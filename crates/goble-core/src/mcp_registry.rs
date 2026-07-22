@@ -178,4 +178,37 @@ mod tests {
             .unwrap();
         assert!(server.credentials_key.is_some());
     }
+
+    #[test]
+    fn test_resolve_unknown_returns_none() {
+        let registry = McpRegistry::builtin();
+        assert!(registry.resolve("unknown-service-xyz").is_none());
+    }
+
+    #[test]
+    fn test_register_and_remove() {
+        let mut registry = McpRegistry::builtin();
+        let before = registry.list().len();
+        registry.remove("mcp-postgres");
+        assert_eq!(registry.list().len(), before - 1);
+        assert!(registry.get("mcp-postgres").is_none());
+    }
+
+    #[test]
+    fn test_auth_field_schema_presence() {
+        let registry = McpRegistry::builtin();
+        let server = registry.get("mcp-postgres").unwrap();
+        assert!(!server.manifest.auth_schema.is_empty());
+        let field = &server.manifest.auth_schema[0];
+        assert_eq!(field.name, "database_url");
+        assert!(field.required);
+    }
+
+    #[test]
+    fn test_mcp_registry_serialization() {
+        let registry = McpRegistry::builtin();
+        let json = serde_json::to_string(&registry).unwrap();
+        let decoded: McpRegistry = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.list().len(), registry.list().len());
+    }
 }

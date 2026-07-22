@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentId;
 use crate::worker::WorkerId;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionTrace {
     pub id: String,
     pub agent_id: AgentId,
@@ -13,6 +13,7 @@ pub struct ExecutionTrace {
     pub finished_at: Option<DateTime<Utc>>,
     pub status: ExecutionStatus,
     pub steps: Vec<Step>,
+    pub metrics: Vec<Metric>,
     pub root_step_id: Option<String>,
 }
 
@@ -68,6 +69,7 @@ impl ExecutionTrace {
             finished_at: None,
             status: ExecutionStatus::Pending,
             steps: Vec::new(),
+            metrics: Vec::new(),
             root_step_id: None,
         }
     }
@@ -131,6 +133,26 @@ impl ExecutionTrace {
     pub fn finish(&mut self, status: ExecutionStatus) {
         self.finished_at = Some(Utc::now());
         self.status = status;
+    }
+
+    /// Add a metric at the trace level.
+    pub fn add_metric(&mut self, name: impl Into<String>, value: f64) {
+        self.metrics.push(Metric {
+            name: name.into(),
+            value,
+            recorded_at: Utc::now(),
+        });
+    }
+
+    /// Find a step by ID, immutable.
+    pub fn find_step(&self, id: &str) -> Option<&Step> {
+        self.steps.iter().find(|s| s.id == id)
+    }
+
+    /// Return the parent step of a given step, if any.
+    pub fn parent_step(&self, step_id: &str) -> Option<&Step> {
+        let parent_id = self.find_step(step_id)?.parent_id.as_ref()?;
+        self.find_step(parent_id)
     }
 }
 
@@ -207,5 +229,46 @@ mod tests {
             .unwrap()
             .log(LogLevel::Info, "hello");
         assert_eq!(trace.root_step().unwrap().logs.len(), 1);
+    }
+
+    #[test]
+    fn test_parent_step_lookup() {
+        let mut trace = ExecutionTrace::new(AgentId::generate());
+        let root = trace.add_root_step("root");
+        let root_id = root.id.clone();
+        let child = trace.add_child_step(&root_id, "child").unwrap();
+        let child_id = child.id.clone();
+
+        assert_eq!(trace.parent_step(&child_id).unwrap().name, "root");
+        assert!(trace.parent_step(&root_id).is_none());
+    }
+
+    #[test]
+    fn test_metric_collection() {
+        let mut trace = ExecutionTrace::new(AgentId::generate());
+        trace.add_metric("tokens", 123.0);
+        assert_eq!(trace.metrics.len(), 1);
+        assert!((trace.metrics[0].value - 123.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_trace_roundtrip_serialization() {
+        let mut trace = ExecutionTrace::new(AgentId::generate());
+        let root = trace.add_root_step("root");
+        let root_id = root.id.clone();
+        trace.add_child_step(&root_id, "child").unwrap();
+        trace.finish(ExecutionStatus::Success);
+
+        let json = serde_json::to_string(&trace).unwrap();
+        let decoded: ExecutionTrace = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.status, ExecutionStatus::Success);
+        assert_eq!(decoded.steps.len(), 2);
+        assert_eq!(decoded.metrics.len(), 0);
+    }
+
+    #[test]
+    fn test_add_child_step_rejects_unknown_parent() {
+        let mut trace = ExecutionTrace::new(AgentId::generate());
+        assert!(trace.add_child_step("unknown", "child").is_none());
     }
 }

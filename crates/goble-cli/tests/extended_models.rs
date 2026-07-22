@@ -1,4 +1,3 @@
-use goble_core::agent::AgentSpec;
 use goble_core::execution::ExecutionTrace;
 use goble_core::mcp_registry::McpRegistry;
 use goble_core::worker::{WorkerId, WorkerStatus};

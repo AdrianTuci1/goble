@@ -10,6 +10,7 @@ pub mod secret;
 pub mod secret_manager;
 pub mod store;
 pub mod task;
+pub mod tls;
 pub mod worker;
 pub mod worker_pool;
 pub mod workspace;

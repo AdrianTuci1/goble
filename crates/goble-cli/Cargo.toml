@@ -10,7 +10,12 @@ publish.workspace = true
 name = "goble-cli"
 path = "src/main.rs"
 
+[lib]
+name = "goble_cli"
+path = "src/lib.rs"
+
 [dependencies]
+tempfile.workspace = true
 goble-core = { path = "../goble-core" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow.workspace = true

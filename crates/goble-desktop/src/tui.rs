@@ -30,6 +30,7 @@ pub struct App {
     pub input: String,
     pub workers: Vec<(WorkerId, WorkerClient)>,
     pub selected_worker: usize,
+    #[allow(dead_code)]
     pub selected_log: usize,
     pub running: bool,
 }
@@ -272,10 +273,46 @@ fn draw_workers(frame: &mut ratatui::Frame, app: &App, area: Rect) {
 
 fn draw_executions(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     let executions = app.state.executions.lock();
-    let items: Vec<ListItem> = executions
-        .values()
-        .map(|e| ListItem::new(format!("{} {:?}", e.id, e.status)))
-        .collect();
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Executions"));
-    frame.render_widget(list, area);
+    if executions.is_empty() {
+        let block = Paragraph::new("No executions yet. Press 'r' to run an agent.")
+            .block(Block::default().borders(Borders::ALL).title("Executions"));
+        frame.render_widget(block, area);
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    for trace in executions.values() {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{} ", trace.id), Style::default().fg(Color::Yellow)),
+            Span::raw(format!("{:?}", trace.status)),
+        ]));
+        let view = trace.sequential_view();
+        for (depth, step) in view {
+            let indent = "  ".repeat(depth);
+            let status_color = match step.status {
+                goble_core::execution::ExecutionStatus::Success => Color::Green,
+                goble_core::execution::ExecutionStatus::Failure(_) => Color::Red,
+                _ => Color::Gray,
+            };
+            lines.push(Line::from(vec![
+                Span::raw(format!("{}{} ", indent, step.name)),
+                Span::styled(
+                    format!("{:?}", step.status),
+                    Style::default().fg(status_color),
+                ),
+            ]));
+            for log in &step.logs {
+                lines.push(Line::from(vec![Span::raw(format!(
+                    "{}  [{:?}] {}",
+                    indent, log.level, log.message
+                ))]));
+            }
+        }
+        lines.push(Line::raw(""));
+    }
+
+    let block = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title("Executions"))
+        .scroll((0, 0));
+    frame.render_widget(block, area);
 }

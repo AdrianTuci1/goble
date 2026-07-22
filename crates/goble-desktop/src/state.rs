@@ -11,12 +11,17 @@ use goble_core::worker::WorkerId;
 
 /// Global desktop state.
 pub struct DesktopState {
+    #[allow(dead_code)]
     pub store: Arc<Mutex<Store>>,
     pub workers: Arc<Mutex<HashMap<WorkerId, WorkerConnection>>>,
+    #[allow(dead_code)]
     pub chats: Arc<Mutex<Vec<Chat>>>,
+    #[allow(dead_code)]
     pub messages: Arc<Mutex<HashMap<String, Vec<ChatMessage>>>>,
     pub agents: Arc<Mutex<Vec<AgentSpec>>>,
+    #[allow(dead_code)]
     pub teams: Arc<Mutex<Vec<Team>>>,
+    #[allow(dead_code)]
     pub mcps: Arc<Mutex<Vec<McpServer>>>,
     pub executions: Arc<Mutex<HashMap<String, ExecutionTrace>>>,
     pub logs: Arc<Mutex<Vec<String>>>,
@@ -24,6 +29,7 @@ pub struct DesktopState {
 
 #[derive(Debug, Clone)]
 pub struct WorkerConnection {
+    #[allow(dead_code)]
     pub worker_id: WorkerId,
     pub name: String,
     pub url: String,
@@ -61,10 +67,12 @@ impl DesktopState {
         self.workers.lock().remove(worker_id);
     }
 
+    #[allow(dead_code)]
     pub fn add_chat(&self, chat: Chat) {
         self.chats.lock().push(chat);
     }
 
+    #[allow(dead_code)]
     pub fn add_message(&self, chat_id: &str, message: ChatMessage) {
         self.messages
             .lock()
@@ -77,10 +85,12 @@ impl DesktopState {
         self.agents.lock().push(agent);
     }
 
+    #[allow(dead_code)]
     pub fn add_team(&self, team: Team) {
         self.teams.lock().push(team);
     }
 
+    #[allow(dead_code)]
     pub fn add_mcp(&self, server: McpServer) {
         self.mcps.lock().push(server);
     }

@@ -108,8 +108,25 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_worker_message() {
-        let msg = WorkerMessage::Paired;
+    fn test_roundtrip_worker_message_log() {
+        let msg = WorkerMessage::AgentLog {
+            trace_id: "t1".to_string(),
+            step_id: "s1".to_string(),
+            level: crate::execution::LogLevel::Info,
+            message: "hello".to_string(),
+        };
+        let bytes = serde_json::to_vec(&msg).unwrap();
+        let decoded: WorkerMessage = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn test_roundtrip_worker_message_status() {
+        let msg = WorkerMessage::StatusReport {
+            worker_id: WorkerId::generate(),
+            status: crate::worker::WorkerStatus::Idle,
+            load: 42,
+        };
         let bytes = serde_json::to_vec(&msg).unwrap();
         let decoded: WorkerMessage = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(decoded, msg);

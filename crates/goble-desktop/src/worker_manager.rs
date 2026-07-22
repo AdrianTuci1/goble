@@ -9,7 +9,9 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::state::DesktopState;
 
 pub struct WorkerClient {
+    #[allow(dead_code)]
     pub worker_id: WorkerId,
+    #[allow(dead_code)]
     pub url: String,
     tx: mpsc::UnboundedSender<DesktopMessage>,
 }

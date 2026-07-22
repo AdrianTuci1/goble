@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
@@ -20,8 +18,6 @@ struct Args {
     worker_id: Option<String>,
     #[arg(long)]
     worker_name: Option<String>,
-    #[arg(long)]
-    run_headless: bool,
 }
 
 #[tokio::main]
@@ -47,12 +43,6 @@ async fn main() -> anyhow::Result<()> {
         println!("connected to worker {} at {}", worker_id, worker_url);
     }
 
-    if args.run_headless {
-        println!("running headless. press ctrl+c to exit.");
-        tokio::signal::ctrl_c().await?;
-    } else {
-        tui::run_tui(state).await?;
-    }
-
+    tui::run_tui(state).await?;
     Ok(())
 }

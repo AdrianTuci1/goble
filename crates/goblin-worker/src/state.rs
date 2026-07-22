@@ -13,7 +13,6 @@ use goble_core::worker::WorkerId;
 /// Shared application state for the Goblin worker.
 pub struct AppState {
     pub worker_id: WorkerId,
-    pub pairing_salt: [u8; 16],
     pub pairing_hash: Mutex<Option<String>>,
     pub agents: Mutex<HashMap<AgentId, AgentSpec>>,
     pub mcp_servers: Mutex<HashMap<String, McpServer>>,
@@ -26,14 +25,12 @@ pub struct AppState {
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
     pub workspace_root: std::path::PathBuf,
-    pub base_url: String,
 }
 
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             workspace_root: std::path::PathBuf::from("/var/goblin/workspaces"),
-            base_url: "http://0.0.0.0:8787".to_string(),
         }
     }
 }
@@ -43,7 +40,6 @@ impl AppState {
         let (event_tx, _rx) = broadcast::channel(1024);
         Arc::new(Self {
             worker_id,
-            pairing_salt: goble_core::crypto::generate_salt(),
             pairing_hash: Mutex::new(None),
             agents: Mutex::new(HashMap::new()),
             mcp_servers: Mutex::new(HashMap::new()),
@@ -78,10 +74,12 @@ impl AppState {
         self.traces.lock().insert(trace.id.clone(), trace);
     }
 
+    #[allow(dead_code)]
     pub fn get_trace(&self, id: &str) -> Option<ExecutionTrace> {
         self.traces.lock().get(id).cloned()
     }
 
+    #[allow(dead_code)]
     pub fn update_trace<F>(&self, id: &str, f: F)
     where
         F: FnOnce(&mut ExecutionTrace),

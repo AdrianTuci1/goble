@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use goble_core::agent::{AgentId, AgentSpec};
-use goble_core::execution::{ExecutionStatus, LogLevel};
+use goble_core::execution::{ExecutionStatus, ExecutionTrace, LogLevel};
 use goble_core::workspace::Workspace;
 
 use crate::state::AppState;
@@ -21,7 +21,7 @@ impl Runner {
         agent_id: AgentId,
         spec: AgentSpec,
     ) -> anyhow::Result<()> {
-        let mut trace = goble_core::execution::ExecutionTrace::new(agent_id.clone());
+        let mut trace = ExecutionTrace::new(agent_id.clone());
         trace.id = trace_id.clone();
         trace.worker_id = Some(self.state.worker_id.clone());
         trace.status = ExecutionStatus::Running;
@@ -36,34 +36,77 @@ impl Runner {
         let workspace = Workspace::new(agent_id.clone(), &self.state.config.lock().workspace_root);
         let _ = workspace.ensure_exists();
 
-        let setup_step = trace.add_step("prepare workspace");
-        setup_step.log(
+        let root_id = trace.add_root_step("execute agent").id.clone();
+        self.state.store_trace(trace.clone());
+
+        let setup_id = trace
+            .add_child_step(&root_id, "prepare workspace")
+            .unwrap()
+            .id
+            .clone();
+        trace.find_step_mut(&setup_id).unwrap().log(
             LogLevel::Info,
             format!("workspace ready at {}", workspace.path.display()),
         );
-        setup_step.log(LogLevel::Info, format!("agent prompt: {}", spec.prompt));
-        setup_step.finish(ExecutionStatus::Success);
+        trace
+            .find_step_mut(&setup_id)
+            .unwrap()
+            .log(LogLevel::Info, format!("agent prompt: {}", spec.prompt));
+        trace
+            .find_step_mut(&setup_id)
+            .unwrap()
+            .finish(ExecutionStatus::Success);
         self.state.store_trace(trace.clone());
 
-        let mcp_step = trace.add_step("attach mcp servers");
+        let mcp_id = trace
+            .add_child_step(&root_id, "attach mcp servers")
+            .unwrap()
+            .id
+            .clone();
         let mcp_ids = spec.mcp_ids.clone();
         let mcp_servers = self.state.mcp_servers.lock().clone();
         for id in &mcp_ids {
-            if let Some(server) = mcp_servers.get(id) {
-                mcp_step.log(LogLevel::Info, format!("attached {}", server.name));
+            let msg = if let Some(server) = mcp_servers.get(id) {
+                format!("attached {}", server.name)
             } else {
-                mcp_step.log(LogLevel::Warn, format!("mcp server {} not found", id));
-            }
+                format!("mcp server {} not found", id)
+            };
+            let level = if mcp_servers.contains_key(id) {
+                LogLevel::Info
+            } else {
+                LogLevel::Warn
+            };
+            trace.find_step_mut(&mcp_id).unwrap().log(level, msg);
         }
-        mcp_step.finish(ExecutionStatus::Success);
+        trace
+            .find_step_mut(&mcp_id)
+            .unwrap()
+            .finish(ExecutionStatus::Success);
         self.state.store_trace(trace.clone());
 
-        let run_step = trace.add_step("execute agent logic");
-        run_step.log(LogLevel::Info, "starting agent runtime");
-        run_step.log(LogLevel::Info, format!("tools: {:?}", spec.tools));
-        run_step.finish(ExecutionStatus::Success);
+        let run_id = trace
+            .add_child_step(&root_id, "execute agent logic")
+            .unwrap()
+            .id
+            .clone();
+        trace
+            .find_step_mut(&run_id)
+            .unwrap()
+            .log(LogLevel::Info, "starting agent runtime");
+        trace
+            .find_step_mut(&run_id)
+            .unwrap()
+            .log(LogLevel::Info, format!("tools: {:?}", spec.tools));
+        trace
+            .find_step_mut(&run_id)
+            .unwrap()
+            .finish(ExecutionStatus::Success);
         self.state.store_trace(trace.clone());
 
+        trace
+            .find_step_mut(&root_id)
+            .unwrap()
+            .finish(ExecutionStatus::Success);
         trace.finish(ExecutionStatus::Success);
         self.state.store_trace(trace.clone());
         self.state
@@ -75,7 +118,7 @@ impl Runner {
     }
 
     pub async fn run_team(&self, trace_id: String, team_id: String) -> anyhow::Result<()> {
-        let mut trace = goble_core::execution::ExecutionTrace::new(AgentId(team_id.clone()));
+        let mut trace = ExecutionTrace::new(AgentId(team_id.clone()));
         trace.id = trace_id.clone();
         trace.worker_id = Some(self.state.worker_id.clone());
         trace.status = ExecutionStatus::Running;
@@ -87,9 +130,18 @@ impl Runner {
                 agent_id: AgentId(team_id.clone()),
             });
 
-        let step = trace.add_step("run team");
-        step.log(LogLevel::Info, format!("running team {}", team_id));
-        step.finish(ExecutionStatus::Success);
+        let root_id = trace
+            .add_root_step(format!("run team {}", team_id))
+            .id
+            .clone();
+        trace
+            .find_step_mut(&root_id)
+            .unwrap()
+            .log(LogLevel::Info, format!("running team {}", team_id));
+        trace
+            .find_step_mut(&root_id)
+            .unwrap()
+            .finish(ExecutionStatus::Success);
         trace.finish(ExecutionStatus::Success);
         self.state.store_trace(trace.clone());
         self.state
@@ -116,6 +168,21 @@ mod tests {
             .run_agent("trace-1".to_string(), id, spec)
             .await
             .unwrap();
-        assert!(state.get_trace("trace-1").is_some());
+        let trace = state.get_trace("trace-1").unwrap();
+        assert!(trace.root_step().is_some());
+        assert!(!trace.sequential_view().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_run_team_success() {
+        let state = AppState::new(WorkerId::generate());
+        let runner = Runner::new(state.clone());
+        runner
+            .run_team("team-trace".to_string(), "team-1".to_string())
+            .await
+            .unwrap();
+        let trace = state.get_trace("team-trace").unwrap();
+        assert_eq!(trace.agent_id.0, "team-1");
+        assert!(trace.root_step().is_some());
     }
 }

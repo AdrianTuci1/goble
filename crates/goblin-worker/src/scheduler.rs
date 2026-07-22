@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use goble_core::agent::{AgentId, AgentSpec, Trigger};
+use goble_core::agent::{AgentId, Trigger};
 use goble_core::protocol::WorkerMessage;
 
 use crate::runner::Runner;
@@ -99,6 +99,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goble_core::agent::AgentSpec;
     use goble_core::worker::WorkerId;
 
     #[tokio::test]

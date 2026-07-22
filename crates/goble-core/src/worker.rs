@@ -52,6 +52,7 @@ impl WorkerConfig {
 pub enum WorkerStatus {
     Unknown,
     Online,
+    Idle,
     Offline,
     Pairing,
     Error(String),

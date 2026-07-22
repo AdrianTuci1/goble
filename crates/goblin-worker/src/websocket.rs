@@ -137,6 +137,12 @@ async fn handle_desktop_message(
                 message: format!("not yet implemented: {name}"),
             });
         }
+        DesktopMessage::ListScheduledTasks => {
+            state.emit(WorkerMessage::ScheduledTasks { tasks: vec![] });
+        }
+        DesktopMessage::CancelScheduledTask { task_id } => {
+            state.emit(WorkerMessage::TaskCancelled { task_id });
+        }
     }
     Ok(())
 }

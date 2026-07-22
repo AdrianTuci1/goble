@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::routing::{get, post};
 use axum::Router;
@@ -12,7 +13,9 @@ use tracing_subscriber::EnvFilter;
 mod file_vault;
 mod pairing;
 mod runner;
+mod scheduler;
 mod state;
+mod task_store;
 mod websocket;
 
 #[derive(Parser, Debug)]
@@ -30,6 +33,18 @@ struct Args {
     worker_id: Option<String>,
     #[arg(long, env = "GOBLIN_TLS_BUNDLE")]
     tls_bundle: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "GOBLIN_TASK_STORE",
+        default_value = "/var/goblin/tasks.db"
+    )]
+    task_store: std::path::PathBuf,
+    #[arg(
+        long,
+        env = "GOBLIN_VAULT_PATH",
+        default_value = "/var/goblin/vault.json"
+    )]
+    vault_path: std::path::PathBuf,
 }
 
 #[tokio::main]
@@ -51,6 +66,12 @@ async fn main() -> anyhow::Result<()> {
         let mut config = state.config.lock();
         config.workspace_root = args.workspace_root;
     }
+
+    let task_store = task_store::TaskStore::open(args.task_store)?;
+    let scheduler = Arc::new(scheduler::Scheduler::new(state.clone(), task_store));
+    let scheduler_for_state = Arc::clone(&scheduler);
+    scheduler.start_loop(Duration::from_secs(5));
+    state.set_scheduler(scheduler_for_state);
 
     let app = Router::new()
         .route("/", get(root_handler))

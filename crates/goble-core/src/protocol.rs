@@ -29,6 +29,10 @@ pub enum DesktopMessage {
     GetVaultSecret {
         name: String,
     },
+    ListScheduledTasks,
+    CancelScheduledTask {
+        task_id: String,
+    },
     PushMcpServers {
         servers: Vec<crate::agent::McpServer>,
     },
@@ -77,6 +81,20 @@ pub enum WorkerMessage {
     VaultError {
         message: String,
     },
+    ScheduledTasks {
+        tasks: Vec<ScheduledTaskSummary>,
+    },
+    TaskCancelled {
+        task_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledTaskSummary {
+    pub id: String,
+    pub agent_id: crate::agent::AgentId,
+    pub trigger: crate::agent::Trigger,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

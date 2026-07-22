@@ -86,6 +86,11 @@ pub enum Command {
     },
     /// Generate a pairing code hash for a worker.
     Pair { code: Option<String> },
+    /// Manage scheduled tasks on a worker.
+    ScheduleManage {
+        #[command(subcommand)]
+        action: ScheduleAction,
+    },
     /// Run an agent on a worker via WebSocket.
     Run {
         #[arg(short, long)]
@@ -116,6 +121,30 @@ pub enum Command {
     Secret {
         #[command(subcommand)]
         action: SecretAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ScheduleAction {
+    /// List scheduled tasks on a worker.
+    List {
+        #[arg(short, long)]
+        worker: String,
+        #[arg(short, long)]
+        url: String,
+        #[arg(short, long)]
+        code: Option<String>,
+    },
+    /// Cancel a scheduled task on a worker.
+    Cancel {
+        #[arg(short, long)]
+        worker: String,
+        #[arg(short, long)]
+        url: String,
+        #[arg(short, long)]
+        task_id: String,
+        #[arg(short, long)]
+        code: Option<String>,
     },
 }
 
@@ -233,6 +262,37 @@ pub async fn async_main() -> Result<()> {
             let hash = hash_pairing_code(&code, &[0u8; 16])?;
             println!("code: {}\nhash: {}", code, hash);
         }
+        Command::ScheduleManage { action } => match action {
+            ScheduleAction::List { worker, url, code } => {
+                let code = code.unwrap_or_else(|| "00000000".to_string());
+                send_to_worker(
+                    &worker,
+                    &url,
+                    &code,
+                    None,
+                    DesktopMessage::ListScheduledTasks,
+                )
+                .await?;
+                println!("schedule list request sent");
+            }
+            ScheduleAction::Cancel {
+                worker,
+                url,
+                task_id,
+                code,
+            } => {
+                let code = code.unwrap_or_else(|| "00000000".to_string());
+                send_to_worker(
+                    &worker,
+                    &url,
+                    &code,
+                    None,
+                    DesktopMessage::CancelScheduledTask { task_id },
+                )
+                .await?;
+                println!("schedule cancel request sent");
+            }
+        },
         Command::Run {
             worker,
             url,

@@ -62,6 +62,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio-test = "0.4"
 tempfile = "3.19"
 mockall = "0.13"
+cron = "0.15"
 proptest = "1.6"
 criterion = "0.5"
 

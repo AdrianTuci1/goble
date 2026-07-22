@@ -4,6 +4,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
+use crate::scheduler::Scheduler;
 use goble_core::agent::{AgentId, AgentSpec, McpServer};
 use goble_core::execution::ExecutionTrace;
 use goble_core::protocol::WorkerMessage;
@@ -22,6 +23,7 @@ pub struct AppState {
     pub vault_path: Mutex<Option<std::path::PathBuf>>,
     pub traces: Mutex<HashMap<String, ExecutionTrace>>,
     pub event_tx: broadcast::Sender<WorkerMessage>,
+    pub scheduler: Mutex<Option<Arc<Scheduler>>>,
     pub config: Mutex<WorkerConfig>,
 }
 
@@ -51,8 +53,17 @@ impl AppState {
             vault_path: Mutex::new(None),
             traces: Mutex::new(HashMap::new()),
             event_tx,
+            scheduler: Mutex::new(None),
             config: Mutex::new(WorkerConfig::default()),
         })
+    }
+
+    pub fn set_scheduler(&self, scheduler: Arc<Scheduler>) {
+        *self.scheduler.lock() = Some(scheduler);
+    }
+
+    pub fn scheduler(&self) -> Option<Arc<Scheduler>> {
+        self.scheduler.lock().clone()
     }
 
     pub fn set_pairing_hash(&self, hash: String) {
@@ -85,7 +96,6 @@ impl AppState {
             if path.exists() {
                 let bytes = std::fs::read(&path)?;
                 let vault = CredentialVault::from_bytes(&bytes)?;
-                // Validate by listing keys only; actual decryption needs passphrase.
                 *self.vault.lock() = vault;
             }
         }

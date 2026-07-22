@@ -54,6 +54,33 @@ fn test_secret_subcommand_parsing() {
     ]);
 }
 
+/// Ensures the schedule-manage subcommands parse correctly.
+#[test]
+fn test_schedule_manage_subcommand_parsing() {
+    use clap::Parser;
+    use goble_cli::Args;
+    let _ = Args::parse_from([
+        "goble-cli",
+        "schedule-manage",
+        "list",
+        "--worker",
+        "worker-1",
+        "--url",
+        "wss://vps-1.local:8787/ws",
+    ]);
+    let _ = Args::parse_from([
+        "goble-cli",
+        "schedule-manage",
+        "cancel",
+        "--worker",
+        "worker-1",
+        "--url",
+        "wss://vps-1.local:8787/ws",
+        "--task-id",
+        "task-123",
+    ]);
+}
+
 /// Ensures the CLI setup-worker command can be parsed and its alias points at the same logic.
 #[test]
 fn test_setup_worker_cli_parsing() {

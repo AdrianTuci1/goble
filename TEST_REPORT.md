@@ -10,21 +10,25 @@ All workspace tests pass.
 |-------|-------|
 | goble-core | 62 passed |
 | goble-cli (lib) | 2 passed |
-| goble-cli (integration) | 8 passed |
-| goblin-worker (lib) | 7 passed |
-| goblin-worker (bin) | 7 passed |
+| goble-cli (integration) | 9 passed |
+| goblin-worker (lib) | 11 passed |
+| goblin-worker (bin) | 13 passed |
 | goble-ui | 4 passed |
 | goble-desktop | 0 tests |
-| **Total** | **90 passed, 0 failed** |
+| **Total** | **101 passed, 0 failed** |
 
 ## Recent additions
 
-- Encrypted credential vault:
-  - `goble-core::vault::CredentialVault` with AES-GCM + PBKDF2 passphrase encryption.
-  - `goblin-worker::file_vault::FileVault` persists vault to disk and reloads it.
-  - `goble-cli secret set|get` subcommands send vault operations to worker over WSS.
-  - Protocol extended with `SetVaultSecret`, `GetVaultSecret`, `VaultSecret`, `VaultError`.
-- mTLS WebSocket handshake (previous commit).
+- Persistent scheduled task store:
+  - `goblin-worker::task_store::TaskStore` backed by SQLite.
+  - `goblin-worker::scheduler::Scheduler` supports cron, heartbeat, manual, and HTTP triggers.
+  - Scheduler loop runs every 5s and dispatches triggers asynchronously.
+  - Worker main opens task store and starts the scheduler loop.
+  - Protocol extended with `ListScheduledTasks`, `CancelScheduledTask`, `ScheduledTasks`, `TaskCancelled`.
+  - `goble-cli schedule-manage list|cancel` subcommands.
+
+- Encrypted credential vault (previous commit).
+- mTLS WebSocket handshake (previous commits).
 
 ## Verification commands
 

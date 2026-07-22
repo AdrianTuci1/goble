@@ -127,6 +127,7 @@ impl DesktopState {
             WorkerMessage::StatusReport { load, .. } => {
                 logs.push(format!("[{}] status load={}", worker_id, load));
             }
+            _ => {}
         }
     }
 

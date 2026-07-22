@@ -23,8 +23,38 @@ fn test_pairing_bundle_for_worker_contains_all_pems() {
     assert!(json.contains("BEGIN PRIVATE KEY"));
 }
 
+/// Ensures the secret set/get subcommands parse correctly.
+#[test]
+fn test_secret_subcommand_parsing() {
+    use clap::Parser;
+    use goble_cli::Args;
+    let _ = Args::parse_from([
+        "goble-cli",
+        "secret",
+        "set",
+        "--worker",
+        "worker-1",
+        "--url",
+        "wss://vps-1.local:8787/ws",
+        "--name",
+        "openai-api-key",
+        "--value",
+        "sk-123",
+    ]);
+    let _ = Args::parse_from([
+        "goble-cli",
+        "secret",
+        "get",
+        "--worker",
+        "worker-1",
+        "--url",
+        "wss://vps-1.local:8787/ws",
+        "--name",
+        "openai-api-key",
+    ]);
+}
+
 /// Ensures the CLI setup-worker command can be parsed and its alias points at the same logic.
-/// Full provisioning is exercised by the unit tests in provision.rs; here we test argument plumbing.
 #[test]
 fn test_setup_worker_cli_parsing() {
     use clap::Parser;

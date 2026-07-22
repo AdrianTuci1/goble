@@ -22,6 +22,13 @@ pub enum DesktopMessage {
     PushSecrets {
         secrets: Vec<crate::secret::Secret>,
     },
+    SetVaultSecret {
+        name: String,
+        value: Vec<u8>,
+    },
+    GetVaultSecret {
+        name: String,
+    },
     PushMcpServers {
         servers: Vec<crate::agent::McpServer>,
     },
@@ -63,6 +70,13 @@ pub enum WorkerMessage {
         load: u8,
     },
     Pong,
+    VaultSecret {
+        name: String,
+        value: Option<Vec<u8>>,
+    },
+    VaultError {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

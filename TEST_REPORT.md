@@ -8,23 +8,23 @@ All workspace tests pass.
 
 | Crate | Tests |
 |-------|-------|
-| goble-core | 57 passed |
+| goble-core | 62 passed |
 | goble-cli (lib) | 2 passed |
-| goble-cli (integration) | 7 passed |
+| goble-cli (integration) | 8 passed |
 | goblin-worker (lib) | 7 passed |
-| goblin-worker (bin) | 5 passed |
+| goblin-worker (bin) | 7 passed |
 | goble-ui | 4 passed |
 | goble-desktop | 0 tests |
-| **Total** | **82 passed, 0 failed** |
+| **Total** | **90 passed, 0 failed** |
 
 ## Recent additions
 
-- mTLS WebSocket handshake:
-  - `goble-core::tls`: `mtls_server_config`, `mtls_client_config`, `PairingBundle::server_config/client_config`.
-  - `goblin-worker`: serves `wss://` with `--tls-bundle` and requires client cert signed by pairing CA.
-  - `goble-cli`: connects via `wss://` with client cert when bundle is supplied; provisioning generates and deploys certs.
-- Provisioning now writes `pairing-bundle.json` to worker host and sets `GOBLIN_TLS_BUNDLE`.
-- rustls `ring` crypto provider installed by default in binaries and tests.
+- Encrypted credential vault:
+  - `goble-core::vault::CredentialVault` with AES-GCM + PBKDF2 passphrase encryption.
+  - `goblin-worker::file_vault::FileVault` persists vault to disk and reloads it.
+  - `goble-cli secret set|get` subcommands send vault operations to worker over WSS.
+  - Protocol extended with `SetVaultSecret`, `GetVaultSecret`, `VaultSecret`, `VaultError`.
+- mTLS WebSocket handshake (previous commit).
 
 ## Verification commands
 

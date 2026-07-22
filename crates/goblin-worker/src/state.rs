@@ -8,6 +8,7 @@ use goble_core::agent::{AgentId, AgentSpec, McpServer};
 use goble_core::execution::ExecutionTrace;
 use goble_core::protocol::WorkerMessage;
 use goble_core::secret::Secret;
+use goble_core::vault::CredentialVault;
 use goble_core::worker::WorkerId;
 
 /// Shared application state for the Goblin worker.
@@ -17,6 +18,8 @@ pub struct AppState {
     pub agents: Mutex<HashMap<AgentId, AgentSpec>>,
     pub mcp_servers: Mutex<HashMap<String, McpServer>>,
     pub secrets: Mutex<HashMap<String, Secret>>,
+    pub vault: Mutex<CredentialVault>,
+    pub vault_path: Mutex<Option<std::path::PathBuf>>,
     pub traces: Mutex<HashMap<String, ExecutionTrace>>,
     pub event_tx: broadcast::Sender<WorkerMessage>,
     pub config: Mutex<WorkerConfig>,
@@ -44,6 +47,8 @@ impl AppState {
             agents: Mutex::new(HashMap::new()),
             mcp_servers: Mutex::new(HashMap::new()),
             secrets: Mutex::new(HashMap::new()),
+            vault: Mutex::new(CredentialVault::new()),
+            vault_path: Mutex::new(None),
             traces: Mutex::new(HashMap::new()),
             event_tx,
             config: Mutex::new(WorkerConfig::default()),
@@ -68,6 +73,32 @@ impl AppState {
 
     pub fn store_secret(&self, secret: Secret) {
         self.secrets.lock().insert(secret.id.clone(), secret);
+    }
+
+    pub fn set_vault_path(&self, path: std::path::PathBuf) {
+        *self.vault_path.lock() = Some(path);
+    }
+
+    pub fn load_vault(&self, _passphrase: &[u8]) -> anyhow::Result<()> {
+        let path = self.vault_path.lock().clone();
+        if let Some(path) = path {
+            if path.exists() {
+                let bytes = std::fs::read(&path)?;
+                let vault = CredentialVault::from_bytes(&bytes)?;
+                // Validate by listing keys only; actual decryption needs passphrase.
+                *self.vault.lock() = vault;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn save_vault(&self) -> anyhow::Result<()> {
+        let path = self.vault_path.lock().clone();
+        if let Some(path) = path {
+            let bytes = self.vault.lock().to_bytes()?;
+            std::fs::write(&path, bytes)?;
+        }
+        Ok(())
     }
 
     pub fn store_trace(&self, trace: ExecutionTrace) {

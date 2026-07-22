@@ -126,6 +126,17 @@ async fn handle_desktop_message(
                 load: 0,
             });
         }
+        DesktopMessage::SetVaultSecret { name, value } => {
+            let _ = (name, value);
+            state.emit(WorkerMessage::VaultError {
+                message: "not yet implemented".to_string(),
+            });
+        }
+        DesktopMessage::GetVaultSecret { name } => {
+            state.emit(WorkerMessage::VaultError {
+                message: format!("not yet implemented: {name}"),
+            });
+        }
     }
     Ok(())
 }

@@ -9,6 +9,7 @@ use goble_core::tls::PairingBundle;
 use goble_core::worker::WorkerId;
 use tracing_subscriber::EnvFilter;
 
+mod file_vault;
 mod pairing;
 mod runner;
 mod state;

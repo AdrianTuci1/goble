@@ -112,6 +112,39 @@ pub enum Command {
         #[arg(short, long)]
         heartbeat: Option<u64>,
     },
+    /// Manage encrypted secrets on a worker.
+    Secret {
+        #[command(subcommand)]
+        action: SecretAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SecretAction {
+    /// Set or update an encrypted secret on a worker.
+    Set {
+        #[arg(short, long)]
+        worker: String,
+        #[arg(short, long)]
+        url: String,
+        #[arg(short, long)]
+        name: String,
+        #[arg(short, long)]
+        value: String,
+        #[arg(short, long)]
+        code: Option<String>,
+    },
+    /// Retrieve an encrypted secret from a worker.
+    Get {
+        #[arg(short, long)]
+        worker: String,
+        #[arg(short, long)]
+        url: String,
+        #[arg(short, long)]
+        name: String,
+        #[arg(short, long)]
+        code: Option<String>,
+    },
 }
 
 pub fn main() -> Result<()> {
@@ -254,6 +287,46 @@ pub async fn async_main() -> Result<()> {
             .await?;
             println!("schedule sent");
         }
+        Command::Secret { action } => match action {
+            SecretAction::Set {
+                worker,
+                url,
+                name,
+                value,
+                code,
+            } => {
+                let code = code.unwrap_or_else(|| "00000000".to_string());
+                send_to_worker(
+                    &worker,
+                    &url,
+                    &code,
+                    None,
+                    DesktopMessage::SetVaultSecret {
+                        name,
+                        value: value.into_bytes(),
+                    },
+                )
+                .await?;
+                println!("secret set request sent");
+            }
+            SecretAction::Get {
+                worker,
+                url,
+                name,
+                code,
+            } => {
+                let code = code.unwrap_or_else(|| "00000000".to_string());
+                send_to_worker(
+                    &worker,
+                    &url,
+                    &code,
+                    None,
+                    DesktopMessage::GetVaultSecret { name },
+                )
+                .await?;
+                println!("secret get request sent");
+            }
+        },
     }
 
     Ok(())

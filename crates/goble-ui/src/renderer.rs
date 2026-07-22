@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use wgpu::{include_wgsl, Adapter, Device, Queue, Surface, SurfaceConfiguration};
+use wgpu::{Adapter, Device, Queue, Surface, SurfaceConfiguration, include_wgsl};
 use winit::window::Window;
 
 pub struct Renderer {
@@ -34,15 +34,13 @@ impl Renderer {
             .await
             .context("failed to find adapter")?;
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
-                    label: Some("goble-device"),
-                    memory_hints: wgpu::MemoryHints::Performance,
-                    trace: wgpu::Trace::Off,
-                },
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                label: Some("goble-device"),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            })
             .await
             .context("failed to request device")?;
 

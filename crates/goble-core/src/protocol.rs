@@ -22,6 +22,20 @@ pub enum DesktopMessage {
     PushSecrets {
         secrets: Vec<crate::secret::Secret>,
     },
+    PushMcpServers {
+        servers: Vec<crate::agent::McpServer>,
+    },
+    UpdateAgent {
+        agent_id: AgentId,
+        spec: AgentSpec,
+    },
+    RemoveAgent {
+        agent_id: AgentId,
+    },
+    RunTeam {
+        trace_id: String,
+        team_id: String,
+    },
     Ping,
 }
 

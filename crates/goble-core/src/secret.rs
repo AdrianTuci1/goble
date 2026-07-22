@@ -27,6 +27,7 @@ pub trait SecretStore: Send + Sync {
     fn list(&self) -> Vec<Secret>;
     fn get(&self, id: &str) -> Option<Secret>;
     fn insert(&mut self, secret: Secret) -> anyhow::Result<()>;
+    fn upsert(&mut self, secret: Secret);
     fn remove(&mut self, id: &str) -> anyhow::Result<()>;
 }
 
@@ -50,6 +51,14 @@ impl SecretStore for InMemorySecretStore {
 
     fn get(&self, id: &str) -> Option<Secret> {
         self.secrets.iter().find(|s| s.id == id).cloned()
+    }
+
+    fn upsert(&mut self, secret: Secret) {
+        if let Some(idx) = self.secrets.iter().position(|s| s.id == secret.id) {
+            self.secrets[idx] = secret;
+        } else {
+            self.secrets.push(secret);
+        }
     }
 
     fn insert(&mut self, secret: Secret) -> anyhow::Result<()> {

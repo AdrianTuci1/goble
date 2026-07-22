@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -71,4 +72,142 @@ pub enum AgentState {
     Running,
     Paused,
     Error(String),
+}
+
+/// MCP server manifest + install metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServer {
+    pub id: String,
+    pub name: String,
+    pub source: McpSource,
+    pub manifest: McpManifest,
+    pub credentials_key: Option<String>,
+    pub installed_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpSource {
+    Github { repo: String, rev: String },
+    Npm { package: String, version: String },
+    Local { path: String },
+    Url { url: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpManifest {
+    pub schema_version: String,
+    pub entrypoint: String,
+    pub runtime: McpRuntime,
+    pub auth_schema: Vec<AuthField>,
+    pub capabilities: Vec<String>,
+    pub config_schema: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpRuntime {
+    V8Isolate,
+    Binary { command: String, args: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthField {
+    pub name: String,
+    pub label: String,
+    pub field_type: AuthFieldType,
+    pub required: bool,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuthFieldType {
+    Token,
+    Password,
+    Text,
+    Url,
+    File,
+}
+
+/// Team is a manually managed group of agents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Team {
+    pub id: String,
+    pub name: String,
+    pub agent_ids: Vec<AgentId>,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Model for the desktop chat view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Chat {
+    pub id: String,
+    pub title: String,
+    pub agent_id: Option<AgentId>,
+    pub worker_id: Option<crate::worker::WorkerId>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: String,
+    pub role: ChatRole,
+    pub content: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChatRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mcp_manifest_roundtrip() {
+        let manifest = McpManifest {
+            schema_version: "1".to_string(),
+            entrypoint: "dist/index.js".to_string(),
+            runtime: McpRuntime::V8Isolate,
+            auth_schema: vec![AuthField {
+                name: "api_key".to_string(),
+                label: "API Key".to_string(),
+                field_type: AuthFieldType::Token,
+                required: true,
+                description: None,
+            }],
+            capabilities: vec!["filesystem".to_string()],
+            config_schema: serde_json::Value::Object(Default::default()),
+        };
+        let json = serde_json::to_string(&manifest).unwrap();
+        let back: McpManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(manifest, back);
+    }
+
+    #[test]
+    fn test_team_serialization() {
+        let team = Team {
+            id: "t1".to_string(),
+            name: "Core".to_string(),
+            agent_ids: vec![AgentId::generate()],
+            metadata: serde_json::Value::Object(Default::default()),
+            created_at: Utc::now(),
+        };
+        let json = serde_json::to_string(&team).unwrap();
+        assert!(json.contains("Core"));
+    }
 }

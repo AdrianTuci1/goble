@@ -21,6 +21,9 @@ base64.workspace = true
 hex.workspace = true
 uuid = { version = "1.16", features = ["v4", "serde"] }
 async-trait.workspace = true
+rusqlite.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

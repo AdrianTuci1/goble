@@ -9,14 +9,23 @@
 - Config serializabilă (TOML/JSON).
 
 ## Module planificate
-- `agent` — `AgentId`, `AgentSpec`, `AgentState`, `Trigger`.
+- `agent` — `AgentId`, `AgentSpec`, `AgentState`, `Trigger`, `McpServer`, `McpManifest`, `McpRuntime`, `AuthField`, `Team`, `Chat`, `ChatMessage`, `ToolCall`.
 - `worker` — `WorkerId`, `WorkerConfig`, `WorkerStatus`.
-- `secret` — `SecretId`, `SecretValue`, `SecretStore` (trait local).
+- `secret` — `Secret`, `SecretStore` (trait local), `InMemorySecretStore`.
+- `secret_manager` — `SecretManager`: encrypt/decrypt + rotate key.
 - `protocol` — `DesktopMessage`, `WorkerMessage`, `Envelope`.
-- `crypto` — `PairingKey`, `Cipher`, `KeyDerivation`, `Nonce`.
+- `crypto` — PBKDF2, ChaCha20Poly1305, pairing code, passphrase encryption.
 - `llm` — `LlmProvider`, `Message`, `CompletionRequest`, `ToolCall`.
 - `execution` — `ExecutionTrace`, `Step`, `LogLevel`, `Metric`.
 - `config` — serializare/deserializare `GobleConfig`.
+- `store` — SQLite intern pentru agenți, workeri, chat-uri, execuții, MCP-uri, setări.
+- `isolate` — `IsolateConfig`, `McpInstance`, `AgentRuntime`, `AgentSource` pentru sandbox V8.
+
+## Decizii de implementare
+- SQLite cu `rusqlite` pentru toate datele locale.
+- Secrets manager folosește o cheie master pentru a cripta/decripta valori înainte de a le pune în store.
+- Protocolul include mesaje pentru MCP servers, update/remove agent, run team.
+- Modelul `isolate` descrie runtime V8 multi-tenant: fiecare agent are propriul isolate, dar MCP-urile pot fi partajate ca instanțe separate.
 
 ## Reguli
 1. Toate structurile publice implementează `serde::Serialize` + `Deserialize`.

@@ -65,6 +65,39 @@ pub fn generate_pairing_code() -> String {
     format!("{:08}", u64::from_le_bytes(bytes) % 100_000_000)
 }
 
+pub fn encrypt_with_passphrase(plaintext: &[u8], passphrase: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let salt = generate_salt();
+    let mut key = [0u8; 32];
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        NonZeroU32::new(PBKDF2_ITERATIONS).unwrap(),
+        &salt,
+        passphrase,
+        &mut key,
+    );
+    let encrypted = encrypt(plaintext, &key)?;
+    let mut out = salt.to_vec();
+    out.extend_from_slice(&encrypted);
+    Ok(out)
+}
+
+pub fn decrypt_with_passphrase(ciphertext: &[u8], passphrase: &[u8]) -> anyhow::Result<Vec<u8>> {
+    if ciphertext.len() < 16 {
+        anyhow::bail!("ciphertext too short for salt");
+    }
+    let salt = &ciphertext[..16];
+    let encrypted = &ciphertext[16..];
+    let mut key = [0u8; 32];
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        NonZeroU32::new(PBKDF2_ITERATIONS).unwrap(),
+        salt,
+        passphrase,
+        &mut key,
+    );
+    decrypt(encrypted, &key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

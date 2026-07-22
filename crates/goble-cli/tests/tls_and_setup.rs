@@ -7,22 +7,20 @@ fn test_pairing_bundle_for_worker_contains_all_pems() {
     let ca = CertGenerator::generate_ca().unwrap();
     let server = CertGenerator::generate_server(&ca, "goblin.local").unwrap();
     let worker_id = WorkerId::generate();
-    let client = CertGenerator::generate_client(&ca, &worker_id.0).unwrap();
+    let desktop = CertGenerator::generate_client(&ca, &worker_id.0).unwrap();
 
     let bundle = PairingBundle {
         ca_cert_pem: ca.cert_pem,
         worker_cert_pem: server.cert_pem,
         worker_key_pem: server.key_pem,
+        desktop_cert_pem: desktop.cert_pem,
+        desktop_key_pem: desktop.key_pem,
         pairing_code_hash: "deadbeef".to_string(),
     };
 
     let json = serde_json::to_string(&bundle).unwrap();
     assert!(json.contains("BEGIN CERTIFICATE"));
     assert!(json.contains("BEGIN PRIVATE KEY"));
-
-    // Client cert can be stored separately for the desktop identity.
-    assert!(client.cert_pem.contains("BEGIN CERTIFICATE"));
-    assert!(client.key_pem.contains("BEGIN PRIVATE KEY"));
 }
 
 /// Ensures the CLI setup-worker command can be parsed and its alias points at the same logic.

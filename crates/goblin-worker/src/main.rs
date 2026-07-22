@@ -1,14 +1,18 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use axum::routing::{get, post};
 use axum::Router;
+use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
+use goble_core::tls::PairingBundle;
+use goble_core::worker::WorkerId;
 use tracing_subscriber::EnvFilter;
 
 mod pairing;
 mod runner;
 mod state;
 mod websocket;
-
-use goble_core::worker::WorkerId;
 
 #[derive(Parser, Debug)]
 #[command(name = "goblin")]
@@ -23,10 +27,14 @@ struct Args {
     workspace_root: std::path::PathBuf,
     #[arg(long, env = "GOBLIN_WORKER_ID")]
     worker_id: Option<String>,
+    #[arg(long, env = "GOBLIN_TLS_BUNDLE")]
+    tls_bundle: Option<PathBuf>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
@@ -50,9 +58,20 @@ async fn main() -> anyhow::Result<()> {
         .route("/ws", get(websocket::ws_handler))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(&args.bind).await?;
-    tracing::info!("goblin listening on {}", args.bind);
-    axum::serve(listener, app).await?;
+    if let Some(bundle_path) = args.tls_bundle {
+        let bundle_json = tokio::fs::read_to_string(&bundle_path).await?;
+        let bundle: PairingBundle = serde_json::from_str(&bundle_json)?;
+        let rustls_config = RustlsConfig::from_config(Arc::new(bundle.server_config()?));
+        tracing::info!("goblin listening with mTLS on {}", args.bind);
+        axum_server::bind_rustls(args.bind.parse()?, rustls_config)
+            .serve(app.into_make_service())
+            .await?;
+    } else {
+        let listener = tokio::net::TcpListener::bind(&args.bind).await?;
+        tracing::info!("goblin listening on {}", args.bind);
+        axum::serve(listener, app).await?;
+    }
+
     Ok(())
 }
 

@@ -8,21 +8,23 @@ All workspace tests pass.
 
 | Crate | Tests |
 |-------|-------|
-| goble-core | 56 passed |
-| goble-cli | 4 passed (2 unit + 2 integration) |
+| goble-core | 57 passed |
+| goble-cli (lib) | 2 passed |
+| goble-cli (integration) | 7 passed |
 | goblin-worker (lib) | 7 passed |
 | goblin-worker (bin) | 5 passed |
 | goble-ui | 4 passed |
 | goble-desktop | 0 tests |
-| **Total** | **76 passed, 0 failed** |
+| **Total** | **82 passed, 0 failed** |
 
 ## Recent additions
 
-- `goble-core::tls`: ephemeral CA + server/client certificate generation for mTLS pairing.
-- `goble-cli setup-worker`: user-friendly alias for `worker-provision`.
-- `ExecutionTrace` tree extensions: `metrics`, `find_step`, `parent_step`, roundtrip serialization tests.
-- MCP registry backend tests: auth schema, register/remove, serialization, unknown resolution.
-- CLI library split (`src/lib.rs`) so argument parsing can be tested directly.
+- mTLS WebSocket handshake:
+  - `goble-core::tls`: `mtls_server_config`, `mtls_client_config`, `PairingBundle::server_config/client_config`.
+  - `goblin-worker`: serves `wss://` with `--tls-bundle` and requires client cert signed by pairing CA.
+  - `goble-cli`: connects via `wss://` with client cert when bundle is supplied; provisioning generates and deploys certs.
+- Provisioning now writes `pairing-bundle.json` to worker host and sets `GOBLIN_TLS_BUNDLE`.
+- rustls `ring` crypto provider installed by default in binaries and tests.
 
 ## Verification commands
 

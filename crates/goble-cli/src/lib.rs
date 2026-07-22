@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -7,6 +8,7 @@ use goble_core::agent::{AgentSpec, Trigger};
 use goble_core::crypto::{generate_pairing_code, hash_pairing_code};
 use goble_core::protocol::DesktopMessage;
 use goble_core::store::Store;
+use goble_core::tls::{CertGenerator, PairingBundle};
 use goble_core::worker::{WorkerConfig, WorkerId};
 
 pub mod provision;
@@ -113,6 +115,7 @@ pub enum Command {
 }
 
 pub fn main() -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async_main())
 }
@@ -211,6 +214,7 @@ pub async fn async_main() -> Result<()> {
                 &worker,
                 &url,
                 &code,
+                None,
                 DesktopMessage::RunAgent {
                     trace_id,
                     agent_id: agent.id.clone(),
@@ -241,6 +245,7 @@ pub async fn async_main() -> Result<()> {
                 &worker,
                 &url,
                 &code,
+                None,
                 DesktopMessage::ScheduleAgent {
                     agent_id: goble_core::agent::AgentId(agent_id),
                     trigger,
@@ -271,6 +276,18 @@ fn do_provision(
     let pairing_hash = hash_pairing_code(&pairing_code, &[0u8; 16])?;
     let worker_id = WorkerId::generate();
 
+    let ca = CertGenerator::generate_ca()?;
+    let server = CertGenerator::generate_server(&ca, &host)?;
+    let desktop = CertGenerator::generate_client(&ca, &worker_id.0)?;
+    let tls_bundle = PairingBundle {
+        ca_cert_pem: ca.cert_pem,
+        worker_cert_pem: server.cert_pem,
+        worker_key_pem: server.key_pem,
+        desktop_cert_pem: desktop.cert_pem,
+        desktop_key_pem: desktop.key_pem,
+        pairing_code_hash: pairing_hash.clone(),
+    };
+
     let config = provision::ProvisionConfig {
         worker_id: worker_id.0.clone(),
         name: name.clone(),
@@ -284,6 +301,7 @@ fn do_provision(
             .parent()
             .map(|p| p.join("goblin"))
             .unwrap_or_else(|| PathBuf::from("goblin")),
+        tls_bundle,
     };
 
     if local_test {
@@ -327,10 +345,11 @@ async fn send_to_worker(
     worker_id: &str,
     url: &str,
     pairing_code: &str,
+    bundle: Option<&PairingBundle>,
     msg: DesktopMessage,
 ) -> Result<()> {
     let hash = hash_pairing_code(pairing_code, &[0u8; 16])?;
-    let (mut ws_stream, _) = tokio_tungstenite::connect_async(url).await?;
+    let mut ws_stream = connect_async_with_tls(url, bundle).await?;
     let pair = DesktopMessage::PairRequest {
         worker_id: WorkerId(worker_id.to_string()),
         pairing_code_hash: hash,
@@ -346,4 +365,24 @@ async fn send_to_worker(
         ))
         .await?;
     Ok(())
+}
+
+async fn connect_async_with_tls(
+    url: &str,
+    bundle: Option<&PairingBundle>,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+> {
+    if let Some(bundle) = bundle {
+        let tls_config = bundle.client_config()?;
+        let connector = tokio_tungstenite::Connector::Rustls(Arc::new(tls_config));
+        let (stream, resp) =
+            tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(connector))
+                .await?;
+        let _ = resp;
+        Ok(stream)
+    } else {
+        let (stream, _) = tokio_tungstenite::connect_async(url).await?;
+        Ok(stream)
+    }
 }

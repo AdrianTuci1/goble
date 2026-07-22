@@ -20,6 +20,8 @@ sha2.workspace = true
 base64.workspace = true
 hex.workspace = true
 rcgen.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
 time = "0.3"
 uuid = { version = "1.16", features = ["v4", "serde"] }
 async-trait.workspace = true

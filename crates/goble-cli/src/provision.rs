@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
+use goble_core::tls::PairingBundle;
 
 /// Transport used to copy files and run commands on a remote host.
 pub trait ProvisionTransport: Send + Sync {
@@ -139,6 +140,7 @@ pub struct ProvisionConfig {
     pub install_hermes: bool,
     pub install_crewai: bool,
     pub goblin_binary: PathBuf,
+    pub tls_bundle: PairingBundle,
 }
 
 /// Generates the shell script that installs the worker on the target host.
@@ -182,6 +184,7 @@ python3 -m pip install crewai 2>/dev/null || true
     }
 
     let checks_joined = checks.join("\n");
+    let bundle_json = serde_json::to_string(&config.tls_bundle).unwrap_or_default();
 
     format!(
         r#"#!/bin/bash
@@ -191,13 +194,21 @@ INSTALL_PATH={install_path}
 WORKSPACE_ROOT={workspace_root}
 WORKER_ID={worker_id}
 PAIRING_HASH={pairing_hash}
+TLS_DIR="$INSTALL_PATH/tls"
+BUNDLE_FILE="$TLS_DIR/pairing-bundle.json"
 
 {checks}
 
-mkdir -p "$INSTALL_PATH" "$WORKSPACE_ROOT"
+mkdir -p "$INSTALL_PATH" "$WORKSPACE_ROOT" "$TLS_DIR"
 groupadd -f goblin
 id -u goblin >/dev/null 2>&1 || useradd -m -g goblin -s /bin/bash goblin
 chown -R goblin:goblin "$INSTALL_PATH" "$WORKSPACE_ROOT"
+
+cat > "$BUNDLE_FILE" <<'EOF'
+{bundle_json}
+EOF
+chmod 600 "$BUNDLE_FILE"
+chown goblin:goblin "$BUNDLE_FILE"
 
 mv "$INSTALL_PATH/goblin.new" "$INSTALL_PATH/goblin"
 chmod +x "$INSTALL_PATH/goblin"
@@ -206,6 +217,7 @@ cat > "$INSTALL_PATH/goblin.env" <<EOF
 GOBLIN_WORKER_ID=$WORKER_ID
 GOBLIN_WORKSPACE_ROOT=$WORKSPACE_ROOT
 GOBLIN_PAIRING_HASH=$PAIRING_HASH
+GOBLIN_TLS_BUNDLE=$BUNDLE_FILE
 EOF
 
 cat > /etc/systemd/system/goblin.service <<EOF
@@ -219,7 +231,7 @@ User=goblin
 Group=goblin
 WorkingDirectory=$INSTALL_PATH
 EnvironmentFile=$INSTALL_PATH/goblin.env
-ExecStart=$INSTALL_PATH/goblin --bind 0.0.0.0:8787 --workspace-root $WORKSPACE_ROOT --worker-id $WORKER_ID
+ExecStart=$INSTALL_PATH/goblin --bind 0.0.0.0:8787 --workspace-root $WORKSPACE_ROOT --worker-id $WORKER_ID --tls-bundle $BUNDLE_FILE
 Restart=always
 RestartSec=5
 
@@ -237,6 +249,7 @@ echo "Goblin worker $WORKER_ID provisioned at $INSTALL_PATH"
         workspace_root = config.workspace_root,
         worker_id = config.worker_id,
         pairing_hash = config.pairing_code_hash,
+        bundle_json = bundle_json,
         checks = checks_joined,
     )
 }
@@ -250,9 +263,17 @@ pub fn provision_worker(
     let script_path = PathBuf::from("/tmp/goblin-install.sh");
     std::fs::write(&script_path, script).context("failed to write install script")?;
 
+    let bundle_path = PathBuf::from("/tmp/goblin-pairing-bundle.json");
+    std::fs::write(&bundle_path, serde_json::to_string(&config.tls_bundle)?)
+        .context("failed to write pairing bundle")?;
+
     transport.copy_file(
         &config.goblin_binary,
         &format!("{}/goblin.new", config.install_path),
+    )?;
+    transport.copy_file(
+        &bundle_path,
+        &format!("{}/tls/pairing-bundle.json", config.install_path),
     )?;
     transport.copy_file(&script_path, "/tmp/goblin-install.sh")?;
     transport.run_command("chmod +x /tmp/goblin-install.sh && sudo bash /tmp/goblin-install.sh")?;
@@ -267,6 +288,14 @@ mod tests {
 
     #[test]
     fn test_generate_install_script_contains_worker_id() {
+        let bundle = PairingBundle {
+            ca_cert_pem: "CA\n".to_string(),
+            worker_cert_pem: "WORKER\n".to_string(),
+            worker_key_pem: "WORKER_KEY\n".to_string(),
+            desktop_cert_pem: "DESKTOP\n".to_string(),
+            desktop_key_pem: "DESKTOP_KEY\n".to_string(),
+            pairing_code_hash: "deadbeef".to_string(),
+        };
         let config = ProvisionConfig {
             worker_id: "worker-123".to_string(),
             name: "vps-1".to_string(),
@@ -277,12 +306,14 @@ mod tests {
             install_hermes: false,
             install_crewai: true,
             goblin_binary: PathBuf::from("/tmp/goblin"),
+            tls_bundle: bundle,
         };
         let script = generate_install_script(&config);
         assert!(script.contains("worker-123"));
         assert!(script.contains("deadbeef"));
         assert!(script.contains("docker-ce"));
         assert!(script.contains("crewai"));
+        assert!(script.contains("pairing-bundle.json"));
     }
 
     #[test]

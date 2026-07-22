@@ -30,6 +30,7 @@ uuid.workspace = true
 tokio-tungstenite.workspace = true
 futures.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
+rustls.workspace = true
 dirs = "6"
 
 [dev-dependencies]

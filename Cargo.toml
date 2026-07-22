@@ -1,0 +1,81 @@
+[workspace]
+members = [
+  "crates/*",
+]
+resolver = "2"
+
+[workspace.package]
+authors = ["Goble Contributors"]
+license = "MIT"
+publish = false
+edition = "2024"
+rust-version = "1.86"
+
+[workspace.dependencies]
+# async / runtime
+anyhow = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["full"] }
+futures = "0.3"
+parking_lot = "0.12"
+dashmap = "6.1"
+async-trait = "0.1"
+
+# networking
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+rustls = { version = "0.23", default-features = false }
+rustls-pemfile = "2.2"
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tungstenite = "0.26"
+
+# serialization / config
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# crypto
+ring = "0.17"
+chacha20poly1305 = "0.10"
+rand = "0.9"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+
+# CLI / logs
+clap = { version = "4.5", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# db / time
+rusqlite = { version = "0.34", features = ["bundled", "chrono"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# testing
+tokio-test = "0.4"
+tempfile = "3.19"
+mockall = "0.13"
+proptest = "1.6"
+criterion = "0.5"
+
+# ui / rendering
+wgpu = "25.0"
+winit = "0.30"
+glam = { version = "0.31", features = ["bytemuck"] }
+bytemuck = { version = "1.23", features = ["derive"] }
+pollster = "0.4"
+raw-window-handle = "0.6"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+lto = true
+strip = true
+opt-level = 3
+
+[profile.dev]
+opt-level = 0
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

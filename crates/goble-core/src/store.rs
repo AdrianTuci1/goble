@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 /// Internal SQLite store for agents, chats, teams, execution traces, MCP registry cache and settings.
 pub struct Store {
@@ -188,6 +188,13 @@ impl Store {
         self.conn
             .lock()
             .execute("DELETE FROM agents WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn delete_worker(&self, id: &str) -> Result<()> {
+        self.conn
+            .lock()
+            .execute("DELETE FROM workers WHERE id = ?1", params![id])?;
         Ok(())
     }
 

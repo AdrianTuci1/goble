@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use wgpu::{Adapter, Device, Queue, Surface, SurfaceConfiguration, include_wgsl};
+use wgpu::{include_wgsl, Adapter, Device, Queue, Surface, SurfaceConfiguration};
 use winit::window::Window;
 
 pub struct Renderer {

@@ -1,16 +1,19 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use axum::extract::State;
 use axum::routing::{get, post};
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use goble_core::tls::PairingBundle;
-use goble_core::worker::WorkerId;
+use goble_core::worker::{WorkerId, WorkerStatus};
+use serde::Serialize;
 use tracing_subscriber::EnvFilter;
 
 mod file_vault;
+mod mcp;
 mod pairing;
 mod runner;
 mod scheduler;
@@ -45,27 +48,56 @@ struct Args {
         default_value = "/var/goblin/vault.json"
     )]
     vault_path: std::path::PathBuf,
+    #[arg(long, env = "GOBLIN_DAEMON")]
+    daemon: bool,
+    #[arg(long, env = "GOBLIN_PID_FILE", default_value = "/var/run/goblin.pid")]
+    pid_file: PathBuf,
+    #[arg(long, env = "GOBLIN_LOG_FILE", default_value = "/var/log/goblin.log")]
+    log_file: PathBuf,
+}
+
+static START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+#[derive(Debug, Serialize, Clone)]
+struct HealthReport {
+    worker_id: String,
+    status: WorkerStatus,
+    paired: bool,
+    uptime_seconds: u64,
+    load: u8,
+    active_traces: usize,
+    scheduled_tasks: usize,
+    version: &'static str,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
+    START_TIME.set(Instant::now()).ok();
+
+    let args = Args::parse();
+
+    if args.daemon {
+        daemonize::daemonize(&args.pid_file, &args.log_file)?;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let args = Args::parse();
     let worker_id = match args.worker_id {
         Some(id) => WorkerId(id),
         None => WorkerId::generate(),
     };
 
-    let state = state::AppState::new(worker_id);
+    let state = state::AppState::new(worker_id.clone());
     {
         let mut config = state.config.lock();
         config.workspace_root = args.workspace_root;
     }
+
+    state.set_vault_path(args.vault_path);
 
     let task_store = task_store::TaskStore::open(args.task_store)?;
     let scheduler = Arc::new(scheduler::Scheduler::new(state.clone(), task_store));
@@ -75,10 +107,12 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(root_handler))
+        .route("/health", get(health_handler))
+        .route("/mcp", get(mcp::list_mcp_handler))
         .route("/pair", post(pairing::pair_handler))
         .route("/status", get(pairing::status_handler))
         .route("/ws", get(websocket::ws_handler))
-        .with_state(state);
+        .with_state(state.clone());
 
     if let Some(bundle_path) = args.tls_bundle {
         let bundle_json = tokio::fs::read_to_string(&bundle_path).await?;
@@ -99,4 +133,64 @@ async fn main() -> anyhow::Result<()> {
 
 async fn root_handler() -> &'static str {
     "Goblin Worker"
+}
+
+async fn health_handler(State(state): State<Arc<state::AppState>>) -> axum::Json<HealthReport> {
+    let uptime_seconds = START_TIME.get().map(|t| t.elapsed().as_secs()).unwrap_or(0);
+    let scheduled_tasks = state
+        .scheduler()
+        .map(|s: Arc<scheduler::Scheduler>| s.list_tasks().unwrap_or_default().len())
+        .unwrap_or(0);
+    axum::Json(HealthReport {
+        worker_id: state.worker_id.to_string(),
+        status: WorkerStatus::Online,
+        paired: state.pairing_hash.lock().is_some(),
+        uptime_seconds,
+        load: 0,
+        active_traces: state.traces.lock().len(),
+        scheduled_tasks,
+        version: env!("CARGO_PKG_VERSION"),
+    })
+}
+
+mod daemonize {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::os::unix::process::CommandExt;
+    use std::path::Path;
+    use std::process::Command;
+
+    pub fn daemonize(pid_file: &Path, log_file: &Path) -> anyhow::Result<()> {
+        let pid = std::process::id();
+        std::fs::create_dir_all(pid_file.parent().unwrap_or(Path::new("/")))?;
+        std::fs::create_dir_all(log_file.parent().unwrap_or(Path::new("/")))?;
+        {
+            let mut f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(pid_file)?;
+            writeln!(f, "{}", pid)?;
+        }
+
+        let current_exe = std::env::current_exe()?;
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let mut cmd = Command::new(current_exe);
+        cmd.args(&args).stdout(std::process::Stdio::null()).stderr(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_file)?,
+        );
+        // Remove --daemon from args to avoid respawning loop
+        let filtered: Vec<String> = args
+            .into_iter()
+            .filter(|a| {
+                a != "--daemon" && !a.starts_with("--pid-file") && !a.starts_with("--log-file")
+            })
+            .collect();
+        cmd.args(filtered);
+        let _ = cmd.spawn()?;
+        std::process::exit(0);
+    }
 }

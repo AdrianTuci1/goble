@@ -23,6 +23,8 @@ rcgen.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
 time = "0.3"
+tokio = { workspace = true, features = ["rt", "process", "macros"] }
+reqwest = { workspace = true, features = ["rustls-tls"] }
 uuid = { version = "1.16", features = ["v4", "serde"] }
 async-trait.workspace = true
 rusqlite.workspace = true

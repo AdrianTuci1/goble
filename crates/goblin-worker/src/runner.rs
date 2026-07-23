@@ -1,18 +1,22 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use goble_core::agent::{AgentId, AgentSpec};
 use goble_core::execution::{ExecutionStatus, ExecutionTrace, LogLevel};
+use goble_core::mcp_installer::McpInstaller;
 use goble_core::workspace::Workspace;
 
 use crate::state::AppState;
 
 pub struct Runner {
     state: Arc<AppState>,
+    installer: McpInstaller,
 }
 
 impl Runner {
     pub fn new(state: Arc<AppState>) -> Self {
-        Self { state }
+        let installer = McpInstaller::new(state.config.lock().workspace_root.join("cache"));
+        Self { state, installer }
     }
 
     pub async fn run_agent(
@@ -58,25 +62,85 @@ impl Runner {
             .finish(ExecutionStatus::Success);
         self.state.store_trace(trace.clone());
 
-        let mcp_id = trace
-            .add_child_step(&root_id, "attach mcp servers")
+        let install_id = trace
+            .add_child_step(&root_id, "install mcp servers")
             .unwrap()
             .id
             .clone();
-        let mcp_ids = spec.mcp_ids.clone();
         let mcp_servers = self.state.mcp_servers.lock().clone();
-        for id in &mcp_ids {
-            let msg = if let Some(server) = mcp_servers.get(id) {
-                format!("attached {}", server.name)
+        let mut installed = HashMap::new();
+        for id in &spec.mcp_ids {
+            if let Some(server) = mcp_servers.get(id) {
+                match self.installer.install(server).await {
+                    Ok(mcp) => {
+                        trace.find_step_mut(&install_id).unwrap().log(
+                            LogLevel::Info,
+                            format!("installed {} at {}", mcp.id, mcp.path.display()),
+                        );
+                        installed.insert(mcp.id.clone(), mcp);
+                    }
+                    Err(e) => {
+                        trace
+                            .find_step_mut(&install_id)
+                            .unwrap()
+                            .log(LogLevel::Error, format!("failed to install {}: {}", id, e));
+                    }
+                }
             } else {
-                format!("mcp server {} not found", id)
-            };
-            let level = if mcp_servers.contains_key(id) {
-                LogLevel::Info
-            } else {
-                LogLevel::Warn
-            };
-            trace.find_step_mut(&mcp_id).unwrap().log(level, msg);
+                trace
+                    .find_step_mut(&install_id)
+                    .unwrap()
+                    .log(LogLevel::Warn, format!("mcp server {} not registered", id));
+            }
+        }
+        trace
+            .find_step_mut(&install_id)
+            .unwrap()
+            .finish(ExecutionStatus::Success);
+        self.state.store_trace(trace.clone());
+
+        let mcp_id = trace
+            .add_child_step(&root_id, "connect mcp servers")
+            .unwrap()
+            .id
+            .clone();
+        for (id, mcp) in &installed {
+            match mcp.start_client(HashMap::new()) {
+                Ok(client) => match client.initialize() {
+                    Ok(_) => {
+                        trace
+                            .find_step_mut(&mcp_id)
+                            .unwrap()
+                            .log(LogLevel::Info, format!("mcp {} initialized", id));
+                        match client.list_tools() {
+                            Ok(tools) => {
+                                trace
+                                    .find_step_mut(&mcp_id)
+                                    .unwrap()
+                                    .log(LogLevel::Info, format!("mcp {} tools: {}", id, tools));
+                            }
+                            Err(e) => {
+                                trace.find_step_mut(&mcp_id).unwrap().log(
+                                    LogLevel::Warn,
+                                    format!("mcp {} list_tools failed: {}", id, e),
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        trace.find_step_mut(&mcp_id).unwrap().log(
+                            LogLevel::Error,
+                            format!("mcp {} initialize failed: {}", id, e),
+                        );
+                    }
+                },
+                Err(e) => {
+                    trace
+                        .find_step_mut(&mcp_id)
+                        .unwrap()
+                        .log(LogLevel::Error, format!("mcp {} start failed: {}", id, e));
+                }
+            }
         }
         trace
             .find_step_mut(&mcp_id)

@@ -27,6 +27,7 @@ tokio = { workspace = true, features = ["rt", "process", "macros"] }
 reqwest = { workspace = true, features = ["rustls-tls"] }
 uuid = { version = "1.16", features = ["v4", "serde"] }
 async-trait.workspace = true
+futures.workspace = true
 rusqlite.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true

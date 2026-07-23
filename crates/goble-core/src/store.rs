@@ -536,6 +536,14 @@ impl Store {
     }
 }
 
+impl Clone for Store {
+    fn clone(&self) -> Self {
+        Self {
+            conn: Arc::clone(&self.conn),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

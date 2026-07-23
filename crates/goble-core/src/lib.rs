@@ -2,6 +2,7 @@ pub mod agent;
 pub mod config;
 pub mod crypto;
 pub mod execution;
+pub mod harness;
 pub mod isolate;
 pub mod llm;
 pub mod mcp_client;

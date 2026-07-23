@@ -90,6 +90,25 @@ export interface VaultSecretInfo {
   updated_at: string;
 }
 
+export interface ToolSchema {
+  name: string;
+  description: string;
+  parameters: unknown;
+}
+
+export interface HarnessEvent {
+  type: 'assistant_delta' | 'tool_call_started' | 'tool_call_finished' | 'tool_call_error' | 'done' | 'error';
+  payload?: unknown;
+}
+
+export async function runHarness(chatId: string, prompt: string): Promise<void> {
+  return invoke('run_harness', { req: { chat_id: chatId, prompt } });
+}
+
+export async function listHarnessTools(): Promise<ToolSchema[]> {
+  return invoke('list_harness_tools');
+}
+
 export async function listWorkers(): Promise<WorkerConnection[]> {
   return invoke('list_workers');
 }

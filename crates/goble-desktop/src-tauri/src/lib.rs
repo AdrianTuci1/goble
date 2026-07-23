@@ -1,7 +1,9 @@
 // Tauri + React application entry
 // This crate is not included in the Cargo workspace because it is a Tauri project.
 use goble_core::agent::{AgentId, Trigger};
+use goble_core::harness::{Harness, HarnessEvent};
 use goble_core::protocol::DesktopMessage;
+use goble_core::store::Store;
 use goble_core::worker::WorkerId;
 use goble_core::workflow::{WorkflowId, WorkflowStep};
 use serde::Deserialize;
@@ -222,6 +224,67 @@ fn create_workflow(
         .map_err(|e| e.to_string())
 }
 
+#[derive(Deserialize)]
+struct RunHarnessRequest {
+    chat_id: String,
+    prompt: String,
+}
+
+#[tauri::command]
+fn list_harness_tools() -> Result<Vec<goble_core::harness::ToolSchema>, String> {
+    let harness = Harness::new(Store::open_in_memory().map_err(|e| e.to_string())?);
+    Ok(harness.list_tools())
+}
+
+#[tauri::command]
+fn run_harness(
+    req: RunHarnessRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    let harness = Harness::new(state.store_clone());
+    let mut stream = harness.run_turn(&req.chat_id, &req.prompt);
+    let state_clone = Arc::clone(&state);
+    tokio::spawn(async move {
+        use futures::StreamExt;
+        while let Some(event) = stream.next().await {
+            match event {
+                HarnessEvent::AssistantDelta(delta) => {
+                    state_clone.add_chat_message(&req.chat_id,
+                        "assistant",
+                        &delta,
+                    ).ok();
+                }
+                HarnessEvent::ToolCallStarted { id, name, arguments } => {
+                    state_clone.add_chat_message(
+                        &req.chat_id,
+                        "tool",
+                        &format!("tool call {id}: {name}({})", serde_json::to_string(&arguments).unwrap_or_default()),
+                    ).ok();
+                }
+                HarnessEvent::ToolCallFinished { id, result } => {
+                    state_clone.add_chat_message(
+                        &req.chat_id,
+                        "tool",
+                        &format!("tool call {id} finished: {result}"),
+                    ).ok();
+                }
+                HarnessEvent::ToolCallError { id, message } => {
+                    state_clone.add_chat_message(
+                        &req.chat_id,
+                        "tool",
+                        &format!("tool call {id} error: {message}"),
+                    ).ok();
+                }
+                HarnessEvent::Done => {}
+                HarnessEvent::Error(e) => {
+                    state_clone.add_log(format!("harness error: {e}"));
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
 #[tauri::command]
 fn delete_workflow(
     workflow_id: String,
@@ -340,7 +403,9 @@ pub fn run() {
             set_vault_secret,
             unlock_vault,
             run_agent,
-            schedule_agent
+            schedule_agent,
+            run_harness,
+            list_harness_tools
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

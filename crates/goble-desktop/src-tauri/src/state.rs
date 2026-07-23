@@ -438,6 +438,10 @@ impl DesktopState {
             .collect())
     }
 
+    pub fn store_clone(&self) -> Store {
+        self.store.lock().clone()
+    }
+
     pub fn create_chat(&self, title: &str) -> anyhow::Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();

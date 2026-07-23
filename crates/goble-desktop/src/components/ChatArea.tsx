@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../stores/appStore';
-import { createChat, chatMessages, addChatMessage, addLog, runAgent } from '../tauri/api';
+import {
+  createChat,
+  chatMessages,
+  addChatMessage,
+  addLog,
+  runAgent,
+  runHarness,
+} from '../tauri/api';
 
 export default function ChatArea() {
   const activeChatId = useStore((s) => s.activeConversationId);
@@ -44,11 +51,14 @@ export default function ChatArea() {
       content: input,
       created_at: new Date().toISOString(),
     });
+    const sentInput = input;
     setInput('');
     addLog(`user sent message in chat ${chatId}`);
 
-    if (workerId && agentId) {
-      await runAgent(workerId, agentId, input);
+    if (sentInput.startsWith('/')) {
+      await runHarness(chatId, sentInput);
+    } else if (workerId && agentId) {
+      await runAgent(workerId, agentId, sentInput);
     }
   }
 

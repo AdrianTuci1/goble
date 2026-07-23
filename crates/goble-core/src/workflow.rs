@@ -52,6 +52,11 @@ impl Workflow {
         }
     }
 
+    pub fn with_steps(mut self, steps: Vec<WorkflowStep>) -> Self {
+        self.steps = steps;
+        self
+    }
+
     pub fn with_step(mut self, step: WorkflowStep) -> Self {
         self.steps.push(step);
         self

@@ -244,36 +244,37 @@ fn run_harness(
     let harness = Harness::new(state.store_clone());
     let mut stream = harness.run_turn(&req.chat_id, &req.prompt);
     let state_clone = Arc::clone(&state);
+    let chat_id = req.chat_id.clone();
     tokio::spawn(async move {
         use futures::StreamExt;
         while let Some(event) = stream.next().await {
             match event {
                 HarnessEvent::AssistantDelta(delta) => {
-                    state_clone.add_chat_message(&req.chat_id,
-                        "assistant",
-                        &delta,
-                    ).ok();
+                    state_clone.add_chat_message(&chat_id, "assistant", &delta).ok();
                 }
                 HarnessEvent::ToolCallStarted { id, name, arguments } => {
-                    state_clone.add_chat_message(
-                        &req.chat_id,
-                        "tool",
-                        &format!("tool call {id}: {name}({})", serde_json::to_string(&arguments).unwrap_or_default()),
-                    ).ok();
+                    let payload = serde_json::json!({
+                        "id": id,
+                        "name": name,
+                        "arguments": arguments
+                    });
+                    state_clone.add_chat_message(&chat_id, "tool", &payload.to_string()).ok();
                 }
                 HarnessEvent::ToolCallFinished { id, result } => {
-                    state_clone.add_chat_message(
-                        &req.chat_id,
-                        "tool",
-                        &format!("tool call {id} finished: {result}"),
-                    ).ok();
+                    let payload = serde_json::json!({
+                        "id": id,
+                        "status": "finished",
+                        "result": result
+                    });
+                    state_clone.add_chat_message(&chat_id, "tool", &payload.to_string()).ok();
                 }
                 HarnessEvent::ToolCallError { id, message } => {
-                    state_clone.add_chat_message(
-                        &req.chat_id,
-                        "tool",
-                        &format!("tool call {id} error: {message}"),
-                    ).ok();
+                    let payload = serde_json::json!({
+                        "id": id,
+                        "status": "error",
+                        "message": message
+                    });
+                    state_clone.add_chat_message(&chat_id, "tool", &payload.to_string()).ok();
                 }
                 HarnessEvent::Done => {}
                 HarnessEvent::Error(e) => {

@@ -407,9 +407,14 @@ impl DesktopState {
     ) -> anyhow::Result<()> {
         let id = uuid::Uuid::new_v4().to_string();
         let created_at = Utc::now().to_rfc3339();
+        let tool_calls = if role == "tool" {
+            serde_json::from_str::<Vec<serde_json::Value>>(content).ok().and_then(|v| serde_json::to_string(&v).ok())
+        } else {
+            None
+        };
         self.store
             .lock()
-            .insert_chat_message(&id, chat_id, role, content, None, &created_at)?;
+            .insert_chat_message(&id, chat_id, role, content, tool_calls.as_deref(), &created_at)?;
         self.messages
             .lock()
             .entry(chat_id.to_string())

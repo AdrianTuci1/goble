@@ -34,10 +34,13 @@ pub struct AgentSpec {
     pub tools: Vec<String>,
     pub triggers: Vec<Trigger>,
     pub mcp_ids: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 impl AgentSpec {
     pub fn new(name: impl Into<String>, prompt: impl Into<String>) -> Self {
+        let now = Utc::now().to_rfc3339();
         Self {
             id: AgentId::generate(),
             name: name.into(),
@@ -46,6 +49,8 @@ impl AgentSpec {
             tools: Vec::new(),
             triggers: vec![Trigger::Manual],
             mcp_ids: Vec::new(),
+            created_at: now.clone(),
+            updated_at: now,
         }
     }
 

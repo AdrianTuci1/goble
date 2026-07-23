@@ -9,6 +9,27 @@ import {
   runHarness,
 } from '../tauri/api';
 
+interface ToolCallPayload {
+  id: string;
+  name?: string;
+  arguments?: Record<string, unknown>;
+  status?: 'finished' | 'error';
+  result?: string;
+  message?: string;
+}
+
+function tryParseTool(content: string): ToolCallPayload | undefined {
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed && typeof parsed === 'object' && 'id' in parsed) {
+      return parsed as ToolCallPayload;
+    }
+  } catch {
+    // not a tool payload
+  }
+  return undefined;
+}
+
 export default function ChatArea() {
   const activeChatId = useStore((s) => s.activeConversationId);
   const setActiveChatId = useStore((s) => s.setActiveConversation);
@@ -69,6 +90,25 @@ export default function ChatArea() {
     });
   }
 
+  function renderMessageContent(content: string, role: string) {
+    if (role === 'tool') {
+      const tool = tryParseTool(content);
+      if (tool) {
+        return (
+          <div className="tool-call">
+            <div className="tool-call-header">tool: {tool.name || tool.id}</div>
+            {tool.arguments && (
+              <pre className="tool-call-args">{String(JSON.stringify(tool.arguments, null, 2))}</pre>
+            )}
+            {tool.status === 'finished' && <div className="tool-result">✅ {tool.result}</div>}
+            {tool.status === 'error' && <div className="tool-error">❌ {tool.message}</div>}
+          </div>
+        );
+      }
+    }
+    return <div className="message-content">{content}</div>;
+  }
+
   return (
     <div className="chat-area">
       <div className="chat-header">
@@ -100,7 +140,7 @@ export default function ChatArea() {
         {messages.map((m) => (
           <div key={m.id} className={`chat-message ${m.role}`}>
             <div className="message-role">{m.role}</div>
-            <div className="message-content">{m.content}</div>
+            {renderMessageContent(m.content, m.role)}
           </div>
         ))}
       </div>
@@ -114,7 +154,7 @@ export default function ChatArea() {
               handleSend();
             }
           }}
-          placeholder="Type a message..."
+          placeholder="Type a message or /command..."
         />
         <button onClick={handleSend}>Send</button>
       </div>

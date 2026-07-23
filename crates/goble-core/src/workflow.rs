@@ -81,7 +81,6 @@ pub struct ScheduledTask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentSpec;
 
     #[test]
     fn test_workflow_builder() {

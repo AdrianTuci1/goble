@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useStore } from '../stores/appStore';
 import { scheduleAgent } from '../tauri/api';
 
 interface ScheduledTask {
@@ -6,147 +7,73 @@ interface ScheduledTask {
   title: string;
   agentId: string;
   trigger: string;
-  status: 'active' | 'paused' | 'failed';
+  status: 'active' | 'paused';
 }
 
 export default function WorkflowsPage() {
-  const [tasks, setTasks] = useState<ScheduledTask[]>([
-    {
-      id: '1',
-      title: 'Daily Backup Verification',
-      agentId: 'backup-agent',
-      trigger: '0 2 * * *',
+  const workers = useStore((s) => s.workers);
+  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
+  const [title, setTitle] = useState('');
+  const [agentId, setAgentId] = useState('');
+  const [trigger, setTrigger] = useState('0 * * * *');
+  const [workerId, setWorkerId] = useState('');
+
+  async function addTask() {
+    if (!title || !agentId || !workerId) return;
+    await scheduleAgent(workerId, agentId, trigger);
+    const newTask: ScheduledTask = {
+      id: `${Date.now()}`,
+      title,
+      agentId,
+      trigger,
       status: 'active',
-    },
-  ]);
-  const [newTitle, setNewTitle] = useState('');
-  const [newAgent, setNewAgent] = useState('');
-  const [newTrigger, setNewTrigger] = useState('');
-
-  const addTask = async () => {
-    if (!newTitle || !newAgent || !newTrigger) return;
-    await scheduleAgent(newAgent, newTrigger);
-    setTasks((t) => [
-      ...t,
-      {
-        id: `${Date.now()}`,
-        title: newTitle,
-        agentId: newAgent,
-        trigger: newTrigger,
-        status: 'active',
-      },
-    ]);
-    setNewTitle('');
-    setNewAgent('');
-    setNewTrigger('');
-  };
-
-  const toggleStatus = (id: string) => {
-    setTasks((t) =>
-      t.map((task) =>
-        task.id === id
-          ? { ...task, status: task.status === 'active' ? 'paused' : 'active' }
-          : task
-      )
-    );
-  };
+    };
+    setTasks([...tasks, newTask]);
+    setTitle('');
+    setAgentId('');
+  }
 
   return (
-    <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
-      <h1 style={{ fontSize: 24, fontWeight: 600, marginBottom: 24 }}>Workflows / Programări</h1>
-
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-          gap: 12,
-          marginBottom: 24,
-        }}
-      >
-        <input
-          type="text"
-          placeholder="Titlu task"
-          value={newTitle}
-          onChange={(e) => setNewTitle(e.target.value)}
-          style={inputStyle}
-        />
-        <input
-          type="text"
-          placeholder="Agent ID"
-          value={newAgent}
-          onChange={(e) => setNewAgent(e.target.value)}
-          style={inputStyle}
-        />
-        <input
-          type="text"
-          placeholder="Trigger (cron / heartbeat)"
-          value={newTrigger}
-          onChange={(e) => setNewTrigger(e.target.value)}
-          style={inputStyle}
-        />
-        <button
-          onClick={addTask}
-          style={{
-            padding: '10px 16px',
-            borderRadius: 8,
-            border: 'none',
-            background: '#e5e5e5',
-            color: '#0a0a0a',
-            fontWeight: 500,
-            cursor: 'pointer',
-          }}
-        >
-          Adaugă
-        </button>
+    <div className="page">
+      <div className="page-header">
+        <h2>Workflows</h2>
       </div>
-
-      {tasks.map((task) => (
-        <div
-          key={task.id}
-          style={{
-            padding: 16,
-            borderRadius: 12,
-            background: '#111111',
-            border: '1px solid #1f1f1f',
-            marginBottom: 12,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
-        >
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 500, marginBottom: 4 }}>{task.title}</div>
-            <div style={{ fontSize: 13, color: '#a3a3a3' }}>
-              Agent: {task.agentId} • Trigger: {task.trigger}
-            </div>
-          </div>
-          <button
-            onClick={() => toggleStatus(task.id)}
-            style={{
-              padding: '6px 12px',
-              borderRadius: 6,
-              border: 'none',
-              background: task.status === 'active' ? '#22c55e' : '#737373',
-              color: '#0a0a0a',
-              fontSize: 13,
-              fontWeight: 500,
-              cursor: 'pointer',
-            }}
-          >
-            {task.status === 'active' ? 'Activ' : 'Pauză'}
-          </button>
+      <div className="page-content">
+        <div className="workflow-form">
+          <input
+            placeholder="Workflow title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+          <select value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
+            <option value="">Select paired worker</option>
+            {workers.filter((w) => w.paired).map((w) => (
+              <option key={w.id} value={w.id}>{w.name}</option>
+            ))}
+          </select>
+          <input
+            placeholder="Agent ID"
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+          />
+          <input
+            placeholder="Cron expression"
+            value={trigger}
+            onChange={(e) => setTrigger(e.target.value)}
+          />
+          <button onClick={addTask}>Schedule</button>
         </div>
-      ))}
+        <div className="workflow-list">
+          {tasks.map((task) => (
+            <div key={task.id} className="card">
+              <div className="card-title">{task.title}</div>
+              <div className="card-row">Agent: {task.agentId}</div>
+              <div className="card-row">Trigger: {task.trigger}</div>
+              <div className="card-row">Status: {task.status}</div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
-
-const inputStyle: React.CSSProperties = {
-  padding: '10px 14px',
-  background: '#111111',
-  border: '1px solid #1f1f1f',
-  borderRadius: 8,
-  color: '#e5e5e5',
-  fontSize: 14,
-  outline: 'none',
-};

@@ -1,111 +1,113 @@
 import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../stores/appStore';
-import { addLog, runAgent } from '../tauri/api';
-
-interface Message {
-  id: string;
-  role: 'user' | 'agent';
-  content: string;
-  timestamp: string;
-}
+import { createChat, chatMessages, addChatMessage, addLog, runAgent } from '../tauri/api';
 
 export default function ChatArea() {
-  const storeActiveConversationId = useStore((s) => s.activeConversationId);
-  const addStoreLog = useStore((s) => s.addLog);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [inputValue, setInputValue] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const activeChatId = useStore((s) => s.activeConversationId);
+  const setActiveChatId = useStore((s) => s.setActiveConversation);
+  const conversations = useStore((s) => s.conversations);
+  const addConversation = useStore((s) => s.addConversation);
+  const messages = useStore((s) => (activeChatId ? s.messages[activeChatId] || [] : []));
+  const addMessage = useStore((s) => s.addMessage);
+  const [input, setInput] = useState('');
+  const [workerId, setWorkerId] = useState('');
+  const [agentId, setAgentId] = useState('');
+  const workers = useStore((s) => s.workers);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading]);
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages]);
 
-  const handleSend = async () => {
-    if (!inputValue.trim()) return;
-    const text = inputValue.trim();
-    setInputValue('');
+  useEffect(() => {
+    if (activeChatId) {
+      chatMessages(activeChatId).then((msgs) => {
+        for (const msg of msgs) {
+          addMessage(activeChatId, msg);
+        }
+      });
+    }
+  }, [activeChatId, addMessage]);
 
-    const userMsg: Message = {
+  async function handleSend() {
+    if (!input.trim()) return;
+    let chatId = activeChatId;
+    if (!chatId) {
+      chatId = await createChat('New chat');
+      addConversation({ id: chatId, title: 'New chat', updated_at: new Date().toISOString() });
+      setActiveChatId(chatId);
+    }
+    await addChatMessage(chatId, 'user', input);
+    addMessage(chatId, {
       id: `${Date.now()}`,
       role: 'user',
-      content: text,
-      timestamp: new Date().toLocaleTimeString(),
-    };
-    setMessages((m) => [...m, userMsg]);
-    setIsLoading(true);
+      content: input,
+      created_at: new Date().toISOString(),
+    });
+    setInput('');
+    addLog(`user sent message in chat ${chatId}`);
 
-    await addLog(`user: ${text}`);
-
-    try {
-      await runAgent('default', text);
-      await new Promise((r) => setTimeout(r, 800));
-      const agentMsg: Message = {
-        id: `${Date.now() + 1}`,
-        role: 'agent',
-        content: `Răspuns generat pentru: "${text}".`,
-        timestamp: new Date().toLocaleTimeString(),
-      };
-      setMessages((m) => [...m, agentMsg]);
-      addStoreLog(`agent: ${agentMsg.content}`);
-    } catch (e) {
-      addStoreLog(`error: ${e}`);
-    } finally {
-      setIsLoading(false);
+    if (workerId && agentId) {
+      await runAgent(workerId, agentId, input);
     }
-  };
+  }
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
-  const title = storeActiveConversationId ? 'Conversație' : 'Te ascult!';
+  function startNewChat() {
+    createChat('New chat').then((id) => {
+      addConversation({ id, title: 'New chat', updated_at: new Date().toISOString() });
+      setActiveChatId(id);
+    });
+  }
 
   return (
-    <div className="gemini-main">
-      <div className="gemini-chat-content-container">
-        <div className="gemini-main-header">
-          <span style={{ fontSize: 14, color: '#a3a3a3' }}>{title}</span>
+    <div className="chat-area">
+      <div className="chat-header">
+        <div className="chat-title">
+          {activeChatId
+            ? conversations.find((c) => c.id === activeChatId)?.title || 'Chat'
+            : 'No chat selected'}
         </div>
-
-        {messages.length === 0 ? (
-          <div className="gemini-start-screen">
-            <h1 className="gemini-start-title">Ce vrei să automatizezi azi?</h1>
-          </div>
-        ) : (
-          <div className="gemini-chat-log">
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`gemini-bubble ${msg.role}`}
-              >
-                <div className="gemini-bubble-content">{msg.content}</div>
-              </div>
+        <div className="chat-controls">
+          <select value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
+            <option value="">Select worker</option>
+            {workers.filter((w) => w.paired).map((w) => (
+              <option key={w.id} value={w.id}>{w.name}</option>
             ))}
-            {isLoading && (
-              <div className="gemini-bubble model">
-                <div className="gemini-bubble-content">Se gândește…</div>
-              </div>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-        )}
-
-        <div className="gemini-prompt-box-container">
-          <div className="composer">
-            <textarea
-              rows={1}
-              placeholder="Scrie un task sau o întrebare…"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={handleKeyDown}
-            />
-            <button onClick={handleSend} disabled={isLoading}>Trimite</button>
-          </div>
+          </select>
+          <input
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            placeholder="Agent ID"
+          />
+          <button onClick={startNewChat}>New chat</button>
         </div>
+      </div>
+      <div className="chat-messages" ref={scrollRef}>
+        {messages.length === 0 && (
+          <div className="chat-empty">Start a conversation with an agent or add a worker.</div>
+        )}
+        {messages.map((m) => (
+          <div key={m.id} className={`chat-message ${m.role}`}>
+            <div className="message-role">{m.role}</div>
+            <div className="message-content">{m.content}</div>
+          </div>
+        ))}
+      </div>
+      <div className="chat-input-area">
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
+          placeholder="Type a message..."
+        />
+        <button onClick={handleSend}>Send</button>
       </div>
     </div>
   );

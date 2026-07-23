@@ -27,6 +27,13 @@ tokio = { version = "1.43", features = ["full"] }
 anyhow = "1.0"
 thiserror = "2.0"
 parking_lot = "0.12"
+tokio-tungstenite = "0.26"
+url = "2.5"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+futures = "0.3"
+tempfile = "3"
 goble-core = { path = "../../goble-core" }
 
 [dev-dependencies]

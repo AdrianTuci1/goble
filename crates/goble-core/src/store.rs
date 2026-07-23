@@ -250,6 +250,20 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn insert_chat(
+        &self,
+        id: &str,
+        title: &str,
+        created_at: &str,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO chats (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+            params![id, title, created_at, updated_at],
+        )?;
+        Ok(())
+    }
+
     pub fn insert_chat_message(
         &self,
         id: &str,
@@ -308,6 +322,20 @@ impl Store {
         Ok(())
     }
 
+    pub fn list_teams(&self) -> Result<Vec<(String, String, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, name, metadata, created_at FROM teams ORDER BY created_at DESC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn list_mcp_servers(
         &self,
     ) -> Result<
@@ -332,6 +360,42 @@ impl Store {
                 r.get::<_, Option<String>>(4)?,
                 r.get::<_, String>(5)?,
                 r.get::<_, String>(6)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn insert_execution(
+        &self,
+        id: &str,
+        agent_id: Option<&str>,
+        worker_id: Option<&str>,
+        status: &str,
+        trace: &str,
+        started_at: &str,
+        finished_at: Option<&str>,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO executions (id, agent_id, worker_id, status, trace, started_at, finished_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET status=excluded.status, trace=excluded.trace, finished_at=excluded.finished_at",
+            params![id, agent_id, worker_id, status, trace, started_at, finished_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_executions(&self) -> Result<Vec<(String, Option<String>, Option<String>, String, String, String, Option<String>)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, agent_id, worker_id, status, trace, started_at, finished_at FROM executions ORDER BY started_at DESC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<String>>(6)?,
             ))
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)

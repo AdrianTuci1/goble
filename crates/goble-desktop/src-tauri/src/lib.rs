@@ -1,8 +1,9 @@
 // Tauri + React application entry
 // This crate is not included in the Cargo workspace because it is a Tauri project.
-use goble_core::agent::AgentId;
+use goble_core::agent::{AgentId, Trigger};
 use goble_core::protocol::DesktopMessage;
 use goble_core::worker::WorkerId;
+use goble_core::workflow::{WorkflowId, WorkflowStep};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -39,6 +40,35 @@ struct ScheduleRequest {
 struct VaultSecretRequest {
     name: String,
     value: String,
+}
+
+#[derive(Deserialize)]
+struct CreateAgentRequest {
+    name: String,
+    prompt: String,
+    description: Option<String>,
+    tools: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct CreateWorkflowRequest {
+    name: String,
+    description: String,
+    steps: Vec<WorkflowStep>,
+    trigger: String,
+}
+
+#[derive(Deserialize)]
+struct CreateTeamRequest {
+    id: String,
+    name: String,
+    metadata: String,
+    agent_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct UnlockVaultRequest {
+    passphrase: String,
 }
 
 #[tauri::command]
@@ -116,6 +146,13 @@ fn create_chat(
 }
 
 #[tauri::command]
+fn list_chats(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<state::Chat>, String> {
+    Ok(state.list_chats())
+}
+
+#[tauri::command]
 fn chat_messages(
     chat_id: String,
     state: tauri::State<'_, Arc<state::DesktopState>>,
@@ -136,22 +173,125 @@ fn add_chat_message(
 }
 
 #[tauri::command]
+fn list_agents(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<state::AgentInfo>, String> {
+    Ok(state.list_agents())
+}
+
+#[tauri::command]
+fn create_agent(
+    req: CreateAgentRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<state::AgentInfo, String> {
+    state
+        .create_agent(
+            &req.name,
+            &req.prompt,
+            req.description.as_deref(),
+            req.tools,
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_agent(
+    agent_id: String,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state.delete_agent(&AgentId(agent_id)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_workflows(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<state::WorkflowInfo>, String> {
+    Ok(state.list_workflows())
+}
+
+#[tauri::command]
+fn create_workflow(
+    req: CreateWorkflowRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<state::WorkflowInfo, String> {
+    let trigger = Trigger::Cron {
+        expression: req.trigger,
+    };
+    state
+        .create_workflow(&req.name, &req.description, req.steps, trigger)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_workflow(
+    workflow_id: String,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state
+        .delete_workflow(&WorkflowId(workflow_id))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_teams(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<state::TeamInfo>, String> {
+    Ok(state.list_teams())
+}
+
+#[tauri::command]
+fn create_team(
+    req: CreateTeamRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<state::TeamInfo, String> {
+    state
+        .create_team(&req.id, &req.name, &req.metadata, req.agent_ids)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_executions(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<state::ExecutionInfo>, String> {
+    Ok(state.list_executions())
+}
+
+#[tauri::command]
+fn list_vault_secrets(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<state::VaultSecretInfo>, String> {
+    Ok(state.list_vault_secrets())
+}
+
+#[tauri::command]
+fn set_vault_secret(
+    req: VaultSecretRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state
+        .set_vault_secret(&req.name, &req.value)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn unlock_vault(
+    req: UnlockVaultRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<String>, String> {
+    state
+        .unlock_vault(req.passphrase)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn run_agent(
     req: RunAgentRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<(), String> {
     let worker_id = WorkerId(req.worker_id);
     let agent_id = AgentId(req.agent_id);
-    let spec = goble_core::agent::AgentSpec::new(&agent_id.0, &req.prompt);
     state
-        .send_to_worker(
-            &worker_id,
-            DesktopMessage::RunAgent {
-                trace_id: format!("desktop-{}", uuid::Uuid::new_v4()),
-                agent_id,
-                spec,
-            },
-        )
+        .run_agent(&worker_id, &agent_id, &req.prompt)
         .map_err(|e| e.to_string())
 }
 
@@ -162,36 +302,11 @@ fn schedule_agent(
 ) -> Result<(), String> {
     let worker_id = WorkerId(req.worker_id);
     let agent_id = AgentId(req.agent_id);
-    let trigger = goble_core::agent::Trigger::Cron {
+    let trigger = Trigger::Cron {
         expression: req.trigger,
     };
     state
-        .send_to_worker(
-            &worker_id,
-            DesktopMessage::ScheduleAgent { agent_id, trigger },
-        )
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_vault_secret(
-    req: VaultSecretRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<(), String> {
-    let workers = state.list_workers();
-    let worker_id = workers
-        .into_iter()
-        .find(|w| w.paired)
-        .map(|w| WorkerId(w.id))
-        .ok_or("no paired worker")?;
-    state
-        .send_to_worker(
-            &worker_id,
-            DesktopMessage::SetVaultSecret {
-                name: req.name,
-                value: req.value.into_bytes(),
-            },
-        )
+        .schedule_agent(&worker_id, &agent_id, trigger)
         .map_err(|e| e.to_string())
 }
 
@@ -209,11 +324,23 @@ pub fn run() {
             ping_worker,
             add_log,
             create_chat,
+            list_chats,
             chat_messages,
             add_chat_message,
+            list_agents,
+            create_agent,
+            delete_agent,
+            list_workflows,
+            create_workflow,
+            delete_workflow,
+            list_teams,
+            create_team,
+            list_executions,
+            list_vault_secrets,
+            set_vault_secret,
+            unlock_vault,
             run_agent,
-            schedule_agent,
-            set_vault_secret
+            schedule_agent
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

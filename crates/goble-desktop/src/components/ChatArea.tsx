@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../stores/appStore';
 import { createChat, chatMessages, addChatMessage, addLog, runAgent } from '../tauri/api';
 
@@ -8,11 +8,13 @@ export default function ChatArea() {
   const conversations = useStore((s) => s.conversations);
   const addConversation = useStore((s) => s.addConversation);
   const messages = useStore((s) => (activeChatId ? s.messages[activeChatId] || [] : []));
+  const setMessages = useStore((s) => s.setMessages);
   const addMessage = useStore((s) => s.addMessage);
   const [input, setInput] = useState('');
   const [workerId, setWorkerId] = useState('');
   const [agentId, setAgentId] = useState('');
   const workers = useStore((s) => s.workers);
+  const agents = useStore((s) => s.agents);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -23,13 +25,9 @@ export default function ChatArea() {
 
   useEffect(() => {
     if (activeChatId) {
-      chatMessages(activeChatId).then((msgs) => {
-        for (const msg of msgs) {
-          addMessage(activeChatId, msg);
-        }
-      });
+      chatMessages(activeChatId).then((msgs) => setMessages(activeChatId, msgs));
     }
-  }, [activeChatId, addMessage]);
+  }, [activeChatId, setMessages]);
 
   async function handleSend() {
     if (!input.trim()) return;
@@ -76,11 +74,12 @@ export default function ChatArea() {
               <option key={w.id} value={w.id}>{w.name}</option>
             ))}
           </select>
-          <input
-            value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
-            placeholder="Agent ID"
-          />
+          <select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+            <option value="">Select agent</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </select>
           <button onClick={startNewChat}>New chat</button>
         </div>
       </div>

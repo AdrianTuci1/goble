@@ -108,9 +108,28 @@ impl Store {
                 updated_at TEXT NOT NULL
             ) STRICT;
 
+            CREATE TABLE IF NOT EXISTS vault_secrets (
+                key TEXT PRIMARY KEY,
+                encrypted_value BLOB NOT NULL,
+                metadata TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            ) STRICT;
+
+            CREATE TABLE IF NOT EXISTS workflows (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                spec TEXT NOT NULL,
+                trigger TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            ) STRICT;
+
             CREATE INDEX IF NOT EXISTS idx_chat_messages_chat_id ON chat_messages(chat_id);
             CREATE INDEX IF NOT EXISTS idx_executions_agent_id ON executions(agent_id);
             CREATE INDEX IF NOT EXISTS idx_team_members_team_id ON team_members(team_id);
+            CREATE INDEX IF NOT EXISTS idx_workflows_updated_at ON workflows(updated_at);
             "#,
         )
         .context("failed to run migrations")?;
@@ -322,20 +341,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_teams(&self) -> Result<Vec<(String, String, String, String)>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT id, name, metadata, created_at FROM teams ORDER BY created_at DESC")?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-    }
-
     pub fn list_mcp_servers(
         &self,
     ) -> Result<
@@ -365,6 +370,133 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn list_teams(&self) -> Result<Vec<(String, String, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT id, name, metadata, created_at FROM teams ORDER BY created_at DESC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn insert_team(
+        &self,
+        id: &str,
+        name: &str,
+        metadata: &str,
+        created_at: &str,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO teams (id, name, metadata, created_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, metadata=excluded.metadata",
+            params![id, name, metadata, created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_team_member(&self, team_id: &str, agent_id: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO team_members (team_id, agent_id) VALUES (?1, ?2)
+             ON CONFLICT DO NOTHING",
+            params![team_id, agent_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_team_members(&self, team_id: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT team_id, agent_id FROM team_members WHERE team_id = ?1")?;
+        let rows = stmt.query_map(params![team_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn insert_vault_secret(
+        &self,
+        key: &str,
+        encrypted_value: &[u8],
+        metadata: &str,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO vault_secrets (key, encrypted_value, metadata, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value, metadata=excluded.metadata, updated_at=excluded.updated_at",
+            params![key, encrypted_value, metadata, updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_vault_secrets(&self) -> Result<Vec<(String, Vec<u8>, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT key, encrypted_value, metadata, updated_at FROM vault_secrets ORDER BY updated_at DESC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn insert_workflow(
+        &self,
+        id: &str,
+        name: &str,
+        description: &str,
+        spec: &str,
+        trigger: &str,
+        enabled: bool,
+        created_at: &str,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO workflows (id, name, description, spec, trigger, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, spec=excluded.spec,
+                                           trigger=excluded.trigger, enabled=excluded.enabled, updated_at=excluded.updated_at",
+            params![id, name, description, spec, trigger, enabled as i32, created_at, updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_workflows(
+        &self,
+    ) -> Result<Vec<(String, String, String, String, String, bool, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, name, description, spec, trigger, enabled, created_at, updated_at FROM workflows ORDER BY updated_at DESC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, bool>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn delete_workflow(&self, id: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "DELETE FROM workflows WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
     pub fn insert_execution(
         &self,
         id: &str,
@@ -384,7 +516,9 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_executions(&self) -> Result<Vec<(String, Option<String>, Option<String>, String, String, String, Option<String>)>> {
+    pub fn list_executions(
+        &self,
+    ) -> Result<Vec<(String, Option<String>, Option<String>, String, String, String, Option<String>)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, agent_id, worker_id, status, trace, started_at, finished_at FROM executions ORDER BY started_at DESC")?;
         let rows = stmt.query_map([], |r| {
@@ -447,9 +581,9 @@ mod tests {
         store
             .insert_worker(
                 "w1",
-                "vps-1",
-                Some("10.0.0.1"),
-                "paired",
+                "vps",
+                Some("localhost:8787"),
+                "unpaired",
                 None,
                 "{}",
                 "2024-01-01T00:00:00Z",
@@ -458,40 +592,133 @@ mod tests {
             .unwrap();
         let workers = store.list_workers().unwrap();
         assert_eq!(workers.len(), 1);
-        assert_eq!(workers[0].1, "vps-1");
+        assert_eq!(workers[0].1, "vps");
+        store.delete_worker("w1").unwrap();
+        assert!(store.list_workers().unwrap().is_empty());
     }
 
     #[test]
     fn test_chat_messages() {
         let store = Store::open_in_memory().unwrap();
-        store.conn.lock().execute(
-            "INSERT INTO chats (id, title, created_at, updated_at) VALUES ('c1', 'hello', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
-            [],
-        ).unwrap();
         store
-            .insert_chat_message("m1", "c1", "user", "hi", None, "2024-01-01T00:00:01Z")
+            .insert_chat("c1", "Test", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
             .unwrap();
-        let messages = store.list_chat_messages("c1").unwrap();
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].2, "hi");
+        store
+            .insert_chat_message(
+                "m1",
+                "c1",
+                "user",
+                "hello",
+                None,
+                "2024-01-01T00:00:01Z",
+            )
+            .unwrap();
+        let msgs = store.list_chat_messages("c1").unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].2, "hello");
     }
 
     #[test]
-    fn test_mcp_servers() {
+    fn test_mcp_server_crud() {
         let store = Store::open_in_memory().unwrap();
         store
             .insert_mcp_server(
-                "m1",
-                "postgres",
-                "github",
+                "mcp1",
+                "files",
+                "npm",
                 "{}",
-                Some("secret/m1"),
+                None,
                 "2024-01-01T00:00:00Z",
                 "2024-01-01T00:00:00Z",
             )
             .unwrap();
         let servers = store.list_mcp_servers().unwrap();
         assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].5, "2024-01-01T00:00:00Z");
+        assert_eq!(servers[0].1, "files");
+    }
+
+    #[test]
+    fn test_team_crud() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_team("t1", "Platform", "{}", "2024-01-01T00:00:00Z")
+            .unwrap();
+        let teams = store.list_teams().unwrap();
+        assert_eq!(teams.len(), 1);
+        assert_eq!(teams[0].1, "Platform");
+        store.insert_team_member("t1", "a1").unwrap();
+        let members = store.list_team_members("t1").unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].1, "a1");
+    }
+
+    #[test]
+    fn test_vault_secret_crud() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_vault_secret("api_key", b"secret", "{}", "2024-01-01T00:00:00Z")
+            .unwrap();
+        let secrets = store.list_vault_secrets().unwrap();
+        assert_eq!(secrets.len(), 1);
+        assert_eq!(secrets[0].0, "api_key");
+        assert_eq!(secrets[0].1, b"secret");
+    }
+
+    #[test]
+    fn test_workflow_crud() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_workflow(
+                "wf1",
+                "Deploy",
+                "Deploy app",
+                "{}",
+                "manual",
+                true,
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:00Z",
+            )
+            .unwrap();
+        let workflows = store.list_workflows().unwrap();
+        assert_eq!(workflows.len(), 1);
+        assert_eq!(workflows[0].1, "Deploy");
+        assert!(workflows[0].5);
+        store.delete_workflow("wf1").unwrap();
+        assert!(store.list_workflows().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_execution_crud() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_execution(
+                "e1",
+                Some("a1"),
+                Some("w1"),
+                "running",
+                "{}",
+                "2024-01-01T00:00:00Z",
+                None,
+            )
+            .unwrap();
+        let execs = store.list_executions().unwrap();
+        assert_eq!(execs.len(), 1);
+        assert_eq!(execs[0].3, "running");
+    }
+
+    #[test]
+    fn test_persistent_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("store.db");
+        {
+            let store = Store::open(&path).unwrap();
+            store.set_setting("x", "y").unwrap();
+            store
+                .insert_agent("a1", "agent", "{}", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+                .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.get_setting("x").unwrap(), Some("y".to_string()));
+        assert_eq!(store.list_agents().unwrap().len(), 1);
     }
 }

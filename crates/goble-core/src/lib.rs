@@ -16,6 +16,7 @@ pub mod tls;
 pub mod vault;
 pub mod worker;
 pub mod worker_pool;
+pub mod workflow;
 pub mod workspace;
 
 #[cfg(test)]

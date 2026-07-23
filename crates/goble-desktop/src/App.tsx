@@ -7,10 +7,20 @@ import ConnectorsPage from './pages/ConnectorsPage';
 import WorkflowsPage from './pages/WorkflowsPage';
 import KnowledgePage from './pages/KnowledgePage';
 import SearchPage from './pages/SearchPage';
+import AgentsPage from './pages/AgentsPage';
+import TeamsPage from './pages/TeamsPage';
+import ExecutionsPage from './pages/ExecutionsPage';
+import VaultPage from './pages/VaultPage';
 import SettingsModal from './components/SettingsModal';
 import {
   listWorkers,
   workerLogs,
+  listAgents,
+  listWorkflows,
+  listTeams,
+  listExecutions,
+  listVaultSecrets,
+  listChats,
   onWorkersUpdated,
   onLogsUpdated,
   onAgentLog,
@@ -18,12 +28,23 @@ import {
   onAgentFinished,
   onChatUpdated,
   onChatsUpdated,
+  onAgentsUpdated,
+  onWorkflowsUpdated,
+  onTeamsUpdated,
+  onExecutionsUpdated,
+  onVaultUpdated,
 } from './tauri/api';
 
 function AppShell() {
   const setWorkers = useStore((s) => s.setWorkers);
   const setLogs = useStore((s) => s.setLogs);
   const addLog = useStore((s) => s.addLog);
+  const setAgents = useStore((s) => s.setAgents);
+  const setWorkflows = useStore((s) => s.setWorkflows);
+  const setTeams = useStore((s) => s.setTeams);
+  const setExecutions = useStore((s) => s.setExecutions);
+  const setVaultSecrets = useStore((s) => s.setVaultSecrets);
+  const setConversations = useStore((s) => s.setConversations);
   const addMessage = useStore((s) => s.addMessage);
   const chatMessages = useStore((s) => s.messages);
 
@@ -35,6 +56,12 @@ function AppShell() {
     async function init() {
       setWorkers(await listWorkers());
       setLogs(await workerLogs());
+      setAgents(await listAgents());
+      setWorkflows(await listWorkflows());
+      setTeams(await listTeams());
+      setExecutions(await listExecutions());
+      setVaultSecrets(await listVaultSecrets());
+      setConversations(await listChats());
       setLoaded(true);
     }
 
@@ -43,8 +70,14 @@ function AppShell() {
     (async () => {
       unsubs.push(await onWorkersUpdated(() => listWorkers().then(setWorkers)));
       unsubs.push(await onLogsUpdated(() => workerLogs().then(setLogs)));
+      unsubs.push(await onAgentsUpdated(() => listAgents().then(setAgents)));
+      unsubs.push(await onWorkflowsUpdated(() => listWorkflows().then(setWorkflows)));
+      unsubs.push(await onTeamsUpdated(() => listTeams().then(setTeams)));
+      unsubs.push(await onExecutionsUpdated(() => listExecutions().then(setExecutions)));
+      unsubs.push(await onVaultUpdated(() => listVaultSecrets().then(setVaultSecrets)));
+      unsubs.push(await onChatsUpdated(() => listChats().then(setConversations)));
       unsubs.push(await onAgentLog((event) => {
-        const payload = event.payload as { message?: string; worker_id?: string; trace_id?: string };
+        const payload = event.payload as { message?: string; worker_id?: string };
         addLog(`[${payload.worker_id || 'worker'}] ${payload.message || 'log'}`);
       }));
       unsubs.push(await onAgentStarted((event) => {
@@ -62,13 +95,24 @@ function AppShell() {
           addMessage(payload.chat_id, msgs[msgs.length - 1]);
         }
       }));
-      unsubs.push(await onChatsUpdated(() => {}));
     })();
 
     return () => {
       unsubs.forEach((u) => u());
     };
-  }, [setWorkers, setLogs, addLog, addMessage, chatMessages]);
+  }, [
+    setWorkers,
+    setLogs,
+    addLog,
+    setAgents,
+    setWorkflows,
+    setTeams,
+    setExecutions,
+    setVaultSecrets,
+    setConversations,
+    addMessage,
+    chatMessages,
+  ]);
 
   if (!loaded) return <div className="loading">Loading...</div>;
 
@@ -79,9 +123,13 @@ function AppShell() {
         <Routes>
           <Route path="/" element={<Navigate to="/chat" />} />
           <Route path="/chat" element={<ChatArea />} />
+          <Route path="/agents" element={<AgentsPage />} />
           <Route path="/workflows" element={<WorkflowsPage />} />
+          <Route path="/teams" element={<TeamsPage />} />
           <Route path="/knowledge" element={<KnowledgePage />} />
           <Route path="/connectors" element={<ConnectorsPage />} />
+          <Route path="/executions" element={<ExecutionsPage />} />
+          <Route path="/vault" element={<VaultPage />} />
           <Route path="/search" element={<SearchPage />} />
         </Routes>
       </main>

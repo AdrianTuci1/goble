@@ -1,36 +1,38 @@
 import { useState } from 'react';
 import { useStore } from '../stores/appStore';
-import { scheduleAgent } from '../tauri/api';
-
-interface ScheduledTask {
-  id: string;
-  title: string;
-  agentId: string;
-  trigger: string;
-  status: 'active' | 'paused';
-}
+import { createWorkflow, deleteWorkflow } from '../tauri/api';
 
 export default function WorkflowsPage() {
-  const workers = useStore((s) => s.workers);
-  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
-  const [title, setTitle] = useState('');
-  const [agentId, setAgentId] = useState('');
+  const workflows = useStore((s) => s.workflows);
+  const agents = useStore((s) => s.agents);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
   const [trigger, setTrigger] = useState('0 * * * *');
-  const [workerId, setWorkerId] = useState('');
+  const [steps, setSteps] = useState<Array<{ name: string; agentId: string; input: string }>>([]);
 
-  async function addTask() {
-    if (!title || !agentId || !workerId) return;
-    await scheduleAgent(workerId, agentId, trigger);
-    const newTask: ScheduledTask = {
-      id: `${Date.now()}`,
-      title,
-      agentId,
-      trigger,
-      status: 'active',
-    };
-    setTasks([...tasks, newTask]);
-    setTitle('');
-    setAgentId('');
+  function addStep() {
+    setSteps([...steps, { name: '', agentId: '', input: '' }]);
+  }
+
+  function updateStep(index: number, field: keyof typeof steps[0], value: string) {
+    setSteps(steps.map((s, i) => (i === index ? { ...s, [field]: value } : s)));
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name || steps.length === 0) return;
+    const workflowSteps = steps.map((s) => ({
+      id: crypto.randomUUID(),
+      name: s.name,
+      agent_id: { 0: s.agentId },
+      input_template: s.input,
+      depends_on: [],
+    }));
+    await createWorkflow(name, description, workflowSteps, trigger);
+    setName('');
+    setDescription('');
+    setTrigger('0 * * * *');
+    setSteps([]);
   }
 
   return (
@@ -39,37 +41,56 @@ export default function WorkflowsPage() {
         <h2>Workflows</h2>
       </div>
       <div className="page-content">
-        <div className="workflow-form">
+        <form className="workflow-form" onSubmit={handleSubmit}>
           <input
-            placeholder="Workflow title"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Workflow name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
           />
-          <select value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
-            <option value="">Select paired worker</option>
-            {workers.filter((w) => w.paired).map((w) => (
-              <option key={w.id} value={w.id}>{w.name}</option>
-            ))}
-          </select>
           <input
-            placeholder="Agent ID"
-            value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
+            placeholder="Description"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
           />
           <input
             placeholder="Cron expression"
             value={trigger}
             onChange={(e) => setTrigger(e.target.value)}
           />
-          <button onClick={addTask}>Schedule</button>
-        </div>
+          <div className="workflow-steps">
+            {steps.map((step, index) => (
+              <div key={index} className="workflow-step">
+                <input
+                  placeholder="Step name"
+                  value={step.name}
+                  onChange={(e) => updateStep(index, 'name', e.target.value)}
+                />
+                <select value={step.agentId} onChange={(e) => updateStep(index, 'agentId', e.target.value)}>
+                  <option value="">Select agent</option>
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  ))}
+                </select>
+                <input
+                  placeholder="Input template"
+                  value={step.input}
+                  onChange={(e) => updateStep(index, 'input', e.target.value)}
+                />
+              </div>
+            ))}
+          </div>
+          <button type="button" onClick={addStep}>Add step</button>
+          <button type="submit">Create workflow</button>
+        </form>
+
         <div className="workflow-list">
-          {tasks.map((task) => (
-            <div key={task.id} className="card">
-              <div className="card-title">{task.title}</div>
-              <div className="card-row">Agent: {task.agentId}</div>
-              <div className="card-row">Trigger: {task.trigger}</div>
-              <div className="card-row">Status: {task.status}</div>
+          {workflows.map((w) => (
+            <div key={w.id} className="card">
+              <div className="card-title">{w.name}</div>
+              <div className="card-row">{w.description}</div>
+              <div className="card-row">Steps: {w.steps.length}</div>
+              <div className="card-row">Enabled: {w.enabled ? 'yes' : 'no'}</div>
+              <button onClick={() => deleteWorkflow(w.id)}>Delete</button>
             </div>
           ))}
         </div>

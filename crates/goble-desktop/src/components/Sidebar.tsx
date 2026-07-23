@@ -18,9 +18,13 @@ export default function Sidebar() {
 
   const navItems = [
     { path: '/chat', label: 'Chat', icon: '💬' },
+    { path: '/agents', label: 'Agents', icon: '🤖' },
     { path: '/workflows', label: 'Workflows', icon: '⚡' },
+    { path: '/teams', label: 'Teams', icon: '👥' },
     { path: '/knowledge', label: 'Knowledge', icon: '📚' },
     { path: '/connectors', label: 'Connectors', icon: '🔌' },
+    { path: '/executions', label: 'Executions', icon: '▶️' },
+    { path: '/vault', label: 'Vault', icon: '🔐' },
     { path: '/search', label: 'Search', icon: '🔍' },
   ];
 

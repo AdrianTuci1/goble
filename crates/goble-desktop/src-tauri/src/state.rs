@@ -138,4 +138,12 @@ impl DesktopState {
     pub fn add_chat_log(&self, message: impl Into<String>) {
         self.logs.lock().push(message.into());
     }
+
+    pub fn list_workers(&self) -> Vec<WorkerConnection> {
+        self.workers.lock().values().cloned().collect()
+    }
+
+    pub fn send_to_worker(&self, worker_id: &WorkerId, _msg: goble_core::protocol::DesktopMessage) -> anyhow::Result<()> {
+        anyhow::bail!("not connected: {}", worker_id)
+    }
 }

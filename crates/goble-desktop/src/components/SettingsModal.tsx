@@ -1,10 +1,29 @@
+import { useEffect, useState } from 'react';
 import { useStore } from '../stores/appStore';
-import { workerLogs } from '../tauri/api';
+import { workerLogs, getLlmSetting, setLlmSetting } from '../tauri/api';
 
 export default function SettingsModal() {
   const isOpen = useStore((s) => s.isSettingsOpen);
   const setOpen = useStore((s) => s.setSettingsOpen);
   const logs = useStore((s) => s.logs);
+
+  const [provider, setProvider] = useState('openai');
+  const [apiKey, setApiKey] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [model, setModel] = useState('gpt-4o-mini');
+  const [temperature, setTemperature] = useState('0.7');
+
+  useEffect(() => {
+    if (!isOpen) return;
+    getLlmSetting(provider).then((setting) => {
+      if (setting) {
+        setApiKey(setting.api_key);
+        setBaseUrl(setting.base_url ?? '');
+        setModel(setting.model);
+        setTemperature(setting.temperature?.toString() ?? '0.7');
+      }
+    });
+  }, [isOpen, provider]);
 
   if (!isOpen) return null;
 
@@ -16,6 +35,35 @@ export default function SettingsModal() {
           <button onClick={() => setOpen(false)}>Close</button>
         </div>
         <div className="modal-body">
+          <div className="settings-section">
+            <h4>LLM Provider</h4>
+            <label>Provider</label>
+            <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+              <option value="openai">OpenAI</option>
+              <option value="custom">Custom / OpenAI-compatible</option>
+            </select>
+            <label>Model</label>
+            <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-4o-mini" />
+            <label>API Key</label>
+            <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." />
+            <label>Base URL (optional)</label>
+            <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" />
+            <label>Temperature</label>
+            <input type="number" min="0" max="2" step="0.1" value={temperature} onChange={(e) => setTemperature(e.target.value)} />
+            <button
+              onClick={() =>
+                setLlmSetting(
+                  provider,
+                  apiKey,
+                  model,
+                  baseUrl || undefined,
+                  parseFloat(temperature)
+                ).then(() => setOpen(false))
+              }
+            >
+              Save LLM Settings
+            </button>
+          </div>
           <div className="settings-section">
             <h4>Logs</h4>
             <button onClick={() => workerLogs().then((l) => useStore.getState().setLogs(l))}>

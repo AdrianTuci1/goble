@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use chrono::Utc;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{AgentId, AgentSpec, Trigger};
@@ -215,92 +215,101 @@ impl Harness {
                 .with_tools(tools)
                 .with_messages(history);
 
-            let response = match llm.complete(request).await {
-                Ok(r) => r,
+            let mut stream = match llm.complete_stream(request).await {
+                Ok(s) => s,
                 Err(e) => {
                     yield HarnessEvent::Error(e.to_string());
                     return;
                 }
             };
 
-            // Stream assistant text delta as a single chunk for now.
-            let assistant_content = response.content.clone();
-            if !assistant_content.is_empty() {
-                if let Err(e) = store.insert_chat_message(
-                    &uuid::Uuid::new_v4().to_string(),
-                    &chat_id,
-                    "assistant",
-                    &assistant_content,
-                    None,
-                    &Utc::now().to_rfc3339(),
-                ) {
-                    yield HarnessEvent::Error(e.to_string());
-                    return;
-                }
-                yield HarnessEvent::AssistantDelta(assistant_content);
-            }
-
-            // Persist raw tool calls before executing.
-            let tool_calls = response.tool_calls.clone();
-            let tool_calls_json = serde_json::to_string(&tool_calls).unwrap_or_default();
-            if !tool_calls.is_empty() {
-                if let Err(e) = store.insert_chat_message(
-                    &uuid::Uuid::new_v4().to_string(),
-                    &chat_id,
-                    "tool",
-                    &tool_calls_json,
-                    Some(&tool_calls_json),
-                    &Utc::now().to_rfc3339(),
-                ) {
-                    yield HarnessEvent::Error(e.to_string());
-                    return;
-                }
-            }
-
-            for call in tool_calls {
-                yield HarnessEvent::ToolCallStarted {
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                };
-
-                let sender_ref = deploy_sender.as_ref().map(|f| arc_to_sender_ref(f));
-                let result = execute_tool_call(&store, &*runner, sender_ref, &call).await;
-                match result {
-                    Ok(value) => {
-                        let tool_result_text = format!("{}\n{}", call.id, value);
-                        if let Err(e) = store.insert_chat_message(
-                            &uuid::Uuid::new_v4().to_string(),
-                            &chat_id,
-                            "tool",
-                            &tool_result_text,
-                            None,
-                            &Utc::now().to_rfc3339(),
-                        ) {
-                            yield HarnessEvent::Error(e.to_string());
-                            return;
-                        }
-                        yield HarnessEvent::ToolCallFinished { id: call.id, result: value };
+            let mut assistant_content = String::new();
+            let mut tool_calls = Vec::new();
+            while let Some(event) = stream.next().await {
+                match event {
+                    crate::llm::CompletionStreamEvent::AssistantDelta(delta) => {
+                        assistant_content.push_str(&delta);
+                        yield HarnessEvent::AssistantDelta(delta);
                     }
-                    Err(e) => {
-                        let error_text = format!("{}\nERROR: {}", call.id, e);
-                        if let Err(e2) = store.insert_chat_message(
-                            &uuid::Uuid::new_v4().to_string(),
-                            &chat_id,
-                            "tool",
-                            &error_text,
-                            None,
-                            &Utc::now().to_rfc3339(),
-                        ) {
-                            yield HarnessEvent::Error(e2.to_string());
-                            return;
+                    crate::llm::CompletionStreamEvent::ToolCalls(calls) => {
+                        tool_calls = calls;
+                        let tool_calls_json = serde_json::to_string(&tool_calls).unwrap_or_default();
+                        if !tool_calls.is_empty() {
+                            if let Err(e) = store.insert_chat_message(
+                                &uuid::Uuid::new_v4().to_string(),
+                                &chat_id,
+                                "tool",
+                                &tool_calls_json,
+                                Some(&tool_calls_json),
+                                &Utc::now().to_rfc3339(),
+                            ) {
+                                yield HarnessEvent::Error(e.to_string());
+                                return;
+                            }
                         }
-                        yield HarnessEvent::ToolCallError { id: call.id, message: e.to_string() };
                     }
+                    crate::llm::CompletionStreamEvent::Done => break,
                 }
             }
 
-            yield HarnessEvent::Done;
+        if !assistant_content.is_empty() {
+            if let Err(e) = store.insert_chat_message(
+                &uuid::Uuid::new_v4().to_string(),
+                &chat_id,
+                "assistant",
+                &assistant_content,
+                None,
+                &Utc::now().to_rfc3339(),
+            ) {
+                yield HarnessEvent::Error(e.to_string());
+                return;
+            }
+        }
+
+        for call in &tool_calls {
+            yield HarnessEvent::ToolCallStarted {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+            };
+
+            let sender_ref = deploy_sender.as_ref().map(|f| arc_to_sender_ref(f));
+            let result = execute_tool_call(&store, &*runner, sender_ref, &call).await;
+            match result {
+                Ok(value) => {
+                    let tool_result_text = format!("{}\n{}", call.id, value);
+                    if let Err(e) = store.insert_chat_message(
+                        &uuid::Uuid::new_v4().to_string(),
+                        &chat_id,
+                        "tool",
+                        &tool_result_text,
+                        None,
+                        &Utc::now().to_rfc3339(),
+                    ) {
+                        yield HarnessEvent::Error(e.to_string());
+                        return;
+                    }
+                    yield HarnessEvent::ToolCallFinished { id: call.id.clone(), result: value };
+                }
+                Err(e) => {
+                    let error_text = format!("{}\nERROR: {}", call.id, e);
+                    if let Err(e2) = store.insert_chat_message(
+                        &uuid::Uuid::new_v4().to_string(),
+                        &chat_id,
+                        "tool",
+                        &error_text,
+                        None,
+                        &Utc::now().to_rfc3339(),
+                    ) {
+                        yield HarnessEvent::Error(e2.to_string());
+                        return;
+                    }
+                    yield HarnessEvent::ToolCallError { id: call.id.clone(), message: e.to_string() };
+                }
+            }
+        }
+
+        yield HarnessEvent::Done;
         };
 
         Box::pin(stream)
@@ -509,6 +518,139 @@ fn harness_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "delete_agent".to_string(),
+            description: "Delete an agent by id.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" }
+                },
+                "required": ["id"]
+            }),
+        },
+        ToolDefinition {
+            name: "delete_workflow".to_string(),
+            description: "Delete a workflow by id.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" }
+                },
+                "required": ["id"]
+            }),
+        },
+        ToolDefinition {
+            name: "delete_team".to_string(),
+            description: "Delete a team by id.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" }
+                },
+                "required": ["id"]
+            }),
+        },
+        ToolDefinition {
+            name: "rename_file".to_string(),
+            description: "Rename or move a file inside the workspace.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string" },
+                    "to": { "type": "string" }
+                },
+                "required": ["from", "to"]
+            }),
+        },
+        ToolDefinition {
+            name: "delete_file".to_string(),
+            description: "Delete a file inside the workspace.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDefinition {
+            name: "git_status".to_string(),
+            description: "Run git status in the workspace.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "git_diff".to_string(),
+            description: "Run git diff in the workspace. Optionally pass a path.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "git_commit".to_string(),
+            description: "Stage files and create a git commit.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string" },
+                    "files": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["message"]
+            }),
+        },
+        ToolDefinition {
+            name: "codebase_search".to_string(),
+            description: "Search for a regex inside workspace files.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string" },
+                    "path": { "type": "string" }
+                },
+                "required": ["pattern"]
+            }),
+        },
+        ToolDefinition {
+            name: "install_mcp_server".to_string(),
+            description: "Register an MCP server in the store.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "source": { "type": "string", "enum": ["github", "npm", "local", "url"] },
+                    "source_value": { "type": "string" },
+                    "manifest": { "type": "string" }
+                },
+                "required": ["id", "name", "source", "source_value"]
+            }),
+        },
+        ToolDefinition {
+            name: "list_mcp_servers".to_string(),
+            description: "List registered MCP servers.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "run_agent".to_string(),
+            description: "Run a local agent once and return its prompt output.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": { "type": "string" },
+                    "input": { "type": "string" }
+                },
+                "required": ["agent_id"]
+            }),
+        },
+        ToolDefinition {
             name: "edit_file".to_string(),
             description: "Replace old text with new text in a workspace file.".to_string(),
             parameters: serde_json::json!({
@@ -548,6 +690,18 @@ async fn execute_tool_call(
         "deploy_workflow" => deploy_workflow(store, deploy_sender, &call.arguments),
         "schedule_workflow" => schedule_workflow(store, &call.arguments),
         "get_execution_status" => get_execution_status(store, &call.arguments),
+        "delete_agent" => delete_agent(store, &call.arguments),
+        "delete_workflow" => delete_workflow(store, &call.arguments),
+        "delete_team" => delete_team(store, &call.arguments),
+        "rename_file" => rename_file(&call.arguments),
+        "delete_file" => delete_file(&call.arguments),
+        "git_status" => git_status(runner, &call.arguments).await,
+        "git_diff" => git_diff(runner, &call.arguments).await,
+        "git_commit" => git_commit(runner, &call.arguments).await,
+        "codebase_search" => codebase_search(&call.arguments),
+        "install_mcp_server" => install_mcp_server(store, &call.arguments),
+        "list_mcp_servers" => list_mcp_servers(store),
+        "run_agent" => run_agent(store, &call.arguments),
         "read_file" => read_file(&call.arguments),
         "write_file" => write_file(&call.arguments),
         "edit_file" => edit_file(&call.arguments),
@@ -930,6 +1084,129 @@ fn edit_file(args: &serde_json::Value) -> Result<String> {
     Ok(format!("edited {path:?}"))
 }
 
+
+fn delete_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let id = args["id"].as_str().context("id is required")?;
+    store.delete_agent(id)?;
+    Ok(format!("agent {id} deleted"))
+}
+
+fn delete_workflow(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let id = args["id"].as_str().context("id is required")?;
+    store.delete_workflow(id)?;
+    Ok(format!("workflow {id} deleted"))
+}
+
+fn delete_team(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let id = args["id"].as_str().context("id is required")?;
+    store.delete_team(id)?;
+    
+    Ok(format!("team {id} deleted"))
+}
+
+fn rename_file(args: &serde_json::Value) -> Result<String> {
+    let from = args["from"].as_str().context("from is required")?;
+    let to = args["to"].as_str().context("to is required")?;
+    let from_path = resolve_path(from)?;
+    let to_path = resolve_path(to)?;
+    if let Some(parent) = to_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(&from_path, &to_path).with_context(|| format!("failed to rename {from_path:?} to {to_path:?}"))?;
+    Ok(format!("renamed {from_path:?} to {to_path:?}"))
+}
+
+fn delete_file(args: &serde_json::Value) -> Result<String> {
+    let path = args["path"].as_str().context("path is required")?;
+    let path = resolve_path(path)?;
+    std::fs::remove_file(&path).with_context(|| format!("failed to delete {path:?}"))?;
+    Ok(format!("deleted {path:?}"))
+}
+
+async fn git_status(runner: &dyn CommandRunner, _args: &serde_json::Value) -> Result<String> {
+    runner.run("git", &["status".to_string(), "--short".to_string()]).await
+}
+
+async fn git_diff(runner: &dyn CommandRunner, args: &serde_json::Value) -> Result<String> {
+    let path = args["path"].as_str().unwrap_or_default();
+    let mut cmd_args = vec!["diff".to_string()];
+    if !path.is_empty() {
+        cmd_args.push(path.to_string());
+    }
+    runner.run("git", &cmd_args).await
+}
+
+async fn git_commit(runner: &dyn CommandRunner, args: &serde_json::Value) -> Result<String> {
+    let message = args["message"].as_str().context("message is required")?;
+    let files: Vec<String> = args["files"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    if !files.is_empty() {
+        let mut add_args = vec!["add".to_string()];
+        add_args.extend(files);
+        runner.run("git", &add_args).await?;
+    } else {
+        runner.run("git", &["add".to_string(), "-A".to_string()]).await?;
+    }
+    runner.run("git", &["commit".to_string(), "-m".to_string(), message.to_string()]).await
+}
+
+fn codebase_search(args: &serde_json::Value) -> Result<String> {
+    let pattern = args["pattern"].as_str().context("pattern is required")?;
+    let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let search_path = args["path"].as_str().map(PathBuf::from).unwrap_or_else(|| base.clone());
+    let search_path = if search_path.is_absolute() { search_path } else { base.join(search_path) };
+    let canonical_base = base.canonicalize().unwrap_or_else(|_| base.clone());
+    let canonical_search = search_path.canonicalize().unwrap_or_else(|_| search_path.clone());
+    if !canonical_search.starts_with(&canonical_base) {
+        anyhow::bail!("search path escapes workspace directory");
+    }
+    let regex = regex_lite::Regex::new(pattern).context("invalid regex")?;
+    let mut matches = Vec::new();
+    for entry in walkdir::WalkDir::new(&canonical_search).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_file() { continue; }
+        if let Ok(content) = std::fs::read_to_string(path) {
+            for (i, line) in content.lines().enumerate() {
+                if regex.is_match(line) {
+                    matches.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+                    if matches.len() >= 50 { break; }
+                }
+            }
+        }
+        if matches.len() >= 50 { break; }
+    }
+    Ok(format!("{} matches\n{}", matches.len(), matches.join("\n")))
+}
+
+fn install_mcp_server(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let id = args["id"].as_str().context("id is required")?;
+    let name = args["name"].as_str().context("name is required")?;
+    let source = args["source"].as_str().context("source is required")?;
+    let source_value = args["source_value"].as_str().context("source_value is required")?;
+    let manifest = args["manifest"].as_str().unwrap_or("{}");
+    let now = Utc::now().to_rfc3339();
+    let metadata = serde_json::json!({ "source": source, "source_value": source_value });
+    store.insert_mcp_server(id, name, &metadata.to_string(), manifest, None, &now, &now)?;
+    Ok(format!("mcp server {id} installed"))
+}
+
+fn list_mcp_servers(store: &Store) -> Result<String> {
+    let rows = store.list_mcp_servers()?;
+    Ok(format!("mcp servers: {:?}", rows.into_iter().map(|(id, name, _, _, _, _, _)| (id, name)).collect::<Vec<_>>()))
+}
+
+fn run_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let agent_id = args["agent_id"].as_str().context("agent_id is required")?;
+    let input = args["input"].as_str().unwrap_or("");
+    let (_, _, spec_json, _, _) = store
+        .get_agent(agent_id)?
+        .context("agent not found")?;
+    let spec: AgentSpec = serde_json::from_str(&spec_json)?;
+    Ok(format!("ran agent {} with input '{}'\nprompt: {}\ntools: {:?}", spec.id, input, spec.prompt, spec.tools))
+}
+
 fn resolve_path(path: &str) -> Result<PathBuf> {
     let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let p = PathBuf::from(path);
@@ -1225,6 +1502,122 @@ mod tests {
         let harness = Harness::new(store).with_llm(llm).with_runner(runner);
         let events: Vec<_> = harness.run_turn(&chat_id, "dangerous").collect().await;
         assert!(events.iter().any(|e| matches!(e, HarnessEvent::ToolCallError { message, .. } if message.contains("not in the allowed list"))));
+    }
+
+
+    #[tokio::test]
+    async fn test_harness_delete_entities() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let now = Utc::now().to_rfc3339();
+        let spec = AgentSpec::new("A", "p");
+        store.insert_agent("agent-1", "A", &serde_json::to_string(&spec).unwrap(), &spec.created_at, &spec.updated_at).unwrap();
+        store.insert_team("team-1", "T", "{}", &now).unwrap();
+        let wf = Workflow::new("wf", "").with_steps(vec![]);
+        let spec_json = serde_json::to_string(&wf).unwrap();
+        let trigger_str = serde_json::to_string(&wf.trigger).unwrap();
+        store.insert_workflow(&wf.id.to_string(), &wf.name, &wf.description, &spec_json, &trigger_str, true, &wf.created_at, &wf.updated_at).unwrap();
+
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![
+                    LlmToolCall { id: "tc_del_a".to_string(), name: "delete_agent".to_string(), arguments: serde_json::json!({"id": "agent-1"}) },
+                    LlmToolCall { id: "tc_del_t".to_string(), name: "delete_team".to_string(), arguments: serde_json::json!({"id": "team-1"}) },
+                    LlmToolCall { id: "tc_del_w".to_string(), name: "delete_workflow".to_string(), arguments: serde_json::json!({"id": wf.id.to_string()}) },
+                ],
+            },
+        ));
+        let harness = Harness::new(store.clone()).with_llm(llm);
+        harness.run_turn(&chat_id, "delete all").collect::<Vec<_>>().await;
+        assert!(store.list_agents().unwrap().is_empty());
+        assert!(store.list_teams().unwrap().is_empty());
+        assert!(store.list_workflows().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_harness_rename_and_delete_file() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        std::fs::write("harness_tmp.txt", "data").unwrap();
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![
+                    LlmToolCall { id: "tc_ren".to_string(), name: "rename_file".to_string(), arguments: serde_json::json!({"from": "harness_tmp.txt", "to": "harness_renamed.txt"}) },
+                ],
+            },
+        ));
+        let harness = Harness::new(store.clone()).with_llm(llm);
+        let events: Vec<_> = harness.run_turn(&chat_id, "rename").collect().await;
+        assert!(events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("renamed"))));
+        assert!(std::fs::metadata("harness_renamed.txt").is_ok());
+
+        let llm2 = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![
+                    LlmToolCall { id: "tc_del".to_string(), name: "delete_file".to_string(), arguments: serde_json::json!({"path": "harness_renamed.txt"}) },
+                ],
+            },
+        ));
+        let harness2 = Harness::new(store).with_llm(llm2);
+        harness2.run_turn(&chat_id, "delete").collect::<Vec<_>>().await;
+        assert!(!PathBuf::from("harness_renamed.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn test_harness_git_status_and_run_agent() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let spec = AgentSpec::new("Greeter", "say hello");
+        store.insert_agent("agent-1", "Greeter", &serde_json::to_string(&spec).unwrap(), &spec.created_at, &spec.updated_at).unwrap();
+
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![
+                    LlmToolCall { id: "tc_git".to_string(), name: "git_status".to_string(), arguments: serde_json::json!({}) },
+                    LlmToolCall { id: "tc_run".to_string(), name: "run_agent".to_string(), arguments: serde_json::json!({"agent_id": "agent-1", "input": "hi"}) },
+                ],
+            },
+        ));
+        let harness = Harness::new(store).with_llm(llm);
+        let events: Vec<_> = harness.run_turn(&chat_id, "git and run").collect().await;
+        let finished: Vec<_> = events.iter().filter_map(|e| match e {
+            HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
+            _ => None,
+        }).collect();
+        assert!(finished.iter().any(|r| r.contains("mock ran") && r.contains("git")));
+        assert!(finished.iter().any(|r| r.contains("ran agent") && r.contains("say hello")));
+    }
+
+    #[tokio::test]
+    async fn test_harness_install_and_list_mcp() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![
+                    LlmToolCall { id: "tc_mcp".to_string(), name: "install_mcp_server".to_string(), arguments: serde_json::json!({"id": "mcp-1", "name": "Files", "source": "npm", "source_value": "@modelcontextprotocol/server-files"}) },
+                    LlmToolCall { id: "tc_list".to_string(), name: "list_mcp_servers".to_string(), arguments: serde_json::json!({}) },
+                ],
+            },
+        ));
+        let harness = Harness::new(store.clone()).with_llm(llm);
+        let events: Vec<_> = harness.run_turn(&chat_id, "mcp").collect().await;
+        let finished: Vec<_> = events.iter().filter_map(|e| match e {
+            HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
+            _ => None,
+        }).collect();
+        assert!(finished.iter().any(|r| r.contains("mcp-1")));
+        assert_eq!(store.list_mcp_servers().unwrap().len(), 1);
     }
 
     #[test]

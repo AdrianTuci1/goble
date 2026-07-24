@@ -85,6 +85,14 @@ pub struct VaultSecretInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmSetting {
+    pub api_key: String,
+    pub base_url: Option<String>,
+    pub model: String,
+    pub temperature: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionInfo {
     pub id: String,
     pub agent_id: Option<String>,
@@ -652,6 +660,27 @@ impl DesktopState {
             .collect()
     }
 
+    pub fn set_llm_setting(
+        &self,
+        provider: &str,
+        api_key: &str,
+        base_url: Option<&str>,
+        model: &str,
+        temperature: Option<f32>,
+    ) -> anyhow::Result<()> {
+        self.store.lock().set_llm_setting(provider, api_key, base_url, model, temperature)?;
+        Ok(())
+    }
+
+    pub fn get_llm_setting(&self, provider: &str) -> Option<LlmSetting> {
+        self.store.lock().get_llm_setting(provider).ok().flatten().map(|(api_key, base_url, model, temperature)| LlmSetting {
+            api_key,
+            base_url,
+            model,
+            temperature,
+        })
+    }
+
     pub fn run_agent(
         &self,
         worker_id: &WorkerId,
@@ -796,7 +825,7 @@ impl DesktopState {
         Ok(())
     }
 
-    fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) {
+    pub fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) {
         if let Some(handle) = self.app_handle.lock().as_ref() {
             let _ = handle.emit(event, payload);
         }

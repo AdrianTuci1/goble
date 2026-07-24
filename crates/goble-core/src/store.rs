@@ -130,10 +130,52 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_executions_agent_id ON executions(agent_id);
             CREATE INDEX IF NOT EXISTS idx_team_members_team_id ON team_members(team_id);
             CREATE INDEX IF NOT EXISTS idx_workflows_updated_at ON workflows(updated_at);
+
+            CREATE TABLE IF NOT EXISTS llm_settings (
+                provider TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL,
+                base_url TEXT,
+                model TEXT NOT NULL,
+                temperature REAL
+            ) STRICT;
             "#,
         )
         .context("failed to run migrations")?;
         Ok(())
+    }
+
+    pub fn set_llm_setting(
+        &self,
+        provider: &str,
+        api_key: &str,
+        base_url: Option<&str>,
+        model: &str,
+        temperature: Option<f32>,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO llm_settings (provider, api_key, base_url, model, temperature)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(provider) DO UPDATE SET api_key=excluded.api_key, base_url=excluded.base_url,
+                                                model=excluded.model, temperature=excluded.temperature",
+            params![provider, api_key, base_url, model, temperature],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_llm_setting(&self, provider: &str) -> Result<Option<(String, Option<String>, String, Option<f32>)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT api_key, base_url, model, temperature FROM llm_settings WHERE provider = ?1")?;
+        let mut rows = stmt.query(params![provider])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<f32>>(3)?,
+            )))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
@@ -397,6 +439,13 @@ impl Store {
              ON CONFLICT(id) DO UPDATE SET name=excluded.name, metadata=excluded.metadata",
             params![id, name, metadata, created_at],
         )?;
+        Ok(())
+    }
+
+    pub fn delete_team(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM team_members WHERE team_id = ?1", params![id])?;
+        conn.execute("DELETE FROM teams WHERE id = ?1", params![id])?;
         Ok(())
     }
 

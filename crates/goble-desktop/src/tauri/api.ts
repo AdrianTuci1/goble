@@ -96,6 +96,13 @@ export interface ToolSchema {
   parameters: unknown;
 }
 
+export interface LlmSetting {
+  api_key: string;
+  base_url: string | null;
+  model: string;
+  temperature: number | null;
+}
+
 export interface HarnessEvent {
   type: 'assistant_delta' | 'tool_call_started' | 'tool_call_finished' | 'tool_call_error' | 'done' | 'error';
   payload?: unknown;
@@ -107,6 +114,14 @@ export async function runHarness(chatId: string, prompt: string): Promise<void> 
 
 export async function listHarnessTools(): Promise<ToolSchema[]> {
   return invoke('list_harness_tools');
+}
+
+export async function setLlmSetting(provider: string, apiKey: string, model: string, baseUrl?: string, temperature?: number): Promise<void> {
+  return invoke('set_llm_setting', { req: { provider, api_key: apiKey, model, base_url: baseUrl, temperature } });
+}
+
+export async function getLlmSetting(provider: string): Promise<LlmSetting | null> {
+  return invoke('get_llm_setting', { provider });
 }
 
 export async function listWorkers(): Promise<WorkerConnection[]> {
@@ -266,4 +281,21 @@ export function onExecutionsUpdated(callback: () => void): Promise<() => void> {
 
 export function onVaultUpdated(callback: () => void): Promise<() => void> {
   return listen('vault:updated', callback);
+}
+
+export interface HarnessEventPayload {
+  chat_id: string;
+  event: {
+    type: 'AssistantDelta' | 'ToolCallStarted' | 'ToolCallFinished' | 'ToolCallError' | 'Done' | 'Error';
+    payload?: unknown;
+    id?: string;
+    name?: string;
+    arguments?: Record<string, unknown>;
+    result?: string;
+    message?: string;
+  };
+}
+
+export function onHarnessEvent(callback: (payload: TauriEvent<HarnessEventPayload>) => void): Promise<() => void> {
+  return listen('harness:event', callback);
 }

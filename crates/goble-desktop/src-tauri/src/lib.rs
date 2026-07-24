@@ -1,7 +1,7 @@
 // Tauri + React application entry
 // This crate is not included in the Cargo workspace because it is a Tauri project.
 use goble_core::agent::{AgentId, Trigger};
-use goble_core::harness::{Harness, HarnessEvent};
+use goble_core::harness::Harness;
 use goble_core::protocol::DesktopMessage;
 use goble_core::store::Store;
 use goble_core::worker::WorkerId;
@@ -225,9 +225,36 @@ fn create_workflow(
 }
 
 #[derive(Deserialize)]
+struct LlmSettingRequest {
+    provider: String,
+    api_key: String,
+    base_url: Option<String>,
+    model: String,
+    temperature: Option<f32>,
+}
+
+#[derive(Deserialize)]
 struct RunHarnessRequest {
     chat_id: String,
     prompt: String,
+}
+
+#[tauri::command]
+fn set_llm_setting(
+    req: LlmSettingRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state
+        .set_llm_setting(&req.provider, &req.api_key, req.base_url.as_deref(), &req.model, req.temperature)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_llm_setting(
+    provider: String,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Option<state::LlmSetting>, String> {
+    Ok(state.get_llm_setting(&provider))
 }
 
 #[tauri::command]
@@ -241,49 +268,54 @@ fn run_harness(
     req: RunHarnessRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<(), String> {
-    use goble_core::harness::SandboxedCommandRunner;
+    use goble_core::harness::{HarnessEvent, SandboxedCommandRunner};
+    use futures::StreamExt;
+    use tauri::Emitter;
+
+    let provider = state.get_llm_setting("openai");
+    let llm: Arc<dyn goble_core::llm::LlmProvider> = if let Some(setting) = provider {
+        if !setting.api_key.is_empty() {
+            Arc::new(goble_core::llm::OpenAiProvider::new(
+                "openai",
+                setting.api_key,
+                setting.base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+            ))
+        } else {
+            Arc::new(goble_core::llm::MockProvider::new(
+                "mock",
+                goble_core::llm::CompletionResponse {
+                    content: "No OpenAI API key configured. Add one in Settings.".to_string(),
+                    tool_calls: Vec::new(),
+                },
+            ))
+        }
+    } else {
+        Arc::new(goble_core::llm::MockProvider::new(
+            "mock",
+            goble_core::llm::CompletionResponse {
+                content: "No LLM provider configured. Add one in Settings.".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ))
+    };
+
     let deploy_state = Arc::clone(&state);
     let harness = Harness::new(state.store_clone())
+        .with_llm(llm)
         .with_runner(Arc::new(SandboxedCommandRunner::default_tools()))
         .with_deploy_sender(move |worker_id, msg| deploy_state.send_to_worker(worker_id, msg));
     let mut stream = harness.run_turn(&req.chat_id, &req.prompt);
     let state_clone = Arc::clone(&state);
     let chat_id = req.chat_id.clone();
     tokio::spawn(async move {
-        use futures::StreamExt;
         while let Some(event) = stream.next().await {
-            match event {
-                HarnessEvent::AssistantDelta(delta) => {
-                    state_clone.add_chat_message(&chat_id, "assistant", &delta).ok();
-                }
-                HarnessEvent::ToolCallStarted { id, name, arguments } => {
-                    let payload = serde_json::json!({
-                        "id": id,
-                        "name": name,
-                        "arguments": arguments
-                    });
-                    state_clone.add_chat_message(&chat_id, "tool", &payload.to_string()).ok();
-                }
-                HarnessEvent::ToolCallFinished { id, result } => {
-                    let payload = serde_json::json!({
-                        "id": id,
-                        "status": "finished",
-                        "result": result
-                    });
-                    state_clone.add_chat_message(&chat_id, "tool", &payload.to_string()).ok();
-                }
-                HarnessEvent::ToolCallError { id, message } => {
-                    let payload = serde_json::json!({
-                        "id": id,
-                        "status": "error",
-                        "message": message
-                    });
-                    state_clone.add_chat_message(&chat_id, "tool", &payload.to_string()).ok();
-                }
-                HarnessEvent::Done => {}
-                HarnessEvent::Error(e) => {
-                    state_clone.add_log(format!("harness error: {e}"));
-                }
+            let payload = serde_json::json!({
+                "chat_id": &chat_id,
+                "event": event,
+            });
+            state_clone.emit("harness:event", payload.clone());
+            if let HarnessEvent::Error(e) = &event {
+                state_clone.add_log(format!("harness error: {e}"));
             }
         }
     });
@@ -407,6 +439,8 @@ pub fn run() {
             list_vault_secrets,
             set_vault_secret,
             unlock_vault,
+            set_llm_setting,
+            get_llm_setting,
             run_agent,
             schedule_agent,
             run_harness,

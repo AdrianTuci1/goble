@@ -104,6 +104,7 @@ interface AppState {
   addConversation: (conversation: Conversation) => void;
   setMessages: (chatId: string, messages: ChatMessage[]) => void;
   addMessage: (chatId: string, message: ChatMessage) => void;
+  updateMessage: (chatId: string, messageId: string, content: string) => void;
   setActiveConversation: (id: string | null) => void;
   setAgents: (agents: AgentInfo[]) => void;
   addAgent: (agent: AgentInfo) => void;
@@ -153,6 +154,15 @@ export const useStore = create<AppState>((set) => ({
       messages: {
         ...state.messages,
         [chatId]: [...(state.messages[chatId] || []), message],
+      },
+    })),
+  updateMessage: (chatId, messageId, content) =>
+    set((state) => ({
+      messages: {
+        ...state.messages,
+        [chatId]: (state.messages[chatId] || []).map((m) =>
+          m.id === messageId ? { ...m, content } : m
+        ),
       },
     })),
   setActiveConversation: (id) => set({ activeConversationId: id }),

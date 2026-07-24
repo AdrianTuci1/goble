@@ -29,6 +29,8 @@ uuid = { version = "1.16", features = ["v4", "serde"] }
 async-trait.workspace = true
 futures.workspace = true
 async-stream = "0.3"
+regex-lite = "0.1"
+walkdir = "2"
 rusqlite.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true

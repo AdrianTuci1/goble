@@ -1,4 +1,6 @@
+use std::pin::Pin;
 use anyhow::{Context, Result};
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +96,29 @@ pub struct CompletionResponse {
 pub trait LlmProvider: Send + Sync {
     fn name(&self) -> &str;
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
+
+    /// Stream completion events. Default implementation aggregates the full response
+    /// and emits it as a single chunk.
+    async fn complete_stream(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<Pin<Box<dyn Stream<Item = CompletionStreamEvent> + Send>>> {
+        let response = self.complete(request).await?;
+        let events = vec![
+            CompletionStreamEvent::AssistantDelta(response.content),
+            CompletionStreamEvent::ToolCalls(response.tool_calls),
+            CompletionStreamEvent::Done,
+        ];
+        Ok(Box::pin(futures::stream::iter(events)))
+    }
+}
+
+/// An event emitted while streaming a completion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletionStreamEvent {
+    AssistantDelta(String),
+    ToolCalls(Vec<LlmToolCall>),
+    Done,
 }
 
 pub struct MockProvider {

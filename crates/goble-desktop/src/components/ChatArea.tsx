@@ -7,7 +7,9 @@ import {
   addLog,
   runAgent,
   runHarness,
+  onHarnessEvent,
 } from '../tauri/api';
+import type { HarnessEventPayload } from '../tauri/api';
 
 interface ToolCallPayload {
   id: string;
@@ -38,12 +40,14 @@ export default function ChatArea() {
   const messages = useStore((s) => (activeChatId ? s.messages[activeChatId] || [] : []));
   const setMessages = useStore((s) => s.setMessages);
   const addMessage = useStore((s) => s.addMessage);
+  const updateMessage = useStore((s) => s.updateMessage);
   const [input, setInput] = useState('');
   const [workerId, setWorkerId] = useState('');
   const [agentId, setAgentId] = useState('');
   const workers = useStore((s) => s.workers);
   const agents = useStore((s) => s.agents);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pendingIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -56,6 +60,79 @@ export default function ChatArea() {
       chatMessages(activeChatId).then((msgs) => setMessages(activeChatId, msgs));
     }
   }, [activeChatId, setMessages]);
+
+  useEffect(() => {
+    let unsub: (() => void) | undefined;
+    onHarnessEvent((e) => {
+      const { chat_id, event } = e.payload as HarnessEventPayload;
+      if (chat_id !== activeChatId) return;
+      switch (event.type) {
+        case 'AssistantDelta': {
+          const text = String(event.payload ?? '');
+          const key = `streaming-${chat_id}`;
+          const existing = messages.find((m) => m.id === key);
+          if (existing) {
+            updateMessage(chat_id, key, existing.content + text);
+          } else {
+            addMessage(chat_id, {
+              id: key,
+              role: 'assistant',
+              content: text,
+              created_at: new Date().toISOString(),
+            });
+            pendingIds.current.add(key);
+          }
+          break;
+        }
+        case 'ToolCallStarted': {
+          const tool = event as unknown as ToolCallPayload;
+          const id = `tool-${tool.id}`;
+          addMessage(chat_id, {
+            id,
+            role: 'tool',
+            content: JSON.stringify({
+              id: tool.id,
+              name: tool.name,
+              arguments: tool.arguments,
+            }),
+            created_at: new Date().toISOString(),
+          });
+          pendingIds.current.add(id);
+          break;
+        }
+        case 'ToolCallFinished': {
+          const tool = event as unknown as ToolCallPayload;
+          const id = `tool-${tool.id}`;
+          updateMessage(chat_id, id, JSON.stringify({
+            id: tool.id,
+            name: tool.name,
+            status: 'finished',
+            result: tool.result,
+          }));
+          break;
+        }
+        case 'ToolCallError': {
+          const tool = event as unknown as ToolCallPayload;
+          const id = `tool-${tool.id}`;
+          updateMessage(chat_id, id, JSON.stringify({
+            id: tool.id,
+            name: tool.name,
+            status: 'error',
+            message: tool.message,
+          }));
+          break;
+        }
+        case 'Done': {
+          for (const id of pendingIds.current) {
+            pendingIds.current.delete(id);
+          }
+          chatMessages(chat_id).then((msgs) => setMessages(chat_id, msgs));
+          break;
+        }
+      }
+    }).then((u) => (unsub = u));
+    return () => unsub?.();
+  }, [activeChatId, messages, addMessage, updateMessage, setMessages]);
 
   async function handleSend() {
     if (!input.trim()) return;

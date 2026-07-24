@@ -1,15 +1,19 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use chrono::Utc;
 use futures::Stream;
 use serde::{Deserialize, Serialize};
-use tokio::runtime::Handle;
 
 use crate::agent::{AgentId, AgentSpec, Trigger};
 use crate::llm::{CompletionRequest, CompletionResponse, LlmProvider, LlmToolCall, Role, ToolDefinition};
+use crate::protocol::DesktopMessage;
 use crate::store::Store;
+use crate::worker::WorkerId;
 use crate::workflow::{Workflow, WorkflowStep};
 
 /// A command that the harness can execute directly from a tool call.
@@ -26,6 +30,56 @@ pub struct MockCommandRunner;
 impl CommandRunner for MockCommandRunner {
     async fn run(&self, command: &str, args: &[String]) -> Result<String> {
         Ok(format!("mock ran `{command}` with args {args:?}"))
+    }
+}
+
+/// A sandboxed shell runner with an allowlist of commands and a per-command timeout.
+pub struct SandboxedCommandRunner {
+    allowed_commands: HashSet<String>,
+    timeout_seconds: u64,
+    working_dir: PathBuf,
+}
+
+impl SandboxedCommandRunner {
+    pub fn new(allowed: impl IntoIterator<Item = impl Into<String>>, timeout_seconds: u64, working_dir: PathBuf) -> Self {
+        Self {
+            allowed_commands: allowed.into_iter().map(Into::into).collect(),
+            timeout_seconds,
+            working_dir,
+        }
+    }
+
+    pub fn default_tools() -> Self {
+        Self::new(
+            ["echo", "cat", "ls", "pwd", "git", "cargo", "npm", "node", "python3", "rustc"],
+            60,
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl CommandRunner for SandboxedCommandRunner {
+    async fn run(&self, command: &str, args: &[String]) -> Result<String> {
+        if !self.allowed_commands.contains(command) {
+            anyhow::bail!("command `{command}` is not in the allowed list");
+        }
+        let output = tokio::time::timeout(
+            Duration::from_secs(self.timeout_seconds),
+            tokio::process::Command::new(command)
+                .args(args)
+                .current_dir(&self.working_dir)
+                .output(),
+        )
+        .await
+        .context("command timed out")?
+        .context("failed to execute command")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success() {
+            anyhow::bail!("command failed: {stderr}");
+        }
+        Ok(format!("{stdout}{stderr}").trim().to_string())
     }
 }
 
@@ -60,6 +114,7 @@ pub struct Harness {
     store: Store,
     runner: Arc<dyn CommandRunner>,
     llm: Arc<dyn LlmProvider>,
+    deploy_sender: Option<Arc<dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync>>,
 }
 
 impl Harness {
@@ -74,6 +129,7 @@ impl Harness {
                     tool_calls: Vec::new(),
                 },
             )),
+            deploy_sender: None,
         }
     }
 
@@ -84,6 +140,14 @@ impl Harness {
 
     pub fn with_llm(mut self, llm: Arc<dyn LlmProvider>) -> Self {
         self.llm = llm;
+        self
+    }
+
+    pub fn with_deploy_sender<F>(mut self, sender: F) -> Self
+    where
+        F: Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync + 'static,
+    {
+        self.deploy_sender = Some(Arc::new(sender));
         self
     }
 
@@ -107,6 +171,7 @@ impl Harness {
         let store = self.store.clone();
         let runner = Arc::clone(&self.runner);
         let llm = Arc::clone(&self.llm);
+        let deploy_sender = self.deploy_sender.clone();
         let chat_id = chat_id.to_string();
         let prompt = prompt.to_string();
 
@@ -127,7 +192,7 @@ impl Harness {
             let history = match store.list_chat_messages(&chat_id) {
                 Ok(rows) => rows
                     .into_iter()
-                    .map(|(_, role, content, _, _)| crate::llm::Message {
+                    .map(|(_, role, content, tool_calls, _)| crate::llm::Message {
                         role: match role.as_str() {
                             "system" => Role::System,
                             "assistant" => Role::Assistant,
@@ -135,7 +200,7 @@ impl Harness {
                             _ => Role::User,
                         },
                         content,
-                        tool_calls: None,
+                        tool_calls: tool_calls.and_then(|t| serde_json::from_str(&t).ok()),
                     })
                     .collect::<Vec<_>>(),
                 Err(e) => {
@@ -175,7 +240,7 @@ impl Harness {
                 yield HarnessEvent::AssistantDelta(assistant_content);
             }
 
-            // Persist tool calls before executing.
+            // Persist raw tool calls before executing.
             let tool_calls = response.tool_calls.clone();
             let tool_calls_json = serde_json::to_string(&tool_calls).unwrap_or_default();
             if !tool_calls.is_empty() {
@@ -199,7 +264,8 @@ impl Harness {
                     arguments: call.arguments.clone(),
                 };
 
-                let result = execute_tool_call(&store, &*runner, &call).await;
+                let sender_ref = deploy_sender.as_ref().map(|f| arc_to_sender_ref(f));
+                let result = execute_tool_call(&store, &*runner, sender_ref, &call).await;
                 match result {
                     Ok(value) => {
                         let tool_result_text = format!("{}\n{}", call.id, value);
@@ -242,9 +308,10 @@ impl Harness {
 }
 
 const HARNESS_SYSTEM_PROMPT: &str = r#"You are an assistant that controls a local Goble agent environment.
-You can create and update agents, workflows and teams, and run shell commands, by calling tools.
+You can create/update agents, workflows and teams, run shell commands, read/write files, search the store, deploy agents/workflows to workers, schedule workflows, and check execution status.
 Only call a tool when the user explicitly asks for an action you can perform with a tool.
-If no tool is needed, reply conversationally."#;
+If no tool is needed, reply conversationally.
+When reading or writing files, paths must be inside the workspace directory unless the user explicitly provides an absolute path."#;
 
 fn harness_tool_definitions() -> Vec<ToolDefinition> {
     vec![
@@ -337,7 +404,7 @@ fn harness_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "run_command".to_string(),
-            description: "Run a shell command. Use with care.".to_string(),
+            description: "Run an allowed shell command with a timeout.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -349,110 +416,182 @@ fn harness_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "list_entities".to_string(),
-            description: "List existing agents, workflows or teams.".to_string(),
+            description: "List existing agents, workflows, teams or workers.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "entity_type": { "type": "string", "enum": ["agents", "workflows", "teams"] }
+                    "entity_type": { "type": "string", "enum": ["agents", "workflows", "teams", "workers"] }
                 },
                 "required": ["entity_type"]
+            }),
+        },
+        ToolDefinition {
+            name: "search_store".to_string(),
+            description: "Search agents, workflows and teams by name.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "entity_types": { "type": "array", "items": { "type": "string", "enum": ["agents", "workflows", "teams"] } }
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolDefinition {
+            name: "deploy_agent".to_string(),
+            description: "Deploy an agent to a worker.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": { "type": "string" },
+                    "worker_id": { "type": "string" }
+                },
+                "required": ["agent_id", "worker_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "deploy_workflow".to_string(),
+            description: "Deploy a workflow to a worker.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "workflow_id": { "type": "string" },
+                    "worker_id": { "type": "string" }
+                },
+                "required": ["workflow_id", "worker_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "schedule_workflow".to_string(),
+            description: "Schedule a workflow to run on a trigger.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "workflow_id": { "type": "string" },
+                    "trigger_type": { "type": "string", "enum": ["cron", "http", "heartbeat"] },
+                    "trigger_value": { "type": "string" }
+                },
+                "required": ["workflow_id", "trigger_type", "trigger_value"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_execution_status".to_string(),
+            description: "Get the status of an execution by id.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "execution_id": { "type": "string" }
+                },
+                "required": ["execution_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "read_file".to_string(),
+            description: "Read a file from the workspace.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDefinition {
+            name: "write_file".to_string(),
+            description: "Write a file inside the workspace. Creates parent directories.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "content": { "type": "string" }
+                },
+                "required": ["path", "content"]
+            }),
+        },
+        ToolDefinition {
+            name: "edit_file".to_string(),
+            description: "Replace old text with new text in a workspace file.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "old_text": { "type": "string" },
+                    "new_text": { "type": "string" }
+                },
+                "required": ["path", "old_text", "new_text"]
             }),
         },
     ]
 }
 
+
+fn arc_to_sender_ref(arc: &Arc<dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync>) -> &(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync) {
+    &**arc
+}
 async fn execute_tool_call(
     store: &Store,
     runner: &dyn CommandRunner,
+    deploy_sender: Option<&(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync)>,
     call: &LlmToolCall,
 ) -> Result<String> {
     match call.name.as_str() {
-        "create_agent" => {
-            let id = call.arguments["id"]
-                .as_str()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let name = call.arguments["name"].as_str().unwrap_or(&id).to_string();
-            let description = call.arguments["description"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            let prompt = call.arguments["prompt"]
-                .as_str()
-                .context("prompt is required")?
-                .to_string();
-            let tools = call.arguments["tools"]
-                .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
-            let mcp_ids = call.arguments["mcp_ids"]
-                .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
-            let now = Utc::now().to_rfc3339();
-            let spec = AgentSpec {
-                id: AgentId(id.clone()),
-                name,
-                description,
-                prompt,
-                tools,
-                triggers: vec![Trigger::Manual],
-                mcp_ids,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            };
-            let spec_json = serde_json::to_string(&spec)?;
-            store.insert_agent(&id, &spec.name, &spec_json, &now, &now)?;
-            Ok(format!("agent {id} created"))
-        }
+        "create_agent" => create_agent(store, &call.arguments),
         "update_agent" => update_agent(store, &call.arguments),
         "create_workflow" => create_workflow(store, &call.arguments),
         "update_workflow" => update_workflow(store, &call.arguments),
         "create_team" => create_team(store, &call.arguments),
         "update_team" => update_team(store, &call.arguments),
-        "run_command" => {
-            let command = call.arguments["command"].as_str().unwrap_or_default();
-            let args: Vec<String> = call.arguments["args"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            // Avoid nested block_on: run via a fresh thread when inside a tokio runtime.
-            if let Ok(_handle) = Handle::try_current() {
-                std::thread::scope(|s| {
-                    s.spawn(|| {
-                        let runtime = tokio::runtime::Runtime::new()?;
-                        runtime.block_on(runner.run(command, &args))
-                    }).join().unwrap()
-                })
-            } else {
-                let runtime = tokio::runtime::Runtime::new()?;
-                runtime.block_on(runner.run(command, &args))
-            }
-        }
-        "list_entities" => {
-            let entity_type = call.arguments["entity_type"].as_str().unwrap_or("agents");
-            match entity_type {
-                "agents" => {
-                    let rows = store.list_agents()?;
-                    Ok(format!("agents: {:?}", rows.into_iter().map(|(id, name, _, _, _)| (id, name)).collect::<Vec<_>>()))
-                }
-                "workflows" => {
-                    let rows = store.list_workflows()?;
-                    Ok(format!("workflows: {:?}", rows.into_iter().map(|(id, name, _, _, _, _, _, _)| (id, name)).collect::<Vec<_>>()))
-                }
-                "teams" => {
-                    let rows = store.list_teams()?;
-                    Ok(format!("teams: {:?}", rows.into_iter().map(|(id, name, _, _)| (id, name)).collect::<Vec<_>>()))
-                }
-                _ => Ok(format!("unknown entity type {entity_type}")),
-            }
-        }
+        "run_command" => run_command(runner, &call.arguments).await,
+        "list_entities" => list_entities(store, &call.arguments),
+        "search_store" => search_store(store, &call.arguments),
+        "deploy_agent" => deploy_agent(store, deploy_sender, &call.arguments),
+        "deploy_workflow" => deploy_workflow(store, deploy_sender, &call.arguments),
+        "schedule_workflow" => schedule_workflow(store, &call.arguments),
+        "get_execution_status" => get_execution_status(store, &call.arguments),
+        "read_file" => read_file(&call.arguments),
+        "write_file" => write_file(&call.arguments),
+        "edit_file" => edit_file(&call.arguments),
         _ => anyhow::bail!("unknown tool {}", call.name),
     }
+}
+
+fn create_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let id = args["id"]
+        .as_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let name = args["name"].as_str().unwrap_or(&id).to_string();
+    let description = args["description"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let prompt = args["prompt"]
+        .as_str()
+        .context("prompt is required")?
+        .to_string();
+    let tools = args["tools"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let mcp_ids = args["mcp_ids"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let now = Utc::now().to_rfc3339();
+    let spec = AgentSpec {
+        id: AgentId(id.clone()),
+        name,
+        description,
+        prompt,
+        tools,
+        triggers: vec![Trigger::Manual],
+        mcp_ids,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+    let spec_json = serde_json::to_string(&spec)?;
+    store.insert_agent(&id, &spec.name, &spec_json, &now, &now)?;
+    Ok(format!("agent {id} created"))
 }
 
 fn update_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
@@ -580,6 +719,229 @@ fn update_team(store: &Store, args: &serde_json::Value) -> Result<String> {
     create_team(store, args)
 }
 
+async fn run_command(runner: &dyn CommandRunner, args: &serde_json::Value) -> Result<String> {
+    let command = args["command"].as_str().unwrap_or_default();
+    let cmd_args: Vec<String> = args["args"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    runner.run(command, &cmd_args).await
+}
+
+fn list_entities(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let entity_type = args["entity_type"].as_str().unwrap_or("agents");
+    match entity_type {
+        "agents" => {
+            let rows = store.list_agents()?;
+            Ok(format!("agents: {:?}", rows.into_iter().map(|(id, name, _, _, _)| (id, name)).collect::<Vec<_>>()))
+        }
+        "workflows" => {
+            let rows = store.list_workflows()?;
+            Ok(format!("workflows: {:?}", rows.into_iter().map(|(id, name, _, _, _, _, _, _)| (id, name)).collect::<Vec<_>>()))
+        }
+        "teams" => {
+            let rows = store.list_teams()?;
+            Ok(format!("teams: {:?}", rows.into_iter().map(|(id, name, _, _)| (id, name)).collect::<Vec<_>>()))
+        }
+        "workers" => {
+            let rows = store.list_workers()?;
+            Ok(format!("workers: {:?}", rows.into_iter().map(|(id, name, host, status, _, _, _, _)| (id, name, host, status)).collect::<Vec<_>>()))
+        }
+        _ => Ok(format!("unknown entity type {entity_type}")),
+    }
+}
+
+fn search_store(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let query = args["query"].as_str().unwrap_or("").to_lowercase();
+    let types: HashSet<String> = args["entity_types"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_else(|| ["agents", "workflows", "teams"].iter().map(|s| s.to_string()).collect());
+
+    let mut results = Vec::new();
+    if types.contains("agents") {
+        for (id, name, _, _, _) in store.list_agents()? {
+            if id.to_lowercase().contains(&query) || name.to_lowercase().contains(&query) {
+                results.push(("agent", id, name));
+            }
+        }
+    }
+    if types.contains("workflows") {
+        for (id, name, _, _, _, _, _, _) in store.list_workflows()? {
+            if id.to_lowercase().contains(&query) || name.to_lowercase().contains(&query) {
+                results.push(("workflow", id, name));
+            }
+        }
+    }
+    if types.contains("teams") {
+        for (id, name, _, _) in store.list_teams()? {
+            if id.to_lowercase().contains(&query) || name.to_lowercase().contains(&query) {
+                results.push(("team", id, name));
+            }
+        }
+    }
+    Ok(format!("search results: {:?}", results))
+}
+
+fn deploy_agent(
+    store: &Store,
+    deploy_sender: Option<&(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync)>,
+    args: &serde_json::Value,
+) -> Result<String> {
+    let agent_id = args["agent_id"].as_str().context("agent_id is required")?;
+    let worker_id = args["worker_id"].as_str().context("worker_id is required")?;
+    let (_, _, spec_json, _, _) = store
+        .get_agent(agent_id)?
+        .context("agent not found")?;
+    let spec: AgentSpec = serde_json::from_str(&spec_json)?;
+    let worker = WorkerId(worker_id.to_string());
+    let message = DesktopMessage::UpdateAgent {
+        agent_id: AgentId(agent_id.to_string()),
+        spec,
+    };
+    if let Some(sender) = deploy_sender {
+        sender(&worker, message)?;
+        Ok(format!("deployed agent {agent_id} to worker {worker_id}"))
+    } else {
+        Ok(format!("no deploy channel configured; would deploy agent {agent_id} to worker {worker_id}"))
+    }
+}
+
+fn deploy_workflow(
+    store: &Store,
+    deploy_sender: Option<&(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync)>,
+    args: &serde_json::Value,
+) -> Result<String> {
+    let workflow_id = args["workflow_id"].as_str().context("workflow_id is required")?;
+    let worker_id = args["worker_id"].as_str().context("worker_id is required")?;
+    let rows = store.list_workflows()?;
+    let existing = rows
+        .into_iter()
+        .find(|(id, _, _, _, _, _, _, _)| id == workflow_id)
+        .context("workflow not found")?;
+    let workflow: Workflow = serde_json::from_str(&existing.3)?;
+    let worker = WorkerId(worker_id.to_string());
+    let message = DesktopMessage::RunAgent {
+        trace_id: uuid::Uuid::new_v4().to_string(),
+        agent_id: AgentId(workflow.id.to_string()),
+        spec: AgentSpec {
+            id: AgentId(workflow.id.to_string()),
+            name: workflow.name.clone(),
+            description: workflow.description.clone(),
+            prompt: serde_json::to_string(&workflow.steps)?,
+            tools: Vec::new(),
+            triggers: vec![workflow.trigger.clone()],
+            mcp_ids: Vec::new(),
+            created_at: workflow.created_at.clone(),
+            updated_at: workflow.updated_at.clone(),
+        },
+    };
+    if let Some(sender) = deploy_sender {
+        sender(&worker, message)?;
+        Ok(format!("deployed workflow {workflow_id} to worker {worker_id}"))
+    } else {
+        Ok(format!("no deploy channel configured; would deploy workflow {workflow_id} to worker {worker_id}"))
+    }
+}
+
+fn schedule_workflow(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let workflow_id = args["workflow_id"].as_str().context("workflow_id is required")?;
+    let trigger_type = args["trigger_type"].as_str().context("trigger_type is required")?;
+    let trigger_value = args["trigger_value"].as_str().context("trigger_value is required")?;
+    let rows = store.list_workflows()?;
+    let existing = rows
+        .into_iter()
+        .find(|(id, _, _, _, _, _, _, _)| id == workflow_id)
+        .context("workflow not found")?;
+    let mut workflow: Workflow = serde_json::from_str(&existing.3)?;
+    workflow.trigger = match trigger_type {
+        "cron" => Trigger::Cron { expression: trigger_value.to_string() },
+        "http" => Trigger::Http { path: trigger_value.to_string() },
+        "heartbeat" => {
+            let interval = trigger_value.parse::<u64>().context("heartbeat interval must be a number")?;
+            Trigger::Heartbeat { interval_seconds: interval }
+        }
+        _ => anyhow::bail!("unknown trigger type {trigger_type}"),
+    };
+    workflow.updated_at = Utc::now().to_rfc3339();
+    let spec_json = serde_json::to_string(&workflow)?;
+    let trigger_str = serde_json::to_string(&workflow.trigger)?;
+    store.insert_workflow(
+        &workflow.id.to_string(),
+        &workflow.name,
+        &workflow.description,
+        &spec_json,
+        &trigger_str,
+        workflow.enabled,
+        &workflow.created_at,
+        &workflow.updated_at,
+    )?;
+    Ok(format!("workflow {workflow_id} scheduled with {trigger_type}={trigger_value}"))
+}
+
+fn get_execution_status(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let execution_id = args["execution_id"].as_str().context("execution_id is required")?;
+    let rows = store.list_executions()?;
+    let exec = rows
+        .into_iter()
+        .find(|(id, _, _, _, _, _, _)| id == execution_id)
+        .context("execution not found")?;
+    Ok(format!(
+        "execution {execution_id}: status={}, agent={}, worker={}, started_at={}",
+        exec.3,
+        exec.1.as_deref().unwrap_or("-"),
+        exec.2.as_deref().unwrap_or("-"),
+        exec.5
+    ))
+}
+
+fn read_file(args: &serde_json::Value) -> Result<String> {
+    let path = args["path"].as_str().context("path is required")?;
+    let path = resolve_path(path)?;
+    std::fs::read_to_string(&path).with_context(|| format!("failed to read {path:?}"))
+}
+
+fn write_file(args: &serde_json::Value) -> Result<String> {
+    let path = args["path"].as_str().context("path is required")?;
+    let content = args["content"].as_str().context("content is required")?;
+    let path = resolve_path(path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, content).with_context(|| format!("failed to write {path:?}"))?;
+    Ok(format!("wrote {path:?}"))
+}
+
+fn edit_file(args: &serde_json::Value) -> Result<String> {
+    let path = args["path"].as_str().context("path is required")?;
+    let old_text = args["old_text"].as_str().context("old_text is required")?;
+    let new_text = args["new_text"].as_str().context("new_text is required")?;
+    let path = resolve_path(path)?;
+    let content = std::fs::read_to_string(&path).with_context(|| format!("failed to read {path:?}"))?;
+    let replaced = content.replacen(old_text, new_text, 1);
+    if replaced == content {
+        anyhow::bail!("old_text not found in file");
+    }
+    std::fs::write(&path, replaced).with_context(|| format!("failed to write {path:?}"))?;
+    Ok(format!("edited {path:?}"))
+}
+
+fn resolve_path(path: &str) -> Result<PathBuf> {
+    let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let p = PathBuf::from(path);
+    let resolved = if p.is_absolute() { p } else { base.join(p) };
+    let canonical_base = base.canonicalize().unwrap_or_else(|_| base.clone());
+    let canonical_resolved = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+    if !canonical_resolved.starts_with(&canonical_base) {
+        anyhow::bail!("path {path:?} escapes workspace directory");
+    }
+    Ok(canonical_resolved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,8 +955,7 @@ mod tests {
         id
     }
 
-    #[tokio::test]
-    async fn test_harness_create_agent() {
+    fn harness_with_tool(name: &str, arguments: serde_json::Value) -> (Store, String, Harness) {
         let store = Store::open_in_memory().unwrap();
         let chat_id = chat(&store);
         let llm = Arc::new(MockProvider::new(
@@ -603,16 +964,22 @@ mod tests {
                 content: String::new(),
                 tool_calls: vec![LlmToolCall {
                     id: "tc1".to_string(),
-                    name: "create_agent".to_string(),
-                    arguments: serde_json::json!({
-                        "id": "agent-1",
-                        "name": "Greeter",
-                        "prompt": "Say hello"
-                    }),
+                    name: name.to_string(),
+                    arguments,
                 }],
             },
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
+        (store, chat_id, harness)
+    }
+
+    #[tokio::test]
+    async fn test_harness_create_agent() {
+        let (store, chat_id, harness) = harness_with_tool("create_agent", serde_json::json!({
+            "id": "agent-1",
+            "name": "Greeter",
+            "prompt": "Say hello"
+        }));
         let events: Vec<_> = harness.run_turn(&chat_id, "make a greeter").collect().await;
         let started = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallStarted { name, .. } if name == "create_agent"));
         assert!(started);
@@ -623,20 +990,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_harness_run_command_mock() {
-        let store = Store::open_in_memory().unwrap();
-        let chat_id = chat(&store);
-        let llm = Arc::new(MockProvider::new(
-            "mock",
-            CompletionResponse {
-                content: String::new(),
-                tool_calls: vec![LlmToolCall {
-                    id: "tc2".to_string(),
-                    name: "run_command".to_string(),
-                    arguments: serde_json::json!({"command": "echo", "args": ["hi"]}),
-                }],
-            },
-        ));
-        let harness = Harness::new(store.clone()).with_llm(llm);
+        let (_store, chat_id, harness) = harness_with_tool("run_command", serde_json::json!({
+            "command": "echo",
+            "args": ["hi"]
+        }));
         let events: Vec<_> = harness.run_turn(&chat_id, "run echo hi").collect().await;
         let finished = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("mock ran")));
         assert!(finished);
@@ -708,11 +1065,176 @@ mod tests {
         assert_eq!(store.list_teams().unwrap().len(), 1);
     }
 
+    #[tokio::test]
+    async fn test_harness_list_entities_and_search() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let now = Utc::now().to_rfc3339();
+        let spec = AgentSpec {
+            id: AgentId("agent-x".to_string()),
+            name: "Xavier".to_string(),
+            description: "".to_string(),
+            prompt: "".to_string(),
+            tools: vec![],
+            triggers: vec![Trigger::Manual],
+            mcp_ids: vec![],
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        store.insert_agent("agent-x", "Xavier", &spec_json, &spec.created_at, &spec.updated_at).unwrap();
+        store.insert_team("team-1", "X-Men", "{}", &now).unwrap();
+
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![
+                    LlmToolCall {
+                        id: "tc6".to_string(),
+                        name: "list_entities".to_string(),
+                        arguments: serde_json::json!({"entity_type": "agents"}),
+                    },
+                    LlmToolCall {
+                        id: "tc7".to_string(),
+                        name: "search_store".to_string(),
+                        arguments: serde_json::json!({"query": "x", "entity_types": ["agents", "teams"]}),
+                    },
+                ],
+            },
+        ));
+        let harness = Harness::new(store).with_llm(llm);
+        let events: Vec<_> = harness.run_turn(&chat_id, "list and search").collect().await;
+        let finished: Vec<_> = events.iter().filter_map(|e| match e {
+            HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
+            _ => None,
+        }).collect();
+        assert!(finished.iter().any(|r| r.contains("agent-x")));
+        assert!(finished.iter().any(|r| r.contains("team-1") && r.contains("X-Men")));
+    }
+
+    #[tokio::test]
+    async fn test_harness_deploy_agent_without_sender() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let _now = Utc::now().to_rfc3339();
+        let spec = AgentSpec::new("A", "p");
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        store.insert_agent("agent-1", "A", &spec_json, &spec.created_at, &spec.updated_at).unwrap();
+
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![LlmToolCall {
+                    id: "tc8".to_string(),
+                    name: "deploy_agent".to_string(),
+                    arguments: serde_json::json!({"agent_id": "agent-1", "worker_id": "w-1"}),
+                }],
+            },
+        ));
+        let harness = Harness::new(store).with_llm(llm);
+        let events: Vec<_> = harness.run_turn(&chat_id, "deploy").collect().await;
+        let finished = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("no deploy channel")));
+        assert!(finished);
+    }
+
+    #[tokio::test]
+    async fn test_harness_schedule_workflow_and_get_execution() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let wf = Workflow::new("wf", "").with_steps(vec![]);
+        let spec_json = serde_json::to_string(&wf).unwrap();
+        let trigger_str = serde_json::to_string(&wf.trigger).unwrap();
+        store.insert_workflow(&wf.id.to_string(), &wf.name, &wf.description, &spec_json, &trigger_str, true, &wf.created_at, &wf.updated_at).unwrap();
+
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![LlmToolCall {
+                    id: "tc9".to_string(),
+                    name: "schedule_workflow".to_string(),
+                    arguments: serde_json::json!({"workflow_id": wf.id.to_string(), "trigger_type": "cron", "trigger_value": "0 9 * * *"}),
+                }],
+            },
+        ));
+        let harness = Harness::new(store.clone()).with_llm(llm);
+        let events: Vec<_> = harness.run_turn(&chat_id, "schedule").collect().await;
+        let finished = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("scheduled")));
+        assert!(finished);
+
+        let rows = store.list_workflows().unwrap();
+        assert!(rows[0].4.contains("Cron"));
+    }
+
+    #[tokio::test]
+    async fn test_harness_read_write_edit_file() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![
+                    LlmToolCall {
+                        id: "tc10".to_string(),
+                        name: "write_file".to_string(),
+                        arguments: serde_json::json!({"path": "harness_test.txt", "content": "hello world"}),
+                    },
+                    LlmToolCall {
+                        id: "tc11".to_string(),
+                        name: "edit_file".to_string(),
+                        arguments: serde_json::json!({"path": "harness_test.txt", "old_text": "world", "new_text": "Goble"}),
+                    },
+                    LlmToolCall {
+                        id: "tc12".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: serde_json::json!({"path": "harness_test.txt"}),
+                    },
+                ],
+            },
+        ));
+        let harness = Harness::new(store).with_llm(llm);
+        let events: Vec<_> = harness.run_turn(&chat_id, "file ops").collect().await;
+        let finished: Vec<_> = events.iter().filter_map(|e| match e {
+            HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
+            _ => None,
+        }).collect();
+        assert!(finished.iter().any(|r| r.contains("harness_test.txt")));
+        assert!(finished.last().unwrap().contains("hello Goble"));
+        std::fs::remove_file("harness_test.txt").ok();
+    }
+
+    #[tokio::test]
+    async fn test_harness_sandboxed_command_blocks_disallowed() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![LlmToolCall {
+                    id: "tc13".to_string(),
+                    name: "run_command".to_string(),
+                    arguments: serde_json::json!({"command": "rm", "args": ["-rf", "/"]}),
+                }],
+            },
+        ));
+        let runner = Arc::new(SandboxedCommandRunner::default_tools());
+        let harness = Harness::new(store).with_llm(llm).with_runner(runner);
+        let events: Vec<_> = harness.run_turn(&chat_id, "dangerous").collect().await;
+        assert!(events.iter().any(|e| matches!(e, HarnessEvent::ToolCallError { message, .. } if message.contains("not in the allowed list"))));
+    }
+
     #[test]
     fn test_list_tools() {
         let store = Store::open_in_memory().unwrap();
         let harness = Harness::new(store);
         let tools = harness.list_tools();
         assert!(tools.iter().any(|t| t.name == "create_agent"));
+        assert!(tools.iter().any(|t| t.name == "search_store"));
+        assert!(tools.iter().any(|t| t.name == "deploy_agent"));
+        assert!(tools.iter().any(|t| t.name == "read_file"));
     }
 }

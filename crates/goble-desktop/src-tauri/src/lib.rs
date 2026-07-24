@@ -241,7 +241,11 @@ fn run_harness(
     req: RunHarnessRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<(), String> {
-    let harness = Harness::new(state.store_clone());
+    use goble_core::harness::SandboxedCommandRunner;
+    let deploy_state = Arc::clone(&state);
+    let harness = Harness::new(state.store_clone())
+        .with_runner(Arc::new(SandboxedCommandRunner::default_tools()))
+        .with_deploy_sender(move |worker_id, msg| deploy_state.send_to_worker(worker_id, msg));
     let mut stream = harness.run_turn(&req.chat_id, &req.prompt);
     let state_clone = Arc::clone(&state);
     let chat_id = req.chat_id.clone();

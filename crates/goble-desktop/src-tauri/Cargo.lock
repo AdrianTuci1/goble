@@ -1412,6 +1412,7 @@ dependencies = [
  "dirs",
  "futures",
  "goble-core",
+ "once_cell",
  "parking_lot",
  "serde",
  "serde_json",

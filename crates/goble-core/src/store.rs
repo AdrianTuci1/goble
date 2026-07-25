@@ -104,6 +104,7 @@ impl Store {
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 source TEXT NOT NULL,
+                source_value TEXT,
                 manifest TEXT NOT NULL,
                 credentials_key TEXT,
                 installed_at TEXT NOT NULL,
@@ -407,17 +408,18 @@ impl Store {
         id: &str,
         name: &str,
         source: &str,
+        source_value: Option<&str>,
         manifest: &str,
         credentials_key: Option<&str>,
         installed_at: &str,
         updated_at: &str,
     ) -> Result<()> {
         self.conn.lock().execute(
-            "INSERT INTO mcp_servers (id, name, source, manifest, credentials_key, installed_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(id) DO UPDATE SET name=excluded.name, source=excluded.source, manifest=excluded.manifest,
+            "INSERT INTO mcp_servers (id, name, source, source_value, manifest, credentials_key, installed_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, source=excluded.source, source_value=excluded.source_value, manifest=excluded.manifest,
                                            credentials_key=excluded.credentials_key, updated_at=excluded.updated_at",
-            params![id, name, source, manifest, credentials_key, installed_at, updated_at],
+            params![id, name, source, source_value, manifest, credentials_key, installed_at, updated_at],
         )?;
         Ok(())
     }
@@ -429,6 +431,7 @@ impl Store {
             String,
             String,
             String,
+            Option<String>,
             String,
             Option<String>,
             String,
@@ -436,16 +439,17 @@ impl Store {
         )>,
     > {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT id, name, source, manifest, credentials_key, installed_at, updated_at FROM mcp_servers ORDER BY updated_at DESC")?;
+        let mut stmt = conn.prepare("SELECT id, name, source, source_value, manifest, credentials_key, installed_at, updated_at FROM mcp_servers ORDER BY updated_at DESC")?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, String>(5)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<String>>(5)?,
                 r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
             ))
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -722,6 +726,7 @@ mod tests {
                 "mcp1",
                 "files",
                 "npm",
+                Some("@modelcontextprotocol/server-files"),
                 "{}",
                 None,
                 "2024-01-01T00:00:00Z",

@@ -1,13 +1,14 @@
 // Tauri + React application entry
 // This crate is not included in the Cargo workspace because it is a Tauri project.
 use goble_core::agent::{AgentId, Trigger};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use goble_core::harness::Harness;
 use goble_core::protocol::DesktopMessage;
 use goble_core::store::Store;
 use goble_core::worker::WorkerId;
 use goble_core::workflow::{WorkflowId, WorkflowStep};
 use serde::Deserialize;
-use std::sync::Arc;
 
 pub mod state;
 pub mod worker_manager;
@@ -73,6 +74,9 @@ struct UnlockVaultRequest {
     passphrase: String,
 }
 
+
+static HARNESS_CANCEL: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 #[tauri::command]
 fn list_workers(
     state: tauri::State<'_, Arc<state::DesktopState>>,
@@ -282,6 +286,14 @@ fn list_harness_tools() -> Result<Vec<goble_core::harness::ToolSchema>, String> 
     Ok(harness.list_tools())
 }
 
+
+#[tauri::command]
+fn cancel_harness(chat_id: String) {
+    if let Some(cancel) = HARNESS_CANCEL.lock().unwrap().get(&chat_id) {
+        cancel.store(true, Ordering::Relaxed);
+    }
+}
+
 #[tauri::command]
 fn run_harness(
     req: RunHarnessRequest,
@@ -346,6 +358,27 @@ fn run_harness(
             let base = setting.as_ref().and_then(|s| s.base_url.clone()).unwrap_or_else(|| "http://localhost:11434".to_string());
             (Arc::new(goble_core::llm::OllamaProvider::new(base)), if req.model.is_empty() { setting.map(|s| s.model).unwrap_or_default() } else { req.model.clone() })
         }
+        "deepseek" => {
+            let setting = state.get_llm_setting("deepseek");
+            if let Some(s) = setting {
+                if !s.api_key.is_empty() {
+                    let base = s.base_url.unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
+                    let provider: Arc<dyn goble_core::llm::LlmProvider> = Arc::new(goble_core::llm::OpenAiProvider::new("deepseek", s.api_key, base));
+                    let model = if req.model.is_empty() { s.model } else { req.model.clone() };
+                    (provider, model)
+                } else {
+                    (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
+                        content: "No DeepSeek API key configured. Add one in Settings.".to_string(),
+                        tool_calls: Vec::new(),
+                    })), req.model.clone())
+                }
+            } else {
+                (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
+                    content: "No DeepSeek provider configured. Add one in Settings.".to_string(),
+                    tool_calls: Vec::new(),
+                })), req.model.clone())
+            }
+        }
         _ => {
             (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
                 content: format!("Unknown provider {provider_name}."),
@@ -355,10 +388,14 @@ fn run_harness(
     };
 
     let deploy_state = Arc::clone(&state);
+    let cancel = Arc::new(AtomicBool::new(false));
+    HARNESS_CANCEL.lock().unwrap().insert(req.chat_id.clone(), cancel.clone());
     let harness = Harness::new(state.store_clone())
         .with_llm(llm)
         .with_runner(Arc::new(SandboxedCommandRunner::default_tools()))
-        .with_deploy_sender(move |worker_id, msg| deploy_state.send_to_worker(worker_id, msg));
+        .with_deploy_sender(move |worker_id, msg| deploy_state.send_to_worker(worker_id, msg))
+        .with_cancel(cancel.clone());
+    let chat_id_for_cleanup = req.chat_id.clone();
     let mut stream = harness.run_turn(&req.chat_id, &req.prompt, provider_name, &model_name);
     let state_clone = Arc::clone(&state);
     let chat_id = req.chat_id.clone();
@@ -373,6 +410,7 @@ fn run_harness(
                 state_clone.add_log(format!("harness error: {e}"));
             }
         }
+        HARNESS_CANCEL.lock().unwrap().remove(&chat_id_for_cleanup);
     });
     Ok(())
 }
@@ -500,6 +538,7 @@ pub fn run() {
             schedule_agent,
             set_chat_model,
             run_harness,
+            cancel_harness,
             list_harness_tools
         ])
         .run(tauri::generate_context!())

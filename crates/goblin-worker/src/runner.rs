@@ -117,7 +117,7 @@ impl Runner {
                                 trace
                                     .find_step_mut(&mcp_id)
                                     .unwrap()
-                                    .log(LogLevel::Info, format!("mcp {} tools: {}", id, tools));
+                                    .log(LogLevel::Info, format!("mcp {} tools: {:?}", id, tools));
                             }
                             Err(e) => {
                                 trace.find_step_mut(&mcp_id).unwrap().log(

@@ -16,6 +16,8 @@ pub struct Message {
     pub role: Role,
     pub content: String,
     pub tool_calls: Option<Vec<LlmToolCall>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +60,7 @@ impl CompletionRequest {
             role: Role::System,
             content: content.into(),
             tool_calls: None,
+            tool_call_id: None,
         });
         self
     }
@@ -67,6 +70,7 @@ impl CompletionRequest {
             role: Role::User,
             content: content.into(),
             tool_calls: None,
+            tool_call_id: None,
         });
         self
     }
@@ -185,6 +189,10 @@ struct OpenAiRequest {
 struct OpenAiMessage {
     role: String,
     content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAiToolCall>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -201,35 +209,15 @@ struct OpenAiFunction {
     parameters: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct OpenAiResponse {
-    choices: Vec<OpenAiChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct OpenAiChoice {
-    message: OpenAiChoiceMessage,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct OpenAiChoiceMessage {
-    content: Option<String>,
-    #[serde(default)]
-    tool_calls: Option<Vec<OpenAiToolCall>>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize)]
 struct OpenAiToolCall {
     id: String,
+    #[serde(rename = "type")]
+    tool_type: String,
     function: OpenAiFunctionCall,
 }
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize)]
 struct OpenAiFunctionCall {
     name: String,
     arguments: String,
@@ -262,7 +250,7 @@ struct OpenAiStreamToolCall {
     function: Option<OpenAiStreamFunctionCall>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct OpenAiStreamFunctionCall {
     name: Option<String>,
     arguments: Option<String>,
@@ -271,15 +259,34 @@ struct OpenAiStreamFunctionCall {
 fn into_openai_messages(messages: Vec<Message>) -> Vec<OpenAiMessage> {
     messages
         .into_iter()
-        .map(|m| OpenAiMessage {
-            role: match m.role {
+        .map(|m| {
+            let role = match m.role {
                 Role::System => "system",
                 Role::User => "user",
                 Role::Assistant => "assistant",
                 Role::Tool => "tool",
             }
-            .to_string(),
-            content: m.content,
+            .to_string();
+            let tool_calls = m.tool_calls.as_ref().map(|calls| {
+                calls
+                    .iter()
+                    .map(|c| OpenAiToolCall {
+                        id: c.id.clone(),
+                        tool_type: "function".to_string(),
+                        function: OpenAiFunctionCall {
+                            name: c.name.clone(),
+                            arguments: c.arguments.to_string(),
+                        },
+                    })
+                    .collect()
+            });
+            let tool_call_id = m.tool_call_id.clone();
+            OpenAiMessage {
+                role,
+                content: m.content,
+                tool_call_id,
+                tool_calls,
+            }
         })
         .collect()
 }
@@ -521,15 +528,19 @@ struct OllamaRequest {
     options: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct OllamaMessage {
+    #[serde(default)]
     role: String,
+    #[serde(default)]
     content: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct OllamaStreamChunk {
+    #[serde(default)]
     message: OllamaMessage,
+    #[serde(default)]
     done: bool,
 }
 

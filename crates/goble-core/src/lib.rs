@@ -7,6 +7,7 @@ pub mod isolate;
 pub mod llm;
 pub mod mcp_client;
 pub mod mcp_installer;
+pub mod mcp_manager;
 pub mod mcp_registry;
 pub mod protocol;
 pub mod secret;

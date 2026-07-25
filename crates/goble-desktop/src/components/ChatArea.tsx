@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../stores/appStore';
 import {
+  cancelHarness,
   createChat,
   chatMessages,
   addChatMessage,
@@ -45,6 +46,7 @@ export default function ChatArea() {
   const addMessage = useStore((s) => s.addMessage);
   const updateMessage = useStore((s) => s.updateMessage);
   const [input, setInput] = useState('');
+  const [isRunning, setIsRunning] = useState(false);
   const [workerId, setWorkerId] = useState('');
   const [agentId, setAgentId] = useState('');
   const [provider, setProvider] = useState('openai');
@@ -185,7 +187,9 @@ export default function ChatArea() {
     addLog(`user sent message in chat ${chatId}`);
 
     if (sentInput.startsWith('/')) {
+      setIsRunning(true);
       await runHarness(chatId, sentInput, usedProvider, usedModel);
+      setIsRunning(false);
     } else if (workerId && agentId) {
       await runAgent(workerId, agentId, sentInput);
     }
@@ -311,6 +315,14 @@ export default function ChatArea() {
           placeholder="Type a message or /command..."
         />
         <button onClick={handleSend}>Send</button>
+        {isRunning && (
+          <button
+            className="cancel-button"
+            onClick={() => activeChatId && cancelHarness(activeChatId)}
+          >
+            Cancel
+          </button>
+        )}
       </div>
     </div>
   );

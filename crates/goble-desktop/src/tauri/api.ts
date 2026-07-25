@@ -110,6 +110,10 @@ export interface HarnessEvent {
   payload?: unknown;
 }
 
+export async function cancelHarness(chatId: string): Promise<void> {
+  return invoke('cancel_harness', { chat_id: chatId });
+}
+
 export async function runHarness(
   chatId: string,
   prompt: string,

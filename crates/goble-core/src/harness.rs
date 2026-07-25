@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -11,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::{AgentId, AgentSpec, Trigger};
 use crate::llm::{CompletionRequest, CompletionResponse, LlmProvider, LlmToolCall, Role, ToolDefinition};
+use crate::mcp_manager::McpManager;
 use crate::protocol::DesktopMessage;
 use crate::store::Store;
 use crate::worker::WorkerId;
@@ -115,6 +117,9 @@ pub struct Harness {
     runner: Arc<dyn CommandRunner>,
     llm: Arc<dyn LlmProvider>,
     deploy_sender: Option<Arc<dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync>>,
+    mcp_manager: McpManager,
+    cancel: Arc<AtomicBool>,
+    workspace_dir: PathBuf,
 }
 
 impl Harness {
@@ -130,6 +135,9 @@ impl Harness {
                 },
             )),
             deploy_sender: None,
+            mcp_manager: McpManager::new(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            workspace_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
 
@@ -143,6 +151,16 @@ impl Harness {
         self
     }
 
+    pub fn with_cancel(mut self, cancel: Arc<AtomicBool>) -> Self {
+        self.cancel = cancel;
+        self
+    }
+
+    pub fn with_workspace_dir(mut self, workspace_dir: impl Into<std::path::PathBuf>) -> Self {
+        self.workspace_dir = workspace_dir.into();
+        self
+    }
+
     pub fn with_deploy_sender<F>(mut self, sender: F) -> Self
     where
         F: Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync + 'static,
@@ -151,8 +169,17 @@ impl Harness {
         self
     }
 
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
     pub fn list_tools(&self) -> Vec<ToolSchema> {
-        harness_tool_definitions()
+        let mut tools = harness_tool_definitions();
+        if let Ok(mcp_tools) = self.mcp_manager.refresh_from_store(&self.store) {
+            tools.extend(mcp_tools);
+        }
+        tools.extend(vec![crate::mcp_manager::McpManager::generic_mcp_call_tool()]);
+        tools.into_iter()
             .into_iter()
             .map(|t| ToolSchema {
                 name: t.name,
@@ -179,6 +206,9 @@ impl Harness {
         let provider = provider.to_string();
         let model = model.to_string();
 
+        let mcp_manager = self.mcp_manager.clone();
+        let cancel = self.cancel.clone();
+        let workspace_dir = self.workspace_dir.clone();
         let stream = async_stream::stream! {
             let now = Utc::now().to_rfc3339();
             if let Err(e) = store.insert_chat_message(
@@ -193,129 +223,173 @@ impl Harness {
                 return;
             }
 
-            let history = match store.list_chat_messages(&chat_id) {
-                Ok(rows) => rows
-                    .into_iter()
-                    .map(|(_, role, content, tool_calls, _)| crate::llm::Message {
-                        role: match role.as_str() {
-                            "system" => Role::System,
-                            "assistant" => Role::Assistant,
-                            "tool" => Role::Tool,
-                            _ => Role::User,
-                        },
-                        content,
-                        tool_calls: tool_calls.and_then(|t| serde_json::from_str(&t).ok()),
-                    })
-                    .collect::<Vec<_>>(),
-                Err(e) => {
-                    yield HarnessEvent::Error(e.to_string());
-                    return;
+            let mut tools = harness_tool_definitions();
+            if let Ok(mcp_tools) = mcp_manager.refresh_from_store(&store) {
+                tools.extend(mcp_tools);
+            }
+            tools.push(crate::mcp_manager::McpManager::generic_mcp_call_tool());
+            let mut iteration = 0;
+            let mut prev_tool_calls: Vec<LlmToolCall> = Vec::new();
+            const MAX_ITERATIONS: usize = 8;
+            let mut tools = harness_tool_definitions();
+            if let Ok(mcp_tools) = mcp_manager.refresh_from_store(&store) {
+                tools.extend(mcp_tools);
+            }
+            tools.push(crate::mcp_manager::McpManager::generic_mcp_call_tool());
+
+            loop {
+                if cancel.load(Ordering::Relaxed) {
+                    yield HarnessEvent::Error("cancelled".to_string());
+                    break;
                 }
-            };
-
-            let tools = harness_tool_definitions();
-            let request = CompletionRequest::new(provider, model)
-                .with_system(HARNESS_SYSTEM_PROMPT)
-                .with_tools(tools)
-                .with_messages(history);
-
-            let mut stream = match llm.complete_stream(request).await {
-                Ok(s) => s,
-                Err(e) => {
-                    yield HarnessEvent::Error(e.to_string());
-                    return;
+                if iteration >= MAX_ITERATIONS {
+                    yield HarnessEvent::Error("too many tool iterations".to_string());
+                    break;
                 }
-            };
+                iteration += 1;
 
-            let mut assistant_content = String::new();
-            let mut tool_calls = Vec::new();
-            while let Some(event) = stream.next().await {
-                match event {
-                    crate::llm::CompletionStreamEvent::AssistantDelta(delta) => {
-                        assistant_content.push_str(&delta);
-                        yield HarnessEvent::AssistantDelta(delta);
-                    }
-                    crate::llm::CompletionStreamEvent::ToolCalls(calls) => {
-                        tool_calls = calls;
-                        let tool_calls_json = serde_json::to_string(&tool_calls).unwrap_or_default();
-                        if !tool_calls.is_empty() {
-                            if let Err(e) = store.insert_chat_message(
-                                &uuid::Uuid::new_v4().to_string(),
-                                &chat_id,
-                                "tool",
-                                &tool_calls_json,
-                                Some(&tool_calls_json),
-                                &Utc::now().to_rfc3339(),
-                            ) {
-                                yield HarnessEvent::Error(e.to_string());
-                                return;
+                let history = match store.list_chat_messages(&chat_id) {
+                    Ok(rows) => rows
+                        .into_iter()
+                        .map(|(_, role, content, tool_calls, _)| {
+                            let (content, tool_call_id) = if role.as_str() == "tool" {
+                                if let Some((id, rest)) = content.split_once('\n') {
+                                    (rest.to_string(), Some(id.to_string()))
+                                } else {
+                                    (content, None)
+                                }
+                            } else {
+                                (content, None)
+                            };
+                            crate::llm::Message {
+                                role: match role.as_str() {
+                                    "system" => Role::System,
+                                    "assistant" => Role::Assistant,
+                                    "tool_calls" => Role::Assistant,
+                                    "tool" => Role::Tool,
+                                    _ => Role::User,
+                                },
+                                content,
+                                tool_calls: tool_calls.and_then(|t| serde_json::from_str(&t).ok()),
+                                tool_call_id,
                             }
-                        }
-                    }
-                    crate::llm::CompletionStreamEvent::Done => break,
-                    crate::llm::CompletionStreamEvent::Error(message) => {
-                        yield HarnessEvent::Error(message);
+                        })
+                        .collect::<Vec<_>>(),
+                    Err(e) => {
+                        yield HarnessEvent::Error(e.to_string());
                         return;
                     }
+                };
+
+                let request = CompletionRequest::new(provider.clone(), model.clone())
+                    .with_system(HARNESS_SYSTEM_PROMPT)
+                    .with_tools(tools.clone())
+                    .with_messages(history);
+
+                let mut stream = match llm.complete_stream(request).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        yield HarnessEvent::Error(e.to_string());
+                        return;
+                    }
+                };
+
+                let mut assistant_content = String::new();
+                let mut tool_calls = Vec::new();
+                while let Some(event) = stream.next().await {
+                    if cancel.load(Ordering::Relaxed) {
+                        yield HarnessEvent::Error("cancelled".to_string());
+                        break;
+                    }
+                    match event {
+                        crate::llm::CompletionStreamEvent::AssistantDelta(delta) => {
+                            assistant_content.push_str(&delta);
+                            yield HarnessEvent::AssistantDelta(delta);
+                        }
+                        crate::llm::CompletionStreamEvent::ToolCalls(calls) => {
+                            tool_calls = calls;
+                        }
+                        crate::llm::CompletionStreamEvent::Done => break,
+                        crate::llm::CompletionStreamEvent::Error(message) => {
+                            yield HarnessEvent::Error(message);
+                            return;
+                        }
+                    }
                 }
-            }
 
-        if !assistant_content.is_empty() {
-            if let Err(e) = store.insert_chat_message(
-                &uuid::Uuid::new_v4().to_string(),
-                &chat_id,
-                "assistant",
-                &assistant_content,
-                None,
-                &Utc::now().to_rfc3339(),
-            ) {
-                yield HarnessEvent::Error(e.to_string());
-                return;
-            }
-        }
-
-        for call in &tool_calls {
-            yield HarnessEvent::ToolCallStarted {
-                id: call.id.clone(),
-                name: call.name.clone(),
-                arguments: call.arguments.clone(),
-            };
-
-            let sender_ref = deploy_sender.as_ref().map(|f| arc_to_sender_ref(f));
-            let result = execute_tool_call(&store, &*runner, sender_ref, &call).await;
-            match result {
-                Ok(value) => {
-                    let tool_result_text = format!("{}\n{}", call.id, value);
+                if !assistant_content.is_empty() || !tool_calls.is_empty() {
+                    let tool_calls_json = serde_json::to_string(&tool_calls).unwrap_or_default();
+                    let tool_calls_opt = if tool_calls.is_empty() { None } else { Some(tool_calls_json.as_str()) };
                     if let Err(e) = store.insert_chat_message(
                         &uuid::Uuid::new_v4().to_string(),
                         &chat_id,
-                        "tool",
-                        &tool_result_text,
-                        None,
+                        "assistant",
+                        &assistant_content,
+                        tool_calls_opt,
                         &Utc::now().to_rfc3339(),
                     ) {
                         yield HarnessEvent::Error(e.to_string());
                         return;
                     }
-                    yield HarnessEvent::ToolCallFinished { id: call.id.clone(), result: value };
                 }
-                Err(e) => {
-                    let error_text = format!("{}\nERROR: {}", call.id, e);
-                    if let Err(e2) = store.insert_chat_message(
-                        &uuid::Uuid::new_v4().to_string(),
-                        &chat_id,
-                        "tool",
-                        &error_text,
-                        None,
-                        &Utc::now().to_rfc3339(),
-                    ) {
-                        yield HarnessEvent::Error(e2.to_string());
-                        return;
+
+                if tool_calls.is_empty() {
+                    break;
+                }
+                if assistant_content.is_empty() {
+                    if tool_calls == prev_tool_calls {
+                        break;
                     }
-                    yield HarnessEvent::ToolCallError { id: call.id.clone(), message: e.to_string() };
+                    prev_tool_calls = tool_calls.clone();
+                }
+
+                for call in &tool_calls {
+                    if cancel.load(Ordering::Relaxed) {
+                        yield HarnessEvent::Error("cancelled".to_string());
+                        break;
+                    }
+                    yield HarnessEvent::ToolCallStarted {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        arguments: call.arguments.clone(),
+                    };
+
+                    let sender_ref = deploy_sender.as_ref().map(|f| arc_to_sender_ref(f));
+                    let result = execute_tool_call(&store, &*runner, sender_ref, &mcp_manager, &workspace_dir, &call).await;
+                    match result {
+                        Ok(value) => {
+                            let tool_result_text = format!("{}\n{}", call.id, value);
+                            if let Err(e) = store.insert_chat_message(
+                                &uuid::Uuid::new_v4().to_string(),
+                                &chat_id,
+                                "tool",
+                                &tool_result_text,
+                                None,
+                                &Utc::now().to_rfc3339(),
+                            ) {
+                                yield HarnessEvent::Error(e.to_string());
+                                return;
+                            }
+                            yield HarnessEvent::ToolCallFinished { id: call.id.clone(), result: value };
+                        }
+                        Err(e) => {
+                            let error_text = format!("{}\nERROR: {}", call.id, e);
+                            if let Err(e2) = store.insert_chat_message(
+                                &uuid::Uuid::new_v4().to_string(),
+                                &chat_id,
+                                "tool",
+                                &error_text,
+                                None,
+                                &Utc::now().to_rfc3339(),
+                            ) {
+                                yield HarnessEvent::Error(e2.to_string());
+                                return;
+                            }
+                            yield HarnessEvent::ToolCallError { id: call.id.clone(), message: e.to_string() };
+                        }
+                    }
                 }
             }
-        }
 
         yield HarnessEvent::Done;
         };
@@ -715,6 +789,8 @@ async fn execute_tool_call(
     store: &Store,
     runner: &dyn CommandRunner,
     deploy_sender: Option<&(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync)>,
+    mcp_manager: &McpManager,
+    workspace_dir: &std::path::Path,
     call: &LlmToolCall,
 ) -> Result<String> {
     match call.name.as_str() {
@@ -734,22 +810,31 @@ async fn execute_tool_call(
         "delete_agent" => delete_agent(store, &call.arguments),
         "delete_workflow" => delete_workflow(store, &call.arguments),
         "delete_team" => delete_team(store, &call.arguments),
-        "rename_file" => rename_file(&call.arguments),
-        "delete_file" => delete_file(&call.arguments),
+        "rename_file" => rename_file(&call.arguments, workspace_dir),
+        "delete_file" => delete_file(&call.arguments, workspace_dir),
         "git_status" => git_status(runner, &call.arguments).await,
         "git_diff" => git_diff(runner, &call.arguments).await,
         "git_commit" => git_commit(runner, &call.arguments).await,
-        "codebase_search" => codebase_search(&call.arguments),
+        "codebase_search" => codebase_search(&call.arguments, workspace_dir),
         "install_mcp_server" => install_mcp_server(store, &call.arguments),
         "list_mcp_servers" => list_mcp_servers(store),
         "run_agent" => run_agent(store, &call.arguments),
-        "read_file" => read_file(&call.arguments),
-        "write_file" => write_file(&call.arguments),
-        "edit_file" => edit_file(&call.arguments),
+        "read_file" => read_file(&call.arguments, workspace_dir),
+        "write_file" => write_file(&call.arguments, workspace_dir),
+        "edit_file" => edit_file(&call.arguments, workspace_dir),
         "web_search" => web_search(&call.arguments).await,
         "read_url" => read_url(&call.arguments).await,
         "execute_python_code" => execute_python_code(&call.arguments).await,
-        _ => anyhow::bail!("unknown tool {}", call.name),
+        "mcp_call" => mcp_call(&mcp_manager, &call.arguments),
+        _ => {
+            if mcp_manager.is_mcp_tool(&call.name) {
+                mcp_manager
+                    .call_tool(&call.name, call.arguments.clone())
+                    .map(|v: serde_json::Value| v.to_string())
+            } else {
+                anyhow::bail!("unknown tool {}", call.name)
+            }
+        }
     }
 }
 
@@ -1097,16 +1182,16 @@ fn get_execution_status(store: &Store, args: &serde_json::Value) -> Result<Strin
     ))
 }
 
-fn read_file(args: &serde_json::Value) -> Result<String> {
+fn read_file(args: &serde_json::Value, workspace_dir: &std::path::Path) -> Result<String> {
     let path = args["path"].as_str().context("path is required")?;
-    let path = resolve_path(path)?;
+    let path = resolve_path(path, workspace_dir)?;
     std::fs::read_to_string(&path).with_context(|| format!("failed to read {path:?}"))
 }
 
-fn write_file(args: &serde_json::Value) -> Result<String> {
+fn write_file(args: &serde_json::Value, workspace_dir: &std::path::Path) -> Result<String> {
     let path = args["path"].as_str().context("path is required")?;
     let content = args["content"].as_str().context("content is required")?;
-    let path = resolve_path(path)?;
+    let path = resolve_path(path, workspace_dir)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -1114,11 +1199,11 @@ fn write_file(args: &serde_json::Value) -> Result<String> {
     Ok(format!("wrote {path:?}"))
 }
 
-fn edit_file(args: &serde_json::Value) -> Result<String> {
+fn edit_file(args: &serde_json::Value, workspace_dir: &std::path::Path) -> Result<String> {
     let path = args["path"].as_str().context("path is required")?;
     let old_text = args["old_text"].as_str().context("old_text is required")?;
     let new_text = args["new_text"].as_str().context("new_text is required")?;
-    let path = resolve_path(path)?;
+    let path = resolve_path(path, workspace_dir)?;
     let content = std::fs::read_to_string(&path).with_context(|| format!("failed to read {path:?}"))?;
     let replaced = content.replacen(old_text, new_text, 1);
     if replaced == content {
@@ -1127,6 +1212,26 @@ fn edit_file(args: &serde_json::Value) -> Result<String> {
     std::fs::write(&path, replaced).with_context(|| format!("failed to write {path:?}"))?;
     Ok(format!("edited {path:?}"))
 }
+
+fn delete_file(args: &serde_json::Value, workspace_dir: &std::path::Path) -> Result<String> {
+    let path = args["path"].as_str().context("path is required")?;
+    let path = resolve_path(path, workspace_dir)?;
+    std::fs::remove_file(&path).with_context(|| format!("failed to delete {path:?}"))?;
+    Ok(format!("deleted {path:?}"))
+}
+
+fn rename_file(args: &serde_json::Value, workspace_dir: &std::path::Path) -> Result<String> {
+    let from = args["from"].as_str().context("from is required")?;
+    let to = args["to"].as_str().context("to is required")?;
+    let from = resolve_path(from, workspace_dir)?;
+    let to = resolve_path(to, workspace_dir)?;
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(&from, &to).with_context(|| format!("failed to rename {from:?} to {to:?}"))?;
+    Ok(format!("renamed {from:?} to {to:?}"))
+}
+
 
 
 fn delete_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
@@ -1146,25 +1251,6 @@ fn delete_team(store: &Store, args: &serde_json::Value) -> Result<String> {
     store.delete_team(id)?;
     
     Ok(format!("team {id} deleted"))
-}
-
-fn rename_file(args: &serde_json::Value) -> Result<String> {
-    let from = args["from"].as_str().context("from is required")?;
-    let to = args["to"].as_str().context("to is required")?;
-    let from_path = resolve_path(from)?;
-    let to_path = resolve_path(to)?;
-    if let Some(parent) = to_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::rename(&from_path, &to_path).with_context(|| format!("failed to rename {from_path:?} to {to_path:?}"))?;
-    Ok(format!("renamed {from_path:?} to {to_path:?}"))
-}
-
-fn delete_file(args: &serde_json::Value) -> Result<String> {
-    let path = args["path"].as_str().context("path is required")?;
-    let path = resolve_path(path)?;
-    std::fs::remove_file(&path).with_context(|| format!("failed to delete {path:?}"))?;
-    Ok(format!("deleted {path:?}"))
 }
 
 async fn git_status(runner: &dyn CommandRunner, _args: &serde_json::Value) -> Result<String> {
@@ -1196,12 +1282,11 @@ async fn git_commit(runner: &dyn CommandRunner, args: &serde_json::Value) -> Res
     runner.run("git", &["commit".to_string(), "-m".to_string(), message.to_string()]).await
 }
 
-fn codebase_search(args: &serde_json::Value) -> Result<String> {
+fn codebase_search(args: &serde_json::Value, workspace_dir: &std::path::Path) -> Result<String> {
     let pattern = args["pattern"].as_str().context("pattern is required")?;
-    let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let search_path = args["path"].as_str().map(PathBuf::from).unwrap_or_else(|| base.clone());
-    let search_path = if search_path.is_absolute() { search_path } else { base.join(search_path) };
-    let canonical_base = base.canonicalize().unwrap_or_else(|_| base.clone());
+    let search_path = args["path"].as_str().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let search_path = if search_path.is_absolute() { search_path } else { workspace_dir.join(search_path) };
+    let canonical_base = workspace_dir.canonicalize().unwrap_or_else(|_| workspace_dir.to_path_buf());
     let canonical_search = search_path.canonicalize().unwrap_or_else(|_| search_path.clone());
     if !canonical_search.starts_with(&canonical_base) {
         anyhow::bail!("search path escapes workspace directory");
@@ -1231,14 +1316,13 @@ fn install_mcp_server(store: &Store, args: &serde_json::Value) -> Result<String>
     let source_value = args["source_value"].as_str().context("source_value is required")?;
     let manifest = args["manifest"].as_str().unwrap_or("{}");
     let now = Utc::now().to_rfc3339();
-    let metadata = serde_json::json!({ "source": source, "source_value": source_value });
-    store.insert_mcp_server(id, name, &metadata.to_string(), manifest, None, &now, &now)?;
+    store.insert_mcp_server(id, name, source, Some(source_value), manifest, None, &now, &now)?;
     Ok(format!("mcp server {id} installed"))
 }
 
 fn list_mcp_servers(store: &Store) -> Result<String> {
     let rows = store.list_mcp_servers()?;
-    Ok(format!("mcp servers: {:?}", rows.into_iter().map(|(id, name, _, _, _, _, _)| (id, name)).collect::<Vec<_>>()))
+    Ok(format!("mcp servers: {:?}", rows.into_iter().map(|(id, name, source, source_value, _, _, _, _)| (id, name, source, source_value)).collect::<Vec<_>>()))
 }
 
 fn run_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
@@ -1393,14 +1477,22 @@ fn html_unescape(s: &str) -> String {
     tag_re.replace_all(&out, "").into_owned().trim().to_string()
 }
 
-fn resolve_path(path: &str) -> Result<PathBuf> {
-    let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+fn mcp_call(manager: &McpManager, args: &serde_json::Value) -> Result<String> {
+    let result = manager.call_tool("mcp_call", args.clone())?;
+    Ok(result.to_string())
+}
+
+fn resolve_path(path: &str, workspace_dir: &std::path::Path) -> Result<PathBuf> {
     let p = PathBuf::from(path);
-    let resolved = if p.is_absolute() { p } else { base.join(p) };
-    let canonical_base = base.canonicalize().unwrap_or_else(|_| base.clone());
+    let resolved = if p.is_absolute() {
+        p
+    } else {
+        workspace_dir.join(p)
+    };
+    let canonical_base = workspace_dir.canonicalize().unwrap_or_else(|_| workspace_dir.to_path_buf());
     let canonical_resolved = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
     if !canonical_resolved.starts_with(&canonical_base) {
-        anyhow::bail!("path {path:?} escapes workspace directory");
+        anyhow::bail!("path {path:?} escapes workspace directory {canonical_base:?}");
     }
     Ok(canonical_resolved)
 }

@@ -104,7 +104,7 @@ interface AppState {
   addConversation: (conversation: Conversation) => void;
   setMessages: (chatId: string, messages: ChatMessage[]) => void;
   addMessage: (chatId: string, message: ChatMessage) => void;
-  updateMessage: (chatId: string, messageId: string, content: string) => void;
+  updateMessage: (chatId: string, messageId: string, content: string | ((prev: string) => string)) => void;
   setActiveConversation: (id: string | null) => void;
   setAgents: (agents: AgentInfo[]) => void;
   addAgent: (agent: AgentInfo) => void;
@@ -156,15 +156,29 @@ export const useStore = create<AppState>((set) => ({
         [chatId]: [...(state.messages[chatId] || []), message],
       },
     })),
-  updateMessage: (chatId, messageId, content) =>
-    set((state) => ({
-      messages: {
-        ...state.messages,
-        [chatId]: (state.messages[chatId] || []).map((m) =>
-          m.id === messageId ? { ...m, content } : m
-        ),
-      },
-    })),
+  updateMessage: (chatId, messageId, contentOrUpdater) =>
+    set((state) => {
+      const list = state.messages[chatId] || [];
+      const existing = list.find((m) => m.id === messageId);
+      const newContent =
+        typeof contentOrUpdater === 'function'
+          ? (contentOrUpdater as (prev: string) => string)(existing?.content ?? '')
+          : contentOrUpdater;
+      if (!existing) {
+        return {
+          messages: {
+            ...state.messages,
+            [chatId]: [...list, { id: messageId, role: 'assistant', content: newContent, created_at: new Date().toISOString() }],
+          },
+        };
+      }
+      return {
+        messages: {
+          ...state.messages,
+          [chatId]: list.map((m) => (m.id === messageId ? { ...m, content: newContent } : m)),
+        },
+      };
+    }),
   setActiveConversation: (id) => set({ activeConversationId: id }),
   setAgents: (agents) => set({ agents }),
   addAgent: (agent) => set((state) => ({ agents: [agent, ...state.agents] })),

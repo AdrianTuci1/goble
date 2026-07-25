@@ -70,18 +70,7 @@ export default function ChatArea() {
         case 'AssistantDelta': {
           const text = String(event.payload ?? '');
           const key = `streaming-${chat_id}`;
-          const existing = messages.find((m) => m.id === key);
-          if (existing) {
-            updateMessage(chat_id, key, existing.content + text);
-          } else {
-            addMessage(chat_id, {
-              id: key,
-              role: 'assistant',
-              content: text,
-              created_at: new Date().toISOString(),
-            });
-            pendingIds.current.add(key);
-          }
+          updateMessage(chat_id, key, (prev) => prev + text);
           break;
         }
         case 'ToolCallStarted': {
@@ -132,7 +121,7 @@ export default function ChatArea() {
       }
     }).then((u) => (unsub = u));
     return () => unsub?.();
-  }, [activeChatId, messages, addMessage, updateMessage, setMessages]);
+  }, [activeChatId, addMessage, updateMessage, setMessages]);
 
   async function handleSend() {
     if (!input.trim()) return;

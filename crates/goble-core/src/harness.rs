@@ -249,6 +249,10 @@ impl Harness {
                         }
                     }
                     crate::llm::CompletionStreamEvent::Done => break,
+                    crate::llm::CompletionStreamEvent::Error(message) => {
+                        yield HarnessEvent::Error(message);
+                        return;
+                    }
                 }
             }
 

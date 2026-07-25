@@ -73,6 +73,8 @@ impl Store {
             CREATE TABLE IF NOT EXISTS chats (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
+                provider TEXT,
+                model TEXT,
                 agent_id TEXT,
                 worker_id TEXT,
                 created_at TEXT NOT NULL,
@@ -315,14 +317,51 @@ impl Store {
         &self,
         id: &str,
         title: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
         created_at: &str,
         updated_at: &str,
     ) -> Result<()> {
         self.conn.lock().execute(
-            "INSERT INTO chats (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-            params![id, title, created_at, updated_at],
+            "INSERT INTO chats (id, title, provider, model, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, title, provider, model, created_at, updated_at],
         )?;
         Ok(())
+    }
+
+    pub fn set_chat_model(&self, id: &str, provider: &str, model: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chats SET provider = ?1, model = ?2 WHERE id = ?3",
+            params![provider, model, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_chat_model(&self, id: &str) -> Result<Option<(Option<String>, Option<String>)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT provider, model FROM chats WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn list_chats(&self) -> Result<Vec<(String, String, Option<String>, Option<String>, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, title, provider, model, created_at, updated_at FROM chats ORDER BY updated_at DESC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn insert_chat_message(
@@ -658,7 +697,7 @@ mod tests {
     fn test_chat_messages() {
         let store = Store::open_in_memory().unwrap();
         store
-            .insert_chat("c1", "Test", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+            .insert_chat("c1",  "Test", None, None,  "2024-01-01T00:00:00Z",  "2024-01-01T00:00:00Z")
             .unwrap();
         store
             .insert_chat_message(

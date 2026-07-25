@@ -35,6 +35,8 @@ pub struct LogEntry {
 pub struct Chat {
     pub id: String,
     pub title: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
     pub agent_id: Option<String>,
     pub worker_id: Option<String>,
     pub updated_at: String,
@@ -455,13 +457,15 @@ impl DesktopState {
         self.store.lock().clone()
     }
 
-    pub fn create_chat(&self, title: &str) -> anyhow::Result<String> {
+    pub fn create_chat(&self, title: &str, provider: Option<&str>, model: Option<&str>) -> anyhow::Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        self.store.lock().insert_chat(&id, title, &now, &now)?;
+        self.store.lock().insert_chat(&id, title, provider, model, &now, &now)?;
         let chat = Chat {
             id: id.clone(),
             title: title.to_string(),
+            provider: provider.map(|s| s.to_string()),
+            model: model.map(|s| s.to_string()),
             agent_id: None,
             worker_id: None,
             updated_at: now,
@@ -469,6 +473,16 @@ impl DesktopState {
         self.chats.lock().push(chat);
         self.emit("chats:updated", ());
         Ok(id)
+    }
+
+    pub fn set_chat_model(&self, id: &str, provider: &str, model: &str) -> anyhow::Result<()> {
+        self.store.lock().set_chat_model(id, provider, model)?;
+        if let Some(chat) = self.chats.lock().iter_mut().find(|c| c.id == id) {
+            chat.provider = Some(provider.to_string());
+            chat.model = Some(model.to_string());
+        }
+        self.emit("chats:updated", ());
+        Ok(())
     }
 
     pub fn list_chats(&self) -> Vec<Chat> {
@@ -816,6 +830,21 @@ impl DesktopState {
         }
         drop(exec_map);
 
+        let chats = self.store.lock().list_chats()?;
+        let mut chats_vec = self.chats.lock();
+        for (id, title, provider, model, _created_at, updated_at) in chats {
+            chats_vec.push(Chat {
+                id,
+                title,
+                provider,
+                model,
+                agent_id: None,
+                worker_id: None,
+                updated_at,
+            });
+        }
+        drop(chats_vec);
+
         if let Some(blob) = self.store.lock().get_setting("vault_blob")? {
             if let Ok(vault) = CredentialVault::from_bytes(blob.as_bytes()) {
                 *self.vault.lock() = vault;
@@ -856,7 +885,7 @@ mod tests {
         let state = DesktopState::new(Store::open_in_memory().unwrap());
         state.add_log("hello");
         assert_eq!(state.get_logs().len(), 1);
-        let chat_id = state.create_chat("Test chat").unwrap();
+        let chat_id = state.create_chat("Test chat", None, None).unwrap();
         state
             .add_chat_message(&chat_id, "user", "hello agent")
             .unwrap();

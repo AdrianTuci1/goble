@@ -167,6 +167,8 @@ impl Harness {
         &self,
         chat_id: &str,
         prompt: &str,
+        provider: &str,
+        model: &str,
     ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
         let store = self.store.clone();
         let runner = Arc::clone(&self.runner);
@@ -174,6 +176,8 @@ impl Harness {
         let deploy_sender = self.deploy_sender.clone();
         let chat_id = chat_id.to_string();
         let prompt = prompt.to_string();
+        let provider = provider.to_string();
+        let model = model.to_string();
 
         let stream = async_stream::stream! {
             let now = Utc::now().to_rfc3339();
@@ -210,7 +214,7 @@ impl Harness {
             };
 
             let tools = harness_tool_definitions();
-            let request = CompletionRequest::new(llm.name(), "gpt-4o-mini")
+            let request = CompletionRequest::new(provider, model)
                 .with_system(HARNESS_SYSTEM_PROMPT)
                 .with_tools(tools)
                 .with_messages(history);
@@ -643,6 +647,39 @@ fn harness_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "web_search".to_string(),
+            description: "Search the web using DuckDuckGo HTML. Returns up to 10 results with title, snippet and URL.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" }
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolDefinition {
+            name: "read_url".to_string(),
+            description: "Fetch a URL and extract the main text content.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string" }
+                },
+                "required": ["url"]
+            }),
+        },
+        ToolDefinition {
+            name: "execute_python_code".to_string(),
+            description: "Execute Python code in a temporary file and return stdout/stderr.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string" }
+                },
+                "required": ["code"]
+            }),
+        },
+        ToolDefinition {
             name: "run_agent".to_string(),
             description: "Run a local agent once and return its prompt output.".to_string(),
             parameters: serde_json::json!({
@@ -709,6 +746,9 @@ async fn execute_tool_call(
         "read_file" => read_file(&call.arguments),
         "write_file" => write_file(&call.arguments),
         "edit_file" => edit_file(&call.arguments),
+        "web_search" => web_search(&call.arguments).await,
+        "read_url" => read_url(&call.arguments).await,
+        "execute_python_code" => execute_python_code(&call.arguments).await,
         _ => anyhow::bail!("unknown tool {}", call.name),
     }
 }
@@ -1211,6 +1251,148 @@ fn run_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
     Ok(format!("ran agent {} with input '{}'\nprompt: {}\ntools: {:?}", spec.id, input, spec.prompt, spec.tools))
 }
 
+async fn web_search(args: &serde_json::Value) -> Result<String> {
+    let query = args["query"].as_str().context("query is required")?;
+    let encoded = urlencoding::encode(query);
+    let url = format!("https://html.duckduckgo.com/html/?q={}", encoded);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "Mozilla/5.0 (compatible; Goble/1.0)")
+        .send()
+        .await
+        .context("web_search request failed")?
+        .text()
+        .await
+        .context("web_search failed to read body")?;
+    let mut results = Vec::new();
+    for result_html in resp.split(r#"class="result""#).skip(1) {
+        let title = regex_lite::Regex::new(r#"class="result__a"[^>]*>(.*?)</a>"#)
+            .ok()
+            .and_then(|re| re.captures(result_html))
+            .and_then(|c| c.get(1))
+            .map(|m| html_unescape(m.as_str()))
+            .unwrap_or_default();
+        let snippet = regex_lite::Regex::new(r#"class="result__snippet"[^>]*>(.*?)</a>"#)
+            .ok()
+            .and_then(|re| re.captures(result_html))
+            .and_then(|c| c.get(1))
+            .map(|m| html_unescape(m.as_str()))
+            .unwrap_or_default();
+        let href = regex_lite::Regex::new(r#"class="result__a"[^>]*href="([^"]+)""#)
+            .ok()
+            .and_then(|re| re.captures(result_html))
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        if title.is_empty() && snippet.is_empty() {
+            continue;
+        }
+        results.push(format!("TITLE: {}\nURL: {}\nSNIPPET: {}\n", title, href, snippet));
+        if results.len() >= 10 {
+            break;
+        }
+    }
+    Ok(format!("{} results\n{}", results.len(), results.join("\n")))
+}
+
+async fn read_url(args: &serde_json::Value) -> Result<String> {
+    let url = args["url"].as_str().context("url is required")?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()?;
+    let html = client
+        .get(url)
+        .header("User-Agent", "Mozilla/5.0 (compatible; Goble/1.0)")
+        .send()
+        .await
+        .context("read_url request failed")?
+        .text()
+        .await
+        .context("read_url failed to read body")?;
+    let text = html_to_text(&html);
+    Ok(text.chars().take(12000).collect())
+}
+
+async fn execute_python_code(args: &serde_json::Value) -> Result<String> {
+    let code = args["code"].as_str().context("code is required")?;
+    let dir = tempfile::tempdir().context("failed to create temp dir")?;
+    let file = dir.path().join("script.py");
+    std::fs::write(&file, code).context("failed to write python script")?;
+    let output = tokio::process::Command::new("python3")
+        .arg(&file)
+        .current_dir(&dir)
+        .output()
+        .await
+        .context("failed to execute python3")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(format!(
+        "exit_code: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code().unwrap_or(-1),
+        stdout,
+        stderr
+    ))
+}
+
+fn html_to_text(html: &str) -> String {
+    let mut text = String::new();
+    let mut in_tag = false;
+    let mut in_script = false;
+    let mut tag_buffer = String::new();
+    for ch in html.chars() {
+        if ch == '<' && !in_script {
+            in_tag = true;
+            tag_buffer.clear();
+            continue;
+        }
+        if ch == '>' && in_tag {
+            in_tag = false;
+            let tag = tag_buffer.trim().to_lowercase();
+            if tag.starts_with("script") || tag.starts_with("style") {
+                in_script = true;
+            } else if tag.starts_with("/script") || tag.starts_with("/style") {
+                in_script = false;
+            }
+            if text.ends_with('\n') || text.is_empty() {
+                continue;
+            }
+            if tag.starts_with("br") || tag.starts_with("p") || tag.starts_with("div") || tag.starts_with("h") || tag.starts_with("li") || tag.starts_with("tr") {
+                text.push('\n');
+            }
+            continue;
+        }
+        if in_tag {
+            tag_buffer.push(ch);
+            continue;
+        }
+        if !in_script {
+            text.push(ch);
+        }
+    }
+    let re = regex_lite::Regex::new(r"\n\s*\n").unwrap();
+    re.replace_all(&text, "\n").into_owned()
+}
+
+fn html_unescape(s: &str) -> String {
+    let mut out = s.to_string();
+            let entities = [
+        ("&amp;", "&"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+        ("&nbsp;", " "),
+    ];
+    for (enc, dec) in &entities {
+        out = out.replace(enc, dec);
+    }
+    let tag_re = regex_lite::Regex::new(r"<[^>]+>").unwrap();
+    tag_re.replace_all(&out, "").into_owned().trim().to_string()
+}
+
 fn resolve_path(path: &str) -> Result<PathBuf> {
     let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let p = PathBuf::from(path);
@@ -1232,7 +1414,7 @@ mod tests {
     fn chat(store: &Store) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        store.insert_chat(&id, "test", &now, &now).unwrap();
+        store.insert_chat(&id, "test", None, None, &now, &now).unwrap();
         id
     }
 
@@ -1261,7 +1443,7 @@ mod tests {
             "name": "Greeter",
             "prompt": "Say hello"
         }));
-        let events: Vec<_> = harness.run_turn(&chat_id, "make a greeter").collect().await;
+        let events: Vec<_> = harness.run_turn(&chat_id, "make a greeter", "mock", "mock").collect().await;
         let started = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallStarted { name, .. } if name == "create_agent"));
         assert!(started);
         let agents = store.list_agents().unwrap();
@@ -1275,7 +1457,7 @@ mod tests {
             "command": "echo",
             "args": ["hi"]
         }));
-        let events: Vec<_> = harness.run_turn(&chat_id, "run echo hi").collect().await;
+        let events: Vec<_> = harness.run_turn(&chat_id, "run echo hi", "mock", "mock").collect().await;
         let finished = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("mock ran")));
         assert!(finished);
     }
@@ -1296,7 +1478,7 @@ mod tests {
             },
         ));
         let harness = Harness::new(store).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "do it").collect().await;
+        let events: Vec<_> = harness.run_turn(&chat_id, "do it", "mock", "mock").collect().await;
         assert!(events.iter().any(|e| matches!(e, HarnessEvent::ToolCallError { .. })));
     }
 
@@ -1340,7 +1522,7 @@ mod tests {
             },
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "make workflow and team").collect().await;
+        let events: Vec<_> = harness.run_turn(&chat_id, "make workflow and team", "mock", "mock").collect().await;
         assert!(events.iter().any(|e| matches!(e, HarnessEvent::Done)));
         assert_eq!(store.list_workflows().unwrap().len(), 1);
         assert_eq!(store.list_teams().unwrap().len(), 1);
@@ -1385,7 +1567,7 @@ mod tests {
             },
         ));
         let harness = Harness::new(store).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "list and search").collect().await;
+        let events: Vec<_> = harness.run_turn(&chat_id, "list and search", "mock", "mock").collect().await;
         let finished: Vec<_> = events.iter().filter_map(|e| match e {
             HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
             _ => None,
@@ -1415,7 +1597,7 @@ mod tests {
             },
         ));
         let harness = Harness::new(store).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "deploy").collect().await;
+        let events: Vec<_> = harness.run_turn(&chat_id, "deploy", "mock", "mock").collect().await;
         let finished = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("no deploy channel")));
         assert!(finished);
     }
@@ -1441,7 +1623,7 @@ mod tests {
             },
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "schedule").collect().await;
+        let events: Vec<_> = harness.run_turn(&chat_id, "schedule", "mock", "mock").collect().await;
         let finished = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("scheduled")));
         assert!(finished);
 
@@ -1477,7 +1659,7 @@ mod tests {
             },
         ));
         let harness = Harness::new(store).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "file ops").collect().await;
+        let events: Vec<_> = harness.run_turn(&chat_id, "file ops", "mock", "mock").collect().await;
         let finished: Vec<_> = events.iter().filter_map(|e| match e {
             HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
             _ => None,
@@ -1504,7 +1686,7 @@ mod tests {
         ));
         let runner = Arc::new(SandboxedCommandRunner::default_tools());
         let harness = Harness::new(store).with_llm(llm).with_runner(runner);
-        let events: Vec<_> = harness.run_turn(&chat_id, "dangerous").collect().await;
+        let events: Vec<_> = harness.run_turn(&chat_id, "dangerous", "mock", "mock").collect().await;
         assert!(events.iter().any(|e| matches!(e, HarnessEvent::ToolCallError { message, .. } if message.contains("not in the allowed list"))));
     }
 
@@ -1534,7 +1716,7 @@ mod tests {
             },
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
-        harness.run_turn(&chat_id, "delete all").collect::<Vec<_>>().await;
+        harness.run_turn(&chat_id, "delete all", "mock", "mock").collect::<Vec<_>>().await;
         assert!(store.list_agents().unwrap().is_empty());
         assert!(store.list_teams().unwrap().is_empty());
         assert!(store.list_workflows().unwrap().is_empty());
@@ -1555,7 +1737,7 @@ mod tests {
             },
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "rename").collect().await;
+        let events: Vec<_> = harness.run_turn(&chat_id, "rename", "mock", "mock").collect().await;
         assert!(events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("renamed"))));
         assert!(std::fs::metadata("harness_renamed.txt").is_ok());
 
@@ -1569,7 +1751,7 @@ mod tests {
             },
         ));
         let harness2 = Harness::new(store).with_llm(llm2);
-        harness2.run_turn(&chat_id, "delete").collect::<Vec<_>>().await;
+        harness2.run_turn(&chat_id, "delete", "mock", "mock").collect::<Vec<_>>().await;
         assert!(!PathBuf::from("harness_renamed.txt").exists());
     }
 
@@ -1591,7 +1773,7 @@ mod tests {
             },
         ));
         let harness = Harness::new(store).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "git and run").collect().await;
+        let events: Vec<_> = harness.run_turn(&chat_id, "git and run", "mock", "mock").collect().await;
         let finished: Vec<_> = events.iter().filter_map(|e| match e {
             HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
             _ => None,
@@ -1615,7 +1797,7 @@ mod tests {
             },
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "mcp").collect().await;
+        let events: Vec<_> = harness.run_turn(&chat_id, "mcp", "mock", "mock").collect().await;
         let finished: Vec<_> = events.iter().filter_map(|e| match e {
             HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
             _ => None,

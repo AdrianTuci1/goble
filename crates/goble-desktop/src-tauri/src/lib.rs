@@ -142,9 +142,11 @@ fn add_log(
 #[tauri::command]
 fn create_chat(
     title: String,
+    provider: Option<String>,
+    model: Option<String>,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<String, String> {
-    state.create_chat(&title).map_err(|e| e.to_string())
+    state.create_chat(&title, provider.as_deref(), model.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -237,8 +239,25 @@ struct LlmSettingRequest {
 struct RunHarnessRequest {
     chat_id: String,
     prompt: String,
+    provider: String,
+    model: String,
 }
 
+#[derive(Deserialize)]
+struct SetChatModelRequest {
+    chat_id: String,
+    provider: String,
+    model: String,
+}
+
+#[tauri::command]
+fn set_chat_model(
+    req: SetChatModelRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state.set_chat_model(&req.chat_id, &req.provider, &req.model)
+        .map_err(|e| e.to_string())
+}
 #[tauri::command]
 fn set_llm_setting(
     req: LlmSettingRequest,
@@ -270,33 +289,69 @@ fn run_harness(
 ) -> Result<(), String> {
     use goble_core::harness::{HarnessEvent, SandboxedCommandRunner};
     use futures::StreamExt;
-    use tauri::Emitter;
 
-    let provider = state.get_llm_setting("openai");
-    let llm: Arc<dyn goble_core::llm::LlmProvider> = if let Some(setting) = provider {
-        if !setting.api_key.is_empty() {
-            Arc::new(goble_core::llm::OpenAiProvider::new(
-                "openai",
-                setting.api_key,
-                setting.base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-            ))
-        } else {
-            Arc::new(goble_core::llm::MockProvider::new(
-                "mock",
-                goble_core::llm::CompletionResponse {
-                    content: "No OpenAI API key configured. Add one in Settings.".to_string(),
+    let provider_name = if req.provider.is_empty() { "openai" } else { &req.provider };
+    let (llm, model_name): (Arc<dyn goble_core::llm::LlmProvider>, String) = match provider_name.to_lowercase().as_str() {
+        "openai" | "openrouter" => {
+            let setting = state.get_llm_setting(provider_name);
+            if let Some(s) = setting {
+                if !s.api_key.is_empty() {
+                    let base = s.base_url.unwrap_or_else(|| {
+                        if provider_name == "openai" {
+                            "https://api.openai.com/v1".to_string()
+                        } else {
+                            "https://openrouter.ai/api/v1".to_string()
+                        }
+                    });
+                    let provider: Arc<dyn goble_core::llm::LlmProvider> = if provider_name == "openai" {
+                        Arc::new(goble_core::llm::OpenAiProvider::new("openai", s.api_key, base))
+                    } else {
+                        Arc::new(goble_core::llm::OpenRouterProvider::new(s.api_key))
+                    };
+                    let model = if req.model.is_empty() { s.model } else { req.model.clone() };
+                    (provider, model)
+                } else {
+                    (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
+                        content: "No API key configured for this provider. Add one in Settings.".to_string(),
+                        tool_calls: Vec::new(),
+                    })), req.model.clone())
+                }
+            } else {
+                (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
+                    content: "No LLM provider configured. Add one in Settings.".to_string(),
                     tool_calls: Vec::new(),
-                },
-            ))
+                })), req.model.clone())
+            }
         }
-    } else {
-        Arc::new(goble_core::llm::MockProvider::new(
-            "mock",
-            goble_core::llm::CompletionResponse {
-                content: "No LLM provider configured. Add one in Settings.".to_string(),
+        "anthropic" => {
+            let setting = state.get_llm_setting("anthropic");
+            if let Some(s) = setting {
+                if !s.api_key.is_empty() {
+                    (Arc::new(goble_core::llm::AnthropicProvider::new(s.api_key)), if req.model.is_empty() { s.model } else { req.model.clone() })
+                } else {
+                    (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
+                        content: "No Anthropic API key configured. Add one in Settings.".to_string(),
+                        tool_calls: Vec::new(),
+                    })), req.model.clone())
+                }
+            } else {
+                (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
+                    content: "No Anthropic provider configured. Add one in Settings.".to_string(),
+                    tool_calls: Vec::new(),
+                })), req.model.clone())
+            }
+        }
+        "ollama" => {
+            let setting = state.get_llm_setting("ollama");
+            let base = setting.as_ref().and_then(|s| s.base_url.clone()).unwrap_or_else(|| "http://localhost:11434".to_string());
+            (Arc::new(goble_core::llm::OllamaProvider::new(base)), if req.model.is_empty() { setting.map(|s| s.model).unwrap_or_default() } else { req.model.clone() })
+        }
+        _ => {
+            (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
+                content: format!("Unknown provider {provider_name}."),
                 tool_calls: Vec::new(),
-            },
-        ))
+            })), req.model.clone())
+        }
     };
 
     let deploy_state = Arc::clone(&state);
@@ -304,7 +359,7 @@ fn run_harness(
         .with_llm(llm)
         .with_runner(Arc::new(SandboxedCommandRunner::default_tools()))
         .with_deploy_sender(move |worker_id, msg| deploy_state.send_to_worker(worker_id, msg));
-    let mut stream = harness.run_turn(&req.chat_id, &req.prompt);
+    let mut stream = harness.run_turn(&req.chat_id, &req.prompt, provider_name, &model_name);
     let state_clone = Arc::clone(&state);
     let chat_id = req.chat_id.clone();
     tokio::spawn(async move {
@@ -443,6 +498,7 @@ pub fn run() {
             get_llm_setting,
             run_agent,
             schedule_agent,
+            set_chat_model,
             run_harness,
             list_harness_tools
         ])

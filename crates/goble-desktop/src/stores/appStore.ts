@@ -10,6 +10,8 @@ export interface WorkerInfo {
 export interface Conversation {
   id: string;
   title: string;
+  provider?: string | null;
+  model?: string | null;
   updated_at: string;
 }
 
@@ -102,10 +104,11 @@ interface AppState {
   addLog: (message: string) => void;
   setConversations: (conversations: Conversation[]) => void;
   addConversation: (conversation: Conversation) => void;
+  updateConversation: (id: string, updates: Partial<Conversation>) => void;
+  setActiveConversation: (id: string | null) => void;
   setMessages: (chatId: string, messages: ChatMessage[]) => void;
   addMessage: (chatId: string, message: ChatMessage) => void;
   updateMessage: (chatId: string, messageId: string, content: string | ((prev: string) => string)) => void;
-  setActiveConversation: (id: string | null) => void;
   setAgents: (agents: AgentInfo[]) => void;
   addAgent: (agent: AgentInfo) => void;
   removeAgent: (id: string) => void;
@@ -145,6 +148,13 @@ export const useStore = create<AppState>((set) => ({
   setConversations: (conversations) => set({ conversations }),
   addConversation: (conversation) =>
     set((state) => ({ conversations: [conversation, ...state.conversations] })),
+  updateConversation: (id, updates) =>
+    set((state) => ({
+      conversations: state.conversations.map((c) =>
+        c.id === id ? { ...c, ...updates } : c
+      ),
+    })),
+  setActiveConversation: (id: string | null) => set({ activeConversationId: id }),
   setMessages: (chatId, messages) =>
     set((state) => ({
       messages: { ...state.messages, [chatId]: messages },
@@ -168,28 +178,40 @@ export const useStore = create<AppState>((set) => ({
         return {
           messages: {
             ...state.messages,
-            [chatId]: [...list, { id: messageId, role: 'assistant', content: newContent, created_at: new Date().toISOString() }],
+            [chatId]: [
+              ...list,
+              {
+                id: messageId,
+                role: 'assistant',
+                content: newContent,
+                created_at: new Date().toISOString(),
+              },
+            ],
           },
         };
       }
       return {
         messages: {
           ...state.messages,
-          [chatId]: list.map((m) => (m.id === messageId ? { ...m, content: newContent } : m)),
+          [chatId]: list.map((m) =>
+            m.id === messageId ? { ...m, content: newContent } : m
+          ),
         },
       };
     }),
-  setActiveConversation: (id) => set({ activeConversationId: id }),
   setAgents: (agents) => set({ agents }),
   addAgent: (agent) => set((state) => ({ agents: [agent, ...state.agents] })),
-  removeAgent: (id) => set((state) => ({
-    agents: state.agents.filter((a) => a.id !== id),
-  })),
+  removeAgent: (id) =>
+    set((state) => ({
+      agents: state.agents.filter((a) => a.id !== id),
+    })),
   setWorkflows: (workflows) => set({ workflows }),
-  addWorkflow: (workflow) => set((state) => ({ workflows: [workflow, ...state.workflows] })),
-  removeWorkflow: (id) => set((state) => ({
-    workflows: state.workflows.filter((w) => w.id !== id),
-  })),
+  addWorkflow: (workflow) =>
+    set((state) => ({ workflows: [workflow, ...state.workflows] })),
+  removeWorkflow: (id) =>
+    set((state) => ({
+      workflows: state.workflows.filter((w) => w.id !== id),
+    })),
   setTeams: (teams) => set({ teams }),
   addTeam: (team) => set((state) => ({ teams: [team, ...state.teams] })),
   setExecutions: (executions) => set({ executions }),

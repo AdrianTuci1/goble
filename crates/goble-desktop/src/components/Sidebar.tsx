@@ -65,8 +65,10 @@ export default function Sidebar() {
               key={c.id}
               className={`conversation-item ${activeChatId === c.id ? 'active' : ''}`}
               onClick={() => setActiveChatId(c.id)}
+              title={c.model ? `${c.provider || 'provider'} / ${c.model}` : undefined}
             >
               {c.title}
+              {c.model && <span className="conversation-model">{c.provider} / {c.model}</span>}
             </button>
           ))}
         </div>

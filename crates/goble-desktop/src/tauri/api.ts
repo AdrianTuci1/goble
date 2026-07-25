@@ -25,6 +25,8 @@ export interface ChatMessage {
 export interface Chat {
   id: string;
   title: string;
+  provider?: string;
+  model?: string;
   agent_id?: string | null;
   worker_id?: string | null;
   updated_at: string;
@@ -108,20 +110,41 @@ export interface HarnessEvent {
   payload?: unknown;
 }
 
-export async function runHarness(chatId: string, prompt: string): Promise<void> {
-  return invoke('run_harness', { req: { chat_id: chatId, prompt } });
+export async function runHarness(
+  chatId: string,
+  prompt: string,
+  provider: string,
+  model: string,
+): Promise<void> {
+  return invoke('run_harness', { req: { chat_id: chatId, prompt, provider, model } });
 }
 
 export async function listHarnessTools(): Promise<ToolSchema[]> {
   return invoke('list_harness_tools');
 }
 
-export async function setLlmSetting(provider: string, apiKey: string, model: string, baseUrl?: string, temperature?: number): Promise<void> {
-  return invoke('set_llm_setting', { req: { provider, api_key: apiKey, model, base_url: baseUrl, temperature } });
+export async function setLlmSetting(
+  provider: string,
+  apiKey: string,
+  model: string,
+  baseUrl?: string,
+  temperature?: number,
+): Promise<void> {
+  return invoke('set_llm_setting', {
+    req: { provider, api_key: apiKey, model, base_url: baseUrl, temperature },
+  });
 }
 
 export async function getLlmSetting(provider: string): Promise<LlmSetting | null> {
   return invoke('get_llm_setting', { provider });
+}
+
+export async function setChatModel(
+  chatId: string,
+  provider: string,
+  model: string,
+): Promise<void> {
+  return invoke('set_chat_model', { req: { chat_id: chatId, provider, model } });
 }
 
 export async function listWorkers(): Promise<WorkerConnection[]> {
@@ -148,8 +171,12 @@ export async function addLog(message: string): Promise<void> {
   return invoke('add_log', { message });
 }
 
-export async function createChat(title: string): Promise<string> {
-  return invoke('create_chat', { title });
+export async function createChat(
+  title: string,
+  provider?: string,
+  model?: string,
+): Promise<string> {
+  return invoke('create_chat', { title, provider, model });
 }
 
 export async function listChats(): Promise<Chat[]> {
@@ -160,7 +187,11 @@ export async function chatMessages(chatId: string): Promise<ChatMessage[]> {
   return invoke('chat_messages', { chatId });
 }
 
-export async function addChatMessage(chatId: string, role: string, content: string): Promise<void> {
+export async function addChatMessage(
+  chatId: string,
+  role: string,
+  content: string,
+): Promise<void> {
   return invoke('add_chat_message', { chatId, role, content });
 }
 
@@ -172,7 +203,7 @@ export async function createAgent(
   name: string,
   prompt: string,
   description?: string,
-  tools: string[] = []
+  tools: string[] = [],
 ): Promise<AgentInfo> {
   return invoke('create_agent', { req: { name, prompt, description, tools } });
 }
@@ -189,7 +220,7 @@ export async function createWorkflow(
   name: string,
   description: string,
   steps: WorkflowStep[],
-  trigger: string
+  trigger: string,
 ): Promise<WorkflowInfo> {
   return invoke('create_workflow', { req: { name, description, steps, trigger } });
 }
@@ -206,7 +237,7 @@ export async function createTeam(
   id: string,
   name: string,
   metadata: string,
-  agentIds: string[]
+  agentIds: string[],
 ): Promise<TeamInfo> {
   return invoke('create_team', { req: { id, name, metadata, agent_ids: agentIds } });
 }
@@ -227,11 +258,19 @@ export async function unlockVault(passphrase: string): Promise<string[]> {
   return invoke('unlock_vault', { req: { passphrase } });
 }
 
-export async function runAgent(workerId: string, agentId: string, prompt: string): Promise<void> {
+export async function runAgent(
+  workerId: string,
+  agentId: string,
+  prompt: string,
+): Promise<void> {
   return invoke('run_agent', { req: { worker_id: workerId, agent_id: agentId, prompt } });
 }
 
-export async function scheduleAgent(workerId: string, agentId: string, trigger: string): Promise<void> {
+export async function scheduleAgent(
+  workerId: string,
+  agentId: string,
+  trigger: string,
+): Promise<void> {
   return invoke('schedule_agent', { req: { worker_id: workerId, agent_id: agentId, trigger } });
 }
 
@@ -243,19 +282,27 @@ export function onLogsUpdated(callback: () => void): Promise<() => void> {
   return listen('logs:updated', callback);
 }
 
-export function onAgentLog(callback: (payload: TauriEvent<unknown>) => void): Promise<() => void> {
+export function onAgentLog(
+  callback: (payload: TauriEvent<unknown>) => void,
+): Promise<() => void> {
   return listen('agent:log', callback);
 }
 
-export function onAgentStarted(callback: (payload: TauriEvent<unknown>) => void): Promise<() => void> {
+export function onAgentStarted(
+  callback: (payload: TauriEvent<unknown>) => void,
+): Promise<() => void> {
   return listen('agent:started', callback);
 }
 
-export function onAgentFinished(callback: (payload: TauriEvent<unknown>) => void): Promise<() => void> {
+export function onAgentFinished(
+  callback: (payload: TauriEvent<unknown>) => void,
+): Promise<() => void> {
   return listen('agent:finished', callback);
 }
 
-export function onChatUpdated(callback: (payload: TauriEvent<unknown>) => void): Promise<() => void> {
+export function onChatUpdated(
+  callback: (payload: TauriEvent<unknown>) => void,
+): Promise<() => void> {
   return listen('chat:updated', callback);
 }
 
@@ -296,6 +343,15 @@ export interface HarnessEventPayload {
   };
 }
 
-export function onHarnessEvent(callback: (payload: TauriEvent<HarnessEventPayload>) => void): Promise<() => void> {
+export function onHarnessEvent(
+  callback: (payload: TauriEvent<HarnessEventPayload>) => void,
+): Promise<() => void> {
   return listen('harness:event', callback);
 }
+
+export const LLM_PROVIDERS = [
+  { id: 'openai', name: 'OpenAI', defaultModel: 'gpt-4o-mini' },
+  { id: 'anthropic', name: 'Anthropic', defaultModel: 'claude-3-5-sonnet-20241022' },
+  { id: 'ollama', name: 'Ollama', defaultModel: 'llama3.1' },
+  { id: 'openrouter', name: 'OpenRouter', defaultModel: 'openai/gpt-4o-mini' },
+];

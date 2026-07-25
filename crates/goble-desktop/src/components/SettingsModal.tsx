@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../stores/appStore';
-import { workerLogs, getLlmSetting, setLlmSetting } from '../tauri/api';
+import { workerLogs, getLlmSetting, setLlmSetting, LLM_PROVIDERS } from '../tauri/api';
 
 export default function SettingsModal() {
   const isOpen = useStore((s) => s.isSettingsOpen);
@@ -21,6 +21,9 @@ export default function SettingsModal() {
         setBaseUrl(setting.base_url ?? '');
         setModel(setting.model);
         setTemperature(setting.temperature?.toString() ?? '0.7');
+      } else {
+        const defaults = LLM_PROVIDERS.find((p) => p.id === provider);
+        setModel(defaults?.defaultModel ?? '');
       }
     });
   }, [isOpen, provider]);
@@ -39,17 +42,40 @@ export default function SettingsModal() {
             <h4>LLM Provider</h4>
             <label>Provider</label>
             <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-              <option value="openai">OpenAI</option>
-              <option value="custom">Custom / OpenAI-compatible</option>
+              {LLM_PROVIDERS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
             </select>
             <label>Model</label>
-            <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-4o-mini" />
+            <input
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder={LLM_PROVIDERS.find((p) => p.id === provider)?.defaultModel}
+            />
             <label>API Key</label>
-            <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." />
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="sk-..."
+            />
             <label>Base URL (optional)</label>
-            <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" />
+            <input
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="https://api.openai.com/v1"
+            />
             <label>Temperature</label>
-            <input type="number" min="0" max="2" step="0.1" value={temperature} onChange={(e) => setTemperature(e.target.value)} />
+            <input
+              type="number"
+              min="0"
+              max="2"
+              step="0.1"
+              value={temperature}
+              onChange={(e) => setTemperature(e.target.value)}
+            />
             <button
               onClick={() =>
                 setLlmSetting(

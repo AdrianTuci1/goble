@@ -5,7 +5,6 @@ import {
   createChat,
   chatMessages,
   addChatMessage,
-  addLog,
   runAgent,
   runHarness,
   setChatModel,
@@ -43,6 +42,7 @@ export default function ChatArea() {
   const updateConversation = useStore((s) => s.updateConversation);
   const messages = useStore((s) => (activeChatId ? s.messages[activeChatId] || [] : []));
   const setMessages = useStore((s) => s.setMessages);
+  const addLog = useStore((s) => s.addLog);
   const addMessage = useStore((s) => s.addMessage);
   const updateMessage = useStore((s) => s.updateMessage);
   const [input, setInput] = useState('');
@@ -188,10 +188,10 @@ export default function ChatArea() {
 
     if (sentInput.startsWith('/')) {
       setIsRunning(true);
-      await runHarness(chatId, sentInput, usedProvider, usedModel);
+      await runHarness(chatId, sentInput, `${usedProvider}/${usedModel}`);
       setIsRunning(false);
     } else if (workerId && agentId) {
-      await runAgent(workerId, agentId, sentInput);
+      await runAgent(chatId, agentId, sentInput);
     }
   }
 

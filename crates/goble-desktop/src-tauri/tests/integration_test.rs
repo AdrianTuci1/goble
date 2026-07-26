@@ -81,7 +81,7 @@ fn test_desktop_state_persistence_roundtrip() {
     state
         .add_worker(worker_id.clone(), "persisted".to_string(), "ws://x/ws".to_string())
         .unwrap();
-    let chat_id = state.create_chat("Persistent").unwrap();
+    let chat_id = state.create_chat("Persistent", None, None).unwrap();
     state
         .add_chat_message(&chat_id, "user", "hello")
         .unwrap();

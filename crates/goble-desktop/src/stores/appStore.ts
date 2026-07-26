@@ -111,7 +111,6 @@ interface AppState {
   vaultSecrets: VaultSecretInfo[];
   mcpServers: McpServerSummary[];
   isWorkflowDrawerOpen: boolean;
-  isSettingsOpen: boolean;
   setWorkers: (workers: WorkerInfo[]) => void;
   setLogs: (logs: LogEntry[]) => void;
   addLog: (message: string) => void;
@@ -137,8 +136,9 @@ interface AppState {
   removeMcpServer: (id: string) => void;
   updateMcpServer: (server: McpServerSummary) => void;
   toggleWorkflowDrawer: () => void;
-  setSettingsOpen: (open: boolean) => void;
 }
+
+export type { AppState };
 
 export const useStore = create<AppState>((set) => ({
   workers: [],
@@ -153,7 +153,6 @@ export const useStore = create<AppState>((set) => ({
   vaultSecrets: [],
   mcpServers: [],
   isWorkflowDrawerOpen: false,
-  isSettingsOpen: false,
   setWorkers: (workers) => set({ workers }),
   setLogs: (logs) => set({ logs }),
   addLog: (message) =>
@@ -249,5 +248,4 @@ export const useStore = create<AppState>((set) => ({
     })),
   toggleWorkflowDrawer: () =>
     set((state) => ({ isWorkflowDrawerOpen: !state.isWorkflowDrawerOpen })),
-  setSettingsOpen: (open) => set({ isSettingsOpen: open }),
 }));

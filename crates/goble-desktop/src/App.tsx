@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useStore } from './stores/appStore';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
@@ -11,7 +11,7 @@ import AgentsPage from './pages/AgentsPage';
 import TeamsPage from './pages/TeamsPage';
 import ExecutionsPage from './pages/ExecutionsPage';
 import VaultPage from './pages/VaultPage';
-import SettingsModal from './components/SettingsModal';
+import SettingsPage from './pages/SettingsPage';
 import {
   listWorkers,
   workerLogs,
@@ -37,6 +37,9 @@ import {
 } from './tauri/api';
 
 function AppShell() {
+  const location = useLocation();
+  const isSettings = location.pathname === '/settings';
+
   const setWorkers = useStore((s) => s.setWorkers);
   const setLogs = useStore((s) => s.setLogs);
   const addLog = useStore((s) => s.addLog);
@@ -122,8 +125,8 @@ function AppShell() {
 
   return (
     <div className="app-shell">
-      <Sidebar />
-      <main className="main-area">
+      {!isSettings && <Sidebar />}
+      <main className={`main-area ${isSettings ? 'settings-active' : ''}`}>
         <Routes>
           <Route path="/" element={<Navigate to="/chat" />} />
           <Route path="/chat" element={<ChatArea />} />
@@ -135,9 +138,9 @@ function AppShell() {
           <Route path="/executions" element={<ExecutionsPage />} />
           <Route path="/vault" element={<VaultPage />} />
           <Route path="/search" element={<SearchPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
-      <SettingsModal />
     </div>
   );
 }

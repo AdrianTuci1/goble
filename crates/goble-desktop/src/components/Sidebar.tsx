@@ -1,20 +1,14 @@
-import { useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useStore } from '../stores/appStore';
-import { addWorker, pairWorker, pingWorker } from '../tauri/api';
+import { pingWorker } from '../tauri/api';
 
 export default function Sidebar() {
   const location = useLocation();
+  const navigate = useNavigate();
   const workers = useStore((s) => s.workers);
   const conversations = useStore((s) => s.conversations);
   const activeChatId = useStore((s) => s.activeConversationId);
   const setActiveChatId = useStore((s) => s.setActiveConversation);
-  const setSettingsOpen = useStore((s) => s.setSettingsOpen);
-
-  const [newName, setNewName] = useState('');
-  const [newUrl, setNewUrl] = useState('');
-  const [pairCode, setPairCode] = useState('');
-  const [selectedWorker, setSelectedWorker] = useState('');
 
   const navItems = [
     { path: '/chat', label: 'Chat', icon: '💬' },
@@ -27,19 +21,6 @@ export default function Sidebar() {
     { path: '/vault', label: 'Vault', icon: '🔐' },
     { path: '/search', label: 'Search', icon: '🔍' },
   ];
-
-  async function handleAddWorker() {
-    if (!newName || !newUrl) return;
-    await addWorker(newName, newUrl);
-    setNewName('');
-    setNewUrl('');
-  }
-
-  async function handlePair() {
-    if (!selectedWorker || !pairCode) return;
-    await pairWorker(selectedWorker, pairCode);
-    setPairCode('');
-  }
 
   return (
     <aside className="sidebar">
@@ -74,51 +55,27 @@ export default function Sidebar() {
         </div>
       </div>
 
-      <div className="sidebar-section">
+      <div className="sidebar-section compact">
         <div className="section-title">Workers</div>
         <div className="worker-list">
-          {workers.map((w) => (
+          {workers.slice(0, 3).map((w) => (
             <div key={w.id} className={`worker-item ${w.paired ? 'paired' : ''}`}>
               <div className="worker-name">{w.name}</div>
               <div className="worker-meta">{w.paired ? 'paired' : 'unpaired'}</div>
-              {w.paired && (
-                <button onClick={() => pingWorker(w.id)}>Ping</button>
-              )}
+              {w.paired && <button onClick={() => pingWorker(w.id)}>Ping</button>}
             </div>
           ))}
-        </div>
-        <div className="add-worker-form">
-          <input
-            placeholder="Name"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-          />
-          <input
-            placeholder="ws://host:port/ws"
-            value={newUrl}
-            onChange={(e) => setNewUrl(e.target.value)}
-          />
-          <button onClick={handleAddWorker}>Add worker</button>
-        </div>
-        <div className="pair-worker-form">
-          <select value={selectedWorker} onChange={(e) => setSelectedWorker(e.target.value)}>
-            <option value="">Select worker</option>
-            {workers.map((w) => (
-              <option key={w.id} value={w.id}>{w.name}</option>
-            ))}
-          </select>
-          <input
-            placeholder="Pairing code"
-            value={pairCode}
-            onChange={(e) => setPairCode(e.target.value)}
-          />
-          <button onClick={handlePair}>Pair</button>
+          {workers.length > 3 && (
+            <div className="worker-meta">+{workers.length - 3} more</div>
+          )}
         </div>
       </div>
 
-      <button className="settings-button" onClick={() => setSettingsOpen(true)}>
-        Settings
-      </button>
+      <div className="sidebar-footer">
+        <button className="settings-button" onClick={() => navigate('/settings')}>
+          Settings
+        </button>
+      </div>
     </aside>
   );
 }

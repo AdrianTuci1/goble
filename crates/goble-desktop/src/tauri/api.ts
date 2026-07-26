@@ -1,18 +1,19 @@
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import type { Event as TauriEvent } from '@tauri-apps/api/event';
+import { listen, type Event as TauriEvent } from '@tauri-apps/api/event';
 
-export interface WorkerConnection {
+export interface WorkerInfo {
   id: string;
   name: string;
   url: string;
   paired: boolean;
 }
 
-export interface LogEntry {
+export interface Conversation {
   id: string;
-  timestamp: string;
-  message: string;
+  title: string;
+  provider?: string | null;
+  model?: string | null;
+  updated_at: string;
 }
 
 export interface ChatMessage {
@@ -22,30 +23,18 @@ export interface ChatMessage {
   created_at: string;
 }
 
-export interface Chat {
-  id: string;
-  title: string;
-  provider?: string;
-  model?: string;
-  agent_id?: string | null;
-  worker_id?: string | null;
-  updated_at: string;
-}
-
-export interface AgentSpec {
-  id: { 0: string };
-  name: string;
-  description: string;
-  prompt: string;
-  tools: string[];
-  triggers: { Cron?: { expression: string }; Manual?: unknown; Http?: { path: string }; Heartbeat?: { interval_seconds: number } }[];
-  mcp_ids: string[];
-}
-
 export interface AgentInfo {
   id: string;
   name: string;
-  spec: AgentSpec;
+  spec: {
+    id: { 0: string };
+    name: string;
+    description: string;
+    prompt: string;
+    tools: string[];
+    triggers: unknown[];
+    mcp_ids: string[];
+  };
   created_at: string;
   updated_at: string;
 }
@@ -63,7 +52,7 @@ export interface WorkflowInfo {
   name: string;
   description: string;
   steps: WorkflowStep[];
-  trigger: AgentSpec['triggers'][number];
+  trigger: unknown;
   enabled: boolean;
   created_at: string;
   updated_at: string;
@@ -92,28 +81,6 @@ export interface VaultSecretInfo {
   updated_at: string;
 }
 
-export interface ToolSchema {
-  name: string;
-  description: string;
-  parameters: unknown;
-}
-
-export interface LlmSetting {
-  api_key: string;
-  base_url: string | null;
-  model: string;
-  temperature: number | null;
-}
-
-export interface McpSearchResult {
-  id: string;
-  name: string;
-  description: string;
-  capabilities: string[];
-  auth_required: boolean;
-  source_kind: string;
-}
-
 export interface McpServerSummary {
   id: string;
   name: string;
@@ -126,96 +93,95 @@ export interface McpServerSummary {
   enabled_tools: string[];
 }
 
+export interface McpSearchResult {
+  id: string;
+  name: string;
+  source: string;
+  description?: string;
+  installs: number;
+}
+
 export interface McpTool {
   name: string;
   description?: string;
   input_schema?: unknown;
 }
 
-export interface HarnessEvent {
-  type: 'assistant_delta' | 'tool_call_started' | 'tool_call_finished' | 'tool_call_error' | 'done' | 'error';
-  payload?: unknown;
+export interface LlmProvider {
+  id: string;
+  name: string;
+  defaultModel: string;
+  defaultBaseUrl?: string;
 }
 
-export async function cancelHarness(chatId: string): Promise<void> {
-  return invoke('cancel_harness', { chat_id: chatId });
+export const LLM_PROVIDERS: LlmProvider[] = [
+  { id: 'openai', name: 'OpenAI', defaultModel: 'gpt-4o-mini' },
+  { id: 'anthropic', name: 'Anthropic', defaultModel: 'claude-3-5-sonnet-20241022' },
+  { id: 'openrouter', name: 'OpenRouter', defaultModel: 'openai/gpt-4o-mini' },
+  { id: 'local', name: 'Local / Custom', defaultModel: '' },
+];
+
+export interface LlmSetting {
+  provider: string;
+  api_key: string;
+  base_url?: string | null;
+  model: string;
+  temperature?: number;
 }
 
-export async function runHarness(
-  chatId: string,
-  prompt: string,
-  provider: string,
-  model: string,
-): Promise<void> {
-  return invoke('run_harness', { req: { chat_id: chatId, prompt, provider, model } });
+export interface InstallWorkerResult {
+  platform: {
+    os: string;
+    arch: string;
+    family: string;
+  };
+  asset_url: string;
+  install_log: string;
 }
 
-export async function listHarnessTools(): Promise<ToolSchema[]> {
-  return invoke('list_harness_tools');
-}
-
-export async function setLlmSetting(
-  provider: string,
-  apiKey: string,
-  model: string,
-  baseUrl?: string,
-  temperature?: number,
-): Promise<void> {
-  return invoke('set_llm_setting', {
-    req: { provider, api_key: apiKey, model, base_url: baseUrl, temperature },
-  });
-}
-
-export async function getLlmSetting(provider: string): Promise<LlmSetting | null> {
-  return invoke('get_llm_setting', { provider });
-}
-
-export async function setChatModel(
-  chatId: string,
-  provider: string,
-  model: string,
-): Promise<void> {
-  return invoke('set_chat_model', { req: { chat_id: chatId, provider, model } });
-}
-
-export async function listWorkers(): Promise<WorkerConnection[]> {
+export async function listWorkers(): Promise<WorkerInfo[]> {
   return invoke('list_workers');
 }
 
-export async function addWorker(name: string, url: string): Promise<WorkerConnection> {
-  return invoke('add_worker', { req: { name, url } });
+export async function addWorker(name: string, url: string): Promise<void> {
+  return invoke('add_worker', { name, url });
 }
 
-export async function pairWorker(workerId: string, pairingCode: string): Promise<boolean> {
-  return invoke('pair_worker', { req: { worker_id: workerId, pairing_code: pairingCode } });
-}
-
-export async function workerLogs(): Promise<LogEntry[]> {
-  return invoke('worker_logs');
+export async function pairWorker(workerId: string, pairingCode: string): Promise<void> {
+  return invoke('pair_worker', { workerId, pairingCode });
 }
 
 export async function pingWorker(workerId: string): Promise<void> {
   return invoke('ping_worker', { workerId });
 }
 
-export async function addLog(message: string): Promise<void> {
-  return invoke('add_log', { message });
+export async function installWorker(
+  host: string,
+  user: string,
+  port: number,
+  privateKey: string,
+  releaseTag: string,
+): Promise<InstallWorkerResult> {
+  return invoke('install_worker', {
+    host,
+    user,
+    port,
+    private_key: privateKey,
+    release_tag: releaseTag,
+    repo: null,
+  });
 }
 
-export async function createChat(
-  title: string,
-  provider?: string,
-  model?: string,
-): Promise<string> {
+export async function workerLogs(): Promise<{ id: string; timestamp: string; message: string }[]> {
+  return invoke('worker_logs');
+}
+
+export async function createChat(title: string, provider?: string, model?: string): Promise<string> {
   return invoke('create_chat', { title, provider, model });
 }
 
-export async function listChats(): Promise<Chat[]> {
+export async function listChats(): Promise<Conversation[]> {
   return invoke('list_chats');
-}
-
-export async function chatMessages(chatId: string): Promise<ChatMessage[]> {
-  return invoke('chat_messages', { chatId });
 }
 
 export async function addChatMessage(
@@ -226,6 +192,10 @@ export async function addChatMessage(
   return invoke('add_chat_message', { chatId, role, content });
 }
 
+export async function chatMessages(chatId: string): Promise<ChatMessage[]> {
+  return invoke('chat_messages', { chatId });
+}
+
 export async function listAgents(): Promise<AgentInfo[]> {
   return invoke('list_agents');
 }
@@ -234,9 +204,11 @@ export async function createAgent(
   name: string,
   prompt: string,
   description?: string,
-  tools: string[] = [],
+  tools?: string[],
 ): Promise<AgentInfo> {
-  return invoke('create_agent', { req: { name, prompt, description, tools } });
+  return invoke('create_agent', {
+    req: { name, prompt, description, tools: tools ?? [] },
+  });
 }
 
 export async function deleteAgent(agentId: string): Promise<void> {
@@ -253,7 +225,9 @@ export async function createWorkflow(
   steps: WorkflowStep[],
   trigger: string,
 ): Promise<WorkflowInfo> {
-  return invoke('create_workflow', { req: { name, description, steps, trigger } });
+  return invoke('create_workflow', {
+    req: { name, description, steps, trigger },
+  });
 }
 
 export async function deleteWorkflow(workflowId: string): Promise<void> {
@@ -289,12 +263,24 @@ export async function unlockVault(passphrase: string): Promise<string[]> {
   return invoke('unlock_vault', { req: { passphrase } });
 }
 
-export async function runAgent(
-  workerId: string,
-  agentId: string,
-  prompt: string,
+export async function getLlmSetting(provider: string): Promise<LlmSetting | null> {
+  return invoke('get_llm_setting', { provider });
+}
+
+export async function setLlmSetting(
+  provider: string,
+  apiKey: string,
+  model: string,
+  baseUrl?: string,
+  temperature?: number,
 ): Promise<void> {
-  return invoke('run_agent', { req: { worker_id: workerId, agent_id: agentId, prompt } });
+  return invoke('set_llm_setting', {
+    req: { provider, api_key: apiKey, model, base_url: baseUrl, temperature },
+  });
+}
+
+export async function runAgent(chatId: string, agentId: string, input: string): Promise<void> {
+  return invoke('run_agent', { chatId, agentId, input });
 }
 
 export async function scheduleAgent(
@@ -303,6 +289,30 @@ export async function scheduleAgent(
   trigger: string,
 ): Promise<void> {
   return invoke('schedule_agent', { req: { worker_id: workerId, agent_id: agentId, trigger } });
+}
+
+export async function setChatModel(
+  chatId: string,
+  provider: string,
+  model: string,
+): Promise<void> {
+  return invoke('set_chat_model', { chatId, provider, model });
+}
+
+export async function runHarness(
+  chatId: string,
+  input: string,
+  model?: string,
+): Promise<void> {
+  return invoke('run_harness', { chatId, input, model });
+}
+
+export async function cancelHarness(chatId: string): Promise<void> {
+  return invoke('cancel_harness', { chatId });
+}
+
+export async function listHarnessTools(): Promise<{ name: string; description?: string }[]> {
+  return invoke('list_harness_tools');
 }
 
 export async function searchMcpServers(query: string): Promise<McpSearchResult[]> {
@@ -339,7 +349,9 @@ export async function updateMcpServerMeta(
   secretIds: string[],
   enabledTools: string[],
 ): Promise<string> {
-  return invoke('update_mcp_server_meta', { req: { id, secret_ids: secretIds, enabled_tools: enabledTools } });
+  return invoke('update_mcp_server_meta', {
+    req: { id, secret_ids: secretIds, enabled_tools: enabledTools },
+  });
 }
 
 export async function discoverMcpTools(id: string): Promise<McpTool[]> {
@@ -420,10 +432,3 @@ export function onHarnessEvent(
 ): Promise<() => void> {
   return listen('harness:event', callback);
 }
-
-export const LLM_PROVIDERS = [
-  { id: 'openai', name: 'OpenAI', defaultModel: 'gpt-4o-mini' },
-  { id: 'anthropic', name: 'Anthropic', defaultModel: 'claude-3-5-sonnet-20241022' },
-  { id: 'ollama', name: 'Ollama', defaultModel: 'llama3.1' },
-  { id: 'openrouter', name: 'OpenRouter', defaultModel: 'openai/gpt-4o-mini' },
-];

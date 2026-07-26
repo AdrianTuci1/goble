@@ -74,8 +74,8 @@ export default function ConnectorsPage() {
     setForm({
       id: result.id,
       name: result.name,
-      source: result.source_kind === 'github' ? 'github' : 'npm',
-      source_value: result.source_kind === 'github' ? result.name : result.id,
+      source: result.source === 'github' ? 'github' : 'npm',
+      source_value: result.source === 'github' ? result.name : result.id,
     });
     setEditingId(null);
     setMessage('');
@@ -291,9 +291,8 @@ export default function ConnectorsPage() {
                   style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
                 >
                   <div>
-                    <strong>{result.name}</strong> <span className="card-row">({result.source_kind})</span>
+                    <strong>{result.name}</strong> <span className="card-row">({result.source})</span>
                     <div className="card-row">{result.description}</div>
-                    <div className="card-row">Capabilities: {result.capabilities.join(', ')}</div>
                   </div>
                   <button onClick={() => selectSearchResult(result)}>Use</button>
                 </div>

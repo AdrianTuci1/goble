@@ -70,6 +70,13 @@ struct HealthReport {
     version: &'static str,
 }
 
+#[derive(Debug, Serialize, Clone)]
+struct PlatformInfo {
+    os: String,
+    arch: String,
+    family: String,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -108,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/", get(root_handler))
         .route("/health", get(health_handler))
+        .route("/platform", get(platform_handler))
         .route("/mcp", get(mcp::list_mcp_handler))
         .route("/pair", post(pairing::pair_handler))
         .route("/status", get(pairing::status_handler))
@@ -133,6 +141,14 @@ async fn main() -> anyhow::Result<()> {
 
 async fn root_handler() -> &'static str {
     "Goblin Worker"
+}
+
+async fn platform_handler() -> axum::Json<PlatformInfo> {
+    axum::Json(PlatformInfo {
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        family: std::env::consts::FAMILY.to_string(),
+    })
 }
 
 async fn health_handler(State(state): State<Arc<state::AppState>>) -> axum::Json<HealthReport> {

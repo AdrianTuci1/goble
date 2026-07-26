@@ -13,6 +13,7 @@ use goble_core::workflow::{WorkflowId, WorkflowStep};
 use serde::{Deserialize, Serialize};
 
 pub mod state;
+pub mod ssh_installer;
 pub mod worker_manager;
 
 #[derive(Deserialize)]
@@ -127,6 +128,16 @@ pub struct UpdateMcpMetaRequest {
     pub enabled_tools: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct InstallWorkerRequest {
+    pub host: String,
+    pub user: String,
+    pub port: u16,
+    pub private_key: String,
+    pub release_tag: String,
+    pub repo: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpIdRequest {
     id: String,
@@ -140,6 +151,18 @@ fn list_workers(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<Vec<state::WorkerConnection>, String> {
     Ok(state.list_workers())
+}
+
+#[tauri::command]
+fn install_worker(req: InstallWorkerRequest) -> Result<ssh_installer::WorkerInstallResult, String> {
+    let creds = ssh_installer::SshCredentials {
+        host: req.host,
+        user: req.user,
+        port: req.port,
+        private_key: req.private_key,
+    };
+    let repo = req.repo.as_deref().unwrap_or("AdrianTuci1/goble");
+    ssh_installer::install_worker(&creds, &req.release_tag, repo).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -609,6 +632,7 @@ pub fn run() {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             list_workers,
+            install_worker,
             add_worker,
             pair_worker,
             worker_logs,

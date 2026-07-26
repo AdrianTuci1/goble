@@ -7,10 +7,15 @@ on:
         description: 'Release tag (e.g. v0.1.0)'
         required: true
         type: string
-      target:
-        description: 'Rust target triple'
+      desktop_target:
+        description: 'Desktop Rust target triple'
         required: false
         default: 'x86_64-unknown-linux-gnu'
+        type: string
+      worker_targets:
+        description: 'Worker targets (comma separated)'
+        required: false
+        default: 'x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu'
         type: string
       draft:
         description: 'Create as draft release'
@@ -30,8 +35,55 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  build-worker:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(format('[{0}]', inputs.worker_targets)) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Install cross compile dependencies
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build worker
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build -p goblin-worker --release --target ${{ matrix.target }}
+
+      - name: Package worker
+        run: |
+          mkdir -p dist
+          ARCH_NAME=$(echo "${{ matrix.target }}" | tr '-' '_')
+          tar -czf "dist/goblin-worker-${ARCH_NAME}.tar.gz"             -C "target/${{ matrix.target }}/release"             goblin             -C "$GITHUB_WORKSPACE"             scripts/install-goblin.sh
+
+      - name: Upload worker artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: goblin-worker-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  build-desktop:
+    runs-on: ubuntu-latest
+    needs: build-worker
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -39,20 +91,12 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            pkg-config \
-            curl \
-            build-essential
+          sudo apt-get install -y             libwebkit2gtk-4.1-dev             libssl-dev             libgtk-3-dev             libayatana-appindicator3-dev             librsvg2-dev             pkg-config             curl             build-essential
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ inputs.target }}
+          targets: ${{ inputs.desktop_target }}
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -89,40 +133,44 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: cargo tauri build --target ${{ inputs.target }}
+        run: cargo tauri build --target ${{ inputs.desktop_target }}
 
-      - name: Collect bundle paths
+      - name: Collect desktop bundle paths
         id: bundles
         working-directory: crates/goble-desktop
         run: |
-          BUNDLE_DIR="src-tauri/target/${{ inputs.target }}/release/bundle"
+          BUNDLE_DIR="src-tauri/target/${{ inputs.desktop_target }}/release/bundle"
           {
             echo "deb=$(ls "$BUNDLE_DIR"/deb/*.deb | head -n1)"
             echo "rpm=$(ls "$BUNDLE_DIR"/rpm/*.rpm | head -n1)"
             echo "appimage=$(ls "$BUNDLE_DIR"/appimage/*.AppImage | head -n1)"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Download worker artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: worker-artifacts
+          pattern: goblin-worker-*
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ inputs.tag }}" \
-            --title "Goble ${{ inputs.tag }}" \
-            --generate-notes \
-            ${{ inputs.draft && '--draft' || '' }} \
-            ${{ inputs.prerelease && '--prerelease' || '' }} \
-            "${{ steps.bundles.outputs.deb }}" \
-            "${{ steps.bundles.outputs.rpm }}" \
-            "${{ steps.bundles.outputs.appimage }}"
+          FILES="${{ steps.bundles.outputs.deb }} ${{ steps.bundles.outputs.rpm }} ${{ steps.bundles.outputs.appimage }}"
+          for f in worker-artifacts/*/*.tar.gz; do
+            FILES="$FILES $f"
+          done
+          gh release create "${{ inputs.tag }}"             --title "Goble ${{ inputs.tag }}"             --generate-notes             ${{ inputs.draft && '--draft' || '' }}             ${{ inputs.prerelease && '--prerelease' || '' }}             $FILES
 
-      - name: Upload build artifacts (fallback)
+      - name: Upload fallback artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: goble-desktop-${{ inputs.target }}
+          name: goblele-release-fallback-${{ inputs.desktop_target }}
           path: |
-            crates/goble-desktop/src-tauri/target/${{ inputs.target }}/release/bundle/deb/*.deb
-            crates/goble-desktop/src-tauri/target/${{ inputs.target }}/release/bundle/rpm/*.rpm
-            crates/goble-desktop/src-tauri/target/${{ inputs.target }}/release/bundle/appimage/*.AppImage
+            crates/goble-desktop/src-tauri/target/${{ inputs.desktop_target }}/release/bundle/deb/*.deb
+            crates/goble-desktop/src-tauri/target/${{ inputs.desktop_target }}/release/bundle/rpm/*.rpm
+            crates/goble-desktop/src-tauri/target/${{ inputs.desktop_target }}/release/bundle/appimage/*.AppImage
+            worker-artifacts/*/*.tar.gz
           if-no-files-found: error
           retention-days: 14

@@ -10,11 +10,7 @@ async fn test_install_and_connect_local_mcp_mock() {
     let src = tmp.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
     let server_path = src.join("index.js");
-    std::fs::write(
-        &server_path,
-        include_str!("mcp_mock_server.js"),
-    )
-    .unwrap();
+    std::fs::write(&server_path, include_str!("mcp_mock_server.js")).unwrap();
 
     let server = McpServer {
         id: "mock-echo".to_string(),

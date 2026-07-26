@@ -21,6 +21,7 @@ import {
   listExecutions,
   listVaultSecrets,
   listChats,
+  listMcpServers,
   onWorkersUpdated,
   onLogsUpdated,
   onAgentLog,
@@ -45,6 +46,7 @@ function AppShell() {
   const setExecutions = useStore((s) => s.setExecutions);
   const setVaultSecrets = useStore((s) => s.setVaultSecrets);
   const setConversations = useStore((s) => s.setConversations);
+  const setMcpServers = useStore((s) => s.setMcpServers);
   const addMessage = useStore((s) => s.addMessage);
   const chatMessages = useStore((s) => s.messages);
 
@@ -62,6 +64,7 @@ function AppShell() {
       setExecutions(await listExecutions());
       setVaultSecrets(await listVaultSecrets());
       setConversations(await listChats());
+      setMcpServers(await listMcpServers());
       setLoaded(true);
     }
 
@@ -110,6 +113,7 @@ function AppShell() {
     setExecutions,
     setVaultSecrets,
     setConversations,
+    setMcpServers,
     addMessage,
     chatMessages,
   ]);

@@ -1,6 +1,8 @@
 // Tauri + React application entry
 // This crate is not included in the Cargo workspace because it is a Tauri project.
 use goble_core::agent::{AgentId, Trigger};
+use goble_core::mcp_manager::McpServerSummary;
+use goble_core::mcp_registry::McpSearchResult;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use goble_core::harness::Harness;
@@ -8,7 +10,7 @@ use goble_core::protocol::DesktopMessage;
 use goble_core::store::Store;
 use goble_core::worker::WorkerId;
 use goble_core::workflow::{WorkflowId, WorkflowStep};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub mod state;
 pub mod worker_manager;
@@ -74,9 +76,65 @@ struct UnlockVaultRequest {
     passphrase: String,
 }
 
+#[derive(Deserialize)]
+struct LlmSettingRequest {
+    provider: String,
+    api_key: String,
+    base_url: Option<String>,
+    model: String,
+    temperature: Option<f32>,
+}
+
+#[derive(Deserialize)]
+struct RunHarnessRequest {
+    chat_id: String,
+    prompt: String,
+    provider: String,
+    model: String,
+}
+
+#[derive(Deserialize)]
+struct SetChatModelRequest {
+    chat_id: String,
+    provider: String,
+    model: String,
+}
+
+#[derive(Deserialize)]
+struct SearchMcpRequest {
+    query: String,
+}
+
+#[derive(Deserialize)]
+struct InstallMcpRequest {
+    id: String,
+    name: String,
+    source: String,
+    source_value: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UpdateMcpRequest {
+    id: String,
+    name: Option<String>,
+    source_value: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateMcpMetaRequest {
+    pub id: String,
+    pub secret_ids: Vec<String>,
+    pub enabled_tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpIdRequest {
+    id: String,
+}
 
 static HARNESS_CANCEL: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>> =
     once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 #[tauri::command]
 fn list_workers(
     state: tauri::State<'_, Arc<state::DesktopState>>,
@@ -230,28 +288,65 @@ fn create_workflow(
         .map_err(|e| e.to_string())
 }
 
-#[derive(Deserialize)]
-struct LlmSettingRequest {
-    provider: String,
-    api_key: String,
-    base_url: Option<String>,
-    model: String,
-    temperature: Option<f32>,
+#[tauri::command]
+fn delete_workflow(
+    workflow_id: String,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state
+        .delete_workflow(&WorkflowId(workflow_id))
+        .map_err(|e| e.to_string())
 }
 
-#[derive(Deserialize)]
-struct RunHarnessRequest {
-    chat_id: String,
-    prompt: String,
-    provider: String,
-    model: String,
+#[tauri::command]
+fn list_teams(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<state::TeamInfo>, String> {
+    Ok(state.list_teams())
 }
 
-#[derive(Deserialize)]
-struct SetChatModelRequest {
-    chat_id: String,
-    provider: String,
-    model: String,
+#[tauri::command]
+fn create_team(
+    req: CreateTeamRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<state::TeamInfo, String> {
+    state
+        .create_team(&req.id, &req.name, &req.metadata, req.agent_ids)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_executions(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<state::ExecutionInfo>, String> {
+    Ok(state.list_executions())
+}
+
+#[tauri::command]
+fn list_vault_secrets(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<state::VaultSecretInfo>, String> {
+    Ok(state.list_vault_secrets())
+}
+
+#[tauri::command]
+fn set_vault_secret(
+    req: VaultSecretRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state
+        .set_vault_secret(&req.name, &req.value)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn unlock_vault(
+    req: UnlockVaultRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<String>, String> {
+    state
+        .unlock_vault(req.passphrase)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -262,6 +357,7 @@ fn set_chat_model(
     state.set_chat_model(&req.chat_id, &req.provider, &req.model)
         .map_err(|e| e.to_string())
 }
+
 #[tauri::command]
 fn set_llm_setting(
     req: LlmSettingRequest,
@@ -286,6 +382,96 @@ fn list_harness_tools() -> Result<Vec<goble_core::harness::ToolSchema>, String> 
     Ok(harness.list_tools())
 }
 
+#[tauri::command]
+fn run_agent(
+    req: RunAgentRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    let worker_id = WorkerId(req.worker_id);
+    let agent_id = AgentId(req.agent_id);
+    state
+        .run_agent(&worker_id, &agent_id, &req.prompt)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn schedule_agent(
+    req: ScheduleRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    let worker_id = WorkerId(req.worker_id);
+    let agent_id = AgentId(req.agent_id);
+    let trigger = Trigger::Cron {
+        expression: req.trigger,
+    };
+    state
+        .schedule_agent(&worker_id, &agent_id, trigger)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_mcp_servers(
+    req: SearchMcpRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<McpSearchResult>, String> {
+    Ok(state.search_mcp_servers(&req.query))
+}
+
+#[tauri::command]
+fn list_mcp_servers(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<McpServerSummary>, String> {
+    state.list_mcp_servers().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn install_mcp_server(
+    req: InstallMcpRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<String, String> {
+    state
+        .install_mcp_server(&req.id, &req.name, &req.source, req.source_value.as_deref(), vec![], None)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_mcp_server(
+    req: UpdateMcpRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<String, String> {
+    state
+        .update_mcp_server(&req.id, req.name.as_deref(), req.source_value.as_deref(), None, None)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_mcp_server_meta(
+    req: UpdateMcpMetaRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<String, String> {
+    state
+        .update_mcp_server_meta(&req.id,
+            req.secret_ids,
+            req.enabled_tools,
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_mcp_server(
+    req: McpIdRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<String, String> {
+    state.delete_mcp_server(&req.id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn discover_mcp_tools(
+    req: McpIdRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<goble_core::mcp_client::McpTool>, String> {
+    state.discover_mcp_tools(&req.id).map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 fn cancel_harness(chat_id: String) {
@@ -368,7 +554,7 @@ fn run_harness(
                     (provider, model)
                 } else {
                     (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
-                        content: "No DeepSeek API key configured. Add one in Settings.".to_string(),
+                        content: "No DeepSeek API key configured for this provider. Add one in Settings.".to_string(),
                         tool_calls: Vec::new(),
                     })), req.model.clone())
                 }
@@ -415,94 +601,6 @@ fn run_harness(
     Ok(())
 }
 
-#[tauri::command]
-fn delete_workflow(
-    workflow_id: String,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<(), String> {
-    state
-        .delete_workflow(&WorkflowId(workflow_id))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn list_teams(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<state::TeamInfo>, String> {
-    Ok(state.list_teams())
-}
-
-#[tauri::command]
-fn create_team(
-    req: CreateTeamRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<state::TeamInfo, String> {
-    state
-        .create_team(&req.id, &req.name, &req.metadata, req.agent_ids)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn list_executions(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<state::ExecutionInfo>, String> {
-    Ok(state.list_executions())
-}
-
-#[tauri::command]
-fn list_vault_secrets(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<state::VaultSecretInfo>, String> {
-    Ok(state.list_vault_secrets())
-}
-
-#[tauri::command]
-fn set_vault_secret(
-    req: VaultSecretRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<(), String> {
-    state
-        .set_vault_secret(&req.name, &req.value)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn unlock_vault(
-    req: UnlockVaultRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<String>, String> {
-    state
-        .unlock_vault(req.passphrase)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn run_agent(
-    req: RunAgentRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<(), String> {
-    let worker_id = WorkerId(req.worker_id);
-    let agent_id = AgentId(req.agent_id);
-    state
-        .run_agent(&worker_id, &agent_id, &req.prompt)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn schedule_agent(
-    req: ScheduleRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<(), String> {
-    let worker_id = WorkerId(req.worker_id);
-    let agent_id = AgentId(req.agent_id);
-    let trigger = Trigger::Cron {
-        expression: req.trigger,
-    };
-    state
-        .schedule_agent(&worker_id, &agent_id, trigger)
-        .map_err(|e| e.to_string())
-}
-
 pub fn run() {
     let state = state::DesktopState::open_default().expect("open store");
     let _ = state.load_from_store();
@@ -539,7 +637,14 @@ pub fn run() {
             set_chat_model,
             run_harness,
             cancel_harness,
-            list_harness_tools
+            list_harness_tools,
+            search_mcp_servers,
+            install_mcp_server,
+            list_mcp_servers,
+            delete_mcp_server,
+            update_mcp_server,
+            update_mcp_server_meta,
+            discover_mcp_tools
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

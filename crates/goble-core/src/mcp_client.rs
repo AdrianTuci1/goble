@@ -65,12 +65,20 @@ pub struct McpTool {
 }
 
 impl McpClient {
-    pub fn spawn(command: &str, args: &[impl AsRef<str>], env: HashMap<String, String>) -> Result<Self> {
+    pub fn spawn(
+        command: &str,
+        args: &[impl AsRef<str>],
+        env: HashMap<String, String>,
+    ) -> Result<Self> {
         let owned_args: Vec<String> = args.iter().map(|s| s.as_ref().to_string()).collect();
         Self::spawn_owned(command, &owned_args, env)
     }
 
-    pub fn spawn_owned(command: &str, args: &[String], env: HashMap<String, String>) -> Result<Self> {
+    pub fn spawn_owned(
+        command: &str,
+        args: &[String],
+        env: HashMap<String, String>,
+    ) -> Result<Self> {
         let mut cmd = std::process::Command::new(command);
         cmd.args(args)
             .envs(env)
@@ -145,7 +153,10 @@ impl McpClient {
     }
 
     pub fn call_tool(&self, name: &str, arguments: serde_json::Value) -> Result<serde_json::Value> {
-        self.request("tools/call", serde_json::json!({ "name": name, "arguments": arguments }))
+        self.request(
+            "tools/call",
+            serde_json::json!({ "name": name, "arguments": arguments }),
+        )
     }
 }
 
@@ -169,11 +180,15 @@ impl McpSseClient {
     }
 
     pub async fn initialize(&self) -> Result<serde_json::Value> {
-        self.request("initialize", serde_json::json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "goble", "version": "0.1.0" }
-        })).await
+        self.request(
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "goble", "version": "0.1.0" }
+            }),
+        )
+        .await
     }
 
     pub async fn list_tools(&self) -> Result<Vec<McpTool>> {
@@ -189,8 +204,16 @@ impl McpSseClient {
             .collect()
     }
 
-    pub async fn call_tool(&self, name: &str, arguments: serde_json::Value) -> Result<serde_json::Value> {
-        self.request("tools/call", serde_json::json!({ "name": name, "arguments": arguments })).await
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.request(
+            "tools/call",
+            serde_json::json!({ "name": name, "arguments": arguments }),
+        )
+        .await
     }
 
     async fn request<T: Serialize>(&self, method: &str, params: T) -> Result<serde_json::Value> {

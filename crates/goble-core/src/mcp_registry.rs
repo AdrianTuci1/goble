@@ -10,6 +10,17 @@ pub struct McpRegistry {
     entries: HashMap<String, McpServer>,
 }
 
+/// Search result returned to the LLM for a matching MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpSearchResult {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub capabilities: Vec<String>,
+    pub auth_required: bool,
+    pub source_kind: String,
+}
+
 impl McpRegistry {
     pub fn new() -> Self {
         Self::default()
@@ -40,7 +51,7 @@ impl McpRegistry {
                     label: "Database URL".to_string(),
                     field_type: crate::agent::AuthFieldType::Url,
                     required: true,
-                    description: Some("postgres://user:pass@host:port/db".to_string()),
+                    description: Some("postgres://user:***@host:port/db".to_string()),
                 }],
                 capabilities: vec!["query".to_string(), "schema".to_string()],
                 config_schema: serde_json::json!({}),
@@ -75,6 +86,32 @@ impl McpRegistry {
                     description: Some("comma-separated paths".to_string()),
                 }],
                 capabilities: vec!["read".to_string(), "write".to_string()],
+                config_schema: serde_json::json!({}),
+            },
+            credentials_key: None,
+            installed_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        });
+
+        registry.register(McpServer {
+            id: "mcp-sequential-thinking".to_string(),
+            name: "Sequential Thinking".to_string(),
+            source: McpSource::Npm {
+                package: "@modelcontextprotocol/server-sequential-thinking".to_string(),
+                version: "latest".to_string(),
+            },
+            manifest: McpManifest {
+                schema_version: "1".to_string(),
+                entrypoint: "dist/index.js".to_string(),
+                runtime: crate::agent::McpRuntime::Binary {
+                    command: "npx".to_string(),
+                    args: vec![
+                        "-y".to_string(),
+                        "@modelcontextprotocol/server-sequential-thinking".to_string(),
+                    ],
+                },
+                auth_schema: vec![],
+                capabilities: vec!["thinking".to_string()],
                 config_schema: serde_json::json!({}),
             },
             credentials_key: None,
@@ -135,6 +172,139 @@ impl McpRegistry {
         server.updated_at = chrono::Utc::now();
         Some(server)
     }
+
+    /// Search both the local registry and optionally the web for matching MCP servers.
+    /// Web search is best-effort and returns npm-based MCP packages that match the query.
+    pub async fn search_mcp_servers(&self, query: &str) -> Vec<McpSearchResult> {
+        let mut results: Vec<McpSearchResult> = self
+            .search(query)
+            .into_iter()
+            .map(|s| McpSearchResult {
+                id: s.id.clone(),
+                name: s.name.clone(),
+                description: s
+                    .manifest
+                    .auth_schema
+                    .first()
+                    .and_then(|f| f.description.clone())
+                    .unwrap_or_else(|| {
+                        format!(
+                            "MCP server with capabilities: {:?}",
+                            s.manifest.capabilities
+                        )
+                    }),
+                capabilities: s.manifest.capabilities.clone(),
+                auth_required: !s.manifest.auth_schema.is_empty(),
+                source_kind: match &s.source {
+                    McpSource::Npm { .. } => "npm".to_string(),
+                    McpSource::Github { .. } => "github".to_string(),
+                    McpSource::Local { .. } => "local".to_string(),
+                    McpSource::Url { .. } => "url".to_string(),
+                },
+            })
+            .collect();
+
+        // Web search is optional; on failure we return only builtin results.
+        if let Ok(web) = web_search_mcp_packages(query).await {
+            for entry in web {
+                if results.iter().any(|r| r.id == entry.id) {
+                    continue;
+                }
+                results.push(entry);
+            }
+        }
+
+        results
+    }
+}
+
+/// Search npm and GitHub for public MCP packages matching the query.
+/// This is intentionally lightweight and does not require authentication.
+async fn web_search_mcp_packages(query: &str) -> anyhow::Result<Vec<McpSearchResult>> {
+    let mut results = Vec::new();
+    let npm_url = format!(
+        "https://registry.npmjs.org/-/v1/search?text={}+mcp&size=10",
+        urlencoding::encode(query)
+    );
+    let resp = reqwest::get(&npm_url).await?;
+    if resp.status().is_success() {
+        let body = resp.json::<serde_json::Value>().await?;
+        if let Some(objects) = body.get("objects").and_then(|v| v.as_array()) {
+            for obj in objects {
+                let package = obj
+                    .get("package")
+                    .and_then(|p| p.as_object())
+                    .cloned()
+                    .unwrap_or_default();
+                let name = package
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if !name.contains("mcp") && !name.contains("modelcontextprotocol") {
+                    continue;
+                }
+                let id = name.replace('/', "-").replace('@', "");
+                let description = package
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Public MCP server from npm")
+                    .to_string();
+                results.push(McpSearchResult {
+                    id,
+                    name: name.clone(),
+                    description,
+                    capabilities: vec!["tools".to_string()],
+                    auth_required: false,
+                    source_kind: "npm".to_string(),
+                });
+            }
+        }
+    }
+
+    // GitHub search is a fallback for source repos; we don't parse it deeply.
+    let github_url = format!(
+        "https://api.github.com/search/repositories?q={}+mcp&per_page=5",
+        urlencoding::encode(query)
+    );
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&github_url)
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "goble-mcp-search")
+        .send()
+        .await;
+    if let Ok(resp) = resp {
+        if resp.status().is_success() {
+            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                if let Some(items) = body.get("items").and_then(|v| v.as_array()) {
+                    for item in items {
+                        let name = item
+                            .get("full_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let id = name.replace('/', "-");
+                        let description = item
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Public MCP server from GitHub")
+                            .to_string();
+                        results.push(McpSearchResult {
+                            id,
+                            name: name.clone(),
+                            description,
+                            capabilities: vec!["tools".to_string()],
+                            auth_required: false,
+                            source_kind: "github".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -210,5 +380,12 @@ mod tests {
         let json = serde_json::to_string(&registry).unwrap();
         let decoded: McpRegistry = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.list().len(), registry.list().len());
+    }
+
+    #[tokio::test]
+    async fn test_search_mcp_servers_returns_builtin() {
+        let registry = McpRegistry::builtin();
+        let results = registry.search_mcp_servers("filesystem").await;
+        assert!(results.iter().any(|r| r.id == "mcp-filesystem"));
     }
 }

@@ -7,15 +7,15 @@ async fn test_deepseek_streaming_hello() {
         .expect("deepseek key file")
         .trim()
         .to_string();
-    let provider = goble_core::llm::OpenAiProvider::new(
-        "deepseek",
-        api_key,
-        "https://api.deepseek.com/v1",
-    );
+    let provider =
+        goble_core::llm::OpenAiProvider::new("deepseek", api_key, "https://api.deepseek.com/v1");
     let request = CompletionRequest::new("deepseek", "deepseek-v4-pro")
         .with_system("You are a concise assistant.")
         .with_user("Say exactly 'hello goble' and nothing else.");
-    let mut stream = provider.complete_stream(request).await.expect("stream request");
+    let mut stream = provider
+        .complete_stream(request)
+        .await
+        .expect("stream request");
     let mut content = String::new();
     let mut got_delta = false;
     while let Some(event) = futures::StreamExt::next(&mut stream).await {
@@ -31,7 +31,10 @@ async fn test_deepseek_streaming_hello() {
     }
     assert!(got_delta, "no delta received");
     let lower = content.to_lowercase();
-    assert!(lower.contains("hello goble"), "unexpected response: {content}");
+    assert!(
+        lower.contains("hello goble"),
+        "unexpected response: {content}"
+    );
 }
 
 #[tokio::test]
@@ -40,11 +43,8 @@ async fn test_deepseek_tool_call() {
         .expect("deepseek key file")
         .trim()
         .to_string();
-    let provider = goble_core::llm::OpenAiProvider::new(
-        "deepseek",
-        api_key,
-        "https://api.deepseek.com/v1",
-    );
+    let provider =
+        goble_core::llm::OpenAiProvider::new("deepseek", api_key, "https://api.deepseek.com/v1");
     let tool = ToolDefinition {
         name: "greet".to_string(),
         description: "Return a greeting for a name".to_string(),
@@ -76,11 +76,8 @@ async fn test_deepseek_tool_call() {
 
 #[tokio::test]
 async fn test_provider_factory_deepseek() {
-    let provider = goble_core::llm::create_provider(
-        "openai",
-        "sk-fake",
-        Some("https://api.deepseek.com/v1"),
-    );
+    let provider =
+        goble_core::llm::create_provider("openai", "sk-fake", Some("https://api.deepseek.com/v1"));
     assert_eq!(provider.name(), "openai");
 }
 
@@ -90,11 +87,8 @@ async fn test_deepseek_with_conversation_history() {
         .expect("deepseek key file")
         .trim()
         .to_string();
-    let provider = goble_core::llm::OpenAiProvider::new(
-        "deepseek",
-        api_key,
-        "https://api.deepseek.com/v1",
-    );
+    let provider =
+        goble_core::llm::OpenAiProvider::new("deepseek", api_key, "https://api.deepseek.com/v1");
     let messages = vec![
         Message {
             role: Role::System,

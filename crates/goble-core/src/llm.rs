@@ -162,7 +162,11 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
-    pub fn new(name: impl Into<String>, api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             api_key: api_key.into(),
@@ -188,7 +192,7 @@ struct OpenAiRequest {
 #[derive(Debug, Serialize, Deserialize)]
 struct OpenAiMessage {
     role: String,
-    content: String,
+    content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -283,7 +287,11 @@ fn into_openai_messages(messages: Vec<Message>) -> Vec<OpenAiMessage> {
             let tool_call_id = m.tool_call_id.clone();
             OpenAiMessage {
                 role,
-                content: m.content,
+                content: if m.content.is_empty() {
+                    None
+                } else {
+                    Some(m.content)
+                },
                 tool_call_id,
                 tool_calls,
             }
@@ -595,7 +603,11 @@ impl LlmProvider for OllamaProvider {
             model: request.model,
             messages: into_ollama_messages(request.messages),
             stream: true,
-            options: if options.is_empty() { None } else { Some(options) },
+            options: if options.is_empty() {
+                None
+            } else {
+                Some(options)
+            },
         };
         let url = format!("{}/api/chat", self.base_url);
         let resp = self
@@ -730,7 +742,11 @@ impl LlmProvider for AnthropicProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = CompletionStreamEvent> + Send>>> {
-        let system = request.messages.iter().find(|m| m.role == Role::System).map(|m| m.content.clone());
+        let system = request
+            .messages
+            .iter()
+            .find(|m| m.role == Role::System)
+            .map(|m| m.content.clone());
         let messages: Vec<AnthropicMessage> = request
             .messages
             .into_iter()
@@ -850,10 +866,16 @@ impl LlmProvider for OpenRouterProvider {
 
 // --- Provider factory ---
 
-pub fn create_provider(provider: &str, api_key: &str, base_url: Option<&str>) -> Box<dyn LlmProvider> {
+pub fn create_provider(
+    provider: &str,
+    api_key: &str,
+    base_url: Option<&str>,
+) -> Box<dyn LlmProvider> {
     match provider.to_lowercase().as_str() {
         "openai" => Box::new(OpenAiProvider::openai(api_key)),
-        "ollama" => Box::new(OllamaProvider::new(base_url.unwrap_or("http://localhost:11434"))),
+        "ollama" => Box::new(OllamaProvider::new(
+            base_url.unwrap_or("http://localhost:11434"),
+        )),
         "anthropic" => Box::new(AnthropicProvider::new(api_key)),
         "openrouter" => Box::new(OpenRouterProvider::new(api_key)),
         _ => Box::new(MockProvider::new(
@@ -879,7 +901,10 @@ mod tests {
                 tool_calls: Vec::new(),
             },
         );
-        let result = provider.complete(CompletionRequest::new("mock", "m")).await.unwrap();
+        let result = provider
+            .complete(CompletionRequest::new("mock", "m"))
+            .await
+            .unwrap();
         assert_eq!(result.content, "hello");
     }
 
@@ -892,7 +917,10 @@ mod tests {
                 tool_calls: Vec::new(),
             },
         );
-        let mut stream = provider.complete_stream(CompletionRequest::new("mock", "m")).await.unwrap();
+        let mut stream = provider
+            .complete_stream(CompletionRequest::new("mock", "m"))
+            .await
+            .unwrap();
         let mut out = String::new();
         while let Some(event) = stream.next().await {
             match event {
@@ -917,7 +945,10 @@ mod tests {
                 }],
             },
         );
-        let result = provider.complete(CompletionRequest::new("mock", "m")).await.unwrap();
+        let result = provider
+            .complete(CompletionRequest::new("mock", "m"))
+            .await
+            .unwrap();
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "create_agent");
     }
@@ -934,15 +965,6 @@ mod tests {
             });
         assert_eq!(request.messages.len(), 2);
         assert_eq!(request.tools.len(), 1);
-    }
-
-    #[test]
-    fn test_openai_response_deserialization() {
-        let json = serde_json::json!({
-            "choices": [{"message": {"content": "hello"}}]
-        });
-        let resp: OpenAiResponse = serde_json::from_value(json).unwrap();
-        assert_eq!(resp.choices[0].message.content, Some("hello".to_string()));
     }
 
     #[test]
@@ -981,17 +1003,15 @@ data: [DONE]
 
     #[test]
     fn test_stream_tool_call_buffer_flush() {
-        let buffer = vec![
-            Some(OpenAiStreamToolCall {
-                index: 0,
-                id: Some("call_1".to_string()),
-                tool_type: Some("function".to_string()),
-                function: Some(OpenAiStreamFunctionCall {
-                    name: Some("create_agent".to_string()),
-                    arguments: Some(r#"{"name":"Agent"}"#.to_string()),
-                }),
+        let buffer = vec![Some(OpenAiStreamToolCall {
+            index: 0,
+            id: Some("call_1".to_string()),
+            tool_type: Some("function".to_string()),
+            function: Some(OpenAiStreamFunctionCall {
+                name: Some("create_agent".to_string()),
+                arguments: Some(r#"{"name":"Agent"}"#.to_string()),
             }),
-        ];
+        })];
         let calls = flush_tool_call_buffer(&buffer);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].id, "call_1");

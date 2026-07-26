@@ -1,39 +1,56 @@
 # Goble
 
-Aplicație desktop + worker VPS pentru agenți autonomi. Codul este Rust, UI construit cu gpui (custom/native, la fel ca OctomusUI), și worker livrat ca binar static.
+Aplicație desktop + worker VPS pentru agenți autonomi. Desktop-ul este construit cu Tauri (Rust backend + React frontend), iar worker-ul este un binar Rust care rulează pe VPS.
 
-## Cuvânt cheie
+## Cuvinte cheie
 
-- **Goble** — aplicația desktop (clientul).
+- **Goble** — aplicația desktop (Tauri + React).
 - **Goblin** — worker-ul care rulează pe VPS (sau mai mulți).
-- **Agent** — unitate autonomă creată prin limbaj natural, activată la heartbeat sau HTTP.
+- **Agent** — unitate autonomă creată prin limbaj natural, activată la heartbeat, cron sau HTTP.
+- **MCP** — Model Context Protocol: conectează servere externe de tool-uri (search, install, discover, execute).
 
 ## Arhitectură (pe scurt)
 
 ```
-Goble Desktop  gpui + tokio
+Goble Desktop  Tauri (Rust + React)
        |
-   SSH / mTLS / WebSocket
+   WebSocket / mTLS / SSH
        |
 Goblin Worker  axum + runner + scheduler + MCP registry
 ```
 
 ## Repo layout
 
-- `.agents/` — documentație de planificare și context pentru fiecare subsistem.
-- `crates/goble-core/` — tipuri partajate, protocol desktop↔worker, crypto, LLM abstractions.
-- `crates/goble-ui/` — componente UI comune (widget-uri, teme, tokeni de design).
-- `crates/goble-desktop/` — aplicația desktop (gpui window, state, chat, views).
-- `crates/goblin-worker/` — binarul worker (server axum, runner, observability).
+- `crates/goble-core/` — tipuri partajate, protocol desktop↔worker, crypto, LLM abstractions, MCP manager, registry.
+- `crates/goble-desktop/` — aplicația desktop Tauri (Rust commands + React UI).
+- `crates/goblin-worker/` — binarul worker (server axum, runner, scheduler, task store).
 - `crates/goble-cli/` — CLI utilitar pentru worker.
 - `tests/` — teste end-to-end între desktop și worker.
 - `scripts/` — scripturi de build, deploy, audit.
 
 ## Dezvoltare
 
-1. Citeste `.agents/` în ordine numerică.
-2. Fiecare crate are `#[cfg(test)] mod tests;` și target de coverage 100%.
-3. Testele rulează cu `cargo test` din root.
+```bash
+cd /root/goble
+cargo fmt --all
+cargo check --workspace --all-targets
+cargo test --workspace
+```
+
+Pentru frontend:
+
+```bash
+cd /root/goble/crates/goble-desktop
+npm test
+npm run build
+```
+
+Pentru release desktop (Tauri bundle):
+
+```bash
+cd /root/goble/crates/goble-desktop
+npm run tauri build
+```
 
 ## Licență
 

@@ -5,14 +5,18 @@ use std::sync::Arc;
 use chrono::Utc;
 use goble_core::agent::{AgentId, AgentSpec, Trigger};
 use goble_core::execution::ExecutionTrace;
+use goble_core::mcp_client::McpTool;
+use goble_core::mcp_manager::{McpManager, McpServerSummary};
+use goble_core::mcp_registry::McpSearchResult;
 use goble_core::protocol::{DesktopMessage, WorkerMessage};
+use goble_core::secret::Secret;
 use goble_core::store::Store;
 use goble_core::vault::CredentialVault;
 use goble_core::worker::WorkerId;
 use goble_core::workflow::{Workflow, WorkflowId, WorkflowStep};
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
+use parking_lot::Mutex;
 
 use crate::worker_manager::WorkerClient;
 
@@ -118,6 +122,7 @@ pub struct DesktopState {
     vault_passphrase: Mutex<Vec<u8>>,
     logs: Arc<Mutex<Vec<LogEntry>>>,
     clients: Arc<Mutex<HashMap<WorkerId, WorkerClient>>>,
+    mcp_manager: McpManager,
     app_handle: Mutex<Option<AppHandle>>,
 }
 
@@ -136,6 +141,7 @@ impl DesktopState {
             vault_passphrase: Mutex::new(Vec::new()),
             logs: Arc::new(Mutex::new(Vec::new())),
             clients: Arc::new(Mutex::new(HashMap::new())),
+            mcp_manager: McpManager::new(),
             app_handle: Mutex::new(None),
         })
     }
@@ -733,6 +739,63 @@ impl DesktopState {
 
     pub fn list_executions(&self) -> Vec<ExecutionInfo> {
         self.executions.lock().values().cloned().collect()
+    }
+
+    pub fn search_mcp_servers(&self, query: &str) -> Vec<McpSearchResult> {
+        tauri::async_runtime::block_on(self.mcp_manager.search_mcp_servers(query))
+    }
+
+    pub fn list_mcp_servers(&self) -> Result<Vec<McpServerSummary>, anyhow::Error> {
+        self.mcp_manager.list_mcp_servers(&self.store.lock())
+    }
+
+    pub fn install_mcp_server(
+        &self,
+        id: &str,
+        name: &str,
+        source: &str,
+        source_value: Option<&str>,
+        credentials: Vec<Secret>,
+        manifest: Option<goble_core::agent::McpManifest>,
+    ) -> Result<String, anyhow::Error> {
+        let store = self.store.lock().clone();
+        tauri::async_runtime::block_on(
+            self.mcp_manager.install_mcp_server(&store, id, name, source, source_value, credentials, manifest),
+        )
+    }
+
+    pub fn update_mcp_server(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        source_value: Option<&str>,
+        credentials: Option<Vec<Secret>>,
+        manifest: Option<goble_core::agent::McpManifest>,
+    ) -> Result<String, anyhow::Error> {
+        let store = self.store.lock().clone();
+        tauri::async_runtime::block_on(
+            self.mcp_manager.update_mcp_server(&store, id, name, source_value, credentials, manifest),
+        )
+    }
+
+    pub fn delete_mcp_server(&self, id: &str) -> Result<String, anyhow::Error> {
+        let store = self.store.lock().clone();
+        self.mcp_manager.delete_mcp_server(&store, id)
+    }
+
+    pub fn update_mcp_server_meta(
+        &self,
+        id: &str,
+        secret_ids: Vec<String>,
+        enabled_tools: Vec<String>,
+    ) -> Result<String, anyhow::Error> {
+        let store = self.store.lock().clone();
+        self.mcp_manager.update_mcp_server_meta(&store, id, &secret_ids, &enabled_tools)
+    }
+
+    pub fn discover_mcp_tools(&self, id: &str) -> Result<Vec<McpTool>, anyhow::Error> {
+        self.mcp_manager.discover_and_enable_all(&self.store.lock(), id)?;
+        self.mcp_manager.discover_and_register(id)
     }
 
     pub fn load_from_store(&self) -> anyhow::Result<()> {

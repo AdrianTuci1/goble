@@ -105,6 +105,33 @@ export interface LlmSetting {
   temperature: number | null;
 }
 
+export interface McpSearchResult {
+  id: string;
+  name: string;
+  description: string;
+  capabilities: string[];
+  auth_required: boolean;
+  source_kind: string;
+}
+
+export interface McpServerSummary {
+  id: string;
+  name: string;
+  source: string;
+  source_value?: string | null;
+  capabilities: string[];
+  auth_required: boolean;
+  discovered_tools: string[];
+  secret_ids: string[];
+  enabled_tools: string[];
+}
+
+export interface McpTool {
+  name: string;
+  description?: string;
+  input_schema?: unknown;
+}
+
 export interface HarnessEvent {
   type: 'assistant_delta' | 'tool_call_started' | 'tool_call_finished' | 'tool_call_error' | 'done' | 'error';
   payload?: unknown;
@@ -276,6 +303,47 @@ export async function scheduleAgent(
   trigger: string,
 ): Promise<void> {
   return invoke('schedule_agent', { req: { worker_id: workerId, agent_id: agentId, trigger } });
+}
+
+export async function searchMcpServers(query: string): Promise<McpSearchResult[]> {
+  return invoke('search_mcp_servers', { req: { query } });
+}
+
+export async function listMcpServers(): Promise<McpServerSummary[]> {
+  return invoke('list_mcp_servers');
+}
+
+export async function installMcpServer(
+  id: string,
+  name: string,
+  source: string,
+  sourceValue?: string,
+): Promise<string> {
+  return invoke('install_mcp_server', { req: { id, name, source, source_value: sourceValue } });
+}
+
+export async function updateMcpServer(
+  id: string,
+  name?: string,
+  sourceValue?: string,
+): Promise<string> {
+  return invoke('update_mcp_server', { req: { id, name, source_value: sourceValue } });
+}
+
+export async function deleteMcpServer(id: string): Promise<string> {
+  return invoke('delete_mcp_server', { req: { id } });
+}
+
+export async function updateMcpServerMeta(
+  id: string,
+  secretIds: string[],
+  enabledTools: string[],
+): Promise<string> {
+  return invoke('update_mcp_server_meta', { req: { id, secret_ids: secretIds, enabled_tools: enabledTools } });
+}
+
+export async function discoverMcpTools(id: string): Promise<McpTool[]> {
+  return invoke('discover_mcp_tools', { req: { id } });
 }
 
 export function onWorkersUpdated(callback: () => void): Promise<() => void> {

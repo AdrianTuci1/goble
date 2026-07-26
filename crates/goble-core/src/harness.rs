@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -10,8 +10,10 @@ use chrono::Utc;
 use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{AgentId, AgentSpec, Trigger};
-use crate::llm::{CompletionRequest, CompletionResponse, LlmProvider, LlmToolCall, Role, ToolDefinition};
+use crate::agent::{AgentId, AgentSpec, McpManifest, Trigger};
+use crate::llm::{
+    CompletionRequest, CompletionResponse, LlmProvider, LlmToolCall, Role, ToolDefinition,
+};
 use crate::mcp_manager::McpManager;
 use crate::protocol::DesktopMessage;
 use crate::store::Store;
@@ -43,7 +45,11 @@ pub struct SandboxedCommandRunner {
 }
 
 impl SandboxedCommandRunner {
-    pub fn new(allowed: impl IntoIterator<Item = impl Into<String>>, timeout_seconds: u64, working_dir: PathBuf) -> Self {
+    pub fn new(
+        allowed: impl IntoIterator<Item = impl Into<String>>,
+        timeout_seconds: u64,
+        working_dir: PathBuf,
+    ) -> Self {
         Self {
             allowed_commands: allowed.into_iter().map(Into::into).collect(),
             timeout_seconds,
@@ -53,7 +59,9 @@ impl SandboxedCommandRunner {
 
     pub fn default_tools() -> Self {
         Self::new(
-            ["echo", "cat", "ls", "pwd", "git", "cargo", "npm", "node", "python3", "rustc"],
+            [
+                "echo", "cat", "ls", "pwd", "git", "cargo", "npm", "node", "python3", "rustc",
+            ],
             60,
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         )
@@ -105,9 +113,19 @@ pub struct ChatToolCall {
 #[serde(tag = "type", content = "payload")]
 pub enum HarnessEvent {
     AssistantDelta(String),
-    ToolCallStarted { id: String, name: String, arguments: serde_json::Value },
-    ToolCallFinished { id: String, result: String },
-    ToolCallError { id: String, message: String },
+    ToolCallStarted {
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolCallFinished {
+        id: String,
+        result: String,
+    },
+    ToolCallError {
+        id: String,
+        message: String,
+    },
     Done,
     Error(String),
 }
@@ -169,6 +187,11 @@ impl Harness {
         self
     }
 
+    pub fn with_mcp_manager(mut self, manager: McpManager) -> Self {
+        self.mcp_manager = manager;
+        self
+    }
+
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -178,8 +201,8 @@ impl Harness {
         if let Ok(mcp_tools) = self.mcp_manager.refresh_from_store(&self.store) {
             tools.extend(mcp_tools);
         }
-        tools.extend(vec![crate::mcp_manager::McpManager::generic_mcp_call_tool()]);
-        tools.into_iter()
+        tools.push(crate::mcp_manager::McpManager::generic_mcp_call_tool());
+        tools
             .into_iter()
             .map(|t| ToolSchema {
                 name: t.name,
@@ -231,11 +254,6 @@ impl Harness {
             let mut iteration = 0;
             let mut prev_tool_calls: Vec<LlmToolCall> = Vec::new();
             const MAX_ITERATIONS: usize = 8;
-            let mut tools = harness_tool_definitions();
-            if let Ok(mcp_tools) = mcp_manager.refresh_from_store(&store) {
-                tools.extend(mcp_tools);
-            }
-            tools.push(crate::mcp_manager::McpManager::generic_mcp_call_tool());
 
             loop {
                 if cancel.load(Ordering::Relaxed) {
@@ -699,17 +717,63 @@ fn harness_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "install_mcp_server".to_string(),
-            description: "Register an MCP server in the store.".to_string(),
+            description: "Install or register an MCP server in the store. Use npm source for npx packages, local for directories, github for repos, or url for direct archives.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "id": { "type": "string" },
                     "name": { "type": "string" },
-                    "source": { "type": "string", "enum": ["github", "npm", "local", "url"] },
+                    "source": { "type": "string", "enum": ["github", "npm", "local", "url", "stdio"] },
+                    "source_value": { "type": "string", "description": "package name, owner/repo, path or url depending on source" }
+                },
+                "required": ["id", "name", "source"]
+            }),
+        },
+        ToolDefinition {
+            name: "delete_mcp_server".to_string(),
+            description: "Delete a registered MCP server from the store and stop its running client.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" }
+                },
+                "required": ["id"]
+            }),
+        },
+        ToolDefinition {
+            name: "update_mcp_server".to_string(),
+            description: "Update a registered MCP server configuration or credentials.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
                     "source_value": { "type": "string" },
                     "manifest": { "type": "string" }
                 },
-                "required": ["id", "name", "source", "source_value"]
+                "required": ["id"]
+            }),
+        },
+        ToolDefinition {
+            name: "search_mcp_servers".to_string(),
+            description: "Search the MCP registry and public repositories for available MCP servers.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" }
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolDefinition {
+            name: "discover_mcp_tools".to_string(),
+            description: "Discover and register concrete tools from an installed MCP server. Use this after installing an MCP server or when its tools are not yet exposed.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Installed MCP server id" }
+                },
+                "required": ["id"]
             }),
         },
         ToolDefinition {
@@ -781,8 +845,9 @@ fn harness_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
-
-fn arc_to_sender_ref(arc: &Arc<dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync>) -> &(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync) {
+fn arc_to_sender_ref(
+    arc: &Arc<dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync>,
+) -> &(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync) {
     &**arc
 }
 async fn execute_tool_call(
@@ -816,8 +881,12 @@ async fn execute_tool_call(
         "git_diff" => git_diff(runner, &call.arguments).await,
         "git_commit" => git_commit(runner, &call.arguments).await,
         "codebase_search" => codebase_search(&call.arguments, workspace_dir),
-        "install_mcp_server" => install_mcp_server(store, &call.arguments),
-        "list_mcp_servers" => list_mcp_servers(store),
+        "install_mcp_server" => install_mcp_server(mcp_manager, store, &call.arguments).await,
+        "list_mcp_servers" => list_mcp_servers(mcp_manager, store),
+        "discover_mcp_tools" => discover_mcp_tools(mcp_manager, &call.arguments),
+        "delete_mcp_server" => delete_mcp_server(mcp_manager, store, &call.arguments).await,
+        "update_mcp_server" => update_mcp_server(mcp_manager, store, &call.arguments).await,
+        "search_mcp_servers" => search_mcp_servers(mcp_manager, &call.arguments).await,
         "run_agent" => run_agent(store, &call.arguments),
         "read_file" => read_file(&call.arguments, workspace_dir),
         "write_file" => write_file(&call.arguments, workspace_dir),
@@ -844,21 +913,26 @@ fn create_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
         .map(|s| s.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let name = args["name"].as_str().unwrap_or(&id).to_string();
-    let description = args["description"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let description = args["description"].as_str().unwrap_or_default().to_string();
     let prompt = args["prompt"]
         .as_str()
         .context("prompt is required")?
         .to_string();
     let tools = args["tools"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let mcp_ids = args["mcp_ids"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let now = Utc::now().to_rfc3339();
     let spec = AgentSpec {
@@ -879,9 +953,7 @@ fn create_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
 
 fn update_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
     let id = args["id"].as_str().context("id is required")?;
-    let existing = store
-        .get_agent(id)?
-        .context("agent not found")?;
+    let existing = store.get_agent(id)?.context("agent not found")?;
     let mut spec: AgentSpec = serde_json::from_str(&existing.2)?;
     if let Some(name) = args["name"].as_str() {
         spec.name = name.to_string();
@@ -893,14 +965,26 @@ fn update_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
         spec.prompt = prompt.to_string();
     }
     if let Some(tools) = args["tools"].as_array() {
-        spec.tools = tools.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+        spec.tools = tools
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
     }
     if let Some(mcp_ids) = args["mcp_ids"].as_array() {
-        spec.mcp_ids = mcp_ids.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+        spec.mcp_ids = mcp_ids
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
     }
     spec.updated_at = Utc::now().to_rfc3339();
     let spec_json = serde_json::to_string(&spec)?;
-    store.insert_agent(id, &spec.name, &spec_json, &spec.created_at, &spec.updated_at)?;
+    store.insert_agent(
+        id,
+        &spec.name,
+        &spec_json,
+        &spec.created_at,
+        &spec.updated_at,
+    )?;
     Ok(format!("agent {id} updated"))
 }
 
@@ -964,13 +1048,20 @@ fn parse_workflow_steps(value: &serde_json::Value) -> Vec<WorkflowStep> {
         .map(|arr| {
             arr.iter()
                 .map(|v| WorkflowStep {
-                    id: v["id"].as_str().map(|s| s.to_string()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    id: v["id"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                     name: v["name"].as_str().unwrap_or("step").to_string(),
                     agent_id: AgentId(v["agent_id"].as_str().unwrap_or_default().to_string()),
                     input_template: v["input_template"].as_str().unwrap_or("").to_string(),
                     depends_on: v["depends_on"]
                         .as_array()
-                        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(String::from))
+                                .collect()
+                        })
                         .unwrap_or_default(),
                 })
                 .collect()
@@ -987,7 +1078,11 @@ fn create_team(store: &Store, args: &serde_json::Value) -> Result<String> {
     let metadata = args["metadata"].as_object().cloned().unwrap_or_default();
     let agent_ids: Vec<String> = args["agent_ids"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let metadata_json = serde_json::to_string(&metadata)?;
     let now = Utc::now().to_rfc3339();
@@ -995,7 +1090,10 @@ fn create_team(store: &Store, args: &serde_json::Value) -> Result<String> {
     for agent_id in &agent_ids {
         store.insert_team_member(&id, agent_id)?;
     }
-    Ok(format!("team {id} created/updated with {} members", agent_ids.len()))
+    Ok(format!(
+        "team {id} created/updated with {} members",
+        agent_ids.len()
+    ))
 }
 
 fn update_team(store: &Store, args: &serde_json::Value) -> Result<String> {
@@ -1020,19 +1118,39 @@ fn list_entities(store: &Store, args: &serde_json::Value) -> Result<String> {
     match entity_type {
         "agents" => {
             let rows = store.list_agents()?;
-            Ok(format!("agents: {:?}", rows.into_iter().map(|(id, name, _, _, _)| (id, name)).collect::<Vec<_>>()))
+            Ok(format!(
+                "agents: {:?}",
+                rows.into_iter()
+                    .map(|(id, name, _, _, _)| (id, name))
+                    .collect::<Vec<_>>()
+            ))
         }
         "workflows" => {
             let rows = store.list_workflows()?;
-            Ok(format!("workflows: {:?}", rows.into_iter().map(|(id, name, _, _, _, _, _, _)| (id, name)).collect::<Vec<_>>()))
+            Ok(format!(
+                "workflows: {:?}",
+                rows.into_iter()
+                    .map(|(id, name, _, _, _, _, _, _)| (id, name))
+                    .collect::<Vec<_>>()
+            ))
         }
         "teams" => {
             let rows = store.list_teams()?;
-            Ok(format!("teams: {:?}", rows.into_iter().map(|(id, name, _, _)| (id, name)).collect::<Vec<_>>()))
+            Ok(format!(
+                "teams: {:?}",
+                rows.into_iter()
+                    .map(|(id, name, _, _)| (id, name))
+                    .collect::<Vec<_>>()
+            ))
         }
         "workers" => {
             let rows = store.list_workers()?;
-            Ok(format!("workers: {:?}", rows.into_iter().map(|(id, name, host, status, _, _, _, _)| (id, name, host, status)).collect::<Vec<_>>()))
+            Ok(format!(
+                "workers: {:?}",
+                rows.into_iter()
+                    .map(|(id, name, host, status, _, _, _, _)| (id, name, host, status))
+                    .collect::<Vec<_>>()
+            ))
         }
         _ => Ok(format!("unknown entity type {entity_type}")),
     }
@@ -1042,8 +1160,17 @@ fn search_store(store: &Store, args: &serde_json::Value) -> Result<String> {
     let query = args["query"].as_str().unwrap_or("").to_lowercase();
     let types: HashSet<String> = args["entity_types"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_else(|| ["agents", "workflows", "teams"].iter().map(|s| s.to_string()).collect());
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            ["agents", "workflows", "teams"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        });
 
     let mut results = Vec::new();
     if types.contains("agents") {
@@ -1076,10 +1203,10 @@ fn deploy_agent(
     args: &serde_json::Value,
 ) -> Result<String> {
     let agent_id = args["agent_id"].as_str().context("agent_id is required")?;
-    let worker_id = args["worker_id"].as_str().context("worker_id is required")?;
-    let (_, _, spec_json, _, _) = store
-        .get_agent(agent_id)?
-        .context("agent not found")?;
+    let worker_id = args["worker_id"]
+        .as_str()
+        .context("worker_id is required")?;
+    let (_, _, spec_json, _, _) = store.get_agent(agent_id)?.context("agent not found")?;
     let spec: AgentSpec = serde_json::from_str(&spec_json)?;
     let worker = WorkerId(worker_id.to_string());
     let message = DesktopMessage::UpdateAgent {
@@ -1090,7 +1217,9 @@ fn deploy_agent(
         sender(&worker, message)?;
         Ok(format!("deployed agent {agent_id} to worker {worker_id}"))
     } else {
-        Ok(format!("no deploy channel configured; would deploy agent {agent_id} to worker {worker_id}"))
+        Ok(format!(
+            "no deploy channel configured; would deploy agent {agent_id} to worker {worker_id}"
+        ))
     }
 }
 
@@ -1099,8 +1228,12 @@ fn deploy_workflow(
     deploy_sender: Option<&(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync)>,
     args: &serde_json::Value,
 ) -> Result<String> {
-    let workflow_id = args["workflow_id"].as_str().context("workflow_id is required")?;
-    let worker_id = args["worker_id"].as_str().context("worker_id is required")?;
+    let workflow_id = args["workflow_id"]
+        .as_str()
+        .context("workflow_id is required")?;
+    let worker_id = args["worker_id"]
+        .as_str()
+        .context("worker_id is required")?;
     let rows = store.list_workflows()?;
     let existing = rows
         .into_iter()
@@ -1125,16 +1258,24 @@ fn deploy_workflow(
     };
     if let Some(sender) = deploy_sender {
         sender(&worker, message)?;
-        Ok(format!("deployed workflow {workflow_id} to worker {worker_id}"))
+        Ok(format!(
+            "deployed workflow {workflow_id} to worker {worker_id}"
+        ))
     } else {
         Ok(format!("no deploy channel configured; would deploy workflow {workflow_id} to worker {worker_id}"))
     }
 }
 
 fn schedule_workflow(store: &Store, args: &serde_json::Value) -> Result<String> {
-    let workflow_id = args["workflow_id"].as_str().context("workflow_id is required")?;
-    let trigger_type = args["trigger_type"].as_str().context("trigger_type is required")?;
-    let trigger_value = args["trigger_value"].as_str().context("trigger_value is required")?;
+    let workflow_id = args["workflow_id"]
+        .as_str()
+        .context("workflow_id is required")?;
+    let trigger_type = args["trigger_type"]
+        .as_str()
+        .context("trigger_type is required")?;
+    let trigger_value = args["trigger_value"]
+        .as_str()
+        .context("trigger_value is required")?;
     let rows = store.list_workflows()?;
     let existing = rows
         .into_iter()
@@ -1142,11 +1283,19 @@ fn schedule_workflow(store: &Store, args: &serde_json::Value) -> Result<String> 
         .context("workflow not found")?;
     let mut workflow: Workflow = serde_json::from_str(&existing.3)?;
     workflow.trigger = match trigger_type {
-        "cron" => Trigger::Cron { expression: trigger_value.to_string() },
-        "http" => Trigger::Http { path: trigger_value.to_string() },
+        "cron" => Trigger::Cron {
+            expression: trigger_value.to_string(),
+        },
+        "http" => Trigger::Http {
+            path: trigger_value.to_string(),
+        },
         "heartbeat" => {
-            let interval = trigger_value.parse::<u64>().context("heartbeat interval must be a number")?;
-            Trigger::Heartbeat { interval_seconds: interval }
+            let interval = trigger_value
+                .parse::<u64>()
+                .context("heartbeat interval must be a number")?;
+            Trigger::Heartbeat {
+                interval_seconds: interval,
+            }
         }
         _ => anyhow::bail!("unknown trigger type {trigger_type}"),
     };
@@ -1163,11 +1312,15 @@ fn schedule_workflow(store: &Store, args: &serde_json::Value) -> Result<String> 
         &workflow.created_at,
         &workflow.updated_at,
     )?;
-    Ok(format!("workflow {workflow_id} scheduled with {trigger_type}={trigger_value}"))
+    Ok(format!(
+        "workflow {workflow_id} scheduled with {trigger_type}={trigger_value}"
+    ))
 }
 
 fn get_execution_status(store: &Store, args: &serde_json::Value) -> Result<String> {
-    let execution_id = args["execution_id"].as_str().context("execution_id is required")?;
+    let execution_id = args["execution_id"]
+        .as_str()
+        .context("execution_id is required")?;
     let rows = store.list_executions()?;
     let exec = rows
         .into_iter()
@@ -1204,7 +1357,8 @@ fn edit_file(args: &serde_json::Value, workspace_dir: &std::path::Path) -> Resul
     let old_text = args["old_text"].as_str().context("old_text is required")?;
     let new_text = args["new_text"].as_str().context("new_text is required")?;
     let path = resolve_path(path, workspace_dir)?;
-    let content = std::fs::read_to_string(&path).with_context(|| format!("failed to read {path:?}"))?;
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("failed to read {path:?}"))?;
     let replaced = content.replacen(old_text, new_text, 1);
     if replaced == content {
         anyhow::bail!("old_text not found in file");
@@ -1232,8 +1386,6 @@ fn rename_file(args: &serde_json::Value, workspace_dir: &std::path::Path) -> Res
     Ok(format!("renamed {from:?} to {to:?}"))
 }
 
-
-
 fn delete_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
     let id = args["id"].as_str().context("id is required")?;
     store.delete_agent(id)?;
@@ -1249,12 +1401,14 @@ fn delete_workflow(store: &Store, args: &serde_json::Value) -> Result<String> {
 fn delete_team(store: &Store, args: &serde_json::Value) -> Result<String> {
     let id = args["id"].as_str().context("id is required")?;
     store.delete_team(id)?;
-    
+
     Ok(format!("team {id} deleted"))
 }
 
 async fn git_status(runner: &dyn CommandRunner, _args: &serde_json::Value) -> Result<String> {
-    runner.run("git", &["status".to_string(), "--short".to_string()]).await
+    runner
+        .run("git", &["status".to_string(), "--short".to_string()])
+        .await
 }
 
 async fn git_diff(runner: &dyn CommandRunner, args: &serde_json::Value) -> Result<String> {
@@ -1270,69 +1424,144 @@ async fn git_commit(runner: &dyn CommandRunner, args: &serde_json::Value) -> Res
     let message = args["message"].as_str().context("message is required")?;
     let files: Vec<String> = args["files"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     if !files.is_empty() {
         let mut add_args = vec!["add".to_string()];
         add_args.extend(files);
         runner.run("git", &add_args).await?;
     } else {
-        runner.run("git", &["add".to_string(), "-A".to_string()]).await?;
+        runner
+            .run("git", &["add".to_string(), "-A".to_string()])
+            .await?;
     }
-    runner.run("git", &["commit".to_string(), "-m".to_string(), message.to_string()]).await
+    runner
+        .run(
+            "git",
+            &["commit".to_string(), "-m".to_string(), message.to_string()],
+        )
+        .await
 }
 
 fn codebase_search(args: &serde_json::Value, workspace_dir: &std::path::Path) -> Result<String> {
     let pattern = args["pattern"].as_str().context("pattern is required")?;
-    let search_path = args["path"].as_str().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    let search_path = if search_path.is_absolute() { search_path } else { workspace_dir.join(search_path) };
-    let canonical_base = workspace_dir.canonicalize().unwrap_or_else(|_| workspace_dir.to_path_buf());
-    let canonical_search = search_path.canonicalize().unwrap_or_else(|_| search_path.clone());
+    let search_path = args["path"]
+        .as_str()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let search_path = if search_path.is_absolute() {
+        search_path
+    } else {
+        workspace_dir.join(search_path)
+    };
+    let canonical_base = workspace_dir
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_dir.to_path_buf());
+    let canonical_search = search_path
+        .canonicalize()
+        .unwrap_or_else(|_| search_path.clone());
     if !canonical_search.starts_with(&canonical_base) {
         anyhow::bail!("search path escapes workspace directory");
     }
     let regex = regex_lite::Regex::new(pattern).context("invalid regex")?;
     let mut matches = Vec::new();
-    for entry in walkdir::WalkDir::new(&canonical_search).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(&canonical_search)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path();
-        if !path.is_file() { continue; }
+        if !path.is_file() {
+            continue;
+        }
         if let Ok(content) = std::fs::read_to_string(path) {
             for (i, line) in content.lines().enumerate() {
                 if regex.is_match(line) {
                     matches.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
-                    if matches.len() >= 50 { break; }
+                    if matches.len() >= 50 {
+                        break;
+                    }
                 }
             }
         }
-        if matches.len() >= 50 { break; }
+        if matches.len() >= 50 {
+            break;
+        }
     }
     Ok(format!("{} matches\n{}", matches.len(), matches.join("\n")))
 }
 
-fn install_mcp_server(store: &Store, args: &serde_json::Value) -> Result<String> {
+async fn install_mcp_server(
+    mcp_manager: &McpManager,
+    store: &Store,
+    args: &serde_json::Value,
+) -> Result<String> {
     let id = args["id"].as_str().context("id is required")?;
     let name = args["name"].as_str().context("name is required")?;
     let source = args["source"].as_str().context("source is required")?;
-    let source_value = args["source_value"].as_str().context("source_value is required")?;
-    let manifest = args["manifest"].as_str().unwrap_or("{}");
-    let now = Utc::now().to_rfc3339();
-    store.insert_mcp_server(id, name, source, Some(source_value), manifest, None, &now, &now)?;
-    Ok(format!("mcp server {id} installed"))
+    let source_value = args["source_value"].as_str();
+    let manifest = args["manifest"]
+        .as_str()
+        .and_then(|m| serde_json::from_str::<McpManifest>(m).ok());
+    mcp_manager
+        .install_mcp_server(store, id, name, source, source_value, vec![], manifest)
+        .await
 }
 
-fn list_mcp_servers(store: &Store) -> Result<String> {
-    let rows = store.list_mcp_servers()?;
-    Ok(format!("mcp servers: {:?}", rows.into_iter().map(|(id, name, source, source_value, _, _, _, _)| (id, name, source, source_value)).collect::<Vec<_>>()))
+fn list_mcp_servers(mcp_manager: &McpManager, store: &Store) -> Result<String> {
+    let rows = mcp_manager.list_mcp_servers(store)?;
+    Ok(serde_json::to_string(&rows)?)
+}
+
+async fn delete_mcp_server(
+    mcp_manager: &McpManager,
+    store: &Store,
+    args: &serde_json::Value,
+) -> Result<String> {
+    let id = args["id"].as_str().context("id is required")?;
+    mcp_manager.delete_mcp_server(store, id)
+}
+
+async fn update_mcp_server(
+    mcp_manager: &McpManager,
+    store: &Store,
+    args: &serde_json::Value,
+) -> Result<String> {
+    let id = args["id"].as_str().context("id is required")?;
+    let name = args["name"].as_str();
+    let source_value = args["source_value"].as_str();
+    let manifest = args["manifest"]
+        .as_str()
+        .and_then(|m| serde_json::from_str::<McpManifest>(m).ok());
+    mcp_manager
+        .update_mcp_server(store, id, name, source_value, None, manifest)
+        .await
+}
+
+async fn search_mcp_servers(mcp_manager: &McpManager, args: &serde_json::Value) -> Result<String> {
+    let query = args["query"].as_str().context("query is required")?;
+    let results = mcp_manager.search_mcp_servers(query).await;
+    Ok(serde_json::to_string(&results)?)
+}
+
+fn discover_mcp_tools(mcp_manager: &McpManager, args: &serde_json::Value) -> Result<String> {
+    let id = args["id"].as_str().context("id is required")?;
+    let tools = mcp_manager.discover_and_register(id)?;
+    Ok(serde_json::to_string(&tools)?)
 }
 
 fn run_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
     let agent_id = args["agent_id"].as_str().context("agent_id is required")?;
     let input = args["input"].as_str().unwrap_or("");
-    let (_, _, spec_json, _, _) = store
-        .get_agent(agent_id)?
-        .context("agent not found")?;
+    let (_, _, spec_json, _, _) = store.get_agent(agent_id)?.context("agent not found")?;
     let spec: AgentSpec = serde_json::from_str(&spec_json)?;
-    Ok(format!("ran agent {} with input '{}'\nprompt: {}\ntools: {:?}", spec.id, input, spec.prompt, spec.tools))
+    Ok(format!(
+        "ran agent {} with input '{}'\nprompt: {}\ntools: {:?}",
+        spec.id, input, spec.prompt, spec.tools
+    ))
 }
 
 async fn web_search(args: &serde_json::Value) -> Result<String> {
@@ -1374,7 +1603,10 @@ async fn web_search(args: &serde_json::Value) -> Result<String> {
         if title.is_empty() && snippet.is_empty() {
             continue;
         }
-        results.push(format!("TITLE: {}\nURL: {}\nSNIPPET: {}\n", title, href, snippet));
+        results.push(format!(
+            "TITLE: {}\nURL: {}\nSNIPPET: {}\n",
+            title, href, snippet
+        ));
         if results.len() >= 10 {
             break;
         }
@@ -1443,7 +1675,13 @@ fn html_to_text(html: &str) -> String {
             if text.ends_with('\n') || text.is_empty() {
                 continue;
             }
-            if tag.starts_with("br") || tag.starts_with("p") || tag.starts_with("div") || tag.starts_with("h") || tag.starts_with("li") || tag.starts_with("tr") {
+            if tag.starts_with("br")
+                || tag.starts_with("p")
+                || tag.starts_with("div")
+                || tag.starts_with("h")
+                || tag.starts_with("li")
+                || tag.starts_with("tr")
+            {
                 text.push('\n');
             }
             continue;
@@ -1462,7 +1700,7 @@ fn html_to_text(html: &str) -> String {
 
 fn html_unescape(s: &str) -> String {
     let mut out = s.to_string();
-            let entities = [
+    let entities = [
         ("&amp;", "&"),
         ("&lt;", "<"),
         ("&gt;", ">"),
@@ -1478,7 +1716,15 @@ fn html_unescape(s: &str) -> String {
 }
 
 fn mcp_call(manager: &McpManager, args: &serde_json::Value) -> Result<String> {
-    let result = manager.call_tool("mcp_call", args.clone())?;
+    let server_id = args["server_id"]
+        .as_str()
+        .context("mcp_call requires server_id")?;
+    let tool = args["tool"].as_str().context("mcp_call requires tool")?;
+    let arguments = args
+        .get("arguments")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
+    let result = manager.call_tool_on_server(server_id, tool, arguments)?;
     Ok(result.to_string())
 }
 
@@ -1489,7 +1735,9 @@ fn resolve_path(path: &str, workspace_dir: &std::path::Path) -> Result<PathBuf> 
     } else {
         workspace_dir.join(p)
     };
-    let canonical_base = workspace_dir.canonicalize().unwrap_or_else(|_| workspace_dir.to_path_buf());
+    let canonical_base = workspace_dir
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_dir.to_path_buf());
     let canonical_resolved = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
     if !canonical_resolved.starts_with(&canonical_base) {
         anyhow::bail!("path {path:?} escapes workspace directory {canonical_base:?}");
@@ -1506,7 +1754,9 @@ mod tests {
     fn chat(store: &Store) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        store.insert_chat(&id, "test", None, None, &now, &now).unwrap();
+        store
+            .insert_chat(&id, "test", None, None, &now, &now)
+            .unwrap();
         id
     }
 
@@ -1530,13 +1780,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_harness_create_agent() {
-        let (store, chat_id, harness) = harness_with_tool("create_agent", serde_json::json!({
-            "id": "agent-1",
-            "name": "Greeter",
-            "prompt": "Say hello"
-        }));
-        let events: Vec<_> = harness.run_turn(&chat_id, "make a greeter", "mock", "mock").collect().await;
-        let started = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallStarted { name, .. } if name == "create_agent"));
+        let (store, chat_id, harness) = harness_with_tool(
+            "create_agent",
+            serde_json::json!({
+                "id": "agent-1",
+                "name": "Greeter",
+                "prompt": "Say hello"
+            }),
+        );
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "make a greeter", "mock", "mock")
+            .collect()
+            .await;
+        let started = events.iter().any(
+            |e| matches!(e, HarnessEvent::ToolCallStarted { name, .. } if name == "create_agent"),
+        );
         assert!(started);
         let agents = store.list_agents().unwrap();
         assert_eq!(agents.len(), 1);
@@ -1545,11 +1803,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_harness_run_command_mock() {
-        let (_store, chat_id, harness) = harness_with_tool("run_command", serde_json::json!({
-            "command": "echo",
-            "args": ["hi"]
-        }));
-        let events: Vec<_> = harness.run_turn(&chat_id, "run echo hi", "mock", "mock").collect().await;
+        let (_store, chat_id, harness) = harness_with_tool(
+            "run_command",
+            serde_json::json!({
+                "command": "echo",
+                "args": ["hi"]
+            }),
+        );
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "run echo hi", "mock", "mock")
+            .collect()
+            .await;
         let finished = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("mock ran")));
         assert!(finished);
     }
@@ -1570,8 +1834,13 @@ mod tests {
             },
         ));
         let harness = Harness::new(store).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "do it", "mock", "mock").collect().await;
-        assert!(events.iter().any(|e| matches!(e, HarnessEvent::ToolCallError { .. })));
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "do it", "mock", "mock")
+            .collect()
+            .await;
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, HarnessEvent::ToolCallError { .. })));
     }
 
     #[tokio::test]
@@ -1591,7 +1860,15 @@ mod tests {
             updated_at: now,
         };
         let spec_json = serde_json::to_string(&spec_a).unwrap();
-        store.insert_agent("agent-a", "A", &spec_json, &spec_a.created_at, &spec_a.updated_at).unwrap();
+        store
+            .insert_agent(
+                "agent-a",
+                "A",
+                &spec_json,
+                &spec_a.created_at,
+                &spec_a.updated_at,
+            )
+            .unwrap();
         let llm = Arc::new(MockProvider::new(
             "mock",
             CompletionResponse {
@@ -1614,7 +1891,10 @@ mod tests {
             },
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "make workflow and team", "mock", "mock").collect().await;
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "make workflow and team", "mock", "mock")
+            .collect()
+            .await;
         assert!(events.iter().any(|e| matches!(e, HarnessEvent::Done)));
         assert_eq!(store.list_workflows().unwrap().len(), 1);
         assert_eq!(store.list_teams().unwrap().len(), 1);
@@ -1637,7 +1917,15 @@ mod tests {
             updated_at: now.clone(),
         };
         let spec_json = serde_json::to_string(&spec).unwrap();
-        store.insert_agent("agent-x", "Xavier", &spec_json, &spec.created_at, &spec.updated_at).unwrap();
+        store
+            .insert_agent(
+                "agent-x",
+                "Xavier",
+                &spec_json,
+                &spec.created_at,
+                &spec.updated_at,
+            )
+            .unwrap();
         store.insert_team("team-1", "X-Men", "{}", &now).unwrap();
 
         let llm = Arc::new(MockProvider::new(
@@ -1659,13 +1947,21 @@ mod tests {
             },
         ));
         let harness = Harness::new(store).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "list and search", "mock", "mock").collect().await;
-        let finished: Vec<_> = events.iter().filter_map(|e| match e {
-            HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
-            _ => None,
-        }).collect();
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "list and search", "mock", "mock")
+            .collect()
+            .await;
+        let finished: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
+                _ => None,
+            })
+            .collect();
         assert!(finished.iter().any(|r| r.contains("agent-x")));
-        assert!(finished.iter().any(|r| r.contains("team-1") && r.contains("X-Men")));
+        assert!(finished
+            .iter()
+            .any(|r| r.contains("team-1") && r.contains("X-Men")));
     }
 
     #[tokio::test]
@@ -1675,7 +1971,15 @@ mod tests {
         let _now = Utc::now().to_rfc3339();
         let spec = AgentSpec::new("A", "p");
         let spec_json = serde_json::to_string(&spec).unwrap();
-        store.insert_agent("agent-1", "A", &spec_json, &spec.created_at, &spec.updated_at).unwrap();
+        store
+            .insert_agent(
+                "agent-1",
+                "A",
+                &spec_json,
+                &spec.created_at,
+                &spec.updated_at,
+            )
+            .unwrap();
 
         let llm = Arc::new(MockProvider::new(
             "mock",
@@ -1689,7 +1993,10 @@ mod tests {
             },
         ));
         let harness = Harness::new(store).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "deploy", "mock", "mock").collect().await;
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "deploy", "mock", "mock")
+            .collect()
+            .await;
         let finished = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("no deploy channel")));
         assert!(finished);
     }
@@ -1701,7 +2008,18 @@ mod tests {
         let wf = Workflow::new("wf", "").with_steps(vec![]);
         let spec_json = serde_json::to_string(&wf).unwrap();
         let trigger_str = serde_json::to_string(&wf.trigger).unwrap();
-        store.insert_workflow(&wf.id.to_string(), &wf.name, &wf.description, &spec_json, &trigger_str, true, &wf.created_at, &wf.updated_at).unwrap();
+        store
+            .insert_workflow(
+                &wf.id.to_string(),
+                &wf.name,
+                &wf.description,
+                &spec_json,
+                &trigger_str,
+                true,
+                &wf.created_at,
+                &wf.updated_at,
+            )
+            .unwrap();
 
         let llm = Arc::new(MockProvider::new(
             "mock",
@@ -1715,7 +2033,10 @@ mod tests {
             },
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "schedule", "mock", "mock").collect().await;
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "schedule", "mock", "mock")
+            .collect()
+            .await;
         let finished = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("scheduled")));
         assert!(finished);
 
@@ -1751,11 +2072,17 @@ mod tests {
             },
         ));
         let harness = Harness::new(store).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "file ops", "mock", "mock").collect().await;
-        let finished: Vec<_> = events.iter().filter_map(|e| match e {
-            HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
-            _ => None,
-        }).collect();
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "file ops", "mock", "mock")
+            .collect()
+            .await;
+        let finished: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
+                _ => None,
+            })
+            .collect();
         assert!(finished.iter().any(|r| r.contains("harness_test.txt")));
         assert!(finished.last().unwrap().contains("hello Goble"));
         std::fs::remove_file("harness_test.txt").ok();
@@ -1778,10 +2105,12 @@ mod tests {
         ));
         let runner = Arc::new(SandboxedCommandRunner::default_tools());
         let harness = Harness::new(store).with_llm(llm).with_runner(runner);
-        let events: Vec<_> = harness.run_turn(&chat_id, "dangerous", "mock", "mock").collect().await;
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "dangerous", "mock", "mock")
+            .collect()
+            .await;
         assert!(events.iter().any(|e| matches!(e, HarnessEvent::ToolCallError { message, .. } if message.contains("not in the allowed list"))));
     }
-
 
     #[tokio::test]
     async fn test_harness_delete_entities() {
@@ -1789,26 +2118,60 @@ mod tests {
         let chat_id = chat(&store);
         let now = Utc::now().to_rfc3339();
         let spec = AgentSpec::new("A", "p");
-        store.insert_agent("agent-1", "A", &serde_json::to_string(&spec).unwrap(), &spec.created_at, &spec.updated_at).unwrap();
+        store
+            .insert_agent(
+                "agent-1",
+                "A",
+                &serde_json::to_string(&spec).unwrap(),
+                &spec.created_at,
+                &spec.updated_at,
+            )
+            .unwrap();
         store.insert_team("team-1", "T", "{}", &now).unwrap();
         let wf = Workflow::new("wf", "").with_steps(vec![]);
         let spec_json = serde_json::to_string(&wf).unwrap();
         let trigger_str = serde_json::to_string(&wf.trigger).unwrap();
-        store.insert_workflow(&wf.id.to_string(), &wf.name, &wf.description, &spec_json, &trigger_str, true, &wf.created_at, &wf.updated_at).unwrap();
+        store
+            .insert_workflow(
+                &wf.id.to_string(),
+                &wf.name,
+                &wf.description,
+                &spec_json,
+                &trigger_str,
+                true,
+                &wf.created_at,
+                &wf.updated_at,
+            )
+            .unwrap();
 
         let llm = Arc::new(MockProvider::new(
             "mock",
             CompletionResponse {
                 content: String::new(),
                 tool_calls: vec![
-                    LlmToolCall { id: "tc_del_a".to_string(), name: "delete_agent".to_string(), arguments: serde_json::json!({"id": "agent-1"}) },
-                    LlmToolCall { id: "tc_del_t".to_string(), name: "delete_team".to_string(), arguments: serde_json::json!({"id": "team-1"}) },
-                    LlmToolCall { id: "tc_del_w".to_string(), name: "delete_workflow".to_string(), arguments: serde_json::json!({"id": wf.id.to_string()}) },
+                    LlmToolCall {
+                        id: "tc_del_a".to_string(),
+                        name: "delete_agent".to_string(),
+                        arguments: serde_json::json!({"id": "agent-1"}),
+                    },
+                    LlmToolCall {
+                        id: "tc_del_t".to_string(),
+                        name: "delete_team".to_string(),
+                        arguments: serde_json::json!({"id": "team-1"}),
+                    },
+                    LlmToolCall {
+                        id: "tc_del_w".to_string(),
+                        name: "delete_workflow".to_string(),
+                        arguments: serde_json::json!({"id": wf.id.to_string()}),
+                    },
                 ],
             },
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
-        harness.run_turn(&chat_id, "delete all", "mock", "mock").collect::<Vec<_>>().await;
+        harness
+            .run_turn(&chat_id, "delete all", "mock", "mock")
+            .collect::<Vec<_>>()
+            .await;
         assert!(store.list_agents().unwrap().is_empty());
         assert!(store.list_teams().unwrap().is_empty());
         assert!(store.list_workflows().unwrap().is_empty());
@@ -1823,13 +2186,18 @@ mod tests {
             "mock",
             CompletionResponse {
                 content: String::new(),
-                tool_calls: vec![
-                    LlmToolCall { id: "tc_ren".to_string(), name: "rename_file".to_string(), arguments: serde_json::json!({"from": "harness_tmp.txt", "to": "harness_renamed.txt"}) },
-                ],
+                tool_calls: vec![LlmToolCall {
+                    id: "tc_ren".to_string(),
+                    name: "rename_file".to_string(),
+                    arguments: serde_json::json!({"from": "harness_tmp.txt", "to": "harness_renamed.txt"}),
+                }],
             },
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "rename", "mock", "mock").collect().await;
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "rename", "mock", "mock")
+            .collect()
+            .await;
         assert!(events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("renamed"))));
         assert!(std::fs::metadata("harness_renamed.txt").is_ok());
 
@@ -1837,13 +2205,18 @@ mod tests {
             "mock",
             CompletionResponse {
                 content: String::new(),
-                tool_calls: vec![
-                    LlmToolCall { id: "tc_del".to_string(), name: "delete_file".to_string(), arguments: serde_json::json!({"path": "harness_renamed.txt"}) },
-                ],
+                tool_calls: vec![LlmToolCall {
+                    id: "tc_del".to_string(),
+                    name: "delete_file".to_string(),
+                    arguments: serde_json::json!({"path": "harness_renamed.txt"}),
+                }],
             },
         ));
         let harness2 = Harness::new(store).with_llm(llm2);
-        harness2.run_turn(&chat_id, "delete", "mock", "mock").collect::<Vec<_>>().await;
+        harness2
+            .run_turn(&chat_id, "delete", "mock", "mock")
+            .collect::<Vec<_>>()
+            .await;
         assert!(!PathBuf::from("harness_renamed.txt").exists());
     }
 
@@ -1852,26 +2225,52 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let chat_id = chat(&store);
         let spec = AgentSpec::new("Greeter", "say hello");
-        store.insert_agent("agent-1", "Greeter", &serde_json::to_string(&spec).unwrap(), &spec.created_at, &spec.updated_at).unwrap();
+        store
+            .insert_agent(
+                "agent-1",
+                "Greeter",
+                &serde_json::to_string(&spec).unwrap(),
+                &spec.created_at,
+                &spec.updated_at,
+            )
+            .unwrap();
 
         let llm = Arc::new(MockProvider::new(
             "mock",
             CompletionResponse {
                 content: String::new(),
                 tool_calls: vec![
-                    LlmToolCall { id: "tc_git".to_string(), name: "git_status".to_string(), arguments: serde_json::json!({}) },
-                    LlmToolCall { id: "tc_run".to_string(), name: "run_agent".to_string(), arguments: serde_json::json!({"agent_id": "agent-1", "input": "hi"}) },
+                    LlmToolCall {
+                        id: "tc_git".to_string(),
+                        name: "git_status".to_string(),
+                        arguments: serde_json::json!({}),
+                    },
+                    LlmToolCall {
+                        id: "tc_run".to_string(),
+                        name: "run_agent".to_string(),
+                        arguments: serde_json::json!({"agent_id": "agent-1", "input": "hi"}),
+                    },
                 ],
             },
         ));
         let harness = Harness::new(store).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "git and run", "mock", "mock").collect().await;
-        let finished: Vec<_> = events.iter().filter_map(|e| match e {
-            HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
-            _ => None,
-        }).collect();
-        assert!(finished.iter().any(|r| r.contains("mock ran") && r.contains("git")));
-        assert!(finished.iter().any(|r| r.contains("ran agent") && r.contains("say hello")));
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "git and run", "mock", "mock")
+            .collect()
+            .await;
+        let finished: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(finished
+            .iter()
+            .any(|r| r.contains("mock ran") && r.contains("git")));
+        assert!(finished
+            .iter()
+            .any(|r| r.contains("ran agent") && r.contains("say hello")));
     }
 
     #[tokio::test]
@@ -1883,17 +2282,31 @@ mod tests {
             CompletionResponse {
                 content: String::new(),
                 tool_calls: vec![
-                    LlmToolCall { id: "tc_mcp".to_string(), name: "install_mcp_server".to_string(), arguments: serde_json::json!({"id": "mcp-1", "name": "Files", "source": "npm", "source_value": "@modelcontextprotocol/server-files"}) },
-                    LlmToolCall { id: "tc_list".to_string(), name: "list_mcp_servers".to_string(), arguments: serde_json::json!({}) },
+                    LlmToolCall {
+                        id: "tc_mcp".to_string(),
+                        name: "install_mcp_server".to_string(),
+                        arguments: serde_json::json!({"id": "mcp-1", "name": "Files", "source": "npm", "source_value": "@modelcontextprotocol/server-files"}),
+                    },
+                    LlmToolCall {
+                        id: "tc_list".to_string(),
+                        name: "list_mcp_servers".to_string(),
+                        arguments: serde_json::json!({}),
+                    },
                 ],
             },
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
-        let events: Vec<_> = harness.run_turn(&chat_id, "mcp", "mock", "mock").collect().await;
-        let finished: Vec<_> = events.iter().filter_map(|e| match e {
-            HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
-            _ => None,
-        }).collect();
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "mcp", "mock", "mock")
+            .collect()
+            .await;
+        let finished: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
+                _ => None,
+            })
+            .collect();
         assert!(finished.iter().any(|r| r.contains("mcp-1")));
         assert_eq!(store.list_mcp_servers().unwrap().len(), 1);
     }
@@ -1907,5 +2320,154 @@ mod tests {
         assert!(tools.iter().any(|t| t.name == "search_store"));
         assert!(tools.iter().any(|t| t.name == "deploy_agent"));
         assert!(tools.iter().any(|t| t.name == "read_file"));
+    }
+
+    #[tokio::test]
+    async fn test_harness_search_mcp_servers_builtin() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![LlmToolCall {
+                    id: "tc_search".to_string(),
+                    name: "search_mcp_servers".to_string(),
+                    arguments: serde_json::json!({"query": "filesystem"}),
+                }],
+            },
+        ));
+        let harness = Harness::new(store).with_llm(llm);
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "find mcp", "mock", "mock")
+            .collect()
+            .await;
+        let finished = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("mcp-filesystem")));
+        assert!(finished);
+    }
+
+    #[tokio::test]
+    async fn test_harness_install_update_delete_mcp_server() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![
+                    LlmToolCall {
+                        id: "tc_install".to_string(),
+                        name: "install_mcp_server".to_string(),
+                        arguments: serde_json::json!({"id": "mcp-2", "name": "Test", "source": "npm", "source_value": "@modelcontextprotocol/server-sequential-thinking"}),
+                    },
+                    LlmToolCall {
+                        id: "tc_list".to_string(),
+                        name: "list_mcp_servers".to_string(),
+                        arguments: serde_json::json!({}),
+                    },
+                    LlmToolCall {
+                        id: "tc_update".to_string(),
+                        name: "update_mcp_server".to_string(),
+                        arguments: serde_json::json!({"id": "mcp-2", "name": "Test Updated"}),
+                    },
+                    LlmToolCall {
+                        id: "tc_delete".to_string(),
+                        name: "delete_mcp_server".to_string(),
+                        arguments: serde_json::json!({"id": "mcp-2"}),
+                    },
+                ],
+            },
+        ));
+        let harness = Harness::new(store.clone()).with_llm(llm);
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "manage mcp", "mock", "mock")
+            .collect()
+            .await;
+        let finished: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(finished
+            .iter()
+            .any(|r| r.contains("mcp-2") && r.contains("installed")));
+        assert!(finished
+            .iter()
+            .any(|r| r.contains("mcp server mcp-2 updated")));
+        assert!(finished
+            .iter()
+            .any(|r| r.contains("mcp server mcp-2 deleted")));
+        assert!(store.list_mcp_servers().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_harness_discover_and_call_mcp_tool() {
+        use crate::mcp_installer::McpInstaller;
+        use crate::mcp_manager::McpManager;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let server_path = src.join("index.js");
+        let script = include_str!("../tests/mcp_mock_server.js");
+        std::fs::write(&server_path, script).unwrap();
+
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let manager = McpManager::new().with_installer(McpInstaller::new(tmp.path().join("cache")));
+        manager
+            .install_mcp_server(
+                &store,
+                "mock-echo",
+                "Mock Echo",
+                "local",
+                Some(&src.to_string_lossy()),
+                vec![],
+                Some(crate::agent::McpManifest {
+                    schema_version: "1".to_string(),
+                    entrypoint: "index.js".to_string(),
+                    runtime: crate::agent::McpRuntime::V8Isolate,
+                    auth_schema: vec![],
+                    capabilities: vec!["tools".to_string()],
+                    config_schema: serde_json::json!({}),
+                }),
+            )
+            .await
+            .unwrap();
+
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![
+                    LlmToolCall {
+                        id: "tc_discover".to_string(),
+                        name: "discover_mcp_tools".to_string(),
+                        arguments: serde_json::json!({"id": "mock-echo"}),
+                    },
+                    LlmToolCall {
+                        id: "tc_call".to_string(),
+                        name: "mcp_mock_echo_echo".to_string(),
+                        arguments: serde_json::json!({"message": "hello from harness"}),
+                    },
+                ],
+            },
+        ));
+        let harness = Harness::new(store).with_llm(llm).with_mcp_manager(manager);
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "use mcp", "mock", "mock")
+            .collect()
+            .await;
+        let finished: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(finished.iter().any(|r| r.contains("echo")));
+        assert!(finished.iter().any(|r| r.contains("hello from harness")));
     }
 }

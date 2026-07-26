@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use tokio::io::{AsyncBufReadExt, BufReader};
 use goble_core::agent::AgentSpec;
 use goble_core::protocol::DesktopMessage;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 fn find_free_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -14,7 +14,8 @@ fn find_free_port() -> u16 {
 async fn test_worker_health_and_websocket_run_agent() {
     let port = find_free_port();
     let workspace = tempfile::TempDir::new().unwrap();
-    let bin = std::env::var("GOBLIN_BIN").unwrap_or_else(|_| "/root/goble/target/release/goblin".to_string());
+    let bin = std::env::var("GOBLIN_BIN")
+        .unwrap_or_else(|_| "/root/goble/target/release/goblin".to_string());
     assert!(std::path::Path::new(&bin).exists(), "goblin binary not found at {bin}; build with `cargo build --release --package goblin-worker`");
 
     let mut child = tokio::process::Command::new(&bin)

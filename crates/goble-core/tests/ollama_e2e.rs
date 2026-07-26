@@ -13,7 +13,10 @@ fn find_free_port() -> u16 {
 async fn test_ollama_provider_e2e() {
     let port = find_free_port();
     let mut child = Command::new("python3")
-        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/ollama_server.py"))
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/ollama_server.py"
+        ))
         .arg(port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -35,14 +38,25 @@ async fn test_ollama_provider_e2e() {
     assert!(ready, "mock server did not start");
 
     let provider = goble_core::llm::OllamaProvider::new(base_url.clone());
-    let request = CompletionRequest::new("ollama", "llama3.1").with_messages(vec![goble_core::llm::Message { role: goble_core::llm::Role::User, content: "hi".to_string(), tool_calls: None }]);
+    let request = CompletionRequest::new("ollama", "llama3.1").with_messages(vec![
+        goble_core::llm::Message {
+            role: goble_core::llm::Role::User,
+            content: "hi".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+    ]);
     let mut stream = provider.complete_stream(request).await.expect("stream");
     let mut content = String::new();
     while let Some(event) = stream.next().await {
         match event {
-            goble_core::llm::CompletionStreamEvent::AssistantDelta(delta) => content.push_str(&delta),
+            goble_core::llm::CompletionStreamEvent::AssistantDelta(delta) => {
+                content.push_str(&delta)
+            }
             goble_core::llm::CompletionStreamEvent::Done => break,
-            goble_core::llm::CompletionStreamEvent::Error(msg) => eprintln!("stream error: {}", msg),
+            goble_core::llm::CompletionStreamEvent::Error(msg) => {
+                eprintln!("stream error: {}", msg)
+            }
             _ => {}
         }
     }

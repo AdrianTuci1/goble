@@ -80,6 +80,18 @@ export interface VaultSecretInfo {
   updated_at: string;
 }
 
+export interface McpServerSummary {
+  id: string;
+  name: string;
+  source: string;
+  source_value?: string | null;
+  capabilities: string[];
+  auth_required: boolean;
+  discovered_tools: string[];
+  secret_ids: string[];
+  enabled_tools: string[];
+}
+
 export interface LogEntry {
   id: string;
   timestamp: string;
@@ -97,6 +109,7 @@ interface AppState {
   teams: TeamInfo[];
   executions: ExecutionInfo[];
   vaultSecrets: VaultSecretInfo[];
+  mcpServers: McpServerSummary[];
   isWorkflowDrawerOpen: boolean;
   isSettingsOpen: boolean;
   setWorkers: (workers: WorkerInfo[]) => void;
@@ -119,6 +132,10 @@ interface AppState {
   addTeam: (team: TeamInfo) => void;
   setExecutions: (executions: ExecutionInfo[]) => void;
   setVaultSecrets: (secrets: VaultSecretInfo[]) => void;
+  setMcpServers: (servers: McpServerSummary[]) => void;
+  addMcpServer: (server: McpServerSummary) => void;
+  removeMcpServer: (id: string) => void;
+  updateMcpServer: (server: McpServerSummary) => void;
   toggleWorkflowDrawer: () => void;
   setSettingsOpen: (open: boolean) => void;
 }
@@ -134,6 +151,7 @@ export const useStore = create<AppState>((set) => ({
   teams: [],
   executions: [],
   vaultSecrets: [],
+  mcpServers: [],
   isWorkflowDrawerOpen: false,
   isSettingsOpen: false,
   setWorkers: (workers) => set({ workers }),
@@ -154,7 +172,7 @@ export const useStore = create<AppState>((set) => ({
         c.id === id ? { ...c, ...updates } : c
       ),
     })),
-  setActiveConversation: (id: string | null) => set({ activeConversationId: id }),
+  setActiveConversation: (id) => set({ activeConversationId: id }),
   setMessages: (chatId, messages) =>
     set((state) => ({
       messages: { ...state.messages, [chatId]: messages },
@@ -216,6 +234,19 @@ export const useStore = create<AppState>((set) => ({
   addTeam: (team) => set((state) => ({ teams: [team, ...state.teams] })),
   setExecutions: (executions) => set({ executions }),
   setVaultSecrets: (vaultSecrets) => set({ vaultSecrets }),
+  setMcpServers: (mcpServers) => set({ mcpServers }),
+  addMcpServer: (server) =>
+    set((state) => ({ mcpServers: [server, ...state.mcpServers] })),
+  removeMcpServer: (id) =>
+    set((state) => ({
+      mcpServers: state.mcpServers.filter((s) => s.id !== id),
+    })),
+  updateMcpServer: (server) =>
+    set((state) => ({
+      mcpServers: state.mcpServers.map((s) =>
+        s.id === server.id ? server : s
+      ),
+    })),
   toggleWorkflowDrawer: () =>
     set((state) => ({ isWorkflowDrawerOpen: !state.isWorkflowDrawerOpen })),
   setSettingsOpen: (open) => set({ isSettingsOpen: open }),

@@ -107,6 +107,8 @@ impl Store {
                 source_value TEXT,
                 manifest TEXT NOT NULL,
                 credentials_key TEXT,
+                secret_ids TEXT NOT NULL DEFAULT '[]',
+                enabled_tools TEXT NOT NULL DEFAULT '[]',
                 installed_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             ) STRICT;
@@ -115,6 +117,23 @@ impl Store {
                 key TEXT PRIMARY KEY,
                 encrypted_value BLOB NOT NULL,
                 metadata TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            ) STRICT;
+
+            CREATE TABLE IF NOT EXISTS principals (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            ) STRICT;
+
+            CREATE TABLE IF NOT EXISTS mcp_accounts (
+                id TEXT PRIMARY KEY,
+                server_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                secret_ids TEXT NOT NULL,
+                created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             ) STRICT;
 
@@ -133,6 +152,7 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_executions_agent_id ON executions(agent_id);
             CREATE INDEX IF NOT EXISTS idx_team_members_team_id ON team_members(team_id);
             CREATE INDEX IF NOT EXISTS idx_workflows_updated_at ON workflows(updated_at);
+            CREATE INDEX IF NOT EXISTS idx_mcp_accounts_principal ON mcp_accounts(principal_id);
 
             CREATE TABLE IF NOT EXISTS llm_settings (
                 provider TEXT PRIMARY KEY,
@@ -165,9 +185,14 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_llm_setting(&self, provider: &str) -> Result<Option<(String, Option<String>, String, Option<f32>)>> {
+    pub fn get_llm_setting(
+        &self,
+        provider: &str,
+    ) -> Result<Option<(String, Option<String>, String, Option<f32>)>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT api_key, base_url, model, temperature FROM llm_settings WHERE provider = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT api_key, base_url, model, temperature FROM llm_settings WHERE provider = ?1",
+        )?;
         let mut rows = stmt.query(params![provider])?;
         if let Some(row) = rows.next()? {
             Ok(Some((
@@ -343,13 +368,27 @@ impl Store {
         let mut stmt = conn.prepare("SELECT provider, model FROM chats WHERE id = ?1")?;
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? {
-            Ok(Some((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)))
+            Ok(Some((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            )))
         } else {
             Ok(None)
         }
     }
 
-    pub fn list_chats(&self) -> Result<Vec<(String, String, Option<String>, Option<String>, String, String)>> {
+    pub fn list_chats(
+        &self,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        )>,
+    > {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, title, provider, model, created_at, updated_at FROM chats ORDER BY updated_at DESC")?;
         let rows = stmt.query_map([], |r| {
@@ -411,16 +450,26 @@ impl Store {
         source_value: Option<&str>,
         manifest: &str,
         credentials_key: Option<&str>,
+        secret_ids: &str,
+        enabled_tools: &str,
         installed_at: &str,
         updated_at: &str,
     ) -> Result<()> {
         self.conn.lock().execute(
-            "INSERT INTO mcp_servers (id, name, source, source_value, manifest, credentials_key, installed_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO mcp_servers (id, name, source, source_value, manifest, credentials_key, secret_ids, enabled_tools, installed_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET name=excluded.name, source=excluded.source, source_value=excluded.source_value, manifest=excluded.manifest,
-                                           credentials_key=excluded.credentials_key, updated_at=excluded.updated_at",
-            params![id, name, source, source_value, manifest, credentials_key, installed_at, updated_at],
+                                           credentials_key=excluded.credentials_key, secret_ids=excluded.secret_ids, enabled_tools=excluded.enabled_tools,
+                                           updated_at=excluded.updated_at",
+            params![id, name, source, source_value, manifest, credentials_key, secret_ids, enabled_tools, installed_at, updated_at],
         )?;
+        Ok(())
+    }
+
+    pub fn delete_mcp_server(&self, id: &str) -> Result<()> {
+        self.conn
+            .lock()
+            .execute("DELETE FROM mcp_servers WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -436,10 +485,12 @@ impl Store {
             Option<String>,
             String,
             String,
+            String,
+            String,
         )>,
     > {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT id, name, source, source_value, manifest, credentials_key, installed_at, updated_at FROM mcp_servers ORDER BY updated_at DESC")?;
+        let mut stmt = conn.prepare("SELECT id, name, source, source_value, manifest, credentials_key, secret_ids, enabled_tools, installed_at, updated_at FROM mcp_servers ORDER BY updated_at DESC")?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -450,9 +501,153 @@ impl Store {
                 r.get::<_, Option<String>>(5)?,
                 r.get::<_, String>(6)?,
                 r.get::<_, String>(7)?,
+                r.get::<_, String>(8)?,
+                r.get::<_, String>(9)?,
             ))
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn insert_principal(
+        &self,
+        id: &str,
+        kind: &str,
+        name: &str,
+        created_at: &str,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO principals (id, kind, name, created_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, name=excluded.name",
+            params![id, kind, name, created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_principals(&self) -> Result<Vec<(String, String, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT id, kind, name, created_at FROM principals ORDER BY created_at ASC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_principal(&self, id: &str) -> Result<Option<(String, String, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT id, kind, name, created_at FROM principals WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn delete_principal(&self, id: &str) -> Result<()> {
+        self.conn
+            .lock()
+            .execute("DELETE FROM principals WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn insert_mcp_account(
+        &self,
+        id: &str,
+        server_id: &str,
+        principal_id: &str,
+        name: &str,
+        secret_ids: &str,
+        created_at: &str,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO mcp_accounts (id, server_id, principal_id, name, secret_ids, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET server_id=excluded.server_id, principal_id=excluded.principal_id,
+                                           name=excluded.name, secret_ids=excluded.secret_ids, updated_at=excluded.updated_at",
+            params![id, server_id, principal_id, name, secret_ids, created_at, updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_mcp_accounts(
+        &self,
+        principal_id: Option<&str>,
+    ) -> Result<Vec<(String, String, String, String, String, String, String)>> {
+        let conn = self.conn.lock();
+        if let Some(pid) = principal_id {
+            let mut stmt = conn.prepare(
+                "SELECT id, server_id, principal_id, name, secret_ids, created_at, updated_at FROM mcp_accounts WHERE principal_id = ?1 ORDER BY updated_at DESC",
+            )?;
+            let rows = stmt.query_map(params![pid], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
+                ))
+            })?;
+            return rows.collect::<Result<Vec<_>, _>>().map_err(Into::into);
+        }
+        let mut stmt = conn.prepare(
+            "SELECT id, server_id, principal_id, name, secret_ids, created_at, updated_at FROM mcp_accounts ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_mcp_account(
+        &self,
+        id: &str,
+    ) -> Result<Option<(String, String, String, String, String, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, server_id, principal_id, name, secret_ids, created_at, updated_at FROM mcp_accounts WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn delete_mcp_account(&self, id: &str) -> Result<()> {
+        self.conn
+            .lock()
+            .execute("DELETE FROM mcp_accounts WHERE id = ?1", params![id])?;
+        Ok(())
     }
 
     pub fn list_teams(&self) -> Result<Vec<(String, String, String, String)>> {
@@ -582,10 +777,9 @@ impl Store {
     }
 
     pub fn delete_workflow(&self, id: &str) -> Result<()> {
-        self.conn.lock().execute(
-            "DELETE FROM workflows WHERE id = ?1",
-            params![id],
-        )?;
+        self.conn
+            .lock()
+            .execute("DELETE FROM workflows WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -610,7 +804,17 @@ impl Store {
 
     pub fn list_executions(
         &self,
-    ) -> Result<Vec<(String, Option<String>, Option<String>, String, String, String, Option<String>)>> {
+    ) -> Result<
+        Vec<(
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            String,
+            Option<String>,
+        )>,
+    > {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, agent_id, worker_id, status, trace, started_at, finished_at FROM executions ORDER BY started_at DESC")?;
         let rows = stmt.query_map([], |r| {
@@ -701,17 +905,17 @@ mod tests {
     fn test_chat_messages() {
         let store = Store::open_in_memory().unwrap();
         store
-            .insert_chat("c1",  "Test", None, None,  "2024-01-01T00:00:00Z",  "2024-01-01T00:00:00Z")
+            .insert_chat(
+                "c1",
+                "Test",
+                None,
+                None,
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:00Z",
+            )
             .unwrap();
         store
-            .insert_chat_message(
-                "m1",
-                "c1",
-                "user",
-                "hello",
-                None,
-                "2024-01-01T00:00:01Z",
-            )
+            .insert_chat_message("m1", "c1", "user", "hello", None, "2024-01-01T00:00:01Z")
             .unwrap();
         let msgs = store.list_chat_messages("c1").unwrap();
         assert_eq!(msgs.len(), 1);
@@ -729,6 +933,8 @@ mod tests {
                 Some("@modelcontextprotocol/server-files"),
                 "{}",
                 None,
+                "[]",
+                "[]",
                 "2024-01-01T00:00:00Z",
                 "2024-01-01T00:00:00Z",
             )
@@ -815,7 +1021,13 @@ mod tests {
             let store = Store::open(&path).unwrap();
             store.set_setting("x", "y").unwrap();
             store
-                .insert_agent("a1", "agent", "{}", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+                .insert_agent(
+                    "a1",
+                    "agent",
+                    "{}",
+                    "2024-01-01T00:00:00Z",
+                    "2024-01-01T00:00:00Z",
+                )
                 .unwrap();
         }
         let store = Store::open(&path).unwrap();

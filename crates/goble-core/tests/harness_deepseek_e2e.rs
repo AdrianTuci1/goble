@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use futures::StreamExt;
 use goble_core::agent::{McpManifest, McpRuntime, McpServer, McpSource};
@@ -11,7 +11,15 @@ use goble_core::store::Store;
 fn create_chat(store: &Store, title: &str) -> String {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    store.insert_chat(&id, title, Some("deepseek"), Some("deepseek-v4-pro"), &now, &now)
+    store
+        .insert_chat(
+            &id,
+            title,
+            Some("deepseek"),
+            Some("deepseek-v4-pro"),
+            &now,
+            &now,
+        )
         .expect("insert chat");
     id
 }
@@ -21,24 +29,38 @@ fn deepseek_provider() -> Arc<dyn goble_core::llm::LlmProvider> {
         .expect("deepseek key file")
         .trim()
         .to_string();
-    Arc::new(OpenAiProvider::new("deepseek", api_key, "https://api.deepseek.com/v1"))
+    Arc::new(OpenAiProvider::new(
+        "deepseek",
+        api_key,
+        "https://api.deepseek.com/v1",
+    ))
 }
 
 fn insert_mcp_server(store: &Store, server: &goble_core::agent::McpServer) {
-    let source = serde_json::to_string(&server.source).unwrap();
+    let source_value = match &server.source {
+        goble_core::agent::McpSource::Local { path } => Some(path.as_str()),
+        _ => serde_json::to_string(&server.source)
+            .ok()
+            .map(|s| s.leak())
+            .map(|s| s as &str),
+    };
     let manifest = serde_json::to_string(&server.manifest).unwrap();
     let now = server.installed_at.to_rfc3339();
     let updated = server.updated_at.to_rfc3339();
-    store.insert_mcp_server(
-        &server.id,
-        &server.name,
-        "local",
-        Some(&source),
-        &manifest,
-        server.credentials_key.as_deref(),
-        &now,
-        &updated,
-    ).expect("insert mcp server");
+    store
+        .insert_mcp_server(
+            &server.id,
+            &server.name,
+            "local",
+            source_value,
+            &manifest,
+            server.credentials_key.as_deref(),
+            "[]",
+            "[]",
+            &now,
+            &updated,
+        )
+        .expect("insert mcp server");
 }
 
 #[tokio::test]
@@ -47,7 +69,12 @@ async fn test_harness_deepseek_creates_agent_and_writes_file() {
     let chat_id = create_chat(&store, "deepseek harness test");
 
     let runner = Arc::new(SandboxedCommandRunner::new(
-        HashSet::from(["echo".to_string(), "ls".to_string(), "cat".to_string(), "pwd".to_string()]),
+        HashSet::from([
+            "echo".to_string(),
+            "ls".to_string(),
+            "cat".to_string(),
+            "pwd".to_string(),
+        ]),
         30,
         std::env::current_dir().unwrap(),
     ));
@@ -78,13 +105,19 @@ async fn test_harness_deepseek_creates_agent_and_writes_file() {
 
     // Verify the agent was created
     let agents = store.list_agents().expect("list agents");
-    assert!(agents.iter().any(|a| a.1 == "greeter"), "greeter agent not found: {agents:?}");
+    assert!(
+        agents.iter().any(|a| a.1 == "greeter"),
+        "greeter agent not found: {agents:?}"
+    );
 
     // Verify file was written
     let path = std::path::Path::new("greeter.txt");
     assert!(path.exists(), "greeter.txt not written");
     let content = std::fs::read_to_string(path).unwrap();
-    assert!(content.contains("hello from goble agent"), "unexpected content: {content}");
+    assert!(
+        content.contains("hello from goble agent"),
+        "unexpected content: {content}"
+    );
     std::fs::remove_file(path).ok();
 }
 
@@ -195,8 +228,14 @@ async fn test_harness_deepseek_generates_web_server_project() {
     assert!(errors.is_empty(), "harness errors: {errors:?}");
 
     // Verify project files
-    assert!(project_dir.join("Cargo.toml").exists(), "Cargo.toml missing");
-    assert!(project_dir.join("src/main.rs").exists(), "src/main.rs missing");
+    assert!(
+        project_dir.join("Cargo.toml").exists(),
+        "Cargo.toml missing"
+    );
+    assert!(
+        project_dir.join("src/main.rs").exists(),
+        "src/main.rs missing"
+    );
     let main_rs = std::fs::read_to_string(project_dir.join("src/main.rs")).unwrap();
     assert!(main_rs.contains("fn main"), "main.rs invalid: {main_rs}");
 }

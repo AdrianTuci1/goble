@@ -3,16 +3,28 @@ name: Release Build
 on:
   workflow_dispatch:
     inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: true
+        type: string
       target:
-        description: 'Target triple (optional)'
+        description: 'Rust target triple'
         required: false
         default: 'x86_64-unknown-linux-gnu'
         type: string
-      upload_artifacts:
-        description: 'Upload build artifacts'
+      draft:
+        description: 'Create as draft release'
         required: false
         default: true
         type: boolean
+      prerelease:
+        description: 'Mark as prerelease'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -79,8 +91,32 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri build --target ${{ inputs.target }}
 
-      - name: Upload artifacts
-        if: ${{ inputs.upload_artifacts }}
+      - name: Collect bundle paths
+        id: bundles
+        working-directory: crates/goble-desktop
+        run: |
+          BUNDLE_DIR="src-tauri/target/${{ inputs.target }}/release/bundle"
+          {
+            echo "deb=$(ls "$BUNDLE_DIR"/deb/*.deb | head -n1)"
+            echo "rpm=$(ls "$BUNDLE_DIR"/rpm/*.rpm | head -n1)"
+            echo "appimage=$(ls "$BUNDLE_DIR"/appimage/*.AppImage | head -n1)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ inputs.tag }}" \
+            --title "Goble ${{ inputs.tag }}" \
+            --generate-notes \
+            ${{ inputs.draft && '--draft' || '' }} \
+            ${{ inputs.prerelease && '--prerelease' || '' }} \
+            "${{ steps.bundles.outputs.deb }}" \
+            "${{ steps.bundles.outputs.rpm }}" \
+            "${{ steps.bundles.outputs.appimage }}"
+
+      - name: Upload build artifacts (fallback)
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: goble-desktop-${{ inputs.target }}

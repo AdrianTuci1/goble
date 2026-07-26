@@ -22,6 +22,8 @@ hex.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
+x509-parser = "0.16"
+yasna = "0.5"
 time = "0.3"
 tokio = { workspace = true, features = ["rt", "process", "macros"] }
 reqwest = { workspace = true, features = ["rustls-tls", "stream"] }

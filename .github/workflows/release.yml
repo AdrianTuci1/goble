@@ -1,0 +1,92 @@
+name: Release Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target triple (optional)'
+        required: false
+        default: 'x86_64-unknown-linux-gnu'
+        type: string
+      upload_artifacts:
+        description: 'Upload build artifacts'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config \
+            curl \
+            build-essential
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: crates/goble-desktop/package-lock.json
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            crates/goble-desktop/src-tauri -> crates/goble-desktop/src-tauri/target
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version '^2.0.0' --locked
+
+      - name: Build workspace
+        run: |
+          cargo fmt --all -- --check
+          cargo check --workspace --all-targets
+          cargo test --workspace
+
+      - name: Build desktop frontend
+        working-directory: crates/goble-desktop
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+      - name: Build Tauri bundles
+        working-directory: crates/goble-desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build --target ${{ inputs.target }}
+
+      - name: Upload artifacts
+        if: ${{ inputs.upload_artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: goble-desktop-${{ inputs.target }}
+          path: |
+            crates/goble-desktop/src-tauri/target/${{ inputs.target }}/release/bundle/deb/*.deb
+            crates/goble-desktop/src-tauri/target/${{ inputs.target }}/release/bundle/rpm/*.rpm
+            crates/goble-desktop/src-tauri/target/${{ inputs.target }}/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 14

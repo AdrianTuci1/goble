@@ -9,9 +9,9 @@ use goble_core::crypto::{generate_pairing_code, hash_pairing_code};
 use goble_core::protocol::DesktopMessage;
 use goble_core::store::Store;
 use goble_core::tls::{CertGenerator, PairingBundle};
+use goble_core::provision::{self, LocalTransport, SshTransport, ProvisionConfig, provision_worker};
 use goble_core::worker::{WorkerConfig, WorkerId};
 
-pub mod provision;
 
 #[derive(Parser, Debug)]
 #[command(name = "goble-cli")]
@@ -414,6 +414,7 @@ fn do_provision(
     let desktop = CertGenerator::generate_client(&ca, &worker_id.0)?;
     let tls_bundle = PairingBundle {
         ca_cert_pem: ca.cert_pem,
+        ca_key_pem: None,
         worker_cert_pem: server.cert_pem,
         worker_key_pem: server.key_pem,
         desktop_cert_pem: desktop.cert_pem,
@@ -421,7 +422,7 @@ fn do_provision(
         pairing_code_hash: pairing_hash.clone(),
     };
 
-    let config = provision::ProvisionConfig {
+    let config = ProvisionConfig {
         worker_id: worker_id.0.clone(),
         name: name.clone(),
         install_path: install_path.clone(),
@@ -439,11 +440,11 @@ fn do_provision(
 
     if local_test {
         let tmp = tempfile::TempDir::new()?;
-        let transport = provision::LocalTransport::new(tmp.path());
-        provision::provision_worker(&transport, &config)?;
+        let transport = LocalTransport::new(tmp.path());
+        provision_worker(&transport, &config)?;
     } else {
-        let transport = provision::SshTransport::new(&host, &username, ssh_key);
-        provision::provision_worker(&transport, &config)?;
+        let transport = SshTransport::new(&host, &username, ssh_key);
+        provision_worker(&transport, &config)?;
     }
 
     store.insert_worker(

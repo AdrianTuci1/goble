@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 pub use crate::identity::Identity;
-use crate::identity::{ClusterCa, ClusterRole};
+use crate::identity::{ClusterCa, ClusterIdentity, ClusterRole};
 
 /// Self-contained CA + server + client certificate generator for mTLS pairing.
 #[derive(Debug, Clone, Copy)]
@@ -39,11 +39,33 @@ impl CertGenerator {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PairingBundle {
     pub ca_cert_pem: String,
+    pub ca_key_pem: Option<String>,
     pub worker_cert_pem: String,
     pub worker_key_pem: String,
     pub desktop_cert_pem: String,
     pub desktop_key_pem: String,
     pub pairing_code_hash: String,
+}
+
+impl PairingBundle {
+    /// Build a pairing bundle for a worker from the active cluster identity.
+    pub fn for_worker(
+        cluster: &ClusterIdentity,
+        san_dns: &str,
+        pairing_code_hash: impl Into<String>,
+    ) -> Result<Self> {
+        let worker = cluster.ca.sign_worker(san_dns, 365)?;
+        let desktop = cluster.device.clone();
+        Ok(Self {
+            ca_cert_pem: cluster.ca.identity.cert_pem.clone(),
+            ca_key_pem: Some(cluster.ca.identity.key_pem.clone()),
+            worker_cert_pem: worker.cert_pem,
+            worker_key_pem: worker.key_pem,
+            desktop_cert_pem: desktop.cert_pem,
+            desktop_key_pem: desktop.key_pem,
+            pairing_code_hash: pairing_code_hash.into(),
+        })
+    }
 }
 
 impl PairingBundle {
@@ -128,6 +150,7 @@ mod tests {
         let desktop = CertGenerator::generate_client(&ca, "desktop-1").unwrap();
         let bundle = PairingBundle {
             ca_cert_pem: ca.cert_pem,
+            ca_key_pem: None,
             worker_cert_pem: server.cert_pem,
             worker_key_pem: server.key_pem,
             desktop_cert_pem: desktop.cert_pem,

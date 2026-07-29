@@ -552,6 +552,16 @@ impl ClusterCa {
     /// Generate a new self-signed root CA for a cluster.
     pub fn generate_new(cluster_name: impl AsRef<str>) -> Result<Self> {
         let key_pair = KeyPair::generate_for(&rcgen::PKCS_ED25519)?;
+        Self::build_from_key(key_pair, cluster_name)
+    }
+
+    /// Build a cluster CA from a deterministic cluster key.
+    pub fn from_key(cluster_key: &crate::cluster_key::ClusterKey, cluster_name: impl AsRef<str>) -> Result<Self> {
+        let key_pair = cluster_key.derive_ca_keypair();
+        Self::build_from_key(key_pair, cluster_name)
+    }
+
+    fn build_from_key(key_pair: KeyPair, cluster_name: impl AsRef<str>) -> Result<Self> {
         let mut ca_params = Self::base_params(365 * 10); // 10 years
         ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         ca_params.distinguished_name = Self::dn("Goble", cluster_name.as_ref());

@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
+use crate::identity::ClusterIdentity;
+use crate::tls::PairingBundle;
 use goble_core::tls::PairingBundle;
 
 /// Transport used to copy files and run commands on a remote host.
@@ -143,6 +145,34 @@ pub struct ProvisionConfig {
     pub tls_bundle: PairingBundle,
 }
 
+impl ProvisionConfig {
+    /// Build a provisioning configuration for a worker from the active cluster identity.
+    pub fn from_cluster_identity(
+        cluster: &ClusterIdentity,
+        worker_id: impl Into<String>,
+        name: impl Into<String>,
+        host: impl Into<String>,
+        install_path: impl Into<String>,
+        pairing_code_hash: impl Into<String>,
+        goblin_binary: PathBuf,
+    ) -> Result<Self> {
+        let host = host.into();
+        let bundle = PairingBundle::for_worker(cluster, &host, pairing_code_hash)?;
+        Ok(Self {
+            worker_id: worker_id.into(),
+            name: name.into(),
+            install_path: install_path.into(),
+            workspace_root: "/var/goblin/workspaces".to_string(),
+            pairing_code_hash: bundle.pairing_code_hash.clone(),
+            install_docker: false,
+            install_hermes: false,
+            install_crewai: false,
+            goblin_binary,
+            tls_bundle: bundle,
+        })
+    }
+}
+
 /// Generates the shell script that installs the worker on the target host.
 pub fn generate_install_script(config: &ProvisionConfig) -> String {
     let mut checks = Vec::new();
@@ -210,6 +240,16 @@ EOF
 chmod 600 "$BUNDLE_FILE"
 chown goblin:goblin "$BUNDLE_FILE"
 
+# Store the CA key on the VPS for disaster recovery using the VPS credentials.
+CA_KEY_FILE="$TLS_DIR/ca-key.pem"
+if [ -n "{ca_key_pem}" ]; then
+    cat > "$CA_KEY_FILE" <<'EOF'
+{ca_key_pem}
+EOF
+    chmod 600 "$CA_KEY_FILE"
+    chown goblin:goblin "$CA_KEY_FILE"
+fi
+
 mv "$INSTALL_PATH/goblin.new" "$INSTALL_PATH/goblin"
 chmod +x "$INSTALL_PATH/goblin"
 
@@ -250,6 +290,7 @@ echo "Goblin worker $WORKER_ID provisioned at $INSTALL_PATH"
         worker_id = config.worker_id,
         pairing_hash = config.pairing_code_hash,
         bundle_json = bundle_json,
+        ca_key_pem = config.tls_bundle.ca_key_pem.as_deref().unwrap_or(""),
         checks = checks_joined,
     )
 }
@@ -290,6 +331,7 @@ mod tests {
     fn test_generate_install_script_contains_worker_id() {
         let bundle = PairingBundle {
             ca_cert_pem: "CA\n".to_string(),
+            ca_key_pem: None,
             worker_cert_pem: "WORKER\n".to_string(),
             worker_key_pem: "WORKER_KEY\n".to_string(),
             desktop_cert_pem: "DESKTOP\n".to_string(),

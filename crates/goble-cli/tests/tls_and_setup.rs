@@ -11,6 +11,7 @@ fn test_pairing_bundle_for_worker_contains_all_pems() {
 
     let bundle = PairingBundle {
         ca_cert_pem: ca.cert_pem,
+        ca_key_pem: None,
         worker_cert_pem: server.cert_pem,
         worker_key_pem: server.key_pem,
         desktop_cert_pem: desktop.cert_pem,

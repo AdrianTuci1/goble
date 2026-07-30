@@ -222,6 +222,21 @@ impl Store {
         Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
     }
 
+    pub fn set_cluster_identity(&self, snapshot: &crate::cluster_key::ClusterIdentitySnapshot) -> Result<()> {
+        let value = serde_json::to_string(snapshot).context("failed to serialize cluster identity")?;
+        self.set_setting("cluster_identity", &value)
+    }
+
+    pub fn get_cluster_identity(&self) -> Result<Option<crate::cluster_key::ClusterIdentitySnapshot>> {
+        match self.get_setting("cluster_identity")? {
+            Some(value) => {
+                let snapshot = serde_json::from_str(&value).context("failed to deserialize cluster identity")?;
+                Ok(Some(snapshot))
+            }
+            None => Ok(None),
+        }
+    }
+
     pub fn insert_agent(
         &self,
         id: &str,

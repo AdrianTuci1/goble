@@ -312,6 +312,7 @@ pub async fn async_main() -> Result<()> {
                     trace_id,
                     agent_id: agent.id.clone(),
                     spec: agent,
+                    mcp_servers: vec![],
                 },
             )
             .await?;
@@ -342,6 +343,7 @@ pub async fn async_main() -> Result<()> {
                 DesktopMessage::ScheduleAgent {
                     agent_id: goble_core::agent::AgentId(agent_id),
                     trigger,
+                    mcp_servers: vec![],
                 },
             )
             .await?;

@@ -77,7 +77,7 @@ impl Runner {
                             LogLevel::Info,
                             format!("installed {} at {}", mcp.id, mcp.path.display()),
                         );
-                        installed.insert(mcp.id.clone(), mcp);
+                        installed.insert(mcp.id.clone(), (mcp, server.clone()));
                     }
                     Err(e) => {
                         trace
@@ -104,8 +104,11 @@ impl Runner {
             .unwrap()
             .id
             .clone();
-        for (id, mcp) in &installed {
-            match mcp.start_client(HashMap::new()) {
+        for (id, (mcp, server)) in &installed {
+            let env = server.credentials_key.as_ref()
+                .and_then(|s| serde_json::from_str::<std::collections::HashMap<String, String>>(s).ok())
+                .unwrap_or_default();
+            match mcp.start_client(env) {
                 Ok(client) => match client.initialize() {
                     Ok(_) => {
                         trace

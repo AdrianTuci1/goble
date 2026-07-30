@@ -1382,6 +1382,7 @@ dependencies = [
  "hex",
  "parking_lot",
  "rand 0.9.5",
+ "rand_chacha",
  "rcgen",
  "regex-lite",
  "reqwest 0.12.28",
@@ -1401,6 +1402,8 @@ dependencies = [
  "urlencoding",
  "uuid",
  "walkdir",
+ "x509-parser",
+ "yasna",
 ]
 
 [[package]]

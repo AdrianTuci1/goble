@@ -2,9 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
-use crate::identity::ClusterIdentity;
+use crate::ClusterIdentity;
 use crate::tls::PairingBundle;
-use goble_core::tls::PairingBundle;
 
 /// Transport used to copy files and run commands on a remote host.
 pub trait ProvisionTransport: Send + Sync {

@@ -18,7 +18,7 @@ pub mod store;
 pub mod cluster_key;
 pub mod provision;
 
-pub use cluster_key::{ClusterBackup, ClusterIdentity, ClusterKey};
+pub use cluster_key::{ClusterBackup, ClusterIdentity, ClusterIdentitySnapshot, ClusterKey};
 pub mod task;
 pub mod tls;
 pub mod vault;

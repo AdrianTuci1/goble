@@ -73,6 +73,7 @@ async fn test_worker_health_and_websocket_run_agent() {
         trace_id: "trace-health-test".to_string(),
         agent_id,
         spec,
+        mcp_servers: vec![],
     };
     write
         .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -110,6 +111,7 @@ fn test_desktop_message_serialize_run_agent() {
         trace_id: "t".to_string(),
         agent_id: spec.id.clone(),
         spec,
+        mcp_servers: vec![],
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains("run_agent"));

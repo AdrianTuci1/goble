@@ -85,9 +85,24 @@ async fn handle_desktop_message(
             trace_id,
             agent_id,
             spec,
+            mcp_servers,
         } => {
             state.store_agent(spec.clone());
+            for server in mcp_servers {
+                state.store_mcp(server);
+            }
             runner.run_agent(trace_id, agent_id, spec).await?;
+        }
+        DesktopMessage::ScheduleAgent { agent_id, trigger, mcp_servers } => {
+            for server in mcp_servers {
+                state.store_mcp(server);
+            }
+            state.emit(WorkerMessage::AgentLog {
+                trace_id: format!("schedule-{}", agent_id),
+                step_id: "scheduler".to_string(),
+                level: goble_core::execution::LogLevel::Info,
+                message: format!("scheduled {:?}", trigger),
+            });
         }
         DesktopMessage::PushSecrets { secrets } => {
             for secret in secrets {
@@ -109,14 +124,6 @@ async fn handle_desktop_message(
         }
         DesktopMessage::RunTeam { trace_id, team_id } => {
             runner.run_team(trace_id, team_id).await?;
-        }
-        DesktopMessage::ScheduleAgent { agent_id, trigger } => {
-            state.emit(WorkerMessage::AgentLog {
-                trace_id: format!("schedule-{}", agent_id),
-                step_id: "scheduler".to_string(),
-                level: goble_core::execution::LogLevel::Info,
-                message: format!("scheduled {:?}", trigger),
-            });
         }
         DesktopMessage::Ping => {
             state.emit(WorkerMessage::Pong);

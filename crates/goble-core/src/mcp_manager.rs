@@ -129,18 +129,17 @@ impl McpManager {
         name: &str,
         source: &str,
         source_value: Option<&str>,
-        credentials: Vec<Secret>,
+        secret_ids: &[Secret],
         manifest: Option<McpManifest>,
     ) -> Result<String> {
         let server =
-            build_server_from_user_input(id, name, source, source_value, credentials, manifest)?;
+            build_server_from_user_input(id, name, source, source_value, vec![], manifest)?;
 
         // Persist in store before any network activity so the UI sees it immediately.
         let now = chrono::Utc::now().to_rfc3339();
         let manifest_json = serde_json::to_string(&server.manifest)?;
         let source_value_str = source_value.map(|s| s.to_string());
-        let credentials_key = server.credentials_key.clone();
-        let secret_ids_json = "[]";
+        let secret_ids_json = serde_json::to_string(&secret_ids.iter().map(|s| s.name.clone()).collect::<Vec<_>>())?;
         let enabled_tools_json = "[]";
         store.insert_mcp_server(
             &server.id,
@@ -148,8 +147,8 @@ impl McpManager {
             source,
             source_value_str.as_deref(),
             &manifest_json,
-            credentials_key.as_deref(),
-            secret_ids_json,
+            None,
+            &secret_ids_json,
             enabled_tools_json,
             &now,
             &now,
@@ -172,7 +171,7 @@ impl McpManager {
         id: &str,
         name: Option<&str>,
         source_value: Option<&str>,
-        credentials: Option<Vec<Secret>>,
+        secret_ids: Option<&[Secret]>,
         manifest: Option<McpManifest>,
     ) -> Result<String> {
         let rows = store.list_mcp_servers()?;
@@ -184,7 +183,7 @@ impl McpManager {
         let current_name = row.1;
         let current_value = row.3;
         let current_manifest_json = row.4;
-        let current_secret_ids_json = row.6;
+        let _current_secret_ids_json = row.6;
         let current_enabled_tools_json = row.7;
 
         let mut server: McpServer = build_server_from_user_input(
@@ -192,13 +191,14 @@ impl McpManager {
             name.unwrap_or(&current_name),
             &source,
             source_value.or(current_value.as_deref()),
-            credentials.unwrap_or_default(),
+            vec![],
             manifest.or_else(|| serde_json::from_str(&current_manifest_json).ok()),
         )?;
         server.updated_at = chrono::Utc::now();
 
         let manifest_json = serde_json::to_string(&server.manifest)?;
-        let credentials_key = server.credentials_key.clone();
+        let secret_ids_json = serde_json::to_string(
+            &secret_ids.map(|s| s.iter().map(|sec| sec.name.clone()).collect::<Vec<_>>()).unwrap_or_default())?;
         store.insert_mcp_server(
             id,
             &server.name,
@@ -208,8 +208,8 @@ impl McpManager {
                 .map(|s| s.to_string())
                 .as_deref(),
             &manifest_json,
-            credentials_key.as_deref(),
-            &current_secret_ids_json,
+            None,
+            &secret_ids_json,
             &current_enabled_tools_json,
             &row.8,
             &server.updated_at.to_rfc3339(),

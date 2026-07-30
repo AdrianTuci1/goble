@@ -35,6 +35,7 @@ async fn test_worker_run_agent_flow() {
         trace_id: trace_id.clone(),
         agent_id,
         spec,
+        mcp_servers: vec![],
     };
     ws.send(Message::Text(serde_json::to_string(&run).unwrap().into()))
         .await

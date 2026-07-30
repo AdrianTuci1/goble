@@ -155,12 +155,39 @@ export async function pingWorker(workerId: string): Promise<void> {
   return invoke('ping_worker', { workerId });
 }
 
+export interface ClusterIdentityInfo {
+  cluster_name: string;
+  ca_cert_pem: string;
+  device_serial: string;
+}
+
+export async function getClusterIdentity(): Promise<ClusterIdentityInfo | null> {
+  return invoke('get_cluster_identity');
+}
+
+export async function createCluster(name: string): Promise<ClusterIdentityInfo> {
+  return invoke('create_cluster', { name });
+}
+
+export async function importClusterKey(key: string, name: string): Promise<ClusterIdentityInfo> {
+  return invoke('import_cluster_key', { key, name });
+}
+
+export async function exportClusterKey(): Promise<string> {
+  return invoke('export_cluster_key');
+}
+
+export async function exportClusterBackup(): Promise<string> {
+  return invoke('export_cluster_backup');
+}
+
 export async function installWorker(
   host: string,
   user: string,
   port: number,
   privateKey: string,
   releaseTag: string,
+  pairingCode: string,
 ): Promise<InstallWorkerResult> {
   return invoke('install_worker', {
     host,
@@ -169,6 +196,7 @@ export async function installWorker(
     private_key: privateKey,
     release_tag: releaseTag,
     repo: null,
+    pairing_code: pairingCode,
   });
 }
 

@@ -11,9 +11,15 @@ import {
   addWorker,
   pairWorker,
   pingWorker,
+  getClusterIdentity,
+  createCluster,
+  importClusterKey,
+  exportClusterKey,
+  exportClusterBackup,
+  type ClusterIdentityInfo,
 } from '../tauri/api';
 
-type SettingsTab = 'profile' | 'llm' | 'workers' | 'appearance';
+type SettingsTab = 'profile' | 'llm' | 'workers' | 'cluster' | 'appearance';
 
 export default function SettingsPage() {
   const navigate = useNavigate();
@@ -42,16 +48,22 @@ export default function SettingsPage() {
             onClick={() => setActiveTab('workers')}
           />
           <SettingsMenuItem
+            label="Cluster"
+            active={activeTab === 'cluster'}
+            onClick={() => setActiveTab('cluster')}
+          />
+          <SettingsMenuItem
             label="Appearance"
             active={activeTab === 'appearance'}
             onClick={() => setActiveTab('appearance')}
           />
-        </nav>
+          </nav>
       </aside>
       <main className="settings-content">
         {activeTab === 'profile' && <ProfileSettings />}
         {activeTab === 'llm' && <LlmSettings />}
         {activeTab === 'workers' && <WorkerSettings />}
+        {activeTab === 'cluster' && <ClusterSettings />}
         {activeTab === 'appearance' && <AppearanceSettings />}
       </main>
     </div>
@@ -214,7 +226,7 @@ function WorkerSettings() {
     setInstallResult(null);
     setInstallError(null);
     try {
-      const result = await installWorker(sshHost, sshUser, parseInt(sshPort, 10), sshKey, releaseTag);
+      const result = await installWorker(sshHost, sshUser, parseInt(sshPort, 10), sshKey, releaseTag, pairCode);
       setInstallResult(
         `Installed ${result.platform.os}/${result.platform.arch} from ${result.asset_url}\n\n${result.install_log}`
       );
@@ -309,6 +321,104 @@ function WorkerSettings() {
             </div>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ClusterSettings() {
+  const [identity, setIdentity] = useState<ClusterIdentityInfo | null>(null);
+  const [clusterName, setClusterName] = useState('');
+  const [importKey, setImportKey] = useState('');
+  const [importName, setImportName] = useState('');
+  const [exportedKey, setExportedKey] = useState('');
+  const [exportedBackup, setExportedBackup] = useState('');
+
+  useEffect(() => {
+    getClusterIdentity().then(setIdentity);
+  }, []);
+
+  async function handleCreate() {
+    if (!clusterName) return;
+    const info = await createCluster(clusterName);
+    setIdentity(info);
+    setClusterName('');
+  }
+
+  async function handleImport() {
+    if (!importKey || !importName) return;
+    const info = await importClusterKey(importKey, importName);
+    setIdentity(info);
+    setImportKey('');
+    setImportName('');
+  }
+
+  async function handleExportKey() {
+    const key = await exportClusterKey();
+    setExportedKey(key);
+  }
+
+  async function handleExportBackup() {
+    const backup = await exportClusterBackup();
+    setExportedBackup(backup);
+  }
+
+  return (
+    <div className="settings-section">
+      <h2>Cluster</h2>
+
+      {identity ? (
+        <div className="settings-subsection">
+          <h3>Active cluster</h3>
+          <p><strong>{identity.cluster_name}</strong></p>
+          <p className="hint">Device serial: {identity.device_serial}</p>
+          <button onClick={handleExportKey}>Export cluster key</button>
+          <button onClick={handleExportBackup}>Export encrypted backup</button>
+          {exportedKey && (
+            <div>
+              <label>Cluster key (save it somewhere safe)</label>
+              <textarea value={exportedKey} readOnly rows={3} />
+            </div>
+          )}
+          {exportedBackup && (
+            <div>
+              <label>Encrypted backup</label>
+              <textarea value={exportedBackup} readOnly rows={5} />
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="hint">No cluster configured yet.</p>
+      )}
+
+      <div className="settings-subsection">
+        <h3>Create cluster</h3>
+        <input
+          placeholder="Cluster name"
+          value={clusterName}
+          onChange={(e) => setClusterName(e.target.value)}
+        />
+        <button onClick={handleCreate} disabled={!clusterName}>
+          Create new cluster
+        </button>
+      </div>
+
+      <div className="settings-subsection">
+        <h3>Import cluster</h3>
+        <input
+          placeholder="Cluster name"
+          value={importName}
+          onChange={(e) => setImportName(e.target.value)}
+        />
+        <textarea
+          placeholder="Paste cluster key"
+          value={importKey}
+          onChange={(e) => setImportKey(e.target.value)}
+          rows={3}
+        />
+        <button onClick={handleImport} disabled={!importKey || !importName}>
+          Import cluster key
+        </button>
       </div>
     </div>
   );

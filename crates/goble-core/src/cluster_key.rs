@@ -164,10 +164,21 @@ impl ClusterBackup {
     }
 }
 
+/// Serializable view of a cluster identity for persistence and transport.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterIdentitySnapshot {
+    pub version: u32,
+    pub cluster_name: String,
+    pub key: String,
+    pub device_cert_pem: String,
+    pub device_key_pem: String,
+}
+
 /// Convenience wrapper that holds a cluster key, the derived CA, and the local
 /// device identity.
 #[derive(Debug, Clone)]
 pub struct ClusterIdentity {
+    pub cluster_name: String,
     pub key: ClusterKey,
     pub ca: ClusterCa,
     pub device: Identity,
@@ -175,24 +186,26 @@ pub struct ClusterIdentity {
 
 impl ClusterIdentity {
     /// Create a new cluster and issue a device certificate for this device.
-    pub fn generate(cluster_name: impl AsRef<str>, device_id: &str, role: ClusterRole) -> Result<Self> {
+    pub fn generate(cluster_name: impl Into<String>, device_id: &str, role: ClusterRole) -> Result<Self> {
+        let cluster_name = cluster_name.into();
         let key = ClusterKey::generate();
-        let ca = key.to_ca(cluster_name)?;
+        let ca = key.to_ca(&cluster_name)?;
         let device = ca.sign_device(device_id, role, 365)?;
-        Ok(Self { key, ca, device })
+        Ok(Self { cluster_name, key, ca, device })
     }
 
     /// Restore a cluster from an exported key and issue a device certificate.
     /// This is used when a user imports a cluster key on a new device.
     pub fn from_key(
         cluster_key: ClusterKey,
-        cluster_name: impl AsRef<str>,
+        cluster_name: impl Into<String>,
         device_id: &str,
         role: ClusterRole,
     ) -> Result<Self> {
-        let ca = cluster_key.to_ca(cluster_name)?;
+        let cluster_name = cluster_name.into();
+        let ca = cluster_key.to_ca(&cluster_name)?;
         let device = ca.sign_device(device_id, role, 365)?;
-        Ok(Self { key: cluster_key, ca, device })
+        Ok(Self { cluster_name, key: cluster_key, ca, device })
     }
 
     /// Restore a cluster from an encrypted backup and issue a device certificate.
@@ -203,8 +216,43 @@ impl ClusterIdentity {
         role: ClusterRole,
     ) -> Result<Self> {
         let ca = backup.restore_ca(&cluster_key)?;
+        let cluster_name = "restored-cluster".to_string();
         let device = ca.sign_device(device_id, role, 365)?;
-        Ok(Self { key: cluster_key, ca, device })
+        Ok(Self { cluster_name, key: cluster_key, ca, device })
+    }
+
+    /// Serialize the identity to a storable snapshot.
+    pub fn to_snapshot(&self) -> ClusterIdentitySnapshot {
+        ClusterIdentitySnapshot {
+            version: 1,
+            cluster_name: self.cluster_name.clone(),
+            key: self.key.to_base64(),
+            device_cert_pem: self.device.cert_pem.clone(),
+            device_key_pem: self.device.key_pem.clone(),
+        }
+    }
+
+    /// Restore an identity from a snapshot, reconstructing the deterministic CA.
+    pub fn from_snapshot(snapshot: ClusterIdentitySnapshot) -> Result<Self> {
+        let key = ClusterKey::from_base64(&snapshot.key)?;
+        let ca = key.to_ca(&snapshot.cluster_name)?;
+        let device = Identity::from_pem(snapshot.device_cert_pem, snapshot.device_key_pem)?;
+        Ok(Self {
+            cluster_name: snapshot.cluster_name,
+            key,
+            ca,
+            device,
+        })
+    }
+
+    /// Export the cluster key as a base64 string.
+    pub fn export_key(&self) -> String {
+        self.key.to_base64()
+    }
+
+    /// Export an encrypted backup bundle containing the CA certificate and key.
+    pub fn export_backup(&self) -> Result<ClusterBackup> {
+        ClusterBackup::from_ca(&self.key, &self.ca)
     }
 }
 

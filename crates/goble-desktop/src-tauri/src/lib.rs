@@ -112,6 +112,7 @@ struct InstallMcpRequest {
     name: String,
     source: String,
     source_value: Option<String>,
+    secret_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -119,6 +120,7 @@ struct UpdateMcpRequest {
     id: String,
     name: Option<String>,
     source_value: Option<String>,
+    secret_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,11 +138,30 @@ pub struct InstallWorkerRequest {
     pub private_key: String,
     pub release_tag: String,
     pub repo: Option<String>,
+    pub pairing_code: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpIdRequest {
     id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterIdentityInfo {
+    pub cluster_name: String,
+    pub ca_cert_pem: String,
+    pub device_serial: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateClusterRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportClusterKeyRequest {
+    pub key: String,
+    pub name: String,
 }
 
 static HARNESS_CANCEL: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>> =
@@ -154,7 +175,11 @@ fn list_workers(
 }
 
 #[tauri::command]
-fn install_worker(req: InstallWorkerRequest) -> Result<ssh_installer::WorkerInstallResult, String> {
+fn install_worker(
+    req: InstallWorkerRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<ssh_installer::WorkerInstallResult, String> {
+    let cluster = state.get_cluster_identity().ok_or("no cluster identity configured")?;
     let creds = ssh_installer::SshCredentials {
         host: req.host,
         user: req.user,
@@ -162,7 +187,60 @@ fn install_worker(req: InstallWorkerRequest) -> Result<ssh_installer::WorkerInst
         private_key: req.private_key,
     };
     let repo = req.repo.as_deref().unwrap_or("AdrianTuci1/goble");
-    ssh_installer::install_worker(&creds, &req.release_tag, repo).map_err(|e| e.to_string())
+    ssh_installer::install_worker(&cluster, &creds, &req.release_tag, repo, &req.pairing_code)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_cluster_identity(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Option<ClusterIdentityInfo>, String> {
+    Ok(state.get_cluster_identity().map(|i| ClusterIdentityInfo {
+        cluster_name: i.cluster_name,
+        ca_cert_pem: i.ca.identity.cert_pem,
+        device_serial: i.device.serial().to_string(),
+    }))
+}
+
+#[tauri::command]
+fn create_cluster(
+    req: CreateClusterRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<ClusterIdentityInfo, String> {
+    let identity = state.create_cluster(&req.name).map_err(|e| e.to_string())?;
+    Ok(ClusterIdentityInfo {
+        cluster_name: identity.cluster_name,
+        ca_cert_pem: identity.ca.identity.cert_pem,
+        device_serial: identity.device.serial().to_string(),
+    })
+}
+
+#[tauri::command]
+fn import_cluster_key(
+    req: ImportClusterKeyRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<ClusterIdentityInfo, String> {
+    let identity = state.import_cluster_key(&req.key, &req.name).map_err(|e| e.to_string())?;
+    Ok(ClusterIdentityInfo {
+        cluster_name: identity.cluster_name,
+        ca_cert_pem: identity.ca.identity.cert_pem,
+        device_serial: identity.device.serial().to_string(),
+    })
+}
+
+#[tauri::command]
+fn export_cluster_key(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<String, String> {
+    state.export_cluster_key().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn export_cluster_backup(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<String, String> {
+    let backup = state.export_cluster_backup().map_err(|e| e.to_string())?;
+    serde_json::to_string(&backup).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -367,9 +445,9 @@ fn unlock_vault(
     req: UnlockVaultRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<Vec<String>, String> {
-    state
-        .unlock_vault(req.passphrase)
-        .map_err(|e| e.to_string())
+    let res = state.unlock_vault(req.passphrase).map_err(|e| e.to_string())?;
+    Arc::clone(&state).restore_clients();
+    Ok(res)
 }
 
 #[tauri::command]
@@ -453,7 +531,7 @@ fn install_mcp_server(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<String, String> {
     state
-        .install_mcp_server(&req.id, &req.name, &req.source, req.source_value.as_deref(), vec![], None)
+        .install_mcp_server(&req.id, &req.name, &req.source, req.source_value.as_deref(), req.secret_ids, None)
         .map_err(|e| e.to_string())
 }
 
@@ -463,7 +541,7 @@ fn update_mcp_server(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<String, String> {
     state
-        .update_mcp_server(&req.id, req.name.as_deref(), req.source_value.as_deref(), None, None)
+        .update_mcp_server(&req.id, req.name.as_deref(), req.source_value.as_deref(), Some(req.secret_ids), None)
         .map_err(|e| e.to_string())
 }
 
@@ -626,10 +704,14 @@ fn run_harness(
 
 pub fn run() {
     let state = state::DesktopState::open_default().expect("open store");
-    let _ = state.load_from_store();
-
+    let state_for_setup = Arc::clone(&state);
     tauri::Builder::default()
         .manage(state)
+        .setup(move |app| {
+            state_for_setup.set_app_handle(app.handle().clone());
+            Arc::clone(&state_for_setup).restore_clients();
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_workers,
             install_worker,
@@ -668,7 +750,12 @@ pub fn run() {
             delete_mcp_server,
             update_mcp_server,
             update_mcp_server_meta,
-            discover_mcp_tools
+            discover_mcp_tools,
+            get_cluster_identity,
+            create_cluster,
+            import_cluster_key,
+            export_cluster_key,
+            export_cluster_backup
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

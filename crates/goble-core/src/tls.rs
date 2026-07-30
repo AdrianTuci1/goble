@@ -1,7 +1,8 @@
 use anyhow::Result;
 
 pub use crate::identity::Identity;
-use crate::identity::{ClusterCa, ClusterIdentity, ClusterRole};
+use crate::identity::{ClusterCa, ClusterRole};
+use crate::ClusterIdentity;
 
 /// Self-contained CA + server + client certificate generator for mTLS pairing.
 #[derive(Debug, Clone, Copy)]

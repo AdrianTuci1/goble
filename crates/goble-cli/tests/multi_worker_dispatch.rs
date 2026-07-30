@@ -51,6 +51,7 @@ async fn test_multi_worker_round_robin_dispatch() {
         trace_id: trace_a.clone(),
         agent_id: spec.id.clone(),
         spec: spec.clone(),
+        mcp_servers: vec![],
     };
     ws_a.send(Message::Text(serde_json::to_string(&run_a).unwrap().into()))
         .await
@@ -61,6 +62,7 @@ async fn test_multi_worker_round_robin_dispatch() {
         trace_id: trace_b.clone(),
         agent_id: spec.id.clone(),
         spec,
+        mcp_servers: vec![],
     };
     ws_b.send(Message::Text(serde_json::to_string(&run_b).unwrap().into()))
         .await

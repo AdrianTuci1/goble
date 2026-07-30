@@ -1,6 +1,9 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+use goble_core::cluster_key::ClusterIdentity;
+use goble_core::provision::{provision_worker, ProvisionConfig, SshTransport};
+
 #[derive(Debug, Clone)]
 pub struct SshCredentials {
     pub host: String,
@@ -77,40 +80,66 @@ pub fn resolve_worker_asset(
 }
 
 pub fn install_worker(
+    cluster: &ClusterIdentity,
     creds: &SshCredentials,
     release_tag: &str,
     repo: &str,
+    pairing_code: &str,
 ) -> Result<WorkerInstallResult, InstallError> {
     let platform = detect_platform(creds)?;
     let asset_url = resolve_worker_asset(&platform, release_tag, repo)?;
 
-    let script = format!(
-        r#"
-set -euo pipefail
-TMPDIR=$(mktemp -d)
-cd "$TMPDIR"
-curl -fsSL "{asset_url}" -o worker.tar.gz
-tar -xzf worker.tar.gz
-chmod +x goblin
-./scripts/install-goblin.sh "$PWD/goblin"
-cd /
-rm -rf "$TMPDIR"
-"#,
-        asset_url = asset_url
-    );
-
-    let output = run_ssh(creds, &["bash", "-c", &script], None)?;
-    if !output.status.success() {
+    let local_binary = std::env::temp_dir().join(format!("goblin-{}-{}", release_tag, platform.arch));
+    // Download the worker binary locally so we can copy it via the provision transport.
+    let download_output = std::process::Command::new("curl")
+        .args(["-fsSL", &asset_url, "-o", &local_binary.display().to_string()])
+        .output()
+        .map_err(|e| InstallError::Io(e))?;
+    if !download_output.status.success() {
         return Err(InstallError::Ssh(format!(
-            "install script failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "failed to download asset: {}",
+            String::from_utf8_lossy(&download_output.stderr)
         )));
     }
+
+    let mut cmd = std::process::Command::new("tar");
+    cmd.args([
+        "-xzf",
+        &local_binary.display().to_string(),
+        "-C",
+        &std::env::temp_dir().display().to_string(),
+    ]);
+    let tar_output = cmd.output().map_err(|e| InstallError::Io(e))?;
+    if !tar_output.status.success() {
+        return Err(InstallError::Ssh(format!(
+            "failed to extract asset: {}",
+            String::from_utf8_lossy(&tar_output.stderr)
+        )));
+    }
+
+    let extracted_binary = std::env::temp_dir().join("goblin");
+
+    let worker_id = uuid::Uuid::new_v4().to_string();
+    let pairing_hash = goble_core::crypto::hash_pairing_code(pairing_code, &[0u8; 16])
+        .map_err(|e| InstallError::Other(format!("failed to hash pairing code: {e}")))?;
+    let config = ProvisionConfig::from_cluster_identity(
+        cluster,
+        &worker_id,
+        &worker_id,
+        &creds.host,
+        "/opt/goblin",
+        pairing_hash,
+        extracted_binary,
+    )
+    .map_err(|e| InstallError::Other(format!("failed to build provision config: {e}")))?;
+
+    let transport = SshTransport::new(&creds.host, &creds.user, None);
+    provision_worker(&transport, &config).map_err(|e| InstallError::Ssh(e.to_string()))?;
 
     Ok(WorkerInstallResult {
         platform,
         asset_url,
-        install_log: String::from_utf8_lossy(&output.stdout).to_string(),
+        install_log: format!("provisioned worker {worker_id} at /opt/goblin"),
     })
 }
 

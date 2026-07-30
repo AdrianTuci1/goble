@@ -129,18 +129,17 @@ impl McpManager {
         name: &str,
         source: &str,
         source_value: Option<&str>,
-        credentials: Vec<Secret>,
+        secret_ids: &[Secret],
         manifest: Option<McpManifest>,
     ) -> Result<String> {
         let server =
-            build_server_from_user_input(id, name, source, source_value, credentials, manifest)?;
+            build_server_from_user_input(id, name, source, source_value, vec![], manifest)?;
 
         // Persist in store before any network activity so the UI sees it immediately.
         let now = chrono::Utc::now().to_rfc3339();
         let manifest_json = serde_json::to_string(&server.manifest)?;
         let source_value_str = source_value.map(|s| s.to_string());
-        let credentials_key = server.credentials_key.clone();
-        let secret_ids_json = "[]";
+        let secret_ids_json = serde_json::to_string(&secret_ids.iter().map(|s| s.name.clone()).collect::<Vec<_>>())?;
         let enabled_tools_json = "[]";
         store.insert_mcp_server(
             &server.id,
@@ -148,8 +147,8 @@ impl McpManager {
             source,
             source_value_str.as_deref(),
             &manifest_json,
-            credentials_key.as_deref(),
-            secret_ids_json,
+            None,
+            &secret_ids_json,
             enabled_tools_json,
             &now,
             &now,
@@ -172,7 +171,7 @@ impl McpManager {
         id: &str,
         name: Option<&str>,
         source_value: Option<&str>,
-        credentials: Option<Vec<Secret>>,
+        secret_ids: Option<&[Secret]>,
         manifest: Option<McpManifest>,
     ) -> Result<String> {
         let rows = store.list_mcp_servers()?;
@@ -184,7 +183,7 @@ impl McpManager {
         let current_name = row.1;
         let current_value = row.3;
         let current_manifest_json = row.4;
-        let current_secret_ids_json = row.6;
+        let _current_secret_ids_json = row.6;
         let current_enabled_tools_json = row.7;
 
         let mut server: McpServer = build_server_from_user_input(
@@ -192,13 +191,14 @@ impl McpManager {
             name.unwrap_or(&current_name),
             &source,
             source_value.or(current_value.as_deref()),
-            credentials.unwrap_or_default(),
+            vec![],
             manifest.or_else(|| serde_json::from_str(&current_manifest_json).ok()),
         )?;
         server.updated_at = chrono::Utc::now();
 
         let manifest_json = serde_json::to_string(&server.manifest)?;
-        let credentials_key = server.credentials_key.clone();
+        let secret_ids_json = serde_json::to_string(
+            &secret_ids.map(|s| s.iter().map(|sec| sec.name.clone()).collect::<Vec<_>>()).unwrap_or_default())?;
         store.insert_mcp_server(
             id,
             &server.name,
@@ -208,8 +208,8 @@ impl McpManager {
                 .map(|s| s.to_string())
                 .as_deref(),
             &manifest_json,
-            credentials_key.as_deref(),
-            &current_secret_ids_json,
+            None,
+            &secret_ids_json,
             &current_enabled_tools_json,
             &row.8,
             &server.updated_at.to_rfc3339(),
@@ -643,6 +643,76 @@ impl McpManager {
 
     /// Call a tool by server id and tool name. The server must already be started
     /// (e.g. via `refresh_from_store` or `discover_and_register`).
+    /// Test a single tool call on an MCP server by spawning a temporary stdio client.
+    /// Does not require the server to be already running in the manager.
+    pub async fn test_call_tool(
+        &self,
+        store: &Store,
+        id: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let rows = store.list_mcp_servers()?;
+        let row = rows
+            .into_iter()
+            .find(|(i, _, _, _, _, _, _, _, _, _)| i == id)
+            .context(format!("mcp server {id} not found"))?;
+        let source = row.2;
+        let source_value = row.3;
+        let manifest_json = row.4;
+        let manifest: McpManifest = serde_json::from_str(&manifest_json).unwrap_or_else(|_| McpManifest {
+            schema_version: "1".to_string(),
+            entrypoint: "".to_string(),
+            runtime: McpRuntime::V8Isolate,
+            auth_schema: vec![],
+            capabilities: vec![],
+            config_schema: serde_json::json!({}),
+        });
+
+        let cache_dir = self.cache_dir().context("no installer configured")?;
+        let installer = McpInstaller::new(cache_dir);
+        let source = match source.as_str() {
+            "npm" => McpSource::Npm {
+                package: source_value.clone().unwrap_or_default(),
+                version: "latest".to_string(),
+            },
+            "github" => McpSource::Github {
+                repo: source_value.clone().unwrap_or_default(),
+                rev: "main".to_string(),
+            },
+            "local" => McpSource::Local {
+                path: source_value.clone().unwrap_or_default(),
+            },
+            "url" => McpSource::Url {
+                url: source_value.clone().unwrap_or_default(),
+            },
+            _ => McpSource::Local {
+                path: source_value.clone().unwrap_or_default(),
+            },
+        };
+        let server = McpServer {
+            id: id.to_string(),
+            name: row.1,
+            source,
+            manifest,
+            credentials_key: row.5,
+            installed_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let installed = installer.install(&server).await?;
+        let (command, args) = installed.runtime_command();
+        let env = server.credentials_key
+            .as_ref()
+            .and_then(|s| serde_json::from_str::<std::collections::HashMap<String, String>>(s).ok())
+            .unwrap_or_default();
+        let client = McpClient::spawn_owned(&command,
+            &args,
+            env,
+        )?;
+        client.initialize()?;
+        client.call_tool(tool_name, arguments)
+    }
+
     pub fn call_tool_on_server(
         &self,
         server_id: &str,
@@ -838,7 +908,7 @@ mod tests {
             &server.name,
             "local",
             Some(&src.to_string_lossy()),
-            vec![],
+            &[],
             Some(server.manifest.clone()),
         ))
         .unwrap();
@@ -887,7 +957,7 @@ mod tests {
             "Sequential Thinking",
             "npm",
             Some("@modelcontextprotocol/server-sequential-thinking"),
-            vec![],
+            &[],
             None,
         ))
         .unwrap();
@@ -971,7 +1041,7 @@ mod tests {
             &server.name,
             "local",
             Some(&src.to_string_lossy()),
-            vec![],
+            &[],
             Some(server.manifest.clone()),
         ))
         .unwrap();

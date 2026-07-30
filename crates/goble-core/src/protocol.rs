@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{AgentId, AgentSpec};
+use crate::agent::{AgentId, AgentSpec, McpServer};
 use crate::worker::WorkerId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,10 +14,12 @@ pub enum DesktopMessage {
         trace_id: String,
         agent_id: AgentId,
         spec: AgentSpec,
+        mcp_servers: Vec<McpServer>,
     },
     ScheduleAgent {
         agent_id: AgentId,
         trigger: crate::agent::Trigger,
+        mcp_servers: Vec<McpServer>,
     },
     PushSecrets {
         secrets: Vec<crate::secret::Secret>,
@@ -125,7 +127,7 @@ impl Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentSpec;
+    use crate::agent::{AgentSpec, McpServer, Trigger};
 
     #[test]
     fn test_roundtrip_desktop_message() {
@@ -133,6 +135,7 @@ mod tests {
             trace_id: "t1".to_string(),
             agent_id: AgentId::generate(),
             spec: AgentSpec::new("demo", "do nothing"),
+            mcp_servers: vec![],
         };
         let bytes = serde_json::to_vec(&msg).unwrap();
         let decoded: DesktopMessage = serde_json::from_slice(&bytes).unwrap();

@@ -1,57 +1,68 @@
 # Goble
 
-Aplicație desktop + worker VPS pentru agenți autonomi. Desktop-ul este construit cu Tauri (Rust backend + React frontend), iar worker-ul este un binar Rust care rulează pe VPS.
+Goble is a desktop app that turns your chat into an autonomous agent control center. It is built with **Tauri** (Rust + React) and pairs with **Goblin** workers running on your own VPS.
 
-## Cuvinte cheie
+Everything is configurable from chat: pick a model, describe what you need, and Goble handles the rest — agents, workers, cluster identity, and credentials are resolved in the background.
 
-- **Goble** — aplicația desktop (Tauri + React).
-- **Goblin** — worker-ul care rulează pe VPS (sau mai mulți).
-- **Agent** — unitate autonomă creată prin limbaj natural, activată la heartbeat, cron sau HTTP.
-- **MCP** — Model Context Protocol: conectează servere externe de tool-uri (search, install, discover, execute).
+## Quick setup
 
-## Arhitectură (pe scurt)
+1. **Start the desktop app**
+   ```bash
+   cd crates/goble-desktop
+   npm install
+   npm run tauri dev
+   ```
+
+2. **Configure a model from the chat or Settings → LLM**
+   Paste your API key (OpenAI, Anthropic, OpenRouter, etc.) and pick a model. The key is stored in the local encrypted vault.
+
+3. **Connect a worker**
+   Say something like *“connect a worker on my VPS at 1.2.3.4”* or go to **Settings → Workers** and click **Install / upgrade worker**. Provide SSH credentials, and Goble will:
+   - Download the latest Goblin release
+   - Generate a cluster identity and mTLS CA
+   - Install PEM keys on the VPS
+   - Pair the worker automatically in the background
+
+4. **Start working**
+   Create agents by describing them in plain language, run coding harnesses, schedule complex tasks, and watch executions in real time.
+
+## What you can do
+
+- **Natural-language agents** — describe an agent and Goble creates it. Example: *“Create a coding agent that reviews PRs, runs cargo test, and posts a summary.”*
+- **Coding harness** — run multi-step coding tasks: edit files, run commands, use git, run tests, deploy.
+- **Workflows & teams** — chain agents into workflows, assign them to teams, and schedule them by cron, HTTP, or heartbeat.
+- **MCP connectors** — attach external tool servers (search, shell, APIs). Credentials are selected from the encrypted vault.
+- **Observability** — live logs, execution traces, and worker status.
+- **Cluster identity** — one cluster key derives mTLS CA, device identity, and encrypted backups. The worker discovers the desktop cluster automatically and pairs itself.
+
+## Project layout
 
 ```
-Goble Desktop  Tauri (Rust + React)
-       |
-   WebSocket / mTLS / SSH
-       |
-Goblin Worker  axum + runner + scheduler + MCP registry
+crates/goble-core/     shared types, protocol, crypto, LLM abstraction, MCP registry, store
+crates/goble-desktop/    Tauri desktop app + React UI
+crates/goblin-worker/    headless worker that runs on your VPS
+crates/goble-cli/        utility CLI for worker operations
 ```
 
-## Repo layout
-
-- `crates/goble-core/` — tipuri partajate, protocol desktop↔worker, crypto, LLM abstractions, MCP manager, registry.
-- `crates/goble-desktop/` — aplicația desktop Tauri (Rust commands + React UI).
-- `crates/goblin-worker/` — binarul worker (server axum, runner, scheduler, task store).
-- `crates/goble-cli/` — CLI utilitar pentru worker.
-- `tests/` — teste end-to-end între desktop și worker.
-- `scripts/` — scripturi de build, deploy, audit.
-
-## Dezvoltare
+## Development
 
 ```bash
-cd /root/goble
+# Format and check the whole workspace
 cargo fmt --all
 cargo check --workspace --all-targets
+
+# Run tests
 cargo test --workspace
-```
 
-Pentru frontend:
-
-```bash
-cd /root/goble/crates/goble-desktop
+# Frontend only
+cd crates/goble-desktop
 npm test
 npm run build
-```
 
-Pentru release desktop (Tauri bundle):
-
-```bash
-cd /root/goble/crates/goble-desktop
+# Build a release bundle
 npm run tauri build
 ```
 
-## Licență
+## License
 
-MIT — vezi `LICENSE`.
+MIT — see `LICENSE`.

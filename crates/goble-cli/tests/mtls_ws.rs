@@ -14,6 +14,7 @@ fn test_mtls_configs_are_mutually_trusted() {
 
     let bundle = goble_core::tls::PairingBundle {
         ca_cert_pem: ca.cert_pem,
+        ca_key_pem: None,
         worker_cert_pem: server.cert_pem,
         worker_key_pem: server.key_pem,
         desktop_cert_pem: desktop.cert_pem,

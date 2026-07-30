@@ -1,15 +1,15 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use chrono::Utc;
 use goble_core::agent::{AgentId, AgentSpec, Trigger};
+use goble_core::cluster_key::{ClusterBackup, ClusterIdentity, ClusterKey};
 use goble_core::execution::ExecutionTrace;
+use goble_core::identity::ClusterRole;
 use goble_core::mcp_client::McpTool;
 use goble_core::mcp_manager::{McpManager, McpServerSummary};
 use goble_core::mcp_registry::McpSearchResult;
 use goble_core::protocol::{DesktopMessage, WorkerMessage};
-use goble_core::secret::Secret;
 use goble_core::store::Store;
 use goble_core::vault::CredentialVault;
 use goble_core::worker::WorkerId;
@@ -17,8 +17,37 @@ use goble_core::workflow::{Workflow, WorkflowId, WorkflowStep};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use parking_lot::Mutex;
+use anyhow::Context;
 
 use crate::worker_manager::WorkerClient;
+
+const WORKER_PAIRING_CODE_VAULT_PREFIX: &str = "worker:";
+
+fn parse_mcp_source(
+    source: &str,
+    source_value: Option<&str>,
+) -> anyhow::Result<goble_core::agent::McpSource> {
+    match source {
+        "npm" => Ok(goble_core::agent::McpSource::Npm {
+            package: source_value.unwrap_or("").to_string(),
+            version: "latest".to_string(),
+        }),
+        "github" => {
+            let parts: Vec<&str> = source_value.unwrap_or("").split('#').collect();
+            Ok(goble_core::agent::McpSource::Github {
+                repo: parts.first().unwrap_or(&"").to_string(),
+                rev: parts.get(1).unwrap_or(&"main").to_string(),
+            })
+        }
+        "local" => Ok(goble_core::agent::McpSource::Local {
+            path: source_value.unwrap_or("").to_string(),
+        }),
+        "url" | "sse" => Ok(goble_core::agent::McpSource::Url {
+            url: source_value.unwrap_or("").to_string(),
+        }),
+        _ => anyhow::bail!("unknown mcp source: {source}"),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerConnection {
@@ -124,9 +153,16 @@ pub struct DesktopState {
     clients: Arc<Mutex<HashMap<WorkerId, WorkerClient>>>,
     mcp_manager: McpManager,
     app_handle: Mutex<Option<AppHandle>>,
+    cluster_identity: Mutex<Option<ClusterIdentity>>,
 }
-
 impl DesktopState {
+    pub fn open_default() -> anyhow::Result<Arc<Self>> {
+        let store = Store::open("goble_store.sqlite")?;
+        let state = Self::new(store);
+        let _ = state.load_from_store();
+        Ok(state)
+    }
+
     pub fn new(store: Store) -> Arc<Self> {
         Arc::new(Self {
             store: Arc::new(Mutex::new(store)),
@@ -143,6 +179,7 @@ impl DesktopState {
             clients: Arc::new(Mutex::new(HashMap::new())),
             mcp_manager: McpManager::new(),
             app_handle: Mutex::new(None),
+            cluster_identity: Mutex::new(None),
         })
     }
 
@@ -150,15 +187,102 @@ impl DesktopState {
         *self.app_handle.lock() = Some(handle);
     }
 
-    pub fn open_default() -> anyhow::Result<Arc<Self>> {
-        let path = dirs::config_dir()
-            .map(|p| p.join("goble").join("store.db"))
-            .unwrap_or_else(|| Path::new(".goble").join("store.db"));
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+    /// Reconnect workers that were previously paired and have a stored pairing code in the vault.
+    pub fn restore_clients(self: Arc<Self>) {
+        let paired: Vec<(WorkerId, String)> = self
+            .workers
+            .lock()
+            .values()
+            .filter(|c| c.paired)
+            .map(|c| (WorkerId(c.id.clone()), c.url.clone()))
+            .collect();
+        if paired.is_empty() {
+            return;
         }
-        let store = Store::open(path)?;
-        Ok(Self::new(store))
+        let passphrase = self.vault_passphrase.lock().clone();
+        if passphrase.is_empty() {
+            self.add_log("vault locked; skip auto-reconnect for paired workers");
+            return;
+        }
+        for (wid, url) in paired {
+            let vault_key = format!("{WORKER_PAIRING_CODE_VAULT_PREFIX}{}:pairing_code", wid);
+            let code = match self.vault.lock().get(&vault_key, &passphrase) {
+                Ok(Some(v)) => String::from_utf8_lossy(&v).to_string(),
+                Ok(None) => {
+                    self.add_log(format!("no stored pairing code for worker {wid}; skip reconnect"));
+                    continue;
+                }
+                Err(e) => {
+                    self.add_log(format!("failed to decrypt pairing code for worker {wid}: {e}"));
+                    continue;
+                }
+            };
+            let state = self.clone();
+            let worker_id = wid.clone();
+            tokio::spawn(async move {
+                match WorkerClient::connect(state.clone(), worker_id.clone(), url.clone(), code).await {
+                    Ok(client) => {
+                        state.clients.lock().insert(worker_id.clone(), client);
+                        state.add_log(format!("worker {worker_id} reconnected"));
+                    }
+                    Err(e) => {
+                        state.add_log(format!("failed to reconnect worker {worker_id}: {e}"));
+                    }
+                }
+            });
+        }
+    }
+
+    fn store_pairing_code(&self, worker_id: &WorkerId, pairing_code: &str) {
+        let passphrase = self.vault_passphrase.lock().clone();
+        if passphrase.is_empty() {
+            return;
+        }
+        let vault_key = format!("{WORKER_PAIRING_CODE_VAULT_PREFIX}{}:pairing_code", worker_id);
+        let _ = self.vault.lock().set(&vault_key, pairing_code.as_bytes(), &passphrase);
+        if let Ok(bytes) = self.vault.lock().to_bytes() {
+            let _ = self.store.lock().set_setting("vault_blob", &String::from_utf8_lossy(&bytes));
+        }
+    }
+
+    pub fn get_cluster_identity(&self) -> Option<ClusterIdentity> {
+        self.cluster_identity.lock().clone()
+    }
+
+    pub fn create_cluster(&self, name: &str) -> anyhow::Result<ClusterIdentity> {
+        let identity = ClusterIdentity::generate(name, &Self::device_id(), ClusterRole::Owner)?;
+        self.set_cluster_identity(identity.clone())
+    }
+
+    pub fn import_cluster_key(&self, key_b64: &str, name: &str) -> anyhow::Result<ClusterIdentity> {
+        let key = ClusterKey::from_base64(key_b64)?;
+        let identity = ClusterIdentity::from_key(key, name, &Self::device_id(), ClusterRole::Admin)?;
+        self.set_cluster_identity(identity.clone())
+    }
+
+    fn device_id() -> String {
+        format!("desktop-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("unknown"))
+    }
+
+    pub fn export_cluster_key(&self) -> anyhow::Result<String> {
+        match self.get_cluster_identity() {
+            Some(identity) => Ok(identity.export_key()),
+            None => anyhow::bail!("no cluster identity configured"),
+        }
+    }
+
+    pub fn export_cluster_backup(&self) -> anyhow::Result<ClusterBackup> {
+        match self.get_cluster_identity() {
+            Some(identity) => identity.export_backup(),
+            None => anyhow::bail!("no cluster identity configured"),
+        }
+    }
+
+    fn set_cluster_identity(&self, identity: ClusterIdentity) -> anyhow::Result<ClusterIdentity> {
+        self.store.lock().set_cluster_identity(&identity.to_snapshot())?;
+        *self.cluster_identity.lock() = Some(identity.clone());
+        self.emit("cluster:updated", ());
+        Ok(identity)
     }
 
     pub fn set_vault_passphrase(&self, passphrase: String) {
@@ -213,9 +337,10 @@ impl DesktopState {
             let state = self.clone();
             let wid = worker_id.clone();
             let url = conn.url.clone();
+            let code = pairing_code.clone();
             tokio::spawn(async move {
                 let conn_name = conn.name.clone();
-                match WorkerClient::connect(state.clone(), wid.clone(), url.clone(), pairing_code).await {
+                match WorkerClient::connect(state.clone(), wid.clone(), url.clone(), code.clone()).await {
                     Ok(client) => {
                         state.clients.lock().insert(wid.clone(), client);
                         if let Some(c) = state.workers.lock().get_mut(&wid) {
@@ -231,6 +356,7 @@ impl DesktopState {
                             &Utc::now().to_rfc3339(),
                             &Utc::now().to_rfc3339(),
                         );
+                        state.store_pairing_code(&wid, &code);
                         state.add_log(format!("worker {} paired", wid));
                         state.emit("workers:updated", ());
                     }
@@ -540,6 +666,10 @@ impl DesktopState {
         self.agents.lock().values().cloned().collect()
     }
 
+    pub fn list_executions(&self) -> Vec<ExecutionInfo> {
+        self.executions.lock().values().cloned().collect()
+    }
+
     pub fn create_workflow(
         &self,
         name: &str,
@@ -712,12 +842,14 @@ impl DesktopState {
         } else {
             AgentSpec::new(&agent_id.0, prompt)
         };
+        let mcp_servers = self.resolve_mcp_servers_for_agent(&spec)?;
         self.send_to_worker(
             worker_id,
             DesktopMessage::RunAgent {
                 trace_id: format!("desktop-{}", uuid::Uuid::new_v4()),
                 agent_id: agent_id.clone(),
                 spec,
+                mcp_servers,
             },
         )
     }
@@ -728,25 +860,98 @@ impl DesktopState {
         agent_id: &AgentId,
         trigger: Trigger,
     ) -> anyhow::Result<()> {
+        let spec = self.agents.lock().get(agent_id).cloned();
+        let mcp_servers = if let Some(ref s) = spec {
+            self.resolve_mcp_servers_for_agent(&s.spec)?
+        } else {
+            vec![]
+        };
         self.send_to_worker(
             worker_id,
             DesktopMessage::ScheduleAgent {
                 agent_id: agent_id.clone(),
                 trigger,
+                mcp_servers,
             },
         )
     }
 
-    pub fn list_executions(&self) -> Vec<ExecutionInfo> {
-        self.executions.lock().values().cloned().collect()
+    /// Resolve MCP servers referenced by an agent spec, substituting vault secrets into the server config.
+    fn resolve_mcp_servers_for_agent(&self,
+        spec: &AgentSpec,
+    ) -> anyhow::Result<Vec<goble_core::agent::McpServer>> {
+        if spec.mcp_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let summaries = self.list_mcp_servers()?;
+        let passphrase = self.vault_passphrase.lock().clone();
+        let mut resolved = Vec::new();
+        for id in &spec.mcp_ids {
+            let summary = match summaries.iter().find(|s| &s.id == id) {
+                Some(s) => s,
+                None => {
+                    anyhow::bail!("mcp server {id} referenced by agent {} not found", spec.id);
+                }
+            };
+            let server = self.resolve_mcp_server_with_secrets(summary, &passphrase)?;
+            resolved.push(server);
+        }
+        Ok(resolved)
+    }
+
+    fn resolve_mcp_server_with_secrets(
+        &self,
+        summary: &McpServerSummary,
+        passphrase: &[u8],
+    ) -> anyhow::Result<goble_core::agent::McpServer> {
+        let rows = self.store.lock().list_mcp_servers()?;
+        let row = rows
+            .into_iter()
+            .find(|(i, _, _, _, _, _, _, _, _, _)| i == &summary.id)
+            .context(format!("mcp server {} not found", summary.id))?;
+        let manifest: goble_core::agent::McpManifest = serde_json::from_str(&row.4)?;
+        let source = parse_mcp_source(&summary.source, summary.source_value.as_deref())?;
+        let mut server = goble_core::agent::McpServer {
+            id: summary.id.clone(),
+            name: summary.name.clone(),
+            source,
+            manifest,
+            credentials_key: None,
+            installed_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        if !summary.secret_ids.is_empty() {
+            if passphrase.is_empty() {
+                anyhow::bail!("vault is locked; cannot resolve secrets for {}", summary.id);
+            }
+            let mut env = std::collections::HashMap::new();
+            for key in &summary.secret_ids {
+                let value = self.vault.lock().get(key, passphrase)?
+                    .context(format!("vault secret {key} missing for mcp server {}", summary.id))?;
+                env.insert(key.clone(), String::from_utf8_lossy(&value).to_string());
+            }
+            server.credentials_key = Some(serde_json::to_string(&env)?);
+        }
+        Ok(server)
+    }
+
+    pub fn list_mcp_servers(&self,
+    ) -> Result<Vec<McpServerSummary>, anyhow::Error> {
+        self.mcp_manager.list_mcp_servers(&self.store.lock())
     }
 
     pub fn search_mcp_servers(&self, query: &str) -> Vec<McpSearchResult> {
         tauri::async_runtime::block_on(self.mcp_manager.search_mcp_servers(query))
     }
 
-    pub fn list_mcp_servers(&self) -> Result<Vec<McpServerSummary>, anyhow::Error> {
-        self.mcp_manager.list_mcp_servers(&self.store.lock())
+    pub fn test_call_mcp_tool(
+        &self,
+        id: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, anyhow::Error> {
+        let store = self.store.lock();
+        tauri::async_runtime::block_on(self.mcp_manager.test_call_tool(&store, id, tool_name, arguments))
     }
 
     pub fn install_mcp_server(
@@ -755,12 +960,15 @@ impl DesktopState {
         name: &str,
         source: &str,
         source_value: Option<&str>,
-        credentials: Vec<Secret>,
+        secret_ids: Vec<String>,
         manifest: Option<goble_core::agent::McpManifest>,
     ) -> Result<String, anyhow::Error> {
         let store = self.store.lock().clone();
+        let secrets: Vec<goble_core::secret::Secret> = secret_ids.iter()
+            .map(|name| goble_core::secret::Secret::new(name, "mcp", vec![]))
+            .collect();
         tauri::async_runtime::block_on(
-            self.mcp_manager.install_mcp_server(&store, id, name, source, source_value, credentials, manifest),
+            self.mcp_manager.install_mcp_server(&store, id, name, source, source_value, &secrets, manifest),
         )
     }
 
@@ -769,12 +977,15 @@ impl DesktopState {
         id: &str,
         name: Option<&str>,
         source_value: Option<&str>,
-        credentials: Option<Vec<Secret>>,
+        secret_ids: Option<Vec<String>>,
         manifest: Option<goble_core::agent::McpManifest>,
     ) -> Result<String, anyhow::Error> {
         let store = self.store.lock().clone();
+        let secrets = secret_ids.map(|ids| ids.iter()
+            .map(|name| goble_core::secret::Secret::new(name, "mcp", vec![]))
+            .collect::<Vec<_>>());
         tauri::async_runtime::block_on(
-            self.mcp_manager.update_mcp_server(&store, id, name, source_value, credentials, manifest),
+            self.mcp_manager.update_mcp_server(&store, id, name, source_value, secrets.as_deref(), manifest),
         )
     }
 

@@ -155,12 +155,39 @@ export async function pingWorker(workerId: string): Promise<void> {
   return invoke('ping_worker', { workerId });
 }
 
+export interface ClusterIdentityInfo {
+  cluster_name: string;
+  ca_cert_pem: string;
+  device_serial: string;
+}
+
+export async function getClusterIdentity(): Promise<ClusterIdentityInfo | null> {
+  return invoke('get_cluster_identity');
+}
+
+export async function createCluster(name: string): Promise<ClusterIdentityInfo> {
+  return invoke('create_cluster', { name });
+}
+
+export async function importClusterKey(key: string, name: string): Promise<ClusterIdentityInfo> {
+  return invoke('import_cluster_key', { key, name });
+}
+
+export async function exportClusterKey(): Promise<string> {
+  return invoke('export_cluster_key');
+}
+
+export async function exportClusterBackup(): Promise<string> {
+  return invoke('export_cluster_backup');
+}
+
 export async function installWorker(
   host: string,
   user: string,
   port: number,
   privateKey: string,
   releaseTag: string,
+  pairingCode: string,
 ): Promise<InstallWorkerResult> {
   return invoke('install_worker', {
     host,
@@ -169,6 +196,7 @@ export async function installWorker(
     private_key: privateKey,
     release_tag: releaseTag,
     repo: null,
+    pairing_code: pairingCode,
   });
 }
 
@@ -328,16 +356,18 @@ export async function installMcpServer(
   name: string,
   source: string,
   sourceValue?: string,
+  secretIds: string[] = [],
 ): Promise<string> {
-  return invoke('install_mcp_server', { req: { id, name, source, source_value: sourceValue } });
+  return invoke('install_mcp_server', { req: { id, name, source, source_value: sourceValue, secret_ids: secretIds } });
 }
 
 export async function updateMcpServer(
   id: string,
   name?: string,
   sourceValue?: string,
+  secretIds: string[] = [],
 ): Promise<string> {
-  return invoke('update_mcp_server', { req: { id, name, source_value: sourceValue } });
+  return invoke('update_mcp_server', { req: { id, name, source_value: sourceValue, secret_ids: secretIds } });
 }
 
 export async function deleteMcpServer(id: string): Promise<string> {
@@ -356,6 +386,14 @@ export async function updateMcpServerMeta(
 
 export async function discoverMcpTools(id: string): Promise<McpTool[]> {
   return invoke('discover_mcp_tools', { req: { id } });
+}
+
+export async function testCallMcpTool(
+  id: string,
+  toolName: string,
+  arguments?: Record<string, unknown>,
+): Promise<unknown> {
+  return invoke('test_call_mcp_tool', { req: { id, tool_name: toolName, arguments } });
 }
 
 export function onWorkersUpdated(callback: () => void): Promise<() => void> {

@@ -6,6 +6,7 @@ import {
   updateMcpServer,
   deleteMcpServer,
   discoverMcpTools,
+  testCallMcpTool,
   listMcpServers,
   updateMcpServerMeta,
 } from '../tauri/api';
@@ -29,12 +30,17 @@ export default function ConnectorsPage() {
     name: '',
     source: 'npm',
     source_value: '',
+    secret_ids: [] as string[],
   });
   const [editingId, setEditingId] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState<'info' | 'error'>('info');
   const [loading, setLoading] = useState(false);
   const [discovering, setDiscovering] = useState<Record<string, boolean>>({});
+  const [testToolServer, setTestToolServer] = useState<string | null>(null);
+  const [testToolName, setTestToolName] = useState('');
+  const [testToolArgs, setTestToolArgs] = useState('{}');
+  const [testToolResult, setTestToolResult] = useState<string | null>(null);
 
   const [drawerServer, setDrawerServer] = useState<McpServerSummary | null>(null);
   const [drawerSecretIds, setDrawerSecretIds] = useState<string[]>([]);
@@ -76,6 +82,7 @@ export default function ConnectorsPage() {
       name: result.name,
       source: result.source === 'github' ? 'github' : 'npm',
       source_value: result.source === 'github' ? result.name : result.id,
+      secret_ids: [],
     });
     setEditingId(null);
     setMessage('');
@@ -102,11 +109,11 @@ export default function ConnectorsPage() {
     setLoading(true);
     clearMessage();
     try {
-      await installMcpServer(form.id.trim(), form.name.trim(), form.source, form.source_value.trim() || undefined);
+      await installMcpServer(form.id.trim(), form.name.trim(), form.source, form.source_value.trim() || undefined, form.secret_ids);
       const updated = await listMcpServers();
       setMcpServers(updated);
       setInfo(`Installed ${form.id.trim()}`);
-      setForm({ id: '', name: '', source: 'npm', source_value: '' });
+      setForm({ id: '', name: '', source: 'npm', source_value: '', secret_ids: [] });
     } catch (err) {
       setError(`Install failed: ${err}`);
     } finally {
@@ -124,12 +131,12 @@ export default function ConnectorsPage() {
     setLoading(true);
     clearMessage();
     try {
-      await updateMcpServer(editingId, form.name.trim(), form.source_value.trim() || undefined);
+      await updateMcpServer(editingId, form.name.trim(), form.source_value.trim() || undefined, form.secret_ids);
       const updated = await listMcpServers();
       setMcpServers(updated);
       setInfo(`Updated ${editingId}`);
       setEditingId(null);
-      setForm({ id: '', name: '', source: 'npm', source_value: '' });
+      setForm({ id: '', name: '', source: 'npm', source_value: '', secret_ids: [] });
     } catch (err) {
       setError(`Update failed: ${err}`);
     } finally {
@@ -156,13 +163,14 @@ export default function ConnectorsPage() {
       name: server.name,
       source: server.source as typeof form.source,
       source_value: server.source_value || '',
+      secret_ids: server.secret_ids || [],
     });
     clearMessage();
   }
 
   function cancelEdit() {
     setEditingId(null);
-    setForm({ id: '', name: '', source: 'npm', source_value: '' });
+    setForm({ id: '', name: '', source: 'npm', source_value: '', secret_ids: [] });
     clearMessage();
   }
 
@@ -339,6 +347,28 @@ export default function ConnectorsPage() {
               value={form.source_value}
               onChange={(e) => setForm({ ...form, source_value: e.target.value })}
             />
+            {vaultSecrets.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div className="card-row">Vault secrets linked to this server:</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {vaultSecrets.map((secret) => (
+                    <label key={secret.key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <input
+                        type="checkbox"
+                        checked={form.secret_ids.includes(secret.key)}
+                        onChange={(e) => {
+                          const ids = new Set(form.secret_ids);
+                          if (e.target.checked) ids.add(secret.key);
+                          else ids.delete(secret.key);
+                          setForm({ ...form, secret_ids: Array.from(ids) });
+                        }}
+                      />
+                      {secret.key}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8 }}>
               <button type="submit" disabled={loading}>
                 {loading ? (editingId ? 'Updating...' : 'Installing...') : (editingId ? 'Update' : 'Install')}
@@ -484,6 +514,24 @@ function McpServerDrawer({
   onSave: () => void;
   onClose: () => void;
 }) {
+  const [testTool, setTestTool] = useState('');
+  const [testArgs, setTestArgs] = useState('{}');
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  async function runTest(toolName: string) {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const args = JSON.parse(testArgs || '{}');
+      const result = await testCallMcpTool(server.id, toolName, args);
+      setTestResult(JSON.stringify(result, null, 2));
+    } catch (err) {
+      setTestResult(`Error: ${err}`);
+    } finally {
+      setTesting(false);
+    }
+  }
   const availableTools = Array.from(new Set([
     ...server.discovered_tools,
     ...server.enabled_tools,
@@ -525,16 +573,36 @@ function McpServerDrawer({
             {availableTools.length === 0 && <p className="drawer-empty">No tools discovered yet. Click Discover to fetch them.</p>}
             <div className="drawer-list">
               {availableTools.map((t) => (
-                <label key={t} className="drawer-row">
-                  <input
-                    type="checkbox"
-                    checked={enabledTools.has(t)}
-                    onChange={() => onToggleTool(t)}
-                  />
-                  <span>{t}</span>
-                </label>
+                <div key={t} className="drawer-row" style={{ justifyContent: 'space-between' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={enabledTools.has(t)}
+                      onChange={() => onToggleTool(t)}
+                    />
+                    <span>{t}</span>
+                  </label>
+                  <button onClick={() => setTestTool(t)} disabled={testing}>Test</button>
+                </div>
               ))}
             </div>
+            {testTool && (
+              <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div className="card-row">Test tool: <strong>{testTool}</strong></div>
+                <textarea
+                  rows={3}
+                  value={testArgs}
+                  onChange={(e) => setTestArgs(e.target.value)}
+                  placeholder='Tool arguments as JSON'
+                />
+                <button onClick={() => runTest(testTool)} disabled={testing}>
+                  {testing ? 'Running...' : 'Run test'}
+                </button>
+                {testResult && (
+                  <pre style={{ maxHeight: 200, overflow: 'auto', fontSize: 12 }}>{testResult}</pre>
+                )}
+              </div>
+            )}
           </div>
         </div>
         <div className="drawer-footer">

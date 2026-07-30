@@ -16,6 +16,7 @@ use crate::llm::{
 };
 use crate::mcp_manager::McpManager;
 use crate::protocol::DesktopMessage;
+use crate::secret::Secret;
 use crate::store::Store;
 use crate::worker::WorkerId;
 use crate::workflow::{Workflow, WorkflowStep};
@@ -1255,6 +1256,7 @@ fn deploy_workflow(
             created_at: workflow.created_at.clone(),
             updated_at: workflow.updated_at.clone(),
         },
+        mcp_servers: vec![],
     };
     if let Some(sender) = deploy_sender {
         sender(&worker, message)?;
@@ -1506,8 +1508,9 @@ async fn install_mcp_server(
     let manifest = args["manifest"]
         .as_str()
         .and_then(|m| serde_json::from_str::<McpManifest>(m).ok());
+    let secret_ids: Vec<Secret> = serde_json::from_str(&args["secret_ids"].as_str().unwrap_or("[]")).unwrap_or_default();
     mcp_manager
-        .install_mcp_server(store, id, name, source, source_value, vec![], manifest)
+        .install_mcp_server(store, id, name, source, source_value, &secret_ids, manifest)
         .await
 }
 
@@ -1536,8 +1539,10 @@ async fn update_mcp_server(
     let manifest = args["manifest"]
         .as_str()
         .and_then(|m| serde_json::from_str::<McpManifest>(m).ok());
+    let secret_ids: Vec<Secret> = serde_json::from_str(
+        args["secret_ids"].as_str().unwrap_or("[]")).unwrap_or_default();
     mcp_manager
-        .update_mcp_server(store, id, name, source_value, None, manifest)
+        .update_mcp_server(store, id, name, source_value, Some(&secret_ids), manifest)
         .await
 }
 
@@ -2424,7 +2429,7 @@ mod tests {
                 "Mock Echo",
                 "local",
                 Some(&src.to_string_lossy()),
-                vec![],
+                &[],
                 Some(crate::agent::McpManifest {
                     schema_version: "1".to_string(),
                     entrypoint: "index.js".to_string(),

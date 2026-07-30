@@ -135,6 +135,7 @@ mod tests {
             trace_id: "t1".to_string(),
             agent_id: AgentId::generate(),
             spec: AgentSpec::new("demo", "do nothing"),
+            mcp_servers: vec![],
         };
         let bytes = serde_json::to_vec(&msg).unwrap();
         let decoded: DesktopMessage = serde_json::from_slice(&bytes).unwrap();

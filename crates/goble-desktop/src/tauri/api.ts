@@ -356,16 +356,18 @@ export async function installMcpServer(
   name: string,
   source: string,
   sourceValue?: string,
+  secretIds: string[] = [],
 ): Promise<string> {
-  return invoke('install_mcp_server', { req: { id, name, source, source_value: sourceValue } });
+  return invoke('install_mcp_server', { req: { id, name, source, source_value: sourceValue, secret_ids: secretIds } });
 }
 
 export async function updateMcpServer(
   id: string,
   name?: string,
   sourceValue?: string,
+  secretIds: string[] = [],
 ): Promise<string> {
-  return invoke('update_mcp_server', { req: { id, name, source_value: sourceValue } });
+  return invoke('update_mcp_server', { req: { id, name, source_value: sourceValue, secret_ids: secretIds } });
 }
 
 export async function deleteMcpServer(id: string): Promise<string> {
@@ -384,6 +386,14 @@ export async function updateMcpServerMeta(
 
 export async function discoverMcpTools(id: string): Promise<McpTool[]> {
   return invoke('discover_mcp_tools', { req: { id } });
+}
+
+export async function testCallMcpTool(
+  id: string,
+  toolName: string,
+  arguments?: Record<string, unknown>,
+): Promise<unknown> {
+  return invoke('test_call_mcp_tool', { req: { id, tool_name: toolName, arguments } });
 }
 
 export function onWorkersUpdated(callback: () => void): Promise<() => void> {

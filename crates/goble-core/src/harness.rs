@@ -2429,7 +2429,7 @@ mod tests {
                 "Mock Echo",
                 "local",
                 Some(&src.to_string_lossy()),
-                vec![],
+                &[],
                 Some(crate::agent::McpManifest {
                     schema_version: "1".to_string(),
                     entrypoint: "index.js".to_string(),

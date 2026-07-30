@@ -574,6 +574,23 @@ fn discover_mcp_tools(
     state.discover_mcp_tools(&req.id).map_err(|e| e.to_string())
 }
 
+#[derive(Deserialize)]
+struct TestCallMcpRequest {
+    id: String,
+    tool_name: String,
+    arguments: Option<serde_json::Value>,
+}
+
+#[tauri::command]
+fn test_call_mcp_tool(
+    req: TestCallMcpRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<serde_json::Value, String> {
+    state
+        .test_call_mcp_tool(&req.id, &req.tool_name, req.arguments.unwrap_or(serde_json::json!({})))
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn cancel_harness(chat_id: String) {
     if let Some(cancel) = HARNESS_CANCEL.lock().unwrap().get(&chat_id) {
@@ -704,7 +721,7 @@ fn run_harness(
 
 pub fn run() {
     let state = state::DesktopState::open_default().expect("open store");
-    let state_for_setup = Arc::clone(&state);
+    let state_for_setup: Arc<state::DesktopState> = Arc::clone(&state);
     tauri::Builder::default()
         .manage(state)
         .setup(move |app| {
@@ -748,6 +765,7 @@ pub fn run() {
             install_mcp_server,
             list_mcp_servers,
             delete_mcp_server,
+            test_call_mcp_tool,
             update_mcp_server,
             update_mcp_server_meta,
             discover_mcp_tools,

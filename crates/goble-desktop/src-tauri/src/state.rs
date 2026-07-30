@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -11,7 +10,6 @@ use goble_core::mcp_client::McpTool;
 use goble_core::mcp_manager::{McpManager, McpServerSummary};
 use goble_core::mcp_registry::McpSearchResult;
 use goble_core::protocol::{DesktopMessage, WorkerMessage};
-use goble_core::secret::Secret;
 use goble_core::store::Store;
 use goble_core::vault::CredentialVault;
 use goble_core::worker::WorkerId;
@@ -19,6 +17,7 @@ use goble_core::workflow::{Workflow, WorkflowId, WorkflowStep};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use parking_lot::Mutex;
+use anyhow::Context;
 
 use crate::worker_manager::WorkerClient;
 
@@ -157,6 +156,13 @@ pub struct DesktopState {
     cluster_identity: Mutex<Option<ClusterIdentity>>,
 }
 impl DesktopState {
+    pub fn open_default() -> anyhow::Result<Arc<Self>> {
+        let store = Store::open("goble_store.sqlite")?;
+        let state = Self::new(store);
+        let _ = state.load_from_store();
+        Ok(state)
+    }
+
     pub fn new(store: Store) -> Arc<Self> {
         Arc::new(Self {
             store: Arc::new(Mutex::new(store)),
@@ -175,25 +181,6 @@ impl DesktopState {
             app_handle: Mutex::new(None),
             cluster_identity: Mutex::new(None),
         })
-    }
-
-    pub fn set_app_handle(&self, handle: AppHandle) {
-        *self.app_handle.lock() = Some(handle);
-    }
-
-    pub fn open_default() -> anyhow::Result<Arc<Self>> {
-        let path = dirs::config_dir()
-            .map(|p| p.join("goble").join("store.db"))
-            .unwrap_or_else(|| Path::new(".goble").join("store.db"));
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let store = Store::open(path)?;
-        let state = Self::new(store);
-        if let Err(e) = state.load_from_store() {
-            state.add_log(format!("failed to restore state from store: {e}"));
-        }
-        Ok(state)
     }
 
     pub fn set_app_handle(&self, handle: AppHandle) {
@@ -679,6 +666,10 @@ impl DesktopState {
         self.agents.lock().values().cloned().collect()
     }
 
+    pub fn list_executions(&self) -> Vec<ExecutionInfo> {
+        self.executions.lock().values().cloned().collect()
+    }
+
     pub fn create_workflow(
         &self,
         name: &str,
@@ -871,7 +862,7 @@ impl DesktopState {
     ) -> anyhow::Result<()> {
         let spec = self.agents.lock().get(agent_id).cloned();
         let mcp_servers = if let Some(ref s) = spec {
-            self.resolve_mcp_servers_for_agent(s)?
+            self.resolve_mcp_servers_for_agent(&s.spec)?
         } else {
             vec![]
         };
@@ -951,6 +942,16 @@ impl DesktopState {
 
     pub fn search_mcp_servers(&self, query: &str) -> Vec<McpSearchResult> {
         tauri::async_runtime::block_on(self.mcp_manager.search_mcp_servers(query))
+    }
+
+    pub fn test_call_mcp_tool(
+        &self,
+        id: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, anyhow::Error> {
+        let store = self.store.lock();
+        tauri::async_runtime::block_on(self.mcp_manager.test_call_tool(&store, id, tool_name, arguments))
     }
 
     pub fn install_mcp_server(

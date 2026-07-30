@@ -643,6 +643,76 @@ impl McpManager {
 
     /// Call a tool by server id and tool name. The server must already be started
     /// (e.g. via `refresh_from_store` or `discover_and_register`).
+    /// Test a single tool call on an MCP server by spawning a temporary stdio client.
+    /// Does not require the server to be already running in the manager.
+    pub async fn test_call_tool(
+        &self,
+        store: &Store,
+        id: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let rows = store.list_mcp_servers()?;
+        let row = rows
+            .into_iter()
+            .find(|(i, _, _, _, _, _, _, _, _, _)| i == id)
+            .context(format!("mcp server {id} not found"))?;
+        let source = row.2;
+        let source_value = row.3;
+        let manifest_json = row.4;
+        let manifest: McpManifest = serde_json::from_str(&manifest_json).unwrap_or_else(|_| McpManifest {
+            schema_version: "1".to_string(),
+            entrypoint: "".to_string(),
+            runtime: McpRuntime::V8Isolate,
+            auth_schema: vec![],
+            capabilities: vec![],
+            config_schema: serde_json::json!({}),
+        });
+
+        let cache_dir = self.cache_dir().context("no installer configured")?;
+        let installer = McpInstaller::new(cache_dir);
+        let source = match source.as_str() {
+            "npm" => McpSource::Npm {
+                package: source_value.clone().unwrap_or_default(),
+                version: "latest".to_string(),
+            },
+            "github" => McpSource::Github {
+                repo: source_value.clone().unwrap_or_default(),
+                rev: "main".to_string(),
+            },
+            "local" => McpSource::Local {
+                path: source_value.clone().unwrap_or_default(),
+            },
+            "url" => McpSource::Url {
+                url: source_value.clone().unwrap_or_default(),
+            },
+            _ => McpSource::Local {
+                path: source_value.clone().unwrap_or_default(),
+            },
+        };
+        let server = McpServer {
+            id: id.to_string(),
+            name: row.1,
+            source,
+            manifest,
+            credentials_key: row.5,
+            installed_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let installed = installer.install(&server).await?;
+        let (command, args) = installed.runtime_command();
+        let env = server.credentials_key
+            .as_ref()
+            .and_then(|s| serde_json::from_str::<std::collections::HashMap<String, String>>(s).ok())
+            .unwrap_or_default();
+        let client = McpClient::spawn_owned(&command,
+            &args,
+            env,
+        )?;
+        client.initialize()?;
+        client.call_tool(tool_name, arguments)
+    }
+
     pub fn call_tool_on_server(
         &self,
         server_id: &str,
@@ -838,7 +908,7 @@ mod tests {
             &server.name,
             "local",
             Some(&src.to_string_lossy()),
-            vec![],
+            &[],
             Some(server.manifest.clone()),
         ))
         .unwrap();
@@ -887,7 +957,7 @@ mod tests {
             "Sequential Thinking",
             "npm",
             Some("@modelcontextprotocol/server-sequential-thinking"),
-            vec![],
+            &[],
             None,
         ))
         .unwrap();
@@ -971,7 +1041,7 @@ mod tests {
             &server.name,
             "local",
             Some(&src.to_string_lossy()),
-            vec![],
+            &[],
             Some(server.manifest.clone()),
         ))
         .unwrap();

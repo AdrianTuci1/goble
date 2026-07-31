@@ -1,277 +1,364 @@
-# Goble Local ↔ Remote Agent — High-Level Graph
+# Goble Agentic System — Local vs Remote Agent Graph
+
+This is the high-level graph of how the **local agent** (Goble Desktop / goble-core) and the **remote agent** (goblin-worker) split responsibilities, what surfaces the chat uses, and how the system handles multi-turn complex workflows.
 
 ```mermaid
 flowchart TB
     subgraph USER["User"]
-        U["Chat / Agents / Settings"]
+        UI["Goble Desktop UI"]
     end
 
-    subgraph COMPOSER["Custom composer"]
+    subgraph CHAT["Chat surfaces"]
         direction LR
-        C1["Variant: ask"]
-        C2["Variant: agent"]
-        C3["Variant: follow-up"]
-        C4["Variant: secrets"]
+        COMPOSER["Composer\n(text input + variants)"]
+        RENDERER["Chat renderer\n(messages + states)"]
     end
 
-    subgraph RENDERERS["Chat renderers"]
+    subgraph PAGES["Main pages"]
         direction LR
-        R1["Searching..."]
-        R2["Connecting to computer..."]
-        R3["Thinking..."]
-        R4["Executing..."]
-        R5["Asking..."]
+        P_CHAT["Chat"]
+        P_AGENT["Agent + sidebar"]
+        P_MCP["MCP menu"]
     end
 
     subgraph LOCAL["Local Agent — goble-core"]
         direction TB
-        L1["Build agent"]
-        L2["Discover tools"]
-        L3["Discover other agents"]
-        L4["Plan mission"]
-        L5["Ask user / clarify"]
-        L6["Deploy to remote"]
+        L_RUNNER["Runner\n(search, query, plan,\nregistry, ask_user, deploy)"]
+        L_QUERY["Query layer\nMCPs, secrets,\nagents, tools, models"]
+        L_SETTINGS["User settings editor\n(LLM, provider, model, vault)"]
+        L_BUILDER["Agent builder\ncreate / edit agents\nand workflows"]
+        L_STATE["State\nmission, reasoning steps,\npending asks, executions"]
     end
 
     subgraph REMOTE["Remote Agent — goblin-worker"]
         direction TB
-        RR1["Execute tools"]
-        RR2["Call MCPs"]
-        RR3["Run workflows"]
-        RR4["Cron scheduler"]
-        RR5["Report back"]
+        R_RUNNER["Runner\n(shell, git, file,\npython, web)"]
+        R_FS["File system\n(read, write, edit)"]
+        R_MCP["MCP gateway\n(call remote MCPs)"]
+        R_CRON["Cron scheduler\ntriggers workflows"]
+        R_TASKS["Task store"]
     end
 
     subgraph EXTERNAL["External"]
-        E1["LLM API"]
-        E2["MCP servers"]
-        E3["Web / Git / Shell"]
+        LLM["LLM API"]
+        MCP_S["MCP servers"]
     end
 
-    U --> COMPOSER
-    COMPOSER --> RENDERERS
-    RENDERERS --> LOCAL
+    UI --> P_CHAT
+    UI --> P_AGENT
+    UI --> P_MCP
 
-    LOCAL --> L1
-    L1 --> L2
-    L2 --> L3
-    L3 --> L4
-    L4 --> L5
-    L5 --> L6
+    P_CHAT --> COMPOSER
+    P_CHAT --> RENDERER
+    P_AGENT --> L_BUILDER
+    P_MCP --> L_QUERY
+    L_SETTINGS --> UI
 
-    L6 --> REMOTE
-    REMOTE --> RR1
-    RR1 --> RR2
-    RR2 --> RR3
-    RR3 --> RR4
-    RR4 --> RR5
+    COMPOSER --> L_RUNNER
+    RENDERER --> L_RUNNER
 
-    RR1 --> E3
-    RR2 --> E2
-    LOCAL --> E1
-    RR5 --> RENDERERS
+    L_RUNNER --> L_QUERY
+    L_RUNNER --> L_BUILDER
+    L_RUNNER --> L_SETTINGS
+    L_RUNNER --> L_STATE
+    L_RUNNER --> LLM
+
+    L_QUERY --> MCP_S
+
+    L_RUNNER --"deploy / control"--> REMOTE
+    R_RUNNER --> R_FS
+    R_RUNNER --> R_MCP
+    R_RUNNER --> R_CRON
+    R_RUNNER --> R_TASKS
+    R_MCP --> MCP_S
+    R_CRON --> R_TASKS
+
+    REMOTE --"logs / status / results"--> RENDERER
+    REMOTE --"executions"--> L_STATE
 
     style LOCAL fill:#0f172a,stroke:#22d3ee,stroke-width:2px
     style REMOTE fill:#0f172a,stroke:#34d399,stroke-width:2px
     style USER fill:#0f172a,stroke:#a78bfa,stroke-width:2px
-    style COMPOSER fill:#0f172a,stroke:#fbbf24,stroke-width:2px
-    style RENDERERS fill:#0f172a,stroke:#fb923c,stroke-width:2px
+    style CHAT fill:#0f172a,stroke:#fbbf24,stroke-width:2px
+    style PAGES fill:#0f172a,stroke:#fb923c,stroke-width:2px
     style EXTERNAL fill:#0f172a,stroke:#94a3b8,stroke-width:2px
 ```
 
 ---
 
-## Split in 4 bullets
-
-| Local Agent | Remote Agent |
-|---|---|
-| Talks to the user, clarifies vague missions, builds agents. | Runs everything it receives: tools, MCPs, workflows, cron. |
-| Discovers tools and other agents from the registry. | Interrogates external tools and MCPs locally on its host. |
-| Plans, asks when blocked, deploys to remote. | Reports status, logs, results back to local. |
-| Owns secrets, config, history. | Owns execution state and scheduler. |
+## Local Agent — what it contains
 
 ```mermaid
-flowchart LR
-    subgraph L["Local Agent"]
-        L1["Build agent"]
-        L2["Discover tools / agents"]
-        L3["Plan + ask user"]
-        L4["Deploy"]
+flowchart TB
+    subgraph LOCAL["Local Agent — goble-core"]
+        direction TB
+
+        subgraph RUNNER["Runner"]
+            R1["search / query"]
+            R2["plan mission"]
+            R3["ask_user"]
+            R4["deploy to remote"]
+            R5["control remote subagent"]
+            R6["interpret results"]
+        end
+
+        subgraph QUERY["Query layer"]
+            Q1["MCP registry"]
+            Q2["Secrets / vault"]
+            Q3["Agent definitions"]
+            Q4["Tool definitions"]
+            Q5["LLM settings"]
+        end
+
+        subgraph BUILDER["Agent builder"]
+            B1["Create agent"]
+            B2["Edit agent"]
+            B3["Create workflow"]
+            B4["Discover tools"]
+            B5["Discover other agents"]
+        end
+
+        subgraph STATE["State"]
+            S1["Mission"]
+            S2["Reasoning steps"]
+            S3["Pending asks"]
+            S4["Execution traces"]
+            S5["Chat messages"]
+        end
+
+        SETTINGS["User settings editor"]
     end
 
-    subgraph R["Remote Agent"]
-        R1["Execute"]
-        R2["Call tools / MCPs"]
-        R3["Report back"]
-    end
+    RUNNER --> QUERY
+    RUNNER --> BUILDER
+    RUNNER --> SETTINGS
+    RUNNER --> STATE
 
-    L1 --> L2 --> L3 --> L4 --> R1
-    R1 --> R2 --> R3 --> L3
+    BUILDER --> QUERY
+    B4 --> Q4
+    B5 --> Q3
 
-    style L fill:#0f172a,stroke:#22d3ee,stroke-width:2px
-    style R fill:#0f172a,stroke:#34d399,stroke-width:2px
+    style LOCAL fill:#0f172a,stroke:#22d3ee,stroke-width:2px
 ```
+
+The local agent **does not** run Python or filesystem operations. It uses the remote agent for that.
 
 ---
 
-## Custom composer variants
+## Remote Agent — what it contains
+
+```mermaid
+flowchart TB
+    subgraph REMOTE["Remote Agent — goblin-worker"]
+        direction TB
+
+        subgraph R_RUNNER["Runner"]
+            RR1["shell"]
+            RR2["git"]
+            RR3["file read / write / edit"]
+            RR4["python"]
+            RR5["web search"]
+        end
+
+        R_FS["File system"]
+        R_MCP["MCP gateway"]
+        R_CRON["Cron scheduler"]
+        R_TASKS["Task store"]
+        R_HEART["Heartbeat"]
+        R_REPORT["Report back"]
+    end
+
+    R_RUNNER --> R_FS
+    R_RUNNER --> R_MCP
+    R_RUNNER --> R_CRON
+    R_CRON --> R_TASKS
+    R_RUNNER --> R_TASKS
+    R_RUNNER --> R_HEART
+    R_HEART --> R_REPORT
+    R_RUNNER --> R_REPORT
+
+    style REMOTE fill:#0f172a,stroke:#34d399,stroke-width:2px
+```
+
+The remote agent does not ask the user. It executes, schedules, and reports.
+
+---
+
+## Chat renderer states
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Searching: local agent searches tools / agents / mcps
+    Searching --> Connecting: preparing remote agent
+    Connecting --> Thinking: planning mission / reasoning
+    Thinking --> Executing: running tools / workflows
+    Executing --> Asking: need user clarification
+    Asking --> Thinking: user answered
+    Executing --> Reporting: remote sends results
+    Reporting --> Done
+    Executing --> Error: failure
+    Error --> Asking: ask user how to proceed
+    Error --> Done: abort
+    Done --> Idle
+
+    note right of Asking
+        The local agent can pause a multi-step
+        mission, save pending_ask state, and
+        resume later from the exact turn.
+    end note
+```
+
+### What the chat renderer displays
+
+| Element | Form |
+|---|---|
+| User text | Plain bubble |
+| Assistant text | Markdown bubble |
+| Tool call start | Inline spinner card: `Searching...` / `Connecting to computer...` |
+| Tool call result | Collapsible card with output |
+| Multi-step progress | Vertical step list with check / spin / error icons |
+| Ask user | Question card with quick-reply buttons or open input |
+| Agent created | Card with agent name + tools |
+| MCP installed | Card with MCP name + status |
+| Workflow deployed | Card with trigger + steps |
+| Remote execution | Live log stream + execution status |
+| Error / retry | Error card with retry button |
+
+---
+
+## Composer variants
 
 ```mermaid
 flowchart LR
-    subgraph COMPOSER["Composer"]
-        C1["Default ask"]
-        C2["Agent mode"]
-        C3["Secrets mode"]
+    subgraph COMPOSER["Composer input"]
+        direction LR
+        C1["Default"]
+        C2["Agent selected"]
+        C3["Secrets needed"]
         C4["Follow-up / resume"]
+        C5["No model configured"]
     end
 
-    U["User"] --> C1
-    U --> C2
-    U --> C3
-    U --> C4
-
-    C1 --> L["Local Agent"]
-    C2 --> L
-    C3 --> L
-    C4 --> L
+    U["User"] --> COMPOSER
+    COMPOSER --> L["Local Agent"]
 
     style COMPOSER fill:#0f172a,stroke:#fbbf24,stroke-width:2px
     style L fill:#0f172a,stroke:#22d3ee,stroke-width:2px
 ```
 
-| Variant | When | Extra UI |
-|---|---|---|
-| Default ask | Normal chat | Text input, model picker, agent picker. |
-| Agent mode | User selected an agent | Avatar, system prompt hint, tool filter. |
-| Secrets mode | Action needs a secret | Inline secret picker / unlock vault. |
-| Follow-up / resume | Mission suspended | Resume button, pending ask badge. |
-
----
-
-## Chat renderers
-
-```mermaid
-flowchart LR
-    subgraph R["Chat renderers"]
-        R1["Searching..."]
-        R2["Connecting to computer..."]
-        R3["Thinking..."]
-        R4["Executing..."]
-        R5["Asking user..."]
-    end
-
-    R1 --> R2 --> R3 --> R4 --> R5
-```
-
-| Renderer | Meaning |
+| Variant | UI |
 |---|---|
-| Searching... | Looking up tools, agents, MCPs, docs. |
-| Connecting to computer... | Preparing remote worker / local shell. |
-| Thinking... | Reasoning loop is planning the mission. |
-| Executing... | Running tools or workflows. |
-| Asking user... | Need clarification before continuing. |
+| Default | Text input, model picker, agent picker. |
+| Agent selected | Input shows selected agent, filtered tools, system prompt hint. |
+| Secrets needed | Secret picker inline / unlock vault button. |
+| Follow-up / resume | Input prefilled with mission context, resume button. |
+| No model configured | Disabled input, placeholder: `Add model in Settings`. |
 
 ---
 
-## Local Agent: building an agent
-
-```mermaid
-flowchart TD
-    A["User says: build an agent"] --> B["Local Agent"]
-    B --> C["Choose base / variant"]
-    C --> D["Write prompt"]
-    D --> E["Select tools"]
-    E --> F["Discover tools / MCPs"]
-    F --> G["Discover other agents"]
-    G --> H["Save agent definition"]
-    H --> I["Deploy to Remote Agent"]
-
-    style B fill:#0f172a,stroke:#22d3ee,stroke-width:2px
-    style I fill:#0f172a,stroke:#34d399,stroke-width:2px
-```
-
----
-
-## Discovery loop
-
-```mermaid
-flowchart LR
-    L["Local Agent"] --> T["Discover tools"]
-    T --> MCP["Discover MCPs"]
-    MCP --> A["Discover agents"]
-    A --> L
-```
-
-- **Tools**: list from harness, local tool registry.
-- **MCPs**: search registry, install, discover tool schemas.
-- **Agents**: list existing agents, combine them into teams/workflows.
-
----
-
-## Remote Agent: local execution only
-
-```mermaid
-flowchart LR
-    R["Remote Agent"] --> T1["Shell / Git / Files"]
-    R --> T2["MCP gateway"]
-    R --> T3["Web search"]
-    R --> T4["Python / other runners"]
-    T1 --> R
-    T2 --> R
-    T3 --> R
-    T4 --> R
-    R --> L["Report back to Local Agent"]
-```
-
-The remote agent does **not** ask the user. It executes the plan and reports.
-
----
-
-## High-level sequence
+## Multi-turn mission flow
 
 ```mermaid
 sequenceDiagram
     participant U as User
     participant C as Composer
+    participant R as Chat renderer
     participant LOC as Local Agent
-    participant REM as Remote Agent
-    participant EXT as External tools
+    REMOTE as Remote Agent
+    LLM as LLM API
 
-    U ->> C: pick variant + type message
+    U ->> C: "Build a daily report agent"
     C ->> LOC: submit
+    LOC ->> R: Searching...
+    LOC ->> LLM: plan + ask_user
+    LOC ->> R: Thinking...
+    LOC ->> R: Asking: "Which database?"
+    R ->> U: quick reply buttons
+    U ->> C: taps "Postgres"
+    C ->> LOC: resume
+    LOC ->> R: Searching...
+    LOC ->> LLM: re-plan
+    LOC ->> LOC: create agent + workflow
+    LOC ->> R: Agent created card
+    LOC ->> R: Connecting to computer...
+    LOC ->> REMOTE: deploy
+    REMOTE ->> R: Executing...
+    REMOTE ->> R: log stream
+    REMOTE ->> LOC: execution trace
+    LOC ->> R: Done card
 
-    LOC ->> LOC: search / discover tools + agents
-    LOC ->> U: renderer: Searching...
-
-    LOC ->> LOC: plan mission
-    LOC ->> U: renderer: Thinking...
-
-    LOC ->> U: ask_user (quick reply or open)
-    U ->> LOC: reply
-
-    LOC ->> LOC: build agent / workflow
-    LOC ->> U: renderer: Connecting to computer...
-
-    LOC ->> REM: deploy
-    REM ->> EXT: execute tools
-    REM ->> U: renderer: Executing...
-
-    REM ->> LOC: report logs/status
-    LOC ->> U: final answer + results
+    Note over LOC: Multiple turns can happen before ask_user.
+    Note over REMOTE: Remote only executes, never asks.
 ```
 
 ---
 
-## Key decisions
+## State persistence across barriers
 
-1. **Local agent is the orchestrator.** It asks, plans, builds, and deploys.
-2. **Remote agent is the executor.** It does not ask the user; it only reports back.
-3. **Remote interrogates remote.** All external tool calls and MCP calls happen on the worker host.
-4. **Composer is context-aware.** It switches variants based on agent, secrets, and suspended asks.
-5. **Chat is a render surface.** Searching, connecting, thinking, executing, and asking are all visual states emitted by the local agent.
+```mermaid
+flowchart TB
+    subgraph STATE["Local Agent State"]
+        S1["Mission goal"]
+        S2["Reasoning steps"]
+        S3["Pending asks"]
+        S4["Tool outputs"]
+        S5["Execution traces"]
+        S6["Chat history"]
+    end
+
+    subgraph BARRIERS["Barriers"]
+        B1["ask_user"]
+        B2["network error"]
+        B3["remote failure"]
+        B4["user closes laptop"]
+    end
+
+    STATE --> BARRIERS
+    BARRIERS --> STATE
+
+    B1 -->|resume| S3
+    B2 -->|retry| S4
+    B3 -->|report| S5
+    B4 -->|restore from SQLite| STATE
+```
+
+The local agent keeps state in SQLite so a workflow can survive restarts, network failures, and user interruptions.
+
+---
+
+## Agent page sidebar + run details
+
+```mermaid
+flowchart LR
+    A["Agents page"] --> B["Agent cards"]
+    B --> C["Agent sidebar"]
+    C --> D1["Details"]
+    C --> D2["Tools"]
+    C --> D3["Workflows"]
+    C --> D4["Runs"]
+    D4 --> E["Run detail drawer"]
+    E --> F["Logs"]
+    E --> G["Trace"]
+    E --> H["Output"]
+```
+
+Each run of the remote agent is shown in the agent page as a detailed execution trace.
+
+---
+
+## Key principles
+
+1. **Local agent = orchestrator + user proxy.** It asks, plans, builds, edits settings, discovers tools/agents, and controls remote subagents.
+2. **Remote agent = hands on the computer.** It runs shell, git, filesystem, Python, and MCP tools. It never asks the user.
+3. **Local agent has no filesystem / Python access.** It delegates everything executable to the remote agent, even if the remote agent was created ad-hoc.
+4. **Chat is the main UI.** Composer = input. Renderer = output + multi-step states.
+5. **Multi-turn is normal.** The local agent runs many LLM turns before pausing for `ask_user`.
+6. **State is durable.** Missions, reasoning steps, pending asks, and executions are persisted so the system can resume across barriers.
+7. **Agent page shows remote runs.** The remote subagent's execution traces live in the agent sidebar/run detail drawer.
 
 ---
 
 ## How to view
 
-This document uses **Mermaid**. Open in GitHub, GitLab, Obsidian with Mermaid plugin, VS Code (`Markdown Preview Mermaid Support`), or https://mermaid.live.
+This document uses **Mermaid**. Open in GitHub, GitLab, Obsidian with Mermaid plugin, VS Code with `Markdown Preview Mermaid Support`, or https://mermaid.live.

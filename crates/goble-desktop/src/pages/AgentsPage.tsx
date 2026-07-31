@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../stores/appStore';
 import { createAgent, deleteAgent } from '../tauri/api';
+import './Pages.css';
 
 export default function AgentsPage() {
   const agents = useStore((s) => s.agents);

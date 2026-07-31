@@ -103,7 +103,7 @@ describe('ConnectorsPage MCP drawer flow', () => {
     fireEvent.click(screen.getByRole('button', { name: /Mock MCP/ }));
 
     await waitFor(() => {
-      expect(screen.getByText(/Vault secrets/)).toBeTruthy();
+      expect(screen.getByText(/^Vault secrets$/)).toBeTruthy();
     });
 
     fireEvent.click(screen.getByRole('button', { name: /^Discover$/i }));

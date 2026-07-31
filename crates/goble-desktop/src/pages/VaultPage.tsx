@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../stores/appStore';
 import { setVaultSecret, unlockVault } from '../tauri/api';
+import './Pages.css';
 
 export default function VaultPage() {
   const secrets = useStore((s) => s.vaultSecrets);

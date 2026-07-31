@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../stores/appStore';
 import { createTeam } from '../tauri/api';
+import './Pages.css';
 
 export default function TeamsPage() {
   const teams = useStore((s) => s.teams);

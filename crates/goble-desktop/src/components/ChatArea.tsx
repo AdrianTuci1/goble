@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { useStore } from '../stores/appStore';
+import { Bot, Cpu, HardHat, Sparkles } from 'lucide-react';
+import './ChatArea.css';
+import { useStore, type ChatMessage } from '../stores/appStore';
 import {
   cancelHarness,
   createChat,
@@ -12,6 +14,8 @@ import {
   LLM_PROVIDERS,
 } from '../tauri/api';
 import type { HarnessEventPayload } from '../tauri/api';
+
+const EMPTY_MESSAGES: ChatMessage[] = [];
 
 interface ToolCallPayload {
   id: string;
@@ -40,7 +44,9 @@ export default function ChatArea() {
   const conversations = useStore((s) => s.conversations);
   const addConversation = useStore((s) => s.addConversation);
   const updateConversation = useStore((s) => s.updateConversation);
-  const messages = useStore((s) => (activeChatId ? s.messages[activeChatId] || [] : []));
+  const messages = useStore((s) =>
+    activeChatId ? s.messages[activeChatId] || EMPTY_MESSAGES : EMPTY_MESSAGES,
+  );
   const setMessages = useStore((s) => s.setMessages);
   const addLog = useStore((s) => s.addLog);
   const addMessage = useStore((s) => s.addMessage);
@@ -255,39 +261,9 @@ export default function ChatArea() {
         <div className="chat-title">
           {activeChatId
             ? conversations.find((c) => c.id === activeChatId)?.title || 'Chat'
-            : 'No chat selected'}
+            : 'New chat'}
         </div>
-        <div className="chat-controls">
-          <select value={provider} onChange={(e) => onProviderChange(e.target.value)}>
-            {LLM_PROVIDERS.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <input
-            type="text"
-            value={model}
-            onChange={(e) => onModelChange(e.target.value)}
-            placeholder="model"
-            className="model-input"
-          />
-          <select value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
-            <option value="">Select worker</option>
-            {workers.filter((w) => w.paired).map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </select>
-          <select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-            <option value="">Select agent</option>
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
+        <div className="chat-header-actions">
           <button onClick={startNewChat}>New chat</button>
         </div>
       </div>
@@ -302,27 +278,72 @@ export default function ChatArea() {
           </div>
         ))}
       </div>
-      <div className="chat-input-area">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
-          placeholder="Type a message or /command..."
-        />
-        <button onClick={handleSend}>Send</button>
-        {isRunning && (
-          <button
-            className="cancel-button"
-            onClick={() => activeChatId && cancelHarness(activeChatId)}
-          >
-            Cancel
-          </button>
-        )}
+      <div className="chat-composer">
+        <div className="composer-toolbar">
+          <label className="composer-control" title="Provider">
+            <Sparkles size={14} />
+            <select value={provider} onChange={(e) => onProviderChange(e.target.value)}>
+              {LLM_PROVIDERS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="composer-control" title="Model">
+            <Cpu size={14} />
+            <input
+              type="text"
+              value={model}
+              onChange={(e) => onModelChange(e.target.value)}
+              placeholder="model"
+            />
+          </label>
+          <label className="composer-control" title="Worker">
+            <HardHat size={14} />
+            <select value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
+              <option value="">worker</option>
+              {workers.filter((w) => w.paired).map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="composer-control" title="Agent">
+            <Bot size={14} />
+            <select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+              <option value="">agent</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="composer-input-row">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
+            placeholder="Type a message or /command..."
+          />
+          <button className="composer-send" onClick={handleSend}>Send</button>
+          {isRunning && (
+            <button
+              className="composer-cancel"
+              onClick={() => activeChatId && cancelHarness(activeChatId)}
+            >
+              Cancel
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

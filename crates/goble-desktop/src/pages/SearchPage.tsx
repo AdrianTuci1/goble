@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../stores/appStore';
+import './Pages.css';
 
 export default function SearchPage() {
   const conversations = useStore((s) => s.conversations);

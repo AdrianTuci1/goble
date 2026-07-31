@@ -1,4 +1,5 @@
 import { useStore } from '../stores/appStore';
+import './Pages.css';
 
 export default function KnowledgePage() {
   const logs = useStore((s) => s.logs);

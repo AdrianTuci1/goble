@@ -1,80 +1,113 @@
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
+import {
+  MessageSquare,
+  Bot,
+  Plug,
+} from 'lucide-react';
+import './Sidebar.css';
 import { useStore } from '../stores/appStore';
-import { pingWorker } from '../tauri/api';
 
-export default function Sidebar() {
+const GRADIENTS = [
+  'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+  'linear-gradient(135deg, #ff9a9e 0%, #fecfef 99%, #fecfef 100%)',
+  'linear-gradient(120deg, #84fab0 0%, #8fd3f4 100%)',
+  'linear-gradient(120deg, #fccb90 0%, #d57eeb 100%)',
+  'linear-gradient(120deg, #e0c3fc 0%, #8ec5fc 100%)',
+  'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
+  'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
+  'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)',
+];
+
+function gradientFor(id: string) {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = id.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return GRADIENTS[Math.abs(hash) % GRADIENTS.length];
+}
+
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .map((w) => w[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
+}
+
+interface SidebarProps {
+  collapsed: boolean;
+}
+
+export default function Sidebar({ collapsed }: SidebarProps) {
   const location = useLocation();
-  const navigate = useNavigate();
-  const workers = useStore((s) => s.workers);
   const conversations = useStore((s) => s.conversations);
+  const agents = useStore((s) => s.agents);
   const activeChatId = useStore((s) => s.activeConversationId);
   const setActiveChatId = useStore((s) => s.setActiveConversation);
 
   const navItems = [
-    { path: '/chat', label: 'Chat', icon: '💬' },
-    { path: '/agents', label: 'Agents', icon: '🤖' },
-    { path: '/workflows', label: 'Workflows', icon: '⚡' },
-    { path: '/teams', label: 'Teams', icon: '👥' },
-    { path: '/knowledge', label: 'Knowledge', icon: '📚' },
-    { path: '/connectors', label: 'Connectors', icon: '🔌' },
-    { path: '/executions', label: 'Executions', icon: '▶️' },
-    { path: '/vault', label: 'Vault', icon: '🔐' },
-    { path: '/search', label: 'Search', icon: '🔍' },
+    { path: '/chat', label: 'Chat', icon: MessageSquare },
+    { path: '/agents', label: 'Agents', icon: Bot },
+    { path: '/connectors', label: 'Connectors', icon: Plug },
   ];
 
   return (
-    <aside className="sidebar">
-      <div className="logo">Goble</div>
+    <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
       <nav className="nav">
-        {navItems.map((item) => (
-          <a
-            key={item.path}
-            href={item.path}
-            className={`nav-item ${location.pathname === item.path ? 'active' : ''}`}
-          >
-            <span className="nav-icon">{item.icon}</span>
-            <span className="nav-label">{item.label}</span>
-          </a>
-        ))}
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <Link
+              key={item.path}
+              to={item.path}
+              className={`nav-item ${location.pathname === item.path ? 'active' : ''}`}
+              title={item.label}
+            >
+              <Icon size={18} className="nav-icon" />
+              {!collapsed && <span className="nav-label">{item.label}</span>}
+            </Link>
+          );
+        })}
       </nav>
 
       <div className="sidebar-section">
-        <div className="section-title">Conversations</div>
+        <div className="section-title">{collapsed ? 'Chats' : 'Conversations'}</div>
         <div className="conversation-list">
           {conversations.map((c) => (
             <button
               key={c.id}
               className={`conversation-item ${activeChatId === c.id ? 'active' : ''}`}
               onClick={() => setActiveChatId(c.id)}
-              title={c.model ? `${c.provider || 'provider'} / ${c.model}` : undefined}
+              title={c.title}
             >
-              {c.title}
-              {c.model && <span className="conversation-model">{c.provider} / {c.model}</span>}
+              {!collapsed && <span className="conversation-title">{c.title}</span>}
+              {collapsed && <span className="conversation-dot" />}
             </button>
           ))}
         </div>
       </div>
 
       <div className="sidebar-section compact">
-        <div className="section-title">Workers</div>
-        <div className="worker-list">
-          {workers.slice(0, 3).map((w) => (
-            <div key={w.id} className={`worker-item ${w.paired ? 'paired' : ''}`}>
-              <div className="worker-name">{w.name}</div>
-              <div className="worker-meta">{w.paired ? 'paired' : 'unpaired'}</div>
-              {w.paired && <button onClick={() => pingWorker(w.id)}>Ping</button>}
-            </div>
+        <div className="section-title">{collapsed ? 'Bots' : 'Agents'}</div>
+        <div className="agent-list">
+          {agents.map((a) => (
+            <Link
+              key={a.id}
+              to="/agents"
+              className="agent-item"
+              title={a.name}
+            >
+              <span
+                className="agent-avatar"
+                style={{ background: gradientFor(a.id) }}
+              >
+                {initials(a.name)}
+              </span>
+              {!collapsed && <span className="agent-name">{a.name}</span>}
+            </Link>
           ))}
-          {workers.length > 3 && (
-            <div className="worker-meta">+{workers.length - 3} more</div>
-          )}
         </div>
-      </div>
-
-      <div className="sidebar-footer">
-        <button className="settings-button" onClick={() => navigate('/settings')}>
-          Settings
-        </button>
       </div>
     </aside>
   );

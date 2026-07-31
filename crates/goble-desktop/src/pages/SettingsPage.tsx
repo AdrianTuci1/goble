@@ -18,6 +18,7 @@ import {
   exportClusterBackup,
   type ClusterIdentityInfo,
 } from '../tauri/api';
+import './Pages.css';
 
 type SettingsTab = 'profile' | 'llm' | 'workers' | 'cluster' | 'appearance';
 

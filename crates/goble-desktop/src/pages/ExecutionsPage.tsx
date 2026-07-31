@@ -1,5 +1,6 @@
 import { useStore } from '../stores/appStore';
 import { listExecutions } from '../tauri/api';
+import './Pages.css';
 
 function statusClass(status: string) {
   switch (status) {

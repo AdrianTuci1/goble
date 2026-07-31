@@ -11,6 +11,7 @@ import {
   updateMcpServerMeta,
 } from '../tauri/api';
 import type { McpSearchResult, McpServerSummary, VaultSecretInfo } from '../tauri/api';
+import './Pages.css';
 
 const SOURCE_OPTIONS = ['npm', 'github', 'local', 'url', 'stdio'];
 
@@ -37,11 +38,6 @@ export default function ConnectorsPage() {
   const [messageType, setMessageType] = useState<'info' | 'error'>('info');
   const [loading, setLoading] = useState(false);
   const [discovering, setDiscovering] = useState<Record<string, boolean>>({});
-  const [testToolServer, setTestToolServer] = useState<string | null>(null);
-  const [testToolName, setTestToolName] = useState('');
-  const [testToolArgs, setTestToolArgs] = useState('{}');
-  const [testToolResult, setTestToolResult] = useState<string | null>(null);
-
   const [drawerServer, setDrawerServer] = useState<McpServerSummary | null>(null);
   const [drawerSecretIds, setDrawerSecretIds] = useState<string[]>([]);
   const [drawerEnabledTools, setDrawerEnabledTools] = useState<Set<string>>(new Set());

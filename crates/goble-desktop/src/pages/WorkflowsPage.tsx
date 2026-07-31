@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../stores/appStore';
 import { createWorkflow, deleteWorkflow } from '../tauri/api';
+import './Pages.css';
 
 export default function WorkflowsPage() {
   const workflows = useStore((s) => s.workflows);

@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use chrono::Utc;
-use futures::{Stream, StreamExt};
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{AgentId, AgentSpec, McpManifest, Trigger};
 use crate::llm::{
-    CompletionRequest, CompletionResponse, LlmProvider, LlmToolCall, Role, ToolDefinition,
+    CompletionResponse, LlmProvider, LlmToolCall, ToolDefinition,
 };
 use crate::mcp_manager::McpManager;
 use crate::protocol::DesktopMessage;
@@ -127,8 +127,97 @@ pub enum HarnessEvent {
         id: String,
         message: String,
     },
+    ThinkingModeChanged(String),
+    ReasoningStarted {
+        step: usize,
+        mode: String,
+    },
+    ReasoningDelta(String),
+    ReasoningDone {
+        step: usize,
+        mode: String,
+        content: String,
+        decision: String,
+    },
+    AskUser {
+        question: String,
+        quick_replies: Vec<String>,
+    },
+    MissionUpdated {
+        mission_id: String,
+        status: String,
+    },
     Done,
     Error(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingMode {
+    Direct,
+    Contemplating,
+    Ruminating,
+    Baking,
+    Reflecting,
+    Verifying,
+    Debugging,
+    Synthesizing,
+    Planning,
+}
+
+impl ThinkingMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ThinkingMode::Direct => "direct",
+            ThinkingMode::Contemplating => "contemplating",
+            ThinkingMode::Ruminating => "ruminating",
+            ThinkingMode::Baking => "baking",
+            ThinkingMode::Reflecting => "reflecting",
+            ThinkingMode::Verifying => "verifying",
+            ThinkingMode::Debugging => "debugging",
+            ThinkingMode::Synthesizing => "synthesizing",
+            ThinkingMode::Planning => "planning",
+        }
+    }
+
+    pub fn prompt(&self) -> &'static str {
+        match self {
+            ThinkingMode::Direct => "Think briefly and then act or reply.",
+            ThinkingMode::Contemplating => "Explore multiple angles and viewpoints before deciding. Do not commit yet.",
+            ThinkingMode::Ruminating => "Let the problem sit. Revisit assumptions, constraints, and edge cases.",
+            ThinkingMode::Baking => "Allow the idea to mature. Synthesize partial thoughts without rushing to a conclusion.",
+            ThinkingMode::Reflecting => "Check what you already know, what is missing, and whether the goal is clear.",
+            ThinkingMode::Verifying => "Validate facts, plan consistency, and tool availability before acting.",
+            ThinkingMode::Debugging => "Diagnose why the previous approach might fail or what could go wrong.",
+            ThinkingMode::Synthesizing => "Combine gathered information into a coherent plan or answer.",
+            ThinkingMode::Planning => "Break the goal into concrete steps, tools, and dependencies.",
+        }
+    }
+}
+
+impl Default for ThinkingMode {
+    fn default() -> Self {
+        ThinkingMode::Direct
+    }
+}
+
+impl std::str::FromStr for ThinkingMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "direct" => Ok(ThinkingMode::Direct),
+            "contemplating" => Ok(ThinkingMode::Contemplating),
+            "ruminating" => Ok(ThinkingMode::Ruminating),
+            "baking" => Ok(ThinkingMode::Baking),
+            "reflecting" => Ok(ThinkingMode::Reflecting),
+            "verifying" => Ok(ThinkingMode::Verifying),
+            "debugging" => Ok(ThinkingMode::Debugging),
+            "synthesizing" => Ok(ThinkingMode::Synthesizing),
+            "planning" => Ok(ThinkingMode::Planning),
+            _ => Err(format!("unknown thinking mode: {s}")),
+        }
+    }
 }
 
 pub struct Harness {
@@ -139,6 +228,7 @@ pub struct Harness {
     mcp_manager: McpManager,
     cancel: Arc<AtomicBool>,
     workspace_dir: PathBuf,
+    reasoning_enabled: bool,
 }
 
 impl Harness {
@@ -157,7 +247,13 @@ impl Harness {
             mcp_manager: McpManager::new(),
             cancel: Arc::new(AtomicBool::new(false)),
             workspace_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            reasoning_enabled: false,
         }
+    }
+
+    pub fn with_reasoning(mut self, enabled: bool) -> Self {
+        self.reasoning_enabled = enabled;
+        self
     }
 
     pub fn with_runner(mut self, runner: Arc<dyn CommandRunner>) -> Self {
@@ -221,209 +317,53 @@ impl Harness {
         provider: &str,
         model: &str,
     ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
-        let store = self.store.clone();
-        let runner = Arc::clone(&self.runner);
-        let llm = Arc::clone(&self.llm);
-        let deploy_sender = self.deploy_sender.clone();
-        let chat_id = chat_id.to_string();
-        let prompt = prompt.to_string();
-        let provider = provider.to_string();
-        let model = model.to_string();
+        crate::reasoning::run_mission_turn(
+            self.store.clone(),
+            Arc::clone(&self.runner),
+            Arc::clone(&self.llm),
+            self.deploy_sender.clone(),
+            self.mcp_manager.clone(),
+            self.cancel.clone(),
+            self.workspace_dir.clone(),
+            chat_id.to_string(),
+            prompt.to_string(),
+            provider.to_string(),
+            model.to_string(),
+            self.reasoning_enabled,
+        )
+    }
 
-        let mcp_manager = self.mcp_manager.clone();
-        let cancel = self.cancel.clone();
-        let workspace_dir = self.workspace_dir.clone();
-        let stream = async_stream::stream! {
-            let now = Utc::now().to_rfc3339();
-            if let Err(e) = store.insert_chat_message(
-                &uuid::Uuid::new_v4().to_string(),
-                &chat_id,
-                "user",
-                &prompt,
-                None,
-                &now,
-            ) {
-                yield HarnessEvent::Error(e.to_string());
-                return;
-            }
-
-            let mut tools = harness_tool_definitions();
-            if let Ok(mcp_tools) = mcp_manager.refresh_from_store(&store) {
-                tools.extend(mcp_tools);
-            }
-            tools.push(crate::mcp_manager::McpManager::generic_mcp_call_tool());
-            let mut iteration = 0;
-            let mut prev_tool_calls: Vec<LlmToolCall> = Vec::new();
-            const MAX_ITERATIONS: usize = 8;
-
-            loop {
-                if cancel.load(Ordering::Relaxed) {
-                    yield HarnessEvent::Error("cancelled".to_string());
-                    break;
-                }
-                if iteration >= MAX_ITERATIONS {
-                    yield HarnessEvent::Error("too many tool iterations".to_string());
-                    break;
-                }
-                iteration += 1;
-
-                let history = match store.list_chat_messages(&chat_id) {
-                    Ok(rows) => rows
-                        .into_iter()
-                        .map(|(_, role, content, tool_calls, _)| {
-                            let (content, tool_call_id) = if role.as_str() == "tool" {
-                                if let Some((id, rest)) = content.split_once('\n') {
-                                    (rest.to_string(), Some(id.to_string()))
-                                } else {
-                                    (content, None)
-                                }
-                            } else {
-                                (content, None)
-                            };
-                            crate::llm::Message {
-                                role: match role.as_str() {
-                                    "system" => Role::System,
-                                    "assistant" => Role::Assistant,
-                                    "tool_calls" => Role::Assistant,
-                                    "tool" => Role::Tool,
-                                    _ => Role::User,
-                                },
-                                content,
-                                tool_calls: tool_calls.and_then(|t| serde_json::from_str(&t).ok()),
-                                tool_call_id,
-                            }
-                        })
-                        .collect::<Vec<_>>(),
-                    Err(e) => {
-                        yield HarnessEvent::Error(e.to_string());
-                        return;
-                    }
-                };
-
-                let request = CompletionRequest::new(provider.clone(), model.clone())
-                    .with_system(HARNESS_SYSTEM_PROMPT)
-                    .with_tools(tools.clone())
-                    .with_messages(history);
-
-                let mut stream = match llm.complete_stream(request).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        yield HarnessEvent::Error(e.to_string());
-                        return;
-                    }
-                };
-
-                let mut assistant_content = String::new();
-                let mut tool_calls = Vec::new();
-                while let Some(event) = stream.next().await {
-                    if cancel.load(Ordering::Relaxed) {
-                        yield HarnessEvent::Error("cancelled".to_string());
-                        break;
-                    }
-                    match event {
-                        crate::llm::CompletionStreamEvent::AssistantDelta(delta) => {
-                            assistant_content.push_str(&delta);
-                            yield HarnessEvent::AssistantDelta(delta);
-                        }
-                        crate::llm::CompletionStreamEvent::ToolCalls(calls) => {
-                            tool_calls = calls;
-                        }
-                        crate::llm::CompletionStreamEvent::Done => break,
-                        crate::llm::CompletionStreamEvent::Error(message) => {
-                            yield HarnessEvent::Error(message);
-                            return;
-                        }
-                    }
-                }
-
-                if !assistant_content.is_empty() || !tool_calls.is_empty() {
-                    let tool_calls_json = serde_json::to_string(&tool_calls).unwrap_or_default();
-                    let tool_calls_opt = if tool_calls.is_empty() { None } else { Some(tool_calls_json.as_str()) };
-                    if let Err(e) = store.insert_chat_message(
-                        &uuid::Uuid::new_v4().to_string(),
-                        &chat_id,
-                        "assistant",
-                        &assistant_content,
-                        tool_calls_opt,
-                        &Utc::now().to_rfc3339(),
-                    ) {
-                        yield HarnessEvent::Error(e.to_string());
-                        return;
-                    }
-                }
-
-                if tool_calls.is_empty() {
-                    break;
-                }
-                if assistant_content.is_empty() {
-                    if tool_calls == prev_tool_calls {
-                        break;
-                    }
-                    prev_tool_calls = tool_calls.clone();
-                }
-
-                for call in &tool_calls {
-                    if cancel.load(Ordering::Relaxed) {
-                        yield HarnessEvent::Error("cancelled".to_string());
-                        break;
-                    }
-                    yield HarnessEvent::ToolCallStarted {
-                        id: call.id.clone(),
-                        name: call.name.clone(),
-                        arguments: call.arguments.clone(),
-                    };
-
-                    let sender_ref = deploy_sender.as_ref().map(|f| arc_to_sender_ref(f));
-                    let result = execute_tool_call(&store, &*runner, sender_ref, &mcp_manager, &workspace_dir, &call).await;
-                    match result {
-                        Ok(value) => {
-                            let tool_result_text = format!("{}\n{}", call.id, value);
-                            if let Err(e) = store.insert_chat_message(
-                                &uuid::Uuid::new_v4().to_string(),
-                                &chat_id,
-                                "tool",
-                                &tool_result_text,
-                                None,
-                                &Utc::now().to_rfc3339(),
-                            ) {
-                                yield HarnessEvent::Error(e.to_string());
-                                return;
-                            }
-                            yield HarnessEvent::ToolCallFinished { id: call.id.clone(), result: value };
-                        }
-                        Err(e) => {
-                            let error_text = format!("{}\nERROR: {}", call.id, e);
-                            if let Err(e2) = store.insert_chat_message(
-                                &uuid::Uuid::new_v4().to_string(),
-                                &chat_id,
-                                "tool",
-                                &error_text,
-                                None,
-                                &Utc::now().to_rfc3339(),
-                            ) {
-                                yield HarnessEvent::Error(e2.to_string());
-                                return;
-                            }
-                            yield HarnessEvent::ToolCallError { id: call.id.clone(), message: e.to_string() };
-                        }
-                    }
-                }
-            }
-
-        yield HarnessEvent::Done;
-        };
-
-        Box::pin(stream)
+    /// Resume a turn that was suspended waiting for a user answer.
+    pub fn resume_turn(
+        &self,
+        chat_id: &str,
+        response: &str,
+        provider: &str,
+        model: &str,
+    ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
+        crate::reasoning::resume_mission_turn(
+            self.store.clone(),
+            Arc::clone(&self.runner),
+            Arc::clone(&self.llm),
+            self.deploy_sender.clone(),
+            self.mcp_manager.clone(),
+            self.cancel.clone(),
+            self.workspace_dir.clone(),
+            chat_id.to_string(),
+            response.to_string(),
+            provider.to_string(),
+            model.to_string(),
+        )
     }
 }
 
-const HARNESS_SYSTEM_PROMPT: &str = r#"You are an assistant that controls a local Goble agent environment.
+pub(crate) const HARNESS_SYSTEM_PROMPT: &str = r#"You are an assistant that controls a local Goble agent environment.
 You can create/update agents, workflows and teams, run shell commands, read/write files, search the store, deploy agents/workflows to workers, schedule workflows, and check execution status.
 Only call a tool when the user explicitly asks for an action you can perform with a tool.
 If no tool is needed, reply conversationally.
 When reading or writing files, paths must be inside the workspace directory unless the user explicitly provides an absolute path."#;
 
-fn harness_tool_definitions() -> Vec<ToolDefinition> {
+pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "create_agent".to_string(),
@@ -846,12 +786,12 @@ fn harness_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
-fn arc_to_sender_ref(
+pub(crate) fn arc_to_sender_ref(
     arc: &Arc<dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync>,
 ) -> &(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync) {
     &**arc
 }
-async fn execute_tool_call(
+pub(crate) async fn execute_tool_call(
     store: &Store,
     runner: &dyn CommandRunner,
     deploy_sender: Option<&(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync)>,

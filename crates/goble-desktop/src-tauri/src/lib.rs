@@ -29,8 +29,37 @@ struct PairWorkerRequest {
 }
 
 #[derive(Deserialize)]
+struct ClassifyIntentRequest {
+    provider: String,
+    model: String,
+    text: String,
+}
+
+#[derive(Serialize)]
+struct ClassifyIntentResponse {
+    intent: String,
+    params: state::IntentParams,
+}
+
+#[tauri::command]
+async fn classify_intent(
+    req: ClassifyIntentRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<ClassifyIntentResponse, String> {
+    state
+        .classify_intent(&req.provider, &req.model, &req.text)
+        .await
+        .map(|intent| ClassifyIntentResponse {
+            intent: intent.intent,
+            params: intent.params,
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
 struct RunAgentRequest {
     worker_id: String,
+    chat_id: Option<String>,
     agent_id: String,
     prompt: String,
 }
@@ -606,91 +635,9 @@ fn run_harness(
     use goble_core::harness::{HarnessEvent, SandboxedCommandRunner};
     use futures::StreamExt;
 
-    let provider_name = if req.provider.is_empty() { "openai" } else { &req.provider };
-    let (llm, model_name): (Arc<dyn goble_core::llm::LlmProvider>, String) = match provider_name.to_lowercase().as_str() {
-        "openai" | "openrouter" => {
-            let setting = state.get_llm_setting(provider_name);
-            if let Some(s) = setting {
-                if !s.api_key.is_empty() {
-                    let base = s.base_url.unwrap_or_else(|| {
-                        if provider_name == "openai" {
-                            "https://api.openai.com/v1".to_string()
-                        } else {
-                            "https://openrouter.ai/api/v1".to_string()
-                        }
-                    });
-                    let provider: Arc<dyn goble_core::llm::LlmProvider> = if provider_name == "openai" {
-                        Arc::new(goble_core::llm::OpenAiProvider::new("openai", s.api_key, base))
-                    } else {
-                        Arc::new(goble_core::llm::OpenRouterProvider::new(s.api_key))
-                    };
-                    let model = if req.model.is_empty() { s.model } else { req.model.clone() };
-                    (provider, model)
-                } else {
-                    (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
-                        content: "No API key configured for this provider. Add one in Settings.".to_string(),
-                        tool_calls: Vec::new(),
-                    })), req.model.clone())
-                }
-            } else {
-                (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
-                    content: "No LLM provider configured. Add one in Settings.".to_string(),
-                    tool_calls: Vec::new(),
-                })), req.model.clone())
-            }
-        }
-        "anthropic" => {
-            let setting = state.get_llm_setting("anthropic");
-            if let Some(s) = setting {
-                if !s.api_key.is_empty() {
-                    (Arc::new(goble_core::llm::AnthropicProvider::new(s.api_key)), if req.model.is_empty() { s.model } else { req.model.clone() })
-                } else {
-                    (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
-                        content: "No Anthropic API key configured. Add one in Settings.".to_string(),
-                        tool_calls: Vec::new(),
-                    })), req.model.clone())
-                }
-            } else {
-                (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
-                    content: "No Anthropic provider configured. Add one in Settings.".to_string(),
-                    tool_calls: Vec::new(),
-                })), req.model.clone())
-            }
-        }
-        "ollama" => {
-            let setting = state.get_llm_setting("ollama");
-            let base = setting.as_ref().and_then(|s| s.base_url.clone()).unwrap_or_else(|| "http://localhost:11434".to_string());
-            (Arc::new(goble_core::llm::OllamaProvider::new(base)), if req.model.is_empty() { setting.map(|s| s.model).unwrap_or_default() } else { req.model.clone() })
-        }
-        "deepseek" => {
-            let setting = state.get_llm_setting("deepseek");
-            if let Some(s) = setting {
-                if !s.api_key.is_empty() {
-                    let base = s.base_url.unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
-                    let provider: Arc<dyn goble_core::llm::LlmProvider> = Arc::new(goble_core::llm::OpenAiProvider::new("deepseek", s.api_key, base));
-                    let model = if req.model.is_empty() { s.model } else { req.model.clone() };
-                    (provider, model)
-                } else {
-                    (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
-                        content: "No DeepSeek API key configured for this provider. Add one in Settings.".to_string(),
-                        tool_calls: Vec::new(),
-                    })), req.model.clone())
-                }
-            } else {
-                (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
-                    content: "No DeepSeek provider configured. Add one in Settings.".to_string(),
-                    tool_calls: Vec::new(),
-                })), req.model.clone())
-            }
-        }
-        _ => {
-            (Arc::new(goble_core::llm::MockProvider::new("mock", goble_core::llm::CompletionResponse {
-                content: format!("Unknown provider {provider_name}."),
-                tool_calls: Vec::new(),
-            })), req.model.clone())
-        }
-    };
+    let (llm, model_name) = state.resolve_llm_provider(&req.provider, &req.model);
 
+    let provider_name = if req.provider.is_empty() { "openai" } else { &req.provider };
     let deploy_state = Arc::clone(&state);
     let cancel = Arc::new(AtomicBool::new(false));
     HARNESS_CANCEL.lock().unwrap().insert(req.chat_id.clone(), cancel.clone());
@@ -760,6 +707,7 @@ pub fn run() {
             set_chat_model,
             run_harness,
             cancel_harness,
+            classify_intent,
             list_harness_tools,
             search_mcp_servers,
             install_mcp_server,

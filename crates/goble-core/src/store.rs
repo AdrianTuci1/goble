@@ -154,6 +154,46 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_workflows_updated_at ON workflows(updated_at);
             CREATE INDEX IF NOT EXISTS idx_mcp_accounts_principal ON mcp_accounts(principal_id);
 
+            CREATE TABLE IF NOT EXISTS missions (
+                id TEXT PRIMARY KEY,
+                chat_id TEXT NOT NULL,
+                goal TEXT NOT NULL,
+                status TEXT NOT NULL,
+                plan TEXT,
+                workflow_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            ) STRICT;
+
+            CREATE INDEX IF NOT EXISTS idx_missions_chat_id ON missions(chat_id);
+            CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status);
+
+            CREATE TABLE IF NOT EXISTS reasoning_steps (
+                id TEXT PRIMARY KEY,
+                mission_id TEXT NOT NULL,
+                step_index INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                content TEXT NOT NULL,
+                decision TEXT,
+                tool_calls TEXT,
+                created_at TEXT NOT NULL
+            ) STRICT;
+
+            CREATE INDEX IF NOT EXISTS idx_reasoning_mission ON reasoning_steps(mission_id, step_index);
+
+            CREATE TABLE IF NOT EXISTS pending_asks (
+                id TEXT PRIMARY KEY,
+                chat_id TEXT NOT NULL,
+                mission_id TEXT,
+                question TEXT NOT NULL,
+                quick_replies TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            ) STRICT;
+
+            CREATE INDEX IF NOT EXISTS idx_pending_asks_chat ON pending_asks(chat_id, status);
+
             CREATE TABLE IF NOT EXISTS llm_settings (
                 provider TEXT PRIMARY KEY,
                 api_key TEXT NOT NULL,
@@ -844,6 +884,174 @@ impl Store {
             ))
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn insert_mission(
+        &self,
+        id: &str,
+        chat_id: &str,
+        goal: &str,
+        status: &str,
+        plan: Option<&str>,
+        workflow_id: Option<&str>,
+        created_at: &str,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO missions (id, chat_id, goal, status, plan, workflow_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, goal=excluded.goal, status=excluded.status,
+                                           plan=excluded.plan, workflow_id=excluded.workflow_id, updated_at=excluded.updated_at",
+            params![id, chat_id, goal, status, plan, workflow_id, created_at, updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_missions(
+        &self,
+    ) -> Result<Vec<(String, String, String, String, Option<String>, Option<String>, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, chat_id, goal, status, plan, workflow_id, created_at, updated_at FROM missions ORDER BY updated_at DESC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_mission(&self, id: &str) -> Result<Option<(String, String, String, String, Option<String>, Option<String>, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, chat_id, goal, status, plan, workflow_id, created_at, updated_at FROM missions WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn insert_reasoning_step(
+        &self,
+        id: &str,
+        mission_id: &str,
+        step_index: i32,
+        mode: &str,
+        content: &str,
+        decision: Option<&str>,
+        tool_calls: Option<&str>,
+        created_at: &str,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO reasoning_steps (id, mission_id, step_index, mode, content, decision, tool_calls, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET mission_id=excluded.mission_id, step_index=excluded.step_index,
+                                           mode=excluded.mode, content=excluded.content, decision=excluded.decision,
+                                           tool_calls=excluded.tool_calls, created_at=excluded.created_at",
+            params![id, mission_id, step_index, mode, content, decision, tool_calls, created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_reasoning_steps(
+        &self,
+        mission_id: &str,
+    ) -> Result<
+        Vec<(
+            String,
+            i32,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+        )>,
+    > {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, step_index, mode, content, decision, tool_calls, created_at FROM reasoning_steps WHERE mission_id = ?1 ORDER BY step_index ASC",
+        )?;
+        let rows = stmt.query_map(params![mission_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i32>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, String>(6)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn insert_pending_ask(
+        &self,
+        id: &str,
+        chat_id: &str,
+        mission_id: Option<&str>,
+        question: &str,
+        quick_replies: &str,
+        status: &str,
+        created_at: &str,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO pending_asks (id, chat_id, mission_id, question, quick_replies, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, mission_id=excluded.mission_id,
+                                           question=excluded.question, quick_replies=excluded.quick_replies,
+                                           status=excluded.status, updated_at=excluded.updated_at",
+            params![id, chat_id, mission_id, question, quick_replies, status, created_at, updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_pending_ask(
+        &self,
+        chat_id: &str,
+    ) -> Result<Option<(String, String, Option<String>, String, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, chat_id, mission_id, question, quick_replies, status FROM pending_asks WHERE chat_id = ?1 AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![chat_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn resolve_pending_ask(&self, id: &str, status: &str, updated_at: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE pending_asks SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![status, updated_at, id],
+        )?;
+        Ok(())
     }
 }
 

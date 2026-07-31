@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useStore } from '../stores/appStore';
 import {
   workerLogs,
@@ -24,7 +24,9 @@ type SettingsTab = 'profile' | 'llm' | 'workers' | 'cluster' | 'appearance';
 
 export default function SettingsPage() {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<SettingsTab>('profile');
+  const location = useLocation();
+  const initialTab = (location.state as { tab?: SettingsTab } | null)?.tab;
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab || 'profile');
 
   return (
     <div className="settings-page">

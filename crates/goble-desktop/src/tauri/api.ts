@@ -307,8 +307,21 @@ export async function setLlmSetting(
   });
 }
 
-export async function runAgent(chatId: string, agentId: string, input: string): Promise<void> {
-  return invoke('run_agent', { chatId, agentId, input });
+export async function runAgent(
+  workerId: string,
+  chatId: string,
+  agentId: string,
+  input: string,
+): Promise<void> {
+  return invoke('run_agent', { req: { worker_id: workerId, chat_id: chatId, agent_id: agentId, prompt: input } });
+}
+
+export async function classifyIntent(
+  provider: string,
+  model: string,
+  text: string,
+): Promise<{ intent: string; params: Record<string, unknown> }> {
+  return invoke('classify_intent', { req: { provider, model, text } });
 }
 
 export async function scheduleAgent(

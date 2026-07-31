@@ -5,6 +5,96 @@
   overflow: hidden;
 }
 
+.page.has-drawer {
+  flex-direction: row;
+}
+
+.page.has-drawer > .page-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.agent-drawer {
+  width: 360px;
+  flex-shrink: 0;
+  background: #111111;
+  border-left: 1px solid #1f1f1f;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.agent-drawer .drawer-header {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  border-bottom: 1px solid #1f1f1f;
+  flex-shrink: 0;
+}
+
+.agent-drawer .drawer-header h3 {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.agent-drawer .drawer-header button {
+  background: none;
+  border: none;
+  color: #a3a3a3;
+  font-size: 22px;
+  cursor: pointer;
+}
+
+.agent-drawer .drawer-body {
+  padding: 20px;
+}
+
+.agent-drawer .drawer-section {
+  margin-bottom: 24px;
+}
+
+.agent-drawer .drawer-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  margin-bottom: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.agent-drawer .drawer-row {
+  font-size: 13px;
+  color: #a3a3a3;
+  padding: 8px 0;
+  border-bottom: 1px solid #1f1f1f;
+  word-break: break-word;
+}
+
+.agent-drawer .drawer-empty {
+  font-size: 13px;
+  color: #737373;
+  margin: 8px 0;
+}
+
+.agent-drawer .drawer-hint {
+  color: #737373;
+  margin-left: 8px;
+}
+
+.card.selected {
+  border-color: #404040;
+  background: #1a1a1a;
+  cursor: pointer;
+}
+
+.card {
+  cursor: pointer;
+}
+
 .page-header {
   height: 56px;
   display: flex;

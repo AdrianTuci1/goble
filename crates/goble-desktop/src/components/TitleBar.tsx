@@ -1,14 +1,21 @@
 import { Plus } from 'lucide-react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import './TitleBar.css';
 
 interface TitleBarProps {
   collapsed: boolean;
   onToggleCollapse: () => void;
-  threadsActive?: boolean;
-  onToggleThreads?: () => void;
 }
 
-export default function TitleBar({ collapsed, onToggleCollapse, threadsActive, onToggleThreads }: TitleBarProps) {
+export default function TitleBar({ collapsed, onToggleCollapse }: TitleBarProps) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const threadsActive = location.pathname.startsWith('/threads');
+
+  function toggleThreads() {
+    navigate(threadsActive ? '/chat' : '/threads');
+  }
+
   return (
     <div className="title-bar">
       <div className="title-bar-left">
@@ -20,7 +27,7 @@ export default function TitleBar({ collapsed, onToggleCollapse, threadsActive, o
       <div className="title-bar-actions">
         <button
           className={`title-bar-action ${threadsActive ? 'active' : ''}`}
-          onClick={onToggleThreads}
+          onClick={toggleThreads}
           title="Threads"
         >
           Threads

@@ -33,7 +33,6 @@ import { useDesignClasses, applyThemeClass } from './utils/designSystem';
 
 function AppShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [threadsActive, setThreadsActive] = useState(false);
 
   const setWorkers = useStore((s) => s.setWorkers);
   const setLogs = useStore((s) => s.setLogs);
@@ -141,7 +140,6 @@ function AppShell() {
     const chatId = await createChat('New chat', 'openai', 'gpt-4o-mini');
     addConversation({ id: chatId, title: 'New chat', provider: 'openai', model: 'gpt-4o-mini', updated_at: new Date().toISOString() });
     setActiveChatId(chatId);
-    setThreadsActive(false);
   }
 
   if (!loaded) return <div className="loading">Loading...</div>;
@@ -151,8 +149,6 @@ function AppShell() {
       <TitleBar
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
-        threadsActive={threadsActive}
-        onToggleThreads={() => setThreadsActive((t) => !t)}
       />
       <div className="app-body">
         <Sidebar
@@ -164,7 +160,7 @@ function AppShell() {
         <main className="main-area">
           <Routes>
             <Route path="/" element={<Navigate to="/chat" />} />
-            <Route path="/chat" element={<ChatArea threadsActive={threadsActive} />} />
+            <Route path="/chat" element={<ChatArea />} />
             <Route path="/threads" element={<ThreadsPage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/connectors" element={<ConnectorsPage />} />

@@ -15,12 +15,7 @@ import { uid, hslHash, getInitials } from '../utils/designSystem';
 import { flowsData, type FlowInfo } from '../mocks/flowsData';
 import { agentsData, type Agent } from '../mocks/agentsData';
 
-interface ChatAreaProps {
-  threadsActive?: boolean;
-}
-
-export default function ChatArea({ threadsActive }: ChatAreaProps) {
-  void threadsActive;
+export default function ChatArea() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const agentId = params.get('agent');
@@ -83,7 +78,6 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
   }, [agentId, flowId]);
 
   useEffect(() => {
-    let cancelled = false;
     const unlistenPromises: Promise<(() => void) | null>[] = [];
 
     async function setupListeners() {
@@ -139,7 +133,6 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
     setupListeners();
 
     return () => {
-      cancelled = true;
       unlistenPromises.forEach(async (promise) => {
         const unlisten = await promise;
         unlisten?.();

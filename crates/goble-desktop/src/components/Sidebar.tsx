@@ -1,113 +1,97 @@
-import { Link, useLocation } from 'react-router-dom';
-import {
-  MessageSquare,
-  Bot,
-  Plug,
-} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Plus, Bot } from 'lucide-react';
 import './Sidebar.css';
-import { useStore } from '../stores/appStore';
-
-const GRADIENTS = [
-  'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-  'linear-gradient(135deg, #ff9a9e 0%, #fecfef 99%, #fecfef 100%)',
-  'linear-gradient(120deg, #84fab0 0%, #8fd3f4 100%)',
-  'linear-gradient(120deg, #fccb90 0%, #d57eeb 100%)',
-  'linear-gradient(120deg, #e0c3fc 0%, #8ec5fc 100%)',
-  'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
-  'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
-  'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)',
-];
-
-function gradientFor(id: string) {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = id.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return GRADIENTS[Math.abs(hash) % GRADIENTS.length];
-}
-
-function initials(name: string) {
-  return name
-    .split(/\s+/)
-    .map((w) => w[0])
-    .slice(0, 2)
-    .join('')
-    .toUpperCase();
-}
+import { useStore, type Conversation } from '../stores/appStore';
 
 interface SidebarProps {
   collapsed: boolean;
+  onNewChat: () => void;
 }
 
-export default function Sidebar({ collapsed }: SidebarProps) {
-  const location = useLocation();
+export default function Sidebar({ collapsed, onNewChat }: SidebarProps) {
+  const navigate = useNavigate();
   const conversations = useStore((s) => s.conversations);
-  const agents = useStore((s) => s.agents);
-  const activeChatId = useStore((s) => s.activeConversationId);
-  const setActiveChatId = useStore((s) => s.setActiveConversation);
+  const activeId = useStore((s) => s.activeConversationId);
+  const setActive = useStore((s) => s.setActiveConversation);
 
-  const navItems = [
-    { path: '/chat', label: 'Chat', icon: MessageSquare },
-    { path: '/agents', label: 'Agents', icon: Bot },
-    { path: '/connectors', label: 'Connectors', icon: Plug },
-  ];
+  // Split active/past by updated_at within last 24h
+  const now = Date.now();
+  const activeConversations: Conversation[] = [];
+  const pastConversations: Conversation[] = [];
+  conversations.forEach((c) => {
+    const updated = new Date(c.updated_at || 0).getTime();
+    if (now - updated < 24 * 60 * 60 * 1000) {
+      activeConversations.push(c);
+    } else {
+      pastConversations.push(c);
+    }
+  });
 
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
-      <nav className="nav">
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.path}
-              to={item.path}
-              className={`nav-item ${location.pathname === item.path ? 'active' : ''}`}
-              title={item.label}
-            >
-              <Icon size={18} className="nav-icon" />
-              {!collapsed && <span className="nav-label">{item.label}</span>}
-            </Link>
-          );
-        })}
-      </nav>
-
-      <div className="sidebar-section">
-        <div className="section-title">{collapsed ? 'Chats' : 'Conversations'}</div>
-        <div className="conversation-list">
-          {conversations.map((c) => (
-            <button
-              key={c.id}
-              className={`conversation-item ${activeChatId === c.id ? 'active' : ''}`}
-              onClick={() => setActiveChatId(c.id)}
-              title={c.title}
-            >
-              {!collapsed && <span className="conversation-title">{c.title}</span>}
-              {collapsed && <span className="conversation-dot" />}
-            </button>
-          ))}
+      <div className="sidebar-expanded-content">
+        <div className="sidebar-header">
+          <div className="sidebar-brand">Goble</div>
+        </div>
+        <button className="new-chat-btn" onClick={onNewChat}>
+          <span className="btn-icon">
+            <Plus size={18} />
+          </span>
+          <span>New chat</span>
+        </button>
+        <button className="agents-btn" onClick={() => navigate('/agents')}>
+          <span className="btn-icon">
+            <Bot size={18} />
+          </span>
+          <span>Agents</span>
+        </button>
+        <div className="sidebar-section active-section">
+          <h3>Active</h3>
+          <div className="conversation-list">
+            {activeConversations.length === 0 ? (
+              <div className="conversation-empty">None</div>
+            ) : (
+              activeConversations.map((c) => (
+                <div
+                  key={c.id}
+                  className={`conversation-item ${activeId === c.id ? 'selected' : ''}`}
+                  onClick={() => setActive(c.id)}
+                  title={c.title}
+                >
+                  {c.title}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+        <div className="sidebar-section past-section">
+          <h3>Past</h3>
+          <div className="conversation-list">
+            {pastConversations.length === 0 ? (
+              <div className="conversation-empty">None</div>
+            ) : (
+              pastConversations.map((c) => (
+                <div
+                  key={c.id}
+                  className={`conversation-item ${activeId === c.id ? 'selected' : ''}`}
+                  onClick={() => setActive(c.id)}
+                  title={c.title}
+                >
+                  {c.title}
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="sidebar-section compact">
-        <div className="section-title">{collapsed ? 'Bots' : 'Agents'}</div>
-        <div className="agent-list">
-          {agents.map((a) => (
-            <Link
-              key={a.id}
-              to="/agents"
-              className="agent-item"
-              title={a.name}
-            >
-              <span
-                className="agent-avatar"
-                style={{ background: gradientFor(a.id) }}
-              >
-                {initials(a.name)}
-              </span>
-              {!collapsed && <span className="agent-name">{a.name}</span>}
-            </Link>
-          ))}
-        </div>
+      <div className="sidebar-collapsed-content">
+        <button className="collapsed-btn new-chat-collapsed" title="New chat" onClick={onNewChat}>
+          <Plus size={18} />
+        </button>
+        <button className="collapsed-btn agents-collapsed" title="Agents" onClick={() => navigate('/agents')}>
+          <Bot size={18} />
+        </button>
       </div>
     </aside>
   );

@@ -98,6 +98,22 @@ export interface LogEntry {
   message: string;
 }
 
+export interface DesignSystem {
+  theme: 'dark' | 'light' | 'midnight';
+  accent: 'blue' | 'green' | 'purple' | 'orange';
+  font: 'system' | 'mono' | 'serif';
+  density: 'compact' | 'default' | 'spacious';
+  radius: 'sharp' | 'default' | 'rounded';
+}
+
+export const DEFAULT_DESIGN: DesignSystem = {
+  theme: 'dark',
+  accent: 'blue',
+  font: 'system',
+  density: 'default',
+  radius: 'default',
+};
+
 interface AppState {
   workers: WorkerInfo[];
   logs: LogEntry[];
@@ -111,6 +127,11 @@ interface AppState {
   vaultSecrets: VaultSecretInfo[];
   mcpServers: McpServerSummary[];
   isWorkflowDrawerOpen: boolean;
+  design: DesignSystem;
+  rightSidebarOpen: boolean;
+  rightSidebarTab: 'info' | 'history';
+  selectedAgentId: string | null;
+  historyDetailId: string | null;
   setWorkers: (workers: WorkerInfo[]) => void;
   setLogs: (logs: LogEntry[]) => void;
   addLog: (message: string) => void;
@@ -136,6 +157,11 @@ interface AppState {
   removeMcpServer: (id: string) => void;
   updateMcpServer: (server: McpServerSummary) => void;
   toggleWorkflowDrawer: () => void;
+  setDesign: (design: DesignSystem) => void;
+  setRightSidebarOpen: (open: boolean) => void;
+  setRightSidebarTab: (tab: 'info' | 'history') => void;
+  setSelectedAgentId: (id: string | null) => void;
+  setHistoryDetailId: (id: string | null) => void;
 }
 
 export type { AppState };
@@ -153,6 +179,11 @@ export const useStore = create<AppState>((set) => ({
   vaultSecrets: [],
   mcpServers: [],
   isWorkflowDrawerOpen: false,
+  design: DEFAULT_DESIGN,
+  rightSidebarOpen: false,
+  rightSidebarTab: 'info',
+  selectedAgentId: null,
+  historyDetailId: null,
   setWorkers: (workers) => set({ workers }),
   setLogs: (logs) => set({ logs }),
   addLog: (message) =>
@@ -248,4 +279,9 @@ export const useStore = create<AppState>((set) => ({
     })),
   toggleWorkflowDrawer: () =>
     set((state) => ({ isWorkflowDrawerOpen: !state.isWorkflowDrawerOpen })),
+  setDesign: (design) => set({ design }),
+  setRightSidebarOpen: (rightSidebarOpen) => set({ rightSidebarOpen }),
+  setRightSidebarTab: (rightSidebarTab) => set({ rightSidebarTab }),
+  setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
+  setHistoryDetailId: (historyDetailId) => set({ historyDetailId }),
 }));

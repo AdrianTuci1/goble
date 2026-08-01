@@ -2,22 +2,22 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Bot,
-  Cpu,
-  HardHat,
   Sparkles,
-  Settings,
-  ChevronDown,
-  ChevronRight,
   Zap,
   Eye,
   Monitor,
   BrainCircuit,
   Terminal,
+  Send,
+  MoreHorizontal,
+  Paperclip,
+  Image as ImageIcon,
+  Smile,
+  Tag,
 } from 'lucide-react';
 import './ChatArea.css';
 import { useStore, type ChatMessage, type WorkerInfo } from '../stores/appStore';
 import {
-  cancelHarness,
   createChat,
   chatMessages,
   addChatMessage,
@@ -143,8 +143,13 @@ function findLastStep(messages: ChatMessage[], type: StepPayload['type']): ChatM
   });
 }
 
-export default function ChatArea() {
+interface ChatAreaProps {
+  threadsActive?: boolean;
+}
+
+export default function ChatArea({ threadsActive }: ChatAreaProps) {
   const navigate = useNavigate();
+  void threadsActive; // reserved for future layout variant
   const activeChatId = useStore((s) => s.activeConversationId);
   const setActiveChatId = useStore((s) => s.setActiveConversation);
   const conversations = useStore((s) => s.conversations);
@@ -167,6 +172,8 @@ export default function ChatArea() {
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const workers = useStore((s) => s.workers);
   const agents = useStore((s) => s.agents);
+  const setRightSidebarOpen = useStore((s) => s.setRightSidebarOpen);
+  const setRightSidebarTab = useStore((s) => s.setRightSidebarTab);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pendingIds = useRef<Set<string>>(new Set());
   const seeded = useRef(false);
@@ -365,7 +372,7 @@ export default function ChatArea() {
   async function handleSend() {
     if (!input.trim()) return;
     if (!modelConfigured) {
-      navigate('/settings', { state: { tab: 'llm' } });
+      navigate('/settings', { state: { tab: 'appearance' } });
       return;
     }
     const { chatId } = await ensureChat();
@@ -501,429 +508,276 @@ export default function ChatArea() {
         });
         break;
       }
-      case 'schedule_agent': {
-        if (paired.length === 0) {
-          showNeedWorker(chatId);
-          return;
-        }
-        if (!params.agent || !params.expression) {
-          addMessage(chatId, {
-            id: `${Date.now()}-need-more`,
-            role: 'assistant',
-            content: 'Which agent and how often should it run?',
-            created_at: new Date().toISOString(),
-          });
-          return;
-        }
-        const found = resolveAgent(params.agent);
-        if (!found) {
-          addMessage(chatId, {
-            id: `${Date.now()}-unknown`,
-            role: 'assistant',
-            content: `I do not know an agent named "${params.agent}".`,
-            created_at: new Date().toISOString(),
-          });
-          return;
-        }
-        addStepMessage(addMessage, chatId, 'connecting', `Connecting to ${paired[0].name}`);
-        addStepMessage(addMessage, chatId, 'ran_command', `Scheduling ${found.name}`);
-        await scheduleAgent(paired[0].id, found.id, params.expression);
-        const cmdStep = findLastStep(messages, 'ran_command');
-        if (cmdStep) updateStepMessage(updateMessage, chatId, cmdStep.id, { status: 'done' });
-        addMessage(chatId, {
-          id: `${Date.now()}-cron`,
-          role: 'assistant',
-          content: `Scheduled **${found.name}** on ${paired[0].name} with cron \`${params.expression}\`.`,
-          created_at: new Date().toISOString(),
-        });
-        break;
-      }
       case 'create_workflow': {
-        if (paired.length === 0) {
-          showNeedWorker(chatId);
-          return;
-        }
-        if (!params.name || !params.expression || !params.agents?.length) {
+        if (!params.name || !params.expression) {
           addMessage(chatId, {
             id: `${Date.now()}-need-more`,
             role: 'assistant',
-            content: 'What is the workflow name, schedule, and which agents should run?',
+            content: 'What should I name the workflow and how often should it run?',
             created_at: new Date().toISOString(),
           });
           return;
         }
-        const steps = params.agents.map((a) => {
-          const found = resolveAgent(a);
-          return {
-            id: crypto.randomUUID(),
-            name: a,
-            agent_id: { 0: found ? found.id : a },
-            input_template: `Run ${a}`,
-            depends_on: [],
-          };
-        });
         addStepMessage(addMessage, chatId, 'ran_command', `Creating workflow ${params.name}`);
-        const workflow = await createWorkflow(params.name, params.message || '', steps, params.expression);
+        const wf = await createWorkflow(params.name, params.message || '', [], params.expression);
         const cmdStep = findLastStep(messages, 'ran_command');
         if (cmdStep) updateStepMessage(updateMessage, chatId, cmdStep.id, { status: 'done' });
         addMessage(chatId, {
-          id: `${Date.now()}-workflow`,
+          id: `${Date.now()}-wf`,
           role: 'assistant',
-          content: `Created workflow **${workflow.name}** with ${steps.length} step(s).`,
+          content: `Created workflow **${wf.name}** (${wf.id}).`,
           created_at: new Date().toISOString(),
         });
         break;
       }
-      case 'run_agent': {
-        if (paired.length === 0) {
-          showNeedWorker(chatId);
-          return;
-        }
-        if (!params.agent) {
+      case 'schedule_agent': {
+        if (!params.agent || !params.message || paired.length === 0) {
           addMessage(chatId, {
             id: `${Date.now()}-need-more`,
             role: 'assistant',
-            content: 'Which agent should I run?',
+            content: paired.length === 0
+              ? 'No paired worker available. Pair a worker first in Settings.'
+              : 'Which agent and what message should I schedule?',
             created_at: new Date().toISOString(),
           });
           return;
         }
-        const found = resolveAgent(params.agent);
-        if (!found) {
+        addStepMessage(addMessage, chatId, 'ran_command', `Scheduling ${params.agent}`);
+        await scheduleAgent(paired[0].id, params.agent, params.expression || '0 0 * * *');
+        const cmdStep = findLastStep(messages, 'ran_command');
+        if (cmdStep) updateStepMessage(updateMessage, chatId, cmdStep.id, { status: 'done' });
+        addMessage(chatId, {
+          id: `${Date.now()}-sched`,
+          role: 'assistant',
+          content: `Scheduled **${params.agent}** as job.`,
+          created_at: new Date().toISOString(),
+        });
+        break;
+      }
+      case 'run_command': {
+        addStepMessage(addMessage, chatId, 'ran_command', params.message || sentInput);
+        await runHarness(chatId, params.message || sentInput, `${activeProvider}/${activeModel}`);
+        break;
+      }
+      default: {
+        if (paired.length === 0) {
           addMessage(chatId, {
-            id: `${Date.now()}-unknown`,
+            id: `${Date.now()}-no-worker`,
             role: 'assistant',
-            content: `I do not know an agent named "${params.agent}".`,
+            content: 'No paired worker available. Add a worker in Settings to execute commands.',
             created_at: new Date().toISOString(),
           });
           return;
         }
         addStepMessage(addMessage, chatId, 'connecting', 'Connecting to computer');
-        addStepMessage(addMessage, chatId, 'using_agent', `Using agent ${found.name}`);
-        await runAgent(paired[0].id, chatId, found.id, params.prompt || params.message || '');
-        const usingStep = findLastStep(messages, 'using_agent');
-        if (usingStep) updateStepMessage(updateMessage, chatId, usingStep.id, { status: 'done' });
-        addMessage(chatId, {
-          id: `${Date.now()}-run`,
-          role: 'assistant',
-          content: `Dispatched **${found.name}** on ${paired[0].name}.`,
-          created_at: new Date().toISOString(),
-        });
-        break;
-      }
-      case 'chat':
-      default: {
-        addStepMessage(addMessage, chatId, 'thinking', 'Thinking');
-        await runHarness(chatId, classified.params.message || sentInputPlaceholder, `${activeProvider}/${activeModel}`);
-        break;
+        await runHarness(chatId, sentInput, `${activeProvider}/${activeModel}`);
       }
     }
   }
 
-  function resolveAgent(nameOrId: string) {
-    return agents.find((a) => a.id === nameOrId || a.name.toLowerCase() === nameOrId.toLowerCase());
-  }
+  const sentInput = '';
 
-  function showNeedWorker(chatId: string) {
-    addMessage(chatId, {
-      id: `${Date.now()}-needs-worker`,
-      role: 'assistant',
-      content: 'No paired worker available. Add and pair a worker in Settings to run agents or schedule workflows.',
-      created_at: new Date().toISOString(),
-    });
-  }
+  const pairedWorkers = workers.filter((w) => w.paired);
+  const activeAgents = agents;
 
-  function parseCommand(text: string): { type: string; args: string } | null {
-    if (!text.startsWith('/')) return null;
-    const space = text.indexOf(' ');
-    if (space === -1) return { type: text, args: '' };
-    return { type: text.slice(0, space), args: text.slice(space + 1).trim() };
-  }
-
-  async function handleCommand(chatId: string, cmd: string, args: string, paired: WorkerInfo[]) {
-    if (['agent', 'mcp', 'cron', 'workflow', 'run'].includes(cmd) && paired.length === 0) {
-      showNeedWorker(chatId);
-      return;
-    }
-
-    try {
-      if (cmd === 'agent') {
-        const match = args.match(/^create\s+([^:]+):\s*(.+)$/s);
-        if (!match) {
-          addMessage(chatId, {
-            id: `${Date.now()}-agent-help`,
-            role: 'assistant',
-            content: 'Usage: /agent create <name>: <prompt>',
-            created_at: new Date().toISOString(),
-          });
-          return;
-        }
-        const [, name, prompt] = match;
-        await executeIntent(chatId, { intent: 'create_agent', params: { name, prompt } }, paired);
-      } else if (cmd === 'mcp') {
-        const parts = args.split(' ').filter(Boolean);
-        if (parts[0] === 'install' && parts.length >= 3) {
-          const [, source, ...valueParts] = parts;
-          await executeIntent(chatId, { intent: 'install_mcp', params: { source, value: valueParts.join(' ') } }, paired);
-        } else if (parts[0] === 'search' && parts[1]) {
-          await executeIntent(chatId, { intent: 'search_mcp', params: { query: parts.slice(1).join(' ') } }, paired);
-        } else {
-          addMessage(chatId, {
-            id: `${Date.now()}-mcp-help`,
-            role: 'assistant',
-            content: 'Usage: /mcp install <source> <value> | /mcp search <query>',
-            created_at: new Date().toISOString(),
-          });
-        }
-      } else if (cmd === 'cron') {
-        const parts = args.split(' ').filter(Boolean);
-        if (parts.length < 3 || parts[0] !== 'add') {
-          addMessage(chatId, {
-            id: `${Date.now()}-cron-help`,
-            role: 'assistant',
-            content: 'Usage: /cron add <agent-id> "<expression>"',
-            created_at: new Date().toISOString(),
-          });
-          return;
-        }
-        await executeIntent(chatId, { intent: 'schedule_agent', params: { agent: parts[1], expression: parts.slice(2).join(' ').replace(/^"|"$/g, '') } }, paired);
-      } else if (cmd === 'workflow') {
-        const parts = args.split(' ').filter(Boolean);
-        if (parts[0] !== 'add' || parts.length < 4) {
-          addMessage(chatId, {
-            id: `${Date.now()}-workflow-help`,
-            role: 'assistant',
-            content: 'Usage: /workflow add <name> "<expression>" <agent>...',
-            created_at: new Date().toISOString(),
-          });
-          return;
-        }
-        const [, name, expression, ...agentNames] = parts;
-        await executeIntent(chatId, { intent: 'create_workflow', params: { name, expression, agents: agentNames } }, paired);
-      } else if (cmd === 'run') {
-        const parts = args.split(' ').filter(Boolean);
-        if (parts.length < 2) {
-          addMessage(chatId, {
-            id: `${Date.now()}-run-help`,
-            role: 'assistant',
-            content: 'Usage: /run <agent-id> <prompt>',
-            created_at: new Date().toISOString(),
-          });
-          return;
-        }
-        const target = parts[0];
-        const prompt = parts.slice(1).join(' ');
-        await executeIntent(chatId, { intent: 'run_agent', params: { agent: target, prompt } }, paired);
-      } else {
-        await runHarness(chatId, `/${cmd} ${args}`, `${activeProvider}/${activeModel}`);
-      }
-    } catch (e) {
-      addMessage(chatId, {
-        id: `${Date.now()}-cmd-err`,
-        role: 'assistant',
-        content: `Command failed: ${String(e)}`,
-        created_at: new Date().toISOString(),
-      });
-    }
-  }
-
-  const sentInputPlaceholder = '';
-
-  function startNewChat() {
-    createChat('New chat', provider, model).then((id) => {
-      addConversation({
-        id,
-        title: 'New chat',
-        provider,
-        model,
-        updated_at: new Date().toISOString(),
-      });
-      setActiveChatId(id);
-    });
-  }
-
-  function onProviderChange(p: string) {
-    setProvider(p);
-    const defaultModel = LLM_PROVIDERS.find((x) => x.id === p)?.defaultModel ?? '';
-    setModel(defaultModel);
-    if (activeChatId) {
-      setChatModel(activeChatId, p, defaultModel).then(() =>
-        updateConversation(activeChatId, { provider: p, model: defaultModel }),
-      );
-    }
-  }
-
-  function onModelChange(m: string) {
-    setModel(m);
-    if (activeChatId) {
-      setChatModel(activeChatId, provider, m).then(() =>
-        updateConversation(activeChatId, { model: m }),
-      );
-    }
-  }
-
-  function toggleStep(id: string) {
-    setExpandedSteps((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-    const step = messages.find((m) => m.id === id);
-    if (step) {
-      updateStepMessage(updateMessage, activeChatId || '', id, { expanded: !expandedSteps.has(id) });
-    }
-  }
-
-  function renderMessageContent(m: ChatMessage) {
-    const { content, role } = m;
-    if (role === 'tool') {
-      const tool = tryParseTool(content);
-      if (tool) {
-        return (
-          <div className="tool-call">
-            <div className="tool-call-header">tool: {tool.name || tool.id}</div>
-            {tool.arguments && (
-              <pre className="tool-call-args">
-                {String(JSON.stringify(tool.arguments, null, 2))}
-              </pre>
-            )}
-            {tool.status === 'finished' && <div className="tool-result">✅ {tool.result}</div>}
-            {tool.status === 'error' && <div className="tool-error">❌ {tool.message}</div>}
-          </div>
-        );
-      }
-    }
-    if (role === 'step') {
-      const step = tryParseStep(content);
-      if (step) {
-        const Icon = STEP_ICONS[step.type] || Bot;
-        const expanded = expandedSteps.has(m.id) || step.expanded || false;
-        return (
-          <div className={`chat-step chat-step-${step.status || 'pending'}`}>
-            <button className="chat-step-header" onClick={() => toggleStep(m.id)}>
-              <Icon size={14} />
-              <span className="chat-step-title">{step.title}</span>
-              {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            </button>
-            {expanded && step.details && (
-              <div className="chat-step-details">{step.details}</div>
-            )}
-          </div>
-        );
-      }
-    }
-    return <div className="message-content">{content}</div>;
+  function openInfo() {
+    setRightSidebarTab('info');
+    setRightSidebarOpen(true);
   }
 
   return (
     <div className="chat-area">
-      <div className="chat-header">
-        <div className="chat-title">
-          {activeChatId
-            ? conversations.find((c) => c.id === activeChatId)?.title || 'Chat'
-            : 'New chat'}
-        </div>
-        <div className="chat-header-actions">
-          {!modelConfigured && (
-            <button
-              className="chat-header-warning"
-              onClick={() => navigate('/settings', { state: { tab: 'llm' } })}
-              title="No LLM provider configured"
-            >
-              <Settings size={14} /> Configure model
-            </button>
-          )}
-          {workers.filter((w) => w.paired).length === 0 && (
-            <button
-              className="chat-header-warning"
-              onClick={() => navigate('/settings', { state: { tab: 'workers' } })}
-              title="No paired worker"
-            >
-              <HardHat size={14} /> Add worker
-            </button>
-          )}
-          <button onClick={startNewChat}>New chat</button>
-        </div>
-      </div>
-      <div className="chat-messages" ref={scrollRef}>
-        {messages.length === 0 && (
-          <div className="chat-empty">Start a conversation with an agent or add a worker.</div>
-        )}
-        {messages.map((m) => (
-          <div key={m.id} className={`chat-message ${m.role}`}>
-            <div className="message-role">{m.role}</div>
-            {renderMessageContent(m)}
+      <div className="chat-window">
+        <div className="chat-header">
+          <div className="chat-title-row">
+            <span className="chat-title">
+              {activeConversation?.title || 'New chat'}
+            </span>
+            <span className="chat-subtitle">
+              {activeProvider}/{activeModel}
+            </span>
           </div>
-        ))}
-      </div>
-      <div className="chat-composer">
-        <div className="composer-toolbar">
-          <label className="composer-control" title="Provider">
-            <Sparkles size={14} />
-            <select value={provider} onChange={(e) => onProviderChange(e.target.value)}>
-              {LLM_PROVIDERS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="composer-control" title="Model">
-            <Cpu size={14} />
-            <input
-              type="text"
-              value={model}
-              onChange={(e) => onModelChange(e.target.value)}
-              placeholder="model"
-            />
-          </label>
-          <label className="composer-control" title="Worker">
-            <HardHat size={14} />
-            <select value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
-              <option value="">worker</option>
-              {workers.filter((w) => w.paired).map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="composer-control" title="Agent">
-            <Bot size={14} />
-            <select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-              <option value="">agent</option>
-              {agents.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="composer-input-row">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            placeholder="Type a message or /command..."
-          />
-          <button className="composer-send" onClick={handleSend}>Send</button>
-          {isRunning && (
-            <button
-              className="composer-cancel"
-              onClick={() => activeChatId && cancelHarness(activeChatId)}
-            >
-              Cancel
+          <div className="chat-header-actions">
+            {!modelConfigured && (
+              <button
+                className="chat-header-warning"
+                onClick={() => navigate('/settings', { state: { tab: 'appearance' } })}
+              >
+                <Sparkles size={14} />
+                Configure LLM
+              </button>
+            )}
+            <button className="chat-header-btn" onClick={openInfo} title="Info">
+              <MoreHorizontal size={16} />
             </button>
+          </div>
+        </div>
+
+        <div className="chat-messages" ref={scrollRef}>
+          {!activeChatId && (
+            <div className="chat-empty">
+              <div className="welcome-title">How can I help you today?</div>
+              <div className="welcome-hint">Start a new chat from the sidebar or type a message below.</div>
+            </div>
           )}
+          {activeChatId && messages.map((m) => (
+            <Message key={m.id} message={m} expanded={expandedSteps.has(m.id)} onToggle={() => {
+              setExpandedSteps((prev) => {
+                const next = new Set(prev);
+                if (next.has(m.id)) next.delete(m.id);
+                else next.add(m.id);
+                return next;
+              });
+            }} />
+          ))}
+        </div>
+
+        <div className="chat-composer">
+          <div className="composer-toolbar">
+            <div className="toolbar-left">
+              <select
+                className="composer-control"
+                value={provider}
+                onChange={(e) => setProvider(e.target.value)}
+              >
+                {LLM_PROVIDERS.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              <input
+                className="composer-control composer-model"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="Model"
+              />
+              <select
+                className="composer-control"
+                value={workerId}
+                onChange={(e) => setWorkerId(e.target.value)}
+              >
+                <option value="">Worker</option>
+                {pairedWorkers.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </select>
+              <select
+                className="composer-control"
+                value={agentId}
+                onChange={(e) => setAgentId(e.target.value)}
+              >
+                <option value="">Agent</option>
+                {activeAgents.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="composer-input-row">
+            <button className="composer-attach">
+              <Paperclip size={18} />
+            </button>
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+              placeholder="Message..."
+              rows={1}
+            />
+            <button
+              className="composer-send"
+              onClick={handleSend}
+              disabled={!input.trim() || isRunning}
+            >
+              <Send size={18} />
+            </button>
+          </div>
+
+          <div className="composer-toolbar">
+            <div className="toolbar-left">
+              <button className="toolbar-btn" title="Tag">
+                <Tag size={16} />
+              </button>
+              <button className="toolbar-btn" title="Image">
+                <ImageIcon size={16} />
+              </button>
+              <button className="toolbar-btn" title="Emoji">
+                <Smile size={16} />
+              </button>
+            </div>
+            <div className="toolbar-right">
+              <span className="composer-hint">Shift+Enter for new line</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   );
 }
+
+function Message({ message, expanded, onToggle }: { message: ChatMessage; expanded: boolean; onToggle: () => void }) {
+  if (message.role === 'step') {
+    const step = tryParseStep(message.content);
+    if (!step) return null;
+    const Icon = STEP_ICONS[step.type] || Bot;
+    const statusClass = step.status === 'done' ? 'chat-step-done' : step.status === 'error' ? 'chat-step-error' : 'chat-step-pending';
+    return (
+      <div className={`chat-message step`}>
+        <button className={`chat-step ${statusClass}`} onClick={onToggle}>
+          <div className="chat-step-header">
+            <Icon size={16} />
+            <span className="chat-step-title">{step.title}</span>
+            {step.status === 'done' ? <Sparkles size={14} /> : step.status === 'error' ? <Zap size={14} /> : <Terminal size={14} />}
+          </div>
+          {expanded && step.details && (
+            <div className="chat-step-details">{step.details}</div>
+          )}
+        </button>
+      </div>
+    );
+  }
+
+  if (message.role === 'tool') {
+    const tool = tryParseTool(message.content);
+    return (
+      <div className="chat-message tool">
+        <div className="message-role">Tool call</div>
+        <div className="tool-call">
+          <div className="tool-call-header">{tool?.name || 'Tool'}</div>
+          {tool?.arguments && (
+            <pre className="tool-call-args">{JSON.stringify(tool.arguments, null, 2)}</pre>
+          )}
+          {tool?.status === 'finished' && <div className="tool-result">{tool.result}</div>}
+          {tool?.status === 'error' && <div className="tool-error">{tool.message}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`chat-message ${message.role}`}>
+      <div className="message-role">{message.role === 'user' ? 'You' : 'Assistant'}</div>
+      <div className="message-content">{message.content}</div>
+    </div>
+  );
+}
+
+function parseCommand(text: string): { type: string; args: string } | null {
+  const match = text.match(/^\/([a-zA-Z0-9_-]+)(?:\s+(.*))?$/);
+  if (!match) return null;
+  return { type: `/${match[1]}`, args: match[2] || '' };
+}
+
+async function handleCommand(chatId: string, type: string, args: string, paired: WorkerInfo[]) {
+  // Reserved for slash commands (kept for future use)
+  void chatId;
+  void type;
+  void args;
+  void paired;
+}
+

@@ -1,4 +1,4 @@
-import { useStore, type AgentInfo } from '../stores/appStore';
+import { useStore } from '../stores/appStore';
 import './RightSidebar.css';
 
 function formatTime(iso: string) {
@@ -49,10 +49,38 @@ function InfoPanel() {
   const activeConversation = useStore((s) =>
     s.activeConversationId ? s.conversations.find((c) => c.id === s.activeConversationId) : null
   );
+  const flows = useStore((s) => s.flows);
+  const selectedFlowId = useStore((s) => s.selectedFlowId);
 
-  const agent: AgentInfo | null = selectedAgentId
-    ? agents.find((a) => a.id === selectedAgentId) || null
-    : null;
+  const agent = selectedAgentId ? agents.find((a) => a.id === selectedAgentId) || null : null;
+  const flow = selectedFlowId ? flows.find((f) => f.id === selectedFlowId) || null : null;
+
+  if (flow) {
+    return (
+      <>
+        <div className="panel-section">
+          <div className="panel-label">Flow</div>
+          <div className="panel-value">{flow.title}</div>
+        </div>
+        <div className="panel-section">
+          <div className="panel-label">Created by</div>
+          <div className="panel-value">{flow.meta.createdBy}</div>
+        </div>
+        <div className="panel-section">
+          <div className="panel-label">Integrations</div>
+          <div className="panel-tags">
+            {flow.meta.integrations.map((tag) => (
+              <span key={tag} className="panel-tag">{tag}</span>
+            ))}
+          </div>
+        </div>
+        <div className="panel-section">
+          <div className="panel-label">Schedule</div>
+          <div className="panel-code">{flow.meta.cron}</div>
+        </div>
+      </>
+    );
+  }
 
   if (agent) {
     return (
@@ -96,9 +124,7 @@ function InfoPanel() {
     );
   }
 
-  return (
-    <div className="panel-placeholder">Select a conversation or an agent to see details.</div>
-  );
+  return <div className="panel-placeholder">Select a conversation, agent or flow to see details.</div>;
 }
 
 function HistoryPanel() {
@@ -108,9 +134,7 @@ function HistoryPanel() {
   const agents = useStore((s) => s.agents);
   const workers = useStore((s) => s.workers);
 
-  const exec = historyDetailId
-    ? executions.find((e) => e.id === historyDetailId) || null
-    : null;
+  const exec = historyDetailId ? executions.find((e) => e.id === historyDetailId) || null : null;
 
   if (exec) {
     return (

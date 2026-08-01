@@ -1,97 +1,106 @@
 import { useNavigate } from 'react-router-dom';
-import { Plus, Bot } from 'lucide-react';
+import { useStore } from '../stores/appStore';
+import { agentsData, type Agent } from '../mocks/agentsData';
 import './Sidebar.css';
-import { useStore, type Conversation } from '../stores/appStore';
 
 interface SidebarProps {
   collapsed: boolean;
   onNewChat: () => void;
+  activeConversationId?: string | null;
+  onSelectConversation?: (id: string) => void;
 }
 
-export default function Sidebar({ collapsed, onNewChat }: SidebarProps) {
+export default function Sidebar({ collapsed, onNewChat, activeConversationId, onSelectConversation }: SidebarProps) {
   const navigate = useNavigate();
   const conversations = useStore((s) => s.conversations);
-  const activeId = useStore((s) => s.activeConversationId);
-  const setActive = useStore((s) => s.setActiveConversation);
 
-  // Split active/past by updated_at within last 24h
-  const now = Date.now();
-  const activeConversations: Conversation[] = [];
-  const pastConversations: Conversation[] = [];
-  conversations.forEach((c) => {
-    const updated = new Date(c.updated_at || 0).getTime();
-    if (now - updated < 24 * 60 * 60 * 1000) {
-      activeConversations.push(c);
-    } else {
-      pastConversations.push(c);
-    }
-  });
+  if (collapsed) {
+    return (
+      <aside className="sidebar collapsed" aria-label="Sidebar">
+        <div className="sidebar-workspaces">
+          <button className="workspace active" title="Demo">D</button>
+        </div>
+        <div className="sidebar-nav">
+          <button className="sidebar-icon active" onClick={() => navigate('/chat')} title="Chat">💬</button>
+          <button className="sidebar-icon" onClick={() => navigate('/threads')} title="Threads">📥</button>
+          <button className="sidebar-icon" onClick={() => navigate('/agents')} title="Agents">🤖</button>
+          <button className="sidebar-icon" onClick={() => navigate('/connectors')} title="Connectors">🔌</button>
+        </div>
+        <div className="sidebar-footer">
+          <button className="sidebar-icon" onClick={() => navigate('/settings')} title="Settings">⚙️</button>
+        </div>
+      </aside>
+    );
+  }
 
   return (
-    <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
-      <div className="sidebar-expanded-content">
-        <div className="sidebar-header">
-          <div className="sidebar-brand">Goble</div>
-        </div>
+    <aside className="sidebar" aria-label="Sidebar">
+      <div className="sidebar-header">
         <button className="new-chat-btn" onClick={onNewChat}>
-          <span className="btn-icon">
-            <Plus size={18} />
-          </span>
-          <span>New chat</span>
+          <span className="new-chat-icon">+</span>
+          New chat
         </button>
-        <button className="agents-btn" onClick={() => navigate('/agents')}>
-          <span className="btn-icon">
-            <Bot size={18} />
-          </span>
-          <span>Agents</span>
-        </button>
-        <div className="sidebar-section active-section">
-          <h3>Active</h3>
-          <div className="conversation-list">
-            {activeConversations.length === 0 ? (
-              <div className="conversation-empty">None</div>
-            ) : (
-              activeConversations.map((c) => (
-                <div
-                  key={c.id}
-                  className={`conversation-item ${activeId === c.id ? 'selected' : ''}`}
-                  onClick={() => setActive(c.id)}
-                  title={c.title}
-                >
-                  {c.title}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-        <div className="sidebar-section past-section">
-          <h3>Past</h3>
-          <div className="conversation-list">
-            {pastConversations.length === 0 ? (
-              <div className="conversation-empty">None</div>
-            ) : (
-              pastConversations.map((c) => (
-                <div
-                  key={c.id}
-                  className={`conversation-item ${activeId === c.id ? 'selected' : ''}`}
-                  onClick={() => setActive(c.id)}
-                  title={c.title}
-                >
-                  {c.title}
-                </div>
-              ))
-            )}
-          </div>
+      </div>
+
+      <div className="sidebar-section">
+        <h4 className="sidebar-section-title">Agents</h4>
+        <div className="sidebar-list">
+          {agentsData.map((agent: Agent) => (
+            <button
+              key={agent.id}
+              className="sidebar-item"
+              onClick={() => navigate(`/chat?agent=${agent.id}`)}
+              title={agent.description}
+            >
+              <span className="sidebar-item-dot" style={{ background: agent.color }} />
+              <span className="sidebar-item-label">{agent.name}</span>
+            </button>
+          ))}
         </div>
       </div>
 
-      <div className="sidebar-collapsed-content">
-        <button className="collapsed-btn new-chat-collapsed" title="New chat" onClick={onNewChat}>
-          <Plus size={18} />
-        </button>
-        <button className="collapsed-btn agents-collapsed" title="Agents" onClick={() => navigate('/agents')}>
-          <Bot size={18} />
-        </button>
+      <div className="sidebar-section">
+        <div className="sidebar-section-header">
+          <h4 className="sidebar-section-title">Conversations</h4>
+          <span className="sidebar-count">{conversations.length}</span>
+        </div>
+        <div className="sidebar-list">
+          {conversations.length === 0 && (
+            <div className="sidebar-empty">No conversations yet.</div>
+          )}
+          {conversations.map((c) => (
+            <button
+              key={c.id}
+              className={`sidebar-item ${activeConversationId === c.id ? 'active' : ''}`}
+              onClick={() => onSelectConversation?.(c.id)}
+            >
+              <span className="sidebar-item-label">{c.title}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="sidebar-spacer" />
+
+      <div className="sidebar-section">
+        <div className="sidebar-list">
+          <button className="sidebar-item" onClick={() => navigate('/threads')}>
+            <span className="sidebar-item-icon">📥</span>
+            <span className="sidebar-item-label">Threads</span>
+          </button>
+          <button className="sidebar-item" onClick={() => navigate('/agents')}>
+            <span className="sidebar-item-icon">🤖</span>
+            <span className="sidebar-item-label">Agents</span>
+          </button>
+          <button className="sidebar-item" onClick={() => navigate('/connectors')}>
+            <span className="sidebar-item-icon">🔌</span>
+            <span className="sidebar-item-label">Connectors</span>
+          </button>
+          <button className="sidebar-item" onClick={() => navigate('/settings')}>
+            <span className="sidebar-item-icon">⚙️</span>
+            <span className="sidebar-item-label">Settings</span>
+          </button>
+        </div>
       </div>
     </aside>
   );

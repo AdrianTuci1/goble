@@ -11,29 +11,104 @@
   user-select: none;
 }
 
-.title-bar-traffic-spacer {
-  width: 72px;
-  flex-shrink: 0;
-}
-
-.topbar-left,
-.topbar-right {
+.title-bar-left,
+.title-bar-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+}
+
+.title-bar-menu-btn {
   -webkit-app-region: no-drag;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--ds-radius);
+  cursor: pointer;
+  color: var(--ds-muted);
 }
 
-.title-bar-button,
-.topbar-btn {
+.title-bar-menu-btn:hover {
+  background: var(--ds-hover);
+  color: var(--ds-text);
+}
+
+.hamburger {
+  display: block;
+  width: 14px;
+  height: 2px;
+  background: currentColor;
+  position: relative;
+  border-radius: 1px;
+}
+
+.hamburger::before,
+.hamburger::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: currentColor;
+  border-radius: 1px;
+}
+
+.hamburger::before { top: -5px; }
+.hamburger::after { top: 5px; }
+
+.title-bar-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ds-text);
+  letter-spacing: -0.3px;
+}
+
+.title-bar-action {
   -webkit-app-region: no-drag;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--ds-muted);
+  padding: 5px 10px;
+  border-radius: var(--ds-radius);
+  cursor: pointer;
+  font-size: 13px;
 }
 
-.sidebar-toggle svg {
-  transform: rotate(0deg);
-  transition: transform 0.15s;
+.title-bar-action:hover {
+  background: var(--ds-hover);
+  color: var(--ds-text);
 }
 
-.sidebar-toggle.collapsed svg {
-  transform: rotate(180deg);
+.title-bar-action.active {
+  background: var(--ds-hover);
+  color: var(--ds-text);
+  border-color: var(--ds-border);
+}
+
+.title-bar-new-chat {
+  -webkit-app-region: no-drag;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--ds-accent);
+  color: #fff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: var(--ds-radius);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.title-bar-new-chat:hover {
+  opacity: 0.9;
+}
+
+.title-bar-new-chat svg {
+  width: 14px;
+  height: 14px;
 }

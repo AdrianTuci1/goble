@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useStore } from '../stores/appStore';
+import { useStore, type DesignSystem } from '../stores/appStore';
 import {
   workerLogs,
   getLlmSetting,
@@ -18,15 +18,80 @@ import {
   exportClusterBackup,
   type ClusterIdentityInfo,
 } from '../tauri/api';
+import {
+  User,
+  Key,
+  Monitor,
+  Bell,
+  Keyboard,
+  Archive,
+  Users,
+  Globe,
+  FileText,
+  Mail,
+  Bot,
+  Server,
+  FlaskConical,
+  Smartphone,
+  Download,
+} from 'lucide-react';
 import './Pages.css';
 
-type SettingsTab = 'profile' | 'llm' | 'workers' | 'cluster' | 'appearance';
+type SettingsTab =
+  | 'profile'
+  | 'keys'
+  | 'appearance'
+  | 'notifications'
+  | 'shortcuts'
+  | 'local-archive'
+  | 'members'
+  | 'hosted-communities'
+  | 'templates'
+  | 'invites'
+  | 'settings-agents'
+  | 'compute'
+  | 'experiments'
+  | 'mobile'
+  | 'updates';
+
+const MENU_GROUPS = [
+  {
+    title: 'Personal',
+    items: [
+      { id: 'profile', label: 'Profile', icon: User },
+      { id: 'keys', label: 'Keys', icon: Key },
+      { id: 'appearance', label: 'Appearance', icon: Monitor },
+      { id: 'notifications', label: 'Notifications', icon: Bell },
+      { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard },
+      { id: 'local-archive', label: 'Local archive', icon: Archive },
+    ],
+  },
+  {
+    title: 'Communities',
+    items: [
+      { id: 'members', label: 'Members', icon: Users },
+      { id: 'hosted-communities', label: 'Hosted communities', icon: Globe },
+      { id: 'templates', label: 'Templates', icon: FileText },
+      { id: 'invites', label: 'Invites', icon: Mail },
+    ],
+  },
+  {
+    title: 'App',
+    items: [
+      { id: 'settings-agents', label: 'Agents', icon: Bot },
+      { id: 'compute', label: 'Compute', icon: Server },
+      { id: 'experiments', label: 'Experiments', icon: FlaskConical },
+      { id: 'mobile', label: 'Mobile', icon: Smartphone },
+      { id: 'updates', label: 'Updates', icon: Download },
+    ],
+  },
+];
 
 export default function SettingsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const initialTab = (location.state as { tab?: SettingsTab } | null)?.tab;
-  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab || 'profile');
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab || 'appearance');
 
   return (
     <div className="settings-page">
@@ -34,64 +99,53 @@ export default function SettingsPage() {
         <button className="settings-back" onClick={() => navigate(-1)}>
           ← Back
         </button>
-        <nav className="settings-menu">
-          <SettingsMenuItem
-            label="Profile"
-            active={activeTab === 'profile'}
-            onClick={() => setActiveTab('profile')}
-          />
-          <SettingsMenuItem
-            label="LLM"
-            active={activeTab === 'llm'}
-            onClick={() => setActiveTab('llm')}
-          />
-          <SettingsMenuItem
-            label="Workers"
-            active={activeTab === 'workers'}
-            onClick={() => setActiveTab('workers')}
-          />
-          <SettingsMenuItem
-            label="Cluster"
-            active={activeTab === 'cluster'}
-            onClick={() => setActiveTab('cluster')}
-          />
-          <SettingsMenuItem
-            label="Appearance"
-            active={activeTab === 'appearance'}
-            onClick={() => setActiveTab('appearance')}
-          />
-          </nav>
+        <div className="settings-menu">
+          {MENU_GROUPS.map((group) => (
+            <div key={group.title} className="settings-menu-group">
+              <h4 className="settings-menu-title">{group.title}</h4>
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.id}
+                    className={`settings-menu-item ${activeTab === item.id ? 'active' : ''}`}
+                    onClick={() => setActiveTab(item.id as SettingsTab)}
+                  >
+                    <span className="settings-menu-icon">
+                      <Icon size={18} />
+                    </span>
+                    <span className="settings-menu-label">{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
       </aside>
       <main className="settings-content">
         {activeTab === 'profile' && <ProfileSettings />}
-        {activeTab === 'llm' && <LlmSettings />}
-        {activeTab === 'workers' && <WorkerSettings />}
-        {activeTab === 'cluster' && <ClusterSettings />}
+        {activeTab === 'keys' && <KeysPlaceholder />}
         {activeTab === 'appearance' && <AppearanceSettings />}
+        {activeTab === 'notifications' && <NotificationsPlaceholder />}
+        {activeTab === 'shortcuts' && <ShortcutsPlaceholder />}
+        {activeTab === 'local-archive' && <LocalArchivePlaceholder />}
+        {activeTab === 'members' && <MembersPlaceholder />}
+        {activeTab === 'hosted-communities' && <HostedCommunitiesPlaceholder />}
+        {activeTab === 'templates' && <TemplatesPlaceholder />}
+        {activeTab === 'invites' && <InvitesPlaceholder />}
+        {activeTab === 'settings-agents' && <AgentsSettings />}
+        {activeTab === 'compute' && <ComputeSettings />}
+        {activeTab === 'experiments' && <ExperimentsPlaceholder />}
+        {activeTab === 'mobile' && <MobilePlaceholder />}
+        {activeTab === 'updates' && <UpdatesPlaceholder />}
       </main>
     </div>
   );
 }
 
-function SettingsMenuItem({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button className={`settings-menu-item ${active ? 'active' : ''}`} onClick={onClick}>
-      {label}
-    </button>
-  );
-}
-
 function ProfileSettings() {
   const [name, setName] = useState('');
-  const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const [timezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
 
   return (
     <div className="settings-section">
@@ -99,14 +153,130 @@ function ProfileSettings() {
       <label>Display name</label>
       <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
       <label>Timezone</label>
-      <input value={timezone} onChange={(e) => setTimezone(e.target.value)} />
+      <input value={timezone} readOnly />
       <button disabled>Save profile</button>
       <p className="hint">Profile persistence coming soon.</p>
     </div>
   );
 }
 
-function LlmSettings() {
+function KeysPlaceholder() {
+  return (
+    <div className="settings-section">
+      <h2>Keys</h2>
+      <p className="hint">Manage workspace and cluster keys here. Key management UI is coming soon.</p>
+    </div>
+  );
+}
+
+function NotificationsPlaceholder() {
+  return <Placeholder title="Notifications" />;
+}
+
+function ShortcutsPlaceholder() {
+  return <Placeholder title="Shortcuts" />;
+}
+
+function LocalArchivePlaceholder() {
+  return <Placeholder title="Local archive" />;
+}
+
+function MembersPlaceholder() {
+  return <Placeholder title="Members" />;
+}
+
+function HostedCommunitiesPlaceholder() {
+  return <Placeholder title="Hosted communities" />;
+}
+
+function TemplatesPlaceholder() {
+  return <Placeholder title="Templates" />;
+}
+
+function InvitesPlaceholder() {
+  return <Placeholder title="Invites" />;
+}
+
+function ExperimentsPlaceholder() {
+  return <Placeholder title="Experiments" />;
+}
+
+function MobilePlaceholder() {
+  return <Placeholder title="Mobile" />;
+}
+
+function UpdatesPlaceholder() {
+  return <Placeholder title="Updates" />;
+}
+
+function Placeholder({ title }: { title: string }) {
+  return (
+    <div className="settings-section">
+      <h2>{title}</h2>
+      <p className="hint">{title} settings are coming soon.</p>
+    </div>
+  );
+}
+
+function AppearanceSettings() {
+  const design = useStore((s) => s.design);
+  const setDesign = useStore((s) => s.setDesign);
+
+  function update(partial: Partial<DesignSystem>) {
+    setDesign({ ...design, ...partial });
+  }
+
+  return (
+    <div className="settings-section">
+      <h2>Appearance</h2>
+      <label>Theme</label>
+      <select value={design.theme} onChange={(e) => update({ theme: e.target.value as DesignSystem['theme'] })}>
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+        <option value="midnight">Midnight</option>
+      </select>
+
+      <label>Accent color</label>
+      <select value={design.accent} onChange={(e) => update({ accent: e.target.value as DesignSystem['accent'] })}>
+        <option value="blue">Blue</option>
+        <option value="green">Green</option>
+        <option value="purple">Purple</option>
+        <option value="orange">Orange</option>
+      </select>
+
+      <label>Font</label>
+      <select value={design.font} onChange={(e) => update({ font: e.target.value as DesignSystem['font'] })}>
+        <option value="system">System</option>
+        <option value="mono">Monospace</option>
+        <option value="serif">Serif</option>
+      </select>
+
+      <label>Density</label>
+      <select value={design.density} onChange={(e) => update({ density: e.target.value as DesignSystem['density'] })}>
+        <option value="compact">Compact</option>
+        <option value="default">Default</option>
+        <option value="spacious">Spacious</option>
+      </select>
+
+      <label>Radius</label>
+      <select value={design.radius} onChange={(e) => update({ radius: e.target.value as DesignSystem['radius'] })}>
+        <option value="sharp">Sharp</option>
+        <option value="default">Default</option>
+        <option value="rounded">Rounded</option>
+      </select>
+    </div>
+  );
+}
+
+function AgentsSettings() {
+  return <Placeholder title="Agents" />;
+}
+
+function ComputeSettings() {
+  return <Placeholder title="Compute" />;
+}
+
+export function LlmSettings() {
   const [provider, setProvider] = useState('openai');
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
@@ -146,46 +316,24 @@ function LlmSettings() {
       <label>Provider</label>
       <select value={provider} onChange={(e) => setProvider(e.target.value)}>
         {LLM_PROVIDERS.map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.name}
-          </option>
+          <option key={p.id} value={p.id}>{p.name}</option>
         ))}
       </select>
       <label>Model</label>
-      <input
-        value={model}
-        onChange={(e) => setModel(e.target.value)}
-        placeholder={LLM_PROVIDERS.find((p) => p.id === provider)?.defaultModel}
-      />
+      <input value={model} onChange={(e) => setModel(e.target.value)} />
       <label>API Key</label>
-      <input
-        type="password"
-        value={apiKey}
-        onChange={(e) => setApiKey(e.target.value)}
-        placeholder="sk-..."
-      />
+      <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." />
       <label>Base URL (optional)</label>
-      <input
-        value={baseUrl}
-        onChange={(e) => setBaseUrl(e.target.value)}
-        placeholder="https://api.openai.com/v1"
-      />
+      <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" />
       <label>Temperature</label>
-      <input
-        type="number"
-        min="0"
-        max="2"
-        step="0.1"
-        value={temperature}
-        onChange={(e) => setTemperature(e.target.value)}
-      />
+      <input type="number" min="0" max="2" step="0.1" value={temperature} onChange={(e) => setTemperature(e.target.value)} />
       <button onClick={handleSave}>Save LLM Settings</button>
       {saved && <span className="success-hint">Saved</span>}
     </div>
   );
 }
 
-function WorkerSettings() {
+export function WorkerSettings() {
   const workers = useStore((s) => s.workers);
   const logs = useStore((s) => s.logs);
   const setWorkers = useStore((s) => s.setWorkers);
@@ -263,11 +411,7 @@ function WorkerSettings() {
       <div className="settings-subsection">
         <h3>Add worker</h3>
         <input placeholder="Name" value={newName} onChange={(e) => setNewName(e.target.value)} />
-        <input
-          placeholder="ws://host:port/ws"
-          value={newUrl}
-          onChange={(e) => setNewUrl(e.target.value)}
-        />
+        <input placeholder="ws://host:port/ws" value={newUrl} onChange={(e) => setNewUrl(e.target.value)} />
         <button onClick={handleAddWorker}>Add worker</button>
       </div>
 
@@ -276,16 +420,10 @@ function WorkerSettings() {
         <select value={selectedWorker} onChange={(e) => setSelectedWorker(e.target.value)}>
           <option value="">Select worker</option>
           {workers.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name}
-            </option>
+            <option key={w.id} value={w.id}>{w.name}</option>
           ))}
         </select>
-        <input
-          placeholder="Pairing code"
-          value={pairCode}
-          onChange={(e) => setPairCode(e.target.value)}
-        />
+        <input placeholder="Pairing code" value={pairCode} onChange={(e) => setPairCode(e.target.value)} />
         <button onClick={handlePair}>Pair</button>
       </div>
 
@@ -298,12 +436,7 @@ function WorkerSettings() {
         <label>SSH port</label>
         <input value={sshPort} onChange={(e) => setSshPort(e.target.value)} />
         <label>Private key</label>
-        <textarea
-          value={sshKey}
-          onChange={(e) => setSshKey(e.target.value)}
-          placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-          rows={5}
-        />
+        <textarea value={sshKey} onChange={(e) => setSshKey(e.target.value)} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" rows={5} />
         <label>Release tag</label>
         <input value={releaseTag} onChange={(e) => setReleaseTag(e.target.value)} />
         <button onClick={handleInstall} disabled={installing || !sshHost || !sshKey}>
@@ -329,7 +462,7 @@ function WorkerSettings() {
   );
 }
 
-function ClusterSettings() {
+export function ClusterSettings() {
   const [identity, setIdentity] = useState<ClusterIdentityInfo | null>(null);
   const [clusterName, setClusterName] = useState('');
   const [importKey, setImportKey] = useState('');
@@ -396,50 +529,16 @@ function ClusterSettings() {
 
       <div className="settings-subsection">
         <h3>Create cluster</h3>
-        <input
-          placeholder="Cluster name"
-          value={clusterName}
-          onChange={(e) => setClusterName(e.target.value)}
-        />
-        <button onClick={handleCreate} disabled={!clusterName}>
-          Create new cluster
-        </button>
+        <input placeholder="Cluster name" value={clusterName} onChange={(e) => setClusterName(e.target.value)} />
+        <button onClick={handleCreate} disabled={!clusterName}>Create new cluster</button>
       </div>
 
       <div className="settings-subsection">
         <h3>Import cluster</h3>
-        <input
-          placeholder="Cluster name"
-          value={importName}
-          onChange={(e) => setImportName(e.target.value)}
-        />
-        <textarea
-          placeholder="Paste cluster key"
-          value={importKey}
-          onChange={(e) => setImportKey(e.target.value)}
-          rows={3}
-        />
-        <button onClick={handleImport} disabled={!importKey || !importName}>
-          Import cluster key
-        </button>
+        <input placeholder="Cluster name" value={importName} onChange={(e) => setImportName(e.target.value)} />
+        <textarea placeholder="Paste cluster key" value={importKey} onChange={(e) => setImportKey(e.target.value)} rows={3} />
+        <button onClick={handleImport} disabled={!importKey || !importName}>Import cluster key</button>
       </div>
-    </div>
-  );
-}
-
-function AppearanceSettings() {
-  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
-
-  return (
-    <div className="settings-section">
-      <h2>Appearance</h2>
-      <label>Theme</label>
-      <select value={theme} onChange={(e) => setTheme(e.target.value as 'light' | 'dark')}>
-        <option value="dark">Dark</option>
-        <option value="light">Light</option>
-      </select>
-      <button disabled>Save appearance</button>
-      <p className="hint">Theme persistence coming soon.</p>
     </div>
   );
 }

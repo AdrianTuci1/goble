@@ -5,8 +5,10 @@ import { useStore } from './stores/appStore';
 import TitleBar from './components/TitleBar';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
+import RightSidebar from './components/RightSidebar';
 import ConnectorsPage from './pages/ConnectorsPage';
 import AgentsPage from './pages/AgentsPage';
+import ThreadsPage from './pages/ThreadsPage';
 import SettingsPage from './pages/SettingsPage';
 import {
   listWorkers,
@@ -15,6 +17,7 @@ import {
   listVaultSecrets,
   listChats,
   listMcpServers,
+  createChat,
   onWorkersUpdated,
   onLogsUpdated,
   onAgentLog,
@@ -25,9 +28,11 @@ import {
   onAgentsUpdated,
   onVaultUpdated,
 } from './tauri/api';
+import { useDesignClasses } from './utils/designSystem';
 
 function AppShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [threadsActive, setThreadsActive] = useState(false);
 
   const setWorkers = useStore((s) => s.setWorkers);
   const setLogs = useStore((s) => s.setLogs);
@@ -36,8 +41,13 @@ function AppShell() {
   const setVaultSecrets = useStore((s) => s.setVaultSecrets);
   const setConversations = useStore((s) => s.setConversations);
   const setMcpServers = useStore((s) => s.setMcpServers);
+  const addConversation = useStore((s) => s.addConversation);
+  const setActiveChatId = useStore((s) => s.setActiveConversation);
   const addMessage = useStore((s) => s.addMessage);
   const chatMessagesRef = useRef(useStore.getState().messages);
+
+  const design = useStore((s) => s.design);
+  const designClasses = useDesignClasses(design);
 
   const [loaded, setLoaded] = useState(false);
 
@@ -92,25 +102,36 @@ function AppShell() {
     };
   }, []);
 
+  async function onNewChat() {
+    const chatId = await createChat('New chat', 'openai', 'gpt-4o-mini');
+    addConversation({ id: chatId, title: 'New chat', provider: 'openai', model: 'gpt-4o-mini', updated_at: new Date().toISOString() });
+    setActiveChatId(chatId);
+    setThreadsActive(false);
+  }
+
   if (!loaded) return <div className="loading">Loading...</div>;
 
   return (
-    <div className="app-shell">
+    <div id="app-root" className={`app-shell ${designClasses}`}>
       <TitleBar
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
+        threadsActive={threadsActive}
+        onToggleThreads={() => setThreadsActive((t) => !t)}
       />
       <div className="app-body">
-        <Sidebar collapsed={sidebarCollapsed} />
+        <Sidebar collapsed={sidebarCollapsed} onNewChat={onNewChat} />
         <main className="main-area">
           <Routes>
             <Route path="/" element={<Navigate to="/chat" />} />
-            <Route path="/chat" element={<ChatArea />} />
+            <Route path="/chat" element={<ChatArea threadsActive={threadsActive} />} />
+            <Route path="/threads" element={<ThreadsPage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/connectors" element={<ConnectorsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </main>
+        <RightSidebar />
       </div>
     </div>
   );

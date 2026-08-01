@@ -98,6 +98,18 @@ export interface LogEntry {
   message: string;
 }
 
+export interface FlowMeta {
+  createdBy: string;
+  integrations: string[];
+  cron: string;
+}
+
+export interface FlowInfo {
+  id: string;
+  title: string;
+  meta: FlowMeta;
+}
+
 export interface DesignSystem {
   theme: 'dark' | 'light' | 'midnight';
   accent: 'blue' | 'green' | 'purple' | 'orange';
@@ -126,12 +138,15 @@ interface AppState {
   executions: ExecutionInfo[];
   vaultSecrets: VaultSecretInfo[];
   mcpServers: McpServerSummary[];
+  flows: FlowInfo[];
+  selectedFlowId: string | null;
   isWorkflowDrawerOpen: boolean;
   design: DesignSystem;
   rightSidebarOpen: boolean;
   rightSidebarTab: 'info' | 'history';
   selectedAgentId: string | null;
   historyDetailId: string | null;
+  navigateFn: (path: string) => void;
   setWorkers: (workers: WorkerInfo[]) => void;
   setLogs: (logs: LogEntry[]) => void;
   addLog: (message: string) => void;
@@ -156,12 +171,15 @@ interface AppState {
   addMcpServer: (server: McpServerSummary) => void;
   removeMcpServer: (id: string) => void;
   updateMcpServer: (server: McpServerSummary) => void;
+  setFlows: (flows: FlowInfo[]) => void;
+  setSelectedFlowId: (id: string | null) => void;
   toggleWorkflowDrawer: () => void;
   setDesign: (design: DesignSystem) => void;
   setRightSidebarOpen: (open: boolean) => void;
   setRightSidebarTab: (tab: 'info' | 'history') => void;
   setSelectedAgentId: (id: string | null) => void;
   setHistoryDetailId: (id: string | null) => void;
+  setNavigateFn: (fn: (path: string) => void) => void;
 }
 
 export type { AppState };
@@ -178,12 +196,15 @@ export const useStore = create<AppState>((set) => ({
   executions: [],
   vaultSecrets: [],
   mcpServers: [],
+  flows: [],
+  selectedFlowId: null,
   isWorkflowDrawerOpen: false,
   design: DEFAULT_DESIGN,
   rightSidebarOpen: false,
   rightSidebarTab: 'info',
   selectedAgentId: null,
   historyDetailId: null,
+  navigateFn: () => {},
   setWorkers: (workers) => set({ workers }),
   setLogs: (logs) => set({ logs }),
   addLog: (message) =>
@@ -277,6 +298,8 @@ export const useStore = create<AppState>((set) => ({
         s.id === server.id ? server : s
       ),
     })),
+  setFlows: (flows) => set({ flows }),
+  setSelectedFlowId: (selectedFlowId) => set({ selectedFlowId }),
   toggleWorkflowDrawer: () =>
     set((state) => ({ isWorkflowDrawerOpen: !state.isWorkflowDrawerOpen })),
   setDesign: (design) => set({ design }),
@@ -284,4 +307,5 @@ export const useStore = create<AppState>((set) => ({
   setRightSidebarTab: (rightSidebarTab) => set({ rightSidebarTab }),
   setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
   setHistoryDetailId: (historyDetailId) => set({ historyDetailId }),
+  setNavigateFn: (navigateFn) => set({ navigateFn }),
 }));

@@ -1,5 +1,4 @@
-import { useNavigate, useLocation } from 'react-router-dom';
-import { Hash, Settings, PanelLeft } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import './TitleBar.css';
 
 interface TitleBarProps {
@@ -10,40 +9,25 @@ interface TitleBarProps {
 }
 
 export default function TitleBar({ collapsed, onToggleCollapse, threadsActive, onToggleThreads }: TitleBarProps) {
-  const navigate = useNavigate();
-  const location = useLocation();
-  void collapsed; // reserved for collapsed state indicator
-
-  const showThreads = location.pathname === '/chat' || location.pathname === '/threads';
-
   return (
     <div className="title-bar">
-      <div className="title-bar-traffic-spacer" />
-      <div className="topbar-left">
-        <button
-          className="topbar-btn sidebar-toggle"
-          title="Toggle sidebar"
-          onClick={onToggleCollapse}
-        >
-          <PanelLeft size={16} />
+      <div className="title-bar-left">
+        <button className="title-bar-menu-btn" onClick={onToggleCollapse} aria-label={collapsed ? 'Expand' : 'Collapse'}>
+          <span className="hamburger" />
         </button>
-        {showThreads && onToggleThreads && (
-          <button
-            className={`topbar-btn threads-btn ${threadsActive ? 'active' : ''}`}
-            title="Threads"
-            onClick={onToggleThreads}
-          >
-            <Hash size={16} />
-          </button>
-        )}
+        <span className="title-bar-title">Goble</span>
       </div>
-      <div className="topbar-right">
+      <div className="title-bar-actions">
         <button
-          className={`topbar-btn settings-btn ${location.pathname === '/settings' ? 'active' : ''}`}
-          title="Settings"
-          onClick={() => navigate('/settings')}
+          className={`title-bar-action ${threadsActive ? 'active' : ''}`}
+          onClick={onToggleThreads}
+          title="Threads"
         >
-          <Settings size={16} />
+          Threads
+        </button>
+        <button className="title-bar-new-chat" onClick={() => window.dispatchEvent(new CustomEvent('goble:new-chat'))}>
+          <Plus size={14} />
+          New chat
         </button>
       </div>
     </div>

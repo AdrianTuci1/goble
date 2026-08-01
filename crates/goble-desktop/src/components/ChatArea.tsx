@@ -38,7 +38,8 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
 
   const activeConversationId = useStore((s) => s.activeConversationId);
   const conversations = useStore((s) => s.conversations);
-  const messages = useStore((s) => s.messages[activeConversationId || ''] || []);
+  const allMessages = useStore((s) => s.messages);
+  const messages = allMessages[activeConversationId || ''] || [];
   const setActiveConversation = useStore((s) => s.setActiveConversation);
   const addConversation = useStore((s) => s.addConversation);
   const setMessages = useStore((s) => s.setMessages);
@@ -64,7 +65,7 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
       const first = conversations[0];
       if (first) setActiveConversation(first.id);
     }
-  }, [activeConversationId, conversations, setActiveConversation]);
+  }, [activeConversationId, conversations]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -82,47 +83,68 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
   }, [agentId, flowId]);
 
   useEffect(() => {
-    const unsubs: (() => void)[] = [];
-    (async () => {
-      unsubs.push(await onChatUpdated((event) => {
-        const payload = event.payload as { chat_id?: string; message?: ChatMessage };
-        if (payload.chat_id && payload.message) {
-          addMessage(payload.chat_id, payload.message);
-        }
-      }));
-      unsubs.push(await onAgentLog((event) => {
-        const payload = event.payload as { trace_id?: string; message?: string };
-        if (payload.trace_id && payload.message) {
-          updateMessage(activeConversationId || '', payload.trace_id, (prev) => prev + payload.message);
-        }
-      }));
-      unsubs.push(await onAgentStarted((event) => {
-        const payload = event.payload as { trace_id?: string; agent_id?: string };
-        if (payload.trace_id && payload.agent_id) {
-          setActiveTrace(payload.trace_id);
-          addMessage(activeConversationId || '', {
-            id: payload.trace_id,
-            role: 'assistant',
-            content: '',
-            created_at: new Date().toISOString(),
-          });
-          setTyping(true);
-          setRightSidebarOpen(true);
-          setRightSidebarTab('history');
-          setHistoryDetailId(payload.trace_id);
-        }
-      }));
-      unsubs.push(await onAgentFinished((event) => {
-        const payload = event.payload as { trace_id?: string; status?: string };
-        if (payload.trace_id) {
-          setTyping(false);
-          updateMessage(activeConversationId || '', payload.trace_id, (prev) =>
-            prev ? prev : payload.status || 'Done'
-          );
-        }
-      }));
-    })();
-    return () => unsubs.forEach((u) => u());
+    let cancelled = false;
+    const unlistenPromises: Promise<(() => void) | null>[] = [];
+
+    async function setupListeners() {
+      const promises = [
+        onChatUpdated((event) => {
+          const payload = event.payload as { chat_id?: string; message?: ChatMessage };
+          if (payload.chat_id && payload.message) {
+            addMessage(payload.chat_id, payload.message);
+          }
+        }),
+        onAgentLog((event) => {
+          const payload = event.payload as { trace_id?: string; message?: string };
+          if (payload.trace_id && payload.message) {
+            updateMessage(activeConversationId || '', payload.trace_id, (prev) => prev + payload.message);
+          }
+        }),
+        onAgentStarted((event) => {
+          const payload = event.payload as { trace_id?: string; agent_id?: string };
+          if (payload.trace_id && payload.agent_id) {
+            setActiveTrace(payload.trace_id);
+            addMessage(activeConversationId || '', {
+              id: payload.trace_id,
+              role: 'assistant',
+              content: '',
+              created_at: new Date().toISOString(),
+            });
+            setTyping(true);
+            setRightSidebarOpen(true);
+            setRightSidebarTab('history');
+            setHistoryDetailId(payload.trace_id);
+          }
+        }),
+        onAgentFinished((event) => {
+          const payload = event.payload as { trace_id?: string; status?: string };
+          if (payload.trace_id) {
+            setTyping(false);
+            updateMessage(activeConversationId || '', payload.trace_id, (prev) =>
+              prev ? prev : payload.status || 'Done'
+            );
+          }
+        }),
+      ];
+      for (const promise of promises) {
+        unlistenPromises.push(
+          promise.catch((err) => {
+            console.error('Failed to register listener', err);
+            return null;
+          })
+        );
+      }
+    }
+
+    setupListeners();
+
+    return () => {
+      cancelled = true;
+      unlistenPromises.forEach(async (promise) => {
+        const unlisten = await promise;
+        unlisten?.();
+      });
+    };
   }, [activeConversationId]);
 
   async function handleNewChat() {

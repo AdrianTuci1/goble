@@ -233,6 +233,10 @@ export async function chatMessages(chatId: string): Promise<ChatMessage[]> {
   return invoke('chat_messages', { chatId });
 }
 
+export async function deleteChat(chatId: string): Promise<void> {
+  return invoke('delete_chat', { chatId });
+}
+
 export async function listAgents(): Promise<AgentInfo[]> {
   return invoke('list_agents');
 }

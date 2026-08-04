@@ -5,3 +5,4 @@ src-tauri/gen/schemas
 .DS_Store
 *.log
 src-tauri/goble_store.sqlite
+src-tauri/goble_store.sqlite.*

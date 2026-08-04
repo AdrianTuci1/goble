@@ -656,6 +656,14 @@ impl DesktopState {
         Ok(())
     }
 
+    pub fn delete_chat(&self, id: &str) -> anyhow::Result<()> {
+        self.store.lock().delete_chat(id)?;
+        self.chats.lock().retain(|c| c.id != id);
+        self.messages.lock().remove(id);
+        self.emit("chats:updated", ());
+        Ok(())
+    }
+
     pub fn list_chats(&self) -> Vec<Chat> {
         self.chats.lock().clone()
     }

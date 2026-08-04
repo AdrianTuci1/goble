@@ -86,6 +86,10 @@
 }
 
 .conversation-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 8px 10px;
   border-radius: 8px;
   font-size: 13px;
@@ -95,9 +99,6 @@
   border: none;
   text-align: left;
   transition: background 0.15s, color 0.15s;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .conversation-item:hover {
@@ -118,6 +119,33 @@
 .past-section .conversation-item:hover,
 .past-section .conversation-item.selected {
   color: var(--ds-text, #e4e6eb);
+}
+
+.conversation-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.conversation-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 6px;
+  color: var(--ds-muted, #8b949e);
+  cursor: pointer;
+  opacity: 0.8;
+  transition: background 0.15s, color 0.15s, opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.conversation-delete:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  opacity: 1;
 }
 
 .conversation-empty {

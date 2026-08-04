@@ -357,6 +357,14 @@ fn chat_messages(
 }
 
 #[tauri::command]
+fn delete_chat(
+    chat_id: String,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state.delete_chat(&chat_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn add_chat_message(
     chat_id: String,
     role: String,
@@ -687,6 +695,7 @@ pub fn run() {
             create_chat,
             list_chats,
             chat_messages,
+            delete_chat,
             add_chat_message,
             list_agents,
             create_agent,

@@ -410,6 +410,13 @@ impl Store {
         Ok(())
     }
 
+    pub fn delete_chat(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM chat_messages WHERE chat_id = ?1", params![id])?;
+        conn.execute("DELETE FROM chats WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     pub fn set_chat_model(&self, id: &str, provider: &str, model: &str) -> Result<()> {
         self.conn.lock().execute(
             "UPDATE chats SET provider = ?1, model = ?2 WHERE id = ?3",

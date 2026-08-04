@@ -60,6 +60,7 @@ interface ChatState {
   setTransientChatId: (id: string | null) => void;
   commitConversation: (conversation: Conversation) => void;
   clearTransientChat: () => void;
+  deleteConversation: (id: string) => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -147,6 +148,29 @@ export const useChatStore = create<ChatState>((set) => ({
         activeConversationId: s.activeConversationId === id ? null : s.activeConversationId,
         messagesByChat,
         transientChatId: null,
+      };
+    }),
+  deleteConversation: (id) =>
+    set((s) => {
+      const main = useMainViewStore.getState();
+      const inActive = main.activeConversations.find((c) => c.id === id);
+      if (inActive) {
+        main.setConversations(
+          main.activeConversations.filter((c) => c.id !== id),
+          main.pastConversations,
+        );
+      } else {
+        main.setConversations(
+          main.activeConversations,
+          main.pastConversations.filter((c) => c.id !== id),
+        );
+      }
+      const messagesByChat = { ...s.messagesByChat };
+      delete messagesByChat[id];
+      return {
+        conversations: s.conversations.filter((c) => c.id !== id),
+        messagesByChat,
+        activeConversationId: s.activeConversationId === id ? null : s.activeConversationId,
       };
     }),
 }));

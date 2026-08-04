@@ -19,9 +19,15 @@ export default function TitleBar({ collapsed, onToggleCollapse }: TitleBarProps)
   return (
     <div className="title-bar">
       <div className="title-bar-left">
-        <button className="title-bar-menu-btn" onClick={onToggleCollapse} aria-label={collapsed ? 'Expand' : 'Collapse'}>
-          <span className="hamburger" />
-        </button>
+        {threadsActive ? (
+          <button className="title-bar-menu-btn" onClick={() => navigate('/chat')} aria-label="Back to chat">
+            ←
+          </button>
+        ) : (
+          <button className="title-bar-menu-btn" onClick={onToggleCollapse} aria-label={collapsed ? 'Expand' : 'Collapse'}>
+            <span className="hamburger" />
+          </button>
+        )}
         <span className="title-bar-title">Goble</span>
       </div>
       <div className="title-bar-actions">

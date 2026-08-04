@@ -1,0 +1,74 @@
+.topbar {
+  height: 44px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  background: var(--ds-surface, #181b21);
+  border-bottom: 1px solid var(--ds-border, #2a2e36);
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.topbar-left, .topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.topbar-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ds-text, #e4e6eb);
+  margin-left: 4px;
+  letter-spacing: -0.2px;
+}
+
+.topbar-new-chat {
+  gap: 6px;
+}
+
+.topbar-window-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+}
+
+.topbar-window-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--ds-radius, 8px);
+  background: transparent;
+  border: none;
+  color: var(--ds-muted, #8b949e);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.topbar-window-btn:hover {
+  background: var(--ds-hover, #2a2e36);
+  color: var(--ds-text, #e4e6eb);
+}
+
+.topbar-window-btn.close:hover {
+  background: #ef4444;
+  color: #fff;
+}
+
+.topbar .ui-icon-btn.active {
+  background: var(--ds-accent, #2563eb);
+  border-color: var(--ds-accent, #2563eb);
+  color: #fff;
+}
+
+.topbar .ui-icon-btn.active:hover {
+  filter: brightness(0.92);
+  background: var(--ds-accent, #2563eb);
+}

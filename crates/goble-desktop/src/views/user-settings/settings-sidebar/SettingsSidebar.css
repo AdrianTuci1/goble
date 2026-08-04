@@ -1,0 +1,100 @@
+#settings-sidebar {
+  width: 260px;
+  border-right: 1px solid var(--ds-border, #2a2e36);
+  background: var(--ds-surface, #181b21);
+  padding: 16px 12px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.settings-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--ds-hover, #21252e);
+  border: 1px solid var(--ds-border, #2a2e36);
+  color: var(--ds-text, #e4e6eb);
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  margin-bottom: 16px;
+  transition: background 0.15s;
+}
+
+.settings-back:hover {
+  background: var(--ds-selected, #2a2e36);
+}
+
+.settings-back-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.settings-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-menu-title {
+  margin: 0 0 6px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ds-muted, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.settings-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--ds-text, #e4e6eb);
+  font-size: 15px;
+  font-weight: 400;
+  background: transparent;
+  border: none;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.settings-menu-item:hover {
+  background: var(--ds-hover, #21252e);
+}
+
+.settings-menu-item.selected {
+  background: var(--ds-selected, #2a2e36);
+  color: var(--ds-text, #e4e6eb);
+}
+
+.settings-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--ds-muted, #8b949e);
+  flex-shrink: 0;
+}
+
+.settings-menu-item:hover .settings-menu-icon,
+.settings-menu-item.selected .settings-menu-icon {
+  color: var(--ds-text, #e4e6eb);
+}

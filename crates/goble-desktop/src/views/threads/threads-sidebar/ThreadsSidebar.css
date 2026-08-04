@@ -1,0 +1,149 @@
+.threads-sidebar {
+  width: 240px;
+  height: 100%;
+  min-height: 0;
+  background: var(--tv-sidebar, #181b21);
+  border-right: 1px solid var(--tv-border, #2a2e36);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  padding: 16px 12px;
+  overflow-y: auto;
+}
+
+.threads-sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 18px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--tv-text, #e4e6eb);
+  font-size: 15px;
+  font-weight: 500;
+  background: transparent;
+  border: none;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.nav-item:hover {
+  background: var(--tv-hover, #21252e);
+}
+
+.nav-item.selected {
+  background: var(--tv-selected, #2a2e36);
+  color: var(--tv-text, #e4e6eb);
+}
+
+.nav-icon {
+  font-size: 18px;
+  line-height: 1;
+  width: 22px;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.threads-sidebar-section {
+  margin-bottom: 18px;
+}
+
+.threads-sidebar-section h4 {
+  margin: 0 0 8px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--tv-muted, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.channel-list,
+.dm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.channel-item,
+.dm-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--tv-text, #e4e6eb);
+  font-size: 15px;
+  font-weight: 400;
+  background: transparent;
+  border: none;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.channel-item:hover,
+.dm-item:hover {
+  background: var(--tv-hover, #21252e);
+}
+
+.channel-item.selected,
+.dm-item.selected {
+  background: var(--tv-selected, #2a2e36);
+  color: var(--tv-text, #e4e6eb);
+}
+
+.channel-item.add {
+  color: var(--tv-muted, #8b949e);
+}
+
+.channel-icon {
+  color: var(--tv-muted, #8b949e);
+  font-size: 15px;
+  width: 18px;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.channel-name,
+.dm-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dm-avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.unread-badge {
+  background: var(--tv-badge, #e01e5a);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}

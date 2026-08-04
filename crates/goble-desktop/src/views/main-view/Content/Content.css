@@ -1,0 +1,24 @@
+.content-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--ds-muted, #8b949e);
+  background: var(--ds-bg, #0f1115);
+  text-align: center;
+  padding: 24px;
+}
+
+.content-placeholder h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--ds-text, #e4e6eb);
+}
+
+.content-placeholder p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ds-muted, #8b949e);
+}

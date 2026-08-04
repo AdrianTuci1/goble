@@ -1,34 +1,19 @@
 .topbar {
-  height: 44px;
+  height: 38px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
+  padding: 0 10px;
   background: var(--ds-surface, #181b21);
   border-bottom: 1px solid var(--ds-border, #2a2e36);
-  -webkit-app-region: drag;
-  app-region: drag;
+  user-select: none;
 }
 
 .topbar-left, .topbar-right {
   display: flex;
   align-items: center;
   gap: 8px;
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
-}
-
-.topbar-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--ds-text, #e4e6eb);
-  margin-left: 4px;
-  letter-spacing: -0.2px;
-}
-
-.topbar-new-chat {
-  gap: 6px;
 }
 
 .topbar-window-controls {
@@ -62,6 +47,19 @@
   color: #fff;
 }
 
+.topbar .ui-icon-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  box-sizing: border-box;
+  color: var(--ds-muted, #8b949e);
+}
+
+.topbar .ui-icon-btn:hover {
+  background: var(--ds-hover, #2a2e36);
+  border-color: var(--ds-border, #2a2e36);
+  color: var(--ds-text, #e4e6eb);
+}
+
 .topbar .ui-icon-btn.active {
   background: var(--ds-accent, #2563eb);
   border-color: var(--ds-accent, #2563eb);
@@ -71,4 +69,9 @@
 .topbar .ui-icon-btn.active:hover {
   filter: brightness(0.92);
   background: var(--ds-accent, #2563eb);
+  border-color: var(--ds-accent, #2563eb);
+}
+
+.topbar.platform-macos .topbar-left {
+  padding-left: 84px;
 }

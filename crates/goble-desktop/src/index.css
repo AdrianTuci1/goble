@@ -1,13 +1,13 @@
 :root {
-  --ds-bg: #0f1115;
-  --ds-surface: #181b21;
-  --ds-surface-raised: #21252e;
-  --ds-border: #2a2e36;
-  --ds-text: #e4e6eb;
-  --ds-muted: #8b949e;
-  --ds-accent: #2563eb;
-  --ds-hover: #21252e;
-  --ds-selected: #2a2e36;
+  --ds-bg: #0a0a0b;
+  --ds-surface: #131315;
+  --ds-surface-raised: #1c1c1f;
+  --ds-border: #27272a;
+  --ds-text: #f4f4f5;
+  --ds-muted: #a1a1aa;
+  --ds-accent: #52525b;
+  --ds-hover: #1c1c1f;
+  --ds-selected: #27272a;
   --ds-radius: 8px;
   --ds-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --ds-density: 1;
@@ -56,16 +56,16 @@ body {
 
 #app.theme-midnight,
 #root.theme-midnight {
-  --ds-bg: #0a0c10;
-  --ds-surface: #11131a;
-  --ds-surface-raised: #181b23;
-  --ds-border: #1f222b;
-  --ds-text: #e8eaed;
-  --ds-muted: #6b7280;
-  --ds-hover: #181b23;
-  --ds-selected: #1e212b;
+  --ds-bg: #050507;
+  --ds-surface: #0e0e10;
+  --ds-surface-raised: #161618;
+  --ds-border: #202023;
+  --ds-text: #f4f4f5;
+  --ds-muted: #71717a;
+  --ds-accent: #52525b;
+  --ds-hover: #161618;
+  --ds-selected: #202023;
 }
-
 #app.font-system,
 #root.font-system { --ds-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
 #app.font-mono,

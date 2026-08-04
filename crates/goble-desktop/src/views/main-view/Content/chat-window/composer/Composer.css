@@ -31,56 +31,33 @@
   color: var(--ds-muted, #8b949e);
 }
 
-.composer-toolbar {
+.composer-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
 }
 
-.composer-toolbar-left {
+.composer-chips {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
-.composer-toolbar-btn {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  border: none;
-  background: transparent;
+.composer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 2px;
+  border: 1px solid var(--ds-border, #2a2e36);
+  background: var(--ds-surface-raised, #21252e);
   color: var(--ds-muted, #8b949e);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
-.composer-toolbar-btn:hover {
-  background: var(--ds-hover, #2a2e36);
-  color: var(--ds-text, #e4e6eb);
-}
-
-.composer-send {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--ds-accent, #2563eb);
-  border: none;
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: filter 0.15s, opacity 0.15s;
-}
-
-.composer-send:hover:not(:disabled) {
-  filter: brightness(0.92);
-}
-
-.composer-send:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+.composer-chip.model-chip.missing {
+  color: var(--ds-muted, #8b949e);
+  border-style: dashed;
 }

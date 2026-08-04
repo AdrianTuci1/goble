@@ -1,6 +1,7 @@
 import { useUserSettingsStore, type SettingsSection } from '../store/userSettingsStore';
 import { useDesignStore } from '../../../shared';
 import type { ThemeName, FontName, RadiusName, DensityName } from '../../../shared';
+import ProvidersSection from './ProvidersSection';
 import './SettingsContent.css';
 
 const themes: { id: ThemeName; label: string }[] = [
@@ -32,7 +33,8 @@ export default function SettingsContent() {
   return (
     <main id="settings-content">
       {section === 'appearance' && <AppearanceSection />}
-      {section !== 'appearance' && <PlaceholderSection section={section} />}
+      {section === 'providers' && <ProvidersSection />}
+      {section !== 'appearance' && section !== 'providers' && <PlaceholderSection section={section} />}
     </main>
   );
 }

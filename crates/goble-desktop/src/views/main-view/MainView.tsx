@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import Topbar from './Topbar/Topbar';
 import Sidebar from './Sidebar/Sidebar';
 import RightSidebar from './right-sidebar/RightSidebar';
 import Content from './Content/Content';
@@ -92,7 +91,6 @@ export default function MainView() {
 
   return (
     <div className="main-view-shell">
-      <Topbar />
       <div className="main-view">
         <Sidebar />
         <main className="main-area">

@@ -49,7 +49,10 @@ export default function SettingsSidebar() {
               <button
                 key={item.id}
                 className={`settings-menu-item ${section === item.id ? 'selected' : ''}`}
-                onClick={() => setSection(item.id)}
+                onClick={() => {
+                  setSection(item.id);
+                  navigate(`/settings/${item.id}`);
+                }}
               >
                 <span className="settings-menu-icon">{item.icon}</span>
                 <span>{item.label}</span>

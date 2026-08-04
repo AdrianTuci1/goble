@@ -12,13 +12,16 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Goble",
+        "title": "",
         "width": 1280,
         "height": 800,
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
-        "titleBarStyle": "Overlay"
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 16, "y": 18 },
+        "acceptFirstMouse": true
       }
     ],
     "security": {

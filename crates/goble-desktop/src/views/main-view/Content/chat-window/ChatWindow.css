@@ -6,4 +6,129 @@
   min-height: 0;
   background: var(--ds-bg, #0f1115);
   height: 100%;
+  position: relative;
+}
+
+.chat-window.empty {
+  justify-content: center;
+  align-items: center;
+}
+
+.chat-window.empty .chat-messages {
+  display: none;
+}
+
+.chat-window.empty .composer {
+  width: 100%;
+  max-width: 600px;
+  padding: 0 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.chat-header {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 40;
+}
+
+.chat-window.empty .chat-header {
+  display: none;
+}
+
+.chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-btn {
+  background: var(--ds-surface-raised, #1e222b);
+  border: 1px solid var(--ds-border, #2a2e36);
+  color: var(--ds-text, #e4e6eb);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.header-btn:hover {
+  background: var(--ds-hover, #2a2e36);
+}
+
+.composer-status-bar {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 32px 4px 32px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  flex-shrink: 0;
+}
+
+.composer-status-bar.active {
+  display: flex;
+  opacity: 1;
+}
+
+.running-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ds-muted, #8b949e);
+}
+
+.running-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: pulse 1.4s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+.running-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.running-btn {
+  background: var(--ds-surface-raised, #21252e);
+  border: 1px solid var(--ds-border, #2a2e36);
+  color: var(--ds-text, #e4e6eb);
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  transition: background 0.15s;
+}
+
+.running-btn:hover {
+  background: var(--ds-hover, #2a2e36);
+}
+
+.running-btn.active {
+  background: var(--ds-accent, #2563eb);
+  border-color: var(--ds-accent, #2563eb);
+  color: #fff;
 }

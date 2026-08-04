@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import './App.css';
 import './ui/index.css';
+import Topbar from './views/main-view/Topbar/Topbar';
 import MainView from './views/main-view/MainView';
 import ThreadsView from './views/threads/ThreadsView';
 import UserSettingsView from './views/user-settings/UserSettingsView';
@@ -27,6 +28,7 @@ function AppShell() {
       id="app"
       className={`app-shell theme-${design.theme} font-${design.font} radius-${design.radius} density-${design.density}`}
     >
+      <Topbar />
       <div className="app-body">
         <Routes>
           <Route path="/" element={<Navigate to="/main/chat" replace />} />

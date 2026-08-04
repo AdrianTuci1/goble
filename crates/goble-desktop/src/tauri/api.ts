@@ -340,12 +340,8 @@ export async function setChatModel(
   return invoke('set_chat_model', { chatId, provider, model });
 }
 
-export async function runHarness(
-  chatId: string,
-  input: string,
-  model?: string,
-): Promise<void> {
-  return invoke('run_harness', { chatId, input, model });
+export async function runHarness(chatId: string, input: string, provider: string, model: string): Promise<void> {
+  return invoke('run_harness', { chatId, input, provider, model });
 }
 
 export async function cancelHarness(chatId: string): Promise<void> {

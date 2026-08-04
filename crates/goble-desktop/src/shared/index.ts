@@ -5,4 +5,5 @@ export { DEFAULT_DESIGN, accentColorMap } from './types/common';
 export type { LogEntry, FlowMeta, FlowInfo } from './types/common';
 export * from './utils/designSystem';
 export * from './store/designStore';
+export * from './store/providerStore';
 export * from './tauri/api';

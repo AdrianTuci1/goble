@@ -2,14 +2,23 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMainViewStore } from '../store/mainViewStore';
 import { MessageSquarePlus, Sparkles, Trash2 } from 'lucide-react';
-import { useChatStore } from '../Content/chat-window/store/chatStore';
+import { useChatStore, type AppChatMessage } from '../Content/chat-window/store/chatStore';
 import { deleteChat } from '../../../shared';
 import './Sidebar.css';
 
+function hasPendingActions(messages: AppChatMessage[] | undefined): boolean {
+  if (!messages) return false;
+  return messages.some((m) => {
+    if (['confirmationCard', 'formCard', 'variantCard', 'secretCard'].includes(m.kind || '')) return true;
+    if (m.kind === 'actionList' && m.items?.some((item) => (item as any).status === 'pending')) return true;
+    return false;
+  });
+}
+
 export default function Sidebar() {
   const navigate = useNavigate();
-  const { sidebarCollapsed, activeConversations, pastConversations, setPage } = useMainViewStore();
-  const { activeConversationId, setActiveConversationId, deleteConversation } = useChatStore();
+  const { sidebarCollapsed, historyConversations, setPage } = useMainViewStore();
+  const { activeConversationId, setActiveConversationId, deleteConversation, messagesByChat } = useChatStore();
 
   function onNewChat() {
     setPage('chat');
@@ -42,6 +51,13 @@ export default function Sidebar() {
     return null;
   }
 
+  const pendingConversations = historyConversations.filter((c) => hasPendingActions(messagesByChat[c.id]));
+  const historyList = historyConversations.filter((c) => {
+    if (pendingConversations.some((p) => p.id === c.id)) return false;
+    const msgs = messagesByChat[c.id];
+    return msgs && msgs.length > 0;
+  });
+
   return (
     <aside className="main-sidebar" aria-label="Sidebar">
       <div className="sidebar-expanded-content">
@@ -55,38 +71,36 @@ export default function Sidebar() {
           Agents
         </button>
 
-        <div className="sidebar-section active-section">
-          <h3>Active</h3>
-          <div className="conversation-list active-list">
-          {activeConversations.length === 0 ? (
-              <div className="conversation-empty">None</div>
-            ) : (
-              activeConversations.map((c) => (
+        {pendingConversations.length > 0 && (
+          <div className="sidebar-section pending-section">
+            <h3>Pending</h3>
+            <div className="conversation-list pending-list">
+              {pendingConversations.map((c) => (
                 <ConversationItem
                   key={c.id}
                   conversation={c}
                   isActive={activeConversationId === c.id}
-                  isPast={false}
+                  isHistory={false}
                   onSelect={() => selectConversation(c.id)}
                   onDelete={(e) => handleDeleteConversation(e, c.id)}
                 />
-              ))
-            )}
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
-        <div className="sidebar-section past-section">
-          <h3>Past</h3>
-          <div className="conversation-list past-list">
-          {pastConversations.length === 0 ? (
+        <div className="sidebar-section history-section">
+          <h3>History</h3>
+          <div className="conversation-list history-list">
+          {historyList.length === 0 ? (
               <div className="conversation-empty">None</div>
             ) : (
-              pastConversations.map((c) => (
+              historyList.map((c) => (
                 <ConversationItem
                   key={c.id}
                   conversation={c}
                   isActive={activeConversationId === c.id}
-                  isPast={true}
+                  isHistory={true}
                   onSelect={() => selectConversation(c.id)}
                   onDelete={(e) => handleDeleteConversation(e, c.id)}
                 />
@@ -102,16 +116,16 @@ export default function Sidebar() {
 interface ConversationItemProps {
   conversation: { id: string; title: string };
   isActive: boolean;
-  isPast: boolean;
+  isHistory: boolean;
   onSelect: () => void;
   onDelete: (e: React.MouseEvent) => void;
 }
 
-function ConversationItem({ conversation, isActive, isPast, onSelect, onDelete }: ConversationItemProps) {
+function ConversationItem({ conversation, isActive, isHistory, onSelect, onDelete }: ConversationItemProps) {
   const [hovered, setHovered] = useState(false);
   return (
     <button
-      className={`conversation-item ${isPast ? 'past' : ''} ${isActive ? 'selected' : ''}`}
+      className={`conversation-item ${isHistory ? 'history' : 'pending'} ${isActive ? 'selected' : ''}`}
       onClick={onSelect}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}

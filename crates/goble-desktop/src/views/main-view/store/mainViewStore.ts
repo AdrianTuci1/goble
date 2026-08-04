@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Conversation } from '../../../shared';
-import { flowsData } from '../data/flowsData';
 
 export type MainPage = 'chat' | 'agents' | 'connectors' | 'workflows' | 'executions' | 'knowledge' | 'search' | 'teams' | 'vault';
 
@@ -25,8 +24,8 @@ interface MainViewState {
   rightTab: 'info' | 'history';
   selectedFlowId: string | null;
   selectedAgentId: string | null;
-  activeConversations: Conversation[];
-  pastConversations: Conversation[];
+  pendingConversations: Conversation[];
+  historyConversations: Conversation[];
   executions: ExecutionRecord[];
   setPage: (page: MainPage) => void;
   toggleSidebar: () => void;
@@ -36,32 +35,24 @@ interface MainViewState {
   toggleRight: () => void;
   selectFlow: (id: string | null) => void;
   selectAgent: (id: string | null) => void;
-  addActiveConversation: (c: Conversation) => void;
-  archiveConversation: (id: string) => void;
-  ensureActive: (id: string) => void;
-  ensurePast: (id: string) => void;
-  setConversations: (active: Conversation[], past: Conversation[]) => void;
+  addHistoryConversation: (c: Conversation) => void;
+  removeConversation: (id: string) => void;
+  setConversations: (history: Conversation[], pending: Conversation[]) => void;
   addExecution: (title: string, steps: MessageStep[]) => void;
   clearExecutions: () => void;
 }
 
-const demoConversations: Conversation[] = flowsData.map((f) => ({
-  id: f.id,
-  title: f.title,
-  updated_at: new Date().toISOString(),
-}));
-
 export const useMainViewStore = create<MainViewState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       page: 'chat',
       sidebarCollapsed: false,
       rightOpen: true,
       rightTab: 'info',
       selectedFlowId: null,
       selectedAgentId: null,
-      activeConversations: [],
-      pastConversations: demoConversations,
+      pendingConversations: [],
+      historyConversations: [],
       executions: [],
       setPage: (page) => set({ page, selectedAgentId: null }),
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
@@ -71,43 +62,18 @@ export const useMainViewStore = create<MainViewState>()(
       toggleRight: () => set((s) => ({ rightOpen: !s.rightOpen })),
       selectFlow: (id) => set({ selectedFlowId: id, selectedAgentId: null }),
       selectAgent: (id) => set({ selectedAgentId: id, selectedFlowId: null }),
-      addActiveConversation: (c) =>
+      addHistoryConversation: (c) =>
         set((s) => ({
-          activeConversations: s.activeConversations.find((x) => x.id === c.id)
-            ? s.activeConversations
-            : [c, ...s.activeConversations],
+          historyConversations: s.historyConversations.find((x) => x.id === c.id)
+            ? s.historyConversations
+            : [c, ...s.historyConversations],
         })),
-      archiveConversation: (id) =>
-        set((s) => {
-          const active = s.activeConversations.filter((c) => c.id !== id);
-          const past = [...s.pastConversations];
-          const removed = s.activeConversations.find((c) => c.id === id);
-          if (removed && !past.find((c) => c.id === removed.id)) past.unshift(removed);
-          return { activeConversations: active, pastConversations: past };
-        }),
-      ensureActive: (id) => {
-        const { activeConversations, pastConversations } = get();
-        if (activeConversations.find((c) => c.id === id)) return;
-        const pastIndex = pastConversations.findIndex((c) => c.id === id);
-        if (pastIndex !== -1) {
-          const conv = pastConversations[pastIndex];
-          set({
-            activeConversations: [conv, ...activeConversations],
-            pastConversations: pastConversations.filter((_, i) => i !== pastIndex),
-          });
-        }
-      },
-      ensurePast: (id) => {
-        const { activeConversations, pastConversations } = get();
-        const activeIndex = activeConversations.findIndex((c) => c.id === id);
-        if (activeIndex === -1) return;
-        const conv = activeConversations[activeIndex];
-        set({
-          activeConversations: activeConversations.filter((_, i) => i !== activeIndex),
-          pastConversations: [conv, ...pastConversations],
-        });
-      },
-      setConversations: (active, past) => set({ activeConversations: active, pastConversations: past }),
+      removeConversation: (id) =>
+        set((s) => ({
+          pendingConversations: s.pendingConversations.filter((c) => c.id !== id),
+          historyConversations: s.historyConversations.filter((c) => c.id !== id),
+        })),
+      setConversations: (history, pending) => set({ historyConversations: history, pendingConversations: pending }),
       addExecution: (title, steps) =>
         set((s) => ({
           executions: [{ id: Date.now(), time: new Date().toLocaleTimeString(), title, steps }, ...s.executions],

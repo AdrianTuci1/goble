@@ -112,13 +112,22 @@
   font-weight: 500;
 }
 
-.past-section .conversation-item {
+.history-section .conversation-item {
   color: var(--ds-muted, #8b949e);
 }
 
-.past-section .conversation-item:hover,
-.past-section .conversation-item.selected {
+.history-section .conversation-item:hover,
+.history-section .conversation-item.selected {
   color: var(--ds-text, #e4e6eb);
+}
+
+.pending-section .conversation-item {
+  color: var(--ds-text, #e4e6eb);
+}
+
+.pending-section .conversation-item:hover,
+.pending-section .conversation-item.selected {
+  background: var(--ds-selected, #2a2e36);
 }
 
 .conversation-title {

@@ -79,17 +79,17 @@ export const useChatStore = create<ChatState>((set) => ({
   updateConversation: (id, updates) =>
     set((s) => {
       const main = useMainViewStore.getState();
-      const activeIndex = main.activeConversations.findIndex((c) => c.id === id);
-      const pastIndex = main.pastConversations.findIndex((c) => c.id === id);
-      if (activeIndex !== -1) {
+      const historyIndex = main.historyConversations.findIndex((c) => c.id === id);
+      const pendingIndex = main.pendingConversations.findIndex((c) => c.id === id);
+      if (historyIndex !== -1) {
         main.setConversations(
-          main.activeConversations.map((c) => (c.id === id ? { ...c, ...updates } : c)),
-          main.pastConversations,
+          main.historyConversations.map((c) => (c.id === id ? { ...c, ...updates } : c)),
+          main.pendingConversations,
         );
-      } else if (pastIndex !== -1) {
+      } else if (pendingIndex !== -1) {
         main.setConversations(
-          main.activeConversations,
-          main.pastConversations.map((c) => (c.id === id ? { ...c, ...updates } : c)),
+          main.historyConversations,
+          main.pendingConversations.map((c) => (c.id === id ? { ...c, ...updates } : c)),
         );
       }
       return {
@@ -132,7 +132,7 @@ export const useChatStore = create<ChatState>((set) => ({
       if (s.conversations.find((c) => c.id === conversation.id)) {
         return { transientChatId: s.transientChatId === conversation.id ? null : s.transientChatId };
       }
-      useMainViewStore.getState().addActiveConversation(conversation);
+      useMainViewStore.getState().addHistoryConversation(conversation);
       return {
         conversations: [conversation, ...s.conversations],
         transientChatId: s.transientChatId === conversation.id ? null : s.transientChatId,
@@ -152,19 +152,7 @@ export const useChatStore = create<ChatState>((set) => ({
     }),
   deleteConversation: (id) =>
     set((s) => {
-      const main = useMainViewStore.getState();
-      const inActive = main.activeConversations.find((c) => c.id === id);
-      if (inActive) {
-        main.setConversations(
-          main.activeConversations.filter((c) => c.id !== id),
-          main.pastConversations,
-        );
-      } else {
-        main.setConversations(
-          main.activeConversations,
-          main.pastConversations.filter((c) => c.id !== id),
-        );
-      }
+      useMainViewStore.getState().removeConversation(id);
       const messagesByChat = { ...s.messagesByChat };
       delete messagesByChat[id];
       return {

@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { Palette, Settings, User, Cpu, Server, Network, KeyRound, Plug, Info, ArrowLeft } from 'lucide-react';
+import { Palette, Settings, User, Cpu, Server, Info, ArrowLeft } from 'lucide-react';
 import { useUserSettingsStore, type SettingsSection } from '../store/userSettingsStore';
 import './SettingsSidebar.css';
 
@@ -20,9 +20,6 @@ const groups: { title: string; items: { id: SettingsSection; label: string; icon
     items: [
       { id: 'providers', label: 'Providers', icon: <Cpu size={18} /> },
       { id: 'workers', label: 'Workers', icon: <Server size={18} /> },
-      { id: 'cluster', label: 'Cluster', icon: <Network size={18} /> },
-      { id: 'vault', label: 'Vault', icon: <KeyRound size={18} /> },
-      { id: 'connectors', label: 'Connectors', icon: <Plug size={18} /> },
     ],
   },
   {

@@ -1,0 +1,140 @@
+.about-section {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 720px;
+}
+
+.about-section-header {
+  margin-bottom: 4px;
+}
+
+.about-section-title {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--ds-text, #e4e6eb);
+}
+
+.about-section-subtitle {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ds-muted, #8b949e);
+  max-width: 560px;
+}
+
+.about-card {
+  background: var(--ds-surface, #181b21);
+  border: 1px solid var(--ds-border, #2a2e36);
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.about-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  flex-shrink: 0;
+}
+
+.about-logo-mark {
+  font-size: 28px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.about-card:first-of-type {
+  flex-direction: row;
+  align-items: center;
+  gap: 18px;
+}
+
+.about-app-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.about-app-name {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--ds-text, #e4e6eb);
+}
+
+.about-app-version {
+  font-size: 13px;
+  color: var(--ds-muted, #8b949e);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.about-app-tagline {
+  font-size: 13px;
+  color: var(--ds-accent, #2563eb);
+  font-weight: 500;
+}
+
+.about-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ds-text, #e4e6eb);
+}
+
+.about-card-title > svg {
+  color: var(--ds-accent, #2563eb);
+  flex-shrink: 0;
+}
+
+.about-card-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ds-muted, #8b949e);
+}
+
+.about-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  color: var(--ds-accent, #2563eb);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.about-link:hover {
+  color: var(--ds-accent-hover, #3b82f6);
+}
+
+.about-link > svg:last-child {
+  opacity: 0.7;
+}
+
+.about-tech-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.about-tech-chip {
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--ds-border, #2a2e36);
+  background: var(--ds-surface-raised, #21252e);
+  color: var(--ds-text, #e4e6eb);
+  font-size: 12px;
+  font-weight: 500;
+}

@@ -30,9 +30,6 @@ function isSettingsSection(value: string): value is SettingsSection {
     'profile',
     'providers',
     'workers',
-    'cluster',
-    'vault',
-    'connectors',
     'about',
   ].includes(value as SettingsSection);
 }

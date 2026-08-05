@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useStore } from '../stores/appStore';
 import {
   searchMcpServers,
@@ -8,10 +8,148 @@ import {
   discoverMcpTools,
   testCallMcpTool,
   listMcpServers,
+  listVaultSecrets,
   updateMcpServerMeta,
-} from '../tauri/api';
-import type { McpSearchResult, McpServerSummary, VaultSecretInfo } from '../tauri/api';
+  setVaultSecret,
+} from '../shared/tauri/api';
+import type { McpSearchResult, McpServerSummary, VaultSecretInfo } from '../shared/tauri/api';
+import { Search, Plus, X, Key, Trash2, RefreshCw, Settings, Puzzle } from 'lucide-react';
 import './Pages.css';
+import './ConnectorsPage.css';
+
+interface McpPreset {
+  id: string;
+  name: string;
+  description: string;
+  source: 'npm' | 'github' | 'local' | 'url' | 'stdio';
+  sourceValue: string;
+  icon: string;
+  color: string;
+  authRequired: boolean;
+}
+
+const PRESETS: McpPreset[] = [
+  {
+    id: 'mcp-postgres',
+    name: 'PostgreSQL',
+    description: 'Query schemas and run SQL against PostgreSQL databases.',
+    source: 'npm',
+    sourceValue: '@modelcontextprotocol/server-postgres',
+    icon: 'P',
+    color: '#336791',
+    authRequired: true,
+  },
+  {
+    id: 'mcp-filesystem',
+    name: 'Filesystem',
+    description: 'Read and write files inside allowed paths.',
+    source: 'npm',
+    sourceValue: '@modelcontextprotocol/server-filesystem',
+    icon: 'F',
+    color: '#f59e0b',
+    authRequired: true,
+  },
+  {
+    id: 'mcp-sequential-thinking',
+    name: 'Sequential Thinking',
+    description: 'Structured reasoning chain for the agent.',
+    source: 'npm',
+    sourceValue: '@modelcontextprotocol/server-sequential-thinking',
+    icon: 'S',
+    color: '#8b5cf6',
+    authRequired: false,
+  },
+  {
+    id: 'mcp-composio',
+    name: 'Composio',
+    description: 'Connect your agent to 1000+ apps like Gmail, Slack, GitHub, and Linear.',
+    source: 'npm',
+    sourceValue: 'composio-mcp',
+    icon: 'C',
+    color: '#7c3aed',
+    authRequired: true,
+  },
+  {
+    id: 'mcp-context7',
+    name: 'Context7',
+    description: 'Fetch up-to-date documentation and code examples.',
+    source: 'npm',
+    sourceValue: '@context7/mcp',
+    icon: '7',
+    color: '#10b981',
+    authRequired: false,
+  },
+  {
+    id: 'mcp-datadog',
+    name: 'Datadog',
+    description: 'Monitor and analyze application performance.',
+    source: 'npm',
+    sourceValue: 'datadog-mcp',
+    icon: 'D',
+    color: '#632ca6',
+    authRequired: true,
+  },
+  {
+    id: 'mcp-figma',
+    name: 'Figma',
+    description: 'Read Figma designs and components.',
+    source: 'npm',
+    sourceValue: 'figma-mcp',
+    icon: 'F',
+    color: '#a259ff',
+    authRequired: true,
+  },
+  {
+    id: 'mcp-github',
+    name: 'GitHub',
+    description: 'Manage issues, projects and code.',
+    source: 'npm',
+    sourceValue: '@modelcontextprotocol/server-github',
+    icon: 'G',
+    color: '#24292f',
+    authRequired: true,
+  },
+  {
+    id: 'mcp-granola',
+    name: 'Granola',
+    description: 'Access meeting notes and transcripts.',
+    source: 'npm',
+    sourceValue: 'granola-mcp',
+    icon: 'G',
+    color: '#d97706',
+    authRequired: true,
+  },
+  {
+    id: 'mcp-linear',
+    name: 'Linear',
+    description: 'Project management tools and issue tracking.',
+    source: 'npm',
+    sourceValue: 'linear-mcp',
+    icon: 'L',
+    color: '#5e6ad2',
+    authRequired: true,
+  },
+  {
+    id: 'mcp-notion',
+    name: 'Notion',
+    description: 'Retrieve documentation and pages from Notion.',
+    source: 'npm',
+    sourceValue: 'notion-mcp',
+    icon: 'N',
+    color: '#000000',
+    authRequired: true,
+  },
+  {
+    id: 'mcp-playwright',
+    name: 'Playwright',
+    description: 'Browser automation for web scraping and testing.',
+    source: 'npm',
+    sourceValue: '@modelcontextprotocol/server-playwright',
+    icon: 'P',
+    color: '#2ead6a',
+    authRequired: false,
+  },
+];
 
 const SOURCE_OPTIONS = ['npm', 'github', 'local', 'url', 'stdio'];
 
@@ -20,11 +158,19 @@ export default function ConnectorsPage() {
   const vaultSecrets = useStore((s) => s.vaultSecrets);
   const removeMcpServer = useStore((s) => s.removeMcpServer);
   const setMcpServers = useStore((s) => s.setMcpServers);
+  const setVaultSecrets = useStore((s) => s.setVaultSecrets);
 
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<McpSearchResult[]>([]);
   const [searching, setSearching] = useState(false);
-  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [autoSpawn, setAutoSpawn] = useState(false);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [drawerServer, setDrawerServer] = useState<McpServerSummary | null>(null);
+  const [message, setMessage] = useState('');
+  const [messageType, setMessageType] = useState<'info' | 'error'>('info');
+  const [loading, setLoading] = useState(false);
+  const [discovering, setDiscovering] = useState<Record<string, boolean>>({});
+  const [installingPreset, setInstallingPreset] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     id: '',
@@ -34,27 +180,34 @@ export default function ConnectorsPage() {
     secret_ids: [] as string[],
   });
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [message, setMessage] = useState('');
-  const [messageType, setMessageType] = useState<'info' | 'error'>('info');
-  const [loading, setLoading] = useState(false);
-  const [discovering, setDiscovering] = useState<Record<string, boolean>>({});
-  const [drawerServer, setDrawerServer] = useState<McpServerSummary | null>(null);
+  const [credentialPreset, setCredentialPreset] = useState<McpPreset | null>(null);
+  const [credentialFields, setCredentialFields] = useState<Record<string, string>>({});
+  const [savingCredentials, setSavingCredentials] = useState(false);
+
   const [drawerSecretIds, setDrawerSecretIds] = useState<string[]>([]);
   const [drawerEnabledTools, setDrawerEnabledTools] = useState<Set<string>>(new Set());
   const [savingMeta, setSavingMeta] = useState(false);
   const [discoveringDrawer, setDiscoveringDrawer] = useState(false);
 
-  async function handleSearch() {
-    if (!query.trim()) return;
-    setSearching(true);
-    clearMessage();
+  useEffect(() => {
+    refreshServers();
+  }, []);
+
+  async function refreshServers() {
     try {
-      const results = await searchMcpServers(query.trim());
-      setSearchResults(results);
+      const updated = await listMcpServers();
+      setMcpServers(updated);
     } catch (e) {
-      setError(`Search failed: ${e}`);
-    } finally {
-      setSearching(false);
+      setError(`Failed to refresh servers: ${e}`);
+    }
+  }
+
+  async function refreshVaultSecrets() {
+    try {
+      const secrets = await listVaultSecrets();
+      setVaultSecrets(secrets);
+    } catch (e) {
+      setError(`Failed to refresh vault secrets: ${e}`);
     }
   }
 
@@ -72,16 +225,132 @@ export default function ConnectorsPage() {
     setMessage('');
   }
 
-  function selectSearchResult(result: McpSearchResult) {
-    setForm({
-      id: result.id,
-      name: result.name,
-      source: result.source === 'github' ? 'github' : 'npm',
-      source_value: result.source === 'github' ? result.name : result.id,
-      secret_ids: [],
-    });
-    setEditingId(null);
-    setMessage('');
+  async function handleSearch() {
+    if (!query.trim()) return;
+    setSearching(true);
+    clearMessage();
+    try {
+      const results = await searchMcpServers(query.trim());
+      setSearchResults(results);
+    } catch (e) {
+      setError(`Search failed: ${e}`);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function installPreset(preset: McpPreset) {
+    if (preset.authRequired) {
+      setCredentialPreset(preset);
+      setCredentialFields({});
+      return;
+    }
+    await doInstall(preset.id, preset.name, preset.source, preset.sourceValue, []);
+  }
+
+  async function doInstall(
+    id: string,
+    name: string,
+    source: string,
+    sourceValue: string,
+    secretIds: string[],
+  ) {
+    try {
+      setInstallingPreset(id);
+      clearMessage();
+      await installMcpServer(id.trim(), name.trim(), source, sourceValue.trim() || undefined, secretIds);
+      await refreshServers();
+      setInfo(`Installed ${id}`);
+    } catch (e) {
+      setError(`Install failed: ${e}`);
+    } finally {
+      setInstallingPreset(null);
+    }
+  }
+
+  async function handleSaveCredentials() {
+    if (!credentialPreset) return;
+    const entries = Object.entries(credentialFields).filter(([, v]) => v.trim());
+    if (entries.length === 0) {
+      setError('Please fill in the required credentials.');
+      return;
+    }
+    setSavingCredentials(true);
+    clearMessage();
+    try {
+      const secretIds: string[] = [];
+      for (const [key, value] of entries) {
+        const secretName = `${credentialPreset.id}-${key}`;
+        await setVaultSecret(secretName, value.trim());
+        secretIds.push(secretName);
+      }
+      await refreshVaultSecrets();
+      await doInstall(
+        credentialPreset.id,
+        credentialPreset.name,
+        credentialPreset.source,
+        credentialPreset.sourceValue,
+        secretIds,
+      );
+      setCredentialPreset(null);
+      setCredentialFields({});
+    } catch (e) {
+      setError(`Failed to save credentials: ${e}`);
+    } finally {
+      setSavingCredentials(false);
+    }
+  }
+
+  async function handleInstallCustom(e: React.FormEvent) {
+    e.preventDefault();
+    const err = validateForm();
+    if (err) {
+      setError(err);
+      return;
+    }
+    setLoading(true);
+    clearMessage();
+    try {
+      await installMcpServer(
+        form.id.trim(),
+        form.name.trim(),
+        form.source,
+        form.source_value.trim() || undefined,
+        form.secret_ids,
+      );
+      await refreshServers();
+      setInfo(`Installed ${form.id.trim()}`);
+      setShowAddModal(false);
+      setForm({ id: '', name: '', source: 'npm', source_value: '', secret_ids: [] });
+      setEditingId(null);
+    } catch (err) {
+      setError(`Install failed: ${err}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleUpdateCustom(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingId) return;
+    if (!form.name.trim()) {
+      setError('Display name is required.');
+      return;
+    }
+    setLoading(true);
+    clearMessage();
+    try {
+      await updateMcpServer(editingId, form.name.trim(), form.source_value.trim() || undefined, form.secret_ids);
+      await refreshServers();
+      setInfo(`Updated ${editingId}`);
+      setShowAddModal(false);
+      setEditingId(null);
+      setForm({ id: '', name: '', source: 'npm', source_value: '', secret_ids: [] });
+    } catch (err) {
+      setError(`Update failed: ${err}`);
+    } finally {
+      setLoading(false);
+    }
   }
 
   function validateForm(): string | null {
@@ -95,57 +364,13 @@ export default function ConnectorsPage() {
     return null;
   }
 
-  async function handleInstall(e: React.FormEvent) {
-    e.preventDefault();
-    const err = validateForm();
-    if (err) {
-      setError(err);
-      return;
-    }
-    setLoading(true);
-    clearMessage();
-    try {
-      await installMcpServer(form.id.trim(), form.name.trim(), form.source, form.source_value.trim() || undefined, form.secret_ids);
-      const updated = await listMcpServers();
-      setMcpServers(updated);
-      setInfo(`Installed ${form.id.trim()}`);
-      setForm({ id: '', name: '', source: 'npm', source_value: '', secret_ids: [] });
-    } catch (err) {
-      setError(`Install failed: ${err}`);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleUpdate(e: React.FormEvent) {
-    e.preventDefault();
-    if (!editingId) return;
-    if (!form.name.trim()) {
-      setError('Display name is required.');
-      return;
-    }
-    setLoading(true);
-    clearMessage();
-    try {
-      await updateMcpServer(editingId, form.name.trim(), form.source_value.trim() || undefined, form.secret_ids);
-      const updated = await listMcpServers();
-      setMcpServers(updated);
-      setInfo(`Updated ${editingId}`);
-      setEditingId(null);
-      setForm({ id: '', name: '', source: 'npm', source_value: '', secret_ids: [] });
-    } catch (err) {
-      setError(`Update failed: ${err}`);
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function handleDelete(id: string) {
     if (!confirm(`Delete MCP server ${id}?`)) return;
     clearMessage();
     try {
       await deleteMcpServer(id);
       removeMcpServer(id);
+      if (drawerServer?.id === id) setDrawerServer(null);
       setInfo(`Deleted ${id}`);
     } catch (err) {
       setError(`Delete failed: ${err}`);
@@ -161,12 +386,14 @@ export default function ConnectorsPage() {
       source_value: server.source_value || '',
       secret_ids: server.secret_ids || [],
     });
+    setShowAddModal(true);
     clearMessage();
   }
 
-  function cancelEdit() {
+  function openAddModal() {
     setEditingId(null);
     setForm({ id: '', name: '', source: 'npm', source_value: '', secret_ids: [] });
+    setShowAddModal(true);
     clearMessage();
   }
 
@@ -175,8 +402,7 @@ export default function ConnectorsPage() {
     clearMessage();
     try {
       const tools = await discoverMcpTools(server.id);
-      const updated = await listMcpServers();
-      setMcpServers(updated);
+      await refreshServers();
       setInfo(`Discovered ${tools.length} tools for ${server.id}`);
     } catch (err) {
       setError(`Discover failed for ${server.id}: ${err}`);
@@ -188,7 +414,8 @@ export default function ConnectorsPage() {
   function openDrawer(server: McpServerSummary) {
     setDrawerServer(server);
     setDrawerSecretIds(server.secret_ids || []);
-    setDrawerEnabledTools(new Set(server.enabled_tools || server.discovered_tools || []));
+    const enabled = server.enabled_tools.length > 0 ? server.enabled_tools : server.discovered_tools;
+    setDrawerEnabledTools(new Set(enabled || []));
   }
 
   function closeDrawer() {
@@ -218,8 +445,7 @@ export default function ConnectorsPage() {
     clearMessage();
     try {
       const tools = await discoverMcpTools(drawerServer.id);
-      const updated = await listMcpServers();
-      setMcpServers(updated);
+      await refreshServers();
       setDrawerEnabledTools(new Set(tools.map((t) => t.name)));
       setInfo(`Discovered ${tools.length} tools for ${drawerServer.id}`);
     } catch (err) {
@@ -235,8 +461,7 @@ export default function ConnectorsPage() {
     clearMessage();
     try {
       await updateMcpServerMeta(drawerServer.id, drawerSecretIds, Array.from(drawerEnabledTools));
-      const updated = await listMcpServers();
-      setMcpServers(updated);
+      await refreshServers();
       setInfo(`Saved settings for ${drawerServer.id}`);
       closeDrawer();
     } catch (err) {
@@ -246,241 +471,403 @@ export default function ConnectorsPage() {
     }
   }
 
-  function toggleFavorite(id: string) {
-    setFavorites((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  const favoriteServers = servers.filter((s) => favorites.has(s.id));
-  const otherServers = servers.filter((s) => !favorites.has(s.id));
+  const installedIds = new Set(servers.map((s) => s.id));
+  const displayPresets = query.trim()
+    ? PRESETS.filter(
+        (p) =>
+          p.name.toLowerCase().includes(query.toLowerCase()) ||
+          p.description.toLowerCase().includes(query.toLowerCase())
+      )
+    : PRESETS;
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <h2>MCP Connectors</h2>
-      </div>
+    <div className="mcp-page">
+      <header className="mcp-header">
+        <h1>MCP Servers</h1>
+        <p className="mcp-header-description">
+          Add MCP servers to extend Goble&apos;s capabilities. MCP servers expose data sources or
+          tools to agents through a standardized interface, essentially acting like plugins. Add a
+          custom server, or use the presets to get started with popular servers.{' '}
+          <a
+            href="https://modelcontextprotocol.io/introduction"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Learn more
+          </a>
+          .
+        </p>
+      </header>
 
-      <div className="page-content">
-        {message && <div className={`card ${messageType === 'error' ? 'card-error' : 'card-info'}`} style={{ marginBottom: 12 }}>{message}</div>}
+      <div className="mcp-scroll">
+        {message && <div className={`mcp-message ${messageType}`}>{message}</div>}
 
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-title">Search registry</div>
-          <div className="card-row" style={{ display: 'flex', gap: 8 }}>
+        <div className="mcp-search-row">
+          <div className="mcp-search-input">
+            <Search size={18} />
             <input
-              placeholder="postgres, filesystem, slack..."
+              placeholder="Search MCP Servers"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              style={{ flex: 1 }}
+              disabled={searching}
             />
-            <button onClick={handleSearch} disabled={searching || !query.trim()}>
-              {searching ? 'Searching...' : 'Search'}
-            </button>
           </div>
-
-          {searchResults.length === 0 && !searching && query.trim() && (
-            <p className="card-row">No results found.</p>
-          )}
-          {searchResults.length > 0 && (
-            <div style={{ marginTop: 12 }}>
-              <div className="card-title">Results</div>
-              {searchResults.map((result) => (
-                <div
-                  key={result.id}
-                  className="card-row"
-                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                >
-                  <div>
-                    <strong>{result.name}</strong> <span className="card-row">({result.source})</span>
-                    <div className="card-row">{result.description}</div>
-                  </div>
-                  <button onClick={() => selectSearchResult(result)}>Use</button>
-                </div>
-              ))}
-              <button
-                onClick={() => setSearchResults([])}
-                style={{ marginTop: 8 }}
-              >
-                Clear results
-              </button>
-            </div>
-          )}
+          <button className="mcp-add-btn" onClick={openAddModal}>
+            <Plus size={18} />
+            Add
+          </button>
         </div>
 
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-title">{editingId ? `Update ${editingId}` : 'Install MCP server'}</div>
-          <form
-            onSubmit={editingId ? handleUpdate : handleInstall}
-            style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
-          >
-            <input
-              placeholder="ID (e.g. mcp-postgres)"
-              value={form.id}
-              onChange={(e) => setForm({ ...form, id: e.target.value })}
-              disabled={!!editingId}
-              required
-            />
-            <input
-              placeholder="Display name"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              required
-            />
-            <select
-              value={form.source}
-              onChange={(e) => setForm({ ...form, source: e.target.value })}
-            >
-              {SOURCE_OPTIONS.map((s) => (
-                <option key={s} value={s}>{s}</option>
+        {searchResults.length > 0 && (
+          <div className="mcp-section">
+            <h2 className="mcp-section-title">Search results</h2>
+            <div className="mcp-grid">
+              {searchResults.map((result) => (
+                <div className="mcp-card" key={result.id}>
+                  <div className="mcp-card-icon" style={{ background: '#64748b' }}>
+                    {result.name.slice(0, 1)}
+                  </div>
+                  <div className="mcp-card-body">
+                    <h3 className="mcp-card-title">{result.name}</h3>
+                    <p className="mcp-card-description">{result.description}</p>
+                    <div className="mcp-card-actions">
+                      <button
+                        className="mcp-card-btn primary"
+                        onClick={() =>
+                          doInstall(result.id, result.name, result.source, result.id, [])
+                        }
+                        disabled={installingPreset === result.id}
+                      >
+                        {installingPreset === result.id ? 'Installing…' : 'Install'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
               ))}
-            </select>
-            <input
-              placeholder="Package / owner/repo / path / url"
-              value={form.source_value}
-              onChange={(e) => setForm({ ...form, source_value: e.target.value })}
-            />
-            {vaultSecrets.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <div className="card-row">Vault secrets linked to this server:</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {vaultSecrets.map((secret) => (
-                    <label key={secret.key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <input
-                        type="checkbox"
-                        checked={form.secret_ids.includes(secret.key)}
-                        onChange={(e) => {
-                          const ids = new Set(form.secret_ids);
-                          if (e.target.checked) ids.add(secret.key);
-                          else ids.delete(secret.key);
-                          setForm({ ...form, secret_ids: Array.from(ids) });
+            </div>
+          </div>
+        )}
+
+        <div className="mcp-auto-spawn">
+          <div className="mcp-auto-spawn-text">
+            <h3>Auto-spawn servers from third-party agents</h3>
+            <p>
+              Automatically detect and spawn MCP servers from globally-scoped third-party AI agent
+              configuration files. Servers detected inside a repository are never spawned
+              automatically and must be enabled individually.{' '}
+              <a
+                href="https://modelcontextprotocol.io/introduction"
+                target="_blank"
+                rel="noreferrer"
+              >
+                See supported providers
+              </a>
+              .
+            </p>
+          </div>
+          <button
+            className={`mcp-toggle ${autoSpawn ? 'on' : ''}`}
+            onClick={() => setAutoSpawn((v) => !v)}
+            aria-label="Toggle auto-spawn"
+          >
+            <span className="mcp-toggle-knob" />
+          </button>
+        </div>
+
+        <h2 className="mcp-section-title">Preset servers</h2>
+        <div className="mcp-grid">
+          {displayPresets.map((preset) => {
+            const isInstalled = installedIds.has(preset.id);
+            return (
+              <div className="mcp-card" key={preset.id}>
+                <button
+                  className="mcp-card-add"
+                  onClick={() => installPreset(preset)}
+                  disabled={isInstalled || installingPreset === preset.id}
+                  aria-label={isInstalled ? 'Installed' : `Add ${preset.name}`}
+                  title={isInstalled ? 'Installed' : `Add ${preset.name}`}
+                >
+                  {isInstalled ? <Settings size={14} /> : <Plus size={14} />}
+                </button>
+                <div className="mcp-card-icon" style={{ background: preset.color }}>
+                  {preset.icon}
+                </div>
+                <div className="mcp-card-body">
+                  <h3 className="mcp-card-title">
+                    {preset.name}
+                    {preset.authRequired && (
+                      <Key size={12} style={{ marginLeft: 6, verticalAlign: 'middle' }} />
+                    )}
+                  </h3>
+                  <p className="mcp-card-description">{preset.description}</p>
+                  <div className="mcp-card-actions">
+                    {isInstalled ? (
+                      <button
+                        className="mcp-card-btn"
+                        onClick={() => {
+                          const server = servers.find((s) => s.id === preset.id);
+                          if (server) openDrawer(server);
                         }}
-                      />
-                      {secret.key}
-                    </label>
-                  ))}
+                      >
+                        Manage
+                      </button>
+                    ) : (
+                      <button
+                        className="mcp-card-btn primary"
+                        onClick={() => installPreset(preset)}
+                        disabled={installingPreset === preset.id}
+                      >
+                        {installingPreset === preset.id ? 'Installing…' : 'Install'}
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
-            )}
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button type="submit" disabled={loading}>
-                {loading ? (editingId ? 'Updating...' : 'Installing...') : (editingId ? 'Update' : 'Install')}
-              </button>
-              {editingId && (
-                <button type="button" onClick={cancelEdit} disabled={loading}>
-                  Cancel
-                </button>
-              )}
-            </div>
-          </form>
+            );
+          })}
         </div>
 
-        {servers.length > 0 && favoriteServers.length === 0 && (
-        <p className="empty-state">No favorites. Click the star on a server to add it here.</p>
-        )}
-        {favoriteServers.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
-          <h3>Favorites</h3>
-            {favoriteServers.map((server) => (
-              <ServerCard
-                key={server.id}
-                server={server}
-                isFavorite
-                discovering={!!discovering[server.id]}
-                onToggleFavorite={() => toggleFavorite(server.id)}
-                onEdit={() => startEdit(server)}
-                onDelete={() => handleDelete(server.id)}
-                onDiscover={() => handleDiscover(server)}
-                onOpen={() => openDrawer(server)}
-              />
+        <h2 className="mcp-section-title">Installed MCP servers</h2>
+        {servers.length === 0 ? (
+          <div className="mcp-empty-state">
+            <Puzzle size={32} />
+            <h3>No MCP servers installed yet</h3>
+            <p>Pick a preset from above or add a custom server to start extending Goble.</p>
+          </div>
+        ) : (
+          <div className="mcp-installed-grid">
+            {servers.map((server) => (
+              <div className="mcp-installed-card" key={server.id}>
+                <div className="mcp-installed-card-header">
+                  <div className="mcp-card-icon" style={{ background: '#64748b' }}>
+                    {server.name.slice(0, 1)}
+                  </div>
+                  <div className="mcp-card-body">
+                    <h3 className="mcp-card-title">{server.name}</h3>
+                    <p className="mcp-card-description">{server.id}</p>
+                    <div className="mcp-installed-card-meta">
+                      <span className="mcp-tag">{server.source}</span>
+                      {server.capabilities.map((c) => (
+                        <span className="mcp-tag" key={c}>
+                          {c}
+                        </span>
+                      ))}
+                      {server.auth_required && <span className="mcp-tag">auth</span>}
+                    </div>
+                  </div>
+                </div>
+                <div className="mcp-installed-card-actions">
+                  <button className="mcp-card-btn" onClick={() => openDrawer(server)}>
+                    <Settings size={14} /> Manage
+                  </button>
+                  <button
+                    className="mcp-card-btn"
+                    onClick={() => handleDiscover(server)}
+                    disabled={discovering[server.id]}
+                  >
+                    <RefreshCw size={14} /> {discovering[server.id] ? 'Discovering…' : 'Discover'}
+                  </button>
+                  <button className="mcp-card-btn" onClick={() => startEdit(server)}>
+                    Edit
+                  </button>
+                  <button
+                    className="mcp-card-btn"
+                    style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                    onClick={() => handleDelete(server.id)}
+                  >
+                    <Trash2 size={14} /> Delete
+                  </button>
+                </div>
+              </div>
             ))}
           </div>
         )}
+      </div>
 
-        <div>
-          <h3>Installed MCP servers</h3>
-          {servers.length === 0 && <p className="empty-state">No MCP servers installed yet. Use the form above to add one.</p>}
-          {otherServers.map((server) => (
-            <ServerCard
-              key={server.id}
-              server={server}
-              discovering={!!discovering[server.id]}
-              onToggleFavorite={() => toggleFavorite(server.id)}
-              onEdit={() => startEdit(server)}
-              onDelete={() => handleDelete(server.id)}
-              onDiscover={() => handleDiscover(server)}
-              onOpen={() => openDrawer(server)}
-            />
-          ))}
+      {showAddModal && (
+        <div className="mcp-modal-overlay" onClick={() => setShowAddModal(false)}>
+          <div className="mcp-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="mcp-modal-header">
+              <h3>{editingId ? `Update ${editingId}` : 'Add custom MCP server'}</h3>
+              <button
+                className="mcp-modal-close"
+                onClick={() => setShowAddModal(false)}
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={editingId ? handleUpdateCustom : handleInstallCustom}>
+              <div className="mcp-modal-body">
+                <div className="mcp-modal-field">
+                  <label>ID</label>
+                  <input
+                    placeholder="e.g. mcp-postgres"
+                    value={form.id}
+                    onChange={(e) => setForm({ ...form, id: e.target.value })}
+                    disabled={!!editingId}
+                    required
+                  />
+                  <p className="mcp-modal-hint">Lowercase slug used as the server identifier.</p>
+                </div>
+                <div className="mcp-modal-field">
+                  <label>Display name</label>
+                  <input
+                    placeholder="e.g. PostgreSQL"
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    required
+                  />
+                </div>
+                <div className="mcp-modal-field">
+                  <label>Source</label>
+                  <select
+                    value={form.source}
+                    onChange={(e) => setForm({ ...form, source: e.target.value })}
+                  >
+                    {SOURCE_OPTIONS.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="mcp-modal-field">
+                  <label>Package / owner/repo / path / URL</label>
+                  <input
+                    placeholder="@modelcontextprotocol/server-postgres"
+                    value={form.source_value}
+                    onChange={(e) => setForm({ ...form, source_value: e.target.value })}
+                  />
+                  <p className="mcp-modal-hint">
+                    Required for local, url and stdio sources; used as the npm package or repo for
+                    npm/github.
+                  </p>
+                </div>
+                {vaultSecrets.length > 0 && (
+                  <div className="mcp-modal-field">
+                    <label>Vault secrets linked to this server</label>
+                    <div className="mcp-secret-list">
+                      {vaultSecrets.map((secret) => (
+                        <label className="mcp-secret-item" key={secret.key}>
+                          <input
+                            type="checkbox"
+                            checked={form.secret_ids.includes(secret.key)}
+                            onChange={(e) => {
+                              const ids = new Set(form.secret_ids);
+                              if (e.target.checked) ids.add(secret.key);
+                              else ids.delete(secret.key);
+                              setForm({ ...form, secret_ids: Array.from(ids) });
+                            }}
+                          />
+                          {secret.key}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="mcp-modal-footer">
+                <button
+                  type="button"
+                  className="mcp-modal-btn"
+                  onClick={() => setShowAddModal(false)}
+                  disabled={loading}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="mcp-modal-btn primary"
+                  disabled={loading}
+                  data-testid="mcp-modal-install"
+                >
+                  {loading
+                    ? editingId
+                      ? 'Updating…'
+                      : 'Installing…'
+                    : editingId
+                      ? 'Update'
+                      : 'Install'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
-
-        {drawerServer && (
-          <McpServerDrawer
-            server={drawerServer}
-            vaultSecrets={vaultSecrets}
-            secretIds={drawerSecretIds}
-            enabledTools={drawerEnabledTools}
-            saving={savingMeta}
-            discovering={discoveringDrawer}
-            onToggleSecret={toggleSecret}
-            onToggleTool={toggleTool}
-            onDiscover={handleDiscoverDrawer}
-            onSave={handleSaveMeta}
-            onClose={closeDrawer}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ServerCard({
-  server,
-  isFavorite,
-  discovering,
-  onToggleFavorite,
-  onEdit,
-  onDelete,
-  onDiscover,
-  onOpen,
-}: {
-  server: McpServerSummary;
-  isFavorite?: boolean;
-  discovering: boolean;
-  onToggleFavorite: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onDiscover: () => void;
-  onOpen: () => void;
-}) {
-  return (
-    <div className="card" style={{ marginBottom: 12 }} onClick={onOpen} role="button" tabIndex={0}>
-      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between' }} onClick={(e) => e.stopPropagation()}>
-        <span>{server.name} <small>({server.id})</small></span>
-        <button onClick={onToggleFavorite}>{isFavorite ? '★' : '☆'}</button>
-      </div>
-      <div className="card-row" onClick={(e) => e.stopPropagation()}>Source: {server.source}{server.source_value ? ` / ${server.source_value}` : ''}</div>
-      <div className="card-row" onClick={(e) => e.stopPropagation()}>Capabilities: {server.capabilities.join(', ') || 'none'}</div>
-      <div className="card-row" onClick={(e) => e.stopPropagation()}>Auth required: {server.auth_required ? 'yes' : 'no'}</div>
-      <div className="card-row" onClick={(e) => e.stopPropagation()}>Discovered tools: {server.discovered_tools.length}</div>
-      <div className="card-row" onClick={(e) => e.stopPropagation()}>Enabled tools: {server.enabled_tools.length || server.discovered_tools.length}</div>
-      {server.discovered_tools.length > 0 && (
-        <ul className="card-row" onClick={(e) => e.stopPropagation()}>
-          {server.discovered_tools.map((t) => (
-            <li key={t}>{t} {server.enabled_tools.includes(t) || server.enabled_tools.length === 0 ? '✓' : '✗'}</li>
-          ))}
-        </ul>
       )}
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
-        <button onClick={onEdit}>Edit</button>
-        <button onClick={onDiscover} disabled={discovering}>
-          {discovering ? 'Discovering...' : 'Discover tools'}
-        </button>
-        <button onClick={onDelete}>Delete</button>
-      </div>
+
+      {credentialPreset && (
+        <div className="mcp-modal-overlay" onClick={() => setCredentialPreset(null)}>
+          <div className="mcp-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="mcp-modal-header">
+              <h3>Set credentials for {credentialPreset.name}</h3>
+              <button
+                className="mcp-modal-close"
+                onClick={() => setCredentialPreset(null)}
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="mcp-modal-body">
+              <p className="mcp-modal-hint">
+                {credentialPreset.name} requires credentials. They will be stored in the vault and
+                linked to the server.
+              </p>
+              <div className="mcp-modal-field">
+                <label>API key / token</label>
+                <input
+                  type="password"
+                  placeholder="secret value"
+                  value={credentialFields.token || ''}
+                  onChange={(e) =>
+                    setCredentialFields({ ...credentialFields, token: e.target.value })
+                  }
+                />
+              </div>
+              <div className="mcp-modal-field">
+                <label>Additional value (optional)</label>
+                <input
+                  placeholder="e.g. base URL, database URL"
+                  value={credentialFields.extra || ''}
+                  onChange={(e) =>
+                    setCredentialFields({ ...credentialFields, extra: e.target.value })
+                  }
+                />
+              </div>
+            </div>
+            <div className="mcp-modal-footer">
+              <button className="mcp-modal-btn" onClick={() => setCredentialPreset(null)}>
+                Cancel
+              </button>
+              <button
+                className="mcp-modal-btn primary"
+                onClick={handleSaveCredentials}
+                disabled={savingCredentials}
+              >
+                {savingCredentials ? 'Saving…' : 'Install with credentials'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {drawerServer && (
+        <McpServerDrawer
+          server={drawerServer}
+          vaultSecrets={vaultSecrets}
+          secretIds={drawerSecretIds}
+          enabledTools={drawerEnabledTools}
+          saving={savingMeta}
+          discovering={discoveringDrawer}
+          onToggleSecret={toggleSecret}
+          onToggleTool={toggleTool}
+          onDiscover={handleDiscoverDrawer}
+          onSave={handleSaveMeta}
+          onClose={closeDrawer}
+        />
+      )}
     </div>
   );
 }
@@ -528,82 +915,96 @@ function McpServerDrawer({
       setTesting(false);
     }
   }
-  const availableTools = Array.from(new Set([
-    ...server.discovered_tools,
-    ...server.enabled_tools,
-    ...enabledTools,
-  ]));
+
+  const availableTools = Array.from(
+    new Set([...server.discovered_tools, ...server.enabled_tools, ...enabledTools]),
+  );
 
   return (
-    <div className="drawer-backdrop" onClick={onClose}>
-      <div className="drawer" onClick={(e) => e.stopPropagation()}>
-        <div className="drawer-header">
+    <div className="mcp-drawer-backdrop" onClick={onClose}>
+      <div className="mcp-drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="mcp-drawer-header">
           <h3>{server.name}</h3>
-          <button onClick={onClose} aria-label="Close">×</button>
+          <button onClick={onClose} aria-label="Close">
+            <X size={18} />
+          </button>
         </div>
-        <div className="drawer-body">
-          <div className="drawer-section">
-            <div className="drawer-section-title">Vault secrets</div>
-            {vaultSecrets.length === 0 && <p className="drawer-empty">No secrets in vault. Add them in the Vault page.</p>}
-            <div className="drawer-list">
+        <div className="mcp-drawer-body">
+          <div className="mcp-drawer-section">
+            <div className="mcp-drawer-section-title">Vault secrets</div>
+            {vaultSecrets.length === 0 && (
+              <p className="mcp-empty">No secrets in vault. Add them in the Vault settings.</p>
+            )}
+            <div className="mcp-drawer-list">
               {vaultSecrets.map((s) => (
-                <label key={s.key} className="drawer-row">
-                  <input
-                    type="checkbox"
-                    checked={secretIds.includes(s.key)}
-                    onChange={() => onToggleSecret(s.key)}
-                  />
-                  <span>{s.key}</span>
-                </label>
+                <div className="mcp-drawer-row" key={s.key}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={secretIds.includes(s.key)}
+                      onChange={() => onToggleSecret(s.key)}
+                    />
+                    {s.key}
+                  </label>
+                </div>
               ))}
             </div>
           </div>
 
-          <div className="drawer-section">
-            <div className="drawer-section-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div className="mcp-drawer-section">
+            <div className="mcp-drawer-section-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span>Enabled tools</span>
-              <button onClick={onDiscover} disabled={discovering}>
-                {discovering ? 'Discovering...' : 'Discover'}
+              <button className="mcp-card-btn" onClick={onDiscover} disabled={discovering} data-testid="mcp-drawer-discover">
+                <RefreshCw size={14} />
+                {discovering ? 'Discovering…' : 'Discover'}
               </button>
             </div>
-            {availableTools.length === 0 && <p className="drawer-empty">No tools discovered yet. Click Discover to fetch them.</p>}
-            <div className="drawer-list">
+            {availableTools.length === 0 && (
+              <p className="mcp-empty">No tools discovered yet. Click Discover to fetch them.</p>
+            )}
+            <div className="mcp-drawer-list">
               {availableTools.map((t) => (
-                <div key={t} className="drawer-row" style={{ justifyContent: 'space-between' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div className="mcp-drawer-row" key={t}>
+                  <label>
                     <input
                       type="checkbox"
                       checked={enabledTools.has(t)}
                       onChange={() => onToggleTool(t)}
                     />
-                    <span>{t}</span>
+                    {t}
                   </label>
-                  <button onClick={() => setTestTool(t)} disabled={testing}>Test</button>
+                  <button className="mcp-card-btn" onClick={() => setTestTool(t)} disabled={testing}>
+                    Test
+                  </button>
                 </div>
               ))}
             </div>
             {testTool && (
-              <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div className="card-row">Test tool: <strong>{testTool}</strong></div>
-                <textarea
-                  rows={3}
-                  value={testArgs}
-                  onChange={(e) => setTestArgs(e.target.value)}
-                  placeholder='Tool arguments as JSON'
-                />
-                <button onClick={() => runTest(testTool)} disabled={testing}>
-                  {testing ? 'Running...' : 'Run test'}
+              <div className="mcp-test-area">
+                <div className="mcp-modal-field">
+                  <label>Test {testTool}</label>
+                  <textarea
+                    rows={3}
+                    value={testArgs}
+                    onChange={(e) => setTestArgs(e.target.value)}
+                    placeholder='Tool arguments as JSON'
+                  />
+                </div>
+                <button className="mcp-card-btn" onClick={() => runTest(testTool)} disabled={testing}>
+                  {testing ? 'Running…' : 'Run test'}
                 </button>
-                {testResult && (
-                  <pre style={{ maxHeight: 200, overflow: 'auto', fontSize: 12 }}>{testResult}</pre>
-                )}
+                {testResult && <pre className="mcp-test-result">{testResult}</pre>}
               </div>
             )}
           </div>
         </div>
-        <div className="drawer-footer">
-          <button onClick={onSave} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-          <button onClick={onClose} disabled={saving}>Cancel</button>
+        <div className="mcp-drawer-footer">
+          <button className="primary" onClick={onSave} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+          <button onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
         </div>
       </div>
     </div>

@@ -145,6 +145,63 @@ export interface ClusterIdentityInfo {
   device_serial: string;
 }
 
+export interface DeploymentStatus {
+  mode: string;
+  local_endpoint?: string | null;
+  public_endpoint?: string | null;
+  mesh_hostname?: string | null;
+  upnp_mapped?: boolean | null;
+  error?: string | null;
+}
+
+export interface DeploymentConfig {
+  mode: DeploymentMode;
+}
+
+export interface DeploymentMode {
+  mode: 'local' | 'remote_server' | 'mesh_vpn';
+  advertise_upnp?: boolean;
+  local_port?: number;
+  host?: string;
+  user?: string;
+  port?: number;
+  private_key?: string;
+  endpoint?: string;
+  provider?: 'tailscale' | 'headscale';
+  auth_key?: string;
+  headscale_url?: string | null;
+  hostname?: string;
+}
+
+export interface DeviceIdentity {
+  id: string;
+  cluster_name: string;
+  cert_pem: string;
+  key_pem: string;
+  ca_cert_pem: string;
+  role: string;
+  is_owner: boolean;
+  deployment_mode: string;
+  deployment_config: DeploymentConfig;
+  deployment_status: DeploymentStatus;
+  created_at: string;
+}
+
+export interface ClusterMembership {
+  id: string;
+  cluster_name: string;
+  role: string;
+  is_owner: boolean;
+  deployment_mode: string;
+  deployment_status: DeploymentStatus;
+}
+
+export interface ClusterInvitePayload {
+  cluster_name: string;
+  code: string;
+  pem_bundle: string;
+}
+
 export interface HarnessEventPayload {
   chat_id: string;
   event: {
@@ -192,6 +249,57 @@ export async function exportClusterKey(): Promise<string> {
 
 export async function exportClusterBackup(): Promise<string> {
   return invoke('export_cluster_backup');
+}
+
+export async function getDeviceIdentity(): Promise<DeviceIdentity | null> {
+  return invoke('get_device_identity');
+}
+
+export async function generateDeviceIdentity(
+  clusterName: string,
+  deploymentConfig?: DeploymentConfig,
+): Promise<DeviceIdentity> {
+  return invoke('generate_device_identity', {
+    req: {
+      cluster_name: clusterName,
+      deployment_mode: deploymentConfig ? JSON.parse(JSON.stringify(deploymentConfig)) : undefined,
+    },
+  });
+}
+
+export async function importDeviceIdentity(pemBundle: string): Promise<DeviceIdentity> {
+  return invoke('import_device_identity', { req: { pem_bundle: pemBundle } });
+}
+
+export async function joinClusterWithInvite(pemOrCode: string): Promise<DeviceIdentity> {
+  return invoke('join_cluster_with_invite', { req: { pem_or_code: pemOrCode } });
+}
+
+export async function generateClusterInvite(
+  clusterName: string,
+  role: string,
+): Promise<ClusterInvitePayload> {
+  return invoke('generate_cluster_invite', { req: { cluster_name: clusterName, role } });
+}
+
+export async function listClusterInvites(clusterName: string): Promise<ClusterInvitePayload[]> {
+  return invoke('list_cluster_invites', { req: { cluster_name: clusterName } });
+}
+
+export async function revokeClusterInvite(id: string): Promise<void> {
+  return invoke('revoke_cluster_invite', { req: { id } });
+}
+
+export async function exportDeviceIdentity(): Promise<string> {
+  return invoke('export_device_identity');
+}
+
+export async function listClusters(): Promise<ClusterMembership[]> {
+  return invoke('list_clusters');
+}
+
+export async function leaveCluster(id: string): Promise<void> {
+  return invoke('leave_cluster', { req: { id } });
 }
 
 export async function installWorker(
@@ -427,6 +535,10 @@ export function onExecutionsUpdated(callback: () => void): Promise<() => void> {
 
 export function onVaultUpdated(callback: () => void): Promise<() => void> {
   return listen('vault:updated', callback);
+}
+
+export function onDeviceIdentitiesUpdated(callback: () => void): Promise<() => void> {
+  return listen('device_identities:updated', callback);
 }
 
 export function onHarnessEvent(callback: (payload: TauriEvent<HarnessEventPayload>) => void): Promise<() => void> {

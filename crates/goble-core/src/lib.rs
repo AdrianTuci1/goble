@@ -1,9 +1,11 @@
 pub mod agent;
 pub mod config;
 pub mod crypto;
+pub mod deployment;
 pub mod execution;
 pub mod harness;
 pub mod identity;
+pub mod invite;
 pub mod isolate;
 pub mod llm;
 pub mod mcp_client;

@@ -1,5 +1,6 @@
 import ChatWindow from './chat-window/ChatWindow';
 import AgentsView from './agents-view/AgentsView';
+import ConnectorsPage from '../../../pages/ConnectorsPage';
 import { useMainViewStore } from '../store/mainViewStore';
 import type { MainPage } from '../store/mainViewStore';
 import './Content.css';
@@ -7,7 +8,7 @@ import './Content.css';
 const pages: Record<MainPage, () => React.ReactNode> = {
   chat: ChatWindow,
   agents: AgentsView,
-  connectors: Placeholder,
+  connectors: ConnectorsPage,
   workflows: Placeholder,
   executions: Placeholder,
   knowledge: Placeholder,

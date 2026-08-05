@@ -4,7 +4,7 @@ import * as tauriCore from '@tauri-apps/api/core';
 import ConnectorsPage from '../pages/ConnectorsPage';
 import { useStore } from '../stores/appStore';
 
-describe('ConnectorsPage MCP drawer flow', () => {
+describe('ConnectorsPage MCP panel flow', () => {
   beforeEach(() => {
     useStore.setState({
       mcpServers: [],
@@ -15,7 +15,16 @@ describe('ConnectorsPage MCP drawer flow', () => {
     vi.restoreAllMocks();
   });
 
-  it('installs, discovers, disables a tool and saves meta', async () => {
+  it('renders the MCP Servers panel header and presets', async () => {
+    vi.spyOn(tauriCore, 'invoke').mockResolvedValue([]);
+    render(<ConnectorsPage />);
+    expect(await screen.findByRole('heading', { name: 'MCP Servers' })).toBeTruthy();
+    expect(screen.getByPlaceholderText('Search MCP Servers')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeTruthy();
+    expect(screen.getByText('Sequential Thinking')).toBeTruthy();
+  });
+
+  it('opens the custom add server modal, installs, discovers, disables a tool and saves meta', async () => {
     let listCalls = 0;
     const invoke = vi.spyOn(tauriCore, 'invoke').mockImplementation((cmd) => {
       switch (cmd) {
@@ -26,19 +35,7 @@ describe('ConnectorsPage MCP drawer flow', () => {
         case 'list_mcp_servers': {
           listCalls += 1;
           if (listCalls === 1) {
-            return Promise.resolve([
-              {
-                id: 'mcp-mock',
-                name: 'Mock MCP',
-                source: 'local',
-                source_value: '/tmp/mock',
-                capabilities: ['tools'],
-                auth_required: false,
-                discovered_tools: [],
-                secret_ids: [],
-                enabled_tools: [],
-              },
-            ]);
+            return Promise.resolve([]);
           }
           return Promise.resolve([
             {
@@ -48,9 +45,9 @@ describe('ConnectorsPage MCP drawer flow', () => {
               source_value: '/tmp/mock',
               capabilities: ['tools'],
               auth_required: false,
-              discovered_tools: ['mcp_mock_echo'],
+              discovered_tools: [],
               secret_ids: [],
-              enabled_tools: ['mcp_mock_echo'],
+              enabled_tools: [],
             },
           ]);
         }
@@ -67,21 +64,30 @@ describe('ConnectorsPage MCP drawer flow', () => {
 
     render(<ConnectorsPage />);
 
-    fireEvent.change(screen.getByPlaceholderText('ID (e.g. mcp-postgres)'), {
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Add' })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Add custom MCP server' })).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. mcp-postgres'), {
       target: { value: 'mcp-mock' },
     });
-    fireEvent.change(screen.getByPlaceholderText('Display name'), {
+    fireEvent.change(screen.getByPlaceholderText('e.g. PostgreSQL'), {
       target: { value: 'Mock MCP' },
     });
     fireEvent.change(screen.getByDisplayValue('npm'), {
       target: { value: 'local' },
     });
-    fireEvent.change(screen.getByPlaceholderText('Package / owner/repo / path / url'), {
+    fireEvent.change(screen.getByPlaceholderText('@modelcontextprotocol/server-postgres'), {
       target: { value: '/tmp/mock' },
     });
 
-    const form = screen.getByRole('button', { name: /install/i }).closest('form')!;
-    fireEvent.submit(form);
+    fireEvent.click(screen.getByTestId('mcp-modal-install'));
 
     await waitFor(() => {
       const installCall = invoke.mock.calls.find((c) => c[0] === 'install_mcp_server');
@@ -97,16 +103,16 @@ describe('ConnectorsPage MCP drawer flow', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Mock MCP/ })).toBeTruthy();
+      expect(screen.getByRole('button', { name: /Manage/i })).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: /Mock MCP/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Manage/i }));
 
     await waitFor(() => {
       expect(screen.getByText(/^Vault secrets$/)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: /^Discover$/i }));
+    fireEvent.click(screen.getByTestId('mcp-drawer-discover'));
 
     await waitFor(() => {
       expect(screen.getByLabelText('mcp_mock_echo')).toBeTruthy();

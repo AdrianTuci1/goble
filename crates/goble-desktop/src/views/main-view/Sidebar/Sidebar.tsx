@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMainViewStore } from '../store/mainViewStore';
-import { MessageSquarePlus, Sparkles, Trash2 } from 'lucide-react';
+import { MessageSquarePlus, Sparkles, Trash2, Plug } from 'lucide-react';
 import { useChatStore, type AppChatMessage } from '../Content/chat-window/store/chatStore';
 import { deleteChat } from '../../../shared';
 import './Sidebar.css';
@@ -29,6 +29,11 @@ export default function Sidebar() {
   function onAgents() {
     setPage('agents');
     navigate('/main/agents');
+  }
+
+  function onConnectors() {
+    setPage('connectors');
+    navigate('/main/connectors');
   }
 
   function selectConversation(id: string) {
@@ -69,6 +74,10 @@ export default function Sidebar() {
         <button className="agents-btn" onClick={onAgents}>
           <Sparkles size={18} />
           Agents
+        </button>
+        <button className="agents-btn" onClick={onConnectors}>
+          <Plug size={18} />
+          Connectors
         </button>
 
         {pendingConversations.length > 0 && (

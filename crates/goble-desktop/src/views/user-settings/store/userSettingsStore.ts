@@ -6,9 +6,6 @@ export type SettingsSection =
   | 'profile'
   | 'providers'
   | 'workers'
-  | 'cluster'
-  | 'vault'
-  | 'connectors'
   | 'about';
 
 interface UserSettingsState {

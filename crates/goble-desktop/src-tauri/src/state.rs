@@ -4,10 +4,13 @@ use std::sync::Arc;
 use chrono::Utc;
 use goble_core::agent::{AgentId, AgentSpec, Trigger};
 use goble_core::cluster_key::{ClusterBackup, ClusterIdentity, ClusterKey};
+use goble_core::deployment::{DeploymentConfig, DeploymentStatus};
 use goble_core::execution::ExecutionTrace;
-use goble_core::identity::ClusterRole;
+use goble_core::identity::{ClusterRole, extract_role, extract_serial, pem_to_der};
+use goble_core::invite::{ClusterInvite, ClusterInvitePayload};
 use goble_core::mcp_client::McpTool;
 use goble_core::mcp_manager::{McpManager, McpServerSummary};
+use x509_parser::prelude::{FromDer, X509Certificate};
 use goble_core::mcp_registry::McpSearchResult;
 use goble_core::protocol::{DesktopMessage, WorkerMessage};
 use goble_core::store::Store;
@@ -177,6 +180,31 @@ pub struct ExecutionInfo {
     pub finished_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceIdentity {
+    pub id: String,
+    pub cluster_name: String,
+    pub cert_pem: String,
+    pub key_pem: String,
+    pub ca_cert_pem: String,
+    pub role: String,
+    pub is_owner: bool,
+    pub deployment_mode: String,
+    pub deployment_config: DeploymentConfig,
+    pub deployment_status: DeploymentStatus,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterMembership {
+    pub id: String,
+    pub cluster_name: String,
+    pub role: String,
+    pub is_owner: bool,
+    pub deployment_mode: String,
+    pub deployment_status: DeploymentStatus,
+}
+
 pub struct DesktopState {
     store: Arc<Mutex<Store>>,
     workers: Arc<Mutex<HashMap<WorkerId, WorkerConnection>>>,
@@ -193,6 +221,7 @@ pub struct DesktopState {
     mcp_manager: McpManager,
     app_handle: Mutex<Option<AppHandle>>,
     cluster_identity: Mutex<Option<ClusterIdentity>>,
+    device_identities: Mutex<Vec<DeviceIdentity>>,
 }
 impl DesktopState {
     pub fn open_default() -> anyhow::Result<Arc<Self>> {
@@ -219,6 +248,7 @@ impl DesktopState {
             mcp_manager: McpManager::new(),
             app_handle: Mutex::new(None),
             cluster_identity: Mutex::new(None),
+            device_identities: Mutex::new(Vec::new()),
         })
     }
 
@@ -322,6 +352,286 @@ impl DesktopState {
         *self.cluster_identity.lock() = Some(identity.clone());
         self.emit("cluster:updated", ());
         Ok(identity)
+    }
+
+    pub fn load_device_identities(&self) -> anyhow::Result<()> {
+        let rows = self.store.lock().list_device_identities()?;
+        let mut identities = Vec::new();
+        for (id, cluster_name, cert_pem, key_pem, ca_cert_pem, role, is_owner, deployment_mode, deployment_config, created_at) in rows {
+            let config: DeploymentConfig = serde_json::from_str(&deployment_config).unwrap_or_default();
+            let hostname = hostname::get().ok().and_then(|h| h.into_string().ok());
+            identities.push(DeviceIdentity {
+                id,
+                cluster_name,
+                cert_pem,
+                key_pem,
+                ca_cert_pem,
+                role,
+                is_owner,
+                deployment_mode: deployment_mode.clone(),
+                deployment_config: config.clone(),
+                deployment_status: DeploymentStatus::from_config(&config, hostname.as_deref()),
+                created_at,
+            });
+        }
+        *self.device_identities.lock() = identities;
+        Ok(())
+    }
+
+    pub fn migrate_legacy_cluster_identity(&self) -> anyhow::Result<()> {
+        let legacy = match self.store.lock().get_cluster_identity()? {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        let key = ClusterKey::from_base64(&legacy.key)?;
+        let ca = key.to_ca(&legacy.cluster_name)?;
+        let device_serial = extract_serial(&legacy.device_cert_pem).unwrap_or_else(|_| "legacy".to_string());
+        let id = format!("legacy-{}", device_serial);
+        let legacy_config = DeploymentConfig::default();
+        let legacy_mode = legacy_config.mode.mode_name().to_string();
+        let legacy_config_json = serde_json::to_string(&legacy_config).unwrap_or_default();
+        self.store.lock().insert_device_identity(
+            &id,
+            &legacy.cluster_name,
+            &legacy.device_cert_pem,
+            &legacy.device_key_pem,
+            &ca.identity.cert_pem,
+            "Owner",
+            true,
+            &legacy_mode,
+            &legacy_config_json,
+            &Utc::now().to_rfc3339(),
+        )?;
+        self.store.lock().set_setting("cluster_identity_migrated", "1")?;
+        self.load_device_identities()?;
+        self.emit("device_identities:updated", ());
+        Ok(())
+    }
+
+    pub fn get_device_identity(&self) -> Option<DeviceIdentity> {
+        let identities = self.device_identities.lock();
+        identities
+            .iter()
+            .find(|i| i.is_owner)
+            .cloned()
+            .or_else(|| identities.first().cloned())
+    }
+
+    pub fn generate_device_identity(
+        &self,
+        cluster_name: &str,
+        deployment_config: Option<DeploymentConfig>,
+    ) -> anyhow::Result<DeviceIdentity> {
+        let cluster_identity = ClusterIdentity::generate(cluster_name, &Self::device_id(), ClusterRole::Owner)?;
+        let ca_cert_pem = cluster_identity.ca.identity.cert_pem.clone();
+        let device = cluster_identity.device.clone();
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let config = deployment_config.unwrap_or_default();
+        let deployment_mode = config.mode.mode_name().to_string();
+        let hostname = hostname::get().ok().and_then(|h| h.into_string().ok());
+        let deployment_status = DeploymentStatus::from_config(&config, hostname.as_deref());
+        let config_json = serde_json::to_string(&config)?;
+        let identity = DeviceIdentity {
+            id: id.clone(),
+            cluster_name: cluster_name.to_string(),
+            cert_pem: device.cert_pem.clone(),
+            key_pem: device.key_pem.clone(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            role: "Owner".to_string(),
+            is_owner: true,
+            deployment_mode: deployment_mode.clone(),
+            deployment_config: config,
+            deployment_status,
+            created_at: now.clone(),
+        };
+        self.store.lock().insert_device_identity(
+            &id,
+            cluster_name,
+            &device.cert_pem,
+            &device.key_pem,
+            &ca_cert_pem,
+            "Owner",
+            true,
+            &deployment_mode,
+            &config_json,
+            &now,
+        )?;
+        *self.cluster_identity.lock() = Some(cluster_identity);
+        self.device_identities.lock().push(identity.clone());
+        self.emit("device_identities:updated", ());
+        Ok(identity)
+    }
+
+    pub fn import_device_identity(&self, pem_bundle: &str) -> anyhow::Result<DeviceIdentity> {
+        let cert_pem = Self::extract_pem(pem_bundle, "CERTIFICATE")
+            .ok_or_else(|| anyhow::anyhow!("no certificate found in PEM bundle"))?;
+        let key_pem = Self::extract_pem(pem_bundle, "PRIVATE KEY")
+            .ok_or_else(|| anyhow::anyhow!("no private key found in PEM bundle"))?;
+        let role = extract_role(&cert_pem)?;
+        let ca_cert_pem = Self::extract_pem(pem_bundle, "CERTIFICATE")
+            .and_then(|_| Self::extract_second_pem(pem_bundle, "CERTIFICATE"))
+            .unwrap_or_default();
+        let cluster_name = Self::extract_cluster_name(&cert_pem)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let config = DeploymentConfig::default();
+        let deployment_mode = config.mode.mode_name().to_string();
+        let config_json = serde_json::to_string(&config)?;
+        let hostname = hostname::get().ok().and_then(|h| h.into_string().ok());
+        let deployment_status = DeploymentStatus::from_config(&config, hostname.as_deref());
+        let identity = DeviceIdentity {
+            id: id.clone(),
+            cluster_name: cluster_name.clone(),
+            cert_pem: cert_pem.clone(),
+            key_pem: key_pem.clone(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            role: role.to_string(),
+            is_owner: role == ClusterRole::Owner,
+            deployment_mode: deployment_mode.clone(),
+            deployment_config: config,
+            deployment_status,
+            created_at: now.clone(),
+        };
+        self.store.lock().insert_device_identity(
+            &id,
+            &cluster_name,
+            &cert_pem,
+            &key_pem,
+            &ca_cert_pem,
+            &role.to_string(),
+            role == ClusterRole::Owner,
+            &deployment_mode,
+            &config_json,
+            &now,
+        )?;
+        self.device_identities.lock().push(identity.clone());
+        self.emit("device_identities:updated", ());
+        Ok(identity)
+    }
+
+    pub fn export_device_identity(&self) -> anyhow::Result<String> {
+        let identity = self.get_device_identity()
+            .ok_or_else(|| anyhow::anyhow!("no device identity configured"))?;
+        Ok(format!("{}\n{}", identity.cert_pem.trim(), identity.key_pem.trim()))
+    }
+
+    pub fn list_clusters(&self) -> Vec<ClusterMembership> {
+        self.device_identities
+            .lock()
+            .iter()
+            .map(|i| ClusterMembership {
+                id: i.id.clone(),
+                cluster_name: i.cluster_name.clone(),
+                role: i.role.clone(),
+                is_owner: i.is_owner,
+                deployment_mode: i.deployment_mode.clone(),
+                deployment_status: i.deployment_status.clone(),
+            })
+            .collect()
+    }
+
+    pub fn get_cluster_identity_by_name(&self, cluster_name: &str) -> Option<ClusterIdentity> {
+        self.cluster_identity.lock().clone().filter(|i| i.cluster_name == cluster_name)
+    }
+
+    pub fn generate_cluster_invite(&self, cluster_name: &str, role: ClusterRole) -> anyhow::Result<ClusterInvitePayload> {
+        let identity = self
+            .cluster_identity
+            .lock()
+            .clone()
+            .filter(|i| i.cluster_name == cluster_name)
+            .ok_or_else(|| anyhow::anyhow!("cluster identity not found"))?;
+        let invite = ClusterInvite::generate(cluster_name, &identity.ca, role)?;
+        let payload = ClusterInvitePayload::from_invite(&invite);
+        self.store.lock().insert_cluster_invite(
+            &invite.id,
+            &invite.cluster_name,
+            &invite.code,
+            &invite.pem_bundle,
+            false,
+            &invite.created_at,
+        )?;
+        self.emit("cluster_invites:updated", serde_json::json!({ "cluster_name": cluster_name }));
+        Ok(payload)
+    }
+
+    pub fn join_cluster_with_invite(&self, pem_or_code: &str) -> anyhow::Result<DeviceIdentity> {
+        let pem_bundle = if pem_or_code.starts_with("-----") {
+            pem_or_code.to_string()
+        } else {
+            let row = self
+                .store
+                .lock()
+                .get_cluster_invite_by_code(pem_or_code)?
+                .ok_or_else(|| anyhow::anyhow!("invite code not found"))?;
+            if row.4 {
+                anyhow::bail!("invite has been revoked");
+            }
+            row.3
+        };
+        self.import_device_identity(&pem_bundle)
+    }
+
+    pub fn list_cluster_invites(&self, cluster_name: &str) -> anyhow::Result<Vec<ClusterInvitePayload>> {
+        let rows = self.store.lock().list_cluster_invites(Some(cluster_name))?;
+        Ok(rows
+            .into_iter()
+            .map(|(_id, cluster_name, code, pem_bundle, _revoked, _created_at)| ClusterInvitePayload {
+                cluster_name,
+                code,
+                pem_bundle,
+            })
+            .collect())
+    }
+
+    pub fn revoke_cluster_invite(&self, id: &str) -> anyhow::Result<()> {
+        self.store.lock().revoke_cluster_invite(id)?;
+        self.emit("cluster_invites:updated", ());
+        Ok(())
+    }
+
+    pub fn leave_cluster(&self, id: &str) -> anyhow::Result<()> {
+        let identity = self
+            .device_identities
+            .lock()
+            .iter()
+            .find(|i| i.id == id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("cluster membership not found"))?;
+        if identity.is_owner {
+            anyhow::bail!("cannot leave an owned cluster; use regenerate identity instead");
+        }
+        self.store.lock().delete_device_identity(id)?;
+        self.device_identities.lock().retain(|i| i.id != id);
+        self.emit("device_identities:updated", ());
+        Ok(())
+    }
+
+    fn extract_pem(bundle: &str, label: &str) -> Option<String> {
+        let start = format!("-----BEGIN {}-----", label);
+        let end = format!("-----END {}-----", label);
+        let start_idx = bundle.find(&start)?;
+        let end_idx = bundle.find(&end)? + end.len();
+        Some(bundle[start_idx..end_idx].to_string())
+    }
+
+    fn extract_second_pem(bundle: &str, label: &str) -> Option<String> {
+        let first = Self::extract_pem(bundle, label)?;
+        let after = &bundle[first.len()..];
+        Self::extract_pem(after, label)
+    }
+
+    fn extract_cluster_name(cert_pem: &str) -> anyhow::Result<String> {
+        let der = pem_to_der(cert_pem)?;
+        let (_, x509) = X509Certificate::from_der(&der)
+            .map_err(|e| anyhow::anyhow!("failed to parse certificate: {e}"))?;
+        for attr in x509.subject.iter_attributes() {
+            if attr.attr_type().to_id_string() == "2.5.4.3" {
+                return Ok(attr.as_str().unwrap_or("imported-cluster").to_string());
+            }
+        }
+        Ok("imported-cluster".to_string())
     }
 
     pub fn set_vault_passphrase(&self, passphrase: String) {
@@ -1239,6 +1549,11 @@ impl DesktopState {
             if let Ok(vault) = CredentialVault::from_bytes(blob.as_bytes()) {
                 *self.vault.lock() = vault;
             }
+        }
+
+        self.load_device_identities()?;
+        if self.store.lock().get_setting("cluster_identity_migrated")?.is_none() {
+            let _ = self.migrate_legacy_cluster_identity();
         }
 
         Ok(())

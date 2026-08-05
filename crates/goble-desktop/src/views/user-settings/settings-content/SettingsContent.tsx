@@ -2,6 +2,10 @@ import { useUserSettingsStore, type SettingsSection } from '../store/userSetting
 import { useDesignStore } from '../../../shared';
 import type { ThemeName, FontName, RadiusName, DensityName } from '../../../shared';
 import ProvidersSection from './ProvidersSection';
+import ProfileSection from './profiles/ProfileSection';
+import GeneralSection from './general/GeneralSection';
+import WorkerGroupsSection from './workers/WorkerGroupsSection';
+import AboutSection from './about/AboutSection';
 import './SettingsContent.css';
 
 const themes: { id: ThemeName; label: string }[] = [
@@ -34,7 +38,11 @@ export default function SettingsContent() {
     <main id="settings-content">
       {section === 'appearance' && <AppearanceSection />}
       {section === 'providers' && <ProvidersSection />}
-      {section !== 'appearance' && section !== 'providers' && <PlaceholderSection section={section} />}
+      {section === 'profile' && <ProfileSection />}
+      {section === 'general' && <GeneralSection />}
+      {section === 'workers' && <WorkerGroupsSection />}
+      {section === 'about' && <AboutSection />}
+      {section !== 'appearance' && section !== 'providers' && section !== 'profile' && section !== 'general' && section !== 'workers' && section !== 'about' && <PlaceholderSection section={section} />}
     </main>
   );
 }
@@ -116,9 +124,6 @@ const titles: Record<SettingsSection, string> = {
   profile: 'Profile',
   providers: 'Providers',
   workers: 'Workers',
-  cluster: 'Cluster',
-  vault: 'Vault',
-  connectors: 'Connectors',
   about: 'About',
 };
 

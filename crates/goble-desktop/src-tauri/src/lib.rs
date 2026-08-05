@@ -193,6 +193,43 @@ pub struct ImportClusterKeyRequest {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct GenerateDeviceIdentityRequest {
+    pub cluster_name: String,
+    pub deployment_mode: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportDeviceIdentityRequest {
+    pub pem_bundle: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LeaveClusterRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GenerateClusterInviteRequest {
+    pub cluster_name: String,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JoinClusterWithInviteRequest {
+    pub pem_or_code: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListClusterInvitesRequest {
+    pub cluster_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RevokeClusterInviteRequest {
+    pub id: String,
+}
+
 static HARNESS_CANCEL: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>> =
     once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
@@ -270,6 +307,87 @@ fn export_cluster_backup(
 ) -> Result<String, String> {
     let backup = state.export_cluster_backup().map_err(|e| e.to_string())?;
     serde_json::to_string(&backup).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_device_identity(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Option<state::DeviceIdentity>, String> {
+    Ok(state.get_device_identity())
+}
+
+#[tauri::command]
+fn generate_device_identity(
+    req: GenerateDeviceIdentityRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<state::DeviceIdentity, String> {
+    let config = req.deployment_mode.and_then(|v| {
+        serde_json::from_value::<goble_core::deployment::DeploymentConfig>(v).ok()
+    });
+    state.generate_device_identity(&req.cluster_name, config).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_device_identity(
+    req: ImportDeviceIdentityRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<state::DeviceIdentity, String> {
+    state.import_device_identity(&req.pem_bundle).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn export_device_identity(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<String, String> {
+    state.export_device_identity().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_clusters(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<state::ClusterMembership>, String> {
+    Ok(state.list_clusters())
+}
+
+#[tauri::command]
+fn leave_cluster(
+    req: LeaveClusterRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state.leave_cluster(&req.id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn generate_cluster_invite(
+    req: GenerateClusterInviteRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<goble_core::invite::ClusterInvitePayload, String> {
+    let role = req.role.parse::<goble_core::identity::ClusterRole>().map_err(|e| e.to_string())?;
+    state.generate_cluster_invite(&req.cluster_name, role).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn join_cluster_with_invite(
+    req: JoinClusterWithInviteRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<state::DeviceIdentity, String> {
+    state.join_cluster_with_invite(&req.pem_or_code).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_cluster_invites(
+    req: ListClusterInvitesRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<goble_core::invite::ClusterInvitePayload>, String> {
+    state.list_cluster_invites(&req.cluster_name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn revoke_cluster_invite(
+    req: RevokeClusterInviteRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state.revoke_cluster_invite(&req.id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -730,7 +848,17 @@ pub fn run() {
             create_cluster,
             import_cluster_key,
             export_cluster_key,
-            export_cluster_backup
+            export_cluster_backup,
+            get_device_identity,
+            generate_device_identity,
+            import_device_identity,
+            export_device_identity,
+            list_clusters,
+            leave_cluster,
+            generate_cluster_invite,
+            join_cluster_with_invite,
+            list_cluster_invites,
+            revoke_cluster_invite,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

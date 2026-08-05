@@ -169,7 +169,8 @@ fn parse_ber_length(bytes: &[u8]) -> Result<(usize, usize)> {
     Ok((len, 1 + num_bytes))
 }
 
-fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
+/// Parse a PEM string into DER bytes.
+pub fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
     let (_, parsed) = x509_parser::pem::parse_x509_pem(pem.as_bytes())
         .map_err(|e| anyhow::anyhow!("failed to parse PEM: {e}"))?;
     Ok(parsed.contents)

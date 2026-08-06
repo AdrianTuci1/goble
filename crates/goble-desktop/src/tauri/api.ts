@@ -472,13 +472,16 @@ export function onVaultUpdated(callback: () => void): Promise<() => void> {
 export interface HarnessEventPayload {
   chat_id: string;
   event: {
-    type: 'AssistantDelta' | 'ToolCallStarted' | 'ToolCallFinished' | 'ToolCallError' | 'Done' | 'Error';
+    type: 'AssistantDelta' | 'ToolCallStarted' | 'ToolCallFinished' | 'ToolCallError' | 'Done' | 'Error' | 'AskUser';
     payload?: unknown;
     id?: string;
     name?: string;
     arguments?: Record<string, unknown>;
     result?: string;
     message?: string;
+    question?: string;
+    quick_replies?: string[];
+    fields?: { name: string; label: string; type?: string }[];
   };
 }
 

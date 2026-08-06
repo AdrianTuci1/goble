@@ -1,5 +1,25 @@
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type Event as TauriEvent } from '@tauri-apps/api/event';
+import { invoke as tauriInvoke } from '@tauri-apps/api/core';
+import { listen as tauriListen, type Event as TauriEvent } from '@tauri-apps/api/event';
+import { isE2E, e2eInvoke, e2eListen } from '../e2e-bridge';
+
+function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (isE2E()) return e2eInvoke<T>(cmd, args);
+  return tauriInvoke<T>(cmd, args);
+}
+
+function listen<T>(event: string, handler: (event: TauriEvent<T>) => void): Promise<() => void> {
+  if (isE2E()) {
+    return e2eListen<T>(event, (payload: T) =>
+      handler({
+        event,
+        id: 0,
+        payload,
+        windowLabel: 'main',
+      } as TauriEvent<T>),
+    );
+  }
+  return tauriListen<T>(event, handler);
+}
 
 export interface WorkerInfo {
   id: string;
@@ -205,13 +225,16 @@ export interface ClusterInvitePayload {
 export interface HarnessEventPayload {
   chat_id: string;
   event: {
-    type: 'AssistantDelta' | 'ToolCallStarted' | 'ToolCallFinished' | 'ToolCallError' | 'Done' | 'Error';
+    type: 'AssistantDelta' | 'ToolCallStarted' | 'ToolCallFinished' | 'ToolCallError' | 'Done' | 'Error' | 'AskUser';
     payload?: unknown;
     id?: string;
     name?: string;
     arguments?: Record<string, unknown>;
     result?: string;
     message?: string;
+    question?: string;
+    quick_replies?: string[];
+    fields?: { name: string; label: string; type?: string }[];
   };
 }
 

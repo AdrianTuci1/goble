@@ -1,4 +1,4 @@
-import { useState, useRef, forwardRef, useImperativeHandle } from 'react';
+import { useState, useRef, forwardRef, useImperativeHandle, useEffect } from 'react';
 import { User } from 'lucide-react';
 import { useChatStore } from '../store/chatStore';
 import { useChatApi } from '../ChatWindow';
@@ -16,7 +16,7 @@ interface ComposerProps {
 const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer({ mode }, ref) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const { addMessage, activeConversationId, setTyping, setActiveConversationId, setMessages, conversations, updateConversation, setActiveTrace, updateMessageMeta, commitConversation, setTransientChatId } = useChatStore();
+  const { addMessage, activeConversationId, setTyping, setActiveConversationId, setMessages, conversations, updateConversation, setActiveTrace, updateMessageMeta, commitConversation, setTransientChatId, pendingPrompt, setPendingPrompt } = useChatStore();
   const chatApi = useChatApi();
   const { endpoints } = useProviderStore();
 
@@ -73,6 +73,7 @@ const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer({ m
       const configured = await findConfiguredModel();
       if (!configured) {
         setInput('');
+        setPendingPrompt({ chatId, text });
         addMessage(chatId, {
           id: uid(),
           role: 'system',
@@ -96,6 +97,10 @@ const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer({ m
       conversation = useChatStore.getState().conversations.find((c) => c.id === chatId);
     }
 
+    await dispatchPrompt(chatId, text, conversation);
+  }
+
+  async function dispatchPrompt(chatId: string, text: string, conversation?: typeof conversations[number]) {
     setInput('');
     addMessage(chatId, { id: uid(), role: 'user', content: text, created_at: new Date().toISOString() });
     if (conversation && (!conversation.title || conversation.title === 'New chat')) {
@@ -123,6 +128,24 @@ const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer({ m
     }
     inputRef.current?.focus();
   }
+
+  // Replay pending prompt when a provider becomes available.
+  useEffect(() => {
+    if (pendingPrompt && endpoints.length > 0) {
+      const { chatId, text } = pendingPrompt;
+      setPendingPrompt(null);
+      const configured = getFirstConfiguredModel();
+      if (!configured) return;
+      let conversation = useChatStore.getState().conversations.find((c) => c.id === chatId);
+      if (!conversation) {
+        commitConversation({ id: chatId, title: 'New chat', provider: configured.provider, model: configured.model, updated_at: new Date().toISOString() });
+      } else {
+        updateConversation(chatId, { provider: configured.provider, model: configured.model });
+      }
+      setChatModel(chatId, configured.provider, configured.model).catch(() => undefined);
+      dispatchPrompt(chatId, text, useChatStore.getState().conversations.find((c) => c.id === chatId));
+    }
+  }, [endpoints, pendingPrompt]);
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {

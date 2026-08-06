@@ -124,10 +124,12 @@ const Chat = forwardRef<ChatHandle>(function Chat(_props, ref) {
           }
         }),
         onHarnessEvent((event) => {
-          const payload = event.payload;
+          const payload = event.payload as { chat_id?: string; event?: Record<string, unknown> } | undefined;
           if (!activeConversationId || !payload) return;
+          if (payload.chat_id && payload.chat_id !== activeConversationId) return;
           const chatId = activeConversationId;
           const ev = payload.event;
+          if (!ev) return;
           switch (ev.type) {
             case 'AssistantDelta': {
               const text = (ev.payload as string | undefined) || '';
@@ -136,9 +138,28 @@ const Chat = forwardRef<ChatHandle>(function Chat(_props, ref) {
               break;
             }
             case 'ToolCallStarted': {
-              const tool = ev.name || 'tool';
-              const args = (ev.arguments as Record<string, unknown>) || {};
+              const tool = (ev.name as string) || 'tool';
+              const args = (ev.arguments || {}) as Record<string, unknown>;
               addToolCallInternal(chatId, tool, args);
+              break;
+            }
+            case 'AskUser': {
+              const question = (ev.question as string) || 'Please provide details';
+              const quickReplies = (ev.quick_replies as string[] | undefined) || [];
+              const fields = (ev.fields as AppChatMessage['fields'] | undefined) || [];
+              let kind: AppChatMessage['kind'] = 'formCard';
+              if (quickReplies.length > 0 && fields.length === 0) kind = 'variantCard';
+              else if (fields.some((f) => f.type === 'password' || f.name.includes('secret') || f.name.includes('key') || f.name.includes('token'))) kind = 'secretCard';
+              addMessage(chatId, {
+                id: uid(),
+                role: 'assistant',
+                content: question,
+                created_at: new Date().toISOString(),
+                kind,
+                title: question,
+                options: quickReplies,
+                fields,
+              });
               break;
             }
             case 'Done':
@@ -354,6 +375,12 @@ const Chat = forwardRef<ChatHandle>(function Chat(_props, ref) {
         return <ToolCallMessage message={message} />;
       case 'actionList':
         return <ActionListMessage message={message} />;
+      case 'variantCard':
+        return <VariantCardMessage message={message} />;
+      case 'secretCard':
+        return <SecretCardMessage message={message} />;
+      case 'formCard':
+        return <FormCardMessage message={message} />;
       default:
         return (
           <div className="message assistant">
@@ -416,6 +443,103 @@ function CodeChangeCard({ message }: { message: AppChatMessage }) {
 function ToolCallMessage({ message }: { message: AppChatMessage }) {
   const summary = toolSummary(message.tool || '', message.args);
   return <div className="tool-call">{summary}</div>;
+}
+
+function VariantCardMessage({ message }: { message: AppChatMessage }) {
+  const options = message.options || [];
+  async function choose(option: string) {
+    try {
+      await (window as any).__goble_e2e_invoke__?.('submit_variant', { option, message_id: message.id });
+    } catch {
+      // ignore in production
+    }
+  }
+  return (
+    <div className="composer-card variant-card" data-testid="variant-card">
+      <div className="composer-topbar">
+        <h4>{message.title || 'Choose an option'}</h4>
+      </div>
+      <div className="variant-options">
+        {options.map((option) => (
+          <button key={option} className="variant-option" data-option={option} onClick={() => choose(option)}>
+            {option}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function submitCard(cmd: string, message: AppChatMessage, formData: Record<string, string>) {
+  try {
+    (window as any).__goble_e2e_invoke__?.(cmd, { message_id: message.id, values: formData });
+  } catch {
+    // ignore in production
+  }
+}
+
+function FormCardMessage({ message }: { message: AppChatMessage }) {
+  const fields = message.fields || [];
+  function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const data: Record<string, string> = {};
+    const form = e.currentTarget;
+    fields.forEach((field) => {
+      const input = form.elements.namedItem(field.name) as HTMLInputElement | null;
+      if (input) data[field.name] = input.value;
+    });
+    submitCard('submit_form_card', message, data);
+  }
+  return (
+    <div className="composer-card form-card" data-testid="form-card">
+      <div className="composer-topbar">
+        <h4>{message.title || 'Provide details'}</h4>
+      </div>
+      <form className="form-card-body" onSubmit={onSubmit}>
+        {fields.map((field) => (
+          <div key={field.name} className="form-card-field">
+            <label>{field.label}</label>
+            <input name={field.name} type={field.type || 'text'} data-field={field.name} />
+          </div>
+        ))}
+        <button className="form-card-submit" type="submit" data-testid="form-card-submit">
+          Submit
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function SecretCardMessage({ message }: { message: AppChatMessage }) {
+  const fields = message.fields || [];
+  function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const data: Record<string, string> = {};
+    const form = e.currentTarget;
+    fields.forEach((field) => {
+      const input = form.elements.namedItem(field.name) as HTMLInputElement | null;
+      if (input) data[field.name] = input.value;
+    });
+    submitCard('submit_secret_card', message, data);
+  }
+  return (
+    <div className="composer-card secret-card" data-testid="secret-card">
+      <div className="composer-topbar">
+        <h4>{message.title || 'Authorize secret'}</h4>
+      </div>
+      <form className="form-card-body" onSubmit={onSubmit}>
+        {fields.map((field) => (
+          <div key={field.name} className="form-card-field">
+            <label>{field.label}</label>
+            <input name={field.name} type={field.type || 'text'} data-field={field.name} />
+          </div>
+        ))}
+        <button className="form-card-submit" type="submit" data-testid="secret-card-submit">
+          Save secret
+        </button>
+      </form>
+    </div>
+  );
 }
 
 function ActionListMessage({ message }: { message: AppChatMessage }) {

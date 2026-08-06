@@ -1,4 +1,6 @@
 node_modules
+.env
+*.env
 dist
 src-tauri/target
 src-tauri/gen/schemas
@@ -6,3 +8,7 @@ src-tauri/gen/schemas
 *.log
 src-tauri/goble_store.sqlite
 src-tauri/goble_store.sqlite.*
+e2e/report/
+e2e/results/
+test-results/
+playwright-report/

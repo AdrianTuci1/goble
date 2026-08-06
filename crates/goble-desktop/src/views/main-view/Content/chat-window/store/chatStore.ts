@@ -47,6 +47,7 @@ interface ChatState {
   typing: boolean;
   activeTrace: string | null;
   transientChatId: string | null;
+  pendingPrompt: { chatId: string; text: string } | null;
   setActiveConversationId: (id: string | null) => void;
   setConversations: (conversations: Conversation[]) => void;
   addConversation: (conversation: Conversation) => void;
@@ -58,6 +59,7 @@ interface ChatState {
   setTyping: (typing: boolean) => void;
   setActiveTrace: (id: string | null) => void;
   setTransientChatId: (id: string | null) => void;
+  setPendingPrompt: (pending: { chatId: string; text: string } | null) => void;
   commitConversation: (conversation: Conversation) => void;
   clearTransientChat: () => void;
   deleteConversation: (id: string) => void;
@@ -70,6 +72,7 @@ export const useChatStore = create<ChatState>((set) => ({
   typing: false,
   activeTrace: null,
   transientChatId: null,
+  pendingPrompt: null,
   setActiveConversationId: (id) => set({ activeConversationId: id }),
   setConversations: (conversations) => set({ conversations }),
   addConversation: (conversation) =>
@@ -127,6 +130,7 @@ export const useChatStore = create<ChatState>((set) => ({
   setTyping: (typing) => set({ typing }),
   setActiveTrace: (id) => set({ activeTrace: id }),
   setTransientChatId: (id) => set({ transientChatId: id }),
+  setPendingPrompt: (pendingPrompt) => set({ pendingPrompt }),
   commitConversation: (conversation) =>
     set((s) => {
       if (s.conversations.find((c) => c.id === conversation.id)) {

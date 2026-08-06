@@ -126,7 +126,7 @@ const Chat = forwardRef<ChatHandle>(function Chat(_props, ref) {
         onHarnessEvent((event) => {
           const payload = event.payload as { chat_id?: string; event?: Record<string, unknown> } | undefined;
           if (!activeConversationId || !payload) return;
-          if (payload.chat_id && payload.chat_id !== activeConversationId) return;
+          if (payload.chat_id && payload.chat_id !== activeConversationId && payload.chat_id !== 'unknown') return;
           const chatId = activeConversationId;
           const ev = payload.event;
           if (!ev) return;
@@ -147,6 +147,7 @@ const Chat = forwardRef<ChatHandle>(function Chat(_props, ref) {
               const question = (ev.question as string) || 'Please provide details';
               const quickReplies = (ev.quick_replies as string[] | undefined) || [];
               const fields = (ev.fields as AppChatMessage['fields'] | undefined) || [];
+              const askMetadata = (ev.metadata as Record<string, unknown> | undefined) || {};
               let kind: AppChatMessage['kind'] = 'formCard';
               if (quickReplies.length > 0 && fields.length === 0) kind = 'variantCard';
               else if (fields.some((f) => f.type === 'password' || f.name.includes('secret') || f.name.includes('key') || f.name.includes('token'))) kind = 'secretCard';
@@ -159,6 +160,7 @@ const Chat = forwardRef<ChatHandle>(function Chat(_props, ref) {
                 title: question,
                 options: quickReplies,
                 fields,
+                metadata: askMetadata,
               });
               break;
             }
@@ -472,7 +474,7 @@ function VariantCardMessage({ message }: { message: AppChatMessage }) {
 
 function submitCard(cmd: string, message: AppChatMessage, formData: Record<string, string>) {
   try {
-    (window as any).__goble_e2e_invoke__?.(cmd, { message_id: message.id, values: formData });
+    (window as any).__goble_e2e_invoke__?.(cmd, { message_id: message.id, values: formData, metadata: message.metadata });
   } catch {
     // ignore in production
   }

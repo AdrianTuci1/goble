@@ -74,7 +74,6 @@ function classifyIntentMock(text) {
 async function streamText(chatId, text) {
   const words = text.split(' ');
   for (const word of words) {
-    console.log('[simulateHarness] broadcasting variant AskUser');
     broadcast('harness:event', { chat_id: chatId, event: { type: 'AssistantDelta', payload: word + ' ' } });
     await delay(10);
   }
@@ -137,6 +136,25 @@ async function simulateHarness(chatId, prompt) {
     const id = uid();
     state.agents.push({ id, name, description: `${name} agent created via test harness.`, prompt, tools: [] });
     await streamText(chatId, `Created agent "${name}".`);
+    return;
+  }
+  if (lower.startsWith('[test:mcp]')) {
+    const requested = prompt.replace(/^\[test:mcp\]\s*/i, '').trim().toLowerCase() || 'github';
+    const presetId = requested;
+    await streamText(chatId, `I can install the ${presetId} MCP server for you. I'll need an API key to authenticate it.`);
+    await delay(100);
+    broadcast('harness:event', {
+      chat_id: chatId,
+      event: {
+        type: 'AskUser',
+        question: `Install ${presetId} MCP server`,
+        metadata: { mcp: presetId },
+        fields: [
+          { name: 'api_key', label: 'API key', type: 'password' },
+          { name: 'scope', label: 'Scope', type: 'text' },
+        ],
+      },
+    });
     return;
   }
 
@@ -390,6 +408,12 @@ export const handlers = {
         await simulateHarness(chatId, prompt);
         return undefined;
       }
+      case 'composer_submit': {
+        const req = args.req || args;
+        const chatId = req.chat_id || req.chatId;
+        await streamText(chatId, 'Got it. I have saved the information.');
+        return undefined;
+      }
       case 'classify_intent': {
         const req = args.req || args;
         return classifyIntentMock(req.text);
@@ -458,10 +482,23 @@ export const handlers = {
         return true;
       }
       case 'submit_secret_card': {
-        const { values, message_id } = args;
+        const { values, message_id, metadata } = args;
         state.submissions.push({ type: 'secret', values, message_id, ts: Date.now() });
         for (const [key, value] of Object.entries(values)) {
           if (value) state.vaultSecrets[key] = value;
+        }
+        // If this secret submission carries MCP install metadata, trigger the MCP install flow.
+        if (metadata && metadata.mcp && values.api_key) {
+          const mcpId = metadata.mcp;
+          const secretName = `${mcpId}-api-key`;
+          state.vaultSecrets[secretName] = values.api_key;
+          const mcp = { id: mcpId, name: mcpId, source: 'npm', source_value: `@modelcontextprotocol/server-${mcpId}`, auth_required: false, discovered_tools: ['list_repos', 'get_issue', 'search_issues'], secret_ids: [secretName], enabled_tools: ['list_repos', 'get_issue', 'search_issues'], capabilities: ['tools'] };
+          if (!state.mcpServers.find((m) => m.id === mcpId)) {
+            state.mcpServers.push(mcp);
+          }
+          // Confirm install. Broadcast the assistant reply as an SSE event on the same channel used by streamText.
+          broadcast('harness:event', { chat_id: 'unknown', event: { type: 'AssistantDelta', payload: `Installed ${mcpId} MCP server and authenticated it. I can now use it in conversations. ` } });
+          broadcast('harness:event', { chat_id: 'unknown', event: { type: 'Done' } });
         }
         return true;
       }

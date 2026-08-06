@@ -464,6 +464,14 @@ export async function runHarness(chatId: string, input: string, provider: string
   return invoke('run_harness', { chatId, input, provider, model });
 }
 
+export async function composerSubmit(
+  chatId: string,
+  values: Record<string, string>,
+  metadata?: Record<string, unknown>,
+): Promise<void> {
+  return invoke('composer_submit', { chatId, values, metadata });
+}
+
 export async function cancelHarness(chatId: string): Promise<void> {
   return invoke('cancel_harness', { chatId });
 }

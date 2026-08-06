@@ -50,7 +50,7 @@ export const goblePageFixture = {
   },
 
   async expectAssistantText(page: Page, text: string) {
-    const locator = page.locator('.message.assistant').filter({ hasText: new RegExp(text, 'i') });
+    const locator = page.locator('.message.assistant .message-content').filter({ hasText: new RegExp(text, 'i') });
     await expect(locator.first()).toBeVisible({ timeout: 15000 });
   },
 

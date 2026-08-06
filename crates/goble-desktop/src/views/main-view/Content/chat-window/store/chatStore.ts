@@ -38,6 +38,7 @@ export type AppChatMessage = BaseChatMessage & {
   fields?: FormField[];
   items?: ActionListItem[];
   streaming?: boolean;
+  metadata?: Record<string, unknown>;
 };
 
 interface ChatState {

@@ -79,7 +79,8 @@ const server = createServer(async (req, res) => {
     req.on('data', (c) => (body += c));
     req.on('end', async () => {
       try {
-        const { cmd, args } = JSON.parse(body || '{}');
+        const parsed = JSON.parse(body || '{}');
+        const { cmd, args } = parsed;
         const result = await handlers.invoke(cmd, args);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result ?? null));

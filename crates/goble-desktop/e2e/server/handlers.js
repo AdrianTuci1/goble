@@ -205,19 +205,63 @@ async function simulateHarness(chatId, prompt) {
     return;
   }
 
-  if (lower.includes('secret') || lower.includes('mcp') || lower.includes('authorize') || lower.includes('token')) {
+  // Generic MCP discovery / install intent for real-mode and full mock flow.
+  if (lower.startsWith('find mcp') || lower.startsWith('search mcp')) {
+    const query = prompt.replace(/^.*?mcp\s*/i, '').trim() || 'github';
+    await streamText(chatId, `Searching MCP registry for "${query}"...`);
+    await delay(100);
+    const results = await searchMcpRegistry(query);
+    if (results.length === 0) {
+      await streamText(chatId, `No MCP servers found for "${query}".`);
+      return;
+    }
+    const top = results.slice(0, 5);
+    state.submissions.push({ type: 'mcp_search_results', results: top, ts: Date.now() });
+    const summary = top.map((r, i) => `${i + 1}. **${r.name}** - ${r.description || 'no description'}`).join('\n');
+    await streamText(chatId, `Found ${results.length} servers. Top results:\n${summary}`);
+    // For a single strong match that requires auth, ask to install.
+    const best = top.find((r) => r.auth_required) || top[0];
+    await delay(50);
     broadcast('harness:event', {
       chat_id: chatId,
       event: {
         type: 'AskUser',
-        question: 'Authorize the MCP server',
-        fields: [
-          { name: 'mcp_id', label: 'MCP server', type: 'text' },
-          { name: 'api_key', label: 'API key', type: 'password' },
-          { name: 'scope', label: 'Scope', type: 'text' },
-        ],
+        question: `Install ${best.name}?`,
+        metadata: { mcp: best.id, name: best.name, source: best.source_kind, source_value: best.name, install: true },
+        quick_replies: ['Install', 'Cancel'],
       },
     });
+    return;
+  }
+
+  if (lower.startsWith('install mcp') || lower.startsWith('add mcp')) {
+    const requested = prompt.replace(/^.*?mcp\s*/i, '').trim() || 'github';
+    const searchQuery = requested.replace(/^@modelcontextprotocol\//, '').replace(/^server-/, '');
+    const results = await searchMcpRegistry(searchQuery);
+    const match = results.find((r) => r.id === requested || r.name === requested || r.name.includes(requested));
+    const mcpId = match ? match.id : requested;
+    const mcpName = match ? match.name : requested;
+    const source = match ? match.source_kind : 'npm';
+    const sourceValue = match ? match.name : `@modelcontextprotocol/server-${requested}`;
+    const requiresAuth = match ? match.auth_required : true;
+    if (requiresAuth) {
+      await streamText(chatId, `I can install the ${mcpName} MCP server for you. I'll need an API key to authenticate it.`);
+      await delay(100);
+      broadcast('harness:event', {
+        chat_id: chatId,
+        event: {
+          type: 'AskUser',
+          question: `Install ${mcpName} MCP server`,
+          metadata: { mcp: mcpId, name: mcpName, source, source_value: sourceValue, install: true },
+          fields: [
+            { name: 'api_key', label: 'API key', type: 'password' },
+            { name: 'scope', label: 'Scope', type: 'text' },
+          ],
+        },
+      });
+    } else {
+      installMcpFromChat(chatId, mcpId, mcpName, source, sourceValue, {});
+    }
     return;
   }
 
@@ -282,6 +326,76 @@ function storePendingMessage(chatId, prompt) {
   state.pendingMessages.push({ chatId, prompt, ts: Date.now() });
 }
 
+
+async function searchMcpRegistry(query) {
+  // Try real npm search first
+  try {
+    const resp = await fetch(`https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(query + ' mcp')}&size=10`);
+    if (resp.ok) {
+      const data = await resp.json();
+      const objects = data.objects || [];
+      const results = objects
+        .map((obj) => {
+          const pkg = obj.package || {};
+          const name = pkg.name || '';
+          const desc = pkg.description || 'MCP server';
+          return {
+            id: name.replace(/\//g, '-').replace(/@/g, ''),
+            name,
+            description: desc,
+            capabilities: [],
+            auth_required: /api.?key|token|secret|auth|password/i.test(`${name} ${desc}`),
+            source_kind: 'npm',
+          };
+        })
+        .filter((r) => /mcp|modelcontextprotocol/i.test(r.name));
+      if (results.length > 0) return results;
+    }
+  } catch (e) {
+    console.warn('[e2e] npm search failed', e.message);
+  }
+  // Fallback to well-known presets
+  const presets = [
+    { id: 'server-github', name: '@modelcontextprotocol/server-github', description: 'Official GitHub MCP server', capabilities: ['git'], auth_required: true, source_kind: 'npm' },
+    { id: 'server-everything', name: '@modelcontextprotocol/server-everything', description: 'Demo MCP server with many tools', capabilities: ['tools'], auth_required: false, source_kind: 'npm' },
+    { id: 'server-filesystem', name: '@modelcontextprotocol/server-filesystem', description: 'Official filesystem MCP server', capabilities: ['filesystem'], auth_required: false, source_kind: 'npm' },
+    { id: 'server-postgres', name: '@modelcontextprotocol/server-postgres', description: 'Official PostgreSQL MCP server', capabilities: ['database'], auth_required: true, source_kind: 'npm' },
+    { id: 'server-puppeteer', name: '@modelcontextprotocol/server-puppeteer', description: 'Official browser MCP server', capabilities: ['browser'], auth_required: false, source_kind: 'npm' },
+    { id: 'server-sequential-thinking', name: '@modelcontextprotocol/server-sequential-thinking', description: 'Sequential thinking MCP server', capabilities: ['tools'], auth_required: false, source_kind: 'npm' },
+    { id: 'server-slack', name: '@modelcontextprotocol/server-slack', description: 'Official Slack MCP server', capabilities: ['messaging'], auth_required: true, source_kind: 'npm' },
+  ];
+  const q = query.toLowerCase();
+  return presets.filter((p) => p.id.includes(q) || p.name.includes(q) || p.description.toLowerCase().includes(q));
+}
+
+function installMcpFromChat(chatId, id, name, source, sourceValue, values) {
+  const secretIds = [];
+  if (values.api_key) {
+    const secretName = `${id}-api-key`;
+    state.vaultSecrets[secretName] = values.api_key;
+    secretIds.push(secretName);
+  }
+  const discovered = source === 'npm' && /github|slack|postgres/i.test(name)
+    ? ['list_repos', 'get_issue', 'search_issues']
+    : ['tools/list'];
+  const mcp = {
+    id,
+    name,
+    source,
+    source_value: sourceValue,
+    auth_required: secretIds.length > 0,
+    discovered_tools: discovered,
+    secret_ids: secretIds,
+    enabled_tools: discovered,
+    capabilities: ['tools'],
+  };
+  const idx = state.mcpServers.findIndex((m) => m.id === id);
+  if (idx >= 0) state.mcpServers[idx] = mcp;
+  else state.mcpServers.push(mcp);
+  broadcast('harness:event', { chat_id: chatId, event: { type: 'AssistantDelta', payload: `Installed ${name} MCP server${secretIds.length ? ' and stored credentials' : ''}. It is available in Connectors. ` } });
+  broadcast('harness:event', { chat_id: chatId, event: { type: 'Done' } });
+}
+
 export const handlers = {
   getState() {
     return state;
@@ -343,6 +457,11 @@ export const handlers = {
       case 'list_agents': {
         return state.agents.map((a) => ({ id: a.id, name: a.name, spec: { id: { 0: a.id }, name: a.name, description: a.description || '', prompt: a.prompt, tools: a.tools, triggers: [], mcp_ids: [] }, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }));
       }
+      case 'delete_mcp_server': {
+        const req = args.req || args;
+        state.mcpServers = state.mcpServers.filter((m) => m.id !== req.id);
+        return true;
+      }
       case 'list_mcp_servers': {
         return state.mcpServers;
       }
@@ -352,6 +471,10 @@ export const handlers = {
         const mcp = { id, name: req.name, source: req.source, source_value: req.source_value ?? null, auth_required: false, discovered_tools: [], secret_ids: req.secret_ids || [], enabled_tools: [] };
         state.mcpServers.push(mcp);
         return id;
+      }
+      case 'search_mcp_servers': {
+        const req = args.req || args;
+        return searchMcpRegistry(req.query || 'github');
       }
       case 'discover_mcp_tools': {
         const req = args.req || args;
@@ -492,13 +615,52 @@ export const handlers = {
           const mcpId = metadata.mcp;
           const secretName = `${mcpId}-api-key`;
           state.vaultSecrets[secretName] = values.api_key;
-          const mcp = { id: mcpId, name: mcpId, source: 'npm', source_value: `@modelcontextprotocol/server-${mcpId}`, auth_required: false, discovered_tools: ['list_repos', 'get_issue', 'search_issues'], secret_ids: [secretName], enabled_tools: ['list_repos', 'get_issue', 'search_issues'], capabilities: ['tools'] };
-          if (!state.mcpServers.find((m) => m.id === mcpId)) {
-            state.mcpServers.push(mcp);
-          }
-          // Confirm install. Broadcast the assistant reply as an SSE event on the same channel used by streamText.
-          broadcast('harness:event', { chat_id: 'unknown', event: { type: 'AssistantDelta', payload: `Installed ${mcpId} MCP server and authenticated it. I can now use it in conversations. ` } });
+          const discovered = metadata.source === 'npm' && /github|slack|postgres/i.test(metadata.name || mcpId)
+            ? ['list_repos', 'get_issue', 'search_issues']
+            : ['tools/list'];
+          const mcp = {
+            id: mcpId,
+            name: metadata.name || mcpId,
+            source: metadata.source || 'npm',
+            source_value: metadata.source_value || `@modelcontextprotocol/server-${mcpId}`,
+            auth_required: true,
+            discovered_tools: discovered,
+            secret_ids: [secretName],
+            enabled_tools: discovered,
+            capabilities: ['tools'],
+          };
+          const idx = state.mcpServers.findIndex((m) => m.id === mcpId);
+          if (idx >= 0) state.mcpServers[idx] = mcp;
+          else state.mcpServers.push(mcp);
+          broadcast('harness:event', { chat_id: 'unknown', event: { type: 'AssistantDelta', payload: `Installed ${mcp.name} MCP server and authenticated it. I can now use it in conversations. ` } });
           broadcast('harness:event', { chat_id: 'unknown', event: { type: 'Done' } });
+        }
+        return true;
+      }
+      case 'submit_form_card': {
+        const { values, message_id } = args;
+        state.submissions.push({ type: 'form', values, message_id, ts: Date.now() });
+        return true;
+      }
+      case 'submit_variant': {
+        const { option, message_id, metadata } = args;
+        state.submissions.push({ type: 'variant', option, message_id, metadata, ts: Date.now() });
+        // If the variant is an MCP install confirmation, ask for credentials next.
+        if (metadata && metadata.install && option === 'Install') {
+          const mcpId = metadata.mcp || metadata.name;
+          const mcpName = metadata.name || mcpId;
+          broadcast('harness:event', {
+            chat_id: 'unknown',
+            event: {
+              type: 'AskUser',
+              question: `Install ${mcpName} MCP server`,
+              metadata,
+              fields: [
+                { name: 'api_key', label: 'API key', type: 'password' },
+                { name: 'scope', label: 'Scope', type: 'text' },
+              ],
+            },
+          });
         }
         return true;
       }

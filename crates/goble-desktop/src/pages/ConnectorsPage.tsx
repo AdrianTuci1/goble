@@ -226,13 +226,16 @@ export default function ConnectorsPage() {
   }
 
   async function handleSearch() {
+    console.log('[handleSearch]', query);
     if (!query.trim()) return;
     setSearching(true);
     clearMessage();
     try {
       const results = await searchMcpServers(query.trim());
+      console.log('[handleSearch] results', results);
       setSearchResults(results);
     } catch (e) {
+      console.error('[handleSearch] error', e);
       setError(`Search failed: ${e}`);
     } finally {
       setSearching(false);
@@ -377,6 +380,10 @@ export default function ConnectorsPage() {
     }
   }
 
+  async function handleDeleteFromDrawer(id: string) {
+    await handleDelete(id);
+  }
+
   function startEdit(server: McpServerSummary) {
     setEditingId(server.id);
     setForm({
@@ -511,11 +518,21 @@ export default function ConnectorsPage() {
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
               disabled={searching}
+              data-testid="mcp-search-input"
             />
           </div>
           <button className="mcp-add-btn" onClick={openAddModal}>
             <Plus size={18} />
             Add
+          </button>
+          <button
+            className="mcp-search-btn"
+            onClick={() => handleSearch()}
+            disabled={searching}
+            data-testid="mcp-search-button"
+          >
+            <Search size={18} />
+            Search
           </button>
         </div>
 
@@ -675,6 +692,7 @@ export default function ConnectorsPage() {
                     className="mcp-card-btn"
                     style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)' }}
                     onClick={() => handleDelete(server.id)}
+                    data-testid="delete-mcp-button"
                   >
                     <Trash2 size={14} /> Delete
                   </button>
@@ -866,6 +884,7 @@ export default function ConnectorsPage() {
           onDiscover={handleDiscoverDrawer}
           onSave={handleSaveMeta}
           onClose={closeDrawer}
+          onDelete={handleDeleteFromDrawer}
         />
       )}
     </div>
@@ -884,6 +903,7 @@ function McpServerDrawer({
   onDiscover,
   onSave,
   onClose,
+  onDelete,
 }: {
   server: McpServerSummary;
   vaultSecrets: VaultSecretInfo[];
@@ -896,6 +916,7 @@ function McpServerDrawer({
   onDiscover: () => void;
   onSave: () => void;
   onClose: () => void;
+  onDelete: (id: string) => void;
 }) {
   const [testTool, setTestTool] = useState('');
   const [testArgs, setTestArgs] = useState('{}');
@@ -996,6 +1017,16 @@ function McpServerDrawer({
                 {testResult && <pre className="mcp-test-result">{testResult}</pre>}
               </div>
             )}
+          </div>
+          <div className="mcp-drawer-section mcp-drawer-actions">
+            <button
+              className="mcp-card-btn"
+              onClick={() => { onClose(); onDelete(server.id); }}
+              style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+              data-testid="delete-mcp-drawer-button"
+            >
+              <Trash2 size={14} /> Delete server
+            </button>
           </div>
         </div>
         <div className="mcp-drawer-footer">

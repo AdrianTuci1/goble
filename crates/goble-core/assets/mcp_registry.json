@@ -1,0 +1,227 @@
+[
+  {
+    "id": "github",
+    "name": "GitHub",
+    "package": "@modelcontextprotocol/server-github",
+    "version": "2025.4.8",
+    "description": "Official MCP server for GitHub API operations: issues, PRs, repositories, search, commits.",
+    "category": "developer-tools",
+    "auth": {
+      "env": "GITHUB_PERSONAL_ACCESS_TOKEN",
+      "label": "GitHub Personal Access Token"
+    },
+    "command": [
+      "npx",
+      "-y",
+      "@modelcontextprotocol/server-github"
+    ],
+    "capabilities": [
+      "issues",
+      "pull_requests",
+      "repositories",
+      "commits",
+      "search",
+      "code_review"
+    ]
+  },
+  {
+    "id": "filesystem",
+    "name": "Filesystem",
+    "package": "@modelcontextprotocol/server-filesystem",
+    "version": "2026.7.10",
+    "description": "Official MCP server for safe read-only and read-write filesystem access inside allowed directories.",
+    "category": "developer-tools",
+    "auth": null,
+    "command": [
+      "npx",
+      "-y",
+      "@modelcontextprotocol/server-filesystem",
+      "{{allowed_dir}}"
+    ],
+    "capabilities": [
+      "read_file",
+      "list_directory",
+      "search_files",
+      "write_file",
+      "edit_file"
+    ]
+  },
+  {
+    "id": "postgres",
+    "name": "PostgreSQL",
+    "package": "@modelcontextprotocol/server-postgres",
+    "version": "0.6.2",
+    "description": "Official MCP server for querying PostgreSQL databases via read-only and write connections.",
+    "category": "data",
+    "auth": {
+      "env": "DATABASE_URL",
+      "label": "PostgreSQL connection URL"
+    },
+    "command": [
+      "npx",
+      "-y",
+      "@modelcontextprotocol/server-postgres",
+      "{{DATABASE_URL}}"
+    ],
+    "capabilities": [
+      "query",
+      "schema",
+      "tables",
+      "columns",
+      "describe"
+    ]
+  },
+  {
+    "id": "slack",
+    "name": "Slack",
+    "package": "@modelcontextprotocol/server-slack",
+    "version": "2025.4.25",
+    "description": "Official MCP server for Slack channel management and messaging.",
+    "category": "communication",
+    "auth": {
+      "env": "SLACK_BOT_TOKEN",
+      "label": "Slack Bot Token"
+    },
+    "command": [
+      "npx",
+      "-y",
+      "@modelcontextprotocol/server-slack"
+    ],
+    "capabilities": [
+      "channels",
+      "messages",
+      "users",
+      "search"
+    ]
+  },
+  {
+    "id": "puppeteer",
+    "name": "Puppeteer",
+    "package": "@modelcontextprotocol/server-puppeteer",
+    "version": "2025.5.12",
+    "description": "Official MCP server for browser automation and web scraping using Puppeteer.",
+    "category": "developer-tools",
+    "auth": null,
+    "command": [
+      "npx",
+      "-y",
+      "@modelcontextprotocol/server-puppeteer"
+    ],
+    "capabilities": [
+      "browse",
+      "screenshot",
+      "click",
+      "extract",
+      "navigate"
+    ]
+  },
+  {
+    "id": "sqlite",
+    "name": "SQLite",
+    "package": "mcp-server-sqlite",
+    "version": "0.0.2",
+    "description": "MCP server for SQLite database operations and analytics.",
+    "category": "data",
+    "auth": null,
+    "command": [
+      "uvx",
+      "mcp-server-sqlite",
+      "--db-path",
+      "{{db_path}}"
+    ],
+    "capabilities": [
+      "query",
+      "schema",
+      "tables",
+      "analytics"
+    ]
+  },
+  {
+    "id": "redis",
+    "name": "Redis",
+    "package": "@modelcontextprotocol/server-redis",
+    "version": "2025.4.25",
+    "description": "Official MCP server for interacting with Redis key-value stores.",
+    "category": "data",
+    "auth": {
+      "env": "REDIS_URL",
+      "label": "Redis URL"
+    },
+    "command": [
+      "npx",
+      "-y",
+      "@modelcontextprotocol/server-redis"
+    ],
+    "capabilities": [
+      "get",
+      "set",
+      "keys",
+      "strings",
+      "hashes",
+      "lists"
+    ]
+  },
+  {
+    "id": "sentry",
+    "name": "Sentry",
+    "package": "@sentry/mcp-server",
+    "version": "0.37.0",
+    "description": "Official Sentry MCP server for retrieving and analyzing issues and events.",
+    "category": "developer-tools",
+    "auth": {
+      "env": "SENTRY_AUTH_TOKEN",
+      "label": "Sentry Auth Token"
+    },
+    "command": [
+      "npx",
+      "-y",
+      "@sentry/mcp-server"
+    ],
+    "capabilities": [
+      "issues",
+      "events",
+      "projects",
+      "organizations"
+    ]
+  },
+  {
+    "id": "memory",
+    "name": "Memory",
+    "package": "@modelcontextprotocol/server-memory",
+    "version": "2026.7.4",
+    "description": "Official MCP server for persistent memory through a knowledge graph.",
+    "category": "productivity",
+    "auth": null,
+    "command": [
+      "npx",
+      "-y",
+      "@modelcontextprotocol/server-memory"
+    ],
+    "capabilities": [
+      "remember",
+      "recall",
+      "entities",
+      "relations"
+    ]
+  },
+  {
+    "id": "sequential-thinking",
+    "name": "Sequential Thinking",
+    "package": "@modelcontextprotocol/server-sequential-thinking",
+    "version": "2026.7.4",
+    "description": "Official MCP server for dynamic and reflective problem-solving through thought sequences.",
+    "category": "productivity",
+    "auth": null,
+    "command": [
+      "npx",
+      "-y",
+      "@modelcontextprotocol/server-sequential-thinking"
+    ],
+    "capabilities": [
+      "think",
+      "reason",
+      "branch",
+      "revise"
+    ]
+  }
+]

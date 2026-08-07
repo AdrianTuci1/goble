@@ -450,8 +450,29 @@ function ToolCallMessage({ message }: { message: AppChatMessage }) {
 function VariantCardMessage({ message }: { message: AppChatMessage }) {
   const options = message.options || [];
   async function choose(option: string) {
+    const metadata = message.metadata || {};
+    if (metadata.install && option === 'Install') {
+      const store = useChatStore.getState();
+      const chatId = store.activeConversationId || '';
+      if (chatId) {
+        // @ts-ignore
+        store.addMessage(chatId, {
+          id: uid(),
+          role: 'assistant',
+          content: metadata.name ? `Installing ${metadata.name} requires credentials.` : 'Provide credentials to continue.',
+          created_at: new Date().toISOString(),
+          kind: 'secretCard',
+          title: `Install ${metadata.name || metadata.mcp || 'MCP server'}`,
+          fields: [
+            { name: 'api_key', label: 'API key', type: 'password' },
+            { name: 'scope', label: 'Scope (optional)', type: 'text' },
+          ],
+          metadata,
+        });
+      }
+    }
     try {
-      await (window as any).__goble_e2e_invoke__?.('submit_variant', { option, message_id: message.id });
+      await (window as any).__goble_e2e_invoke__?.('submit_variant', { option, message_id: message.id, metadata: message.metadata });
     } catch {
       // ignore in production
     }

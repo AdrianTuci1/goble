@@ -21,104 +21,93 @@ pub struct McpSearchResult {
     pub source_kind: String,
 }
 
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct McpRegistryEntry {
+    id: String,
+    name: String,
+    #[serde(rename = "package")]
+    package: String,
+    version: String,
+    description: String,
+    category: String,
+    auth: Option<McpRegistryAuth>,
+    command: Vec<String>,
+    capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct McpRegistryAuth {
+    env: String,
+    label: String,
+}
+
+fn auth_field_type_for_env(env: &str) -> crate::agent::AuthFieldType {
+    let lower = env.to_lowercase();
+    if lower.contains("url") {
+        crate::agent::AuthFieldType::Url
+    } else if lower.contains("token") || lower.contains("key") {
+        crate::agent::AuthFieldType::Token
+    } else if lower.contains("password") || lower.contains("secret") {
+        crate::agent::AuthFieldType::Password
+    } else {
+        crate::agent::AuthFieldType::Text
+    }
+}
+
+impl From<McpRegistryEntry> for McpServer {
+    fn from(entry: McpRegistryEntry) -> Self {
+        let auth_schema = entry.auth.map(|a| {
+            vec![AuthField {
+                name: a.env.clone(),
+                label: a.label,
+                field_type: auth_field_type_for_env(&a.env),
+                required: true,
+                description: Some(format!("Set {} environment variable", a.env)),
+            }]
+        }).unwrap_or_default();
+        let (command, args) = if let Some(first) = entry.command.first() {
+            (first.clone(), entry.command.iter().skip(1).cloned().collect())
+        } else {
+            ("npx".to_string(), vec!["-y".to_string(), entry.package.clone()])
+        };
+        McpServer {
+            id: format!("mcp-{}", entry.id),
+            name: entry.name,
+            source: McpSource::Npm {
+                package: entry.package,
+                version: entry.version,
+            },
+            manifest: McpManifest {
+                schema_version: "1".to_string(),
+                entrypoint: "dist/index.js".to_string(),
+                runtime: crate::agent::McpRuntime::Binary { command, args },
+                auth_schema,
+                capabilities: entry.capabilities,
+                config_schema: serde_json::json!({}),
+            },
+            credentials_key: None,
+            installed_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+}
+
 impl McpRegistry {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Seed with a few well-known servers so natural language can map to them.
+    /// Seed with the real MCP registry bundled as JSON.
     pub fn builtin() -> Self {
         let mut registry = Self::new();
-        registry.register(McpServer {
-            id: "mcp-postgres".to_string(),
-            name: "PostgreSQL".to_string(),
-            source: McpSource::Npm {
-                package: "@modelcontextprotocol/server-postgres".to_string(),
-                version: "latest".to_string(),
-            },
-            manifest: McpManifest {
-                schema_version: "1".to_string(),
-                entrypoint: "dist/index.js".to_string(),
-                runtime: crate::agent::McpRuntime::Binary {
-                    command: "npx".to_string(),
-                    args: vec![
-                        "-y".to_string(),
-                        "@modelcontextprotocol/server-postgres".to_string(),
-                    ],
-                },
-                auth_schema: vec![AuthField {
-                    name: "database_url".to_string(),
-                    label: "Database URL".to_string(),
-                    field_type: crate::agent::AuthFieldType::Url,
-                    required: true,
-                    description: Some("postgres://user:***@host:port/db".to_string()),
-                }],
-                capabilities: vec!["query".to_string(), "schema".to_string()],
-                config_schema: serde_json::json!({}),
-            },
-            credentials_key: None,
-            installed_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        });
-
-        registry.register(McpServer {
-            id: "mcp-filesystem".to_string(),
-            name: "Filesystem".to_string(),
-            source: McpSource::Npm {
-                package: "@modelcontextprotocol/server-filesystem".to_string(),
-                version: "latest".to_string(),
-            },
-            manifest: McpManifest {
-                schema_version: "1".to_string(),
-                entrypoint: "dist/index.js".to_string(),
-                runtime: crate::agent::McpRuntime::Binary {
-                    command: "npx".to_string(),
-                    args: vec![
-                        "-y".to_string(),
-                        "@modelcontextprotocol/server-filesystem".to_string(),
-                    ],
-                },
-                auth_schema: vec![AuthField {
-                    name: "allowed_paths".to_string(),
-                    label: "Allowed Paths".to_string(),
-                    field_type: crate::agent::AuthFieldType::Text,
-                    required: true,
-                    description: Some("comma-separated paths".to_string()),
-                }],
-                capabilities: vec!["read".to_string(), "write".to_string()],
-                config_schema: serde_json::json!({}),
-            },
-            credentials_key: None,
-            installed_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        });
-
-        registry.register(McpServer {
-            id: "mcp-sequential-thinking".to_string(),
-            name: "Sequential Thinking".to_string(),
-            source: McpSource::Npm {
-                package: "@modelcontextprotocol/server-sequential-thinking".to_string(),
-                version: "latest".to_string(),
-            },
-            manifest: McpManifest {
-                schema_version: "1".to_string(),
-                entrypoint: "dist/index.js".to_string(),
-                runtime: crate::agent::McpRuntime::Binary {
-                    command: "npx".to_string(),
-                    args: vec![
-                        "-y".to_string(),
-                        "@modelcontextprotocol/server-sequential-thinking".to_string(),
-                    ],
-                },
-                auth_schema: vec![],
-                capabilities: vec!["thinking".to_string()],
-                config_schema: serde_json::json!({}),
-            },
-            credentials_key: None,
-            installed_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        });
-
+        let data = include_str!("../assets/mcp_registry.json");
+        let entries: Vec<McpRegistryEntry> =
+            serde_json::from_str(data).unwrap_or_default();
+        for entry in entries {
+            registry.register(entry.into());
+        }
         registry
     }
 
@@ -250,12 +239,19 @@ async fn web_search_mcp_packages(query: &str) -> anyhow::Result<Vec<McpSearchRes
                     .and_then(|v| v.as_str())
                     .unwrap_or("Public MCP server from npm")
                     .to_string();
+                let keywords = package
+                    .get("keywords")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let capabilities = infer_capabilities(&description, &keywords);
+                let auth_required = likely_requires_auth(&name, &description);
                 results.push(McpSearchResult {
                     id,
                     name: name.clone(),
                     description,
-                    capabilities: vec!["tools".to_string()],
-                    auth_required: false,
+                    capabilities,
+                    auth_required,
                     source_kind: "npm".to_string(),
                 });
             }
@@ -290,12 +286,13 @@ async fn web_search_mcp_packages(query: &str) -> anyhow::Result<Vec<McpSearchRes
                             .and_then(|v| v.as_str())
                             .unwrap_or("Public MCP server from GitHub")
                             .to_string();
+                        let auth_required = likely_requires_auth(&name, &description);
                         results.push(McpSearchResult {
                             id,
                             name: name.clone(),
                             description,
                             capabilities: vec!["tools".to_string()],
-                            auth_required: false,
+                            auth_required,
                             source_kind: "github".to_string(),
                         });
                     }
@@ -307,7 +304,31 @@ async fn web_search_mcp_packages(query: &str) -> anyhow::Result<Vec<McpSearchRes
     Ok(results)
 }
 
+fn infer_capabilities(description: &str, keywords: &[String]) -> Vec<String> {
+    let text = format!("{} {}", description, keywords.join(" ")).to_lowercase();
+    let mut caps = Vec::new();
+    if text.contains("file") { caps.push("filesystem".to_string()); }
+    if text.contains("git") || text.contains("github") || text.contains("repository") { caps.push("git".to_string()); }
+    if text.contains("database") || text.contains("sql") || text.contains("postgres") || text.contains("sqlite") { caps.push("database".to_string()); }
+    if text.contains("browser") || text.contains("puppeteer") || text.contains("playwright") || text.contains("web") { caps.push("browser".to_string()); }
+    if text.contains("slack") || text.contains("discord") || text.contains("teams") || text.contains("message") { caps.push("messaging".to_string()); }
+    if text.contains("issue") || text.contains("ticket") || text.contains("linear") || text.contains("jira") { caps.push("issue-tracking".to_string()); }
+    if caps.is_empty() { caps.push("tools".to_string()); }
+    caps
+}
+
+fn likely_requires_auth(name: &str, description: &str) -> bool {
+    let text = format!("{name} {description}").to_lowercase();
+    text.contains("api key")
+        || text.contains("api_key")
+        || text.contains("token")
+        || text.contains("secret")
+        || text.contains("password")
+        || text.contains("oauth")
+        || text.contains("auth")
+}
 #[cfg(test)]
+
 mod tests {
     use super::*;
     use crate::secret::Secret;
@@ -370,7 +391,7 @@ mod tests {
         let server = registry.get("mcp-postgres").unwrap();
         assert!(!server.manifest.auth_schema.is_empty());
         let field = &server.manifest.auth_schema[0];
-        assert_eq!(field.name, "database_url");
+        assert_eq!(field.name, "DATABASE_URL");
         assert!(field.required);
     }
 

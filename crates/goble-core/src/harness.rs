@@ -828,6 +828,8 @@ pub(crate) async fn execute_tool_call(
         "delete_mcp_server" => delete_mcp_server(mcp_manager, store, &call.arguments).await,
         "update_mcp_server" => update_mcp_server(mcp_manager, store, &call.arguments).await,
         "search_mcp_servers" => search_mcp_servers(mcp_manager, &call.arguments).await,
+        "set_vault_secret" => set_vault_secret(store, &call.arguments),
+        "delete_vault_secret" => delete_vault_secret(store, &call.arguments),
         "run_agent" => run_agent(store, &call.arguments),
         "read_file" => read_file(&call.arguments, workspace_dir),
         "write_file" => write_file(&call.arguments, workspace_dir),
@@ -1496,6 +1498,23 @@ fn discover_mcp_tools(mcp_manager: &McpManager, args: &serde_json::Value) -> Res
     let id = args["id"].as_str().context("id is required")?;
     let tools = mcp_manager.discover_and_register(id)?;
     Ok(serde_json::to_string(&tools)?)
+}
+
+fn set_vault_secret(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let name = args["name"].as_str().context("name is required")?;
+    let value = args["value"].as_str().context("value is required")?;
+    let metadata = args["metadata"].as_str().unwrap_or("{}");
+    let secret = Secret::new(name, "goble-vault", value.as_bytes().to_vec());
+    store.insert_vault_secret(&secret.id, &secret.encrypted_value, metadata, &chrono::Utc::now().to_rfc3339())?;
+    Ok(format!("secret {name} stored"))
+}
+
+fn delete_vault_secret(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let name = args["name"].as_str().context("name is required")?;
+    store.list_vault_secrets()?.into_iter()
+        .find(|(key, _, _, _)| key == name)
+        .context("secret not found")?;
+    Ok(format!("secret {name} deleted"))
 }
 
 fn run_agent(store: &Store, args: &serde_json::Value) -> Result<String> {

@@ -64,6 +64,7 @@ fn insert_mcp_server(store: &Store, server: &goble_core::agent::McpServer) {
 }
 
 #[tokio::test]
+#[ignore = "requires live DeepSeek API key"]
 async fn test_harness_deepseek_creates_agent_and_writes_file() {
     let store = Store::open_in_memory().expect("store");
     let chat_id = create_chat(&store, "deepseek harness test");
@@ -122,6 +123,7 @@ async fn test_harness_deepseek_creates_agent_and_writes_file() {
 }
 
 #[tokio::test]
+#[ignore = "requires live DeepSeek API key"]
 async fn test_harness_deepseek_with_mcp_mock() {
     let store = Store::open_in_memory().expect("store");
     let chat_id = create_chat(&store, "deepseek mcp test");
@@ -182,6 +184,7 @@ async fn test_harness_deepseek_with_mcp_mock() {
 }
 
 #[tokio::test]
+#[ignore = "requires live DeepSeek API key"]
 async fn test_harness_deepseek_generates_web_server_project() {
     let tmp = tempfile::TempDir::new().unwrap();
     let project_dir = tmp.path().join("webserver");

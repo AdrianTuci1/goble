@@ -8,3 +8,5 @@
 .vscode/
 .idea/
 node_modules/
+crates/goble-desktop/src-tauri/*.json
+crates/goble-desktop/src-tauri/messages/

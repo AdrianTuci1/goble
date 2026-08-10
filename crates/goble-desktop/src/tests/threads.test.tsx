@@ -75,4 +75,18 @@ describe('thread store', () => {
     store.togglePendingTag('#todo');
     expect(useStore.getState().pendingTags).not.toContain('#todo');
   });
+
+  it('toggles thread replies open state', () => {
+    const store = useStore.getState();
+    store.setThreadRepliesOpen('m1', true);
+    expect(useStore.getState().threadRepliesOpen['m1']).toBe(true);
+    store.setThreadRepliesOpen('m1', false);
+    expect(useStore.getState().threadRepliesOpen['m1']).toBe(false);
+  });
+
+  it('sets emoji picker message id', () => {
+    const store = useStore.getState();
+    store.setThreadEmojiPickerForMessageId('m2');
+    expect(useStore.getState().threadEmojiPickerForMessageId).toBe('m2');
+  });
 });

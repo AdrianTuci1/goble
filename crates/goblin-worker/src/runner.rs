@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use goble_core::agent::{AgentId, AgentSpec};
 use goble_core::execution::{ExecutionStatus, ExecutionTrace, LogLevel};
+use goble_core::llm::CompletionRequest;
 use goble_core::mcp_installer::McpInstaller;
 use goble_core::workspace::Workspace;
 
@@ -201,6 +202,92 @@ impl Runner {
         Ok(())
     }
 
+
+
+    /// Run agent logic against the configured LLM provider and return a reply string.
+    pub async fn run_agent_for_thread_reply(
+        &self,
+        trace_id: String,
+        agent_id: AgentId,
+        spec: AgentSpec,
+        prompt: String,
+    ) -> anyhow::Result<String> {
+        let mut trace = ExecutionTrace::new(agent_id.clone());
+        trace.id = trace_id.clone();
+        trace.worker_id = Some(self.state.worker_id.clone());
+        trace.status = ExecutionStatus::Running;
+        self.state.store_trace(trace.clone());
+
+        self.state
+            .emit(goble_core::protocol::WorkerMessage::AgentStarted {
+                trace_id: trace_id.clone(),
+                agent_id: agent_id.clone(),
+            });
+
+        let workspace = Workspace::new(agent_id.clone(), &self.state.config.lock().workspace_root);
+        let _ = workspace.ensure_exists();
+
+        let root_id = trace.add_root_step("execute agent").id.clone();
+        self.state.store_trace(trace.clone());
+
+        let run_id = trace
+            .add_child_step(&root_id, "execute agent logic")
+            .unwrap()
+            .id
+            .clone();
+
+        let secrets = self.state.secrets.lock().clone();
+        let api_key = secrets
+            .get("llm_api_key")
+            .and_then(|s| String::from_utf8(s.encrypted_value.clone()).ok());
+
+        let content = if let Some(key) = api_key {
+            let provider_name = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string());
+            let provider = goble_core::llm::create_provider(&provider_name, &key, None);
+            let req = CompletionRequest::new(&provider_name, "gpt-4o-mini")
+                .with_system(spec.prompt.clone())
+                .with_user(prompt.clone());
+            match provider.complete(req).await {
+                Ok(resp) => {
+                    trace
+                        .find_step_mut(&run_id)
+                        .unwrap()
+                        .log(LogLevel::Info, "llm completed".to_string());
+                    resp.content
+                }
+                Err(e) => {
+                    trace
+                        .find_step_mut(&run_id)
+                        .unwrap()
+                        .log(LogLevel::Error, format!("llm failed: {}", e));
+                    format!("Agent {} could not complete the request.", agent_id.0)
+                }
+            }
+        } else {
+            trace
+                .find_step_mut(&run_id)
+                .unwrap()
+                .log(LogLevel::Warn, "no llm_api_key secret available".to_string());
+            format!("Agent {} received: {}", agent_id.0, prompt)
+        };
+
+        trace
+            .find_step_mut(&run_id)
+            .unwrap()
+            .finish(ExecutionStatus::Success);
+        trace
+            .find_step_mut(&root_id)
+            .unwrap()
+            .finish(ExecutionStatus::Success);
+        trace.finish(ExecutionStatus::Success);
+        self.state.store_trace(trace.clone());
+        self.state
+            .emit(goble_core::protocol::WorkerMessage::AgentFinished {
+                trace_id,
+                status: ExecutionStatus::Success,
+            });
+        Ok(content)
+    }
     pub async fn run_team(&self, trace_id: String, team_id: String) -> anyhow::Result<()> {
         let mut trace = ExecutionTrace::new(AgentId(team_id.clone()));
         trace.id = trace_id.clone();
@@ -268,5 +355,21 @@ mod tests {
         let trace = state.get_trace("team-trace").unwrap();
         assert_eq!(trace.agent_id.0, "team-1");
         assert!(trace.root_step().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_agent_workspaces_are_isolated() {
+        use std::path::Path;
+        let state = AppState::new(WorkerId::generate());
+        let spec_a = AgentSpec::new("agent-a", "agent a");
+        let spec_b = AgentSpec::new("agent-b", "agent b");
+        let ws_a = Workspace::new(spec_a.id.clone(), &state.config.lock().workspace_root);
+        let ws_b = Workspace::new(spec_b.id.clone(), &state.config.lock().workspace_root);
+        ws_a.ensure_exists().unwrap();
+        ws_b.ensure_exists().unwrap();
+        std::fs::write(ws_a.path.join("secret.txt"), "agent-a-only").unwrap();
+        assert!(Path::new(&ws_a.path.join("secret.txt")).exists());
+        assert!(!Path::new(&ws_b.path.join("secret.txt")).exists());
+        assert_ne!(ws_a.path, ws_b.path);
     }
 }

@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use goble_core::agent::{AgentId, AgentSpec, Trigger};
+use goble_core::thread::{Participant, ThreadId, ThreadKind, UserId};
+use crate::ThreadSummary;
 use goble_core::cluster_key::{ClusterBackup, ClusterIdentity, ClusterKey};
 use goble_core::execution::ExecutionTrace;
 use goble_core::identity::ClusterRole;
@@ -175,6 +177,12 @@ pub struct ExecutionInfo {
     pub trace: ExecutionTrace,
     pub started_at: String,
     pub finished_at: Option<String>,
+}
+
+
+#[derive(Debug, Clone, Serialize)]
+struct ThreadMessagesUpdatedPayload {
+    thread_id: String,
 }
 
 pub struct DesktopState {
@@ -568,6 +576,31 @@ impl DesktopState {
                     "worker:task_cancelled",
                     serde_json::json!({ "task_id": task_id }),
                 );
+            }
+            WorkerMessage::ThreadAgentReply {
+                trace_id,
+                thread_id,
+                content,
+            } => {
+                self.add_log(format!(
+                    "worker {} posted thread reply {}: {}",
+                    worker_id, thread_id, content
+                ));
+                let agent_id = self
+                    .executions
+                    .lock()
+                    .get(&trace_id)
+                    .and_then(|e| e.agent_id.clone())
+                    .unwrap_or_default();
+                let _ = self.thread_store().post_message(
+                    &goble_core::thread::ThreadId(thread_id.clone()),
+                    goble_core::thread::Participant::Agent(goble_core::agent::AgentId(agent_id)),
+                    content,
+                    None,
+                    vec![],
+                    vec![],
+                );
+                self.emit("thread:messages:updated", ThreadMessagesUpdatedPayload { thread_id });
             }
         }
     }
@@ -1251,11 +1284,90 @@ impl DesktopState {
             let _ = handle.emit(event, payload);
         }
     }
+
+    /// Convert legacy chat conversations into threads with a single participant (the user).
+
+    pub fn run_agent_for_thread_reply(
+        &self,
+        worker_id: &WorkerId,
+        thread_id: &ThreadId,
+        agent_id: &AgentId,
+        prompt: &str,
+    ) -> anyhow::Result<()> {
+        let (id, name, spec, created_at, updated_at) = self
+            .store
+            .lock()
+            .get_agent(&agent_id.0)?
+            .ok_or_else(|| anyhow::anyhow!("agent not found: {}", agent_id.0))?;
+        let agent_spec = AgentSpec {
+            id: AgentId(id),
+            name: name.clone(),
+            description: name.clone(),
+            prompt: spec,
+            tools: vec![],
+            triggers: vec![],
+            mcp_ids: vec![],
+            created_at,
+            updated_at,
+        };
+        let mcp_servers = self.resolve_mcp_servers_for_agent(&agent_spec)?;
+        let msg = DesktopMessage::RunAgentForThreadReply {
+            trace_id: format!("{}-{}", thread_id.0, uuid::Uuid::new_v4()),
+            thread_id: thread_id.0.clone(),
+            agent_id: agent_id.clone(),
+            prompt: prompt.to_string(),
+            spec: agent_spec,
+            mcp_servers,
+        };
+        self.send_to_worker(worker_id, msg)
+    }
+    pub fn migrate_legacy_chats_to_threads(&self) -> Result<Vec<ThreadSummary>, String> {
+        let owner = self
+            .thread_store()
+            .get_profile()
+            .map(|p| UserId(p.id.0))
+            .unwrap_or_else(UserId::generate);
+        let mut summaries = Vec::new();
+        for conv in self.list_chats() {
+            let participants = vec![Participant::User(owner.clone())];
+            let thread = self
+                .thread_store()
+                .create_thread(
+                    ThreadKind::Chat,
+                    conv.title,
+                    owner.clone(),
+                    false,
+                    participants,
+                    vec![],
+                )
+                .map_err(|e| e.to_string())?;
+            if let Some(messages) = self.messages.lock().get(&conv.id).cloned() {
+                for msg in messages {
+                    let author = if msg.role == "user" {
+                        Participant::User(owner.clone())
+                    } else {
+                        Participant::Agent(AgentId(conv.agent_id.clone().unwrap_or_else(|| "agent".to_string())))
+                    };
+                    let _ = self.thread_store().post_message(
+                        &thread.id,
+                        author,
+                        msg.content,
+                        None,
+                        vec![],
+                        vec![],
+                    );
+                }
+            }
+            summaries.push(ThreadSummary::from(thread));
+        }
+        Ok(summaries)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     #[test]
     fn test_state_add_worker() {
@@ -1399,5 +1511,31 @@ mod tests {
         assert_eq!(state2.list_workflows().len(), 1);
         assert_eq!(state2.list_teams().len(), 1);
         assert_eq!(state2.list_vault_secrets().len(), 1);
+    }
+
+
+    #[test]
+    fn migrate_legacy_chats_creates_threads() {
+        let state = DesktopState::new(
+            Store::open_in_memory().unwrap(),
+            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+        );
+        // Create a legacy chat with two messages
+        state.create_chat("legacy chat", None, None).unwrap();
+        let chats = state.list_chats();
+        let chat = &chats[0];
+        state.add_chat_message(&chat.id, "user", "hello").unwrap();
+        state.add_chat_message(&chat.id, "user", "hi there").unwrap();
+
+        let threads = state.migrate_legacy_chats_to_threads().unwrap();
+        assert_eq!(threads.len(), 1);
+        let summary = &threads[0];
+        assert_eq!(summary.title, "legacy chat");
+
+        let messages = state
+            .thread_store()
+            .list_messages(&goble_core::thread::ThreadId(summary.id.clone()))
+            .unwrap();
+        assert_eq!(messages.len(), 2);
     }
 }

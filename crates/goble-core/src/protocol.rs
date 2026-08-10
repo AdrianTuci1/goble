@@ -49,6 +49,14 @@ pub enum DesktopMessage {
         trace_id: String,
         team_id: String,
     },
+    RunAgentForThreadReply {
+        trace_id: String,
+        thread_id: String,
+        agent_id: AgentId,
+        prompt: String,
+        spec: AgentSpec,
+        mcp_servers: Vec<McpServer>,
+    },
     Ping,
 }
 
@@ -88,6 +96,11 @@ pub enum WorkerMessage {
     },
     TaskCancelled {
         task_id: String,
+    },
+    ThreadAgentReply {
+        trace_id: String,
+        thread_id: String,
+        content: String,
     },
 }
 

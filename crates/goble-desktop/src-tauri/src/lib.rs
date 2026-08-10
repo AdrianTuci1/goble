@@ -67,6 +67,14 @@ struct RunAgentRequest {
 }
 
 #[derive(Deserialize)]
+struct RunAgentForThreadReplyRequest {
+    worker_id: String,
+    thread_id: String,
+    agent_id: String,
+    prompt: String,
+}
+
+#[derive(Deserialize)]
 struct ScheduleRequest {
     worker_id: String,
     agent_id: String,
@@ -514,6 +522,21 @@ fn list_harness_tools() -> Result<Vec<goble_core::harness::ToolSchema>, String> 
     Ok(harness.list_tools())
 }
 
+
+#[tauri::command]
+fn run_agent_for_thread_reply(
+    req: RunAgentForThreadReplyRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state
+        .run_agent_for_thread_reply(
+            &WorkerId(req.worker_id),
+            &goble_core::thread::ThreadId(req.thread_id),
+            &AgentId(req.agent_id),
+            &req.prompt,
+        )
+        .map_err(|e| e.to_string())
+}
 #[tauri::command]
 fn run_agent(
     req: RunAgentRequest,
@@ -673,6 +696,7 @@ fn run_harness(
 pub struct CreateThreadRequest {
     kind: goble_core::thread::ThreadKind,
     title: String,
+    is_private: bool,
     participants: Vec<goble_core::thread::Participant>,
     tags: Vec<String>,
 }
@@ -748,6 +772,13 @@ impl From<goble_core::thread::ThreadMessage> for ThreadMessageSummary {
     }
 }
 
+
+#[tauri::command]
+fn migrate_legacy_chats_to_threads(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<ThreadSummary>, String> {
+    state.migrate_legacy_chats_to_threads()
+}
 #[tauri::command]
 fn list_threads(
     state: tauri::State<'_, Arc<state::DesktopState>>,
@@ -772,7 +803,7 @@ fn create_thread(
         .unwrap_or_else(|| goble_core::thread::UserId::generate());
     let thread = state
         .thread_store()
-        .create_thread(req.kind, req.title, owner_id, req.participants, req.tags)
+        .create_thread(req.kind, req.title, owner_id, req.is_private, req.participants, req.tags)
         .map(ThreadSummary::from)
         .map_err(|e| e.to_string())?;
     state.emit("threads:updated", ());
@@ -854,6 +885,38 @@ fn get_thread_messages(
         .list_messages(&goble_core::thread::ThreadId(req.thread_id))
         .map(|messages| messages.into_iter().map(ThreadMessageSummary::from).collect())
         .map_err(|e| e.to_string())
+}
+
+
+#[derive(Deserialize)]
+pub struct InviteUserByPublicKeyRequest {
+    thread_id: String,
+    public_key_pem: String,
+    name: String,
+}
+
+#[tauri::command]
+fn invite_user_by_public_key(
+    req: InviteUserByPublicKeyRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<goble_core::thread::Participant, String> {
+    let participant = state
+        .thread_store()
+        .invite_user_by_public_key(
+            &goble_core::thread::ThreadId(req.thread_id),
+            req.public_key_pem,
+            req.name,
+        )
+        .map_err(|e| e.to_string())?;
+    state.emit("threads:updated", ());
+    Ok(participant)
+}
+
+#[tauri::command]
+fn get_authorized_keys(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<goble_core::user::AuthorizedKey>, String> {
+    Ok(state.thread_store().list_authorized_keys())
 }
 
 #[derive(Deserialize)]
@@ -1070,6 +1133,7 @@ pub fn run() {
             unlock_vault,
             set_llm_setting,
             get_llm_setting,
+            run_agent_for_thread_reply,
             run_agent,
             schedule_agent,
             set_chat_model,
@@ -1096,6 +1160,7 @@ pub fn run() {
             add_thread_participant,
             remove_thread_participant,
             get_thread_participants,
+            invite_user_by_public_key,
             get_thread_messages,
             post_thread_message,
             add_thread_reaction,

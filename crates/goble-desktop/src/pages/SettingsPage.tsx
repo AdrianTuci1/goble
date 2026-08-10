@@ -3,6 +3,8 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useStore, type DesignSystem } from '../stores/appStore';
 import {
   workerLogs,
+  setUserProfile,
+  type UserProfile,
   getLlmSetting,
   setLlmSetting,
   LLM_PROVIDERS,
@@ -144,18 +146,39 @@ export default function SettingsPage() {
 }
 
 function ProfileSettings() {
-  const [name, setName] = useState('');
-  const [timezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const profile = useStore((s) => s.userProfile);
+  const setProfile = useStore((s) => s.setUserProfile);
+  const [name, setName] = useState(profile?.name ?? '');
+  const [email, setEmail] = useState(profile?.email ?? '');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (profile) {
+      setName(profile.name);
+      setEmail(profile.email);
+    }
+  }, [profile]);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await setUserProfile({ ...profile, name, email } as UserProfile);
+      setProfile({ ...profile, name, email } as UserProfile);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div className="settings-section">
       <h2>Profile</h2>
       <label>Display name</label>
       <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
-      <label>Timezone</label>
-      <input value={timezone} readOnly />
-      <button disabled>Save profile</button>
-      <p className="hint">Profile persistence coming soon.</p>
+      <label>Email</label>
+      <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+      <button onClick={handleSave} disabled={saving || !name}>
+        {saving ? 'Saving...' : 'Save profile'}
+      </button>
     </div>
   );
 }

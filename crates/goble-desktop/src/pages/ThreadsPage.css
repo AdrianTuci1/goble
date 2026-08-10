@@ -769,3 +769,60 @@
 .threads-modal-actions .btn {
   padding: 8px 14px;
 }
+
+.invite-user-button {
+  margin-top: 8px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text);
+  cursor: pointer;
+  padding: 4px 8px;
+  width: 100%;
+  text-align: left;
+}
+
+.invite-user-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.invite-user-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.invite-user-card input,
+.invite-user-card textarea {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px;
+}
+
+.invite-user-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.authorized-keys {
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.authorized-key-option {
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}

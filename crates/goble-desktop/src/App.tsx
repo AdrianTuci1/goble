@@ -123,7 +123,7 @@ function AppShell() {
         <Sidebar collapsed={sidebarCollapsed} onNewChat={onNewChat} />
         <main className="main-area">
           <Routes>
-            <Route path="/" element={<Navigate to="/chat" />} />
+            <Route path="/" element={<Navigate to="/threads" />} />
             <Route path="/chat" element={<ChatArea threadsActive={threadsActive} />} />
             <Route path="/threads" element={<ThreadsPage />} />
             <Route path="/agents" element={<AgentsPage />} />

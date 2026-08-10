@@ -116,6 +116,7 @@ pub struct Thread {
     pub kind: ThreadKind,
     pub title: String,
     pub owner_id: UserId,
+    pub is_private: bool,
     pub participants: Vec<Participant>,
     pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
@@ -128,6 +129,7 @@ impl Thread {
         kind: ThreadKind,
         title: impl Into<String>,
         owner_id: UserId,
+        is_private: bool,
         participants: Vec<Participant>,
         tags: Vec<String>,
     ) -> Self {
@@ -137,6 +139,7 @@ impl Thread {
             kind,
             title: title.into(),
             owner_id,
+            is_private,
             participants,
             tags,
             created_at: now,

@@ -1,3 +1,4 @@
+import { getUserProfile } from '../tauri/api';
 import { create } from 'zustand';
 import type {
   ThreadSummary,
@@ -81,6 +82,8 @@ interface AppState {
   userProfile: UserProfile | null;
   pendingTags: string[];
   participantsPanelOpen: boolean;
+  threadRepliesOpen: Record<string, boolean>;
+  threadEmojiPickerForMessageId: string | null;
 
   selectedFlowId: string | null;
   isWorkflowDrawerOpen: boolean;
@@ -139,6 +142,8 @@ interface AppState {
   setPendingTags: (tags: string[]) => void;
   togglePendingTag: (tag: string) => void;
   setParticipantsPanelOpen: (open: boolean) => void;
+  setThreadRepliesOpen: (messageId: string, open: boolean) => void;
+  setThreadEmojiPickerForMessageId: (id: string | null) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -163,6 +168,8 @@ export const useStore = create<AppState>((set) => ({
   userProfile: null,
   pendingTags: [],
   participantsPanelOpen: false,
+  threadRepliesOpen: {},
+  threadEmojiPickerForMessageId: null,
 
   selectedFlowId: null,
   isWorkflowDrawerOpen: false,
@@ -317,4 +324,13 @@ export const useStore = create<AppState>((set) => ({
         : [...state.pendingTags, tag],
     })),
   setParticipantsPanelOpen: (participantsPanelOpen) => set({ participantsPanelOpen }),
+  setThreadRepliesOpen: (messageId, open) =>
+    set((state) => ({
+      threadRepliesOpen: { ...state.threadRepliesOpen, [messageId]: open },
+    })),
+  setThreadEmojiPickerForMessageId: (threadEmojiPickerForMessageId) => set({ threadEmojiPickerForMessageId }),
 }));
+
+getUserProfile().then((profile: UserProfile | null) => {
+  if (profile) useStore.setState({ userProfile: profile });
+});

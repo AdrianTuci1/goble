@@ -129,6 +129,25 @@ async fn handle_desktop_message(
         DesktopMessage::RunTeam { trace_id, team_id } => {
             runner.run_team(trace_id, team_id).await?;
         }
+        DesktopMessage::RunAgentForThreadReply {
+            trace_id,
+            thread_id,
+            agent_id,
+            prompt,
+            spec,
+            mcp_servers,
+        } => {
+            state.store_agent(spec.clone());
+            for server in mcp_servers {
+                state.store_mcp(server);
+            }
+            let content = runner.run_agent_for_thread_reply(trace_id.clone(), agent_id, spec, prompt).await?;
+            state.emit(WorkerMessage::ThreadAgentReply {
+                trace_id,
+                thread_id,
+                content,
+            });
+        }
         DesktopMessage::Ping => {
             state.emit(WorkerMessage::Pong);
             state.emit(WorkerMessage::StatusReport {

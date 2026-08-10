@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
+use goble_core::principal::PrincipalId;
+use sha2::{Digest, Sha256};
 use goble_core::thread::{
     MessageId, Participant, ParticipantId, Reaction, Thread, ThreadError, ThreadKind,
     ThreadMessage, ThreadId, UserId,
@@ -59,6 +61,7 @@ impl ThreadStore {
         kind: ThreadKind,
         title: impl Into<String>,
         owner_id: UserId,
+        is_private: bool,
         mut participants: Vec<Participant>,
         tags: Vec<String>,
     ) -> Result<Thread, ThreadError> {
@@ -83,7 +86,7 @@ impl ThreadStore {
             ));
         }
 
-        let thread = Thread::new(id, kind, title, owner_id, participants, tags);
+        let thread = Thread::new(id, kind, title, owner_id, is_private, participants, tags);
         self.threads.lock().push(thread.clone());
         self.save().map_err(|_| ThreadError::Unauthorized)?;
         Ok(thread)
@@ -177,7 +180,10 @@ impl ThreadStore {
         tags: Vec<String>,
         mentions: Vec<ParticipantId>,
     ) -> Result<ThreadMessage, ThreadError> {
-        self.get_thread(thread_id)?;
+        let thread = self.get_thread(thread_id)?;
+        if !thread.has_participant(&author.participant_id()) {
+            return Err(ThreadError::Unauthorized);
+        }
 
         let mut message = ThreadMessage::new(thread_id.clone(), author, content).with_tags(tags);
         message.participant_mentions = mentions;
@@ -330,6 +336,7 @@ impl ThreadStore {
                 kind: ThreadKind::Chat,
                 title: chat.title,
                 owner_id: owner_id.clone(),
+            is_private: false,
                 participants: vec![Participant::User(owner_id.clone())],
                 tags: Vec::new(),
                 created_at: Utc::now(),
@@ -458,6 +465,31 @@ impl ThreadStore {
 
         Ok(())
     }
+
+    pub fn invite_user_by_public_key(
+        &self,
+        thread_id: &ThreadId,
+        public_key_pem: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Result<Participant, ThreadError> {
+        let participant = self.resolve_user_by_public_key(public_key_pem, name)
+            .map_err(|_| ThreadError::Unauthorized)?;
+        self.add_participant(thread_id, participant.clone())?;
+        Ok(participant)
+    }
+
+    pub fn resolve_user_by_public_key(
+        &self,
+        public_key_pem: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Result<Participant, UserError> {
+        let pem = public_key_pem.into();
+        let fingerprint = fingerprint(&pem);
+        let id = PrincipalId(fingerprint.clone());
+        let key = AuthorizedKey::new(&fingerprint, name, &pem, &fingerprint);
+        self.add_authorized_key(key)?;
+        Ok(Participant::User(UserId::from_principal(id)))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -473,6 +505,12 @@ pub struct LegacyChat {
     pub id: String,
     pub title: String,
     pub messages: Vec<LegacyChatMessage>,
+}
+
+fn fingerprint(pem: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(pem.trim().as_bytes());
+    format!("{}", hex::encode(hasher.finalize()))
 }
 
 #[cfg(test)]
@@ -515,6 +553,7 @@ mod tests {
                 ThreadKind::Channel,
                 "general",
                 owner.clone(),
+                false,
                 vec![Participant::User(owner.clone())],
                 vec!["#general".to_string()],
             )
@@ -539,6 +578,7 @@ mod tests {
                 ThreadKind::Direct,
                 "dm",
                 owner.clone(),
+                false,
                 vec![Participant::User(owner.clone()), agent("agent-1")],
                 vec![],
             )
@@ -559,6 +599,7 @@ mod tests {
                 ThreadKind::Channel,
                 "team",
                 owner.clone(),
+                false,
                 vec![Participant::User(owner.clone()), agent("agent-1")],
                 vec![],
             )
@@ -605,6 +646,7 @@ mod tests {
                 ThreadKind::Channel,
                 "team",
                 owner.clone(),
+                false,
                 vec![Participant::User(owner.clone())],
                 vec![],
             )
@@ -631,6 +673,7 @@ mod tests {
                 ThreadKind::Channel,
                 "team",
                 owner.clone(),
+                false,
                 vec![Participant::User(owner.clone()), agent("agent-1")],
                 vec![],
             )
@@ -679,6 +722,7 @@ mod tests {
                 ThreadKind::Channel,
                 "general",
                 owner.clone(),
+                false,
                 vec![Participant::User(owner.clone()), agent("agent-1")],
                 vec!["#general".to_string()],
             )
@@ -729,6 +773,27 @@ mod tests {
     }
 
     #[test]
+    fn invite_user_by_public_key_adds_participant() {
+        let (_dir, store) = tmp_store();
+        let owner = owner();
+        let thread = store.create_thread(
+            ThreadKind::Channel,
+            "team",
+            owner.clone(),
+            true,
+            vec![Participant::User(owner.clone())],
+            vec![],
+        ).unwrap();
+        let pem = "-----BEGIN PUBLIC KEY-----\n[REDACTED]\n-----END PUBLIC KEY-----";
+        let participant = store
+            .invite_user_by_public_key(&thread.id, pem, "Ada")
+            .unwrap();
+        assert!(participant.is_user());
+        let participants = store.list_participants(&thread.id).unwrap();
+        assert_eq!(participants.len(), 2);
+        assert!(store.list_authorized_keys().len() >= 1);
+    }
+
     fn create_private_thread_for_reply_requires_exactly_two_participants() {
         let (_dir, store) = tmp_store();
         let owner = owner();
@@ -736,7 +801,8 @@ mod tests {
             ThreadKind::Direct,
             "private",
             owner.clone(),
-            vec![Participant::User(owner.clone())],
+                false,
+                vec![Participant::User(owner.clone())],
             vec![],
         );
         assert!(matches!(
@@ -753,7 +819,8 @@ mod tests {
             ThreadKind::Channel,
             "duplicates",
             owner.clone(),
-            vec![
+                false,
+                vec![
                 Participant::User(owner.clone()),
                 Participant::User(owner.clone()),
             ],
@@ -769,6 +836,7 @@ mod tests {
             ThreadKind::Channel,
             "general",
             UserId::generate(),
+            false,
             vec![user("u1"), agent("a1")],
             vec!["#general".to_string()],
         );
@@ -785,5 +853,51 @@ mod tests {
             mentions,
             vec![ParticipantId::user("u1"), ParticipantId::agent("a1"),]
         );
+    }
+
+
+    #[test]
+    fn post_message_rejects_non_participant_author() {
+        let (_dir, store) = tmp_store();
+        let owner = owner();
+        let channel = store
+            .create_thread(
+                ThreadKind::Channel,
+                "team",
+                owner.clone(),
+                false,
+                vec![Participant::User(owner.clone())],
+                vec![],
+            )
+            .unwrap();
+        let result = store.post_message(
+            &channel.id,
+            agent("agent-1"),
+            "hello",
+            None,
+            vec![],
+            vec![],
+        );
+        assert!(matches!(result, Err(ThreadError::Unauthorized)));
+    }
+
+    #[test]
+    fn private_channel_requires_participant_to_read() {
+        let (_dir, store) = tmp_store();
+        let owner = owner();
+        let other = user("other");
+        let channel = store
+            .create_thread(
+                ThreadKind::Channel,
+                "private",
+                owner.clone(),
+                true,
+                vec![Participant::User(owner.clone())],
+                vec![],
+            )
+            .unwrap();
+        store.add_participant(&channel.id, other.clone()).unwrap();
+        let parts = store.list_participants(&channel.id).unwrap();
+        assert!(parts.iter().any(|p| p.participant_id() == other.participant_id()));
     }
 }

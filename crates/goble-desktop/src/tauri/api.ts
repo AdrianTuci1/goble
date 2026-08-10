@@ -519,6 +519,16 @@ export interface Participant {
   id: string;
 }
 
+export interface AuthorizedKey {
+  id: string;
+  name: string;
+  public_key_pem: string;
+  fingerprint: string;
+  thread_ids: string[];
+  created_at: string;
+}
+
+
 export interface ThreadMessageSummary {
   id: string;
   thread_id: string;
@@ -547,10 +557,11 @@ export async function listThreads(): Promise<ThreadSummary[]> {
 export async function createThread(
   kind: 'chat' | 'channel' | 'direct',
   title: string,
+  isPrivate: boolean,
   participants: Participant[],
   tags: string[] = [],
 ): Promise<ThreadSummary> {
-  return invoke('create_thread', { req: { kind, title, participants, tags } });
+  return invoke('create_thread', { req: { kind, title, is_private: isPrivate, participants, tags } });
 }
 
 export async function deleteThread(threadId: string): Promise<boolean> {
@@ -613,3 +624,37 @@ export function onThreadMessagesUpdated(callback: (event: TauriEvent<{ thread_id
   return listen('thread:messages:updated', callback);
 }
 
+
+
+export async function migrateLegacyChatsToThreads(): Promise<ThreadSummary[]> {
+  return invoke<ThreadSummary[]>('migrate_legacy_chats_to_threads');
+}
+
+
+export async function runAgentForThreadReply(
+  workerId: string,
+  threadId: string,
+  agentId: string,
+  prompt: string,
+): Promise<void> {
+  await invoke('run_agent_for_thread_reply', { workerId, threadId, agentId, prompt });
+}
+
+export async function inviteUserByPublicKey(
+  threadId: string,
+  publicKeyPem: string,
+  name: string,
+): Promise<Participant> {
+  return await invoke('invite_user_by_public_key', { threadId, publicKeyPem, name });
+}
+
+export async function getAuthorizedKeys(): Promise<AuthorizedKey[]> {
+  return await invoke('get_authorized_keys');
+}
+
+export async function addAuthorizedKey(
+  publicKeyPem: string,
+  name: string,
+): Promise<AuthorizedKey> {
+  return await invoke('add_authorized_key', { publicKeyPem, name });
+}

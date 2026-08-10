@@ -193,16 +193,22 @@ pub struct DesktopState {
     mcp_manager: McpManager,
     app_handle: Mutex<Option<AppHandle>>,
     cluster_identity: Mutex<Option<ClusterIdentity>>,
+    thread_store: Arc<crate::thread_store::ThreadStore>,
 }
 impl DesktopState {
     pub fn open_default() -> anyhow::Result<Arc<Self>> {
         let store = Store::open("goble_store.sqlite")?;
-        let state = Self::new(store);
+        let thread_store_path = dirs::data_dir()
+            .ok_or_else(|| anyhow::anyhow!("no data dir"))?
+            .join("com.goble.desktop")
+            .join("threads");
+        let thread_store = crate::thread_store::ThreadStore::new(thread_store_path)?;
+        let state = Self::new(store, thread_store);
         let _ = state.load_from_store();
         Ok(state)
     }
 
-    pub fn new(store: Store) -> Arc<Self> {
+    pub fn new(store: Store, thread_store: crate::thread_store::ThreadStore) -> Arc<Self> {
         Arc::new(Self {
             store: Arc::new(Mutex::new(store)),
             workers: Arc::new(Mutex::new(HashMap::new())),
@@ -219,7 +225,11 @@ impl DesktopState {
             mcp_manager: McpManager::new(),
             app_handle: Mutex::new(None),
             cluster_identity: Mutex::new(None),
+            thread_store: Arc::new(thread_store),
         })
+    }
+    pub fn thread_store(&self) -> Arc<crate::thread_store::ThreadStore> {
+        Arc::clone(&self.thread_store)
     }
 
     pub fn set_app_handle(&self, handle: AppHandle) {
@@ -1249,7 +1259,7 @@ mod tests {
 
     #[test]
     fn test_state_add_worker() {
-        let state = DesktopState::new(Store::open_in_memory().unwrap());
+        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
         let wid = WorkerId::generate();
         state
             .add_worker(wid.clone(), "vps".to_string(), "wss://localhost:8787/ws".to_string())
@@ -1264,7 +1274,7 @@ mod tests {
 
     #[test]
     fn test_state_logs_and_chat() {
-        let state = DesktopState::new(Store::open_in_memory().unwrap());
+        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
         state.add_log("hello");
         assert_eq!(state.get_logs().len(), 1);
         let chat_id = state.create_chat("Test chat", None, None).unwrap();
@@ -1279,7 +1289,7 @@ mod tests {
 
     #[test]
     fn test_state_agent_and_workflow() {
-        let state = DesktopState::new(Store::open_in_memory().unwrap());
+        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
         let agent = state
             .create_agent("greeter", "say hello", Some("test agent"), vec![])
             .unwrap();
@@ -1304,7 +1314,7 @@ mod tests {
 
     #[test]
     fn test_state_team_and_vault() {
-        let state = DesktopState::new(Store::open_in_memory().unwrap());
+        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
         state.set_vault_passphrase("passphrase".to_string());
         state.set_vault_secret("api_key", "sk-123").unwrap();
         assert_eq!(state.list_vault_secrets().len(), 1);
@@ -1316,7 +1326,7 @@ mod tests {
 
     #[test]
     fn test_worker_message_handling() {
-        let state = DesktopState::new(Store::open_in_memory().unwrap());
+        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
         let wid = WorkerId::generate();
         state.add_worker(wid.clone(), "vps".to_string(), "ws://localhost:8787/ws".to_string()).unwrap();
         state.handle_worker_message(
@@ -1338,7 +1348,7 @@ mod tests {
 
     #[test]
     fn test_agent_workflow_team_vault_roundtrip() {
-        let state = DesktopState::new(Store::open_in_memory().unwrap());
+        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
         state.set_vault_passphrase("secret".to_string());
         let agent = state.create_agent("greeter", "say hello", Some("test agent"), vec![]).unwrap();
         let step = WorkflowStep {
@@ -1369,7 +1379,7 @@ mod tests {
     fn test_persistence_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path().join("store.db")).unwrap();
-        let state = DesktopState::new(store);
+        let state = DesktopState::new(store, crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
         state.set_vault_passphrase("p".to_string());
         let agent = state.create_agent("a", "prompt", None, vec![]).unwrap();
         let step = WorkflowStep {
@@ -1383,7 +1393,7 @@ mod tests {
         state.create_team("t", "Team", "{}", vec![agent.id]).unwrap();
         state.set_vault_secret("k", "v").unwrap();
 
-        let state2 = DesktopState::new(Store::open(tmp.path().join("store.db")).unwrap());
+        let state2 = DesktopState::new(Store::open(tmp.path().join("store.db")).unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
         state2.load_from_store().unwrap();
         assert_eq!(state2.list_agents().len(), 1);
         assert_eq!(state2.list_workflows().len(), 1);

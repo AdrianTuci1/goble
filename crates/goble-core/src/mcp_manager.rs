@@ -139,7 +139,12 @@ impl McpManager {
         let now = chrono::Utc::now().to_rfc3339();
         let manifest_json = serde_json::to_string(&server.manifest)?;
         let source_value_str = source_value.map(|s| s.to_string());
-        let secret_ids_json = serde_json::to_string(&secret_ids.iter().map(|s| s.name.clone()).collect::<Vec<_>>())?;
+        let secret_ids_json = serde_json::to_string(
+            &secret_ids
+                .iter()
+                .map(|s| s.name.clone())
+                .collect::<Vec<_>>(),
+        )?;
         let enabled_tools_json = "[]";
         store.insert_mcp_server(
             &server.id,
@@ -198,7 +203,10 @@ impl McpManager {
 
         let manifest_json = serde_json::to_string(&server.manifest)?;
         let secret_ids_json = serde_json::to_string(
-            &secret_ids.map(|s| s.iter().map(|sec| sec.name.clone()).collect::<Vec<_>>()).unwrap_or_default())?;
+            &secret_ids
+                .map(|s| s.iter().map(|sec| sec.name.clone()).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        )?;
         store.insert_mcp_server(
             id,
             &server.name,
@@ -660,14 +668,15 @@ impl McpManager {
         let source = row.2;
         let source_value = row.3;
         let manifest_json = row.4;
-        let manifest: McpManifest = serde_json::from_str(&manifest_json).unwrap_or_else(|_| McpManifest {
-            schema_version: "1".to_string(),
-            entrypoint: "".to_string(),
-            runtime: McpRuntime::V8Isolate,
-            auth_schema: vec![],
-            capabilities: vec![],
-            config_schema: serde_json::json!({}),
-        });
+        let manifest: McpManifest =
+            serde_json::from_str(&manifest_json).unwrap_or_else(|_| McpManifest {
+                schema_version: "1".to_string(),
+                entrypoint: "".to_string(),
+                runtime: McpRuntime::V8Isolate,
+                auth_schema: vec![],
+                capabilities: vec![],
+                config_schema: serde_json::json!({}),
+            });
 
         let cache_dir = self.cache_dir().context("no installer configured")?;
         let installer = McpInstaller::new(cache_dir);
@@ -701,14 +710,12 @@ impl McpManager {
         };
         let installed = installer.install(&server).await?;
         let (command, args) = installed.runtime_command();
-        let env = server.credentials_key
+        let env = server
+            .credentials_key
             .as_ref()
             .and_then(|s| serde_json::from_str::<std::collections::HashMap<String, String>>(s).ok())
             .unwrap_or_default();
-        let client = McpClient::spawn_owned(&command,
-            &args,
-            env,
-        )?;
+        let client = McpClient::spawn_owned(&command, &args, env)?;
         client.initialize()?;
         client.call_tool(tool_name, arguments)
     }

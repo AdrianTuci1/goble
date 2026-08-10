@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 
 pub mod state;
 pub mod ssh_installer;
+pub mod thread_store;
 pub mod worker_manager;
+
 
 #[derive(Deserialize)]
 struct AddWorkerRequest {
@@ -666,6 +668,372 @@ fn run_harness(
     Ok(())
 }
 
+
+#[derive(Deserialize)]
+pub struct CreateThreadRequest {
+    kind: goble_core::thread::ThreadKind,
+    title: String,
+    participants: Vec<goble_core::thread::Participant>,
+    tags: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ThreadSummary {
+    id: String,
+    kind: String,
+    title: String,
+    owner_id: String,
+    participants: Vec<goble_core::thread::Participant>,
+    tags: Vec<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+impl From<goble_core::thread::Thread> for ThreadSummary {
+    fn from(t: goble_core::thread::Thread) -> Self {
+        Self {
+            id: t.id.0,
+            kind: format!("{:?}", t.kind).to_lowercase(),
+            title: t.title,
+            owner_id: t.owner_id.0,
+            participants: t.participants,
+            tags: t.tags,
+            created_at: t.created_at.to_rfc3339(),
+            updated_at: t.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct ThreadMessageSummary {
+    id: String,
+    thread_id: String,
+    author: goble_core::thread::Participant,
+    content: String,
+    reply_to: Option<String>,
+    tags: Vec<String>,
+    participant_mentions: Vec<String>,
+    reactions: Vec<ThreadReactionSummary>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Serialize)]
+pub struct ThreadReactionSummary {
+    emoji: String,
+    participant_id: String,
+}
+
+impl From<goble_core::thread::ThreadMessage> for ThreadMessageSummary {
+    fn from(m: goble_core::thread::ThreadMessage) -> Self {
+        Self {
+            id: m.id.0,
+            thread_id: m.thread_id.0,
+            author: m.author,
+            content: m.content,
+            reply_to: m.reply_to.map(|r| r.0),
+            tags: m.tags,
+            participant_mentions: m.participant_mentions.iter().map(|p| p.to_string()).collect(),
+            reactions: m
+                .reactions
+                .into_iter()
+                .map(|r| ThreadReactionSummary {
+                    emoji: r.emoji,
+                    participant_id: r.participant_id.to_string(),
+                })
+                .collect(),
+            created_at: m.created_at.to_rfc3339(),
+            updated_at: m.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+#[tauri::command]
+fn list_threads(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Vec<ThreadSummary> {
+    state
+        .thread_store()
+        .list_threads()
+        .into_iter()
+        .map(ThreadSummary::from)
+        .collect()
+}
+
+#[tauri::command]
+fn create_thread(
+    req: CreateThreadRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<ThreadSummary, String> {
+    let owner_id = state
+        .thread_store()
+        .get_profile()
+        .map(|p| goble_core::thread::UserId(p.id.to_string()))
+        .unwrap_or_else(|| goble_core::thread::UserId::generate());
+    let thread = state
+        .thread_store()
+        .create_thread(req.kind, req.title, owner_id, req.participants, req.tags)
+        .map(ThreadSummary::from)
+        .map_err(|e| e.to_string())?;
+    state.emit("threads:updated", ());
+    Ok(thread)
+}
+
+#[derive(Deserialize)]
+pub struct ThreadIdRequest {
+    thread_id: String,
+}
+
+#[tauri::command]
+fn delete_thread(
+    req: ThreadIdRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> bool {
+    state.thread_store().delete_thread(&goble_core::thread::ThreadId(req.thread_id))
+}
+
+#[derive(Deserialize)]
+pub struct AddThreadParticipantRequest {
+    thread_id: String,
+    participant: goble_core::thread::Participant,
+}
+
+#[tauri::command]
+fn add_thread_participant(
+    req: AddThreadParticipantRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state
+        .thread_store()
+        .add_participant(&goble_core::thread::ThreadId(req.thread_id), req.participant)
+        .map_err(|e| e.to_string())?;
+    state.emit("threads:updated", ());
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct RemoveThreadParticipantRequest {
+    thread_id: String,
+    participant_id: String,
+}
+
+#[tauri::command]
+fn remove_thread_participant(
+    req: RemoveThreadParticipantRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state
+        .thread_store()
+        .remove_participant(
+            &goble_core::thread::ThreadId(req.thread_id),
+            &goble_core::thread::ParticipantId(req.participant_id),
+        )
+        .map_err(|e| e.to_string())?;
+    state.emit("threads:updated", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn get_thread_participants(
+    req: ThreadIdRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<goble_core::thread::Participant>, String> {
+    state
+        .thread_store()
+        .list_participants(&goble_core::thread::ThreadId(req.thread_id))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_thread_messages(
+    req: ThreadIdRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<Vec<ThreadMessageSummary>, String> {
+    state
+        .thread_store()
+        .list_messages(&goble_core::thread::ThreadId(req.thread_id))
+        .map(|messages| messages.into_iter().map(ThreadMessageSummary::from).collect())
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+pub struct PostMessageRequest {
+    thread_id: String,
+    content: String,
+    reply_to: Option<String>,
+    tags: Vec<String>,
+    mentions: Vec<String>,
+}
+
+#[tauri::command]
+fn post_thread_message(
+    req: PostMessageRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<ThreadMessageSummary, String> {
+    let author = state
+        .thread_store()
+        .get_profile()
+        .map(|p| goble_core::thread::Participant::User(goble_core::thread::UserId(p.id.to_string())))
+        .unwrap_or_else(|| goble_core::thread::Participant::User(goble_core::thread::UserId::generate()));
+    let reply_to = req.reply_to.map(goble_core::thread::MessageId);
+    let mentions = req
+        .mentions
+        .into_iter()
+        .map(goble_core::thread::ParticipantId)
+        .collect();
+    let thread_id = goble_core::thread::ThreadId(req.thread_id.clone());
+    let message = state
+        .thread_store()
+        .post_message(
+            &thread_id,
+            author,
+            req.content,
+            reply_to,
+            req.tags,
+            mentions,
+        )
+        .map(ThreadMessageSummary::from)
+        .map_err(|e| e.to_string())?;
+    state.emit("thread:messages:updated", ThreadMessagesUpdatedPayload { thread_id: req.thread_id });
+    Ok(message)
+}
+
+#[derive(Serialize, Clone)]
+struct ThreadMessagesUpdatedPayload {
+    thread_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct ReactionRequest {
+    thread_id: String,
+    message_id: String,
+    emoji: String,
+}
+
+#[tauri::command]
+fn add_thread_reaction(
+    req: ReactionRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    let participant_id = state
+        .thread_store()
+        .get_profile()
+        .map(|p| goble_core::thread::ParticipantId::user(p.id.to_string()))
+        .unwrap_or_else(|| goble_core::thread::ParticipantId::user(goble_core::thread::UserId::generate().to_string()));
+    state
+        .thread_store()
+        .add_reaction(
+            &goble_core::thread::ThreadId(req.thread_id.clone()),
+            &goble_core::thread::MessageId(req.message_id),
+            participant_id,
+            req.emoji,
+        )
+        .map_err(|e| e.to_string())?;
+    state.emit("thread:messages:updated", ThreadMessagesUpdatedPayload { thread_id: req.thread_id });
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_thread_reaction(
+    req: ReactionRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    let participant_id = state
+        .thread_store()
+        .get_profile()
+        .map(|p| goble_core::thread::ParticipantId::user(p.id.to_string()))
+        .unwrap_or_else(|| goble_core::thread::ParticipantId::user(goble_core::thread::UserId::generate().to_string()));
+    state
+        .thread_store()
+        .remove_reaction(
+            &goble_core::thread::ThreadId(req.thread_id.clone()),
+            &goble_core::thread::MessageId(req.message_id),
+            &participant_id,
+            &req.emoji,
+        )
+        .map_err(|e| e.to_string())?;
+    state.emit("thread:messages:updated", ThreadMessagesUpdatedPayload { thread_id: req.thread_id });
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct UserProfileRequest {
+    name: String,
+    email: String,
+    avatar_url: Option<String>,
+    public_key_pem: Option<String>,
+}
+
+#[tauri::command]
+fn get_user_profile(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<goble_core::user::UserProfile, String> {
+    state
+        .thread_store()
+        .get_profile()
+        .ok_or_else(|| "profile not found".to_string())
+}
+
+#[tauri::command]
+fn set_user_profile(
+    req: UserProfileRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    let id = state
+        .thread_store()
+        .get_profile()
+        .map(|p| p.id)
+        .unwrap_or_else(goble_core::principal::PrincipalId::generate);
+    let mut profile = goble_core::user::UserProfile::new(id, req.name, req.email);
+    if let Some(url) = req.avatar_url {
+        profile = profile.with_avatar_url(url);
+    }
+    if let Some(pem) = req.public_key_pem {
+        profile = profile.with_public_key(pem);
+    }
+    state.thread_store().set_profile(profile).map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+pub struct AuthorizedKeyRequest {
+    id: String,
+    name: String,
+    public_key_pem: String,
+    fingerprint: String,
+    thread_ids: Vec<String>,
+}
+
+#[tauri::command]
+fn list_authorized_keys(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Vec<goble_core::user::AuthorizedKey> {
+    state.thread_store().list_authorized_keys()
+}
+
+#[tauri::command]
+fn add_authorized_key(
+    req: AuthorizedKeyRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    let mut key = goble_core::user::AuthorizedKey::new(
+        req.id,
+        req.name,
+        req.public_key_pem,
+        req.fingerprint,
+    );
+    key.thread_ids = req.thread_ids;
+    state.thread_store().add_authorized_key(key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_authorized_key(
+    id: String,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> bool {
+    state.thread_store().remove_authorized_key(&id)
+}
+
+
 pub fn run() {
     let state = state::DesktopState::open_default().expect("open store");
     let state_for_setup: Arc<state::DesktopState> = Arc::clone(&state);
@@ -721,7 +1089,22 @@ pub fn run() {
             create_cluster,
             import_cluster_key,
             export_cluster_key,
-            export_cluster_backup
+            export_cluster_backup,
+            list_threads,
+            create_thread,
+            delete_thread,
+            add_thread_participant,
+            remove_thread_participant,
+            get_thread_participants,
+            get_thread_messages,
+            post_thread_message,
+            add_thread_reaction,
+            remove_thread_reaction,
+            get_user_profile,
+            set_user_profile,
+            list_authorized_keys,
+            add_authorized_key,
+            remove_authorized_key
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

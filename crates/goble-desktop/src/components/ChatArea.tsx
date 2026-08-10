@@ -1,273 +1,193 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import './ChatArea.css';
-import { useStore, type ChatMessage } from '../stores/appStore';
+import { useStore, type Participant, type ThreadMessageSummary } from '../stores/appStore';
 import {
-  createChat,
-  runAgent,
-  addChatMessage,
-  onChatUpdated,
-  onAgentLog,
-  onAgentStarted,
-  onAgentFinished,
+  getThreadMessages,
+  postThreadMessage,
+  addThreadParticipant,
+  getThreadParticipants,
+  onThreadMessagesUpdated,
+  onThreadsUpdated,
+  listThreads,
+  extractMentions,
 } from '../tauri/api';
-import { uid, hslHash, getInitials } from '../utils/designSystem';
-import { flowsData, type FlowInfo } from '../mocks/flowsData';
-import { agentsData, type Agent } from '../mocks/agentsData';
+import { uid, getInitials } from '../utils/designSystem';
 
 interface ChatAreaProps {
   threadsActive?: boolean;
 }
 
+function participantToString(p: Participant): string {
+  return `${p.kind}:${p.id}`;
+}
+
 export default function ChatArea({ threadsActive }: ChatAreaProps) {
   void threadsActive;
-  const navigate = useNavigate();
-  const [params] = useSearchParams();
-  const agentId = params.get('agent');
-  const flowId = params.get('flow');
-
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [input, setInput] = useState('');
-  const [typing, setTyping] = useState(false);
-  const [renderMode, setRenderMode] = useState<{ mode: string; label: string } | null>(null);
-  const [selectedVariant, setSelectedVariant] = useState<{ question: string; choices: string[]; handler: (choice: string) => void } | null>(null);
-  const [confirmation, setConfirmation] = useState<{ id: string; title: string; message: string; actions: string[]; handler: (action: string) => void } | null>(null);
-  const [activeTrace, setActiveTrace] = useState<string | null>(null);
-  void activeTrace;
+  const [loading, setLoading] = useState(false);
+  const [showMentionPicker, setShowMentionPicker] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionIndex, setMentionIndex] = useState(0);
 
-  const activeConversationId = useStore((s) => s.activeConversationId);
-  const conversations = useStore((s) => s.conversations);
-  const messages = useStore((s) => s.messages[activeConversationId || ''] || []);
-  const setActiveConversation = useStore((s) => s.setActiveConversation);
-  const addConversation = useStore((s) => s.addConversation);
-  const setMessages = useStore((s) => s.setMessages);
-  const addMessage = useStore((s) => s.addMessage);
-  const updateMessage = useStore((s) => s.updateMessage);
+  const threads = useStore((s) => s.threads);
+  const activeThreadId = useStore((s) => s.activeThreadId);
+  const threadMessages = useStore((s) => s.threadMessages[activeThreadId || ''] || []);
+  const threadParticipants = useStore((s) => s.threadParticipants[activeThreadId || ''] || []);
+  const replyToMessageId = useStore((s) => s.replyToMessageId);
+  const pendingTags = useStore((s) => s.pendingTags);
+  const agents = useStore((s) => s.agents);
+  const userProfile = useStore((s) => s.userProfile);
+  const setThreads = useStore((s) => s.setThreads);
+  const setThreadMessages = useStore((s) => s.setThreadMessages);
+  const addThreadMessage = useStore((s) => s.addThreadMessage);
+  const setThreadParticipants = useStore((s) => s.setThreadParticipants);
+  const setActiveThreadId = useStore((s) => s.setActiveThreadId);
+  const setReplyToMessageId = useStore((s) => s.setReplyToMessageId);
+  const togglePendingTag = useStore((s) => s.togglePendingTag);
+  const setPendingTags = useStore((s) => s.setPendingTags);
+  const setParticipantsPanelOpen = useStore((s) => s.setParticipantsPanelOpen);
   const setRightSidebarOpen = useStore((s) => s.setRightSidebarOpen);
   const setRightSidebarTab = useStore((s) => s.setRightSidebarTab);
-  const setHistoryDetailId = useStore((s) => s.setHistoryDetailId);
-  const setSelectedFlowId = useStore((s) => s.setSelectedFlowId);
 
-  const activeConversation = conversations.find((c) => c.id === activeConversationId);
-
-  useEffect(() => {
-    function onNewChat() {
-      handleNewChat();
-    }
-    window.addEventListener('goble:new-chat', onNewChat);
-    return () => window.removeEventListener('goble:new-chat', onNewChat);
-  }, []);
+  const activeThread = threads.find((t) => t.id === activeThreadId);
+  const messages = threadMessages;
 
   useEffect(() => {
-    if (!activeConversationId) {
-      const first = conversations[0];
-      if (first) setActiveConversation(first.id);
+    listThreads().then(setThreads).catch(() => {});
+  }, [setThreads]);
+
+  useEffect(() => {
+    if (!activeThreadId) {
+      const first = threads[0];
+      if (first) setActiveThreadId(first.id);
+      return;
     }
-  }, [activeConversationId, conversations, setActiveConversation]);
+    getThreadMessages(activeThreadId).then((msgs) => setThreadMessages(activeThreadId, msgs)).catch(() => {});
+    getThreadParticipants(activeThreadId).then((parts) => setThreadParticipants(activeThreadId, parts)).catch(() => {});
+  }, [activeThreadId, threads, setThreadMessages, setThreadParticipants, setActiveThreadId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   useEffect(() => {
-    if (agentId) {
-      const agent = agentsData.find((a: Agent) => a.id === agentId);
-      if (agent) startAgentChat(agent.id, agent.name);
-      navigate('/chat', { replace: true });
-    } else if (flowId) {
-      startFlowChat(flowId);
-      navigate('/chat', { replace: true });
-    }
-  }, [agentId, flowId]);
-
-  useEffect(() => {
-    const unsubs: (() => void)[] = [];
+    let unsubs: (() => void)[] = [];
     (async () => {
-      unsubs.push(await onChatUpdated((event) => {
-        const payload = event.payload as { chat_id?: string; message?: ChatMessage };
-        if (payload.chat_id && payload.message) {
-          addMessage(payload.chat_id, payload.message);
-        }
-      }));
-      unsubs.push(await onAgentLog((event) => {
-        const payload = event.payload as { trace_id?: string; message?: string };
-        if (payload.trace_id && payload.message) {
-          updateMessage(activeConversationId || '', payload.trace_id, (prev) => prev + payload.message);
-        }
-      }));
-      unsubs.push(await onAgentStarted((event) => {
-        const payload = event.payload as { trace_id?: string; agent_id?: string };
-        if (payload.trace_id && payload.agent_id) {
-          setActiveTrace(payload.trace_id);
-          addMessage(activeConversationId || '', {
-            id: payload.trace_id,
-            role: 'assistant',
-            content: '',
-            created_at: new Date().toISOString(),
-          });
-          setTyping(true);
-          setRightSidebarOpen(true);
-          setRightSidebarTab('history');
-          setHistoryDetailId(payload.trace_id);
-        }
-      }));
-      unsubs.push(await onAgentFinished((event) => {
-        const payload = event.payload as { trace_id?: string; status?: string };
-        if (payload.trace_id) {
-          setTyping(false);
-          updateMessage(activeConversationId || '', payload.trace_id, (prev) =>
-            prev ? prev : payload.status || 'Done'
-          );
-        }
+      unsubs.push(await onThreadsUpdated(() => listThreads().then(setThreads).catch(() => {})));
+      unsubs.push(await onThreadMessagesUpdated((event) => {
+        const threadId = event.payload.thread_id;
+        getThreadMessages(threadId).then((msgs) => setThreadMessages(threadId, msgs)).catch(() => {});
       }));
     })();
     return () => unsubs.forEach((u) => u());
-  }, [activeConversationId]);
-
-  async function handleNewChat() {
-    try {
-      const chatId = await createChat('New chat', 'openai', 'gpt-4o-mini');
-      addConversation({ id: chatId, title: 'New chat', provider: 'openai', model: 'gpt-4o-mini', updated_at: new Date().toISOString() });
-      setActiveConversation(chatId);
-      setMessages(chatId, []);
-      inputRef.current?.focus();
-    } catch {
-      const chatId = uid();
-      addConversation({ id: chatId, title: 'New chat', provider: 'openai', model: 'gpt-4o-mini', updated_at: new Date().toISOString() });
-      setActiveConversation(chatId);
-      setMessages(chatId, []);
-      inputRef.current?.focus();
-    }
-  }
-
-  async function startAgentChat(agentId: string, title: string) {
-    if (!activeConversationId) await handleNewChat();
-    const chatId = activeConversationId || uid();
-    if (!activeConversation) {
-      addConversation({ id: chatId, title, provider: 'openai', model: 'gpt-4o-mini', updated_at: new Date().toISOString() });
-      setActiveConversation(chatId);
-    }
-    addMessage(chatId, {
-      id: uid(),
-      role: 'system',
-      content: `Started ${title} agent.`,
-      created_at: new Date().toISOString(),
-    });
-    try {
-      await runAgent('local', chatId, agentId, 'start');
-    } catch {
-      setTimeout(() => simulateFlow(chatId, agentId), 300);
-    }
-  }
-
-  async function startFlowChat(flowId: string) {
-    if (!activeConversationId) await handleNewChat();
-    const chatId = activeConversationId || uid();
-    const flow = flowsData.find((f: FlowInfo) => f.id === flowId);
-    if (!activeConversation) {
-      addConversation({ id: chatId, title: flow?.title || flowId, provider: 'openai', model: 'gpt-4o-mini', updated_at: new Date().toISOString() });
-      setActiveConversation(chatId);
-    }
-    setSelectedFlowId(flowId);
-    setRightSidebarOpen(true);
-    setRightSidebarTab('info');
-    simulateFlow(chatId, flowId);
-  }
-
-  async function simulateFlow(chatId: string, flowId: string) {
-    const agent = agentsData.find((a: Agent) => a.id === flowId);
-    if (agent) {
-      addMessage(chatId, {
-        id: uid(),
-        role: 'assistant',
-        content: agent.description,
-        created_at: new Date().toISOString(),
-      });
-    }
-    const flow = flowsData.find((f: FlowInfo) => f.id === flowId);
-    if (flow) {
-      addMessage(chatId, {
-        id: uid(),
-        role: 'assistant',
-        content: `Flow: **${flow.title}**\nCreated by ${flow.meta.createdBy}\nIntegrations: ${flow.meta.integrations.join(', ')}\nSchedule: ${flow.meta.cron}`,
-        created_at: new Date().toISOString(),
-      });
-    }
-  }
+  }, [setThreads, setThreadMessages]);
 
   async function handleSend() {
-    if (!input.trim() || !activeConversationId) return;
+    if (!input.trim() || !activeThreadId) return;
     const text = input.trim();
     setInput('');
-    addMessage(activeConversationId, {
-      id: uid(),
-      role: 'user',
-      content: text,
-      created_at: new Date().toISOString(),
-    });
+    setLoading(true);
     try {
-      await addChatMessage(activeConversationId, 'user', text);
-    } catch {
-      // fallback: demo mode, generate a local reply
-    }
-    setTyping(true);
-    setTimeout(() => {
-      setTyping(false);
-      addMessage(activeConversationId, {
-        id: uid(),
-        role: 'assistant',
-        content: 'Received: ' + text,
-        created_at: new Date().toISOString(),
+      const mentions = extractMentions(text);
+      const message = await postThreadMessage(activeThreadId, text, {
+        reply_to: replyToMessageId ?? undefined,
+        tags: pendingTags,
+        mentions,
       });
-    }, 600);
+      addThreadMessage(activeThreadId, message);
+      setReplyToMessageId(null);
+      setPendingTags([]);
+    } catch (e) {
+      // fallback: add local optimistic message
+      addThreadMessage(activeThreadId, {
+        id: uid(),
+        thread_id: activeThreadId,
+        author: userProfile ? { kind: 'user', id: userProfile.id } : { kind: 'user', id: 'me' },
+        content: text,
+        reply_to: replyToMessageId,
+        tags: pendingTags,
+        participant_mentions: [],
+        reactions: [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } as ThreadMessageSummary);
+    } finally {
+      setLoading(false);
+    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    } else if (showMentionPicker) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionIndex((i) => (i + 1) % mentionOptions.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionIndex((i) => (i - 1 + mentionOptions.length) % mentionOptions.length);
+      } else if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        insertMention(mentionOptions[mentionIndex]);
+      } else if (e.key === 'Escape') {
+        setShowMentionPicker(false);
+      }
     }
   }
 
-  function handleCancel() {
-    setTyping(false);
-    setRenderMode(null);
-    setActiveTrace(null);
+  const allMentionables: Participant[] = [
+    ...threadParticipants,
+    ...agents.map((a) => ({ kind: 'agent' as const, id: a.spec.id['0'] })),
+  ];
+  const uniqueMentionables = allMentionables.filter(
+    (p, idx, arr) => arr.findIndex((x) => participantToString(x) === participantToString(p)) === idx
+  );
+  const mentionOptions = uniqueMentionables.filter((p) => {
+    const q = mentionQuery.toLowerCase();
+    return p.id.toLowerCase().includes(q) || p.kind.toLowerCase().includes(q);
+  });
+
+  function onInputChange(value: string) {
+    setInput(value);
+    const lastAt = value.lastIndexOf('@');
+    if (lastAt >= 0 && lastAt === value.length - 1) {
+      setShowMentionPicker(true);
+      setMentionQuery('');
+      setMentionIndex(0);
+    } else if (lastAt >= 0 && !value.slice(lastAt + 1).includes(' ')) {
+      setShowMentionPicker(true);
+      setMentionQuery(value.slice(lastAt + 1));
+      setMentionIndex(0);
+    } else {
+      setShowMentionPicker(false);
+    }
   }
 
-  function handleVariantChoice(choice: string) {
-    if (!selectedVariant) return;
-    setSelectedVariant(null);
-    addMessage(activeConversationId || '', {
-      id: uid(),
-      role: 'user',
-      content: choice,
-      created_at: new Date().toISOString(),
-    });
-    selectedVariant.handler(choice);
+  function insertMention(p: Participant) {
+    const lastAt = input.lastIndexOf('@');
+    const prefix = input.slice(0, lastAt);
+    const suffix = input.slice(lastAt + 1 + mentionQuery.length);
+    setInput(`${prefix}@${p.kind}:${p.id}${suffix} `);
+    setShowMentionPicker(false);
+    inputRef.current?.focus();
   }
 
-  function handleConfirm(action: string) {
-    if (!confirmation) return;
-    setConfirmation(null);
-    addMessage(activeConversationId || '', {
-      id: uid(),
-      role: 'user',
-      content: action,
-      created_at: new Date().toISOString(),
-    });
-    confirmation.handler(action);
+  async function inviteAgentToThread(agentId: string) {
+    if (!activeThreadId) return;
+    await addThreadParticipant(activeThreadId, { kind: 'agent', id: agentId });
+    const parts = await getThreadParticipants(activeThreadId);
+    setThreadParticipants(activeThreadId, parts);
   }
 
-  if (!activeConversationId) {
+  if (!activeThreadId) {
     return (
       <div className="chat-view empty">
         <div className="chat-welcome">
           <div className="chat-welcome-logo">G</div>
           <h2>Welcome to Goble</h2>
-          <p>Choose an agent from the sidebar or start a new chat.</p>
-          <button className="btn" onClick={handleNewChat}>Start new chat</button>
+          <p>Choose a thread from the sidebar or start a new conversation.</p>
         </div>
       </div>
     );
@@ -277,10 +197,11 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
     <div className="chat-view">
       <div className="chat-header">
         <div className="chat-header-info">
-          <span className="chat-header-title">{activeConversation?.title || 'Chat'}</span>
-          <span className="chat-header-meta">{activeConversation?.model || 'gpt-4o-mini'}</span>
+          <span className="chat-header-title">{activeThread?.title || 'Thread'}</span>
+          <span className="chat-header-meta">{activeThread?.kind}</span>
         </div>
         <div className="chat-header-actions">
+          <button className="chat-header-btn" onClick={() => setParticipantsPanelOpen(true)} title="Participants">👤</button>
           <button className="chat-header-btn" onClick={() => { setRightSidebarOpen(true); setRightSidebarTab('info'); }} title="Info">ℹ️</button>
           <button className="chat-header-btn" onClick={() => { setRightSidebarOpen(true); setRightSidebarTab('history'); }} title="History">📜</button>
         </div>
@@ -293,121 +214,130 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
           </div>
         )}
         {messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
+          <MessageBubble key={m.id} message={m} onReply={() => setReplyToMessageId(m.id)} onMentionAgent={inviteAgentToThread} />
         ))}
-        {typing && (
+        {loading && (
           <div className="message assistant">
             <div className="message-avatar" style={{ background: '#9ca3af' }}>AI</div>
             <div className="message-content">
-              <div className="typing-indicator">
-                <span /><span /><span />
-              </div>
-            </div>
-          </div>
-        )}
-        {renderMode && (
-          <div className="render-mode">
-            <span className="render-dot" />
-            <span className="render-label">{renderMode.label}</span>
-          </div>
-        )}
-        {selectedVariant && (
-          <div className="variant-card">
-            <div className="variant-question">{selectedVariant.question}</div>
-            <div className="variant-choices">
-              {selectedVariant.choices.map((choice) => (
-                <button key={choice} className="variant-choice" onClick={() => handleVariantChoice(choice)}>
-                  {choice}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        {confirmation && (
-          <div className="confirmation-card">
-            <div className="confirmation-title">{confirmation.title}</div>
-            <div className="confirmation-message">{confirmation.message}</div>
-            <div className="confirmation-actions">
-              {confirmation.actions.map((action) => (
-                <button key={action} className={`btn ${action === 'Cancel' ? 'secondary' : ''}`} onClick={() => handleConfirm(action)}>
-                  {action}
-                </button>
-              ))}
+              <div className="typing-indicator"><span /><span /><span /></div>
             </div>
           </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
+      {replyToMessageId && (
+        <div className="composer-context">
+          Replying to {messages.find((m) => m.id === replyToMessageId)?.author.id}
+          <button className="cancel-reply" onClick={() => setReplyToMessageId(null)}>×</button>
+        </div>
+      )}
+
       <div className="chat-composer">
-        <div className="composer-row">
+        <div className="composer-row" style={{ position: 'relative' }}>
           <input
             ref={inputRef}
             className="composer-input"
             placeholder="Message..."
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => onInputChange(e.target.value)}
             onKeyDown={handleKeyDown}
           />
-          <button className="composer-send" onClick={handleSend} disabled={!input.trim() || typing}>
-            ↑
-          </button>
+          <button className="composer-send" onClick={handleSend} disabled={!input.trim() || loading}>↑</button>
+          {showMentionPicker && mentionOptions.length > 0 && (
+            <div className="mention-picker">
+              {mentionOptions.map((p, idx) => (
+                <div
+                  key={participantToString(p)}
+                  className={`mention-option ${idx === mentionIndex ? 'selected' : ''}`}
+                  onClick={() => insertMention(p)}
+                >
+                  {p.kind === 'agent' ? '🤖' : '👤'} {p.id}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div className="composer-toolbar">
           <div className="composer-toolbar-left">
-            <button title="Mention">@</button>
+            <button title="Mention" onClick={() => setInput((v) => v + '@')}>@</button>
             <button title="Attach">📎</button>
             <button title="Emoji">☺</button>
-            <button title="Tag">#</button>
+            <button title="Tag" className={pendingTags.length ? 'active' : ''} onClick={() => togglePendingTag('#todo')}>#</button>
             <button title="Format">Aa</button>
           </div>
-          {typing && <button className="composer-cancel" onClick={handleCancel}>Cancel</button>}
+          {loading && <button className="composer-cancel" onClick={() => setLoading(false)}>Cancel</button>}
         </div>
       </div>
     </div>
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
-  const isUser = message.role === 'user';
-  const isSystem = message.role === 'system';
-  const author = isUser ? 'You' : isSystem ? 'System' : 'Assistant';
-  const color = isUser ? '#22c55e' : isSystem ? '#6b7280' : '#9ca3af';
+function MessageBubble({
+  message,
+  onReply,
+  onMentionAgent,
+}: {
+  message: ThreadMessageSummary;
+  onReply: () => void;
+  onMentionAgent: (id: string) => void;
+}) {
+  const isMe = message.author.kind === 'user';
+  const author = message.author.id;
+  const color = isMe ? '#22c55e' : message.author.kind === 'agent' ? '#10b981' : '#9ca3af';
   const initials = getInitials(author);
 
   return (
-    <div className={`message ${isUser ? 'user' : isSystem ? 'system' : 'assistant'}`}>
+    <div className={`message ${isMe ? 'user' : 'assistant'}`}>
       <div className="message-avatar" style={{ background: color }} title={author}>
         {initials}
       </div>
       <div className="message-body">
         <div className="message-meta">
-          <span className="message-author">{author}</span>
+          <span className="message-author">{message.author.kind === 'agent' ? '🤖 ' : ''}{author}</span>
+          {message.reply_to && <span className="reply-badge">↳ reply</span>}
         </div>
         <div className="message-content">
-          <RichText text={message.content} />
+          <RichText text={message.content} onMentionAgent={onMentionAgent} />
+        </div>
+        {message.tags.length > 0 && (
+          <div className="message-tags">
+            {message.tags.map((t) => <span key={t} className="message-tag">{t}</span>)}
+          </div>
+        )}
+        <div className="message-footer">
+          <button className="msg-action reply-btn" onClick={onReply}>Reply</button>
+          {message.reactions.map((r) => (
+            <button key={r.participant_id + r.emoji} className="reaction">{r.emoji}</button>
+          ))}
         </div>
       </div>
     </div>
   );
 }
 
-function RichText({ text }: { text: string }) {
+function RichText({ text, onMentionAgent }: { text: string; onMentionAgent: (id: string) => void }) {
   if (!text) return null;
-  if (text.startsWith('```') || text.includes('`')) {
-    return <pre className="code-block">{text}</pre>;
-  }
-  return <div className="rich-text" dangerouslySetInnerHTML={{ __html: simpleHtml(text) }} />;
-}
-
-function simpleHtml(md: string) {
-  return md
+  const html = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/\u003e/g, '&gt;')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/`(.+?)`/g, '<code>$1</code>')
+    .replace(/@agent:([a-zA-Z0-9_-]+)/g, '<span class="mention-agent" data-agent="$1">@$1</span>')
+    .replace(/@user:([a-zA-Z0-9_-]+)/g, '<span class="mention-user">@$1</span>')
     .replace(/\n/g, '<br />');
+  return (
+    <div
+      className="rich-text"
+      dangerouslySetInnerHTML={{ __html: html }}
+      onClick={(e) => {
+        const target = e.target as HTMLElement;
+        if (target.classList.contains('mention-agent')) {
+          onMentionAgent(target.dataset.agent || '');
+        }
+      }}
+    />
+  );
 }
-
-export { uid, hslHash, getInitials };

@@ -7,11 +7,12 @@ use futures::SinkExt;
 use goble_core::agent::{AgentSpec, Trigger};
 use goble_core::crypto::{generate_pairing_code, hash_pairing_code};
 use goble_core::protocol::DesktopMessage;
+use goble_core::provision::{
+    self, provision_worker, LocalTransport, ProvisionConfig, SshTransport,
+};
 use goble_core::store::Store;
 use goble_core::tls::{CertGenerator, PairingBundle};
-use goble_core::provision::{self, LocalTransport, SshTransport, ProvisionConfig, provision_worker};
 use goble_core::worker::{WorkerConfig, WorkerId};
-
 
 #[derive(Parser, Debug)]
 #[command(name = "goble-cli")]

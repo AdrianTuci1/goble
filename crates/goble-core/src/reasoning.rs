@@ -8,11 +8,12 @@ use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::harness::{
-    arc_to_sender_ref, execute_tool_call, harness_tool_definitions, HarnessEvent, HARNESS_SYSTEM_PROMPT,
-    ThinkingMode,
+    arc_to_sender_ref, execute_tool_call, harness_tool_definitions, HarnessEvent, ThinkingMode,
+    HARNESS_SYSTEM_PROMPT,
 };
 use crate::llm::{
-    CompletionRequest, CompletionStreamEvent, LlmProvider, LlmToolCall, Message, Role, ToolDefinition,
+    CompletionRequest, CompletionStreamEvent, LlmProvider, LlmToolCall, Message, Role,
+    ToolDefinition,
 };
 use crate::mcp_manager::McpManager;
 use crate::protocol::DesktopMessage;
@@ -74,7 +75,8 @@ pub fn build_reasoning_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "continue_thinking".to_string(),
-            description: "Continue reasoning for another step. Optionally provide a focus prompt.".to_string(),
+            description: "Continue reasoning for another step. Optionally provide a focus prompt."
+                .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -134,11 +136,7 @@ pub fn build_reasoning_tools() -> Vec<ToolDefinition> {
     ]
 }
 
-fn build_reasoning_prompt(
-    mode: ThinkingMode,
-    goal: &str,
-    steps: &[ReasoningStep],
-) -> String {
+fn build_reasoning_prompt(mode: ThinkingMode, goal: &str, steps: &[ReasoningStep]) -> String {
     let mut prompt = format!(
         "You are in thinking mode: {}.\n{}\n\n",
         mode.as_str(),
@@ -147,7 +145,9 @@ fn build_reasoning_prompt(
     prompt.push_str("You are orchestrating a complex task. You may call reasoning tools: set_thinking_mode, continue_thinking, execute, ask_user, create_mission, update_mission.\n");
     prompt.push_str("Rules:\n");
     prompt.push_str("- If you need more information, call ask_user.\n");
-    prompt.push_str("- If you need to keep reasoning, call continue_thinking or set_thinking_mode.\n");
+    prompt.push_str(
+        "- If you need to keep reasoning, call continue_thinking or set_thinking_mode.\n",
+    );
     prompt.push_str("- When you are ready to act (call tools, create agents/workflows, deploy), call execute.\n");
     prompt.push_str("- Track the overall goal using create_mission / update_mission.\n\n");
     prompt.push_str(&format!("Current goal: {goal}\n\n"));
@@ -166,29 +166,28 @@ fn build_reasoning_prompt(
     prompt
 }
 
-fn build_execution_prompt(
-    goal: &str,
-    reasoning_steps: &[ReasoningStep],
-) -> String {
-    let mut prompt = format!(
-        "You are now executing. The goal is: {goal}\n\nReasoning summary:\n"
-    );
+fn build_execution_prompt(goal: &str, reasoning_steps: &[ReasoningStep]) -> String {
+    let mut prompt = format!("You are now executing. The goal is: {goal}\n\nReasoning summary:\n");
     for step in reasoning_steps.iter().rev().take(6) {
         let content = step.content.chars().take(200).collect::<String>();
-        prompt.push_str(&format!("- [{}] {}: {}\n", step.step, step.mode.as_str(), content));
+        prompt.push_str(&format!(
+            "- [{}] {}: {}\n",
+            step.step,
+            step.mode.as_str(),
+            content
+        ));
     }
     prompt.push_str("\nUse available tools to create agents, workflows, discover MCPs, install/connect MCPs, deploy to workers, and schedule workflows.\n");
     prompt.push_str("Only call a tool when you have enough information. If still missing info, ask the user instead.\n");
     prompt
 }
 
-fn load_or_create_mission(
-    store: &Store,
-    chat_id: &str,
-    goal: &str,
-) -> Result<MissionState> {
+fn load_or_create_mission(store: &Store, chat_id: &str, goal: &str) -> Result<MissionState> {
     let missions = store.list_missions()?;
-    if let Some(mission) = missions.into_iter().find(|m| m.1 == chat_id && m.3 != "done") {
+    if let Some(mission) = missions
+        .into_iter()
+        .find(|m| m.1 == chat_id && m.3 != "done")
+    {
         let reasoning = store
             .list_reasoning_steps(&mission.0)?
             .into_iter()
@@ -780,14 +779,9 @@ mod tests {
     fn chat(store: &Store) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        store.insert_chat(
-            &id,
-            "test",
-            None,
-            None,
-            &now,
-            &now,
-        ).unwrap();
+        store
+            .insert_chat(&id, "test", None, None, &now, &now)
+            .unwrap();
         id
     }
 
@@ -828,7 +822,9 @@ mod tests {
             .run_turn(&chat_id, "build a daily report workflow", "mock", "mock")
             .collect()
             .await;
-        assert!(events.iter().any(|e| matches!(e, HarnessEvent::ReasoningStarted { mode, .. } if mode == "direct")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, HarnessEvent::ReasoningStarted { mode, .. } if mode == "direct")));
         assert!(events.iter().any(|e| matches!(e, HarnessEvent::ReasoningDone { decision, .. } if decision == "\"execute\"")));
     }
 
@@ -847,7 +843,9 @@ mod tests {
                 }),
             }],
         );
-        let harness = Harness::new(store.clone()).with_llm(llm).with_reasoning(true);
+        let harness = Harness::new(store.clone())
+            .with_llm(llm)
+            .with_reasoning(true);
         let events: Vec<_> = harness
             .run_turn(&chat_id, "automate reports", "mock", "mock")
             .collect()
@@ -868,7 +866,9 @@ mod tests {
             .resume_turn(&chat_id, "postgres", "mock", "mock")
             .collect()
             .await;
-        assert!(events2.iter().any(|e| matches!(e, HarnessEvent::ReasoningDone { .. })));
+        assert!(events2
+            .iter()
+            .any(|e| matches!(e, HarnessEvent::ReasoningDone { .. })));
         assert!(store.get_pending_ask(&chat_id).unwrap().is_none());
     }
 }

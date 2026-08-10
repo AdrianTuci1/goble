@@ -93,7 +93,11 @@ async fn handle_desktop_message(
             }
             runner.run_agent(trace_id, agent_id, spec).await?;
         }
-        DesktopMessage::ScheduleAgent { agent_id, trigger, mcp_servers } => {
+        DesktopMessage::ScheduleAgent {
+            agent_id,
+            trigger,
+            mcp_servers,
+        } => {
             for server in mcp_servers {
                 state.store_mcp(server);
             }

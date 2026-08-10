@@ -1,9 +1,7 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use rcgen::{
-    CertificateParams, CustomExtension, DnType, IsCa, KeyPair, SanType, SerialNumber,
-};
+use rcgen::{CertificateParams, CustomExtension, DnType, IsCa, KeyPair, SanType, SerialNumber};
 use ring::signature::{Ed25519KeyPair, UnparsedPublicKey, ED25519};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -13,7 +11,7 @@ use x509_parser::prelude::*;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
-use rustls::{DistinguishedName, DigitallySignedStruct};
+use rustls::{DigitallySignedStruct, DistinguishedName};
 
 /// String form of the Goble role extension OID.
 const GOBLE_ROLE_OID_STR: &str = "1.3.6.1.4.1.42069.100.1.1";
@@ -123,15 +121,11 @@ pub fn extract_validity(cert_pem: &str) -> Result<(DateTime<Utc>, DateTime<Utc>)
         .map_err(|e| anyhow::anyhow!("failed to parse certificate: {e}"))?;
     let not_before = x509.validity.not_before.to_datetime();
     let not_after = x509.validity.not_after.to_datetime();
-    Ok((
-        offset_to_chrono(not_before),
-        offset_to_chrono(not_after),
-    ))
+    Ok((offset_to_chrono(not_before), offset_to_chrono(not_after)))
 }
 
 fn offset_to_chrono(dt: ::time::OffsetDateTime) -> DateTime<Utc> {
-    DateTime::from_timestamp(dt.unix_timestamp(), dt.nanosecond())
-        .expect("valid timestamp")
+    DateTime::from_timestamp(dt.unix_timestamp(), dt.nanosecond()).expect("valid timestamp")
 }
 
 fn parse_utf8_der(bytes: &[u8]) -> Result<String> {
@@ -245,7 +239,9 @@ impl Identity {
     pub fn root_cert_store(&self) -> Result<Arc<rustls::RootCertStore>> {
         let mut store = rustls::RootCertStore::empty();
         for cert in self.cert_chain()? {
-            store.add(cert).context("failed to add cert to root store")?;
+            store
+                .add(cert)
+                .context("failed to add cert to root store")?;
         }
         Ok(Arc::new(store))
     }
@@ -475,10 +471,7 @@ pub struct ClusterServerVerifier {
 }
 
 impl ClusterServerVerifier {
-    pub fn new(
-        inner: Arc<dyn ServerCertVerifier>,
-        expected_role: ClusterRole,
-    ) -> Self {
+    pub fn new(inner: Arc<dyn ServerCertVerifier>, expected_role: ClusterRole) -> Self {
         Self {
             inner,
             expected_role,
@@ -556,7 +549,10 @@ impl ClusterCa {
     }
 
     /// Build a cluster CA from a deterministic cluster key.
-    pub fn from_key(cluster_key: &crate::cluster_key::ClusterKey, cluster_name: impl AsRef<str>) -> Result<Self> {
+    pub fn from_key(
+        cluster_key: &crate::cluster_key::ClusterKey,
+        cluster_name: impl AsRef<str>,
+    ) -> Result<Self> {
         let key_pair = cluster_key.derive_ca_keypair();
         Self::build_from_key(key_pair, cluster_name)
     }
@@ -600,10 +596,9 @@ impl ClusterCa {
         let identity = Identity::from_ca_pem(ca_cert_pem, ca_key_pem)?;
         let mut store = store;
         store.add_ca(identity.cert_pem.clone())?;
-        let ca_params = CertificateParams::from_ca_cert_der(
-            &pem_to_der(&identity.cert_pem)?.into(),
-        )
-        .map_err(|e| anyhow::anyhow!("failed to parse CA params: {e}"))?;
+        let ca_params =
+            CertificateParams::from_ca_cert_der(&pem_to_der(&identity.cert_pem)?.into())
+                .map_err(|e| anyhow::anyhow!("failed to parse CA params: {e}"))?;
         let ca_key = if identity.key_pem.is_empty() {
             None
         } else {
@@ -804,7 +799,10 @@ impl ClusterCa {
             .with_safe_default_protocol_versions()
             .map_err(|e| anyhow::anyhow!("protocol versions: {e}"))?
             .with_client_cert_verifier(verifier)
-            .with_single_cert(server_identity.cert_chain()?, server_identity.private_key()?)
+            .with_single_cert(
+                server_identity.cert_chain()?,
+                server_identity.private_key()?,
+            )
             .context("failed to build server config")?;
         Ok(config)
     }
@@ -831,7 +829,10 @@ impl ClusterCa {
             .map_err(|e| anyhow::anyhow!("protocol versions: {e}"))?
             .dangerous()
             .with_custom_certificate_verifier(verifier)
-            .with_client_auth_cert(client_identity.cert_chain()?, client_identity.private_key()?)
+            .with_client_auth_cert(
+                client_identity.cert_chain()?,
+                client_identity.private_key()?,
+            )
             .context("failed to build client config")?;
         Ok(config)
     }
@@ -842,12 +843,10 @@ impl ClusterCa {
         provider: Arc<rustls::crypto::CryptoProvider>,
     ) -> Result<Arc<ClusterClientVerifier>> {
         let root_store = self.root_cert_store()?;
-        let inner = rustls::server::WebPkiClientVerifier::builder_with_provider(
-            root_store,
-            provider,
-        )
-        .build()
-        .context("failed to build webpki client verifier")?;
+        let inner =
+            rustls::server::WebPkiClientVerifier::builder_with_provider(root_store, provider)
+                .build()
+                .context("failed to build webpki client verifier")?;
         Ok(Arc::new(ClusterClientVerifier::new(
             inner,
             allowed_roles,
@@ -970,16 +969,24 @@ mod tests {
     #[test]
     fn test_crl_apply_updates_store() {
         let ca = make_ca();
-        let device = ca
-            .sign_device("device-1", ClusterRole::Admin, 365)
-            .unwrap();
+        let device = ca.sign_device("device-1", ClusterRole::Admin, 365).unwrap();
         let serial = device.serial().to_string();
         ca.revoke(&serial).unwrap();
         let crl = ca.crl().unwrap();
 
         let other_ca = ClusterCa::from_ca_cert_pem(&ca.identity.cert_pem).unwrap();
-        other_ca.store.write().unwrap().add_identity(&ca.identity).unwrap();
-        other_ca.store.write().unwrap().add_identity(&device).unwrap();
+        other_ca
+            .store
+            .write()
+            .unwrap()
+            .add_identity(&ca.identity)
+            .unwrap();
+        other_ca
+            .store
+            .write()
+            .unwrap()
+            .add_identity(&device)
+            .unwrap();
         assert!(other_ca.apply_crl(crl).unwrap());
         assert!(other_ca.store.read().unwrap().is_revoked(&serial));
         assert!(!other_ca.store.read().unwrap().is_active(&serial));
@@ -988,12 +995,15 @@ mod tests {
     #[test]
     fn test_certificate_store_rejects_revoked() {
         let ca = make_ca();
-        let device = ca
-            .sign_device("device-1", ClusterRole::Admin, 365)
-            .unwrap();
+        let device = ca.sign_device("device-1", ClusterRole::Admin, 365).unwrap();
         let serial = device.serial().to_string();
         ca.revoke(&serial).unwrap();
-        assert!(ca.store.write().unwrap().add(device.cert_pem.clone()).is_err());
+        assert!(ca
+            .store
+            .write()
+            .unwrap()
+            .add(device.cert_pem.clone())
+            .is_err());
     }
 
     #[test]
@@ -1011,7 +1021,9 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let ca = make_ca();
         let worker = ca.sign_worker("worker-1", 365).unwrap();
-        let desktop = ca.sign_device("desktop-1", ClusterRole::Admin, 365).unwrap();
+        let desktop = ca
+            .sign_device("desktop-1", ClusterRole::Admin, 365)
+            .unwrap();
 
         let server_config = ca
             .server_config(&worker, vec![ClusterRole::Admin, ClusterRole::Owner])
@@ -1090,7 +1102,9 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let ca = make_ca();
         let worker = ca.sign_worker("worker-1", 365).unwrap();
-        let desktop = ca.sign_device("desktop-1", ClusterRole::Admin, 365).unwrap();
+        let desktop = ca
+            .sign_device("desktop-1", ClusterRole::Admin, 365)
+            .unwrap();
         let server_config = Arc::new(
             ca.server_config(
                 &worker,
@@ -1127,8 +1141,10 @@ mod tests {
             )
             .unwrap(),
         );
-        let client_config =
-            Arc::new(ca.client_config(&malicious_client, ClusterRole::Worker).unwrap());
+        let client_config = Arc::new(
+            ca.client_config(&malicious_client, ClusterRole::Worker)
+                .unwrap(),
+        );
         let server_name = "worker-1".try_into().unwrap();
         let mut server = rustls::ServerConnection::new(server_config).unwrap();
         let mut client = rustls::ClientConnection::new(client_config, server_name).unwrap();
@@ -1136,4 +1152,3 @@ mod tests {
         assert!(run_handshake(&mut client, &mut server, client_pipe, server_pipe).is_err());
     }
 }
-

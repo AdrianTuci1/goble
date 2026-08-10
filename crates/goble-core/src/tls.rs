@@ -17,21 +17,13 @@ impl CertGenerator {
 
     /// Generate a worker (server) certificate signed by the provided CA.
     pub fn generate_server(ca: &Identity, san_dns: &str) -> Result<Identity> {
-        let ca = ClusterCa::from_pem(
-            ca.cert_pem.clone(),
-            ca.key_pem.clone(),
-            Default::default(),
-        )?;
+        let ca = ClusterCa::from_pem(ca.cert_pem.clone(), ca.key_pem.clone(), Default::default())?;
         ca.sign_worker(san_dns, 365)
     }
 
     /// Generate a desktop (client) certificate signed by the provided CA.
     pub fn generate_client(ca: &Identity, worker_id: &str) -> Result<Identity> {
-        let ca = ClusterCa::from_pem(
-            ca.cert_pem.clone(),
-            ca.key_pem.clone(),
-            Default::default(),
-        )?;
+        let ca = ClusterCa::from_pem(ca.cert_pem.clone(), ca.key_pem.clone(), Default::default())?;
         ca.sign_device(worker_id, ClusterRole::Admin, 365)
     }
 }
@@ -74,10 +66,7 @@ impl PairingBundle {
     /// carrying an operator role (Owner, Admin, or Operator).
     pub fn server_config(&self) -> Result<rustls::ServerConfig> {
         let ca = ClusterCa::from_ca_cert_pem(&self.ca_cert_pem)?;
-        let worker = Identity::from_pem(
-            self.worker_cert_pem.clone(),
-            self.worker_key_pem.clone(),
-        )?;
+        let worker = Identity::from_pem(self.worker_cert_pem.clone(), self.worker_key_pem.clone())?;
         ca.server_config(
             &worker,
             vec![
@@ -92,10 +81,8 @@ impl PairingBundle {
     /// presents the desktop client certificate.
     pub fn client_config(&self) -> Result<rustls::ClientConfig> {
         let ca = ClusterCa::from_ca_cert_pem(&self.ca_cert_pem)?;
-        let desktop = Identity::from_pem(
-            self.desktop_cert_pem.clone(),
-            self.desktop_key_pem.clone(),
-        )?;
+        let desktop =
+            Identity::from_pem(self.desktop_cert_pem.clone(), self.desktop_key_pem.clone())?;
         ca.client_config(&desktop, ClusterRole::Worker)
     }
 }

@@ -90,7 +90,7 @@ mod tests {
     async fn test_worker_client_connect_mock() {
         use tokio_tungstenite::accept_async;
 
-        let state = DesktopState::new(Store::open_in_memory().unwrap());
+        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
         let worker_id = WorkerId::generate();
         state
             .add_worker(worker_id.clone(), "mock".to_string(), "ws://127.0.0.1:0".to_string())

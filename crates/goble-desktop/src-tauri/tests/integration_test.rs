@@ -12,7 +12,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::test]
 async fn test_state_worker_pair_and_message_flow() {
-    let state = DesktopState::new(Store::open_in_memory().unwrap());
+    let state = DesktopState::new(Store::open_in_memory().unwrap(), goble_desktop_tauri_lib::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
     let worker_id = WorkerId::generate();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -75,7 +75,7 @@ async fn test_state_worker_pair_and_message_flow() {
 fn test_desktop_state_persistence_roundtrip() {
     let tmp = tempfile::tempdir().unwrap();
     let store = Store::open(tmp.path().join("store.db")).unwrap();
-    let state = DesktopState::new(store);
+    let state = DesktopState::new(store, goble_desktop_tauri_lib::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
 
     let worker_id = WorkerId::generate();
     state
@@ -86,7 +86,7 @@ fn test_desktop_state_persistence_roundtrip() {
         .add_chat_message(&chat_id, "user", "hello")
         .unwrap();
 
-    let state2 = DesktopState::new(Store::open(tmp.path().join("store.db")).unwrap());
+    let state2 = DesktopState::new(Store::open(tmp.path().join("store.db")).unwrap(), goble_desktop_tauri_lib::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
     state2.load_from_store().unwrap();
 
     assert_eq!(state2.list_workers().len(), 1);

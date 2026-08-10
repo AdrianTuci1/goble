@@ -104,10 +104,27 @@ impl Runner {
             .unwrap()
             .id
             .clone();
+        let secrets = self.state.secrets.lock().clone();
         for (id, (mcp, server)) in &installed {
-            let env = server.credentials_key.as_ref()
-                .and_then(|s| serde_json::from_str::<std::collections::HashMap<String, String>>(s).ok())
-                .unwrap_or_default();
+            let mut env = server
+                .credentials_key
+                .as_ref()
+                .and_then(|s| {
+                    serde_json::from_str::<std::collections::HashMap<String, String>>(s).ok()
+                })
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|(env_name, secret_id)| {
+                    secrets.get(secret_id).map(|secret| {
+                        let value = String::from_utf8_lossy(&secret.encrypted_value).to_string();
+                        (env_name.clone(), value)
+                    })
+                })
+                .collect::<std::collections::HashMap<String, String>>();
+            env.insert(
+                "GOBLIN_AGENT_WORKSPACE".to_string(),
+                workspace.path.to_string_lossy().to_string(),
+            );
             match mcp.start_client(env) {
                 Ok(client) => match client.initialize() {
                     Ok(_) => {

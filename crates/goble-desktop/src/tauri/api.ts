@@ -482,8 +482,134 @@ export interface HarnessEventPayload {
   };
 }
 
+export function extractMentions(content: string): string[] {
+  const mentions: string[] = [];
+  const seen = new Set<string>();
+  const re = /@(user|agent):([a-zA-Z0-9_-]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    const id = `${m[1]}:${m[2]}`;
+    if (!seen.has(id)) {
+      seen.add(id);
+      mentions.push(id);
+    }
+  }
+  return mentions;
+}
+
 export function onHarnessEvent(
   callback: (payload: TauriEvent<HarnessEventPayload>) => void,
 ): Promise<() => void> {
   return listen('harness:event', callback);
 }
+
+export interface ThreadSummary {
+  id: string;
+  kind: 'chat' | 'channel' | 'direct';
+  title: string;
+  owner_id: string;
+  participants: Participant[];
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Participant {
+  kind: 'user' | 'agent';
+  id: string;
+}
+
+export interface ThreadMessageSummary {
+  id: string;
+  thread_id: string;
+  author: Participant;
+  content: string;
+  reply_to?: string | null;
+  tags: string[];
+  participant_mentions: string[];
+  reactions: { emoji: string; participant_id: string }[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserProfile {
+  id: string;
+  name: string;
+  email: string;
+  avatar_url?: string | null;
+  public_key_pem?: string | null;
+}
+
+export async function listThreads(): Promise<ThreadSummary[]> {
+  return invoke('list_threads');
+}
+
+export async function createThread(
+  kind: 'chat' | 'channel' | 'direct',
+  title: string,
+  participants: Participant[],
+  tags: string[] = [],
+): Promise<ThreadSummary> {
+  return invoke('create_thread', { req: { kind, title, participants, tags } });
+}
+
+export async function deleteThread(threadId: string): Promise<boolean> {
+  return invoke('delete_thread', { req: { thread_id: threadId } });
+}
+
+export async function addThreadParticipant(threadId: string, participant: Participant): Promise<void> {
+  return invoke('add_thread_participant', { req: { thread_id: threadId, participant } });
+}
+
+export async function removeThreadParticipant(threadId: string, participantId: string): Promise<void> {
+  return invoke('remove_thread_participant', { req: { thread_id: threadId, participant_id: participantId } });
+}
+
+export async function getThreadParticipants(threadId: string): Promise<Participant[]> {
+  return invoke('get_thread_participants', { req: { thread_id: threadId } });
+}
+
+export async function getThreadMessages(threadId: string): Promise<ThreadMessageSummary[]> {
+  return invoke('get_thread_messages', { req: { thread_id: threadId } });
+}
+
+export async function postThreadMessage(
+  threadId: string,
+  content: string,
+  options?: { reply_to?: string; tags?: string[]; mentions?: string[] },
+): Promise<ThreadMessageSummary> {
+  return invoke('post_thread_message', {
+    req: {
+      thread_id: threadId,
+      content,
+      reply_to: options?.reply_to ?? null,
+      tags: options?.tags ?? [],
+      mentions: options?.mentions ?? [],
+    },
+  });
+}
+
+export async function addThreadReaction(threadId: string, messageId: string, emoji: string): Promise<void> {
+  return invoke('add_thread_reaction', { req: { thread_id: threadId, message_id: messageId, emoji } });
+}
+
+export async function removeThreadReaction(threadId: string, messageId: string, emoji: string): Promise<void> {
+  return invoke('remove_thread_reaction', { req: { thread_id: threadId, message_id: messageId, emoji } });
+}
+
+export async function getUserProfile(): Promise<UserProfile | null> {
+  return invoke('get_user_profile');
+}
+
+export async function setUserProfile(profile: UserProfile): Promise<void> {
+  return invoke('set_user_profile', { req: profile });
+}
+
+export function onThreadsUpdated(callback: () => void): Promise<() => void> {
+  return listen('threads:updated', callback);
+}
+
+export function onThreadMessagesUpdated(callback: (event: TauriEvent<{ thread_id: string }>) => void): Promise<() => void> {
+  return listen('thread:messages:updated', callback);
+}
+

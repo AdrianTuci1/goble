@@ -11,9 +11,7 @@ use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{AgentId, AgentSpec, McpManifest, Trigger};
-use crate::llm::{
-    CompletionResponse, LlmProvider, LlmToolCall, ToolDefinition,
-};
+use crate::llm::{CompletionResponse, LlmProvider, LlmToolCall, ToolDefinition};
 use crate::mcp_manager::McpManager;
 use crate::protocol::DesktopMessage;
 use crate::secret::Secret;
@@ -1448,7 +1446,8 @@ async fn install_mcp_server(
     let manifest = args["manifest"]
         .as_str()
         .and_then(|m| serde_json::from_str::<McpManifest>(m).ok());
-    let secret_ids: Vec<Secret> = serde_json::from_str(&args["secret_ids"].as_str().unwrap_or("[]")).unwrap_or_default();
+    let secret_ids: Vec<Secret> =
+        serde_json::from_str(&args["secret_ids"].as_str().unwrap_or("[]")).unwrap_or_default();
     mcp_manager
         .install_mcp_server(store, id, name, source, source_value, &secret_ids, manifest)
         .await
@@ -1479,8 +1478,8 @@ async fn update_mcp_server(
     let manifest = args["manifest"]
         .as_str()
         .and_then(|m| serde_json::from_str::<McpManifest>(m).ok());
-    let secret_ids: Vec<Secret> = serde_json::from_str(
-        args["secret_ids"].as_str().unwrap_or("[]")).unwrap_or_default();
+    let secret_ids: Vec<Secret> =
+        serde_json::from_str(args["secret_ids"].as_str().unwrap_or("[]")).unwrap_or_default();
     mcp_manager
         .update_mcp_server(store, id, name, source_value, Some(&secret_ids), manifest)
         .await

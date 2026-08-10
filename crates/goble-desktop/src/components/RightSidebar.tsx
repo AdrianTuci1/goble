@@ -56,6 +56,7 @@ function InfoPanel() {
   const flow = selectedFlowId ? flows.find((f) => f.id === selectedFlowId) || null : null;
 
   if (flow) {
+    const integrations = flow.meta.integrations as string[];
     return (
       <>
         <div className="panel-section">
@@ -69,7 +70,7 @@ function InfoPanel() {
         <div className="panel-section">
           <div className="panel-label">Integrations</div>
           <div className="panel-tags">
-            {flow.meta.integrations.map((tag) => (
+            {(integrations as string[]).map((tag: any) => (
               <span key={tag} className="panel-tag">{tag}</span>
             ))}
           </div>

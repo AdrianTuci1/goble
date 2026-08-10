@@ -1,114 +1,19 @@
 import { create } from 'zustand';
-
-export interface WorkerInfo {
-  id: string;
-  name: string;
-  url: string;
-  paired: boolean;
-}
-
-export interface Conversation {
-  id: string;
-  title: string;
-  provider?: string | null;
-  model?: string | null;
-  updated_at: string;
-}
-
-export interface ChatMessage {
-  id: string;
-  role: string;
-  content: string;
-  created_at: string;
-}
-
-export interface AgentInfo {
-  id: string;
-  name: string;
-  spec: {
-    id: { 0: string };
-    name: string;
-    description: string;
-    prompt: string;
-    tools: string[];
-    triggers: unknown[];
-    mcp_ids: string[];
-  };
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkflowStep {
-  id: string;
-  name: string;
-  agent_id: { 0: string };
-  input_template: string;
-  depends_on: string[];
-}
-
-export interface WorkflowInfo {
-  id: string;
-  name: string;
-  description: string;
-  steps: WorkflowStep[];
-  trigger: unknown;
-  enabled: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface TeamInfo {
-  id: string;
-  name: string;
-  metadata: string;
-  created_at: string;
-  members: string[];
-}
-
-export interface ExecutionInfo {
-  id: string;
-  agent_id?: string | null;
-  worker_id?: string | null;
-  status: string;
-  trace: unknown;
-  started_at: string;
-  finished_at?: string | null;
-}
-
-export interface VaultSecretInfo {
-  key: string;
-  updated_at: string;
-}
-
-export interface McpServerSummary {
-  id: string;
-  name: string;
-  source: string;
-  source_value?: string | null;
-  capabilities: string[];
-  auth_required: boolean;
-  discovered_tools: string[];
-  secret_ids: string[];
-  enabled_tools: string[];
-}
-
-export interface LogEntry {
-  id: string;
-  timestamp: string;
-  message: string;
-}
-
-export interface FlowMeta {
-  createdBy: string;
-  integrations: string[];
-  cron: string;
-}
-
-export interface FlowInfo {
-  id: string;
-  title: string;
-  meta: FlowMeta;
-}
+import type {
+  ThreadSummary,
+  ThreadMessageSummary,
+  Participant,
+  UserProfile,
+  AgentInfo,
+  WorkerInfo,
+  Conversation,
+  ChatMessage,
+  WorkflowInfo,
+  TeamInfo,
+  ExecutionInfo,
+  VaultSecretInfo,
+  McpServerSummary,
+} from '../tauri/api';
 
 export interface DesignSystem {
   theme: 'dark' | 'light' | 'midnight';
@@ -117,6 +22,34 @@ export interface DesignSystem {
   density: 'compact' | 'default' | 'spacious';
   radius: 'sharp' | 'default' | 'rounded';
 }
+
+export interface LogEntry {
+  id: string;
+  timestamp: string;
+  message: string;
+}
+
+export interface FlowInfo {
+  id: string;
+  title: string;
+  meta: { createdBy: string; integrations: string[]; cron: string };
+}
+
+export type {
+  ThreadSummary,
+  ThreadMessageSummary,
+  Participant,
+  UserProfile,
+  AgentInfo,
+  WorkerInfo,
+  Conversation,
+  ChatMessage,
+  WorkflowInfo,
+  TeamInfo,
+  ExecutionInfo,
+  VaultSecretInfo,
+  McpServerSummary,
+};
 
 export const DEFAULT_DESIGN: DesignSystem = {
   theme: 'dark',
@@ -139,6 +72,16 @@ interface AppState {
   vaultSecrets: VaultSecretInfo[];
   mcpServers: McpServerSummary[];
   flows: FlowInfo[];
+
+  threads: ThreadSummary[];
+  threadMessages: Record<string, ThreadMessageSummary[]>;
+  activeThreadId: string | null;
+  threadParticipants: Record<string, Participant[]>;
+  replyToMessageId: string | null;
+  userProfile: UserProfile | null;
+  pendingTags: string[];
+  participantsPanelOpen: boolean;
+
   selectedFlowId: string | null;
   isWorkflowDrawerOpen: boolean;
   design: DesignSystem;
@@ -147,6 +90,7 @@ interface AppState {
   selectedAgentId: string | null;
   historyDetailId: string | null;
   navigateFn: (path: string) => void;
+
   setWorkers: (workers: WorkerInfo[]) => void;
   setLogs: (logs: LogEntry[]) => void;
   addLog: (message: string) => void;
@@ -180,9 +124,22 @@ interface AppState {
   setSelectedAgentId: (id: string | null) => void;
   setHistoryDetailId: (id: string | null) => void;
   setNavigateFn: (fn: (path: string) => void) => void;
-}
 
-export type { AppState };
+  setThreads: (threads: ThreadSummary[]) => void;
+  addThread: (thread: ThreadSummary) => void;
+  updateThread: (id: string, updates: Partial<ThreadSummary>) => void;
+  setActiveThreadId: (id: string | null) => void;
+  setThreadMessages: (threadId: string, messages: ThreadMessageSummary[]) => void;
+  addThreadMessage: (threadId: string, message: ThreadMessageSummary) => void;
+  setThreadParticipants: (threadId: string, participants: Participant[]) => void;
+  addThreadParticipantLocal: (threadId: string, participant: Participant) => void;
+  removeThreadParticipantLocal: (threadId: string, participantId: string) => void;
+  setReplyToMessageId: (id: string | null) => void;
+  setUserProfile: (profile: UserProfile | null) => void;
+  setPendingTags: (tags: string[]) => void;
+  togglePendingTag: (tag: string) => void;
+  setParticipantsPanelOpen: (open: boolean) => void;
+}
 
 export const useStore = create<AppState>((set) => ({
   workers: [],
@@ -197,6 +154,16 @@ export const useStore = create<AppState>((set) => ({
   vaultSecrets: [],
   mcpServers: [],
   flows: [],
+
+  threads: [],
+  threadMessages: {},
+  activeThreadId: null,
+  threadParticipants: {},
+  replyToMessageId: null,
+  userProfile: null,
+  pendingTags: [],
+  participantsPanelOpen: false,
+
   selectedFlowId: null,
   isWorkflowDrawerOpen: false,
   design: DEFAULT_DESIGN,
@@ -205,6 +172,7 @@ export const useStore = create<AppState>((set) => ({
   selectedAgentId: null,
   historyDetailId: null,
   navigateFn: () => {},
+
   setWorkers: (workers) => set({ workers }),
   setLogs: (logs) => set({ logs }),
   addLog: (message) =>
@@ -249,12 +217,7 @@ export const useStore = create<AppState>((set) => ({
             ...state.messages,
             [chatId]: [
               ...list,
-              {
-                id: messageId,
-                role: 'assistant',
-                content: newContent,
-                created_at: new Date().toISOString(),
-              },
+              { id: messageId, role: 'assistant', content: newContent, created_at: new Date().toISOString() },
             ],
           },
         };
@@ -271,16 +234,12 @@ export const useStore = create<AppState>((set) => ({
   setAgents: (agents) => set({ agents }),
   addAgent: (agent) => set((state) => ({ agents: [agent, ...state.agents] })),
   removeAgent: (id) =>
-    set((state) => ({
-      agents: state.agents.filter((a) => a.id !== id),
-    })),
+    set((state) => ({ agents: state.agents.filter((a) => a.id !== id) })),
   setWorkflows: (workflows) => set({ workflows }),
   addWorkflow: (workflow) =>
     set((state) => ({ workflows: [workflow, ...state.workflows] })),
   removeWorkflow: (id) =>
-    set((state) => ({
-      workflows: state.workflows.filter((w) => w.id !== id),
-    })),
+    set((state) => ({ workflows: state.workflows.filter((w) => w.id !== id) })),
   setTeams: (teams) => set({ teams }),
   addTeam: (team) => set((state) => ({ teams: [team, ...state.teams] })),
   setExecutions: (executions) => set({ executions }),
@@ -289,14 +248,10 @@ export const useStore = create<AppState>((set) => ({
   addMcpServer: (server) =>
     set((state) => ({ mcpServers: [server, ...state.mcpServers] })),
   removeMcpServer: (id) =>
-    set((state) => ({
-      mcpServers: state.mcpServers.filter((s) => s.id !== id),
-    })),
+    set((state) => ({ mcpServers: state.mcpServers.filter((s) => s.id !== id) })),
   updateMcpServer: (server) =>
     set((state) => ({
-      mcpServers: state.mcpServers.map((s) =>
-        s.id === server.id ? server : s
-      ),
+      mcpServers: state.mcpServers.map((s) => (s.id === server.id ? server : s)),
     })),
   setFlows: (flows) => set({ flows }),
   setSelectedFlowId: (selectedFlowId) => set({ selectedFlowId }),
@@ -308,4 +263,58 @@ export const useStore = create<AppState>((set) => ({
   setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
   setHistoryDetailId: (historyDetailId) => set({ historyDetailId }),
   setNavigateFn: (navigateFn) => set({ navigateFn }),
+
+  setThreads: (threads) => set({ threads }),
+  addThread: (thread) => set((state) => ({ threads: [thread, ...state.threads] })),
+  updateThread: (id, updates) =>
+    set((state) => ({
+      threads: state.threads.map((t) => (t.id === id ? { ...t, ...updates } : t)),
+    })),
+  setActiveThreadId: (activeThreadId) => set({ activeThreadId }),
+  setThreadMessages: (threadId, messages) =>
+    set((state) => ({
+      threadMessages: { ...state.threadMessages, [threadId]: messages },
+    })),
+  addThreadMessage: (threadId, message) =>
+    set((state) => ({
+      threadMessages: {
+        ...state.threadMessages,
+        [threadId]: [...(state.threadMessages[threadId] || []), message],
+      },
+    })),
+  setThreadParticipants: (threadId, participants) =>
+    set((state) => ({
+      threadParticipants: { ...state.threadParticipants, [threadId]: participants },
+    })),
+  addThreadParticipantLocal: (threadId, participant) =>
+    set((state) => {
+      const existing = state.threadParticipants[threadId] || [];
+      const id = `${participant.kind}:${participant.id}`;
+      if (existing.some((p) => `${p.kind}:${p.id}` === id)) return state;
+      return {
+        threadParticipants: {
+          ...state.threadParticipants,
+          [threadId]: [...existing, participant],
+        },
+      };
+    }),
+  removeThreadParticipantLocal: (threadId, participantId) =>
+    set((state) => ({
+      threadParticipants: {
+        ...state.threadParticipants,
+        [threadId]: (state.threadParticipants[threadId] || []).filter(
+          (p) => `${p.kind}:${p.id}` !== participantId
+        ),
+      },
+    })),
+  setReplyToMessageId: (replyToMessageId) => set({ replyToMessageId }),
+  setUserProfile: (userProfile) => set({ userProfile }),
+  setPendingTags: (pendingTags) => set({ pendingTags }),
+  togglePendingTag: (tag) =>
+    set((state) => ({
+      pendingTags: state.pendingTags.includes(tag)
+        ? state.pendingTags.filter((t) => t !== tag)
+        : [...state.pendingTags, tag],
+    })),
+  setParticipantsPanelOpen: (participantsPanelOpen) => set({ participantsPanelOpen }),
 }));

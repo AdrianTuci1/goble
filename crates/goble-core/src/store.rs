@@ -262,15 +262,22 @@ impl Store {
         Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
     }
 
-    pub fn set_cluster_identity(&self, snapshot: &crate::cluster_key::ClusterIdentitySnapshot) -> Result<()> {
-        let value = serde_json::to_string(snapshot).context("failed to serialize cluster identity")?;
+    pub fn set_cluster_identity(
+        &self,
+        snapshot: &crate::cluster_key::ClusterIdentitySnapshot,
+    ) -> Result<()> {
+        let value =
+            serde_json::to_string(snapshot).context("failed to serialize cluster identity")?;
         self.set_setting("cluster_identity", &value)
     }
 
-    pub fn get_cluster_identity(&self) -> Result<Option<crate::cluster_key::ClusterIdentitySnapshot>> {
+    pub fn get_cluster_identity(
+        &self,
+    ) -> Result<Option<crate::cluster_key::ClusterIdentitySnapshot>> {
         match self.get_setting("cluster_identity")? {
             Some(value) => {
-                let snapshot = serde_json::from_str(&value).context("failed to deserialize cluster identity")?;
+                let snapshot = serde_json::from_str(&value)
+                    .context("failed to deserialize cluster identity")?;
                 Ok(Some(snapshot))
             }
             None => Ok(None),
@@ -909,7 +916,18 @@ impl Store {
 
     pub fn list_missions(
         &self,
-    ) -> Result<Vec<(String, String, String, String, Option<String>, Option<String>, String, String)>> {
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        )>,
+    > {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, chat_id, goal, status, plan, workflow_id, created_at, updated_at FROM missions ORDER BY updated_at DESC")?;
         let rows = stmt.query_map([], |r| {
@@ -927,7 +945,21 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub fn get_mission(&self, id: &str) -> Result<Option<(String, String, String, String, Option<String>, Option<String>, String, String)>> {
+    pub fn get_mission(
+        &self,
+        id: &str,
+    ) -> Result<
+        Option<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        )>,
+    > {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, chat_id, goal, status, plan, workflow_id, created_at, updated_at FROM missions WHERE id = ?1")?;
         let mut rows = stmt.query(params![id])?;

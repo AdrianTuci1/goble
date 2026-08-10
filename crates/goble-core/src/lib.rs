@@ -2,6 +2,7 @@ pub mod agent;
 pub mod cluster_key;
 pub mod config;
 pub mod crypto;
+pub mod encrypted_wallet;
 pub mod execution;
 pub mod harness;
 pub mod identity;

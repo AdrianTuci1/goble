@@ -195,12 +195,19 @@ pub struct ClusterIdentityInfo {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateClusterRequest {
     pub name: String,
+    pub passphrase: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImportClusterKeyRequest {
     pub key: String,
     pub name: String,
+    pub passphrase: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnlockClusterIdentityRequest {
+    pub passphrase: String,
 }
 
 static HARNESS_CANCEL: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>> =
@@ -246,7 +253,9 @@ fn create_cluster(
     req: CreateClusterRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<ClusterIdentityInfo, String> {
-    let identity = state.create_cluster(&req.name).map_err(|e| e.to_string())?;
+    let identity = state
+        .create_cluster(&req.name, &req.passphrase)
+        .map_err(|e| e.to_string())?;
     Ok(ClusterIdentityInfo {
         cluster_name: identity.cluster_name,
         ca_cert_pem: identity.ca.identity.cert_pem,
@@ -259,12 +268,31 @@ fn import_cluster_key(
     req: ImportClusterKeyRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<ClusterIdentityInfo, String> {
-    let identity = state.import_cluster_key(&req.key, &req.name).map_err(|e| e.to_string())?;
+    let identity = state
+        .import_cluster_key(&req.key, &req.name, &req.passphrase)
+        .map_err(|e| e.to_string())?;
     Ok(ClusterIdentityInfo {
         cluster_name: identity.cluster_name,
         ca_cert_pem: identity.ca.identity.cert_pem,
         device_serial: identity.device.serial().to_string(),
     })
+}
+
+#[tauri::command]
+fn unlock_cluster_identity(
+    req: UnlockClusterIdentityRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<bool, String> {
+    state
+        .unlock_cluster_identity(&req.passphrase)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn has_cluster_identity(
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<bool, String> {
+    Ok(state.has_stored_cluster_identity())
 }
 
 #[tauri::command]
@@ -1154,6 +1182,8 @@ pub fn run() {
             import_cluster_key,
             export_cluster_key,
             export_cluster_backup,
+            unlock_cluster_identity,
+            has_cluster_identity,
             list_threads,
             create_thread,
             delete_thread,

@@ -165,12 +165,20 @@ export async function getClusterIdentity(): Promise<ClusterIdentityInfo | null> 
   return invoke('get_cluster_identity');
 }
 
-export async function createCluster(name: string): Promise<ClusterIdentityInfo> {
-  return invoke('create_cluster', { name });
+export async function createCluster(name: string, passphrase: string): Promise<ClusterIdentityInfo> {
+  return invoke('create_cluster', { name, passphrase });
 }
 
-export async function importClusterKey(key: string, name: string): Promise<ClusterIdentityInfo> {
-  return invoke('import_cluster_key', { key, name });
+export async function importClusterKey(key: string, name: string, passphrase: string): Promise<ClusterIdentityInfo> {
+  return invoke('import_cluster_key', { key, name, passphrase });
+}
+
+export async function unlockClusterIdentity(passphrase: string): Promise<boolean> {
+  return invoke('unlock_cluster_identity', { passphrase });
+}
+
+export async function hasClusterIdentity(): Promise<boolean> {
+  return invoke('has_cluster_identity');
 }
 
 export async function exportClusterKey(): Promise<string> {

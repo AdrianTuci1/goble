@@ -5,7 +5,8 @@ use chrono::Utc;
 use goble_core::agent::{AgentId, AgentSpec, Trigger};
 use goble_core::thread::{Participant, ThreadId, ThreadKind, UserId};
 use crate::ThreadSummary;
-use goble_core::cluster_key::{ClusterBackup, ClusterIdentity, ClusterKey};
+use goble_core::cluster_key::{ClusterBackup, ClusterIdentity, ClusterIdentitySnapshot, ClusterKey};
+use goble_core::encrypted_wallet::EncryptedWallet;
 use goble_core::execution::ExecutionTrace;
 use goble_core::identity::ClusterRole;
 use goble_core::mcp_client::McpTool;
@@ -302,23 +303,15 @@ impl DesktopState {
         }
     }
 
-    pub fn get_cluster_identity(&self) -> Option<ClusterIdentity> {
-        self.cluster_identity.lock().clone()
-    }
-
-    pub fn create_cluster(&self, name: &str) -> anyhow::Result<ClusterIdentity> {
-        let identity = ClusterIdentity::generate(name, &Self::device_id(), ClusterRole::Owner)?;
-        self.set_cluster_identity(identity.clone())
-    }
-
-    pub fn import_cluster_key(&self, key_b64: &str, name: &str) -> anyhow::Result<ClusterIdentity> {
-        let key = ClusterKey::from_base64(key_b64)?;
-        let identity = ClusterIdentity::from_key(key, name, &Self::device_id(), ClusterRole::Admin)?;
-        self.set_cluster_identity(identity.clone())
-    }
-
     fn device_id() -> String {
-        format!("desktop-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("unknown"))
+        format!(
+            "desktop-{}",
+            uuid::Uuid::new_v4()
+                .to_string()
+                .split('-')
+                .next()
+                .unwrap_or("unknown")
+        )
     }
 
     pub fn export_cluster_key(&self) -> anyhow::Result<String> {
@@ -335,8 +328,61 @@ impl DesktopState {
         }
     }
 
-    fn set_cluster_identity(&self, identity: ClusterIdentity) -> anyhow::Result<ClusterIdentity> {
-        self.store.lock().set_cluster_identity(&identity.to_snapshot())?;
+    pub fn get_cluster_identity(&self) -> Option<ClusterIdentity> {
+        self.cluster_identity.lock().clone()
+    }
+
+    pub fn create_cluster(
+        &self,
+        name: &str,
+        passphrase: &str,
+    ) -> anyhow::Result<ClusterIdentity> {
+        let identity = ClusterIdentity::generate(name, &Self::device_id(), ClusterRole::Owner)?;
+        self.set_cluster_identity(identity.clone(), passphrase)
+    }
+
+    pub fn import_cluster_key(
+        &self,
+        key_b64: &str,
+        name: &str,
+        passphrase: &str,
+    ) -> anyhow::Result<ClusterIdentity> {
+        let key = ClusterKey::from_base64(key_b64)?;
+        let identity =
+            ClusterIdentity::from_key(key, name, &Self::device_id(), ClusterRole::Admin)?;
+        self.set_cluster_identity(identity.clone(), passphrase)
+    }
+
+    pub fn unlock_cluster_identity(&self, passphrase: &str) -> anyhow::Result<bool> {
+        let wallet = self.store.lock().get_cluster_wallet()?;
+        match wallet {
+            Some(wallet) => {
+                let bytes = wallet.open(passphrase.as_bytes())?;
+                let snapshot: ClusterIdentitySnapshot =
+                    serde_json::from_slice(&bytes)?;
+                let identity = ClusterIdentity::from_snapshot(snapshot)?;
+                *self.cluster_identity.lock() = Some(identity);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    pub fn has_stored_cluster_identity(&self) -> bool {
+        self.store.lock().get_cluster_wallet().ok().flatten().is_some()
+    }
+
+    fn set_cluster_identity(
+        &self,
+        identity: ClusterIdentity,
+        passphrase: &str,
+    ) -> anyhow::Result<ClusterIdentity> {
+        let snapshot = identity.to_snapshot();
+        let wallet = EncryptedWallet::seal(
+            &serde_json::to_vec(&snapshot)?,
+            passphrase.as_bytes(),
+        )?;
+        self.store.lock().set_cluster_wallet(&wallet)?;
         *self.cluster_identity.lock() = Some(identity.clone());
         self.emit("cluster:updated", ());
         Ok(identity)
@@ -1511,6 +1557,28 @@ mod tests {
         assert_eq!(state2.list_workflows().len(), 1);
         assert_eq!(state2.list_teams().len(), 1);
         assert_eq!(state2.list_vault_secrets().len(), 1);
+    }
+
+    #[test]
+    fn test_cluster_identity_encrypted_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path().join("store.db")).unwrap();
+        let state = DesktopState::new(
+            store,
+            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+        );
+        let identity = state.create_cluster("test-cluster", "secret-pass").unwrap();
+        assert!(!identity.cluster_name.is_empty());
+
+        let state2 = DesktopState::new(
+            Store::open(tmp.path().join("store.db")).unwrap(),
+            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+        );
+        assert!(state2.has_stored_cluster_identity());
+        assert!(state2.unlock_cluster_identity("wrong").is_err());
+        assert!(state2.unlock_cluster_identity("secret-pass").unwrap());
+        let loaded = state2.get_cluster_identity().unwrap();
+        assert_eq!(loaded.cluster_name, identity.cluster_name);
     }
 
 

@@ -262,6 +262,22 @@ impl Store {
         Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
     }
 
+    pub fn set_cluster_wallet(&self, wallet: &crate::encrypted_wallet::EncryptedWallet) -> Result<()> {
+        let value = serde_json::to_string(wallet).context("failed to serialize cluster wallet")?;
+        self.set_setting("cluster_identity", &value)
+    }
+
+    pub fn get_cluster_wallet(&self) -> Result<Option<crate::encrypted_wallet::EncryptedWallet>> {
+        match self.get_setting("cluster_identity")? {
+            Some(value) => {
+                let wallet = serde_json::from_str(&value)
+                    .context("failed to deserialize cluster wallet")?;
+                Ok(Some(wallet))
+            }
+            None => Ok(None),
+        }
+    }
+
     pub fn set_cluster_identity(
         &self,
         snapshot: &crate::cluster_key::ClusterIdentitySnapshot,

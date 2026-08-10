@@ -18,6 +18,8 @@ import {
   importClusterKey,
   exportClusterKey,
   exportClusterBackup,
+  unlockClusterIdentity,
+  hasClusterIdentity,
   type ClusterIdentityInfo,
 } from '../tauri/api';
 import {
@@ -488,28 +490,69 @@ export function WorkerSettings() {
 export function ClusterSettings() {
   const [identity, setIdentity] = useState<ClusterIdentityInfo | null>(null);
   const [clusterName, setClusterName] = useState('');
+  const [passphrase, setPassphrase] = useState('');
   const [importKey, setImportKey] = useState('');
   const [importName, setImportName] = useState('');
+  const [importPassphrase, setImportPassphrase] = useState('');
+  const [unlockPassphrase, setUnlockPassphrase] = useState('');
   const [exportedKey, setExportedKey] = useState('');
   const [exportedBackup, setExportedBackup] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    getClusterIdentity().then(setIdentity);
+    hasClusterIdentity().then(async (hasWallet) => {
+      if (hasWallet) {
+        const unlocked = await unlockClusterIdentity('');
+        if (unlocked) {
+          const info = await getClusterIdentity();
+          setIdentity(info);
+        }
+      }
+    });
   }, []);
 
   async function handleCreate() {
-    if (!clusterName) return;
-    const info = await createCluster(clusterName);
-    setIdentity(info);
-    setClusterName('');
+    if (!clusterName || !passphrase) return;
+    setError(null);
+    try {
+      const info = await createCluster(clusterName, passphrase);
+      setIdentity(info);
+      setClusterName('');
+      setPassphrase('');
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   async function handleImport() {
-    if (!importKey || !importName) return;
-    const info = await importClusterKey(importKey, importName);
-    setIdentity(info);
-    setImportKey('');
-    setImportName('');
+    if (!importKey || !importName || !importPassphrase) return;
+    setError(null);
+    try {
+      const info = await importClusterKey(importKey, importName, importPassphrase);
+      setIdentity(info);
+      setImportKey('');
+      setImportName('');
+      setImportPassphrase('');
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function handleUnlock() {
+    if (!unlockPassphrase) return;
+    setError(null);
+    try {
+      const unlocked = await unlockClusterIdentity(unlockPassphrase);
+      if (unlocked) {
+        const info = await getClusterIdentity();
+        setIdentity(info);
+        setUnlockPassphrase('');
+      } else {
+        setError('No stored cluster identity found.');
+      }
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   async function handleExportKey() {
@@ -525,6 +568,8 @@ export function ClusterSettings() {
   return (
     <div className="settings-section">
       <h2>Cluster</h2>
+
+      {error && <div className="card-error">{error}</div>}
 
       {identity ? (
         <div className="settings-subsection">
@@ -547,20 +592,28 @@ export function ClusterSettings() {
           )}
         </div>
       ) : (
-        <p className="hint">No cluster configured yet.</p>
+        <p className="hint">No cluster configured yet. Create or import one, then unlock it.</p>
       )}
+
+      <div className="settings-subsection">
+        <h3>Unlock cluster</h3>
+        <input type="password" placeholder="Passphrase" value={unlockPassphrase} onChange={(e) => setUnlockPassphrase(e.target.value)} />
+        <button onClick={handleUnlock} disabled={!unlockPassphrase}>Unlock</button>
+      </div>
 
       <div className="settings-subsection">
         <h3>Create cluster</h3>
         <input placeholder="Cluster name" value={clusterName} onChange={(e) => setClusterName(e.target.value)} />
-        <button onClick={handleCreate} disabled={!clusterName}>Create new cluster</button>
+        <input type="password" placeholder="Passphrase" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
+        <button onClick={handleCreate} disabled={!clusterName || !passphrase}>Create new cluster</button>
       </div>
 
       <div className="settings-subsection">
         <h3>Import cluster</h3>
         <input placeholder="Cluster name" value={importName} onChange={(e) => setImportName(e.target.value)} />
         <textarea placeholder="Paste cluster key" value={importKey} onChange={(e) => setImportKey(e.target.value)} rows={3} />
-        <button onClick={handleImport} disabled={!importKey || !importName}>Import cluster key</button>
+        <input type="password" placeholder="Passphrase" value={importPassphrase} onChange={(e) => setImportPassphrase(e.target.value)} />
+        <button onClick={handleImport} disabled={!importKey || !importName || !importPassphrase}>Import cluster key</button>
       </div>
     </div>
   );

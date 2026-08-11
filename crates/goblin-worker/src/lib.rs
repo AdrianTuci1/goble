@@ -1,3 +1,4 @@
+pub mod agent_runtime;
 pub mod pairing;
 pub mod runner;
 pub mod scheduler;

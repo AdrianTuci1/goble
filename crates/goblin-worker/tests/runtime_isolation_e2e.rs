@@ -135,11 +135,7 @@ async fn test_agent_runtime_isolation_and_secret_passthrough() {
             config_schema: serde_json::json!({}),
         },
         credentials_key: Some(
-            serde_json::to_string(&HashMap::from([(
-                "AI_API_KEY".to_string(),
-                secret_id,
-            )]))
-            .unwrap(),
+            serde_json::to_string(&HashMap::from([("AI_API_KEY".to_string(), secret_id)])).unwrap(),
         ),
         installed_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

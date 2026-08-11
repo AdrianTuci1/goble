@@ -12,6 +12,7 @@ use goble_core::worker::{WorkerId, WorkerStatus};
 use serde::Serialize;
 use tracing_subscriber::EnvFilter;
 
+mod agent_runtime;
 mod file_vault;
 mod mcp;
 mod pairing;
@@ -107,7 +108,10 @@ async fn main() -> anyhow::Result<()> {
     state.set_vault_path(args.vault_path);
 
     let task_store = task_store::TaskStore::open(args.task_store)?;
-    let scheduler = Arc::new(scheduler::Scheduler::new(state.clone(), task_store));
+    let scheduler = Arc::new(scheduler::Scheduler::new_with_default_runner(
+        state.clone(),
+        task_store,
+    ));
     let scheduler_for_state = Arc::clone(&scheduler);
     scheduler.start_loop(Duration::from_secs(5));
     state.set_scheduler(scheduler_for_state);

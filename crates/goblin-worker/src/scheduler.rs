@@ -17,7 +17,15 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn new(state: Arc<AppState>, store: TaskStore) -> Self {
+    pub fn new(state: Arc<AppState>, store: TaskStore, runner: Runner) -> Self {
+        Self {
+            state,
+            runner,
+            store: Arc::new(std::sync::Mutex::new(store)),
+        }
+    }
+
+    pub fn new_with_default_runner(state: Arc<AppState>, store: TaskStore) -> Self {
         let runner = Runner::new(state.clone());
         Self {
             state,
@@ -170,12 +178,23 @@ mod tests {
     use goble_core::worker::WorkerId;
     use tempfile::TempDir;
 
+    fn mock_factory() -> crate::runner::ProviderFactory {
+        Box::new(|| {
+            Ok(goble_core::llm::create_provider(
+                "mock",
+                "test-key",
+                None,
+            ))
+        })
+    }
+
     #[tokio::test]
     async fn test_manual_trigger_finds_agent() {
         let tmp = TempDir::new().unwrap();
         let store = TaskStore::open(tmp.path().join("tasks.db")).unwrap();
         let state = AppState::new(WorkerId::generate());
-        let scheduler = Scheduler::new(state.clone(), store);
+        let runner = crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
+        let scheduler = Scheduler::new(state.clone(), store, runner);
         let spec = AgentSpec::new("demo", "do nothing");
         let id = spec.id.clone();
         state.store_agent(spec);
@@ -188,7 +207,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = TaskStore::open(tmp.path().join("tasks.db")).unwrap();
         let state = AppState::new(WorkerId::generate());
-        let scheduler = Scheduler::new(state, store);
+        let runner = crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
+        let scheduler = Scheduler::new(state, store, runner);
         let result = scheduler.trigger_agent(AgentId::generate()).await;
         assert!(result.is_err());
     }
@@ -198,7 +218,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = TaskStore::open(tmp.path().join("tasks.db")).unwrap();
         let state = AppState::new(WorkerId::generate());
-        let scheduler = Scheduler::new(state, store);
+        let runner = crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
+        let scheduler = Scheduler::new(state, store, runner);
         let agent_id = AgentId::generate();
         let task = scheduler
             .schedule(
@@ -226,7 +247,8 @@ mod tests {
         let spec = AgentSpec::new("demo", "do nothing");
         let agent_id = spec.id.clone();
         state.store_agent(spec);
-        let scheduler = Arc::new(Scheduler::new(state, store));
+        let runner = crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
+        let scheduler = Arc::new(Scheduler::new(state, store, runner));
         scheduler
             .schedule(
                 agent_id.clone(),

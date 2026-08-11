@@ -3,21 +3,42 @@ use std::sync::Arc;
 
 use goble_core::agent::{AgentId, AgentSpec};
 use goble_core::execution::{ExecutionStatus, ExecutionTrace, LogLevel};
-use goble_core::llm::CompletionRequest;
+use goble_core::llm::LlmProvider;
 use goble_core::mcp_installer::McpInstaller;
 use goble_core::workspace::Workspace;
 
+use crate::agent_runtime::AgentRuntime;
 use crate::state::AppState;
+
+pub type ProviderFactory = Box<dyn Fn() -> anyhow::Result<Box<dyn LlmProvider>> + Send + Sync>;
 
 pub struct Runner {
     state: Arc<AppState>,
     installer: McpInstaller,
+    provider_factory: ProviderFactory,
 }
 
 impl Runner {
     pub fn new(state: Arc<AppState>) -> Self {
         let installer = McpInstaller::new(state.config.lock().workspace_root.join("cache"));
-        Self { state, installer }
+        let factory = default_provider_factory(state.clone());
+        Self {
+            state,
+            installer,
+            provider_factory: factory,
+        }
+    }
+
+    pub fn new_with_provider_factory(
+        state: Arc<AppState>,
+        factory: ProviderFactory,
+    ) -> Self {
+        let installer = McpInstaller::new(state.config.lock().workspace_root.join("cache"));
+        Self {
+            state,
+            installer,
+            provider_factory: factory,
+        }
     }
 
     pub async fn run_agent(
@@ -31,36 +52,15 @@ impl Runner {
         trace.worker_id = Some(self.state.worker_id.clone());
         trace.status = ExecutionStatus::Running;
         self.state.store_trace(trace.clone());
-
-        self.state
-            .emit(goble_core::protocol::WorkerMessage::AgentStarted {
-                trace_id: trace_id.clone(),
-                agent_id: agent_id.clone(),
-            });
+        self.state.emit(goble_core::protocol::WorkerMessage::AgentStarted {
+            trace_id: trace_id.clone(),
+            agent_id: agent_id.clone(),
+        });
 
         let workspace = Workspace::new(agent_id.clone(), &self.state.config.lock().workspace_root);
         let _ = workspace.ensure_exists();
 
         let root_id = trace.add_root_step("execute agent").id.clone();
-        self.state.store_trace(trace.clone());
-
-        let setup_id = trace
-            .add_child_step(&root_id, "prepare workspace")
-            .unwrap()
-            .id
-            .clone();
-        trace.find_step_mut(&setup_id).unwrap().log(
-            LogLevel::Info,
-            format!("workspace ready at {}", workspace.path.display()),
-        );
-        trace
-            .find_step_mut(&setup_id)
-            .unwrap()
-            .log(LogLevel::Info, format!("agent prompt: {}", spec.prompt));
-        trace
-            .find_step_mut(&setup_id)
-            .unwrap()
-            .finish(ExecutionStatus::Success);
         self.state.store_trace(trace.clone());
 
         let install_id = trace
@@ -169,40 +169,13 @@ impl Runner {
             .finish(ExecutionStatus::Success);
         self.state.store_trace(trace.clone());
 
-        let run_id = trace
-            .add_child_step(&root_id, "execute agent logic")
-            .unwrap()
-            .id
-            .clone();
-        trace
-            .find_step_mut(&run_id)
-            .unwrap()
-            .log(LogLevel::Info, "starting agent runtime");
-        trace
-            .find_step_mut(&run_id)
-            .unwrap()
-            .log(LogLevel::Info, format!("tools: {:?}", spec.tools));
-        trace
-            .find_step_mut(&run_id)
-            .unwrap()
-            .finish(ExecutionStatus::Success);
-        self.state.store_trace(trace.clone());
-
-        trace
-            .find_step_mut(&root_id)
-            .unwrap()
-            .finish(ExecutionStatus::Success);
-        trace.finish(ExecutionStatus::Success);
-        self.state.store_trace(trace.clone());
-        self.state
-            .emit(goble_core::protocol::WorkerMessage::AgentFinished {
-                trace_id,
-                status: ExecutionStatus::Success,
-            });
+        let provider = (self.provider_factory)()?;
+        let runtime = AgentRuntime::new(self.state.clone());
+        let (_trace, _summary) = runtime
+            .run(trace_id, agent_id, spec, None, provider)
+            .await?;
         Ok(())
     }
-
-
 
     /// Run agent logic against the configured LLM provider and return a reply string.
     pub async fn run_agent_for_thread_reply(
@@ -212,94 +185,24 @@ impl Runner {
         spec: AgentSpec,
         prompt: String,
     ) -> anyhow::Result<String> {
-        let mut trace = ExecutionTrace::new(agent_id.clone());
-        trace.id = trace_id.clone();
-        trace.worker_id = Some(self.state.worker_id.clone());
-        trace.status = ExecutionStatus::Running;
-        self.state.store_trace(trace.clone());
-
-        self.state
-            .emit(goble_core::protocol::WorkerMessage::AgentStarted {
-                trace_id: trace_id.clone(),
-                agent_id: agent_id.clone(),
-            });
-
-        let workspace = Workspace::new(agent_id.clone(), &self.state.config.lock().workspace_root);
-        let _ = workspace.ensure_exists();
-
-        let root_id = trace.add_root_step("execute agent").id.clone();
-        self.state.store_trace(trace.clone());
-
-        let run_id = trace
-            .add_child_step(&root_id, "execute agent logic")
-            .unwrap()
-            .id
-            .clone();
-
-        let secrets = self.state.secrets.lock().clone();
-        let api_key = secrets
-            .get("llm_api_key")
-            .and_then(|s| String::from_utf8(s.encrypted_value.clone()).ok());
-
-        let content = if let Some(key) = api_key {
-            let provider_name = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string());
-            let provider = goble_core::llm::create_provider(&provider_name, &key, None);
-            let req = CompletionRequest::new(&provider_name, "gpt-4o-mini")
-                .with_system(spec.prompt.clone())
-                .with_user(prompt.clone());
-            match provider.complete(req).await {
-                Ok(resp) => {
-                    trace
-                        .find_step_mut(&run_id)
-                        .unwrap()
-                        .log(LogLevel::Info, "llm completed".to_string());
-                    resp.content
-                }
-                Err(e) => {
-                    trace
-                        .find_step_mut(&run_id)
-                        .unwrap()
-                        .log(LogLevel::Error, format!("llm failed: {}", e));
-                    format!("Agent {} could not complete the request.", agent_id.0)
-                }
-            }
-        } else {
-            trace
-                .find_step_mut(&run_id)
-                .unwrap()
-                .log(LogLevel::Warn, "no llm_api_key secret available".to_string());
-            format!("Agent {} received: {}", agent_id.0, prompt)
-        };
-
-        trace
-            .find_step_mut(&run_id)
-            .unwrap()
-            .finish(ExecutionStatus::Success);
-        trace
-            .find_step_mut(&root_id)
-            .unwrap()
-            .finish(ExecutionStatus::Success);
-        trace.finish(ExecutionStatus::Success);
-        self.state.store_trace(trace.clone());
-        self.state
-            .emit(goble_core::protocol::WorkerMessage::AgentFinished {
-                trace_id,
-                status: ExecutionStatus::Success,
-            });
-        Ok(content)
+        let provider = (self.provider_factory)()?;
+        let runtime = AgentRuntime::new(self.state.clone());
+        let (_trace, summary): (ExecutionTrace, Option<String>) = runtime
+            .run(trace_id, agent_id, spec, Some(prompt), provider)
+            .await?;
+        Ok(summary.unwrap_or_else(|| "no reply".into()))
     }
+
     pub async fn run_team(&self, trace_id: String, team_id: String) -> anyhow::Result<()> {
         let mut trace = ExecutionTrace::new(AgentId(team_id.clone()));
         trace.id = trace_id.clone();
         trace.worker_id = Some(self.state.worker_id.clone());
         trace.status = ExecutionStatus::Running;
         self.state.store_trace(trace.clone());
-
-        self.state
-            .emit(goble_core::protocol::WorkerMessage::AgentStarted {
-                trace_id: trace_id.clone(),
-                agent_id: AgentId(team_id.clone()),
-            });
+        self.state.emit(goble_core::protocol::WorkerMessage::AgentStarted {
+            trace_id: trace_id.clone(),
+            agent_id: AgentId(team_id.clone()),
+        });
 
         let root_id = trace
             .add_root_step(format!("run team {}", team_id))
@@ -324,15 +227,39 @@ impl Runner {
     }
 }
 
+fn default_provider_factory(
+    state: Arc<AppState>,
+) -> ProviderFactory {
+    Box::new(move || {
+        let secrets = state.secrets.lock().clone();
+        let key = secrets
+            .get("llm_api_key")
+            .and_then(|s| String::from_utf8(s.encrypted_value.clone()).ok())
+            .ok_or_else(|| anyhow::anyhow!("no llm_api_key secret available"))?;
+        let provider = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".into());
+        Ok(goble_core::llm::create_provider(&provider, &key, None))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use goble_core::worker::WorkerId;
 
+    fn mock_factory() -> ProviderFactory {
+        Box::new(|| {
+            Ok(goble_core::llm::create_provider(
+                "mock",
+                "test-key",
+                None,
+            ))
+        })
+    }
+
     #[tokio::test]
     async fn test_run_agent_success() {
         let state = AppState::new(WorkerId::generate());
-        let runner = Runner::new(state.clone());
+        let runner = Runner::new_with_provider_factory(state.clone(), mock_factory());
         let spec = AgentSpec::new("demo", "do nothing");
         let id = spec.id.clone();
         runner

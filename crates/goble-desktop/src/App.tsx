@@ -10,6 +10,7 @@ import ConnectorsPage from './pages/ConnectorsPage';
 import AgentsPage from './pages/AgentsPage';
 import ThreadsPage from './pages/ThreadsPage';
 import SettingsPage from './pages/SettingsPage';
+import AgentTracePage from './pages/AgentTracePage';
 import {
   listWorkers,
   workerLogs,
@@ -18,16 +19,19 @@ import {
   listChats,
   listMcpServers,
   createChat,
-  onWorkersUpdated,
+  onAgentStateUpdate,
+  onAgentToolResult,
+  onChatsUpdated,
   onLogsUpdated,
+  onWorkersUpdated,
   onAgentLog,
   onAgentStarted,
   onAgentFinished,
   onChatUpdated,
-  onChatsUpdated,
   onAgentsUpdated,
   onVaultUpdated,
 } from './tauri/api';
+import type { StateUpdateEvent, ToolResultEvent } from './tauri/api';
 import { useDesignClasses } from './utils/designSystem';
 
 function AppShell() {
@@ -45,6 +49,8 @@ function AppShell() {
   const setActiveChatId = useStore((s) => s.setActiveConversation);
   const addMessage = useStore((s) => s.addMessage);
   const chatMessagesRef = useRef(useStore.getState().messages);
+  const setAgentState = useStore((s) => s.setAgentState);
+  const addAgentToolResult = useStore((s) => s.addAgentToolResult);
 
   const design = useStore((s) => s.design);
   const designClasses = useDesignClasses(design);
@@ -88,6 +94,14 @@ function AppShell() {
         const payload = event.payload as { status?: string; trace_id?: string };
         addLog(`agent finished ${payload.trace_id} status ${payload.status}`);
       }));
+      unsubs.push(await onAgentStateUpdate((event) => {
+        const payload = event.payload as StateUpdateEvent;
+        setAgentState(payload.trace_id, payload.state);
+      }));
+      unsubs.push(await onAgentToolResult((event) => {
+        const payload = event.payload as ToolResultEvent;
+        addAgentToolResult(payload.trace_id, payload);
+      }));
       unsubs.push(await onChatUpdated((event) => {
         const payload = event.payload as { chat_id?: string };
         if (payload.chat_id) {
@@ -128,6 +142,7 @@ function AppShell() {
             <Route path="/threads" element={<ThreadsPage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/connectors" element={<ConnectorsPage />} />
+            <Route path="/traces" element={<AgentTracePage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </main>

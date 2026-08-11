@@ -576,6 +576,28 @@ impl DesktopState {
                     }),
                 );
             }
+            WorkerMessage::AgentStateUpdate { trace_id, state } => {
+                self.emit(
+                    "agent:state_update",
+                    serde_json::json!({
+                        "worker_id": worker_id.to_string(),
+                        "trace_id": trace_id,
+                        "state": state,
+                    }),
+                );
+            }
+            WorkerMessage::AgentToolResult { trace_id, step_id, name, result } => {
+                self.emit(
+                    "agent:tool_result",
+                    serde_json::json!({
+                        "worker_id": worker_id.to_string(),
+                        "trace_id": trace_id,
+                        "step_id": step_id,
+                        "name": name,
+                        "result": result,
+                    }),
+                );
+            }
             WorkerMessage::StatusReport { worker_id, status, load } => {
                 self.emit(
                     "worker:status",

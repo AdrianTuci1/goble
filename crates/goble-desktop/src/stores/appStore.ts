@@ -14,6 +14,8 @@ import type {
   ExecutionInfo,
   VaultSecretInfo,
   McpServerSummary,
+  RuntimeState,
+  ToolResultEvent,
 } from '../tauri/api';
 
 export interface DesignSystem {
@@ -73,6 +75,9 @@ interface AppState {
   vaultSecrets: VaultSecretInfo[];
   mcpServers: McpServerSummary[];
   flows: FlowInfo[];
+  agentStates: Record<string, RuntimeState>;
+  agentToolResults: Record<string, ToolResultEvent[]>;
+  selectedTraceId: string | null;
 
   threads: ThreadSummary[];
   threadMessages: Record<string, ThreadMessageSummary[]>;
@@ -114,7 +119,7 @@ interface AppState {
   addTeam: (team: TeamInfo) => void;
   setExecutions: (executions: ExecutionInfo[]) => void;
   setVaultSecrets: (secrets: VaultSecretInfo[]) => void;
-  setMcpServers: (servers: McpServerSummary[]) => void;
+  setMcpServers: (mcpServers: McpServerSummary[]) => void;
   addMcpServer: (server: McpServerSummary) => void;
   removeMcpServer: (id: string) => void;
   updateMcpServer: (server: McpServerSummary) => void;
@@ -127,6 +132,9 @@ interface AppState {
   setSelectedAgentId: (id: string | null) => void;
   setHistoryDetailId: (id: string | null) => void;
   setNavigateFn: (fn: (path: string) => void) => void;
+  setAgentState: (traceId: string, state: RuntimeState) => void;
+  addAgentToolResult: (traceId: string, result: ToolResultEvent) => void;
+  setSelectedTraceId: (id: string | null) => void;
 
   setThreads: (threads: ThreadSummary[]) => void;
   addThread: (thread: ThreadSummary) => void;
@@ -159,6 +167,9 @@ export const useStore = create<AppState>((set) => ({
   vaultSecrets: [],
   mcpServers: [],
   flows: [],
+  agentStates: {},
+  agentToolResults: {},
+  selectedTraceId: null,
 
   threads: [],
   threadMessages: {},
@@ -270,6 +281,16 @@ export const useStore = create<AppState>((set) => ({
   setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
   setHistoryDetailId: (historyDetailId) => set({ historyDetailId }),
   setNavigateFn: (navigateFn) => set({ navigateFn }),
+  setAgentState: (traceId, state) =>
+    set((s) => ({ agentStates: { ...s.agentStates, [traceId]: state } })),
+  addAgentToolResult: (traceId, result) =>
+    set((s) => ({
+      agentToolResults: {
+        ...s.agentToolResults,
+        [traceId]: [...(s.agentToolResults[traceId] || []), result],
+      },
+    })),
+  setSelectedTraceId: (selectedTraceId) => set({ selectedTraceId }),
 
   setThreads: (threads) => set({ threads }),
   addThread: (thread) => set((state) => ({ threads: [thread, ...state.threads] })),

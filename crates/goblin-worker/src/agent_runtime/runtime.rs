@@ -147,7 +147,18 @@ impl AgentRuntime {
                                     format!("failed to save runtime state: {}", e),
                                 );
                             }
+                            self.state.emit(WorkerMessage::AgentStateUpdate {
+                                trace_id: trace_id.clone(),
+                                state: runtime_state.clone(),
+                            });
                         }
+
+                        self.state.emit(WorkerMessage::AgentToolResult {
+                            trace_id: trace_id.clone(),
+                            step_id: root_id.clone(),
+                            name: call.name.clone(),
+                            result: result.output.clone(),
+                        });
                         result.output
                     }
                     Err(e) => {

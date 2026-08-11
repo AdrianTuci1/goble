@@ -511,6 +511,45 @@ export function onHarnessEvent(
   return listen('harness:event', callback);
 }
 
+export interface RuntimeState {
+  version: number;
+  checklist: ChecklistItem[];
+  notes: string[];
+  self_feedback: string[];
+}
+
+export interface ChecklistItem {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
+export interface ToolResultEvent {
+  worker_id: string;
+  trace_id: string;
+  step_id: string;
+  name: string;
+  result: string;
+}
+
+export interface StateUpdateEvent {
+  worker_id: string;
+  trace_id: string;
+  state: RuntimeState;
+}
+
+export function onAgentStateUpdate(
+  callback: (payload: TauriEvent<StateUpdateEvent>) => void,
+): Promise<() => void> {
+  return listen('agent:state_update', callback);
+}
+
+export function onAgentToolResult(
+  callback: (payload: TauriEvent<ToolResultEvent>) => void,
+): Promise<() => void> {
+  return listen('agent:tool_result', callback);
+}
+
 export interface ThreadSummary {
   id: string;
   kind: 'chat' | 'channel' | 'direct';

@@ -102,6 +102,16 @@ pub enum WorkerMessage {
         thread_id: String,
         content: String,
     },
+    AgentStateUpdate {
+        trace_id: String,
+        state: crate::agent_runtime::RuntimeState,
+    },
+    AgentToolResult {
+        trace_id: String,
+        step_id: String,
+        name: String,
+        result: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,7 +150,7 @@ impl Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{AgentSpec, McpServer, Trigger};
+    use crate::agent::{AgentSpec, AgentId};
 
     #[test]
     fn test_roundtrip_desktop_message() {

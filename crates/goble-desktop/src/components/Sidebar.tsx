@@ -25,6 +25,7 @@ export default function Sidebar({ collapsed, onNewChat, activeConversationId, on
           <button className="sidebar-icon" onClick={() => navigate('/threads')} title="Threads">📥</button>
           <button className="sidebar-icon" onClick={() => navigate('/agents')} title="Agents">🤖</button>
           <button className="sidebar-icon" onClick={() => navigate('/connectors')} title="Connectors">🔌</button>
+          <button className="sidebar-icon" onClick={() => navigate('/traces')} title="Traces">🔍</button>
         </div>
         <div className="sidebar-footer">
           <button className="sidebar-icon" onClick={() => navigate('/settings')} title="Settings">⚙️</button>
@@ -95,6 +96,10 @@ export default function Sidebar({ collapsed, onNewChat, activeConversationId, on
           <button className="sidebar-item" onClick={() => navigate('/connectors')}>
             <span className="sidebar-item-icon">🔌</span>
             <span className="sidebar-item-label">Connectors</span>
+          </button>
+          <button className="sidebar-item" onClick={() => navigate('/traces')}>
+            <span className="sidebar-item-icon">🔍</span>
+            <span className="sidebar-item-label">Traces</span>
           </button>
           <button className="sidebar-item" onClick={() => navigate('/settings')}>
             <span className="sidebar-item-icon">⚙️</span>

@@ -4,7 +4,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
-use goble_core::protocol::{DesktopMessage, WorkerMessage};
+use goble_core::protocol::{DesktopMessage, ScheduledTaskSummary, WorkerMessage};
 use goble_core::worker::WorkerStatus;
 
 use crate::runner::Runner;
@@ -88,30 +88,42 @@ async fn handle_desktop_message(
             mcp_servers,
         } => {
             state.store_agent(spec.clone());
-            for server in mcp_servers {
+            for server in mcp_servers.clone() {
                 state.store_mcp(server);
             }
-            runner.run_agent(trace_id, agent_id, spec).await?;
+            let secrets = state.secrets.lock().values().cloned().collect();
+            runner
+                .run_agent(trace_id, agent_id, spec, mcp_servers, secrets)
+                .await?;
         }
         DesktopMessage::ScheduleAgent {
             agent_id,
             trigger,
             mcp_servers,
         } => {
-            for server in mcp_servers {
+            for server in mcp_servers.clone() {
                 state.store_mcp(server);
             }
+            let scheduler = state
+                .scheduler()
+                .ok_or_else(|| anyhow::anyhow!("scheduler not available"))?;
+            scheduler.schedule(agent_id.clone(), trigger)?;
             state.emit(WorkerMessage::AgentLog {
                 trace_id: format!("schedule-{}", agent_id),
                 step_id: "scheduler".to_string(),
                 level: goble_core::execution::LogLevel::Info,
-                message: format!("scheduled {:?}", trigger),
+                message: "scheduled".to_string(),
             });
         }
         DesktopMessage::PushSecrets { secrets } => {
-            for secret in secrets {
+            for secret in secrets.clone() {
                 state.store_secret(secret);
             }
+            let mut vault = state.file_vault.lock();
+            for secret in secrets {
+                vault.set(&secret.name, &secret.encrypted_value, b"").ok();
+            }
+            state.save_vault(b"").ok();
         }
         DesktopMessage::PushMcpServers { servers } => {
             for server in servers {
@@ -138,11 +150,19 @@ async fn handle_desktop_message(
             mcp_servers,
         } => {
             state.store_agent(spec.clone());
-            for server in mcp_servers {
+            for server in mcp_servers.clone() {
                 state.store_mcp(server);
             }
+            let secrets = state.secrets.lock().values().cloned().collect();
             let content = runner
-                .run_agent_for_thread_reply(trace_id.clone(), agent_id, spec, prompt)
+                .run_agent_for_thread_reply(
+                    trace_id.clone(),
+                    agent_id,
+                    spec,
+                    prompt,
+                    mcp_servers,
+                    secrets,
+                )
                 .await?;
             state.emit(WorkerMessage::ThreadAgentReply {
                 trace_id,
@@ -159,22 +179,199 @@ async fn handle_desktop_message(
             });
         }
         DesktopMessage::SetVaultSecret { name, value } => {
-            let _ = (name, value);
-            state.emit(WorkerMessage::VaultError {
-                message: "not yet implemented".to_string(),
+            if state.file_vault.lock().set(&name, &value, b"").is_ok() {
+                state.save_vault(b"")?;
+            }
+            state.emit(WorkerMessage::VaultSecret {
+                name,
+                value: Some(value),
             });
         }
         DesktopMessage::GetVaultSecret { name } => {
-            state.emit(WorkerMessage::VaultError {
-                message: format!("not yet implemented: {name}"),
-            });
+            let value = state.file_vault.lock().get(&name, b"").ok().flatten();
+            state.emit(WorkerMessage::VaultSecret { name, value });
         }
         DesktopMessage::ListScheduledTasks => {
-            state.emit(WorkerMessage::ScheduledTasks { tasks: vec![] });
+            let tasks: Vec<ScheduledTaskSummary> = state
+                .scheduler()
+                .map(|s| {
+                    s.list_tasks()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|t| ScheduledTaskSummary {
+                            id: t.id,
+                            agent_id: t.agent_id,
+                            trigger: t.trigger,
+                            enabled: t.enabled,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            state.emit(WorkerMessage::ScheduledTasks { tasks });
         }
         DesktopMessage::CancelScheduledTask { task_id } => {
+            if let Some(scheduler) = state.scheduler() {
+                scheduler.cancel_task(&task_id)?;
+            }
             state.emit(WorkerMessage::TaskCancelled { task_id });
+        }
+        DesktopMessage::GetTrace { trace_id } => {
+            let trace = state.get_trace(&trace_id);
+            state.emit(WorkerMessage::Trace { trace_id, trace });
+        }
+        DesktopMessage::QueryEntities {
+            entity_type,
+            query: _,
+        } => {
+            let items = query_store_entities(state, &entity_type)?;
+            state.emit(WorkerMessage::EntityList { entity_type, items });
+        }
+        DesktopMessage::TriggerSnapshot => {
+            if let Some(provider) = state.snapshot_provider() {
+                if let Some(cluster_key) = state.cluster_key() {
+                    let store = state.store()?;
+                    let worker_id = state.worker_id.clone();
+                    let snapshot = goble_core::snapshot::Snapshot::from_store(
+                        &store,
+                        &worker_id,
+                        &cluster_key,
+                    )?;
+                    provider.upload_snapshot(&worker_id, &snapshot)?;
+                    state.emit(WorkerMessage::AgentLog {
+                        trace_id: "snapshot".to_string(),
+                        step_id: "snapshot".to_string(),
+                        level: goble_core::execution::LogLevel::Info,
+                        message: "snapshot uploaded".to_string(),
+                    });
+                }
+            }
         }
     }
     Ok(())
+}
+
+fn query_store_entities(
+    state: &Arc<AppState>,
+    entity_type: &str,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let store = state.store()?;
+    match entity_type {
+        "agents" => {
+            let rows = store.list_agents()?;
+            let mut items = Vec::new();
+            for (id, name, spec, created_at, updated_at) in rows {
+                let spec: serde_json::Value = serde_json::from_str(&spec).unwrap_or_default();
+                items.push(serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "spec": spec,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                }));
+            }
+            Ok(items)
+        }
+        "teams" => {
+            let rows = store.list_teams()?;
+            let mut items = Vec::new();
+            for (id, name, metadata, created_at) in rows {
+                let members: Vec<String> = store
+                    .list_team_members(&id)?
+                    .into_iter()
+                    .map(|(_, agent_id)| agent_id)
+                    .collect();
+                let metadata: serde_json::Value =
+                    serde_json::from_str(&metadata).unwrap_or_default();
+                items.push(serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "metadata": metadata,
+                    "members": members,
+                    "created_at": created_at,
+                }));
+            }
+            Ok(items)
+        }
+        "workflows" => {
+            let rows = store.list_workflows()?;
+            let mut items = Vec::new();
+            for (id, name, description, spec, trigger, enabled, created_at, updated_at) in rows {
+                let spec: serde_json::Value = serde_json::from_str(&spec).unwrap_or_default();
+                items.push(serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "description": description,
+                    "spec": spec,
+                    "trigger": trigger,
+                    "enabled": enabled,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                }));
+            }
+            Ok(items)
+        }
+        "executions" => {
+            let rows = store.list_executions()?;
+            let items = rows
+                .into_iter()
+                .map(
+                    |(id, agent_id, worker_id, status, trace, started_at, finished_at)| {
+                        let trace: serde_json::Value =
+                            serde_json::from_str(&trace).unwrap_or_default();
+                        serde_json::json!({
+                            "id": id,
+                            "agent_id": agent_id,
+                            "worker_id": worker_id,
+                            "status": status,
+                            "trace": trace,
+                            "started_at": started_at,
+                            "finished_at": finished_at,
+                        })
+                    },
+                )
+                .collect();
+            Ok(items)
+        }
+        "mcp_servers" => {
+            let rows = store.list_mcp_servers()?;
+            let items = rows
+                .into_iter()
+                .map(
+                    |(
+                        id,
+                        name,
+                        source,
+                        source_value,
+                        manifest,
+                        credentials_key,
+                        secret_ids,
+                        enabled_tools,
+                        installed_at,
+                        updated_at,
+                    )| {
+                        let manifest: serde_json::Value =
+                            serde_json::from_str(&manifest).unwrap_or_default();
+                        let secret_ids: serde_json::Value =
+                            serde_json::from_str(&secret_ids).unwrap_or_default();
+                        let enabled_tools: serde_json::Value =
+                            serde_json::from_str(&enabled_tools).unwrap_or_default();
+                        serde_json::json!({
+                            "id": id,
+                            "name": name,
+                            "source": source,
+                            "source_value": source_value,
+                            "manifest": manifest,
+                            "credentials_key": credentials_key,
+                            "secret_ids": secret_ids,
+                            "enabled_tools": enabled_tools,
+                            "installed_at": installed_at,
+                            "updated_at": updated_at,
+                        })
+                    },
+                )
+                .collect();
+            Ok(items)
+        }
+        _ => anyhow::bail!("unknown entity type: {entity_type}"),
+    }
 }

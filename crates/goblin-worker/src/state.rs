@@ -1,41 +1,52 @@
-use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
+use crate::file_vault::FileVault;
 use crate::scheduler::Scheduler;
 use goble_core::agent::{AgentId, AgentSpec, McpServer};
+use goble_core::cluster_key::ClusterKey;
 use goble_core::execution::ExecutionTrace;
 use goble_core::protocol::WorkerMessage;
 use goble_core::secret::Secret;
-use goble_core::vault::CredentialVault;
+use goble_core::snapshot::SnapshotProvider;
+use goble_core::store::Store;
 use goble_core::worker::WorkerId;
 
 /// Shared application state for the Goblin worker.
 pub struct AppState {
     pub worker_id: WorkerId,
     pub pairing_hash: Mutex<Option<String>>,
-    pub agents: Mutex<HashMap<AgentId, AgentSpec>>,
-    pub mcp_servers: Mutex<HashMap<String, McpServer>>,
-    pub secrets: Mutex<HashMap<String, Secret>>,
-    pub vault: Mutex<CredentialVault>,
-    pub vault_path: Mutex<Option<std::path::PathBuf>>,
-    pub traces: Mutex<HashMap<String, ExecutionTrace>>,
+    pub agents: Mutex<std::collections::HashMap<AgentId, AgentSpec>>,
+    pub mcp_servers: Mutex<std::collections::HashMap<String, McpServer>>,
+    pub secrets: Mutex<std::collections::HashMap<String, Secret>>,
+    pub file_vault: Mutex<FileVault>,
+    pub traces: Mutex<std::collections::HashMap<String, ExecutionTrace>>,
     pub event_tx: broadcast::Sender<WorkerMessage>,
     pub scheduler: Mutex<Option<Arc<Scheduler>>>,
     pub config: Mutex<WorkerConfig>,
+    pub store: Mutex<Option<Store>>,
+    pub cluster_key: Mutex<Option<ClusterKey>>,
+    pub snapshot_provider: Mutex<Option<Arc<dyn SnapshotProvider>>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
     pub workspace_root: std::path::PathBuf,
+    pub llm_provider: Option<String>,
+    pub llm_model: Option<String>,
+    pub llm_base_url: Option<String>,
 }
 
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             workspace_root: std::path::PathBuf::from("/var/goblin/workspaces"),
+            llm_provider: std::env::var("LLM_PROVIDER").ok(),
+            llm_model: std::env::var("LLM_MODEL").ok(),
+            llm_base_url: std::env::var("LLM_BASE_URL").ok(),
         }
     }
 }
@@ -46,15 +57,17 @@ impl AppState {
         Arc::new(Self {
             worker_id,
             pairing_hash: Mutex::new(None),
-            agents: Mutex::new(HashMap::new()),
-            mcp_servers: Mutex::new(HashMap::new()),
-            secrets: Mutex::new(HashMap::new()),
-            vault: Mutex::new(CredentialVault::new()),
-            vault_path: Mutex::new(None),
-            traces: Mutex::new(HashMap::new()),
+            agents: Mutex::new(std::collections::HashMap::new()),
+            mcp_servers: Mutex::new(std::collections::HashMap::new()),
+            secrets: Mutex::new(std::collections::HashMap::new()),
+            file_vault: Mutex::new(FileVault::new(PathBuf::from("/var/goblin/vault.json"))),
+            traces: Mutex::new(std::collections::HashMap::new()),
             event_tx,
             scheduler: Mutex::new(None),
             config: Mutex::new(WorkerConfig::default()),
+            store: Mutex::new(None),
+            cluster_key: Mutex::new(None),
+            snapshot_provider: Mutex::new(None),
         })
     }
 
@@ -87,28 +100,45 @@ impl AppState {
     }
 
     pub fn set_vault_path(&self, path: std::path::PathBuf) {
-        *self.vault_path.lock() = Some(path);
+        let mut vault = self.file_vault.lock();
+        vault.set_path(path);
     }
 
-    pub fn load_vault(&self, _passphrase: &[u8]) -> anyhow::Result<()> {
-        let path = self.vault_path.lock().clone();
-        if let Some(path) = path {
-            if path.exists() {
-                let bytes = std::fs::read(&path)?;
-                let vault = CredentialVault::from_bytes(&bytes)?;
-                *self.vault.lock() = vault;
-            }
-        }
+    pub fn load_vault(&self, passphrase: &[u8]) -> anyhow::Result<()> {
+        self.file_vault.lock().load(passphrase)
+    }
+
+    pub fn save_vault(&self, passphrase: &[u8]) -> anyhow::Result<()> {
+        self.file_vault.lock().save(passphrase)
+    }
+
+    pub fn set_store_path(&self, path: std::path::PathBuf) -> anyhow::Result<()> {
+        let store = Store::open(path)?;
+        *self.store.lock() = Some(store);
         Ok(())
     }
 
-    pub fn save_vault(&self) -> anyhow::Result<()> {
-        let path = self.vault_path.lock().clone();
-        if let Some(path) = path {
-            let bytes = self.vault.lock().to_bytes()?;
-            std::fs::write(&path, bytes)?;
-        }
-        Ok(())
+    pub fn set_cluster_key(&self, key: ClusterKey) {
+        *self.cluster_key.lock() = Some(key);
+    }
+
+    pub fn set_snapshot_provider(&self, provider: Arc<dyn SnapshotProvider>) {
+        *self.snapshot_provider.lock() = Some(provider);
+    }
+
+    pub fn snapshot_provider(&self) -> Option<Arc<dyn SnapshotProvider>> {
+        self.snapshot_provider.lock().clone()
+    }
+
+    pub fn cluster_key(&self) -> Option<ClusterKey> {
+        self.cluster_key.lock().clone()
+    }
+
+    pub fn store(&self) -> anyhow::Result<Store> {
+        self.store
+            .lock()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("worker store not initialized"))
     }
 
     pub fn store_trace(&self, trace: ExecutionTrace) {
@@ -120,7 +150,6 @@ impl AppState {
         self.traces.lock().get(id).cloned()
     }
 
-    #[allow(dead_code)]
     pub fn update_trace<F>(&self, id: &str, f: F)
     where
         F: FnOnce(&mut ExecutionTrace),

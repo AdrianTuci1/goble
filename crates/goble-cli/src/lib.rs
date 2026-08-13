@@ -5,11 +5,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use futures::SinkExt;
 use goble_core::agent::{AgentSpec, Trigger};
+use goble_core::cluster_key::ClusterKey;
 use goble_core::crypto::{generate_pairing_code, hash_pairing_code};
 use goble_core::protocol::DesktopMessage;
-use goble_core::provision::{
-    self, provision_worker, LocalTransport, ProvisionConfig, SshTransport,
-};
+use goble_core::provision::{provision_worker, LocalTransport, ProvisionConfig, SshTransport};
+use goble_core::snapshot::{LocalSnapshotProvider, SnapshotProvider};
 use goble_core::store::Store;
 use goble_core::tls::{CertGenerator, PairingBundle};
 use goble_core::worker::{WorkerConfig, WorkerId};
@@ -123,6 +123,11 @@ pub enum Command {
         #[command(subcommand)]
         action: SecretAction,
     },
+    /// Manage worker snapshots.
+    Snapshot {
+        #[command(subcommand)]
+        action: SnapshotAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -172,6 +177,33 @@ pub enum SecretAction {
         url: String,
         #[arg(short, long)]
         name: String,
+        #[arg(short, long)]
+        code: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnapshotAction {
+    /// List snapshots stored locally or in a configured directory.
+    List {
+        #[arg(short, long)]
+        dir: PathBuf,
+    },
+    /// Restore a local store from the latest snapshot.
+    Restore {
+        #[arg(short, long)]
+        dir: PathBuf,
+        #[arg(short, long)]
+        store: PathBuf,
+        #[arg(short, long)]
+        cluster_key: String,
+    },
+    /// Ask a worker to upload a snapshot immediately.
+    Trigger {
+        #[arg(short, long)]
+        worker: String,
+        #[arg(short, long)]
+        url: String,
         #[arg(short, long)]
         code: Option<String>,
     },
@@ -388,6 +420,36 @@ pub async fn async_main() -> Result<()> {
                 )
                 .await?;
                 println!("secret get request sent");
+            }
+        },
+        Command::Snapshot { action } => match action {
+            SnapshotAction::List { dir } => {
+                let provider = LocalSnapshotProvider::new(dir);
+                for entry in provider.list_snapshots()? {
+                    println!("{}\t{}\t{} bytes", entry.key, entry.created_at, entry.size);
+                }
+            }
+            SnapshotAction::Restore {
+                dir,
+                store,
+                cluster_key,
+            } => {
+                let key: ClusterKey = cluster_key.parse()?;
+                let provider = LocalSnapshotProvider::new(dir);
+                let snapshots = provider.list_snapshots()?;
+                let latest = snapshots
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("no snapshots found"))?;
+                let snapshot = provider.download_snapshot(&latest.key)?;
+                let db = Store::open(store)?;
+                snapshot.restore_into_store(&db, &key)?;
+                println!("restored from {}", latest.key);
+            }
+            SnapshotAction::Trigger { worker, url, code } => {
+                let code = code.unwrap_or_else(|| "00000000".to_string());
+                send_to_worker(&worker, &url, &code, None, DesktopMessage::TriggerSnapshot).await?;
+                println!("snapshot trigger request sent");
             }
         },
     }

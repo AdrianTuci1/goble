@@ -19,6 +19,7 @@ pub mod provision;
 pub mod reasoning;
 pub mod secret;
 pub mod secret_manager;
+pub mod snapshot;
 pub mod store;
 pub mod task;
 pub mod thread;

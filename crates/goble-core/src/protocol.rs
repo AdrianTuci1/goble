@@ -57,10 +57,18 @@ pub enum DesktopMessage {
         spec: AgentSpec,
         mcp_servers: Vec<McpServer>,
     },
+    GetTrace {
+        trace_id: String,
+    },
+    QueryEntities {
+        entity_type: String,
+        query: Option<String>,
+    },
+    TriggerSnapshot,
     Ping,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkerMessage {
     Paired,
@@ -112,6 +120,48 @@ pub enum WorkerMessage {
         name: String,
         result: String,
     },
+    // Streaming harness events from worker to desktop.
+    AssistantDelta {
+        trace_id: String,
+        delta: String,
+    },
+    ToolCallStarted {
+        trace_id: String,
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolCallFinished {
+        trace_id: String,
+        id: String,
+        result: String,
+    },
+    ToolCallError {
+        trace_id: String,
+        id: String,
+        message: String,
+    },
+    AskUser {
+        trace_id: String,
+        question: String,
+        quick_replies: Vec<String>,
+    },
+    MissionUpdated {
+        trace_id: String,
+        mission_id: String,
+        status: String,
+    },
+    Done {
+        trace_id: String,
+    },
+    Trace {
+        trace_id: String,
+        trace: Option<crate::execution::ExecutionTrace>,
+    },
+    EntityList {
+        entity_type: String,
+        items: Vec<serde_json::Value>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,7 +200,7 @@ impl Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{AgentSpec, AgentId};
+    use crate::agent::{AgentId, AgentSpec};
 
     #[test]
     fn test_roundtrip_desktop_message() {

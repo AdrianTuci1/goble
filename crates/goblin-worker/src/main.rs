@@ -2,25 +2,31 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
 use axum::extract::State;
 use axum::routing::{get, post};
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
+use goble_core::cluster_key::ClusterKey;
+use goble_core::snapshot::LocalSnapshotProvider;
 use goble_core::tls::PairingBundle;
 use goble_core::worker::{WorkerId, WorkerStatus};
 use serde::Serialize;
 use tracing_subscriber::EnvFilter;
 
-mod agent_runtime;
-mod file_vault;
-mod mcp;
-mod pairing;
-mod runner;
-mod scheduler;
-mod state;
-mod task_store;
-mod websocket;
+pub mod agent_runtime;
+pub mod file_vault;
+pub mod harness_runner;
+pub mod llm_factory;
+pub mod mcp;
+pub mod pairing;
+pub mod runner;
+pub mod scheduler;
+pub mod snapshot_runner;
+pub mod state;
+pub mod task_store;
+pub mod websocket;
 
 #[derive(Parser, Debug)]
 #[command(name = "goblin")]
@@ -55,6 +61,12 @@ struct Args {
     pid_file: PathBuf,
     #[arg(long, env = "GOBLIN_LOG_FILE", default_value = "/var/log/goblin.log")]
     log_file: PathBuf,
+    #[arg(long, env = "GOBLIN_CLUSTER_KEY")]
+    cluster_key: Option<String>,
+    #[arg(long, env = "GOBLIN_SNAPSHOT_DIR")]
+    snapshot_dir: Option<std::path::PathBuf>,
+    #[arg(long, env = "GOBLIN_SNAPSHOT_INTERVAL_SECONDS", default_value = "300")]
+    snapshot_interval_seconds: u64,
 }
 
 static START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -99,13 +111,41 @@ async fn main() -> anyhow::Result<()> {
         None => WorkerId::generate(),
     };
 
+    let workspace_root = args.workspace_root.clone();
     let state = state::AppState::new(worker_id.clone());
     {
         let mut config = state.config.lock();
-        config.workspace_root = args.workspace_root;
+        config.workspace_root = args.workspace_root.clone();
+        config.llm_provider = std::env::var("LLM_PROVIDER").ok();
+        config.llm_model = std::env::var("LLM_MODEL").ok();
+        config.llm_base_url = std::env::var("LLM_BASE_URL").ok();
     }
 
-    state.set_vault_path(args.vault_path);
+    state.file_vault.lock().set_path(args.vault_path.clone());
+    // Best-effort vault load with empty passphrase; client can unlock later.
+    let _ = state.load_vault(b"");
+    std::fs::create_dir_all(&workspace_root)?;
+    state.set_store_path(workspace_root.join("worker.db"))?;
+
+    if let Some(key_str) = args.cluster_key {
+        let cluster_key: ClusterKey = key_str.parse().context("invalid cluster key")?;
+        state.set_cluster_key(cluster_key.clone());
+        if let Some(snapshot_dir) = args.snapshot_dir {
+            std::fs::create_dir_all(&snapshot_dir)?;
+            let provider = Arc::new(LocalSnapshotProvider::new(snapshot_dir));
+            state.set_snapshot_provider(provider.clone());
+            let runner = snapshot_runner::SnapshotRunner::new(
+                state.clone(),
+                provider,
+                cluster_key,
+                Duration::from_secs(args.snapshot_interval_seconds),
+            );
+            if runner.restore_if_empty()? {
+                tracing::info!("restored worker state from snapshot");
+            }
+            runner.start();
+        }
+    }
 
     let task_store = task_store::TaskStore::open(args.task_store)?;
     let scheduler = Arc::new(scheduler::Scheduler::new_with_default_runner(
@@ -176,7 +216,6 @@ async fn health_handler(State(state): State<Arc<state::AppState>>) -> axum::Json
 mod daemonize {
     use std::fs::OpenOptions;
     use std::io::Write;
-    use std::os::unix::process::CommandExt;
     use std::path::Path;
     use std::process::Command;
 

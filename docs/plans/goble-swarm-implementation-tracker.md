@@ -87,26 +87,27 @@
 
 ---
 
-## Phase 4 — Device sync via snapshot `[ ]`
+## Phase 4 — Device sync via snapshot `[x]`
 
-- **Objective:** A new device restores identity and state from the snapshot store instead of a central server.
-- **Files to touch:**
-  - `crates/goble-core/src/encrypted_wallet.rs`
+- **Objective:** A new device restores identity and worker metadata from the snapshot store; live runtime data stays on the workers and is queried directly.
+- **Files touched:**
   - `crates/goble-core/src/device_transfer.rs` (new)
-  - `crates/goble-core/src/snapshot.rs`
+  - `crates/goble-core/src/lib.rs`
   - `crates/goble-cli/src/lib.rs`
-  - `crates/goble-desktop/src-tauri/src/state.rs` (if desktop is active)
+  - `crates/goble-cli/tests/tls_and_setup.rs`
 - **Failing test to drive implementation:**
   - `goble-core::device_transfer::tests::test_device_restore_from_snapshot`
 - **Implementation:**
-  1. CLI `goble device add --from-snapshot <bucket>` downloads latest snapshot.
-  2. Decrypts wallet with passphrase, generates new device cert, updates wallet.
-  3. Re-uploads updated wallet snapshot.
-  4. Desktop caches restored state.
+  1. `DeviceTransfer::restore_from_snapshot` downloads latest snapshot, decrypts it with cluster key, extracts `IdentityWallet`, and decrypts it with passphrase.
+  2. Generates a new device certificate via `ClusterIdentity::from_key`, adds it to wallet.
+  3. Returns `(IdentityWallet, Identity)` so the CLI can persist the updated wallet locally.
+  4. CLI adds `goble device restore --from-snapshot <dir> --cluster-key <key> --passphrase <pass>`.
+  5. No local data migration: restored wallet contains worker list/URLs; the device queries live workers for runtime state.
 - **Verification command:**
   ```bash
-  cargo test -p goble-core device_transfer encrypted_wallet snapshot
-  cargo test -p goble-cli
+  cargo test -p goble-core device_transfer
+  cargo test -p goble-cli --test tls_and_setup --test e2e_worker
+  cargo test --workspace --lib
   ```
 - **Commit step:** `feat: restore identity wallet on a new device from snapshot`
 

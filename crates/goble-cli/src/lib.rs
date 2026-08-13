@@ -10,9 +10,7 @@ use goble_core::crypto::{generate_pairing_code, hash_pairing_code};
 use goble_core::encrypted_wallet::IdentityWallet;
 use goble_core::identity::ClusterRole;
 use goble_core::protocol::DesktopMessage;
-use goble_core::provision::{
-    provision_worker, LocalTransport, ProvisionConfig, SshTransport,
-};
+use goble_core::provision::{provision_worker, LocalTransport, ProvisionConfig, SshTransport};
 use goble_core::snapshot::{LocalSnapshotProvider, SnapshotProvider};
 use goble_core::store::Store;
 use goble_core::tls::CertGenerator;
@@ -132,10 +130,32 @@ pub enum Command {
         #[command(subcommand)]
         action: SnapshotAction,
     },
+    /// Manage devices (join from snapshot).
+    Device {
+        #[command(subcommand)]
+        action: DeviceAction,
+    },
     /// Manage the cluster identity wallet.
     Identity {
         #[command(subcommand)]
         action: IdentityAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DeviceAction {
+    /// Restore (or join) this device from an encrypted snapshot.
+    Restore {
+        #[arg(short, long)]
+        from_snapshot: PathBuf,
+        #[arg(short, long)]
+        cluster_key: String,
+        #[arg(short, long)]
+        passphrase: String,
+        #[arg(short = 'i', long, default_value = "restored-device")]
+        device_id: String,
+        #[arg(short = 'm', long, default_value = "Restored Device")]
+        device_name: String,
     },
 }
 
@@ -539,6 +559,35 @@ pub async fn async_main() -> Result<()> {
                     "restored identity wallet from {} into store",
                     wallet.display()
                 );
+            }
+        },
+        Command::Device { action } => match action {
+            DeviceAction::Restore {
+                from_snapshot,
+                cluster_key,
+                passphrase,
+                device_id,
+                device_name,
+            } => {
+                let key = ClusterKey::from_base64(&cluster_key)?;
+                let provider = LocalSnapshotProvider::new(&from_snapshot);
+                let (wallet, identity) =
+                    goble_core::device_transfer::DeviceTransfer::restore_from_snapshot(
+                        &provider,
+                        &WorkerId::generate(),
+                        &key,
+                        passphrase.as_bytes(),
+                        &device_id,
+                        &device_name,
+                        ClusterRole::Admin,
+                    )?;
+                let sealed = wallet.seal(passphrase.as_bytes())?;
+                store.set_cluster_wallet(&sealed)?;
+                println!(
+                    "joined cluster '{}' as device {}",
+                    wallet.cluster_name, device_id
+                );
+                println!("device certificate serial: {}", identity.serial());
             }
         },
     }

@@ -99,3 +99,25 @@ fn test_setup_worker_cli_parsing() {
         "--local-test",
     ]);
 }
+
+/// Ensures the device restore subcommand parses correctly.
+#[test]
+fn test_device_restore_subcommand_parsing() {
+    use clap::Parser;
+    use goble_cli::Args;
+    let _ = Args::parse_from([
+        "goble-cli",
+        "device",
+        "restore",
+        "--from-snapshot",
+        "/tmp/snapshots",
+        "--cluster-key",
+        "c3Vkd2f8sX7f8J8f8J8f8J8f8J8f8J8f8J8f8J8=",
+        "--passphrase",
+        "secret",
+        "--device-id",
+        "phone-device",
+        "--device-name",
+        "Phone",
+    ]);
+}

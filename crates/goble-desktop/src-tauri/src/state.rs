@@ -5,8 +5,8 @@ use chrono::Utc;
 use goble_core::agent::{AgentId, AgentSpec, Trigger};
 use goble_core::thread::{Participant, ThreadId, ThreadKind, UserId};
 use crate::ThreadSummary;
-use goble_core::cluster_key::{ClusterBackup, ClusterIdentity, ClusterIdentitySnapshot, ClusterKey};
-use goble_core::encrypted_wallet::EncryptedWallet;
+use goble_core::cluster_key::{ClusterBackup, ClusterIdentity, ClusterKey};
+use goble_core::encrypted_wallet::{EncryptedWallet, IdentityWallet};
 use goble_core::execution::ExecutionTrace;
 use goble_core::identity::ClusterRole;
 use goble_core::mcp_client::McpTool;
@@ -358,9 +358,10 @@ impl DesktopState {
         match wallet {
             Some(wallet) => {
                 let bytes = wallet.open(passphrase.as_bytes())?;
-                let snapshot: ClusterIdentitySnapshot =
+                let identity_wallet: IdentityWallet =
                     serde_json::from_slice(&bytes)?;
-                let identity = ClusterIdentity::from_snapshot(snapshot)?;
+                let device_id = Self::device_id();
+                let identity = identity_wallet.to_cluster_identity(&device_id, ClusterRole::Admin)?;
                 *self.cluster_identity.lock() = Some(identity);
                 Ok(true)
             }
@@ -377,12 +378,9 @@ impl DesktopState {
         identity: ClusterIdentity,
         passphrase: &str,
     ) -> anyhow::Result<ClusterIdentity> {
-        let snapshot = identity.to_snapshot();
-        let wallet = EncryptedWallet::seal(
-            &serde_json::to_vec(&snapshot)?,
-            passphrase.as_bytes(),
-        )?;
-        self.store.lock().set_cluster_wallet(&wallet)?;
+        let wallet = IdentityWallet::from(&identity);
+        let sealed = wallet.seal(passphrase.as_bytes())?;
+        self.store.lock().set_cluster_wallet(&sealed)?;
         *self.cluster_identity.lock() = Some(identity.clone());
         self.emit("cluster:updated", ());
         Ok(identity)

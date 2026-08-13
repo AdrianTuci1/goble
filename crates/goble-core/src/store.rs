@@ -263,16 +263,18 @@ impl Store {
         Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
     }
 
+    /// Store the encrypted cluster wallet (IdentityWallet) under a dedicated
+    /// settings key so it does not collide with the legacy ClusterIdentitySnapshot.
     pub fn set_cluster_wallet(
         &self,
         wallet: &crate::encrypted_wallet::EncryptedWallet,
     ) -> Result<()> {
         let value = serde_json::to_string(wallet).context("failed to serialize cluster wallet")?;
-        self.set_setting("cluster_identity", &value)
+        self.set_setting("cluster_wallet", &value)
     }
 
     pub fn get_cluster_wallet(&self) -> Result<Option<crate::encrypted_wallet::EncryptedWallet>> {
-        match self.get_setting("cluster_identity")? {
+        match self.get_setting("cluster_wallet")? {
             Some(value) => {
                 let wallet =
                     serde_json::from_str(&value).context("failed to deserialize cluster wallet")?;
@@ -1475,5 +1477,38 @@ mod tests {
             Some("world".to_string())
         );
         assert_eq!(store2.list_agents().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_identity_wallet_roundtrip_in_snapshot() {
+        use crate::cluster_key::ClusterKey;
+        use crate::encrypted_wallet::IdentityWallet;
+        use crate::snapshot::Snapshot;
+        use crate::worker::WorkerId;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store1 = Store::open(tmp.path().join("store1.db")).unwrap();
+        let identity = IdentityWallet::new(
+            ClusterKey::generate().to_base64(),
+            "test-cluster",
+            "ca-cert-pem",
+            "ca-key-pem",
+        );
+        let sealed = identity.seal(b"passphrase").unwrap();
+        store1.set_cluster_wallet(&sealed).unwrap();
+
+        let key = ClusterKey::generate();
+        let worker_id = WorkerId::generate();
+        let snapshot = Snapshot::from_store(&store1, &worker_id, &key).unwrap();
+
+        let store2 = Store::open(tmp.path().join("store2.db")).unwrap();
+        snapshot.restore_into_store(&store2, &key).unwrap();
+
+        let loaded = store2
+            .get_cluster_wallet()
+            .unwrap()
+            .expect("wallet missing");
+        let opened = IdentityWallet::open(&loaded, b"passphrase").unwrap();
+        assert_eq!(opened, identity);
     }
 }

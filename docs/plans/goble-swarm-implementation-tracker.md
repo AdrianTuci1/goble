@@ -1,0 +1,213 @@
+# Goble Swarm Implementation Tracker
+
+**Branch:** `feature/agent-guide-ui`  
+**Base commit after Phase 1:** `1a5e497`
+
+## Legend
+
+- `[ ]` pending
+- `[>]` in progress
+- `[x]` done
+
+---
+
+## Phase 1 — Snapshot engine `[x]`
+
+- **Objective:** Add encrypted object-storage snapshot format that workers can upload/restore for disaster recovery.
+- **Files touched:**
+  - `crates/goble-core/src/snapshot.rs` (new)
+  - `crates/goble-core/src/store.rs`
+  - `crates/goble-core/src/protocol.rs`
+  - `crates/goblin-worker/src/snapshot_runner.rs` (new)
+  - `crates/goblin-worker/src/state.rs`
+  - `crates/goblin-worker/src/main.rs`
+  - `crates/goblin-worker/src/websocket.rs`
+  - `crates/goble-cli/src/lib.rs`
+- **Tests added:**
+  - `goble-core/src/store.rs::test_snapshot_export_import_roundtrip`
+  - `goblin-worker/src/snapshot_runner.rs::test_restore_empty_store`
+- **Verification command:**
+  ```bash
+  cargo test -p goble-core -p goblin-worker -p goble-cli -- --skip test_multi_worker_round_robin_dispatch --skip test_agent_runtime_isolation_and_secret_passthrough --skip test_worker_health_and_websocket_run_agent
+  ```
+- **Commit:** `1a5e497`
+
+---
+
+## Phase 2 — Identity wallet as part of the snapshot `[x]`
+
+- **Objective:** Move the raw cluster key into an encrypted `IdentityWallet` payload and include that wallet in the snapshot so a new device can restore identity without a central account server.
+- **Files touched:**
+  - `crates/goble-core/src/encrypted_wallet.rs`
+  - `crates/goble-core/src/store.rs`
+  - `crates/goble-cli/src/lib.rs`
+  - `crates/goble-desktop/src-tauri/src/state.rs`
+- **Tests added:**
+  - `goble-core/src/store.rs::test_identity_wallet_roundtrip_in_snapshot`
+- **Implementation:**
+  1. Defined `IdentityWallet { version, cluster_key_base64, cluster_name, ca_cert_pem, ca_key_pem, revoked_serials, devices, workers }`.
+  2. Added `IdentityWallet::seal`/`open` and `From<&ClusterIdentity>`/`to_cluster_identity` helpers.
+  3. Changed `Store::{set_cluster_wallet, get_cluster_wallet}` to use dedicated `cluster_wallet` setting key.
+  4. Pruned `SNAPSHOT_TABLES` to match real tables in `Store::init`.
+  5. Added CLI `goble identity {create,export,restore}`.
+  6. Updated desktop `set_cluster_identity`/`unlock_cluster_identity` to use `IdentityWallet`.
+- **Verification command:**
+  ```bash
+  cargo test --workspace -- --skip test_multi_worker_round_robin_dispatch --skip test_agent_runtime_isolation_and_secret_passthrough --skip test_worker_health_and_websocket_run_agent
+  ```
+- **Commit step:** `feat: identity wallet embedded in encrypted snapshot`
+
+---
+
+## Phase 3 — Certificate-based worker provisioning `[ ]`
+
+- **Objective:** Replace the pairing-code hash bootstrap with a certificate bundle. The desktop signs a worker certificate with the cluster CA and the worker starts with `--bundle worker-bundle.json`.
+- **Files to touch:**
+  - `crates/goble-core/src/provision.rs`
+  - `crates/goble-core/src/identity.rs`
+  - `crates/goble-core/src/tls.rs`
+  - `crates/goblin-worker/src/main.rs`
+  - `crates/goblin-worker/src/pairing.rs`
+  - `crates/goble-cli/src/lib.rs`
+- **Failing test to drive implementation:**
+  - `goble-core/src/provision.rs::tests::test_provision_bundle_contains_worker_cert`
+- **Implementation:**
+  1. Add `WorkerBundle { worker_id, cert_pem, key_pem, ca_cert_pem, cluster_name }`.
+  2. `ClusterCa::sign_worker(worker_id)` returns the bundle.
+  3. `SshTransport` copies binary + bundle + starts worker with `--bundle`.
+  4. Worker reads bundle, builds server mTLS config, removes hash-based `pair_hash` check.
+  5. Desktop connects to worker over mTLS using its device cert.
+- **Verification command:**
+  ```bash
+  cargo test -p goble-core provision identity tls
+  cargo test -p goble-cli --test e2e_worker --test tls_and_setup
+  cargo test -p goblin-worker pairing
+  ```
+- **Commit step:** `feat: certificate-based worker provisioning replaces pairing hash`
+
+---
+
+## Phase 4 — Device sync via snapshot `[ ]`
+
+- **Objective:** A new device restores identity and state from the snapshot store instead of a central server.
+- **Files to touch:**
+  - `crates/goble-core/src/encrypted_wallet.rs`
+  - `crates/goble-core/src/device_transfer.rs` (new)
+  - `crates/goble-core/src/snapshot.rs`
+  - `crates/goble-cli/src/lib.rs`
+  - `crates/goble-desktop/src-tauri/src/state.rs` (if desktop is active)
+- **Failing test to drive implementation:**
+  - `goble-core::device_transfer::tests::test_device_restore_from_snapshot`
+- **Implementation:**
+  1. CLI `goble device add --from-snapshot <bucket>` downloads latest snapshot.
+  2. Decrypts wallet with passphrase, generates new device cert, updates wallet.
+  3. Re-uploads updated wallet snapshot.
+  4. Desktop caches restored state.
+- **Verification command:**
+  ```bash
+  cargo test -p goble-core device_transfer encrypted_wallet snapshot
+  cargo test -p goble-cli
+  ```
+- **Commit step:** `feat: restore identity wallet on a new device from snapshot`
+
+---
+
+## Phase 5 — Kubernetes cluster mode with snapshot tier `[ ]`
+
+- **Objective:** Run workers in Kubernetes. Each pod has local state; snapshot tier is cluster-level. No live runtime migration. Sticky sessions handled at the UI/balancer layer.
+- **Files to touch:**
+  - `deploy/goblin/Dockerfile`
+  - `deploy/goblin/charts/goblin-cluster/` (Helm chart)
+  - `crates/goblin-worker/src/main.rs` (`--mode=cluster`, env-based snapshot config)
+  - `crates/goblin-worker/src/state.rs` (PVC-aware restore guard)
+  - `crates/goblin-worker/src/scheduler.rs` (leader election)
+  - `crates/goble-desktop/src-tauri/src/cluster_commands.rs` (new)
+  - `crates/goble-desktop/src/components/ClusterInstallCard.tsx` (new)
+  - `crates/goble-cli/src/lib.rs` (Helm command generator)
+- **Failing test / verification:**
+  - Manual: `kind create cluster`, `helm install`, kill a pod, new pod restores from snapshot.
+- **Implementation:**
+  1. Build minimal distroless Docker image for `goblin`.
+  2. Helm chart: `StatefulSet` with PVC, snapshot env vars from Secret, mTLS bootstrap.
+  3. Worker detects `GOBLIN_MODE=cluster` and skips auto-restore if existing `worker.db` on PVC.
+  4. Scheduler leader election via Kubernetes lease API.
+  5. Desktop composer card generates `helm install` command with snapshot provider, bucket, interval.
+  6. Document sticky session requirement: use `sessionAffinity: ClientIP` on Service or desktop pins to a single pod for the lifetime of an agent run.
+- **Verification command:**
+  ```bash
+  cargo build --release -p goblin-worker
+  docker build -t goble/goblin:latest -f deploy/goblin/Dockerfile .
+  kind load docker-image goble/goblin:latest
+  helm install goblin deploy/goblin/charts/goblin-cluster --namespace goblin --create-namespace
+  kubectl -n goblin delete pod goblin-0
+  # wait for replacement pod and confirm snapshot restore in logs
+  ```
+- **Commit step:** `feat: kubernetes cluster mode with snapshot disaster recovery`
+
+---
+
+## Phase 6 — Worker groups and runtime routing `[ ]`
+
+- **Objective:** Tag workers into groups (e.g. `gpu`, `prod`) and let the desktop route agents to the best worker using `WorkerPool`.
+- **Files to touch:**
+  - `crates/goble-core/src/worker_pool.rs`
+  - `crates/goble-core/src/worker.rs`
+  - `crates/goblin-worker/src/state.rs`
+  - `crates/goble-cli/src/lib.rs` (`goble worker tag`)
+  - `crates/goble-desktop/src/components/ComposerRuntimeSelector.tsx` (new)
+- **Failing test to drive implementation:**
+  - `goble-core::worker_pool::tests::test_tagged_group_selection`
+- **Implementation:**
+  1. Add `tags: Vec<String>` to `Worker`.
+  2. `WorkerPool::select` accepts optional tag filter.
+  3. Desktop UI shows runtime selector: local / group / specific worker.
+  4. CLI `goble worker tag <worker-id> <tag>` updates worker metadata.
+- **Verification command:**
+  ```bash
+  cargo test -p goble-core worker_pool worker
+  cargo test -p goble-cli --test tls_and_setup
+  ```
+- **Commit step:** `feat: worker groups and runtime routing`
+
+---
+
+## Phase 7 — Compliance & security hardening `[ ]`
+
+- **Objective:** Close security gaps: encrypted device store, no empty vault passphrase, audit log, key rotation.
+- **Files to touch:**
+  - `crates/goble-core/src/store.rs` (encryption at rest)
+  - `crates/goble-core/src/vault.rs`
+  - `crates/goble-core/src/encrypted_wallet.rs`
+  - `crates/goble-core/src/audit.rs` (new)
+  - `crates/goble-cli/src/lib.rs` (`goble identity rotate-worker-certs`)
+  - `crates/goble-desktop/src/components/IdentitySettings.tsx`
+- **Failing test to drive implementation:**
+  - `goble-core::vault::tests::test_empty_passphrase_rejected`
+- **Implementation:**
+  1. Enforce non-empty vault passphrase.
+  2. Encrypt device SQLite store with key derived from device key + passphrase.
+  3. Add `AuditLog` table; log every signed command.
+  4. Add `rotate-worker-certs` command that re-issues all worker certificates and pushes CRL update.
+  5. UI warns until wallet is exported.
+- **Verification command:**
+  ```bash
+  cargo test -p goble-core vault encrypted_wallet audit identity
+  cargo test -p goble-cli
+  cargo test -p goblin-worker
+  ```
+- **Commit step:** `feat: compliance hardening — encrypted store, audit log, key rotation`
+
+---
+
+## Cross-cutting concerns
+
+### Kubernetes / autoscale / sticky sessions
+
+- **No live runtime migration.** A running agent, its MCP child processes, and LLM streams are bound to one pod. Autoscale must only scale new work, never migrate running agents.
+- **PVC per pod.** Use a `StatefulSet` so each pod keeps a stable name and local `worker.db` across restarts.
+- **Snapshot tier is cluster-level.** All pods share the same bucket, prefix, and credentials.
+- **Sticky sessions.** The desktop must send a running agent's traffic to the same pod. Options:
+  1. Expose each pod behind its own stable DNS / LoadBalancer.
+  2. Use Kubernetes Service `sessionAffinity: ClientIP` (works only for same source IP and short-lived flows).
+  3. Have the desktop track the pod assigned to each agent and route directly to it.
+- **Leader election.** Only one pod should run cron-style `Scheduler` loops. Use Kubernetes `coordination.k8s.io` leases.

@@ -1,12 +1,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures::SinkExt;
 use goble_core::agent::{AgentSpec, Trigger};
-use goble_core::cluster_key::ClusterKey;
+use goble_core::cluster_key::{ClusterIdentity, ClusterKey};
 use goble_core::crypto::{generate_pairing_code, hash_pairing_code};
+use goble_core::encrypted_wallet::IdentityWallet;
+use goble_core::identity::ClusterRole;
 use goble_core::protocol::DesktopMessage;
 use goble_core::provision::{provision_worker, LocalTransport, ProvisionConfig, SshTransport};
 use goble_core::snapshot::{LocalSnapshotProvider, SnapshotProvider};
@@ -128,6 +130,11 @@ pub enum Command {
         #[command(subcommand)]
         action: SnapshotAction,
     },
+    /// Manage the cluster identity wallet.
+    Identity {
+        #[command(subcommand)]
+        action: IdentityAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -206,6 +213,33 @@ pub enum SnapshotAction {
         url: String,
         #[arg(short, long)]
         code: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum IdentityAction {
+    /// Create a new cluster identity wallet.
+    Create {
+        #[arg(short, long)]
+        name: String,
+        #[arg(short, long)]
+        passphrase: String,
+        #[arg(short, long)]
+        out: PathBuf,
+    },
+    /// Export the cluster identity wallet from this device store to a file.
+    Export {
+        #[arg(short, long)]
+        passphrase: String,
+        #[arg(short, long)]
+        out: PathBuf,
+    },
+    /// Restore a cluster identity wallet from a file into this device store.
+    Restore {
+        #[arg(short, long)]
+        passphrase: String,
+        #[arg(short, long)]
+        wallet: PathBuf,
     },
 }
 
@@ -450,6 +484,52 @@ pub async fn async_main() -> Result<()> {
                 let code = code.unwrap_or_else(|| "00000000".to_string());
                 send_to_worker(&worker, &url, &code, None, DesktopMessage::TriggerSnapshot).await?;
                 println!("snapshot trigger request sent");
+            }
+        },
+        Command::Identity { action } => match action {
+            IdentityAction::Create {
+                name,
+                passphrase,
+                out,
+            } => {
+                let device_id = format!("cli-{}", uuid::Uuid::new_v4());
+                let identity = ClusterIdentity::generate(&name, &device_id, ClusterRole::Owner)?;
+                let wallet = IdentityWallet::from(&identity);
+                let sealed = wallet.seal(passphrase.as_bytes())?;
+                let json = serde_json::to_string(&sealed)?;
+                std::fs::write(&out, json)?;
+                println!(
+                    "created identity wallet for '{}' at {}",
+                    name,
+                    out.display()
+                );
+                println!("cluster key: {}", identity.export_key());
+            }
+            IdentityAction::Export { passphrase, out } => {
+                let wallet = store
+                    .get_cluster_wallet()?
+                    .ok_or_else(|| anyhow::anyhow!("no cluster wallet in store"))?;
+                let plaintext = wallet.open(passphrase.as_bytes())?;
+                let identity: IdentityWallet = serde_json::from_slice(&plaintext)
+                    .context("wallet does not contain a valid IdentityWallet")?;
+                let sealed = identity.seal(passphrase.as_bytes())?;
+                let json = serde_json::to_string(&sealed)?;
+                std::fs::write(&out, json)?;
+                println!("exported identity wallet to {}", out.display());
+            }
+            IdentityAction::Restore { passphrase, wallet } => {
+                let json = std::fs::read_to_string(&wallet)?;
+                let sealed: goble_core::encrypted_wallet::EncryptedWallet =
+                    serde_json::from_str(&json)?;
+                let plaintext = sealed.open(passphrase.as_bytes())?;
+                let identity: IdentityWallet = serde_json::from_slice(&plaintext)
+                    .context("wallet does not contain a valid IdentityWallet")?;
+                let resealed = identity.seal(passphrase.as_bytes())?;
+                store.set_cluster_wallet(&resealed)?;
+                println!(
+                    "restored identity wallet from {} into store",
+                    wallet.display()
+                );
             }
         },
     }

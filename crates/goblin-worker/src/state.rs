@@ -5,6 +5,7 @@ use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
 use crate::file_vault::FileVault;
+use crate::leader::LeaderState;
 use crate::scheduler::Scheduler;
 use goble_core::agent::{AgentId, AgentSpec, McpServer};
 use goble_core::cluster_key::ClusterKey;
@@ -32,8 +33,11 @@ pub struct AppState {
     pub scheduler: Mutex<Option<Arc<Scheduler>>>,
     pub config: Mutex<WorkerConfig>,
     pub store: Mutex<Option<Store>>,
+    pub store_path: Mutex<Option<PathBuf>>,
     pub cluster_key: Mutex<Option<ClusterKey>>,
     pub snapshot_provider: Mutex<Option<Arc<dyn SnapshotProvider>>>,
+    pub cluster_mode: Mutex<bool>,
+    pub leader_state: Mutex<Option<LeaderState>>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,9 +76,34 @@ impl AppState {
             scheduler: Mutex::new(None),
             config: Mutex::new(WorkerConfig::default()),
             store: Mutex::new(None),
+            store_path: Mutex::new(None),
             cluster_key: Mutex::new(None),
             snapshot_provider: Mutex::new(None),
+            cluster_mode: Mutex::new(false),
+            leader_state: Mutex::new(None),
         })
+    }
+
+    pub fn set_cluster_mode(&self, cluster_mode: bool) {
+        *self.cluster_mode.lock() = cluster_mode;
+    }
+
+    pub fn cluster_mode(&self) -> bool {
+        *self.cluster_mode.lock()
+    }
+
+    pub fn set_leader_state(&self, leader_state: LeaderState) {
+        *self.leader_state.lock() = Some(leader_state);
+    }
+
+    pub fn leader_state(&self) -> Option<LeaderState> {
+        self.leader_state.lock().clone()
+    }
+
+    pub fn is_scheduler_leader(&self) -> bool {
+        self.leader_state()
+            .map(|l| l.is_leader())
+            .unwrap_or(true)
     }
 
     pub fn set_scheduler(&self, scheduler: Arc<Scheduler>) {
@@ -142,9 +171,24 @@ impl AppState {
     }
 
     pub fn set_store_path(&self, path: std::path::PathBuf) -> anyhow::Result<()> {
-        let store = Store::open(path)?;
-        *self.store.lock() = Some(store);
+        *self.store_path.lock() = Some(path);
         Ok(())
+    }
+
+    pub fn store_path(&self) -> Option<PathBuf> {
+        self.store_path.lock().clone()
+    }
+
+    pub fn store(&self) -> anyhow::Result<Store> {
+        let mut store = self.store.lock();
+        if store.is_none() {
+            if let Some(path) = self.store_path() {
+                *store = Some(Store::open(path)?);
+            }
+        }
+        store
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("worker store not initialized"))
     }
 
     pub fn set_cluster_key(&self, key: ClusterKey) {
@@ -161,13 +205,6 @@ impl AppState {
 
     pub fn cluster_key(&self) -> Option<ClusterKey> {
         self.cluster_key.lock().clone()
-    }
-
-    pub fn store(&self) -> anyhow::Result<Store> {
-        self.store
-            .lock()
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("worker store not initialized"))
     }
 
     pub fn store_trace(&self, trace: ExecutionTrace) {

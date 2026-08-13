@@ -38,6 +38,7 @@ parking_lot.workspace = true
 dashmap.workspace = true
 axum = { workspace = true, features = ["ws"] }
 cron.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 tokio-test.workspace = true

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use clap::{Parser, Subcommand};
 use futures::SinkExt;
 use goble_core::agent::{AgentSpec, Trigger};
@@ -140,6 +141,11 @@ pub enum Command {
         #[command(subcommand)]
         action: IdentityAction,
     },
+    /// Generate a Kubernetes Helm install command for a Goblin worker cluster.
+    Cluster {
+        #[command(subcommand)]
+        action: ClusterAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -235,6 +241,49 @@ pub enum SnapshotAction {
         url: String,
         #[arg(short, long)]
         code: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ClusterAction {
+    /// Print a helm install command for a Goblin worker cluster.
+    HelmInstall {
+        /// Helm release name.
+        #[arg(short, long, default_value = "goblin")]
+        name: String,
+        /// Kubernetes namespace.
+        #[arg(long, default_value = "goblin")]
+        namespace: String,
+        /// Number of worker replicas.
+        #[arg(short, long, default_value = "3")]
+        replicas: u32,
+        /// Passphrase to decrypt the local identity wallet.
+        #[arg(short, long)]
+        passphrase: String,
+        /// Snapshot provider: local, s3, r2, b2, minio.
+        #[arg(long, default_value = "local")]
+        provider: String,
+        /// S3-compatible endpoint (e.g. R2 URL). Required for s3/r2/minio providers.
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Snapshot bucket name.
+        #[arg(long)]
+        bucket: Option<String>,
+        /// Snapshot access key id.
+        #[arg(long)]
+        access_key_id: Option<String>,
+        /// Snapshot secret access key.
+        #[arg(long)]
+        secret_access_key: Option<String>,
+        /// Snapshot region.
+        #[arg(long, default_value = "auto")]
+        region: String,
+        /// Snapshot interval in seconds.
+        #[arg(long, default_value = "3600")]
+        interval_seconds: u64,
+        /// Use a local chart path instead of the remote repo.
+        #[arg(long)]
+        local_chart: Option<PathBuf>,
     },
 }
 
@@ -588,6 +637,69 @@ pub async fn async_main() -> Result<()> {
                     wallet.cluster_name, device_id
                 );
                 println!("device certificate serial: {}", identity.serial());
+            }
+        },
+        Command::Cluster { action } => match action {
+            ClusterAction::HelmInstall {
+                name,
+                namespace,
+                replicas,
+                passphrase,
+                provider,
+                endpoint,
+                bucket,
+                access_key_id,
+                secret_access_key,
+                region,
+                interval_seconds,
+                local_chart,
+            } => {
+                let sealed = store
+                    .get_cluster_wallet()?
+                    .ok_or_else(|| anyhow::anyhow!("no cluster wallet in store; create or restore identity first"))?;
+                let plaintext = sealed.open(passphrase.as_bytes())?;
+                let wallet: IdentityWallet = serde_json::from_slice(&plaintext)
+                    .context("wallet does not contain a valid IdentityWallet")?;
+                let identity = wallet.to_cluster_identity("cli-cluster-command", ClusterRole::Admin)?;
+                let worker_id = "goblin-cluster".to_string();
+                let bundle = identity
+                    .ca
+                    .sign_worker_bundle(&worker_id, &wallet.cluster_name, 365)?;
+                let bundle_json = serde_json::to_string(&bundle)?;
+                let bundle_b64 = base64::engine::general_purpose::STANDARD.encode(bundle_json);
+                let cluster_key_b64 = identity.export_key();
+
+                let mut helm_args = vec![
+                    format!("helm install {} ", name),
+                    if let Some(chart) = local_chart {
+                        format!("{} ", chart.display())
+                    } else {
+                        "goble/goblin-cluster ".to_string()
+                    },
+                    format!("--namespace {} --create-namespace ", namespace),
+                    format!("--set replicas={} ", replicas),
+                    format!("--set workerBundle={} ", bundle_b64),
+                    format!("--set clusterKey={} ", cluster_key_b64),
+                    format!("--set snapshot.enabled=true "),
+                    format!("--set snapshot.provider={} ", provider),
+                    format!("--set snapshot.intervalSeconds={} ", interval_seconds),
+                    format!("--set snapshot.region={} ", region),
+                ];
+                if let Some(endpoint) = endpoint {
+                    helm_args.push(format!("--set snapshot.endpoint={} ", endpoint));
+                }
+                if let Some(bucket) = bucket {
+                    helm_args.push(format!("--set snapshot.bucket={} ", bucket));
+                }
+                if let Some(access_key_id) = access_key_id {
+                    helm_args.push(format!("--set snapshot.accessKeyId={} ", access_key_id));
+                }
+                if let Some(secret_access_key) = secret_access_key {
+                    helm_args.push(format!("--set snapshot.secretAccessKey={} ", secret_access_key));
+                }
+                helm_args.push("\n".to_string());
+                println!("Run the following command in a cluster with Helm configured:");
+                println!("{}", helm_args.join(""));
             }
         },
     }

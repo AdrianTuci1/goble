@@ -6,6 +6,7 @@ use cron::Schedule;
 use goble_core::agent::{AgentId, Trigger};
 use goble_core::protocol::WorkerMessage;
 
+use crate::leader::LeaderState;
 use crate::runner::Runner;
 use crate::state::AppState;
 use crate::task_store::{ScheduledTask, TaskStore};
@@ -88,12 +89,13 @@ impl Scheduler {
         }
     }
 
-    pub fn start_loop(self: Arc<Self>, tick_interval: Duration) {
+    pub fn start_loop(self: Arc<Self>, tick_interval: Duration, leader_state: LeaderState) {
         tokio::spawn(async move {
             let mut last_heartbeat = std::collections::HashMap::<String, Instant>::new();
             loop {
                 tokio::time::sleep(tick_interval).await;
 
+                let is_leader = leader_state.is_leader();
                 let tasks = match self.store.lock().unwrap().list() {
                     Ok(t) => t,
                     Err(e) => {
@@ -109,7 +111,7 @@ impl Scheduler {
 
                 let now = Utc::now();
                 for task in tasks {
-                    if !task.enabled {
+                    if !task.enabled || !is_leader {
                         continue;
                     }
                     let due = match &task.trigger {
@@ -271,7 +273,37 @@ mod tests {
             )
             .unwrap();
         let scheduler_clone = Arc::clone(&scheduler);
-        scheduler_clone.start_loop(Duration::from_millis(100));
+        scheduler_clone.start_loop(Duration::from_millis(100), LeaderState::new(true));
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let tasks = scheduler.list_tasks().unwrap();
+        assert_eq!(tasks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_loop_skips_triggers_when_not_leader() {
+        let tmp = TempDir::new().unwrap();
+        let store = TaskStore::open(tmp.path().join("tasks.db")).unwrap();
+        let state = AppState::new(WorkerId::generate());
+        let tmp_state = tempfile::tempdir().unwrap();
+        state
+            .set_store_path(tmp_state.path().join("worker.db"))
+            .unwrap();
+        let spec = AgentSpec::new("demo", "do nothing");
+        let agent_id = spec.id.clone();
+        state.store_agent(spec);
+        let runner =
+            crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
+        let scheduler = Arc::new(Scheduler::new(state, store, runner));
+        scheduler
+            .schedule(
+                agent_id.clone(),
+                Trigger::Heartbeat {
+                    interval_seconds: 1,
+                },
+            )
+            .unwrap();
+        let scheduler_clone = Arc::clone(&scheduler);
+        scheduler_clone.start_loop(Duration::from_millis(100), LeaderState::new(false));
         tokio::time::sleep(Duration::from_millis(1500)).await;
         let tasks = scheduler.list_tasks().unwrap();
         assert_eq!(tasks.len(), 1);

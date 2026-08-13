@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -9,13 +9,15 @@ use rusqlite::{params, Connection};
 /// Internal SQLite store for agents, chats, teams, execution traces, MCP registry cache and settings.
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    path: Option<PathBuf>,
 }
 
 impl Store {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let conn = Connection::open(path).context("failed to open sqlite store")?;
+        let conn = Connection::open(path.as_ref()).context("failed to open sqlite store")?;
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
+            path: Some(path.as_ref().to_path_buf()),
         };
         store.migrate()?;
         Ok(store)
@@ -25,9 +27,15 @@ impl Store {
         let conn = Connection::open_in_memory().context("failed to open in-memory sqlite store")?;
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
+            path: None,
         };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// Path to the underlying SQLite database, if any.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     fn migrate(&self) -> Result<()> {
@@ -1238,6 +1246,7 @@ impl Clone for Store {
     fn clone(&self) -> Self {
         Self {
             conn: Arc::clone(&self.conn),
+            path: self.path.clone(),
         }
     }
 }

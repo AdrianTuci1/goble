@@ -24,6 +24,10 @@ pub struct WorkerConfig {
     pub port: u16,
     pub username: String,
     pub pairing_code: String,
+    /// Optional worker certificate bundle for mTLS.
+    pub worker_bundle: Option<crate::provision::WorkerBundle>,
+    /// Optional desktop identity certificate for mTLS.
+    pub desktop_identity: Option<crate::identity::Identity>,
 }
 
 impl WorkerConfig {
@@ -39,12 +43,33 @@ impl WorkerConfig {
             port: 7878,
             username: username.into(),
             pairing_code: String::new(),
+            worker_bundle: None,
+            desktop_identity: None,
         }
     }
 
     pub fn with_pairing_code(mut self, code: impl Into<String>) -> Self {
         self.pairing_code = code.into();
         self
+    }
+
+    pub fn with_worker_bundle(mut self, bundle: crate::provision::WorkerBundle) -> Self {
+        self.worker_bundle = Some(bundle);
+        self
+    }
+
+    pub fn with_desktop_identity(mut self, identity: crate::identity::Identity) -> Self {
+        self.desktop_identity = Some(identity);
+        self
+    }
+
+    /// Return the WebSocket URL for this worker, preferring wss when an mTLS bundle is present.
+    pub fn websocket_url(&self) -> String {
+        if self.worker_bundle.is_some() {
+            format!("wss://{}:{}/ws", self.host, self.port)
+        } else {
+            format!("ws://{}:{}/ws", self.host, self.port)
+        }
     }
 }
 

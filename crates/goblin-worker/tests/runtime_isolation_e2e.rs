@@ -51,6 +51,7 @@ async fn test_agent_runtime_isolation_and_secret_passthrough() {
             &workspace.path().join("vault.json").to_string_lossy(),
         ])
         .env("RUST_LOG", "info")
+        .env("LLM_PROVIDER", "mock")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

@@ -66,9 +66,11 @@ impl Scheduler {
             .get(&agent_id)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("agent not found"))?;
+        let mcp_servers = self.state.mcp_servers.lock().values().cloned().collect();
+        let secrets = self.state.secrets.lock().values().cloned().collect();
         let trace_id = uuid::Uuid::new_v4().to_string();
         self.runner
-            .run_agent(trace_id.clone(), agent_id, spec)
+            .run_agent(trace_id.clone(), agent_id, spec, mcp_servers, secrets)
             .await?;
         Ok(trace_id)
     }
@@ -175,16 +177,15 @@ impl Scheduler {
 mod tests {
     use super::*;
     use goble_core::agent::AgentSpec;
+    use goble_core::llm::LlmProvider;
     use goble_core::worker::WorkerId;
     use tempfile::TempDir;
 
     fn mock_factory() -> crate::runner::ProviderFactory {
         Box::new(|| {
-            Ok(goble_core::llm::create_provider(
-                "mock",
-                "test-key",
-                None,
-            ))
+            let boxed = goble_core::llm::create_provider("mock", "test-key", None);
+            let arc: std::sync::Arc<dyn LlmProvider> = std::sync::Arc::from(boxed);
+            Ok(arc)
         })
     }
 
@@ -193,7 +194,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = TaskStore::open(tmp.path().join("tasks.db")).unwrap();
         let state = AppState::new(WorkerId::generate());
-        let runner = crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
+        let tmp_state = tempfile::tempdir().unwrap();
+        state
+            .set_store_path(tmp_state.path().join("worker.db"))
+            .unwrap();
+        let runner =
+            crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
         let scheduler = Scheduler::new(state.clone(), store, runner);
         let spec = AgentSpec::new("demo", "do nothing");
         let id = spec.id.clone();
@@ -207,7 +213,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = TaskStore::open(tmp.path().join("tasks.db")).unwrap();
         let state = AppState::new(WorkerId::generate());
-        let runner = crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
+        let runner =
+            crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
         let scheduler = Scheduler::new(state, store, runner);
         let result = scheduler.trigger_agent(AgentId::generate()).await;
         assert!(result.is_err());
@@ -218,7 +225,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = TaskStore::open(tmp.path().join("tasks.db")).unwrap();
         let state = AppState::new(WorkerId::generate());
-        let runner = crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
+        let runner =
+            crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
         let scheduler = Scheduler::new(state, store, runner);
         let agent_id = AgentId::generate();
         let task = scheduler
@@ -244,10 +252,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = TaskStore::open(tmp.path().join("tasks.db")).unwrap();
         let state = AppState::new(WorkerId::generate());
+        let tmp_state = tempfile::tempdir().unwrap();
+        state
+            .set_store_path(tmp_state.path().join("worker.db"))
+            .unwrap();
         let spec = AgentSpec::new("demo", "do nothing");
         let agent_id = spec.id.clone();
         state.store_agent(spec);
-        let runner = crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
+        let runner =
+            crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
         let scheduler = Arc::new(Scheduler::new(state, store, runner));
         scheduler
             .schedule(

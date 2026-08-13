@@ -8,7 +8,7 @@ use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct PairRequest {
-    pub pairing_code_hash: String,
+    pub pairing_code_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -21,7 +21,18 @@ pub async fn pair_handler(
     Extension(state): Extension<Arc<AppState>>,
     Json(req): Json<PairRequest>,
 ) -> impl IntoResponse {
-    state.set_pairing_hash(req.pairing_code_hash);
+    if state.is_mtls_active() {
+        return (
+            StatusCode::OK,
+            Json(PairResponse {
+                worker_id: state.worker_id.to_string(),
+                paired: true,
+            }),
+        );
+    }
+    if let Some(hash) = req.pairing_code_hash {
+        state.set_pairing_hash(hash);
+    }
     let response = PairResponse {
         worker_id: state.worker_id.to_string(),
         paired: true,
@@ -32,7 +43,7 @@ pub async fn pair_handler(
 pub async fn status_handler(Extension(state): Extension<Arc<AppState>>) -> impl IntoResponse {
     let response = PairResponse {
         worker_id: state.worker_id.to_string(),
-        paired: state.pairing_hash.lock().is_some(),
+        paired: state.is_mtls_active() || state.pairing_hash.lock().is_some(),
     };
     (StatusCode::OK, Json(response))
 }

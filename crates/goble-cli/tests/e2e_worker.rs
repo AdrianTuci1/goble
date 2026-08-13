@@ -12,7 +12,8 @@ use tokio_tungstenite::tungstenite::Message;
 async fn test_worker_run_agent_flow() {
     let worker_id = WorkerId::generate();
     let state = goblin_worker::state::AppState::new(worker_id.clone());
-    let addr = spawn_worker(state.clone()).await;
+    std::env::set_var("LLM_PROVIDER", "mock");
+    let (addr, _tmp) = spawn_worker(state.clone()).await;
 
     let url = format!("ws://{}/ws", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -20,9 +21,16 @@ async fn test_worker_run_agent_flow() {
     let code = "12345678";
     state.set_pairing_hash(hash_pairing_code(code, &[0u8; 16]).unwrap());
 
+    let secret =
+        goble_core::secret::Secret::new("llm_api_key", "llm", "test-key".as_bytes().to_vec());
+    state
+        .secrets
+        .lock()
+        .insert("llm_api_key".to_string(), secret);
+
     let pair = DesktopMessage::PairRequest {
         worker_id: worker_id.clone(),
-        pairing_code_hash: hash_pairing_code(code, &[0u8; 16]).unwrap(),
+        pairing_code_hash: Some(hash_pairing_code(code, &[0u8; 16]).unwrap()),
     };
     ws.send(Message::Text(serde_json::to_string(&pair).unwrap().into()))
         .await
@@ -56,7 +64,9 @@ async fn test_worker_run_agent_flow() {
                         saw_finished = true;
                         break;
                     }
-                    _ => {}
+                    _ => {
+                        eprintln!("got msg: {msg:?}");
+                    }
                 }
             }
         }
@@ -66,7 +76,12 @@ async fn test_worker_run_agent_flow() {
     assert!(saw_finished, "expected AgentFinished");
 }
 
-async fn spawn_worker(state: Arc<goblin_worker::state::AppState>) -> std::net::SocketAddr {
+async fn spawn_worker(
+    state: Arc<goblin_worker::state::AppState>,
+) -> (std::net::SocketAddr, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().unwrap();
+    state.set_store_path(tmp.path().join("worker.db")).unwrap();
+
     let app = axum::Router::new()
         .route(
             "/ws",
@@ -81,5 +96,5 @@ async fn spawn_worker(state: Arc<goblin_worker::state::AppState>) -> std::net::S
         axum::serve(listener, app).await.unwrap();
     });
 
-    addr
+    (addr, tmp)
 }

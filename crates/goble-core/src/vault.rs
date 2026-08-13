@@ -74,9 +74,22 @@ impl CredentialVault {
         serde_json::to_vec(self).context("failed to serialize vault")
     }
 
-    /// Deserialize the vault from bytes.
+    /// Deserialize the vault from bytes (plain JSON, no encryption envelope).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         serde_json::from_slice(bytes).context("failed to deserialize vault")
+    }
+
+    /// Serialize the vault to bytes and encrypt with a passphrase-derived key.
+    pub fn to_bytes_passphrase(&self, passphrase: &[u8]) -> Result<Vec<u8>> {
+        let plaintext = serde_json::to_vec(self).context("failed to serialize vault")?;
+        encrypt_with_passphrase(&plaintext, passphrase)
+    }
+
+    /// Decrypt and deserialize the vault from bytes.
+    pub fn from_bytes_passphrase(bytes: &[u8], passphrase: &[u8]) -> Result<Self> {
+        let plaintext =
+            decrypt_with_passphrase(bytes, passphrase).context("failed to decrypt vault")?;
+        serde_json::from_slice(&plaintext).context("failed to deserialize vault")
     }
 }
 

@@ -8,7 +8,7 @@ use crate::worker::WorkerId;
 pub enum DesktopMessage {
     PairRequest {
         worker_id: WorkerId,
-        pairing_code_hash: String,
+        pairing_code_hash: Option<String>,
     },
     RunAgent {
         trace_id: String,

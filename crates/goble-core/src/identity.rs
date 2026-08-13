@@ -170,7 +170,7 @@ fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
 }
 
 /// An issued certificate plus its private key in PEM form.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Identity {
     pub cert_pem: String,
     pub key_pem: String,
@@ -634,6 +634,23 @@ impl ClusterCa {
     /// Sign a worker certificate for a VPS node.
     pub fn sign_worker(&self, worker_id: &str, days: u64) -> Result<Identity> {
         self.sign_identity(worker_id, ClusterRole::Worker, days, true)
+    }
+
+    /// Sign a worker and return a self-contained bundle for provisioning.
+    pub fn sign_worker_bundle(
+        &self,
+        worker_id: &str,
+        cluster_name: &str,
+        days: u64,
+    ) -> Result<crate::provision::WorkerBundle> {
+        let identity = self.sign_worker(worker_id, days)?;
+        Ok(crate::provision::WorkerBundle {
+            worker_id: worker_id.to_string(),
+            cluster_name: cluster_name.to_string(),
+            cert_pem: identity.cert_pem,
+            key_pem: identity.key_pem,
+            ca_cert_pem: self.identity.cert_pem.clone(),
+        })
     }
 
     fn sign_identity(

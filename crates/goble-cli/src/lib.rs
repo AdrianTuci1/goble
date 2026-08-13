@@ -10,10 +10,12 @@ use goble_core::crypto::{generate_pairing_code, hash_pairing_code};
 use goble_core::encrypted_wallet::IdentityWallet;
 use goble_core::identity::ClusterRole;
 use goble_core::protocol::DesktopMessage;
-use goble_core::provision::{provision_worker, LocalTransport, ProvisionConfig, SshTransport};
+use goble_core::provision::{
+    provision_worker, LocalTransport, ProvisionConfig, SshTransport,
+};
 use goble_core::snapshot::{LocalSnapshotProvider, SnapshotProvider};
 use goble_core::store::Store;
-use goble_core::tls::{CertGenerator, PairingBundle};
+use goble_core::tls::CertGenerator;
 use goble_core::worker::{WorkerConfig, WorkerId};
 
 #[derive(Parser, Debug)]
@@ -333,10 +335,10 @@ pub async fn async_main() -> Result<()> {
             ScheduleAction::List { worker, url, code } => {
                 let code = code.unwrap_or_else(|| "00000000".to_string());
                 send_to_worker(
+                    &store,
                     &worker,
                     &url,
                     &code,
-                    None,
                     DesktopMessage::ListScheduledTasks,
                 )
                 .await?;
@@ -350,10 +352,10 @@ pub async fn async_main() -> Result<()> {
             } => {
                 let code = code.unwrap_or_else(|| "00000000".to_string());
                 send_to_worker(
+                    &store,
                     &worker,
                     &url,
                     &code,
-                    None,
                     DesktopMessage::CancelScheduledTask { task_id },
                 )
                 .await?;
@@ -371,10 +373,10 @@ pub async fn async_main() -> Result<()> {
             let trace_id = uuid::Uuid::new_v4().to_string();
             let code = code.unwrap_or_else(|| "00000000".to_string());
             send_to_worker(
+                &store,
                 &worker,
                 &url,
                 &code,
-                None,
                 DesktopMessage::RunAgent {
                     trace_id,
                     agent_id: agent.id.clone(),
@@ -403,10 +405,10 @@ pub async fn async_main() -> Result<()> {
             };
             let code = "00000000".to_string();
             send_to_worker(
+                &store,
                 &worker,
                 &url,
                 &code,
-                None,
                 DesktopMessage::ScheduleAgent {
                     agent_id: goble_core::agent::AgentId(agent_id),
                     trigger,
@@ -426,10 +428,10 @@ pub async fn async_main() -> Result<()> {
             } => {
                 let code = code.unwrap_or_else(|| "00000000".to_string());
                 send_to_worker(
+                    &store,
                     &worker,
                     &url,
                     &code,
-                    None,
                     DesktopMessage::SetVaultSecret {
                         name,
                         value: value.into_bytes(),
@@ -446,10 +448,10 @@ pub async fn async_main() -> Result<()> {
             } => {
                 let code = code.unwrap_or_else(|| "00000000".to_string());
                 send_to_worker(
+                    &store,
                     &worker,
                     &url,
                     &code,
-                    None,
                     DesktopMessage::GetVaultSecret { name },
                 )
                 .await?;
@@ -482,7 +484,14 @@ pub async fn async_main() -> Result<()> {
             }
             SnapshotAction::Trigger { worker, url, code } => {
                 let code = code.unwrap_or_else(|| "00000000".to_string());
-                send_to_worker(&worker, &url, &code, None, DesktopMessage::TriggerSnapshot).await?;
+                send_to_worker(
+                    &store,
+                    &worker,
+                    &url,
+                    &code,
+                    DesktopMessage::TriggerSnapshot,
+                )
+                .await?;
                 println!("snapshot trigger request sent");
             }
         },
@@ -557,14 +566,12 @@ fn do_provision(
     let ca = CertGenerator::generate_ca()?;
     let server = CertGenerator::generate_server(&ca, &host)?;
     let desktop = CertGenerator::generate_client(&ca, &worker_id.0)?;
-    let tls_bundle = PairingBundle {
-        ca_cert_pem: ca.cert_pem,
-        ca_key_pem: None,
-        worker_cert_pem: server.cert_pem,
-        worker_key_pem: server.key_pem,
-        desktop_cert_pem: desktop.cert_pem,
-        desktop_key_pem: desktop.key_pem,
-        pairing_code_hash: pairing_hash.clone(),
+    let worker_bundle = goble_core::provision::WorkerBundle {
+        worker_id: worker_id.0.clone(),
+        cert_pem: server.cert_pem.clone(),
+        key_pem: server.key_pem.clone(),
+        ca_cert_pem: ca.cert_pem.clone(),
+        cluster_name: "goble".to_string(),
     };
 
     let config = ProvisionConfig {
@@ -580,7 +587,7 @@ fn do_provision(
             .parent()
             .map(|p| p.join("goblin"))
             .unwrap_or_else(|| PathBuf::from("goblin")),
-        tls_bundle,
+        worker_bundle,
     };
 
     if local_test {
@@ -592,21 +599,27 @@ fn do_provision(
         provision_worker(&transport, &config)?;
     }
 
+    let worker_config = WorkerConfig::new(&name, &host, &username)
+        .with_pairing_code(&pairing_code)
+        .with_worker_bundle(config.worker_bundle.clone())
+        .with_desktop_identity(goble_core::identity::Identity::from_pem(
+            desktop.cert_pem,
+            desktop.key_pem,
+        )?);
+
     store.insert_worker(
         &worker_id.0,
         &name,
         Some(&format!("{}:8787", host)),
         "provisioned",
         None,
-        &serde_json::to_string(
-            &WorkerConfig::new(&name, &host, &username).with_pairing_code(&pairing_code),
-        )?,
+        &serde_json::to_string(&worker_config)?,
         "",
         "",
     )?;
 
     println!(
-        "provisioned worker {} ({}) on {} with pairing code {}",
+        "provisioned worker {} ({}) on {} with pairing code {} and mTLS bundle",
         worker_id.0, name, host, pairing_code
     );
     Ok(())
@@ -621,17 +634,64 @@ async fn init_store() -> Result<Store> {
 }
 
 async fn send_to_worker(
+    store: &Store,
     worker_id: &str,
     url: &str,
     pairing_code: &str,
-    bundle: Option<&PairingBundle>,
     msg: DesktopMessage,
 ) -> Result<()> {
-    let hash = hash_pairing_code(pairing_code, &[0u8; 16])?;
-    let mut ws_stream = connect_async_with_tls(url, bundle).await?;
+    let config = store
+        .get_worker(worker_id)?
+        .and_then(|(_, _, _, cfg)| serde_json::from_str::<WorkerConfig>(&cfg).ok());
+
+    let use_mtls = config
+        .as_ref()
+        .map(|c| c.worker_bundle.is_some())
+        .unwrap_or(false);
+    let url = if use_mtls {
+        let cfg = config.as_ref().unwrap();
+        let host = if url.is_empty() { &cfg.host } else { url };
+        if host.starts_with("wss://") {
+            host.to_string()
+        } else if host.starts_with("ws://") {
+            host.replacen("ws://", "wss://", 1)
+        } else {
+            format!("wss://{}/ws", host.trim_end_matches("/ws"))
+        }
+    } else if url.is_empty() {
+        config
+            .as_ref()
+            .map(|c| c.websocket_url())
+            .unwrap_or_else(|| format!("ws://{}/ws", worker_id))
+    } else {
+        url.to_string()
+    };
+
+    let mut ws_stream = if use_mtls {
+        let cfg = config.as_ref().unwrap();
+        let bundle = cfg.worker_bundle.as_ref().unwrap();
+        let desktop_identity = cfg
+            .desktop_identity
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("worker config missing desktop identity for mTLS"))?;
+        let tls_config = bundle.client_config(desktop_identity)?;
+        let connector = tokio_tungstenite::Connector::Rustls(Arc::new(tls_config));
+        let (stream, _resp) =
+            tokio_tungstenite::connect_async_tls_with_config(&url, None, false, Some(connector))
+                .await?;
+        stream
+    } else {
+        let (stream, _resp) = tokio_tungstenite::connect_async(&url).await?;
+        stream
+    };
+
     let pair = DesktopMessage::PairRequest {
         worker_id: WorkerId(worker_id.to_string()),
-        pairing_code_hash: hash,
+        pairing_code_hash: if use_mtls {
+            None
+        } else {
+            Some(hash_pairing_code(pairing_code, &[0u8; 16])?)
+        },
     };
     ws_stream
         .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -644,24 +704,4 @@ async fn send_to_worker(
         ))
         .await?;
     Ok(())
-}
-
-async fn connect_async_with_tls(
-    url: &str,
-    bundle: Option<&PairingBundle>,
-) -> Result<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-> {
-    if let Some(bundle) = bundle {
-        let tls_config = bundle.client_config()?;
-        let connector = tokio_tungstenite::Connector::Rustls(Arc::new(tls_config));
-        let (stream, resp) =
-            tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(connector))
-                .await?;
-        let _ = resp;
-        Ok(stream)
-    } else {
-        let (stream, _) = tokio_tungstenite::connect_async(url).await?;
-        Ok(stream)
-    }
 }

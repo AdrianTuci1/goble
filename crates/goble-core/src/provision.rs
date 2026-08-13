@@ -1,9 +1,64 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use crate::identity::{ClusterCa, Identity};
 use crate::tls::PairingBundle;
 use crate::ClusterIdentity;
 use anyhow::{Context, Result};
+
+/// Self-contained certificate bundle used to start a worker with mTLS.
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WorkerBundle {
+    pub worker_id: String,
+    pub cert_pem: String,
+    pub key_pem: String,
+    pub ca_cert_pem: String,
+    pub cluster_name: String,
+}
+
+impl WorkerBundle {
+    /// Generate a fresh worker bundle from an ephemeral CA. Useful for tests and
+    /// for CLI provisioning when no persistent cluster CA is available.
+    pub fn generate(worker_id: &str, cluster_name: &str, _san_dns: &str) -> Result<Self> {
+        let ca = ClusterCa::generate_new(cluster_name)?;
+        ca.sign_worker_bundle(worker_id, cluster_name, 365)
+    }
+
+    /// Build a rustls server config from this bundle. The server will require a client
+    /// certificate signed by the bundled CA and carrying an operator role.
+    pub fn server_config(&self) -> Result<rustls::ServerConfig> {
+        let worker = Identity::from_pem(self.cert_pem.clone(), self.key_pem.clone())?;
+        crate::tls::mtls_server_config(
+            &worker,
+            &Identity::from_ca_pem(self.ca_cert_pem.clone(), String::new())?,
+        )
+    }
+
+    /// Build a rustls client config from this bundle that verifies the server has the
+    /// Worker role and presents the CA as a trusted root.
+    pub fn client_config(&self, desktop_identity: &Identity) -> Result<rustls::ClientConfig> {
+        crate::tls::mtls_client_config(
+            desktop_identity,
+            &Identity::from_ca_pem(self.ca_cert_pem.clone(), String::new())?,
+        )
+    }
+
+    /// Convert the legacy pairing bundle into a WorkerBundle. Returns None if the
+    /// legacy bundle does not contain a worker certificate.
+    pub fn from_pairing_bundle(
+        bundle: &PairingBundle,
+        worker_id: &str,
+        cluster_name: &str,
+    ) -> Self {
+        Self {
+            worker_id: worker_id.to_string(),
+            cert_pem: bundle.worker_cert_pem.clone(),
+            key_pem: bundle.worker_key_pem.clone(),
+            ca_cert_pem: bundle.ca_cert_pem.clone(),
+            cluster_name: cluster_name.to_string(),
+        }
+    }
+}
 
 /// Transport used to copy files and run commands on a remote host.
 pub trait ProvisionTransport: Send + Sync {
@@ -141,7 +196,7 @@ pub struct ProvisionConfig {
     pub install_hermes: bool,
     pub install_crewai: bool,
     pub goblin_binary: PathBuf,
-    pub tls_bundle: PairingBundle,
+    pub worker_bundle: WorkerBundle,
 }
 
 impl ProvisionConfig {
@@ -150,24 +205,28 @@ impl ProvisionConfig {
         cluster: &ClusterIdentity,
         worker_id: impl Into<String>,
         name: impl Into<String>,
-        host: impl Into<String>,
+        _host: impl Into<String>,
         install_path: impl Into<String>,
         pairing_code_hash: impl Into<String>,
         goblin_binary: PathBuf,
     ) -> Result<Self> {
-        let host = host.into();
-        let bundle = PairingBundle::for_worker(cluster, &host, pairing_code_hash)?;
+        let worker_id = worker_id.into();
+        let name = name.into();
+        let worker_bundle =
+            cluster
+                .ca
+                .sign_worker_bundle(&worker_id, &cluster.cluster_name, 365)?;
         Ok(Self {
-            worker_id: worker_id.into(),
-            name: name.into(),
+            worker_id: worker_id.clone(),
+            name: name.clone(),
             install_path: install_path.into(),
             workspace_root: "/var/goblin/workspaces".to_string(),
-            pairing_code_hash: bundle.pairing_code_hash.clone(),
+            pairing_code_hash: pairing_code_hash.into(),
             install_docker: false,
             install_hermes: false,
             install_crewai: false,
             goblin_binary,
-            tls_bundle: bundle,
+            worker_bundle,
         })
     }
 }
@@ -213,7 +272,7 @@ python3 -m pip install crewai 2>/dev/null || true
     }
 
     let checks_joined = checks.join("\n");
-    let bundle_json = serde_json::to_string(&config.tls_bundle).unwrap_or_default();
+    let bundle_json = serde_json::to_string(&config.worker_bundle).unwrap_or_default();
 
     format!(
         r#"#!/bin/bash
@@ -224,7 +283,7 @@ WORKSPACE_ROOT={workspace_root}
 WORKER_ID={worker_id}
 PAIRING_HASH={pairing_hash}
 TLS_DIR="$INSTALL_PATH/tls"
-BUNDLE_FILE="$TLS_DIR/pairing-bundle.json"
+BUNDLE_FILE="$TLS_DIR/worker-bundle.json"
 
 {checks}
 
@@ -289,7 +348,7 @@ echo "Goblin worker $WORKER_ID provisioned at $INSTALL_PATH"
         worker_id = config.worker_id,
         pairing_hash = config.pairing_code_hash,
         bundle_json = bundle_json,
-        ca_key_pem = config.tls_bundle.ca_key_pem.as_deref().unwrap_or(""),
+        ca_key_pem = config.worker_bundle.ca_cert_pem.as_str(),
         checks = checks_joined,
     )
 }
@@ -303,9 +362,9 @@ pub fn provision_worker(
     let script_path = PathBuf::from("/tmp/goblin-install.sh");
     std::fs::write(&script_path, script).context("failed to write install script")?;
 
-    let bundle_path = PathBuf::from("/tmp/goblin-pairing-bundle.json");
-    std::fs::write(&bundle_path, serde_json::to_string(&config.tls_bundle)?)
-        .context("failed to write pairing bundle")?;
+    let bundle_path = PathBuf::from("/tmp/goblin-worker-bundle.json");
+    std::fs::write(&bundle_path, serde_json::to_string(&config.worker_bundle)?)
+        .context("failed to write worker bundle")?;
 
     transport.copy_file(
         &config.goblin_binary,
@@ -313,7 +372,7 @@ pub fn provision_worker(
     )?;
     transport.copy_file(
         &bundle_path,
-        &format!("{}/tls/pairing-bundle.json", config.install_path),
+        &format!("{}/tls/worker-bundle.json", config.install_path),
     )?;
     transport.copy_file(&script_path, "/tmp/goblin-install.sh")?;
     transport.run_command("chmod +x /tmp/goblin-install.sh && sudo bash /tmp/goblin-install.sh")?;
@@ -328,15 +387,8 @@ mod tests {
 
     #[test]
     fn test_generate_install_script_contains_worker_id() {
-        let bundle = PairingBundle {
-            ca_cert_pem: "CA\n".to_string(),
-            ca_key_pem: None,
-            worker_cert_pem: "WORKER\n".to_string(),
-            worker_key_pem: "WORKER_KEY\n".to_string(),
-            desktop_cert_pem: "DESKTOP\n".to_string(),
-            desktop_key_pem: "DESKTOP_KEY\n".to_string(),
-            pairing_code_hash: "deadbeef".to_string(),
-        };
+        let worker_bundle =
+            WorkerBundle::generate("worker-123", "goble-test", "goblin.local").unwrap();
         let config = ProvisionConfig {
             worker_id: "worker-123".to_string(),
             name: "vps-1".to_string(),
@@ -347,14 +399,34 @@ mod tests {
             install_hermes: false,
             install_crewai: true,
             goblin_binary: PathBuf::from("/tmp/goblin"),
-            tls_bundle: bundle,
+            worker_bundle,
         };
         let script = generate_install_script(&config);
+        assert!(script.contains("$INSTALL_PATH/goblin --bind"));
+        assert!(script.contains("--tls-bundle $BUNDLE_FILE"));
         assert!(script.contains("worker-123"));
         assert!(script.contains("deadbeef"));
         assert!(script.contains("docker-ce"));
         assert!(script.contains("crewai"));
-        assert!(script.contains("pairing-bundle.json"));
+        assert!(script.contains("worker-bundle.json"));
+    }
+
+    #[test]
+    fn test_provision_bundle_contains_worker_cert() {
+        let bundle = WorkerBundle::generate("worker-abc", "test-cluster", "goblin.local").unwrap();
+        assert_eq!(bundle.worker_id, "worker-abc");
+        assert_eq!(bundle.cluster_name, "test-cluster");
+        assert!(bundle.cert_pem.contains("BEGIN CERTIFICATE"));
+        assert!(bundle.key_pem.contains("BEGIN PRIVATE KEY"));
+        assert!(bundle.ca_cert_pem.contains("BEGIN CERTIFICATE"));
+    }
+
+    #[test]
+    fn test_worker_bundle_server_config_builds() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let bundle = WorkerBundle::generate("worker-1", "test-cluster", "goblin.local").unwrap();
+        let server_config = bundle.server_config().unwrap();
+        assert!(server_config.alpn_protocols.is_empty());
     }
 
     #[test]

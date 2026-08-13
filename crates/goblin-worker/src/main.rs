@@ -9,8 +9,8 @@ use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use goble_core::cluster_key::ClusterKey;
+use goble_core::provision::WorkerBundle;
 use goble_core::snapshot::LocalSnapshotProvider;
-use goble_core::tls::PairingBundle;
 use goble_core::worker::{WorkerId, WorkerStatus};
 use serde::Serialize;
 use tracing_subscriber::EnvFilter;
@@ -168,8 +168,9 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(bundle_path) = args.tls_bundle {
         let bundle_json = tokio::fs::read_to_string(&bundle_path).await?;
-        let bundle: PairingBundle = serde_json::from_str(&bundle_json)?;
+        let bundle: WorkerBundle = serde_json::from_str(&bundle_json)?;
         let rustls_config = RustlsConfig::from_config(Arc::new(bundle.server_config()?));
+        state.set_worker_bundle(bundle);
         tracing::info!("goblin listening with mTLS on {}", args.bind);
         axum_server::bind_rustls(args.bind.parse()?, rustls_config)
             .serve(app.into_make_service())
@@ -204,7 +205,7 @@ async fn health_handler(State(state): State<Arc<state::AppState>>) -> axum::Json
     axum::Json(HealthReport {
         worker_id: state.worker_id.to_string(),
         status: WorkerStatus::Online,
-        paired: state.pairing_hash.lock().is_some(),
+        paired: state.is_mtls_active() || state.pairing_hash.lock().is_some(),
         uptime_seconds,
         load: 0,
         active_traces: state.traces.lock().len(),

@@ -9,7 +9,9 @@ use crate::scheduler::Scheduler;
 use goble_core::agent::{AgentId, AgentSpec, McpServer};
 use goble_core::cluster_key::ClusterKey;
 use goble_core::execution::ExecutionTrace;
+use goble_core::identity::Identity;
 use goble_core::protocol::WorkerMessage;
+use goble_core::provision::WorkerBundle;
 use goble_core::secret::Secret;
 use goble_core::snapshot::SnapshotProvider;
 use goble_core::store::Store;
@@ -19,6 +21,8 @@ use goble_core::worker::WorkerId;
 pub struct AppState {
     pub worker_id: WorkerId,
     pub pairing_hash: Mutex<Option<String>>,
+    pub worker_bundle: Mutex<Option<WorkerBundle>>,
+    pub desktop_identity: Mutex<Option<Identity>>,
     pub agents: Mutex<std::collections::HashMap<AgentId, AgentSpec>>,
     pub mcp_servers: Mutex<std::collections::HashMap<String, McpServer>>,
     pub secrets: Mutex<std::collections::HashMap<String, Secret>>,
@@ -57,6 +61,8 @@ impl AppState {
         Arc::new(Self {
             worker_id,
             pairing_hash: Mutex::new(None),
+            worker_bundle: Mutex::new(None),
+            desktop_identity: Mutex::new(None),
             agents: Mutex::new(std::collections::HashMap::new()),
             mcp_servers: Mutex::new(std::collections::HashMap::new()),
             secrets: Mutex::new(std::collections::HashMap::new()),
@@ -83,8 +89,31 @@ impl AppState {
         *self.pairing_hash.lock() = Some(hash);
     }
 
+    pub fn set_worker_bundle(&self, bundle: WorkerBundle) {
+        *self.worker_bundle.lock() = Some(bundle);
+    }
+
+    pub fn worker_bundle(&self) -> Option<WorkerBundle> {
+        self.worker_bundle.lock().clone()
+    }
+
+    pub fn set_desktop_identity(&self, identity: Identity) {
+        *self.desktop_identity.lock() = Some(identity);
+    }
+
+    pub fn requires_pairing_hash(&self) -> bool {
+        self.worker_bundle.lock().is_none()
+    }
+
     pub fn is_paired(&self, hash: &str) -> bool {
+        if self.worker_bundle.lock().is_some() {
+            return true;
+        }
         self.pairing_hash.lock().as_ref() == Some(&hash.to_string())
+    }
+
+    pub fn is_mtls_active(&self) -> bool {
+        self.worker_bundle.lock().is_some()
     }
 
     pub fn store_agent(&self, spec: AgentSpec) {

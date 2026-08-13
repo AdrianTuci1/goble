@@ -163,7 +163,10 @@ impl Thread {
         Ok(())
     }
 
-    pub fn remove_participant(&mut self, participant_id: &ParticipantId) -> Result<(), ThreadError> {
+    pub fn remove_participant(
+        &mut self,
+        participant_id: &ParticipantId,
+    ) -> Result<(), ThreadError> {
         let before = self.participants.len();
         self.participants
             .retain(|p| &p.participant_id() != participant_id);
@@ -191,11 +194,7 @@ pub struct ThreadMessage {
 }
 
 impl ThreadMessage {
-    pub fn new(
-        thread_id: ThreadId,
-        author: Participant,
-        content: impl Into<String>,
-    ) -> Self {
+    pub fn new(thread_id: ThreadId, author: Participant, content: impl Into<String>) -> Self {
         let now = Utc::now();
         Self {
             id: MessageId::generate(),
@@ -269,7 +268,11 @@ impl fmt::Display for ThreadError {
             ThreadError::DuplicateParticipant(id) => write!(f, "duplicate participant: {}", id),
             ThreadError::Unauthorized => write!(f, "unauthorized"),
             ThreadError::InvalidDirectThreadParticipantCount(n) => {
-                write!(f, "direct thread requires exactly 2 participants, got {}", n)
+                write!(
+                    f,
+                    "direct thread requires exactly 2 participants, got {}",
+                    n
+                )
             }
             ThreadError::ReplyToDifferentThread => write!(f, "reply must target the same thread"),
             ThreadError::ReplyToNotFound(id) => write!(f, "reply target not found: {}", id.0),

@@ -77,8 +77,12 @@ async fn handle_desktop_message(
             worker_id,
             pairing_code_hash,
         } => {
-            if worker_id == state.worker_id && state.is_paired(&pairing_code_hash) {
-                state.emit(WorkerMessage::Paired);
+            if worker_id == state.worker_id {
+                if state.is_mtls_active()
+                    || state.is_paired(pairing_code_hash.as_deref().unwrap_or_default())
+                {
+                    state.emit(WorkerMessage::Paired);
+                }
             }
         }
         DesktopMessage::RunAgent {

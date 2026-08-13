@@ -392,6 +392,23 @@ impl Store {
         Ok(())
     }
 
+    pub fn get_worker(&self, id: &str) -> Result<Option<(String, Option<String>, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT name, host, pairing_status, config FROM workers WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn list_workers(
         &self,
     ) -> Result<

@@ -38,6 +38,7 @@ goble-core = { path = "../../goble-core" }
 sha2 = "0.10"
 hex = "0.4"
 once_cell = "1"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio-test = "0.4"

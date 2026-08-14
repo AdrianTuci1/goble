@@ -6,6 +6,7 @@ export interface WorkerInfo {
   name: string;
   url: string;
   paired: boolean;
+  tags: string[];
 }
 
 export interface Conversation {
@@ -187,6 +188,26 @@ export async function exportClusterKey(): Promise<string> {
 
 export async function exportClusterBackup(): Promise<string> {
   return invoke('export_cluster_backup');
+}
+
+export interface ClusterHelmInstallRequest {
+  name: string;
+  namespace: string;
+  replicas: number;
+  storageClass?: string;
+  persistenceSize: string;
+  provider: string;
+  endpoint?: string;
+  bucket?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  region?: string;
+  intervalSeconds: number;
+  localChart?: string;
+}
+
+export async function clusterHelmInstall(req: ClusterHelmInstallRequest): Promise<string> {
+  return invoke('cluster_helm_install', { req });
 }
 
 export async function installWorker(
@@ -419,6 +440,10 @@ export async function testCallMcpTool(
   args?: Record<string, unknown>,
 ): Promise<unknown> {
   return invoke('test_call_mcp_tool', { req: { id, tool_name: toolName, arguments: args } });
+}
+
+export async function tagWorker(workerId: string, tag: string): Promise<void> {
+  return invoke('tag_worker', { workerId, tag });
 }
 
 export function onWorkersUpdated(callback: () => void): Promise<() => void> {

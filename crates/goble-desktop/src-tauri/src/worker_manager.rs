@@ -32,7 +32,7 @@ impl WorkerClient {
 
         let pair_msg = DesktopMessage::PairRequest {
             worker_id: worker_id.clone(),
-            pairing_code_hash: hash,
+            pairing_code_hash: Some(hash),
         };
         let json = serde_json::to_string(&pair_msg)?;
         write

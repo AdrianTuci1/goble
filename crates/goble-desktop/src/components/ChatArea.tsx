@@ -9,8 +9,11 @@ import {
   onThreadsUpdated,
   listThreads,
   extractMentions,
+  listWorkers,
+  type WorkerInfo,
 } from '../tauri/api';
 import { uid, getInitials } from '../utils/designSystem';
+import ComposerRuntimeSelector, { type RuntimeTarget, runtimeTargetLabel } from './ComposerRuntimeSelector';
 
 interface ChatAreaProps {
   threadsActive?: boolean;
@@ -29,6 +32,8 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [workers, setWorkers] = useState<WorkerInfo[]>([]);
+  const [runtimeTarget, setRuntimeTarget] = useState<RuntimeTarget>({ kind: 'auto' });
 
   const threads = useStore((s) => s.threads);
   const activeThreadId = useStore((s) => s.activeThreadId);
@@ -56,6 +61,10 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
   useEffect(() => {
     listThreads().then(setThreads).catch(() => {});
   }, [setThreads]);
+
+  useEffect(() => {
+    listWorkers().then(setWorkers).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!activeThreadId) {
@@ -261,6 +270,10 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
         </div>
         <div className="composer-toolbar">
           <div className="composer-toolbar-left">
+            <ComposerRuntimeSelector workers={workers} value={runtimeTarget} onChange={setRuntimeTarget} />
+            <span className="composer-runtime-label" title="Selected runtime target">
+              {runtimeTargetLabel(runtimeTarget, workers)}
+            </span>
             <button title="Mention" onClick={() => setInput((v) => v + '@')}>@</button>
             <button title="Attach">📎</button>
             <button title="Emoji">☺</button>

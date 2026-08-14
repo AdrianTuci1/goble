@@ -139,4 +139,25 @@ mod tests {
         let workers: Vec<WorkerSnapshot> = vec![];
         assert!(pool.select(&workers).is_none());
     }
+
+    #[test]
+    fn test_tagged_group_selection() {
+        let mut pool = WorkerPool::new(WorkerPoolStrategy::RoundRobin);
+        let workers = vec![
+            make_worker("cpu-1", 0, WorkerStatus::Online, vec!["cpu"]),
+            make_worker("cpu-2", 0, WorkerStatus::Online, vec!["cpu"]),
+            make_worker("gpu-1", 0, WorkerStatus::Online, vec!["gpu"]),
+            make_worker("gpu-2", 0, WorkerStatus::Online, vec!["gpu"]),
+        ];
+        let gpu_group: Vec<WorkerSnapshot> = workers
+            .into_iter()
+            .filter(|w| w.tags.iter().any(|t| t == "gpu"))
+            .collect();
+        let first = pool.select(&gpu_group).unwrap().worker_id.clone();
+        let second = pool.select(&gpu_group).unwrap().worker_id.clone();
+        let third = pool.select(&gpu_group).unwrap().worker_id.clone();
+        assert_eq!(first, WorkerId("gpu-1".to_string()));
+        assert_eq!(second, WorkerId("gpu-2".to_string()));
+        assert_eq!(third, WorkerId("gpu-1".to_string()));
+    }
 }

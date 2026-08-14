@@ -6,7 +6,7 @@ use goble_core::agent::{AgentId, AgentSpec, Trigger};
 use goble_core::thread::{Participant, ThreadId, ThreadKind, UserId};
 use crate::ThreadSummary;
 use goble_core::cluster_key::{ClusterBackup, ClusterIdentity, ClusterKey};
-use goble_core::encrypted_wallet::{EncryptedWallet, IdentityWallet};
+use goble_core::encrypted_wallet::IdentityWallet;
 use goble_core::execution::ExecutionTrace;
 use goble_core::identity::ClusterRole;
 use goble_core::mcp_client::McpTool;
@@ -16,7 +16,8 @@ use goble_core::protocol::{DesktopMessage, WorkerMessage};
 use goble_core::store::Store;
 use goble_core::vault::CredentialVault;
 use goble_core::llm::{self, CompletionRequest, LlmProvider};
-use goble_core::worker::WorkerId;
+use goble_core::worker::{WorkerConfig, WorkerId};
+use base64::Engine;
 use goble_core::workflow::{Workflow, WorkflowId, WorkflowStep};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -59,6 +60,7 @@ pub struct WorkerConnection {
     pub name: String,
     pub url: String,
     pub paired: bool,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -373,6 +375,71 @@ impl DesktopState {
         self.store.lock().get_cluster_wallet().ok().flatten().is_some()
     }
 
+    /// Generate a `helm install` command for a Goblin worker cluster. Requires an
+    /// unlocked cluster identity so the worker mTLS bundle and snapshot key can be
+    /// embedded in the generated command.
+    #[allow(clippy::too_many_arguments)]
+    pub fn cluster_helm_install(
+        &self,
+        name: String,
+        namespace: String,
+        replicas: u32,
+        storage_class: Option<String>,
+        persistence_size: String,
+        provider: String,
+        endpoint: Option<String>,
+        bucket: Option<String>,
+        access_key_id: Option<String>,
+        secret_access_key: Option<String>,
+        region: Option<String>,
+        interval_seconds: u64,
+        local_chart: Option<String>,
+    ) -> anyhow::Result<String> {
+        let identity = self
+            .get_cluster_identity()
+            .context("cluster identity is not unlocked")?;
+        let worker_id = format!("{}-0", name);
+        let bundle = identity
+            .ca
+            .sign_worker_bundle(&worker_id, &identity.cluster_name, 365)?;
+        let bundle_json = serde_json::to_string(&bundle)?;
+        let bundle_b64 = base64::engine::general_purpose::STANDARD.encode(bundle_json);
+        let cluster_key_b64 = identity.export_key();
+
+        let chart_ref = local_chart.map(|p| format!("{} ", p)).unwrap_or_else(|| "goble/goblin-cluster ".to_string());
+        let mut parts = vec![
+            format!("helm install {} ", name),
+            chart_ref,
+            format!("--namespace {} --create-namespace ", namespace),
+            format!("--set replicas={} ", replicas),
+            format!("--set workerBundle={} ", bundle_b64),
+            format!("--set clusterKey={} ", cluster_key_b64),
+            "--set snapshot.enabled=true ".to_string(),
+            format!("--set snapshot.provider={} ", provider),
+            format!("--set snapshot.intervalSeconds={} ", interval_seconds),
+        ];
+        if let Some(region) = region {
+            parts.push(format!("--set snapshot.region={} ", region));
+        }
+        if let Some(endpoint) = endpoint {
+            parts.push(format!("--set snapshot.endpoint={} ", endpoint));
+        }
+        if let Some(bucket) = bucket {
+            parts.push(format!("--set snapshot.bucket={} ", bucket));
+        }
+        if let Some(access_key_id) = access_key_id {
+            parts.push(format!("--set snapshot.accessKeyId={} ", access_key_id));
+        }
+        if let Some(secret_access_key) = secret_access_key {
+            parts.push(format!("--set snapshot.secretAccessKey={} ", secret_access_key));
+        }
+        if let Some(storage_class) = storage_class {
+            parts.push(format!("--set persistence.storageClass={} ", storage_class));
+        }
+        parts.push(format!("--set persistence.size={}", persistence_size));
+        Ok(parts.join(""))
+    }
+
     fn set_cluster_identity(
         &self,
         identity: ClusterIdentity,
@@ -401,18 +468,52 @@ impl DesktopState {
             name: name.clone(),
             url: url.clone(),
             paired: false,
+            tags: Vec::new(),
         };
+        let config = WorkerConfig::new(&name, &url, "");
         self.store.lock().insert_worker(
             &worker_id.to_string(),
             &conn.name,
             Some(&url),
             "unpaired",
             None,
-            "{}",
+            &serde_json::to_string(&config)?,
             &Utc::now().to_rfc3339(),
             &Utc::now().to_rfc3339(),
         )?;
         self.workers.lock().insert(worker_id, conn);
+        self.emit("workers:updated", ());
+        Ok(())
+    }
+
+    pub fn tag_worker(&self, worker_id: &WorkerId, tag: String) -> anyhow::Result<()> {
+        let mut workers = self.workers.lock();
+        let conn = workers
+            .get_mut(worker_id)
+            .ok_or_else(|| anyhow::anyhow!("worker not found"))?;
+        if !conn.tags.contains(&tag) {
+            conn.tags.push(tag.clone());
+        }
+        let mut config: WorkerConfig = serde_json::from_str(
+            &self
+                .store
+                .lock()
+                .get_worker(&worker_id.to_string())?
+                .map(|(_, _, _, cfg)| cfg)
+                .unwrap_or_default(),
+        )
+        .unwrap_or_else(|_| WorkerConfig::new(&conn.name, &conn.url, ""));
+        config.tags = conn.tags.clone();
+        self.store.lock().insert_worker(
+            &worker_id.to_string(),
+            &conn.name,
+            Some(&conn.url),
+            if conn.paired { "paired" } else { "unpaired" },
+            None,
+            &serde_json::to_string(&config)?,
+            &Utc::now().to_rfc3339(),
+            &Utc::now().to_rfc3339(),
+        )?;
         self.emit("workers:updated", ());
         Ok(())
     }
@@ -667,6 +768,9 @@ impl DesktopState {
                     vec![],
                 );
                 self.emit("thread:messages:updated", ThreadMessagesUpdatedPayload { thread_id });
+            }
+            _ => {
+                // Ignore unhandled agent runtime and worker message variants for now.
             }
         }
     }
@@ -1229,7 +1333,10 @@ impl DesktopState {
     pub fn load_from_store(&self) -> anyhow::Result<()> {
         let workers = self.store.lock().list_workers()?;
         let mut map = self.workers.lock();
-        for (id, name, host, status, _pk, _config, _created, _updated) in workers {
+        for (id, name, host, status, _pk, config, _created, _updated) in workers {
+            let tags = serde_json::from_str::<WorkerConfig>(&config)
+                .map(|c| c.tags)
+                .unwrap_or_default();
             map.insert(
                 WorkerId(id.clone()),
                 WorkerConnection {
@@ -1237,6 +1344,7 @@ impl DesktopState {
                     name,
                     url: host.unwrap_or_default(),
                     paired: status == "paired",
+                    tags,
                 },
             );
         }

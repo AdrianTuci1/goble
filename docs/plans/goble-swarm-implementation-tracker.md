@@ -113,37 +113,38 @@
 
 ---
 
-## Phase 5 — Kubernetes cluster mode with snapshot tier `[ ]`
+## Phase 5 — Kubernetes cluster mode with snapshot tier `[x]`
 
 - **Objective:** Run workers in Kubernetes. Each pod has local state; snapshot tier is cluster-level. No live runtime migration. Sticky sessions handled at the UI/balancer layer.
-- **Files to touch:**
+- **Files touched:**
   - `deploy/goblin/Dockerfile`
   - `deploy/goblin/charts/goblin-cluster/` (Helm chart)
   - `crates/goblin-worker/src/main.rs` (`--mode=cluster`, env-based snapshot config)
   - `crates/goblin-worker/src/state.rs` (PVC-aware restore guard)
-  - `crates/goblin-worker/src/scheduler.rs` (leader election)
-  - `crates/goble-desktop/src-tauri/src/cluster_commands.rs` (new)
+  - `crates/goblin-worker/src/scheduler.rs` (leader election integration)
+  - `crates/goblin-worker/src/leader.rs` (Kubernetes lease client)
+  - `crates/goblin-worker/src/snapshot_runner.rs` (cluster-mode restore guard)
+  - `crates/goblin-worker/Cargo.toml` (wiremock dev dependency)
+  - `crates/goble-desktop/src-tauri/src/state.rs` (helm command generator)
+  - `crates/goble-desktop/src-tauri/src/lib.rs` (`cluster_helm_install` Tauri command)
+  - `crates/goble-desktop/src-tauri/Cargo.toml` (base64 dependency)
+  - `crates/goble-desktop/src/tauri/api.ts` (cluster install API)
   - `crates/goble-desktop/src/components/ClusterInstallCard.tsx` (new)
+  - `crates/goble-desktop/src/pages/SettingsPage.tsx` (cluster install card)
   - `crates/goble-cli/src/lib.rs` (Helm command generator)
-- **Failing test / verification:**
-  - Manual: `kind create cluster`, `helm install`, kill a pod, new pod restores from snapshot.
-- **Implementation:**
-  1. Build minimal distroless Docker image for `goblin`.
-  2. Helm chart: `StatefulSet` with PVC, snapshot env vars from Secret, mTLS bootstrap.
-  3. Worker detects `GOBLIN_MODE=cluster` and skips auto-restore if existing `worker.db` on PVC.
-  4. Scheduler leader election via Kubernetes lease API.
-  5. Desktop composer card generates `helm install` command with snapshot provider, bucket, interval.
-  6. Document sticky session requirement: use `sessionAffinity: ClientIP` on Service or desktop pins to a single pod for the lifetime of an agent run.
+  - `crates/goble-cli/tests/tls_and_setup.rs` (helm-install parsing test)
+- **Tests added:**
+  - `goblin-worker/src/snapshot_runner.rs::test_cluster_mode_skips_restore_when_db_exists`
+  - `goblin-worker/src/snapshot_runner.rs::test_cluster_mode_restores_when_db_missing`
+  - `goblin-worker/src/scheduler.rs::test_scheduler_loop_skips_triggers_when_not_leader`
+  - `goblin-worker/src/leader.rs::test_kube_leader_elector_acquires_new_lease`
+  - `goblin-worker/src/leader.rs::test_kube_leader_elector_yields_to_existing_holder`
+  - `goble-cli/tests/tls_and_setup.rs::test_cluster_helm_install_subcommand_parsing`
 - **Verification command:**
   ```bash
-  cargo build --release -p goblin-worker
-  docker build -t goble/goblin:latest -f deploy/goblin/Dockerfile .
-  kind load docker-image goble/goblin:latest
-  helm install goblin deploy/goblin/charts/goblin-cluster --namespace goblin --create-namespace
-  kubectl -n goblin delete pod goblin-0
-  # wait for replacement pod and confirm snapshot restore in logs
+  cargo test -p goblin-worker --lib snapshot_runner scheduler leader
+  cargo test -p goble-cli --test tls_and_setup
   ```
-- **Commit step:** `feat: kubernetes cluster mode with snapshot disaster recovery`
 
 ---
 

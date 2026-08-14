@@ -210,6 +210,23 @@ pub struct UnlockClusterIdentityRequest {
     pub passphrase: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClusterHelmInstallRequest {
+    pub name: String,
+    pub namespace: String,
+    pub replicas: u32,
+    pub storage_class: Option<String>,
+    pub persistence_size: String,
+    pub provider: String,
+    pub endpoint: Option<String>,
+    pub bucket: Option<String>,
+    pub access_key_id: Option<String>,
+    pub secret_access_key: Option<String>,
+    pub region: Option<String>,
+    pub interval_seconds: u64,
+    pub local_chart: Option<String>,
+}
+
 static HARNESS_CANCEL: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>> =
     once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
@@ -311,6 +328,30 @@ fn export_cluster_backup(
 }
 
 #[tauri::command]
+fn cluster_helm_install(
+    req: ClusterHelmInstallRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<String, String> {
+    state
+        .cluster_helm_install(
+            req.name,
+            req.namespace,
+            req.replicas,
+            req.storage_class,
+            req.persistence_size,
+            req.provider,
+            req.endpoint,
+            req.bucket,
+            req.access_key_id,
+            req.secret_access_key,
+            req.region,
+            req.interval_seconds,
+            req.local_chart,
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn add_worker(
     req: AddWorkerRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
@@ -328,7 +369,19 @@ fn add_worker(
             name: req.name,
             url: req.url,
             paired: false,
+            tags: Vec::new(),
         }))
+}
+
+#[tauri::command]
+fn tag_worker(
+    worker_id: String,
+    tag: String,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    state
+        .tag_worker(&WorkerId(worker_id), tag)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1139,6 +1192,7 @@ pub fn run() {
             list_workers,
             install_worker,
             add_worker,
+            tag_worker,
             pair_worker,
             worker_logs,
             ping_worker,
@@ -1182,6 +1236,7 @@ pub fn run() {
             import_cluster_key,
             export_cluster_key,
             export_cluster_backup,
+            cluster_helm_install,
             unlock_cluster_identity,
             has_cluster_identity,
             list_threads,

@@ -28,6 +28,8 @@ pub struct WorkerConfig {
     pub worker_bundle: Option<crate::provision::WorkerBundle>,
     /// Optional desktop identity certificate for mTLS.
     pub desktop_identity: Option<crate::identity::Identity>,
+    /// Runtime tags used for group selection (e.g. "gpu", "prod").
+    pub tags: Vec<String>,
 }
 
 impl WorkerConfig {
@@ -45,7 +47,13 @@ impl WorkerConfig {
             pairing_code: String::new(),
             worker_bundle: None,
             desktop_identity: None,
+            tags: Vec::new(),
         }
+    }
+
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = tags;
+        self
     }
 
     pub fn with_pairing_code(mut self, code: impl Into<String>) -> Self {

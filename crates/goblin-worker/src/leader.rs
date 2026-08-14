@@ -264,6 +264,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_kube_leader_elector_acquires_new_lease() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+
+        let mock_server = MockServer::start().await;
+        let lease_path = "/apis/coordination.k8s.io/v1/namespaces/goblin/leases/goblin-scheduler";
+        Mock::given(method("GET"))
+            .and(path(lease_path))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(lease_path))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&mock_server)
+            .await;
+
+        let elector = KubeLeaderElector::new(
+            mock_server.uri(),
+            "goblin",
+            "goblin-scheduler",
+            "fake-token",
+            std::path::PathBuf::new(),
+            "goblin-0",
+        )
+        .unwrap();
+        let leader = elector.acquire_or_renew().await.unwrap();
+        assert!(leader);
+    }
+
+    #[tokio::test]
+    async fn test_kube_leader_elector_yields_to_existing_holder() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+
+        let mock_server = MockServer::start().await;
+        let lease_path = "/apis/coordination.k8s.io/v1/namespaces/goblin/leases/goblin-scheduler";
+        let lease_json = serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": { "name": "goblin-scheduler", "namespace": "goblin", "resourceVersion": "1" },
+            "spec": {
+                "holderIdentity": "goblin-1",
+                "leaseDurationSeconds": 30,
+                "acquireTime": Utc::now().to_rfc3339(),
+                "renewTime": Utc::now().to_rfc3339(),
+            }
+        });
+        Mock::given(method("GET"))
+            .and(path(lease_path))
+            .respond_with(ResponseTemplate::new(200).set_body_json(lease_json))
+            .mount(&mock_server)
+            .await;
+
+        let elector = KubeLeaderElector::new(
+            mock_server.uri(),
+            "goblin",
+            "goblin-scheduler",
+            "fake-token",
+            std::path::PathBuf::new(),
+            "goblin-0",
+        )
+        .unwrap();
+        let leader = elector.acquire_or_renew().await.unwrap();
+        assert!(!leader);
+    }
+
+    #[tokio::test]
     async fn test_lease_serialization() {
         let lease = Lease {
             api_version: "coordination.k8s.io/v1".to_string(),

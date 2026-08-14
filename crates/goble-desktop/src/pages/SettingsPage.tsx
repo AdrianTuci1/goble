@@ -22,6 +22,7 @@ import {
   hasClusterIdentity,
   type ClusterIdentityInfo,
 } from '../tauri/api';
+import ClusterInstallCard from '../components/ClusterInstallCard';
 import {
   User,
   Key,
@@ -615,6 +616,12 @@ export function ClusterSettings() {
         <input type="password" placeholder="Passphrase" value={importPassphrase} onChange={(e) => setImportPassphrase(e.target.value)} />
         <button onClick={handleImport} disabled={!importKey || !importName || !importPassphrase}>Import cluster key</button>
       </div>
+
+      {identity && (
+        <div className="settings-subsection">
+          <ClusterInstallCard />
+        </div>
+      )}
     </div>
   );
 }

@@ -45,6 +45,11 @@ pub enum Command {
     WorkerList,
     /// Remove a worker profile.
     WorkerRemove { id: String },
+    /// Add a tag to a worker profile.
+    WorkerTag {
+        id: String,
+        tag: String,
+    },
     /// Provision and deploy a Goblin worker on a remote VPS.
     WorkerProvision {
         #[arg(short, long)]
@@ -359,6 +364,26 @@ pub async fn async_main() -> Result<()> {
         Command::WorkerRemove { id } => {
             store.delete_worker(&id)?;
             println!("removed worker");
+        }
+        Command::WorkerTag { id, tag } => {
+            let (_, _, _, config_json) = store
+                .get_worker(&id)?
+                .ok_or_else(|| anyhow::anyhow!("worker not found"))?;
+            let mut config: WorkerConfig = serde_json::from_str(&config_json)?;
+            if !config.tags.contains(&tag) {
+                config.tags.push(tag.clone());
+            }
+            store.insert_worker(
+                &config.id.0,
+                &config.name,
+                Some(&format!("{}:{}", config.host, config.port)),
+                "tagged",
+                None,
+                &serde_json::to_string(&config)?,
+                "",
+                "",
+            )?;
+            println!("tagged worker {} with {}", id, tag);
         }
         Command::WorkerProvision {
             name,

@@ -38,6 +38,9 @@ impl CredentialVault {
 
     /// Encrypt and store a value under the given key.
     pub fn set(&mut self, key: impl Into<String>, value: &[u8], passphrase: &[u8]) -> Result<()> {
+        if passphrase.is_empty() {
+            anyhow::bail!("vault passphrase cannot be empty");
+        }
         let key = key.into();
         let encrypted_blob = encrypt_with_passphrase(value, passphrase)?;
         self.entries

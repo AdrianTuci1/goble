@@ -210,6 +210,16 @@ impl Store {
                 model TEXT NOT NULL,
                 temperature REAL
             ) STRICT;
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                category TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT NOT NULL
+            ) STRICT;
+
+            CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp DESC);
             "#,
         )
         .context("failed to run migrations")?;
@@ -312,6 +322,70 @@ impl Store {
             }
             None => Ok(None),
         }
+    }
+
+    pub fn append_audit_log(&self, entry: &crate::audit::AuditEntry) -> Result<()> {
+        let details =
+            serde_json::to_string(&entry.details).context("failed to serialize audit details")?;
+        self.conn.lock().execute(
+            "INSERT INTO audit_log (id, timestamp, category, actor, action, details)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO NOTHING",
+            params![
+                entry.id,
+                entry.timestamp,
+                format!("{:?}", entry.category).to_lowercase(),
+                entry.actor,
+                entry.action,
+                details,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_audit_logs(&self, limit: Option<usize>) -> Result<Vec<crate::audit::AuditEntry>> {
+        let conn = self.conn.lock();
+        let sql = "SELECT id, timestamp, category, actor, action, details FROM audit_log ORDER BY timestamp DESC";
+        let mut stmt = conn.prepare(sql)?;
+        let rows: Vec<(String, String, String, String, String, String)> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let rows = if let Some(n) = limit {
+            rows.into_iter().take(n).collect::<Vec<_>>()
+        } else {
+            rows
+        };
+        rows.into_iter()
+            .map(|(id, timestamp, category, actor, action, details_json)| {
+                let category = match category.as_str() {
+                    "identity" => crate::audit::AuditCategory::Identity,
+                    "vault" => crate::audit::AuditCategory::Vault,
+                    "worker" => crate::audit::AuditCategory::Worker,
+                    "agent" => crate::audit::AuditCategory::Agent,
+                    "cluster" => crate::audit::AuditCategory::Cluster,
+                    "settings" => crate::audit::AuditCategory::Settings,
+                    _ => crate::audit::AuditCategory::Settings,
+                };
+                let details = serde_json::from_str(&details_json).unwrap_or_default();
+                Ok(crate::audit::AuditEntry {
+                    id,
+                    timestamp,
+                    category,
+                    actor,
+                    action,
+                    details,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
     }
 
     pub fn insert_agent(
@@ -1469,6 +1543,26 @@ mod tests {
         let execs = store.list_executions().unwrap();
         assert_eq!(execs.len(), 1);
         assert_eq!(execs[0].3, "running");
+    }
+
+    #[test]
+    fn test_audit_log_roundtrip() {
+        use crate::audit::{AuditCategory, AuditEntry};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path().join("store.db")).unwrap();
+        let entry = AuditEntry::new(
+            "audit-1",
+            "2026-08-14T00:00:00Z",
+            AuditCategory::Identity,
+            "device-1",
+            "cluster_created",
+        )
+        .with_detail("cluster_name", "prod");
+        store.append_audit_log(&entry).unwrap();
+        let loaded = store.list_audit_logs(Some(10)).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].action, "cluster_created");
+        assert_eq!(loaded[0].details.get("cluster_name").unwrap(), "prod");
     }
 
     #[test]

@@ -575,6 +575,15 @@ export function ClusterSettings() {
       {identity ? (
         <div className="settings-subsection">
           <h3>Active cluster</h3>
+          {exportedKey || exportedBackup ? (
+            <p className="hint success">Wallet has been exported.</p>
+          ) : (
+            <p className="hint warning">
+              Warning: cluster identity is not exported. Use Export cluster key and Export
+              encrypted backup, and save both offline. If this device is lost, the cluster key
+              is unrecoverable.
+            </p>
+          )}
           <p><strong>{identity.cluster_name}</strong></p>
           <p className="hint">Device serial: {identity.device_serial}</p>
           <button onClick={handleExportKey}>Export cluster key</button>

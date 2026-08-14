@@ -48,7 +48,10 @@ pub struct LeaseMetadata {
 pub struct LeaseSpec {
     #[serde(rename = "holderIdentity", skip_serializing_if = "Option::is_none")]
     pub holder_identity: Option<String>,
-    #[serde(rename = "leaseDurationSeconds", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "leaseDurationSeconds",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub lease_duration_seconds: Option<i32>,
     #[serde(rename = "acquireTime", skip_serializing_if = "Option::is_none")]
     pub acquire_time: Option<DateTime<Utc>>,
@@ -78,10 +81,8 @@ impl KubeLeaderElector {
             return Ok(None);
         }
         let namespace = pod_namespace().context("failed to read pod namespace")?;
-        let token = std::fs::read_to_string(
-            "/var/run/secrets/kubernetes.io/serviceaccount/token",
-        )
-        .context("failed to read service account token")?;
+        let token = std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/token")
+            .context("failed to read service account token")?;
         let ca_path = PathBuf::from("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt");
         let identity = pod_name().unwrap_or_else(|| "goblin".to_string());
         Self::new(
@@ -234,8 +235,7 @@ impl LeaderState {
     }
 
     pub fn is_leader(&self) -> bool {
-        self.is_leader
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.is_leader.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn set_leader(&self, is_leader: bool) {
@@ -265,8 +265,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_kube_leader_elector_acquires_new_lease() {
-        use wiremock::{Mock, MockServer, ResponseTemplate};
         use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let mock_server = MockServer::start().await;
         let lease_path = "/apis/coordination.k8s.io/v1/namespaces/goblin/leases/goblin-scheduler";
@@ -296,8 +296,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_kube_leader_elector_yields_to_existing_holder() {
-        use wiremock::{Mock, MockServer, ResponseTemplate};
         use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let mock_server = MockServer::start().await;
         let lease_path = "/apis/coordination.k8s.io/v1/namespaces/goblin/leases/goblin-scheduler";

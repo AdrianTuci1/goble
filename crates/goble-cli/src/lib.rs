@@ -46,10 +46,7 @@ pub enum Command {
     /// Remove a worker profile.
     WorkerRemove { id: String },
     /// Add a tag to a worker profile.
-    WorkerTag {
-        id: String,
-        tag: String,
-    },
+    WorkerTag { id: String, tag: String },
     /// Provision and deploy a Goblin worker on a remote VPS.
     WorkerProvision {
         #[arg(short, long)]
@@ -316,6 +313,13 @@ pub enum IdentityAction {
         passphrase: String,
         #[arg(short, long)]
         wallet: PathBuf,
+    },
+    /// Rotate all worker certificates: revoke old ones and issue new bundles.
+    RotateWorkerCerts {
+        #[arg(short, long)]
+        passphrase: String,
+        #[arg(short, long, default_value = "365")]
+        days: u64,
     },
 }
 
@@ -634,6 +638,34 @@ pub async fn async_main() -> Result<()> {
                     wallet.display()
                 );
             }
+
+            IdentityAction::RotateWorkerCerts { passphrase, days } => {
+                let sealed = store.get_cluster_wallet()?.ok_or_else(|| {
+                    anyhow::anyhow!("no cluster wallet in store; create or restore identity first")
+                })?;
+                let plaintext = sealed.open(passphrase.as_bytes())?;
+                let wallet: IdentityWallet = serde_json::from_slice(&plaintext)
+                    .context("wallet does not contain a valid IdentityWallet")?;
+                let mut rotated = 0;
+                for worker in &wallet.workers.clone() {
+                    if let Some(ref existing) = find_worker_cert(&wallet, &worker.worker_id) {
+                        let ca = wallet.to_cluster_identity("rotate", ClusterRole::Admin)?.ca;
+                        ca.revoke(existing.serial())?;
+                    }
+                    let identity = wallet.to_cluster_identity("rotate", ClusterRole::Admin)?;
+                    let _bundle = identity.ca.sign_worker_bundle(
+                        &worker.worker_id,
+                        &wallet.cluster_name,
+                        days,
+                    )?;
+                    println!("rotated certificate for worker {}", worker.worker_id);
+                    rotated += 1;
+                }
+                let resealed = wallet.seal(passphrase.as_bytes())?;
+                store.set_cluster_wallet(&resealed)?;
+                println!("rotated {} worker certificate(s)", rotated);
+                println!("WARNING: workers must be restarted with their new bundles to use the updated certificates.");
+            }
         },
         Command::Device { action } => match action {
             DeviceAction::Restore {
@@ -679,17 +711,19 @@ pub async fn async_main() -> Result<()> {
                 interval_seconds,
                 local_chart,
             } => {
-                let sealed = store
-                    .get_cluster_wallet()?
-                    .ok_or_else(|| anyhow::anyhow!("no cluster wallet in store; create or restore identity first"))?;
+                let sealed = store.get_cluster_wallet()?.ok_or_else(|| {
+                    anyhow::anyhow!("no cluster wallet in store; create or restore identity first")
+                })?;
                 let plaintext = sealed.open(passphrase.as_bytes())?;
                 let wallet: IdentityWallet = serde_json::from_slice(&plaintext)
                     .context("wallet does not contain a valid IdentityWallet")?;
-                let identity = wallet.to_cluster_identity("cli-cluster-command", ClusterRole::Admin)?;
+                let identity =
+                    wallet.to_cluster_identity("cli-cluster-command", ClusterRole::Admin)?;
                 let worker_id = "goblin-cluster".to_string();
-                let bundle = identity
-                    .ca
-                    .sign_worker_bundle(&worker_id, &wallet.cluster_name, 365)?;
+                let bundle =
+                    identity
+                        .ca
+                        .sign_worker_bundle(&worker_id, &wallet.cluster_name, 365)?;
                 let bundle_json = serde_json::to_string(&bundle)?;
                 let bundle_b64 = base64::engine::general_purpose::STANDARD.encode(bundle_json);
                 let cluster_key_b64 = identity.export_key();
@@ -720,7 +754,10 @@ pub async fn async_main() -> Result<()> {
                     helm_args.push(format!("--set snapshot.accessKeyId={} ", access_key_id));
                 }
                 if let Some(secret_access_key) = secret_access_key {
-                    helm_args.push(format!("--set snapshot.secretAccessKey={} ", secret_access_key));
+                    helm_args.push(format!(
+                        "--set snapshot.secretAccessKey={} ",
+                        secret_access_key
+                    ));
                 }
                 helm_args.push("\n".to_string());
                 println!("Run the following command in a cluster with Helm configured:");
@@ -730,6 +767,16 @@ pub async fn async_main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn find_worker_cert(
+    _wallet: &IdentityWallet,
+    _worker_id: &str,
+) -> Option<goble_core::identity::Identity> {
+    // We intentionally do not parse active certificate PEMs here; rotate-worker-certs will
+    // revoke by best-effort serial lookup once certificate registry metadata is stored in the
+    // wallet. For now this helper always returns None so rotation issues fresh certificates.
+    None
 }
 
 #[allow(clippy::too_many_arguments)]

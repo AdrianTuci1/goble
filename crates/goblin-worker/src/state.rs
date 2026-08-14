@@ -101,9 +101,7 @@ impl AppState {
     }
 
     pub fn is_scheduler_leader(&self) -> bool {
-        self.leader_state()
-            .map(|l| l.is_leader())
-            .unwrap_or(true)
+        self.leader_state().map(|l| l.is_leader()).unwrap_or(true)
     }
 
     pub fn set_scheduler(&self, scheduler: Arc<Scheduler>) {

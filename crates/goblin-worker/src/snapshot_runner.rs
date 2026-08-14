@@ -118,7 +118,8 @@ mod tests {
         state.set_cluster_key(key.clone());
         state.set_snapshot_provider(provider.clone());
 
-        let runner = SnapshotRunner::new(state.clone(), provider, key, Duration::from_secs(60), false);
+        let runner =
+            SnapshotRunner::new(state.clone(), provider, key, Duration::from_secs(60), false);
         let restored = runner.restore_if_empty().unwrap();
         assert!(restored);
         assert_eq!(
@@ -149,7 +150,8 @@ mod tests {
         state.set_cluster_key(key.clone());
         state.set_snapshot_provider(provider.clone());
 
-        let runner = SnapshotRunner::new(state.clone(), provider, key, Duration::from_secs(60), true);
+        let runner =
+            SnapshotRunner::new(state.clone(), provider, key, Duration::from_secs(60), true);
         let restored = runner.restore_if_empty().unwrap();
         assert!(!restored);
     }
@@ -173,7 +175,8 @@ mod tests {
         state.set_cluster_key(key.clone());
         state.set_snapshot_provider(provider.clone());
 
-        let runner = SnapshotRunner::new(state.clone(), provider, key, Duration::from_secs(60), true);
+        let runner =
+            SnapshotRunner::new(state.clone(), provider, key, Duration::from_secs(60), true);
         let restored = runner.restore_if_empty().unwrap();
         assert!(restored);
     }

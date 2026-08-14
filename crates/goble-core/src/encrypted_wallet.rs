@@ -20,6 +20,9 @@ impl EncryptedWallet {
     /// Encrypt `plaintext` with `passphrase`. The resulting wallet can be
     /// serialized to disk and later decrypted with `open`.
     pub fn seal(plaintext: &[u8], passphrase: &[u8]) -> Result<Self> {
+        if passphrase.is_empty() {
+            anyhow::bail!("wallet passphrase cannot be empty");
+        }
         let blob = encrypt_with_passphrase(plaintext, passphrase)?;
         if blob.len() < 16 + 12 {
             anyhow::bail!("unexpected short ciphertext from encrypt_with_passphrase");
@@ -197,11 +200,15 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_passphrase_roundtrip() {
-        let data = b"";
-        let wallet = EncryptedWallet::seal(data, b"").unwrap();
-        let opened = wallet.open(b"").unwrap();
-        assert!(opened.is_empty());
+    fn test_empty_passphrase_rejected() {
+        use crate::vault::CredentialVault;
+        let mut vault = CredentialVault::new();
+        let err = vault.set("x", b"y", b"").unwrap_err().to_string();
+        assert!(err.contains("passphrase cannot be empty"), "{err}");
+
+        let data = b"cluster identity data";
+        let err = EncryptedWallet::seal(data, b"").unwrap_err().to_string();
+        assert!(err.contains("passphrase cannot be empty"), "{err}");
     }
 
     #[test]

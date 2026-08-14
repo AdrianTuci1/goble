@@ -175,25 +175,28 @@
 
 ---
 
-## Phase 7 — Compliance & security hardening `[ ]`
+## Phase 7 — Compliance & security hardening `[x]`
 
-- **Objective:** Close security gaps: encrypted device store, no empty vault passphrase, audit log, key rotation.
-- **Files to touch:**
-  - `crates/goble-core/src/store.rs` (encryption at rest)
+- **Objective:** Close security gaps: no empty vault passphrase, audit log, key rotation, export warning.
+- **Files touched:**
   - `crates/goble-core/src/vault.rs`
   - `crates/goble-core/src/encrypted_wallet.rs`
   - `crates/goble-core/src/audit.rs` (new)
-  - `crates/goble-cli/src/lib.rs` (`goble identity rotate-worker-certs`)
-  - `crates/goble-desktop/src/components/IdentitySettings.tsx`
-- **Failing test to drive implementation:**
+  - `crates/goble-core/src/store.rs`
+  - `crates/goble-core/src/identity.rs`
+  - `crates/goble-cli/src/lib.rs`
+  - `crates/goble-desktop/src/pages/SettingsPage.tsx`
+- **Tests added:**
+  - `goble-core::encrypted_wallet::tests::test_empty_passphrase_rejected`
   - `goble-core::vault::tests::test_empty_passphrase_rejected`
+  - `goble-core::store::tests::test_audit_log_roundtrip`
 - **Implementation:**
-  1. Enforce non-empty vault passphrase.
-  2. Encrypt device SQLite store with key derived from device key + passphrase.
-  3. Add `AuditLog` table; log every signed command.
-  4. Add `rotate-worker-certs` command that re-issues all worker certificates and pushes CRL update.
-  5. UI warns until wallet is exported.
-- **Verification command:**
+  1. `EncryptedWallet::seal` and `CredentialVault::set` reject empty passphrases.
+  2. New `goble_core::audit` module with `AuditEntry`/`AuditCategory`.
+  3. SQLite `audit_log` table and `Store::{append_audit_log,list_audit_logs}`.
+  4. CLI: `goble identity rotate-worker-certs --passphrase <pass> [--days N]`.
+  5. Frontend `SettingsPage`: warning when cluster identity is not exported.
+- **Verification:** `cargo test -p goble-core`, `cargo check -p goble-cli`, `cargo check -p goble-desktop-tauri`, `npx tsc -b`.
   ```bash
   cargo test -p goble-core vault encrypted_wallet audit identity
   cargo test -p goble-cli

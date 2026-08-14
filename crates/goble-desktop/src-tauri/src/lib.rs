@@ -60,15 +60,22 @@ async fn classify_intent(
 
 #[derive(Deserialize)]
 struct RunAgentRequest {
-    worker_id: String,
+    target: RuntimeTarget,
     chat_id: Option<String>,
     agent_id: String,
     prompt: String,
 }
 
 #[derive(Deserialize)]
+struct RuntimeTarget {
+    kind: String,
+    tag: Option<String>,
+    worker_id: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct RunAgentForThreadReplyRequest {
-    worker_id: String,
+    target: RuntimeTarget,
     thread_id: String,
     agent_id: String,
     prompt: String,
@@ -605,28 +612,35 @@ fn list_harness_tools() -> Result<Vec<goble_core::harness::ToolSchema>, String> 
 
 
 #[tauri::command]
-fn run_agent_for_thread_reply(
-    req: RunAgentForThreadReplyRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<(), String> {
-    state
-        .run_agent_for_thread_reply(
-            &WorkerId(req.worker_id),
-            &goble_core::thread::ThreadId(req.thread_id),
-            &AgentId(req.agent_id),
-            &req.prompt,
-        )
-        .map_err(|e| e.to_string())
-}
-#[tauri::command]
 fn run_agent(
     req: RunAgentRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<(), String> {
-    let worker_id = WorkerId(req.worker_id);
+    let worker_id = state
+        .resolve_worker_for_target(&req.target.kind, req.target.tag.as_deref(), req.target.worker_id.as_deref())
+        .map_err(|e| e.to_string())?;
     let agent_id = AgentId(req.agent_id);
     state
         .run_agent(&worker_id, &agent_id, &req.prompt)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn run_agent_for_thread_reply(
+    req: RunAgentForThreadReplyRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    let worker_id = state
+        .resolve_worker_for_target(&req.target.kind, req.target.tag.as_deref(), req.target.worker_id.as_deref())
+        .map_err(|e| e.to_string())?;
+    let agent_id = AgentId(req.agent_id);
+    state
+        .run_agent_for_thread_reply(
+            &worker_id,
+            &goble_core::thread::ThreadId(req.thread_id),
+            &agent_id,
+            &req.prompt,
+        )
         .map_err(|e| e.to_string())
 }
 

@@ -148,7 +148,7 @@
 
 ---
 
-## Phase 6 — Worker groups and runtime routing `[ ]`
+## Phase 6 — Worker groups and runtime routing `[x]`
 
 - **Objective:** Tag workers into groups (e.g. `gpu`, `prod`) and let the desktop route agents to the best worker using `WorkerPool`.
 - **Files to touch:**
@@ -157,13 +157,15 @@
   - `crates/goblin-worker/src/state.rs`
   - `crates/goble-cli/src/lib.rs` (`goble worker tag`)
   - `crates/goble-desktop/src/components/ComposerRuntimeSelector.tsx` (new)
-- **Failing test to drive implementation:**
+- **Tests added:**
   - `goble-core::worker_pool::tests::test_tagged_group_selection`
+  - `goble-core::worker_pool::tests::test_tagged_first_fallback_to_any_available`
 - **Implementation:**
-  1. Add `tags: Vec<String>` to `Worker`.
-  2. `WorkerPool::select` accepts optional tag filter.
+  1. Add `tags: Vec<String>` to `WorkerConfig`.
+  2. `WorkerPool::select` accepts optional tag filter via `TaggedFirst` strategy.
   3. Desktop UI shows runtime selector: local / group / specific worker.
   4. CLI `goble worker tag <worker-id> <tag>` updates worker metadata.
+  5. Tauri commands `run_agent` and `run_agent_for_thread_reply` resolve `RuntimeTarget` to a paired worker using `WorkerPool`.
 - **Verification command:**
   ```bash
   cargo test -p goble-core worker_pool worker

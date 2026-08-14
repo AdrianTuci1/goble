@@ -160,4 +160,17 @@ mod tests {
         assert_eq!(second, WorkerId("gpu-2".to_string()));
         assert_eq!(third, WorkerId("gpu-1".to_string()));
     }
+
+    #[test]
+    fn test_tagged_first_fallback_to_any_available() {
+        let mut pool = WorkerPool::new(WorkerPoolStrategy::TaggedFirst {
+            tag: "gpu".to_string(),
+        });
+        let workers = vec![
+            make_worker("cpu-1", 0, WorkerStatus::Online, vec!["cpu"]),
+            make_worker("cpu-2", 0, WorkerStatus::Online, vec!["cpu"]),
+        ];
+        let selected = pool.select(&workers).unwrap();
+        assert_eq!(selected.worker_id.0, "cpu-1");
+    }
 }

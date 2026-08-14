@@ -336,13 +336,19 @@ export async function setLlmSetting(
   });
 }
 
+export type RuntimeTarget =
+  | { kind: 'auto' }
+  | { kind: 'local' }
+  | { kind: 'tag'; tag: string }
+  | { kind: 'worker'; workerId: string };
+
 export async function runAgent(
-  workerId: string,
+  target: RuntimeTarget,
   chatId: string,
   agentId: string,
   input: string,
 ): Promise<void> {
-  return invoke('run_agent', { req: { worker_id: workerId, chat_id: chatId, agent_id: agentId, prompt: input } });
+  return invoke('run_agent', { req: { target, chat_id: chatId, agent_id: agentId, prompt: input } });
 }
 
 export async function classifyIntent(
@@ -704,12 +710,12 @@ export async function migrateLegacyChatsToThreads(): Promise<ThreadSummary[]> {
 
 
 export async function runAgentForThreadReply(
-  workerId: string,
+  target: RuntimeTarget,
   threadId: string,
   agentId: string,
   prompt: string,
 ): Promise<void> {
-  await invoke('run_agent_for_thread_reply', { workerId, threadId, agentId, prompt });
+  await invoke('run_agent_for_thread_reply', { req: { target, thread_id: threadId, agent_id: agentId, prompt } });
 }
 
 export async function inviteUserByPublicKey(

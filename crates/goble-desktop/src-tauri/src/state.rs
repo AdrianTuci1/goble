@@ -18,6 +18,7 @@ use goble_core::vault::CredentialVault;
 use goble_core::llm::{self, CompletionRequest, LlmProvider};
 use goble_core::worker::{WorkerConfig, WorkerId};
 use base64::Engine;
+use goble_core::worker_pool::{WorkerPool, WorkerPoolStrategy, WorkerSnapshot};
 use goble_core::workflow::{Workflow, WorkflowId, WorkflowStep};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -584,6 +585,52 @@ impl DesktopState {
         } else {
             anyhow::bail!("worker not connected: {}", worker_id)
         }
+    }
+
+    /// Resolve an abstract runtime target to a concrete paired worker id.
+    pub fn resolve_worker_for_target(
+        &self,
+        target_kind: &str,
+        tag: Option<&str>,
+        worker_id: Option<&str>,
+    ) -> anyhow::Result<WorkerId> {
+        let all_workers = self.list_workers();
+        let paired_workers: Vec<WorkerConnection> = all_workers
+            .into_iter()
+            .filter(|w| w.paired)
+            .collect();
+
+        if target_kind == "worker" {
+            let id = worker_id.ok_or_else(|| anyhow::anyhow!("worker target missing worker_id"))?;
+            if paired_workers.iter().any(|w| w.id == id) {
+                return Ok(WorkerId(id.to_string()));
+            }
+            anyhow::bail!("worker {} is not paired", id);
+        }
+
+        if target_kind == "local" {
+            anyhow::bail!("local runtime target is not supported yet");
+        }
+
+        let strategy = match tag {
+            Some(t) => WorkerPoolStrategy::TaggedFirst { tag: t.to_string() },
+            None => WorkerPoolStrategy::RoundRobin,
+        };
+        let mut pool = WorkerPool::new(strategy);
+        let snapshots: Vec<WorkerSnapshot> = paired_workers
+            .iter()
+            .map(|w| WorkerSnapshot {
+                worker_id: WorkerId(w.id.clone()),
+                name: w.name.clone(),
+                url: w.url.clone(),
+                status: goble_core::worker::WorkerStatus::Online,
+                load: 0,
+                tags: w.tags.clone(),
+            })
+            .collect();
+        pool.select(&snapshots)
+            .map(|s| s.worker_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("no paired worker available for target {}", target_kind))
     }
 
     pub fn handle_worker_message(&self, worker_id: &WorkerId, msg: WorkerMessage) {

@@ -22,6 +22,7 @@ import {
 } from '../tauri/api';
 import { Lock } from 'lucide-react';
 import { getInitials } from '../utils/designSystem';
+import ComposerRuntimeSelector, { type RuntimeTarget, runtimeTargetLabel } from '../components/ComposerRuntimeSelector';
 
 function participantKey(p: Participant) {
   return `${p.kind}:${p.id}`;
@@ -68,6 +69,7 @@ export default function ThreadsPage() {
   const [qrValue, setQrValue] = useState('');
   const [authorizedKeys, setAuthorizedKeys] = useState<AuthorizedKey[]>([]);
   const [showTagPicker, setShowTagPicker] = useState(false);
+  const [runtimeTarget, setRuntimeTarget] = useState<RuntimeTarget>({ kind: 'auto' });
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const me = useStore((s) => s.userProfile);
@@ -202,10 +204,9 @@ export default function ThreadsPage() {
       setPendingTags([]);
       for (const mentionId of mentions) {
         const agent = agents.find((a) => a.spec.id['0'] === mentionId);
-        const worker = workers.find((w) => w.paired && w.url);
-        if (agent && worker) {
+        if (agent) {
           try {
-            await runAgentForThreadReply(worker.id, activeThreadId, mentionId, text);
+            await runAgentForThreadReply(runtimeTarget, activeThreadId, mentionId, text);
           } catch {
             // Worker may not be reachable; ignore.
           }
@@ -465,6 +466,10 @@ export default function ThreadsPage() {
             />
             <div className="composer-toolbar">
               <div className="toolbar-left">
+                <ComposerRuntimeSelector workers={workers} value={runtimeTarget} onChange={setRuntimeTarget} />
+                <span className="composer-runtime-label" title="Selected runtime target">
+                  {runtimeTargetLabel(runtimeTarget, workers)}
+                </span>
                 <button title="Mention" onClick={() => setInput((v) => v + '@')}>@</button>
                 <button className={pendingTags.length ? 'active' : ''} title="Tag" onClick={() => setShowTagPicker((s) => !s)}>#</button>
               </div>

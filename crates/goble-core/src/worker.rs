@@ -71,6 +71,16 @@ impl WorkerConfig {
         self
     }
 
+    pub fn with_worker_id(mut self, worker_id: WorkerId) -> Self {
+        self.id = worker_id;
+        self
+    }
+
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
+    }
+
     /// Return the WebSocket URL for this worker, preferring wss when an mTLS bundle is present.
     pub fn websocket_url(&self) -> String {
         if self.worker_bundle.is_some() {

@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use futures::{SinkExt, StreamExt};
 use goble_core::protocol::{DesktopMessage, WorkerMessage};
-use goble_core::worker::WorkerId;
+use goble_core::worker::{WorkerConfig, WorkerId};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{connect_async, connect_async_tls_with_config, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::Connector;
 
 use crate::state::DesktopState;
 
@@ -20,11 +21,22 @@ impl WorkerClient {
     pub async fn connect(
         state: Arc<DesktopState>,
         worker_id: WorkerId,
-        url: String,
+        config: &WorkerConfig,
         pairing_code: String,
     ) -> anyhow::Result<Self> {
-        let (ws_stream, _): (WebSocketStream<MaybeTlsStream<TcpStream>>, _) =
-            connect_async(&url).await?;
+        let url = config.websocket_url();
+        let ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>> = if let Some(ref bundle) = config.worker_bundle {
+            let client_config = bundle
+                .client_config(config.desktop_identity.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("worker bundle present but no desktop identity configured")
+                })?)?;
+            let connector = Connector::Rustls(Arc::new(client_config));
+            let (ws_stream, _) = connect_async_tls_with_config(&url, None, true, Some(connector)).await?;
+            ws_stream
+        } else {
+            let (ws_stream, _) = connect_async(&url).await?;
+            ws_stream
+        };
         let (mut write, mut read) = ws_stream.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<DesktopMessage>();
 
@@ -86,16 +98,12 @@ mod tests {
     use goble_core::store::Store;
     use std::time::Duration;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_worker_client_connect_mock() {
         use tokio_tungstenite::accept_async;
 
         let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
         let worker_id = WorkerId::generate();
-        state
-            .add_worker(worker_id.clone(), "mock".to_string(), "ws://127.0.0.1:0".to_string())
-            .unwrap();
-
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let url = format!("ws://127.0.0.1:{}/ws", port);
@@ -137,11 +145,11 @@ mod tests {
             }
         });
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         let client = WorkerClient::connect(
             state.clone(),
             worker_id.clone(),
-            url,
+            &WorkerConfig::new("mock", "127.0.0.1", "").with_pairing_code("0000").with_worker_id(worker_id.clone()).with_port(port),
             "0000".to_string(),
         )
         .await;

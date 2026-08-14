@@ -265,7 +265,14 @@ impl DesktopState {
             self.add_log("vault locked; skip auto-reconnect for paired workers");
             return;
         }
-        for (wid, url) in paired {
+        for (wid, _) in paired {
+            let config = match self.get_worker_config(&wid) {
+                Ok(c) => c,
+                Err(e) => {
+                    self.add_log(format!("no config for worker {wid}; skip reconnect: {e}"));
+                    continue;
+                }
+            };
             let vault_key = format!("{WORKER_PAIRING_CODE_VAULT_PREFIX}{}:pairing_code", wid);
             let code = match self.vault.lock().get(&vault_key, &passphrase) {
                 Ok(Some(v)) => String::from_utf8_lossy(&v).to_string(),
@@ -281,7 +288,7 @@ impl DesktopState {
             let state = self.clone();
             let worker_id = wid.clone();
             tokio::spawn(async move {
-                match WorkerClient::connect(state.clone(), worker_id.clone(), url.clone(), code).await {
+                match WorkerClient::connect(state.clone(), worker_id.clone(), &config, code).await {
                     Ok(client) => {
                         state.clients.lock().insert(worker_id.clone(), client);
                         state.add_log(format!("worker {worker_id} reconnected"));
@@ -530,32 +537,66 @@ impl DesktopState {
         self.workers.lock().values().cloned().collect()
     }
 
+    pub fn get_worker_config(&self, worker_id: &WorkerId) -> anyhow::Result<WorkerConfig> {
+        match self.store.lock().get_worker(&worker_id.to_string())? {
+            Some((_, _, _, config_json)) => {
+                serde_json::from_str(&config_json).context("invalid worker config")
+            }
+            None => anyhow::bail!("worker not found"),
+        }
+    }
+
     pub fn pair_worker(
         self: Arc<Self>,
         worker_id: &WorkerId,
         pairing_code: String,
     ) -> anyhow::Result<bool> {
         let conn = self.workers.lock().get(worker_id).cloned();
+        let cluster = self.get_cluster_identity();
         if let Some(conn) = conn {
             let state = self.clone();
             let wid = worker_id.clone();
-            let url = conn.url.clone();
             let code = pairing_code.clone();
             tokio::spawn(async move {
                 let conn_name = conn.name.clone();
-                match WorkerClient::connect(state.clone(), wid.clone(), url.clone(), code.clone()).await {
+                let url = conn.url.clone();
+                let config = match cluster {
+                    Some(identity) => {
+                        let bundle = match identity.ca.sign_worker_bundle(&wid.to_string(), &identity.cluster_name, 365) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                state.add_log(format!("failed to sign worker bundle for {}: {}", wid, e));
+                                return;
+                            }
+                        };
+                        let mut cfg = WorkerConfig::new(&conn_name, &url, "");
+                        cfg.id = wid.clone();
+                        cfg.port = url.split(':').last().and_then(|p| p.parse().ok()).unwrap_or(7878);
+                        cfg.worker_bundle = Some(bundle);
+                        cfg.desktop_identity = Some(identity.device);
+                        cfg
+                    }
+                    None => {
+                        let mut cfg = WorkerConfig::new(&conn_name, &url, "");
+                        cfg.id = wid.clone();
+                        cfg.port = url.split(':').last().and_then(|p| p.parse().ok()).unwrap_or(7878);
+                        cfg
+                    }
+                };
+                match WorkerClient::connect(state.clone(), wid.clone(), &config, code.clone()).await {
                     Ok(client) => {
                         state.clients.lock().insert(wid.clone(), client);
                         if let Some(c) = state.workers.lock().get_mut(&wid) {
                             c.paired = true;
                         }
+                        let config_json = serde_json::to_string(&config).unwrap_or_else(|_| "{}".to_string());
                         let _ = state.store.lock().insert_worker(
                             &wid.to_string(),
                             &conn_name,
-                            Some(&url),
+                            Some(&config.websocket_url()),
                             "paired",
                             None,
-                            "{}",
+                            &config_json,
                             &Utc::now().to_rfc3339(),
                             &Utc::now().to_rfc3339(),
                         );

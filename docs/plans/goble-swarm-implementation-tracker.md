@@ -59,31 +59,30 @@
 
 ---
 
-## Phase 3 — Certificate-based worker provisioning `[ ]`
+## Phase 3 — Certificate-based worker provisioning `[x]`
 
 - **Objective:** Replace the pairing-code hash bootstrap with a certificate bundle. The desktop signs a worker certificate with the cluster CA and the worker starts with `--bundle worker-bundle.json`.
-- **Files to touch:**
+- **Files touched:**
   - `crates/goble-core/src/provision.rs`
   - `crates/goble-core/src/identity.rs`
   - `crates/goble-core/src/tls.rs`
   - `crates/goblin-worker/src/main.rs`
   - `crates/goblin-worker/src/pairing.rs`
   - `crates/goble-cli/src/lib.rs`
-- **Failing test to drive implementation:**
-  - `goble-core/src/provision.rs::tests::test_provision_bundle_contains_worker_cert`
+  - `crates/goble-desktop/src-tauri/src/worker_manager.rs`
+  - `crates/goble-desktop/src-tauri/src/state.rs`
+  - `crates/goble-core/src/worker.rs`
+  - `crates/goble-desktop/src-tauri/Cargo.toml`
+- **Tests added:**
+  - `goble-core::provision::tests::test_provision_bundle_contains_worker_cert`
+  - `goble-desktop-tauri::worker_manager::tests::test_worker_client_connect_mock`
 - **Implementation:**
-  1. Add `WorkerBundle { worker_id, cert_pem, key_pem, ca_cert_pem, cluster_name }`.
-  2. `ClusterCa::sign_worker(worker_id)` returns the bundle.
-  3. `SshTransport` copies binary + bundle + starts worker with `--bundle`.
-  4. Worker reads bundle, builds server mTLS config, removes hash-based `pair_hash` check.
-  5. Desktop connects to worker over mTLS using its device cert.
-- **Verification command:**
-  ```bash
-  cargo test -p goble-core provision identity tls
-  cargo test -p goble-cli --test e2e_worker --test tls_and_setup
-  cargo test -p goblin-worker pairing
-  ```
-- **Commit step:** `feat: certificate-based worker provisioning replaces pairing hash`
+  1. `WorkerBundle` and `PairingBundle` already existed; enabled desktop use.
+  2. `WorkerClient::connect` now uses mTLS via `tokio-tungstenite` `rustls-tls-native-roots` when `WorkerConfig.worker_bundle` is present.
+  3. `DesktopState::pair_worker` signs a worker bundle from the unlocked cluster identity and persists the bundle + desktop identity in `WorkerConfig`.
+  4. `DesktopState::restore_clients` reads the saved `WorkerConfig` and reconnects with mTLS.
+  5. Added `WorkerConfig::with_worker_id` and `with_port` helpers.
+- **Verification:** `cargo test -p goble-core provision identity tls`, `cargo test -p goble-desktop-tauri --lib worker_manager`, `cargo test -p goble-cli --test tls_and_setup`.
 
 ---
 

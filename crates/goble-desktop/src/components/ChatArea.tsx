@@ -10,6 +10,7 @@ import {
   listThreads,
   extractMentions,
   listWorkers,
+  runAgentForThreadReply,
   type WorkerInfo,
 } from '../tauri/api';
 import { uid, getInitials } from '../utils/designSystem';
@@ -29,6 +30,7 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [pendingTraceId, setPendingTraceId] = useState<string | null>(null);
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -97,6 +99,7 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
     const text = input.trim();
     setInput('');
     setLoading(true);
+    setPendingTraceId(null);
     try {
       const mentions = extractMentions(text);
       const message = await postThreadMessage(activeThreadId, text, {
@@ -107,7 +110,20 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
       addThreadMessage(activeThreadId, message);
       setReplyToMessageId(null);
       setPendingTags([]);
-    } catch (e) {
+
+      const agentMentions = mentions
+        .map((m) => m.replace(/^agent:/, ''))
+        .filter((id) => agents.some((a) => a.id === id || a.spec.id['0'] === id));
+      for (const agentId of agentMentions) {
+        try {
+          const traceId = `${activeThreadId}-${agentId}-${Date.now()}`;
+          setPendingTraceId(traceId);
+          await runAgentForThreadReply(runtimeTarget, activeThreadId, agentId, text);
+        } catch {
+          // Worker may be unreachable; ignore.
+        }
+      }
+    } catch {
       // fallback: add local optimistic message
       addThreadMessage(activeThreadId, {
         id: uid(),
@@ -230,6 +246,17 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
             <div className="message-avatar" style={{ background: '#9ca3af' }}>AI</div>
             <div className="message-content">
               <div className="typing-indicator"><span /><span /><span /></div>
+              {pendingTraceId && (
+                <button
+                  className="msg-action trace-link"
+                  onClick={() => {
+                    useStore.getState().setSelectedTraceId(pendingTraceId);
+                    useStore.getState().navigateFn('/traces');
+                  }}
+                >
+                  Trace
+                </button>
+              )}
             </div>
           </div>
         )}

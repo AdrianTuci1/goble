@@ -320,6 +320,10 @@ export async function listExecutions(): Promise<ExecutionInfo[]> {
   return invoke('list_executions');
 }
 
+export async function getExecutionTrace(traceId: string): Promise<ExecutionTrace> {
+  return invoke('get_execution_trace', { traceId });
+}
+
 export async function listVaultSecrets(): Promise<VaultSecretInfo[]> {
   return invoke('list_vault_secrets');
 }

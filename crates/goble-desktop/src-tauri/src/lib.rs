@@ -10,6 +10,7 @@ use goble_core::protocol::DesktopMessage;
 use goble_core::store::Store;
 use goble_core::worker::WorkerId;
 use goble_core::workflow::{WorkflowId, WorkflowStep};
+use goble_core::execution::ExecutionTrace;
 use serde::{Deserialize, Serialize};
 
 pub mod state;
@@ -585,6 +586,16 @@ fn list_executions(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<Vec<state::ExecutionInfo>, String> {
     Ok(state.list_executions())
+}
+
+#[tauri::command]
+fn get_execution_trace(
+    trace_id: String,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<ExecutionTrace, String> {
+    state
+        .get_execution_trace(&trace_id)
+        .ok_or_else(|| "trace not found".to_string())
 }
 
 #[tauri::command]
@@ -1345,6 +1356,7 @@ pub fn run() {
             list_teams,
             create_team,
             list_executions,
+            get_execution_trace,
             list_vault_secrets,
             set_vault_secret,
             unlock_vault,

@@ -7,7 +7,7 @@ use goble_core::thread::{Participant, ThreadId, ThreadKind, UserId};
 use crate::ThreadSummary;
 use goble_core::cluster_key::{ClusterBackup, ClusterIdentity, ClusterKey};
 use goble_core::encrypted_wallet::IdentityWallet;
-use goble_core::execution::ExecutionTrace;
+use goble_core::execution::{ExecutionTrace, TraceEvent, LogLevel};
 use goble_core::identity::ClusterRole;
 use goble_core::mcp_client::McpTool;
 use goble_core::mcp_manager::{McpManager, McpServerSummary};
@@ -685,25 +685,38 @@ impl DesktopState {
             }
             WorkerMessage::AgentLog {
                 trace_id,
-                step_id,
+                step_id: _,
                 level,
                 message,
             } => {
                 let entry = format!(
-                    "[{}] [{}] {} - {:?}: {}",
-                    worker_id, trace_id, step_id, level, message
+                    "[{}] [{}] {:?}: {}",
+                    worker_id, trace_id, level, message
                 );
                 self.add_log(entry);
+                if let Some(exec) = self.executions.lock().get_mut(&trace_id) {
+                    let level = match level {
+                        goble_core::execution::LogLevel::Debug => LogLevel::Debug,
+                        goble_core::execution::LogLevel::Info => LogLevel::Info,
+                        goble_core::execution::LogLevel::Warn => LogLevel::Warn,
+                        goble_core::execution::LogLevel::Error => LogLevel::Error,
+                    };
+                    exec.trace.add_event(TraceEvent::Log {
+                        timestamp: Utc::now(),
+                        level,
+                        message: message.clone(),
+                    });
+                }
                 self.emit(
                     "agent:log",
                     serde_json::json!({
                         "worker_id": worker_id.to_string(),
                         "trace_id": trace_id,
-                        "step_id": step_id,
                         "level": format!("{:?}", level),
                         "message": message,
                     }),
                 );
+                self.emit("executions:updated", ());
             }
             WorkerMessage::AgentStarted { trace_id, agent_id } => {
                 self.add_log(format!(
@@ -772,6 +785,73 @@ impl DesktopState {
                         "state": state,
                     }),
                 );
+            }
+            WorkerMessage::AssistantDelta { trace_id, delta } => {
+                if let Some(exec) = self.executions.lock().get_mut(&trace_id) {
+                    exec.trace.add_event(TraceEvent::AssistantDelta {
+                        timestamp: Utc::now(),
+                        delta,
+                    });
+                }
+                self.emit("executions:updated", ());
+            }
+            WorkerMessage::ToolCallStarted {
+                trace_id,
+                id,
+                name,
+                arguments,
+            } => {
+                if let Some(exec) = self.executions.lock().get_mut(&trace_id) {
+                    exec.trace.add_event(TraceEvent::ToolCallStarted {
+                        timestamp: Utc::now(),
+                        id,
+                        name,
+                        arguments,
+                    });
+                }
+                self.emit("executions:updated", ());
+            }
+            WorkerMessage::ToolCallFinished {
+                trace_id,
+                id,
+                result,
+            } => {
+                if let Some(exec) = self.executions.lock().get_mut(&trace_id) {
+                    exec.trace.add_event(TraceEvent::ToolCallFinished {
+                        timestamp: Utc::now(),
+                        id,
+                        result,
+                    });
+                }
+                self.emit("executions:updated", ());
+            }
+            WorkerMessage::ToolCallError {
+                trace_id,
+                id,
+                message,
+            } => {
+                if let Some(exec) = self.executions.lock().get_mut(&trace_id) {
+                    exec.trace.add_event(TraceEvent::ToolCallError {
+                        timestamp: Utc::now(),
+                        id,
+                        message,
+                    });
+                }
+                self.emit("executions:updated", ());
+            }
+            WorkerMessage::AskUser {
+                trace_id,
+                question,
+                quick_replies,
+            } => {
+                if let Some(exec) = self.executions.lock().get_mut(&trace_id) {
+                    exec.trace.add_event(TraceEvent::AskUser {
+                        timestamp: Utc::now(),
+                        question,
+                        quick_replies,
+                    });
+                }
+                self.emit("executions:updated", ());
             }
             WorkerMessage::AgentToolResult { trace_id, step_id, name, result } => {
                 self.emit(
@@ -1043,6 +1123,10 @@ impl DesktopState {
 
     pub fn list_executions(&self) -> Vec<ExecutionInfo> {
         self.executions.lock().values().cloned().collect()
+    }
+
+    pub fn get_execution_trace(&self, trace_id: &str) -> Option<ExecutionTrace> {
+        self.executions.lock().get(trace_id).map(|e| e.trace.clone())
     }
 
     pub fn create_workflow(

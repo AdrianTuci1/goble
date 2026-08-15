@@ -143,6 +143,8 @@ interface AppState {
   setActiveThreadId: (id: string | null) => void;
   setThreadMessages: (threadId: string, messages: ThreadMessageSummary[]) => void;
   addThreadMessage: (threadId: string, message: ThreadMessageSummary) => void;
+  updateThreadMessage: (threadId: string, messageId: string, content: string) => void;
+  deleteThreadMessage: (threadId: string, messageId: string) => void;
   markThreadRead: (threadId: string, timestamp: string) => void;
   setThreadParticipants: (threadId: string, participants: Participant[]) => void;
   addThreadParticipantLocal: (threadId: string, participant: Participant) => void;
@@ -313,6 +315,25 @@ export const useStore = create<AppState>((set) => ({
       threadMessages: {
         ...state.threadMessages,
         [threadId]: [...(state.threadMessages[threadId] || []), message],
+      },
+    })),
+  updateThreadMessage: (threadId, messageId, content) =>
+    set((state) => {
+      const list = state.threadMessages[threadId] || [];
+      return {
+        threadMessages: {
+          ...state.threadMessages,
+          [threadId]: list.map((m) =>
+            m.id === messageId ? { ...m, content, updated_at: new Date().toISOString() } : m
+          ),
+        },
+      };
+    }),
+  deleteThreadMessage: (threadId, messageId) =>
+    set((state) => ({
+      threadMessages: {
+        ...state.threadMessages,
+        [threadId]: (state.threadMessages[threadId] || []).filter((m) => m.id !== messageId),
       },
     })),
   markThreadRead: (threadId, timestamp) =>

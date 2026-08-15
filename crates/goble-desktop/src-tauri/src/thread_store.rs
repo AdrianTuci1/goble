@@ -186,6 +186,59 @@ impl ThreadStore {
             .unwrap_or_default())
     }
 
+    pub fn update_message(
+        &self,
+        thread_id: &ThreadId,
+        message_id: &MessageId,
+        participant_id: &ParticipantId,
+        content: impl Into<String>,
+    ) -> Result<ThreadMessage, ThreadError> {
+        let content = content.into();
+        self.get_thread(thread_id)?;
+        let mut messages = self.messages.lock();
+        let list = messages
+            .get_mut(&thread_id.0)
+            .ok_or_else(|| ThreadError::ThreadNotFound(thread_id.clone()))?;
+        let message = list
+            .iter_mut()
+            .find(|m| &m.id == message_id)
+            .ok_or_else(|| ThreadError::MessageNotFound(message_id.clone()))?;
+        if message.author.participant_id() != *participant_id {
+            return Err(ThreadError::Unauthorized);
+        }
+        message.content = content;
+        message.participant_mentions = Self::extract_mentions(&message.content);
+        message.updated_at = Utc::now();
+        let updated = message.clone();
+        drop(messages);
+        self.save().map_err(|_| ThreadError::Unauthorized)?;
+        Ok(updated)
+    }
+
+    pub fn delete_message(
+        &self,
+        thread_id: &ThreadId,
+        message_id: &MessageId,
+        participant_id: &ParticipantId,
+    ) -> Result<(), ThreadError> {
+        self.get_thread(thread_id)?;
+        let mut messages = self.messages.lock();
+        let list = messages
+            .get_mut(&thread_id.0)
+            .ok_or_else(|| ThreadError::ThreadNotFound(thread_id.clone()))?;
+        let index = list
+            .iter()
+            .position(|m| &m.id == message_id)
+            .ok_or_else(|| ThreadError::MessageNotFound(message_id.clone()))?;
+        if list[index].author.participant_id() != *participant_id {
+            return Err(ThreadError::Unauthorized);
+        }
+        list.remove(index);
+        drop(messages);
+        self.save().map_err(|_| ThreadError::Unauthorized)?;
+        Ok(())
+    }
+
     pub fn post_message(
         &self,
         thread_id: &ThreadId,

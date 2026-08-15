@@ -12,6 +12,8 @@ import {
   listAgents,
   listThreads,
   markThreadRead,
+  updateThreadMessage,
+  deleteThreadMessage,
   onThreadMessageCreated,
   onThreadMessagesUpdated,
   onThreadUpdated,
@@ -64,6 +66,8 @@ export default function ThreadsPage() {
   const addThreadPendingRun = useStore((s) => s.addThreadPendingRun);
   const removeThreadPendingRun = useStore((s) => s.removeThreadPendingRun);
   const threadPendingRuns = useStore((s) => s.threadPendingRuns);
+  const updateThreadMessageLocal = useStore((s) => s.updateThreadMessage);
+  const deleteThreadMessageLocal = useStore((s) => s.deleteThreadMessage);
 
   const [input, setInput] = useState('');
   const [mentionQuery, setMentionQuery] = useState('');
@@ -81,6 +85,8 @@ export default function ThreadsPage() {
   const [authorizedKeys, setAuthorizedKeys] = useState<AuthorizedKey[]>([]);
   const [showTagPicker, setShowTagPicker] = useState(false);
   const [runtimeTarget, setRuntimeTarget] = useState<RuntimeTarget>({ kind: 'auto' });
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editInput, setEditInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const me = useStore((s) => s.userProfile);
@@ -218,6 +224,38 @@ export default function ThreadsPage() {
       setInviteName('');
       setShowInviteUser(false);
       if (activeThreadId) loadParticipants(activeThreadId);
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleEditStart(messageId: string, currentContent: string) {
+    setEditingMessageId(messageId);
+    setEditInput(currentContent);
+  }
+
+  async function handleEditSave(messageId: string) {
+    if (!activeThreadId || !editInput.trim()) return;
+    try {
+      await updateThreadMessage(activeThreadId, messageId, editInput.trim());
+      updateThreadMessageLocal(activeThreadId, messageId, editInput.trim());
+      setEditingMessageId(null);
+      setEditInput('');
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleEditCancel() {
+    setEditingMessageId(null);
+    setEditInput('');
+  }
+
+  async function handleDeleteMessage(messageId: string) {
+    if (!activeThreadId) return;
+    try {
+      await deleteThreadMessage(activeThreadId, messageId);
+      deleteThreadMessageLocal(activeThreadId, messageId);
     } catch {
       // ignore
     }
@@ -393,13 +431,36 @@ export default function ThreadsPage() {
               Replying to {messages.find((m) => m.id === msg.reply_to)?.author.id || 'unknown'}
             </div>
           )}
-          <div className="threads-message-body">{msg.content}</div>
+          {editingMessageId === msg.id ? (
+            <div className="message-edit-row">
+              <input
+                className="message-edit-input"
+                value={editInput}
+                onChange={(e) => setEditInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleEditSave(msg.id);
+                  if (e.key === 'Escape') handleEditCancel();
+                }}
+                autoFocus
+              />
+              <button className="msg-action" onClick={() => handleEditSave(msg.id)}>Save</button>
+              <button className="msg-action" onClick={handleEditCancel}>Cancel</button>
+            </div>
+          ) : (
+            <div className="threads-message-body">{msg.content}</div>
+          )}
           {msg.tags.length > 0 && (
             <div className="message-tags">
               {msg.tags.map((t) => <span key={t} className="message-tag">{t}</span>)}
             </div>
           )}
           <div className="threads-message-footer">
+            {msg.author.kind === 'user' && msg.author.id === me?.id && !editingMessageId && (
+              <>
+                <button className="msg-action" onClick={() => handleEditStart(msg.id, msg.content)}>Edit</button>
+                <button className="msg-action" onClick={() => handleDeleteMessage(msg.id)}>Delete</button>
+              </>
+            )}
             <button className="msg-action" onClick={() => setReplyToMessageId(msg.id)}>Reply</button>
             <button className="msg-action" onClick={() => setThreadEmojiPickerForMessageId(threadEmojiPickerForMessageId === msg.id ? null : msg.id)}>
               Add reaction

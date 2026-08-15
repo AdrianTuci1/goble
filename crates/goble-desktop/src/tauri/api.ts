@@ -679,6 +679,25 @@ export async function postThreadMessage(
   });
 }
 
+export async function updateThreadMessage(
+  threadId: string,
+  messageId: string,
+  content: string,
+): Promise<ThreadMessageSummary> {
+  return invoke('update_thread_message', {
+    req: { thread_id: threadId, message_id: messageId, content },
+  });
+}
+
+export async function deleteThreadMessage(
+  threadId: string,
+  messageId: string,
+): Promise<void> {
+  return invoke('delete_thread_message', {
+    req: { thread_id: threadId, message_id: messageId },
+  });
+}
+
 export async function addThreadReaction(threadId: string, messageId: string, emoji: string): Promise<void> {
   return invoke('add_thread_reaction', { req: { thread_id: threadId, message_id: messageId, emoji } });
 }

@@ -82,6 +82,19 @@ struct RunAgentForThreadReplyRequest {
 }
 
 #[derive(Deserialize)]
+struct UpdateThreadMessageRequest {
+    thread_id: String,
+    message_id: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct DeleteThreadMessageRequest {
+    thread_id: String,
+    message_id: String,
+}
+
+#[derive(Deserialize)]
 struct ScheduleRequest {
     worker_id: String,
     agent_id: String,
@@ -642,6 +655,49 @@ fn run_agent_for_thread_reply(
             &req.prompt,
         )
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_thread_message(
+    req: UpdateThreadMessageRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<ThreadMessageSummary, String> {
+    let me = state
+        .thread_store()
+        .get_profile()
+        .ok_or("profile not set")?;
+    let msg = state
+        .thread_store()
+        .update_message(
+            &goble_core::thread::ThreadId(req.thread_id.clone()),
+            &goble_core::thread::MessageId(req.message_id.clone()),
+            &goble_core::thread::ParticipantId::user(me.id.0.clone()),
+            req.content,
+        )
+        .map_err(|e| e.to_string())?;
+    state.emit("thread:messages:updated", ThreadUpdatedPayload { thread_id: req.thread_id });
+    Ok(ThreadMessageSummary::from(msg))
+}
+
+#[tauri::command]
+fn delete_thread_message(
+    req: DeleteThreadMessageRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    let me = state
+        .thread_store()
+        .get_profile()
+        .ok_or("profile not set")?;
+    state
+        .thread_store()
+        .delete_message(
+            &goble_core::thread::ThreadId(req.thread_id.clone()),
+            &goble_core::thread::MessageId(req.message_id.clone()),
+            &goble_core::thread::ParticipantId::user(me.id.0.clone()),
+        )
+        .map_err(|e| e.to_string())?;
+    state.emit("thread:messages:updated", ThreadUpdatedPayload { thread_id: req.thread_id });
+    Ok(())
 }
 
 #[tauri::command]
@@ -1299,6 +1355,8 @@ pub fn run() {
             get_thread_messages,
             post_thread_message,
             mark_thread_read,
+            update_thread_message,
+            delete_thread_message,
             add_thread_reaction,
             remove_thread_reaction,
             get_user_profile,

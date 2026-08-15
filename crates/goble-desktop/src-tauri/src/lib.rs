@@ -1,5 +1,6 @@
 // Tauri + React application entry
 // This crate is not included in the Cargo workspace because it is a Tauri project.
+use base64::Engine;
 use goble_core::agent::{AgentId, Trigger};
 use goble_core::execution::ExecutionTrace;
 use goble_core::harness::Harness;
@@ -255,6 +256,30 @@ pub struct ClusterHelmInstallRequest {
     pub local_chart: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExportIdentityRequest {
+    pub passphrase: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportIdentityRequest {
+    pub wallet: String,
+    pub passphrase: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GenerateWorkerInviteRequest {
+    pub worker_id: String,
+    pub worker_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkerInvite {
+    pub worker_id: String,
+    pub cluster_key: String,
+    pub bundle: String,
+}
+
 static HARNESS_CANCEL: once_cell::sync::Lazy<
     std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
 > = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -352,6 +377,51 @@ fn export_cluster_backup(
 ) -> Result<String, String> {
     let backup = state.export_cluster_backup().map_err(|e| e.to_string())?;
     serde_json::to_string(&backup).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn export_identity_wallet(
+    req: ExportIdentityRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<String, String> {
+    state
+        .export_identity_wallet(&req.passphrase)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_identity_wallet(
+    req: ImportIdentityRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<ClusterIdentityInfo, String> {
+    let identity = state
+        .import_identity_wallet(&req.wallet, &req.passphrase)
+        .map_err(|e| e.to_string())?;
+    Ok(ClusterIdentityInfo {
+        cluster_name: identity.cluster_name,
+        ca_cert_pem: identity.ca.identity.cert_pem,
+        device_serial: identity.device.serial().to_string(),
+    })
+}
+
+#[tauri::command]
+fn generate_worker_invite(
+    req: GenerateWorkerInviteRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<WorkerInvite, String> {
+    let identity = state
+        .get_cluster_identity()
+        .ok_or("no cluster identity unlocked")?;
+    let bundle = identity
+        .ca
+        .sign_worker_bundle(&req.worker_id, &identity.cluster_name, 365)
+        .map_err(|e| e.to_string())?;
+    let bundle_json = serde_json::to_string(&bundle).map_err(|e| e.to_string())?;
+    Ok(WorkerInvite {
+        worker_id: req.worker_id,
+        cluster_key: identity.export_key(),
+        bundle: base64::engine::general_purpose::STANDARD.encode(bundle_json),
+    })
 }
 
 #[tauri::command]
@@ -1483,6 +1553,9 @@ pub fn run() {
             import_cluster_key,
             export_cluster_key,
             export_cluster_backup,
+            export_identity_wallet,
+            import_identity_wallet,
+            generate_worker_invite,
             cluster_helm_install,
             unlock_cluster_identity,
             has_cluster_identity,

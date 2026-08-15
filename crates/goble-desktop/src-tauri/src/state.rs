@@ -378,6 +378,29 @@ impl DesktopState {
         self.set_cluster_identity(identity.clone(), passphrase)
     }
 
+    pub fn export_identity_wallet(&self, passphrase: &str) -> anyhow::Result<String> {
+        let identity = self
+            .get_cluster_identity()
+            .context("no cluster identity unlocked")?;
+        let wallet = IdentityWallet::from(&identity);
+        let sealed = wallet.seal(passphrase.as_bytes())?;
+        Ok(serde_json::to_string(&sealed)?)
+    }
+
+    pub fn import_identity_wallet(
+        &self,
+        wallet_json: &str,
+        passphrase: &str,
+    ) -> anyhow::Result<ClusterIdentity> {
+        let sealed: goble_core::encrypted_wallet::EncryptedWallet =
+            serde_json::from_str(wallet_json).context("invalid wallet JSON")?;
+        let wallet = IdentityWallet::open(&sealed, passphrase.as_bytes())?;
+        let device_id = Self::device_id();
+        let identity = wallet.to_cluster_identity(&device_id, ClusterRole::Admin)?;
+        *self.cluster_identity.lock() = Some(identity.clone());
+        Ok(identity)
+    }
+
     pub fn unlock_cluster_identity(&self, passphrase: &str) -> anyhow::Result<bool> {
         let wallet = self.store.lock().get_cluster_wallet()?;
         match wallet {

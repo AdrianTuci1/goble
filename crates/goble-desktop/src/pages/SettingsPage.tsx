@@ -21,14 +21,16 @@ import {
   getClusterIdentity,
   createCluster,
   importClusterKey,
+  exportIdentityWallet,
+  importIdentityWallet,
   exportClusterKey,
   exportClusterBackup,
+  generateWorkerInvite,
   unlockClusterIdentity,
   hasClusterIdentity,
   type ClusterIdentityInfo,
   type AuthorizedKey,
 } from '../tauri/api';
-import ClusterInstallCard from '../components/ClusterInstallCard';
 import {
   User,
   Key,
@@ -42,6 +44,7 @@ import {
   Download,
 } from 'lucide-react';
 import './Pages.css';
+import ClusterInstallCard from '../components/ClusterInstallCard';
 
 type SettingsTab =
   | 'profile'
@@ -165,9 +168,16 @@ function KeysSettings() {
   const [pem, setPem] = useState('');
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
+  const [exportPass, setExportPass] = useState('');
+  const [importWallet, setImportWallet] = useState('');
+  const [importPass, setImportPass] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [cluster, setCluster] = useState<ClusterIdentityInfo | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
     getAuthorizedKeys().then(setKeys).catch(() => {});
+    getClusterIdentity().then(setCluster).catch(() => {});
   }, []);
 
   async function handleAdd() {
@@ -183,6 +193,41 @@ function KeysSettings() {
     }
   }
 
+  async function handleExportIdentity() {
+    if (!exportPass.trim()) return;
+    setMessage(null);
+    try {
+      const wallet = await exportIdentityWallet(exportPass.trim());
+      const blob = new Blob([wallet], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `goble-identity-wallet-${cluster?.cluster_name ?? 'cluster'}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setMessage('Identity wallet exported.');
+    } catch (e: unknown) {
+      setMessage(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  async function handleImportIdentity() {
+    if (!importWallet.trim() || !importPass.trim()) return;
+    setImporting(true);
+    setMessage(null);
+    try {
+      const info = await importIdentityWallet(importWallet.trim(), importPass.trim());
+      setCluster(info);
+      setMessage('Identity imported successfully.');
+      setImportWallet('');
+      setImportPass('');
+    } catch (e: unknown) {
+      setMessage(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setImporting(false);
+    }
+  }
+
   function fingerprint(pem: string): string {
     let hash = 0;
     for (const c of pem.trim()) hash = c.charCodeAt(0) + ((hash << 5) - hash);
@@ -192,6 +237,35 @@ function KeysSettings() {
   return (
     <div className="settings-section">
       <h2>Keys</h2>
+      <div className="settings-subsection">
+        <h3>Cluster identity</h3>
+        {cluster ? (
+          <div className="panel-section">
+            <div className="panel-label">Cluster</div>
+            <div className="panel-value">{cluster.cluster_name}</div>
+            <div className="panel-label">Device serial</div>
+            <div className="panel-value">{cluster.device_serial}</div>
+          </div>
+        ) : (
+          <p className="empty">No cluster identity unlocked. Create or import a cluster first.</p>
+        )}
+      </div>
+      <div className="settings-subsection">
+        <h3>Export identity wallet</h3>
+        <p className="hint">Download an encrypted wallet containing your cluster CA and device credentials. Keep it safe.</p>
+        <input type="password" value={exportPass} onChange={(e) => setExportPass(e.target.value)} placeholder="Passphrase" />
+        <button onClick={handleExportIdentity} disabled={!exportPass.trim() || !cluster}>
+          Export wallet
+        </button>
+      </div>
+      <div className="settings-subsection">
+        <h3>Import identity wallet</h3>
+        <textarea value={importWallet} onChange={(e) => setImportWallet(e.target.value)} placeholder="Paste encrypted wallet JSON" rows={6} />
+        <input type="password" value={importPass} onChange={(e) => setImportPass(e.target.value)} placeholder="Passphrase" />
+        <button onClick={handleImportIdentity} disabled={importing || !importWallet.trim() || !importPass.trim()}>
+          {importing ? 'Importing...' : 'Import wallet'}
+        </button>
+      </div>
       <div className="settings-subsection">
         <h3>Add public key</h3>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Key name" />
@@ -214,6 +288,7 @@ function KeysSettings() {
           ))}
         </div>
       </div>
+      {message && <p className="success-hint">{message}</p>}
     </div>
   );
 }
@@ -696,6 +771,9 @@ export function ClusterSettings() {
   const [unlockPassphrase, setUnlockPassphrase] = useState('');
   const [exportedKey, setExportedKey] = useState('');
   const [exportedBackup, setExportedBackup] = useState('');
+  const [workerInvite, setWorkerInvite] = useState('');
+  const [workerInviteName, setWorkerInviteName] = useState('');
+  const [workerInviteCopied, setWorkerInviteCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -764,6 +842,26 @@ export function ClusterSettings() {
     setExportedBackup(backup);
   }
 
+  async function handleGenerateWorkerInvite() {
+    if (!identity) return;
+    setError(null);
+    try {
+      const workerId = crypto.randomUUID();
+      const invite = await generateWorkerInvite(workerId, workerInviteName || undefined);
+      setWorkerInvite(JSON.stringify(invite, null, 2));
+      setWorkerInviteCopied(false);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  function copyWorkerInvite() {
+    navigator.clipboard.writeText(workerInvite).then(() => {
+      setWorkerInviteCopied(true);
+      setTimeout(() => setWorkerInviteCopied(false), 1500);
+    });
+  }
+
   return (
     <div className="settings-section">
       <h2>Cluster</h2>
@@ -823,6 +921,22 @@ export function ClusterSettings() {
         <input type="password" placeholder="Passphrase" value={importPassphrase} onChange={(e) => setImportPassphrase(e.target.value)} />
         <button onClick={handleImport} disabled={!importKey || !importName || !importPassphrase}>Import cluster key</button>
       </div>
+
+      {identity && (
+        <div className="settings-subsection">
+          <h3>Worker invite</h3>
+          <p className="hint">Generate a one-liner invitation for a new worker. Copy it and run it on the worker host.</p>
+          <input placeholder="Worker name (optional)" value={workerInviteName} onChange={(e) => setWorkerInviteName(e.target.value)} />
+          <button onClick={handleGenerateWorkerInvite} disabled={!identity}>Generate worker invite</button>
+          {workerInvite && (
+            <div>
+              <label>Invite bundle</label>
+              <textarea value={workerInvite} readOnly rows={8} />
+              <button onClick={copyWorkerInvite}>{workerInviteCopied ? 'Copied!' : 'Copy invite'}</button>
+            </div>
+          )}
+        </div>
+      )}
 
       {identity && (
         <div className="settings-subsection">

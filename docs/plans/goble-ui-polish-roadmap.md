@@ -1,3 +1,8 @@
+---
+**STATUS: SUPERSEDED / PARTIALLY IMPLEMENTED**
+This document described early planning. Many items have since been implemented or superseded by later plans. Keep for historical context, but do not use as a current source of truth.
+---
+
 # Goble UI Polish Roadmap
 
 **Goal:** close functional gaps in Threads, Settings, Agent/Worker management, and polish execution traces so the desktop app is usable end-to-end.

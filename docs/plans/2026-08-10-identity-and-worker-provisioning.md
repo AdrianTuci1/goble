@@ -1,3 +1,8 @@
+---
+**STATUS: SUPERSEDED / PARTIALLY IMPLEMENTED**
+This document described early planning. Many items have since been implemented or superseded by later plans. Keep for historical context, but do not use as a current source of truth.
+---
+
 # Goble Identity & Worker Provisioning Implementation Plan
 
 > **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.

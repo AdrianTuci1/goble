@@ -233,6 +233,24 @@ export async function exportClusterBackup(): Promise<string> {
   return invoke('export_cluster_backup');
 }
 
+export interface WorkerInvite {
+  worker_id: string;
+  cluster_key: string;
+  bundle: string;
+}
+
+export async function exportIdentityWallet(passphrase: string): Promise<string> {
+  return invoke('export_identity_wallet', { req: { passphrase } });
+}
+
+export async function importIdentityWallet(wallet: string, passphrase: string): Promise<ClusterIdentityInfo> {
+  return invoke('import_identity_wallet', { req: { wallet, passphrase } });
+}
+
+export async function generateWorkerInvite(workerId: string, workerName?: string): Promise<WorkerInvite> {
+  return invoke('generate_worker_invite', { req: { worker_id: workerId, worker_name: workerName } });
+}
+
 export interface ClusterHelmInstallRequest {
   name: string;
   namespace: string;

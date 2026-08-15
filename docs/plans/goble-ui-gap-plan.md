@@ -1,3 +1,8 @@
+---
+**STATUS: SUPERSEDED / PARTIALLY IMPLEMENTED**
+This document described early planning. Many items have since been implemented or superseded by later plans. Keep for historical context, but do not use as a current source of truth.
+---
+
 # Goble Desktop Gap Plan
 
 **Goal:** Close remaining functional gaps so the desktop app navigation, sidebar, agents, settings, and inbox are all usable end-to-end.

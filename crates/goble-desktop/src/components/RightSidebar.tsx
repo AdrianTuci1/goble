@@ -1,4 +1,6 @@
 import { useStore } from '../stores/appStore';
+import { useNavigate } from 'react-router-dom';
+import type { AgentInfo } from '../tauri/api';
 import './RightSidebar.css';
 
 function formatTime(iso: string) {
@@ -84,28 +86,7 @@ function InfoPanel() {
   }
 
   if (agent) {
-    return (
-      <>
-        <div className="panel-section">
-          <div className="panel-label">Agent</div>
-          <div className="panel-value">{agent.name}</div>
-        </div>
-        <div className="panel-section">
-          <div className="panel-label">Description</div>
-          <div className="panel-value">{agent.spec.description || '-'}</div>
-        </div>
-        <div className="panel-section">
-          <div className="panel-label">Tools</div>
-          <div className="panel-tags">
-            {agent.spec.tools.length > 0 ? (
-              agent.spec.tools.map((t) => <span key={t} className="panel-tag">{t}</span>)
-            ) : (
-              <span className="panel-placeholder">no tools configured</span>
-            )}
-          </div>
-        </div>
-      </>
-    );
+    return <AgentInfoPanel agent={agent} />;
   }
 
   if (activeConversation) {
@@ -126,6 +107,70 @@ function InfoPanel() {
   }
 
   return <div className="panel-placeholder">Select a conversation, agent or flow to see details.</div>;
+}
+
+function AgentInfoPanel({ agent }: { agent: AgentInfo }) {
+  const navigate = useNavigate();
+  const executions = useStore((s) => s.executions);
+  const setHistoryDetailId = useStore((s) => s.setHistoryDetailId);
+  const setRightSidebarTab = useStore((s) => s.setRightSidebarTab);
+
+  const agentExecutions = [...executions]
+    .filter((e) => e.agent_id === agent.id)
+    .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
+    .slice(0, 10);
+
+  return (
+    <>
+      <div className="panel-section">
+        <div className="panel-label">Agent</div>
+        <div className="panel-value">{agent.name}</div>
+      </div>
+      <div className="panel-section">
+        <div className="panel-label">Description</div>
+        <div className="panel-value">{agent.spec.description || '-'}</div>
+      </div>
+      <div className="panel-section">
+        <div className="panel-label">Prompt</div>
+        <div className="panel-code prompt">{agent.spec.prompt}</div>
+      </div>
+      <div className="panel-section">
+        <div className="panel-label">Tools</div>
+        <div className="panel-tags">
+          {agent.spec.tools.length > 0 ? (
+            agent.spec.tools.map((t: string) => <span key={t} className="panel-tag">{t}</span>)
+          ) : (
+            <span className="panel-placeholder">no tools configured</span>
+          )}
+        </div>
+      </div>
+      <div className="panel-section">
+        <button className="btn" onClick={() => navigate(`/chat?agent=${agent.id}`)}>Chat with {agent.name}</button>
+      </div>
+      <div className="panel-section">
+        <div className="panel-label">Recent executions</div>
+        {agentExecutions.length === 0 ? (
+          <span className="panel-placeholder">No executions yet</span>
+        ) : (
+          <div className="panel-history-list">
+            {agentExecutions.map((e) => (
+              <button
+                key={e.id}
+                className="panel-history-item"
+                onClick={() => {
+                  setHistoryDetailId(e.id);
+                  setRightSidebarTab('history');
+                }}
+              >
+                <span className="panel-history-time">{formatTime(e.started_at)}</span>
+                <span className="panel-history-label">{e.status}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
 }
 
 function HistoryPanel() {

@@ -215,3 +215,26 @@
   font-size: 13px;
   color: #e4e6eb;
 }
+
+.panel-code.prompt {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px;
+  background: var(--tv-input, #181b21);
+  border: 1px solid var(--tv-border);
+  border-radius: 6px;
+}
+
+.panel-section .btn {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--tv-border);
+  background: var(--tv-button, #2563eb);
+  color: #fff;
+  cursor: pointer;
+}

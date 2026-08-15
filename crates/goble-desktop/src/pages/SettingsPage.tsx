@@ -16,6 +16,8 @@ import {
   createAgent,
   deleteAgent,
   listAgents,
+  getAuthorizedKeys,
+  addAuthorizedKey,
   getClusterIdentity,
   createCluster,
   importClusterKey,
@@ -24,6 +26,7 @@ import {
   unlockClusterIdentity,
   hasClusterIdentity,
   type ClusterIdentityInfo,
+  type AuthorizedKey,
 } from '../tauri/api';
 import ClusterInstallCard from '../components/ClusterInstallCard';
 import {
@@ -132,11 +135,11 @@ export default function SettingsPage() {
       </aside>
       <main className="settings-content">
         {activeTab === 'profile' && <ProfileSettings />}
-        {activeTab === 'keys' && <KeysPlaceholder />}
+        {activeTab === 'keys' && <KeysSettings />}
         {activeTab === 'appearance' && <AppearanceSettings />}
-        {activeTab === 'notifications' && <NotificationsPlaceholder />}
+        {activeTab === 'notifications' && <NotificationsSettings />}
         {activeTab === 'shortcuts' && <ShortcutsPlaceholder />}
-        {activeTab === 'local-archive' && <LocalArchivePlaceholder />}
+        {activeTab === 'local-archive' && <LocalArchiveSettings />}
         {activeTab === 'members' && <MembersPlaceholder />}
         {activeTab === 'hosted-communities' && <HostedCommunitiesPlaceholder />}
         {activeTab === 'templates' && <TemplatesPlaceholder />}
@@ -144,8 +147,8 @@ export default function SettingsPage() {
         {activeTab === 'settings-agents' && <AgentsSettings />}
         {activeTab === 'compute' && <ComputeSettings />}
         {activeTab === 'experiments' && <ExperimentsPlaceholder />}
-        {activeTab === 'mobile' && <MobilePlaceholder />}
-        {activeTab === 'updates' && <UpdatesPlaceholder />}
+        {activeTab === 'mobile' && <MobileSettings />}
+        {activeTab === 'updates' && <UpdatesSettings />}
       </main>
     </div>
   );
@@ -189,25 +192,160 @@ function ProfileSettings() {
   );
 }
 
-function KeysPlaceholder() {
+function KeysSettings() {
+  const [keys, setKeys] = useState<AuthorizedKey[]>([]);
+  const [pem, setPem] = useState('');
+  const [name, setName] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    getAuthorizedKeys().then(setKeys).catch(() => {});
+  }, []);
+
+  async function handleAdd() {
+    if (!pem.trim() || !name.trim()) return;
+    setLoading(true);
+    try {
+      await addAuthorizedKey(pem.trim(), name.trim());
+      setKeys(await getAuthorizedKeys());
+      setPem('');
+      setName('');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function fingerprint(pem: string): string {
+    let hash = 0;
+    for (const c of pem.trim()) hash = c.charCodeAt(0) + ((hash << 5) - hash);
+    return Math.abs(hash).toString(16).padStart(8, '0').slice(0, 16);
+  }
+
   return (
     <div className="settings-section">
       <h2>Keys</h2>
-      <p className="hint">Manage workspace and cluster keys here. Key management UI is coming soon.</p>
+      <div className="settings-subsection">
+        <h3>Add public key</h3>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Key name" />
+        <textarea value={pem} onChange={(e) => setPem(e.target.value)} placeholder="Paste PEM public key" rows={4} />
+        <button onClick={handleAdd} disabled={loading || !pem.trim() || !name.trim()}>
+          {loading ? 'Adding...' : 'Add key'}
+        </button>
+      </div>
+      <div className="settings-subsection">
+        <h3>Authorized keys</h3>
+        {keys.length === 0 && <p className="empty">No authorized keys.</p>}
+        <div className="key-list">
+          {keys.map((k) => (
+            <div key={k.id} className="key-list-item">
+              <div>
+                <div className="key-name">{k.name}</div>
+                <div className="key-meta">Fingerprint: {k.fingerprint || fingerprint(k.public_key_pem)}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
 
-function NotificationsPlaceholder() {
-  return <Placeholder title="Notifications" />;
+function NotificationsSettings() {
+  const [enabled, setEnabled] = useState(() => {
+    try { return localStorage.getItem('goble-notifications-enabled') === 'true'; } catch { return false; }
+  });
+  const [sound, setSound] = useState(() => {
+    try { return localStorage.getItem('goble-notifications-sound') === 'true'; } catch { return false; }
+  });
+  const [mentions, setMentions] = useState(() => {
+    try { return localStorage.getItem('goble-notifications-mentions') !== 'false'; } catch { return true; }
+  });
+
+  function update(key: string, value: boolean, setter: (v: boolean) => void) {
+    setter(value);
+    try { localStorage.setItem(key, String(value)); } catch {}
+  }
+
+  return (
+    <div className="settings-section">
+      <h2>Notifications</h2>
+      <label className="checkbox-row">
+        <input type="checkbox" checked={enabled} onChange={(e) => update('goble-notifications-enabled', e.target.checked, setEnabled)} />
+        Enable desktop notifications
+      </label>
+      <label className="checkbox-row">
+        <input type="checkbox" checked={sound} onChange={(e) => update('goble-notifications-sound', e.target.checked, setSound)} />
+        Play sound on new message
+      </label>
+      <label className="checkbox-row">
+        <input type="checkbox" checked={mentions} onChange={(e) => update('goble-notifications-mentions', e.target.checked, setMentions)} />
+        Notify on mentions
+      </label>
+    </div>
+  );
 }
 
 function ShortcutsPlaceholder() {
   return <Placeholder title="Shortcuts" />;
 }
 
-function LocalArchivePlaceholder() {
-  return <Placeholder title="Local archive" />;
+function LocalArchiveSettings() {
+  const threads = useStore((s) => s.threads);
+  const threadMessages = useStore((s) => s.threadMessages);
+  const profile = useStore((s) => s.userProfile);
+  const [importText, setImportText] = useState('');
+  const [message, setMessage] = useState<string | null>(null);
+
+  function handleExport() {
+    const payload = {
+      version: 1,
+      exported_at: new Date().toISOString(),
+      profile,
+      threads,
+      messages: threadMessages,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `goble-archive-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setMessage('Archive exported.');
+  }
+
+  async function handleImport() {
+    if (!importText.trim()) return;
+    setMessage(null);
+    try {
+      const data = JSON.parse(importText);
+      if (data.threads && Array.isArray(data.threads)) {
+        // For now just validate; real merge would require backend commands.
+        setMessage(`Archive valid: ${data.threads.length} threads, ${Object.keys(data.messages || {}).length} message lists.`);
+      } else {
+        setMessage('Invalid archive format.');
+      }
+    } catch {
+      setMessage('Invalid JSON.');
+    }
+  }
+
+  return (
+    <div className="settings-section">
+      <h2>Local archive</h2>
+      <div className="settings-subsection">
+        <h3>Export</h3>
+        <p className="hint">Download a JSON snapshot of your local threads, messages, and profile.</p>
+        <button onClick={handleExport}>Export archive</button>
+      </div>
+      <div className="settings-subsection">
+        <h3>Import</h3>
+        <textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Paste archive JSON" rows={8} />
+        <button onClick={handleImport}>Validate import</button>
+      </div>
+      {message && <p className="success-hint">{message}</p>}
+    </div>
+  );
 }
 
 function MembersPlaceholder() {
@@ -230,12 +368,38 @@ function ExperimentsPlaceholder() {
   return <Placeholder title="Experiments" />;
 }
 
-function MobilePlaceholder() {
-  return <Placeholder title="Mobile" />;
+function MobileSettings() {
+  return (
+    <div className="settings-section">
+      <h2>Mobile</h2>
+      <p className="hint">Mobile companion app is in development. When released, scan the QR code here to pair this device.</p>
+      <div className="qr-placeholder">QR pairing placeholder</div>
+    </div>
+  );
 }
 
-function UpdatesPlaceholder() {
-  return <Placeholder title="Updates" />;
+function UpdatesSettings() {
+  const [checking, setChecking] = useState(false);
+  const [version] = useState('0.1.0');
+
+  function handleCheck() {
+    setChecking(true);
+    setTimeout(() => setChecking(false), 1500);
+  }
+
+  return (
+    <div className="settings-section">
+      <h2>Updates</h2>
+      <div className="panel-section">
+        <div className="panel-label">Current version</div>
+        <div className="panel-value">{version}</div>
+      </div>
+      <button onClick={handleCheck} disabled={checking}>
+        {checking ? 'Checking...' : 'Check for updates'}
+      </button>
+      <p className="hint">Release notes and automatic updates will be available once the updater is wired.</p>
+    </div>
+  );
 }
 
 function Placeholder({ title }: { title: string }) {

@@ -934,3 +934,63 @@
 .agent-list-item button.danger:hover {
   background: rgba(239, 68, 68, 0.1);
 }
+
+.key-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.key-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid var(--tv-border);
+  border-radius: 8px;
+  background: var(--tv-card);
+}
+
+.key-name {
+  font-weight: 600;
+  color: var(--tv-text);
+}
+
+.key-meta {
+  font-size: 12px;
+  color: var(--tv-muted);
+  margin-top: 2px;
+  font-family: ui-monospace, monospace;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  color: var(--tv-text);
+  cursor: pointer;
+}
+
+.checkbox-row input {
+  width: 16px;
+  height: 16px;
+}
+
+.qr-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 200px;
+  height: 200px;
+  border: 2px dashed var(--tv-border);
+  border-radius: 12px;
+  color: var(--tv-muted);
+  font-size: 14px;
+}
+
+.settings-section .success-hint {
+  color: var(--tv-success, #10b981);
+  font-size: 13px;
+  margin-top: 8px;
+}

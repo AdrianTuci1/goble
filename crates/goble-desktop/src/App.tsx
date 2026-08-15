@@ -15,7 +15,7 @@ import WorkflowsPage from './pages/WorkflowsPage';
 import TeamsPage from './pages/TeamsPage';
 import VaultPage from './pages/VaultPage';
 import ExecutionsPage from './pages/ExecutionsPage';
-import KnowledgePage from './pages/KnowledgePage';
+import LogsPage from './pages/LogsPage';
 import SearchPage from './pages/SearchPage';
 import {
   listWorkers,
@@ -162,7 +162,7 @@ function AppShell() {
             <Route path="/teams" element={<TeamsPage />} />
             <Route path="/vault" element={<VaultPage />} />
             <Route path="/executions" element={<ExecutionsPage />} />
-            <Route path="/knowledge" element={<KnowledgePage />} />
+            <Route path="/logs" element={<LogsPage />} />
             <Route path="/search" element={<SearchPage />} />
           </Routes>
         </main>

@@ -987,3 +987,14 @@
   color: var(--tv-button, #2563eb);
   margin-top: 4px;
 }
+
+.threads-message-header .trace-link {
+  margin-left: auto;
+  opacity: 0.7;
+  font-size: 11px;
+  padding: 2px 6px;
+}
+
+.threads-message-header .trace-link:hover {
+  opacity: 1;
+}

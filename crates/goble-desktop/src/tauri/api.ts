@@ -629,6 +629,7 @@ export interface ThreadMessageSummary {
   tags: string[];
   participant_mentions: string[];
   reactions: { emoji: string; participant_id: string }[];
+  trace_id?: string | null;
   created_at: string;
   updated_at: string;
 }

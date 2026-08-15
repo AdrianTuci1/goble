@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import './ThreadsPage.css';
 import { useStore, type Participant } from '../stores/appStore';
 import {
@@ -37,6 +38,7 @@ const COMMON_EMOJIS = ['👍', '❤️', '😂', '🚀', '👀', '✅', '❓', '
 const TAG_SUGGESTIONS = ['#todo', '#question', '#blocked', '#decision', '#idea'];
 
 export default function ThreadsPage() {
+  const navigate = useNavigate();
   const threads = useStore((s) => s.threads);
   const setThreads = useStore((s) => s.setThreads);
   const workers = useStore((s) => s.workers);
@@ -444,6 +446,18 @@ export default function ThreadsPage() {
               {msg.author.id}
             </span>
             <span className="threads-message-time">{formatTime(msg.created_at)}</span>
+            {msg.author.kind === 'agent' && msg.trace_id && (
+              <button
+                className="msg-action trace-link"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  useStore.getState().setSelectedTraceId(msg.trace_id as string);
+                  navigate('/traces');
+                }}
+              >
+                Trace
+              </button>
+            )}
           </div>
           {msg.reply_to && (
             <div className="threads-message-reply">

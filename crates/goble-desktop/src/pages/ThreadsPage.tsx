@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import './ThreadsPage.css';
 import { useStore, type Participant } from '../stores/appStore';
 import {
@@ -38,7 +37,6 @@ const COMMON_EMOJIS = ['👍', '❤️', '😂', '🚀', '👀', '✅', '❓', '
 const TAG_SUGGESTIONS = ['#todo', '#question', '#blocked', '#decision', '#idea'];
 
 export default function ThreadsPage() {
-  const navigate = useNavigate();
   const threads = useStore((s) => s.threads);
   const setThreads = useStore((s) => s.setThreads);
   const workers = useStore((s) => s.workers);
@@ -74,6 +72,7 @@ export default function ThreadsPage() {
   const [mentionAnchor, setMentionAnchor] = useState<{ start: number; end: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [showNewChannel, setShowNewChannel] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
   const [newChannelName, setNewChannelName] = useState('');
   const [showParticipantPicker, setShowParticipantPicker] = useState(false);
   const [participantQuery, setParticipantQuery] = useState('');
@@ -163,6 +162,26 @@ export default function ThreadsPage() {
     } catch {
       // ignore
     }
+  }
+
+  function inboxItems(): { threadId: string; title: string; kind: string; messageId: string; content: string; createdAt: string; reason: 'mention' | 'unread' }[] {
+    const items: ReturnType<typeof inboxItems> = [];
+    const meId = me?.id;
+    for (const thread of threads) {
+      const messages = threadMessages[thread.id] || [];
+      const lastRead = thread.last_read_at ? new Date(thread.last_read_at) : new Date(0);
+      for (const msg of messages) {
+        const msgDate = new Date(msg.created_at);
+        const isUnread = msgDate > lastRead;
+        const isMention = meId && msg.content.includes(`@user:${meId}`);
+        if (isMention) {
+          items.push({ threadId: thread.id, title: thread.title, kind: thread.kind, messageId: msg.id, content: msg.content, createdAt: msg.created_at, reason: 'mention' });
+        } else if (isUnread) {
+          items.push({ threadId: thread.id, title: thread.title, kind: thread.kind, messageId: msg.id, content: msg.content, createdAt: msg.created_at, reason: 'unread' });
+        }
+      }
+    }
+    return items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 50);
   }
 
   function unreadCount(thread: Parameters<typeof setThreads>[0][number]): number {
@@ -504,8 +523,35 @@ export default function ThreadsPage() {
       <div className="threads-view">
         <div className="threads-sidebar">
           <div className="threads-sidebar-nav">
-            <div className="nav-item inbox-item" onClick={() => navigate('/chat')}>📥 Chat</div>
+            <div className={`nav-item inbox-item ${inboxOpen ? 'active' : ''}`} onClick={() => setInboxOpen((v) => !v)}>
+              📥 Inbox
+              {inboxItems().length > 0 && <span className="inbox-badge">{inboxItems().length}</span>}
+            </div>
           </div>
+
+          {inboxOpen && (
+            <div className="threads-sidebar-section inbox-section">
+              <h4>Inbox</h4>
+              <div className="inbox-list">
+                {inboxItems().length === 0 && <div className="empty">No unread activity.</div>}
+                {inboxItems().map((item) => (
+                  <div
+                    key={`${item.threadId}-${item.messageId}`}
+                    className={`inbox-item ${item.reason}`}
+                    onClick={() => {
+                      setActiveThreadId(item.threadId);
+                      setInboxOpen(false);
+                      if (item.threadId) markThreadReadLocal(item.threadId, new Date().toISOString());
+                    }}
+                  >
+                    <div className="inbox-title">{item.title}</div>
+                    <div className="inbox-content">{item.content.slice(0, 80)}</div>
+                    <div className="inbox-meta">{item.reason === 'mention' ? 'Mentioned you' : 'Unread'}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="threads-sidebar-section">
             <h4>

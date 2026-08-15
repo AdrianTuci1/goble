@@ -914,3 +914,76 @@
   font-size: 15px;
   font-family: inherit;
 }
+
+.inbox-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--tv-danger, #ef4444);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-item.inbox-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-item.inbox-item.active {
+  background: var(--tv-selected);
+}
+
+.inbox-section .inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inbox-item {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--tv-card);
+  border: 1px solid var(--tv-border);
+  cursor: pointer;
+}
+
+.inbox-item:hover {
+  background: var(--tv-hover);
+}
+
+.inbox-item.mention {
+  border-left: 3px solid var(--tv-button, #2563eb);
+}
+
+.inbox-item.unread {
+  border-left: 3px solid var(--tv-muted, #8b949e);
+}
+
+.inbox-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--tv-text);
+}
+
+.inbox-content {
+  font-size: 12px;
+  color: var(--tv-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inbox-meta {
+  font-size: 11px;
+  color: var(--tv-button, #2563eb);
+  margin-top: 4px;
+}

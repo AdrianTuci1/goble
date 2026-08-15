@@ -977,6 +977,31 @@
   height: 16px;
 }
 
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.shortcut-row kbd {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid var(--tv-border);
+  border-radius: 4px;
+  background: var(--tv-surface);
+  min-width: 24px;
+  text-align: center;
+}
+
 .qr-placeholder {
   display: flex;
   align-items: center;

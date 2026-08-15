@@ -36,13 +36,8 @@ import {
   Bell,
   Keyboard,
   Archive,
-  Users,
-  Globe,
-  FileText,
-  Mail,
   Bot,
   Server,
-  FlaskConical,
   Smartphone,
   Download,
 } from 'lucide-react';
@@ -55,13 +50,8 @@ type SettingsTab =
   | 'notifications'
   | 'shortcuts'
   | 'local-archive'
-  | 'members'
-  | 'hosted-communities'
-  | 'templates'
-  | 'invites'
   | 'settings-agents'
   | 'compute'
-  | 'experiments'
   | 'mobile'
   | 'updates';
 
@@ -78,20 +68,10 @@ const MENU_GROUPS = [
     ],
   },
   {
-    title: 'Communities',
-    items: [
-      { id: 'members', label: 'Members', icon: Users },
-      { id: 'hosted-communities', label: 'Hosted communities', icon: Globe },
-      { id: 'templates', label: 'Templates', icon: FileText },
-      { id: 'invites', label: 'Invites', icon: Mail },
-    ],
-  },
-  {
     title: 'App',
     items: [
       { id: 'settings-agents', label: 'Agents', icon: Bot },
       { id: 'compute', label: 'Compute', icon: Server },
-      { id: 'experiments', label: 'Experiments', icon: FlaskConical },
       { id: 'mobile', label: 'Mobile', icon: Smartphone },
       { id: 'updates', label: 'Updates', icon: Download },
     ],
@@ -138,15 +118,10 @@ export default function SettingsPage() {
         {activeTab === 'keys' && <KeysSettings />}
         {activeTab === 'appearance' && <AppearanceSettings />}
         {activeTab === 'notifications' && <NotificationsSettings />}
-        {activeTab === 'shortcuts' && <ShortcutsPlaceholder />}
+        {activeTab === 'shortcuts' && <ShortcutsSettings />}
         {activeTab === 'local-archive' && <LocalArchiveSettings />}
-        {activeTab === 'members' && <MembersPlaceholder />}
-        {activeTab === 'hosted-communities' && <HostedCommunitiesPlaceholder />}
-        {activeTab === 'templates' && <TemplatesPlaceholder />}
-        {activeTab === 'invites' && <InvitesPlaceholder />}
         {activeTab === 'settings-agents' && <AgentsSettings />}
         {activeTab === 'compute' && <ComputeSettings />}
-        {activeTab === 'experiments' && <ExperimentsPlaceholder />}
         {activeTab === 'mobile' && <MobileSettings />}
         {activeTab === 'updates' && <UpdatesSettings />}
       </main>
@@ -278,8 +253,26 @@ function NotificationsSettings() {
   );
 }
 
-function ShortcutsPlaceholder() {
-  return <Placeholder title="Shortcuts" />;
+function ShortcutsSettings() {
+  return (
+    <div className="settings-section">
+      <h2>Keyboard shortcuts</h2>
+      <div className="shortcut-list">
+        <div className="shortcut-row">
+          <kbd>Cmd</kbd> / <kbd>Ctrl</kbd> + <kbd>K</kbd>
+          <span>Open quick search</span>
+        </div>
+        <div className="shortcut-row">
+          <kbd>Esc</kbd>
+          <span>Close side panel / go back</span>
+        </div>
+        <div className="shortcut-row">
+          <kbd>Cmd</kbd> / <kbd>Ctrl</kbd> + <kbd>/</kbd>
+          <span>Toggle right sidebar</span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function LocalArchiveSettings() {
@@ -341,32 +334,11 @@ function LocalArchiveSettings() {
   );
 }
 
-function MembersPlaceholder() {
-  return <Placeholder title="Members" />;
-}
-
-function HostedCommunitiesPlaceholder() {
-  return <Placeholder title="Hosted communities" />;
-}
-
-function TemplatesPlaceholder() {
-  return <Placeholder title="Templates" />;
-}
-
-function InvitesPlaceholder() {
-  return <Placeholder title="Invites" />;
-}
-
-function ExperimentsPlaceholder() {
-  return <Placeholder title="Experiments" />;
-}
-
 function MobileSettings() {
   return (
     <div className="settings-section">
       <h2>Mobile</h2>
       <p className="hint">Mobile companion app is in development. When released, scan the QR code here to pair this device.</p>
-      <div className="qr-placeholder">QR pairing placeholder</div>
     </div>
   );
 }
@@ -391,15 +363,6 @@ function UpdatesSettings() {
         {checking ? 'Checking...' : 'Check for updates'}
       </button>
       <p className="hint">Release notes and automatic updates will be available once the updater is wired.</p>
-    </div>
-  );
-}
-
-function Placeholder({ title }: { title: string }) {
-  return (
-    <div className="settings-section">
-      <h2>{title}</h2>
-      <p className="hint">{title} settings are coming soon.</p>
     </div>
   );
 }

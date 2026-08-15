@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useStore, type Participant, type ThreadMessageSummary } from '../stores/appStore';
 import {
   getThreadMessages,
@@ -27,6 +28,7 @@ function participantToString(p: Participant): string {
 
 export default function ChatArea({ threadsActive }: ChatAreaProps) {
   void threadsActive;
+  const navigate = useNavigate();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [input, setInput] = useState('');
@@ -252,7 +254,7 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
                   className="msg-action trace-link"
                   onClick={() => {
                     useStore.getState().setSelectedTraceId(pendingTraceId);
-                    useStore.getState().navigateFn('/traces');
+                    navigate('/traces');
                   }}
                 >
                   Trace

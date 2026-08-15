@@ -32,7 +32,7 @@ import {
   onVaultUpdated,
 } from './tauri/api';
 import type { StateUpdateEvent, ToolResultEvent } from './tauri/api';
-import { useDesignClasses } from './utils/designSystem';
+import { useDesignClasses, loadDesign, saveDesign } from './utils/designSystem';
 
 function AppShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -53,6 +53,7 @@ function AppShell() {
   const addAgentToolResult = useStore((s) => s.addAgentToolResult);
 
   const design = useStore((s) => s.design);
+  const setDesign = useStore((s) => s.setDesign);
   const designClasses = useDesignClasses(design);
 
   const [loaded, setLoaded] = useState(false);
@@ -62,9 +63,15 @@ function AppShell() {
   });
 
   useEffect(() => {
+    saveDesign(design);
+  }, [design]);
+
+  useEffect(() => {
     let unsubs: (() => void)[] = [];
 
     async function init() {
+      const savedDesign = loadDesign();
+      if (savedDesign) setDesign(savedDesign);
       setWorkers(await listWorkers());
       setLogs(await workerLogs());
       setAgents(await listAgents());

@@ -78,6 +78,15 @@ export type FontName = 'system' | 'mono' | 'serif';
 export type RadiusName = 'sharp' | 'default' | 'rounded';
 export type DensityName = 'compact' | 'default' | 'spacious';
 
+export interface DesignSystem {
+  theme: ThemeName;
+  accent: 'blue' | 'green' | 'purple' | 'orange';
+  font: FontName;
+  density: DensityName;
+  radius: RadiusName;
+}
+
+
 export function applyThemeClass(
   root: HTMLElement | null,
   theme: ThemeName,
@@ -92,6 +101,37 @@ export function applyThemeClass(
   root.classList.remove('density-compact', 'density-default', 'density-spacious');
   root.classList.add(`theme-${theme}`, `font-${font}`, `radius-${radius}`, `density-${density}`);
   if (theme === 'dark') root.classList.add('theme-dark');
+}
+
+export const STORAGE_KEY = 'goble-design-v1';
+
+export function loadDesign(): DesignSystem | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      ['dark', 'light', 'midnight'].includes(parsed.theme) &&
+      ['blue', 'green', 'purple', 'orange'].includes(parsed.accent) &&
+      ['system', 'mono', 'serif'].includes(parsed.font) &&
+      ['compact', 'default', 'spacious'].includes(parsed.density) &&
+      ['sharp', 'default', 'rounded'].includes(parsed.radius)
+    ) {
+      return parsed as DesignSystem;
+    }
+  } catch {
+    // ignore corrupted storage
+  }
+  return null;
+}
+
+export function saveDesign(design: DesignSystem) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(design));
+  } catch {
+    // ignore storage errors
+  }
 }
 
 export function useDesignClasses(design: { theme: ThemeName; font: FontName; radius: RadiusName; density: DensityName }) {

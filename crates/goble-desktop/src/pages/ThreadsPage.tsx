@@ -11,7 +11,10 @@ import {
   inviteUserByPublicKey,
   listAgents,
   listThreads,
+  markThreadRead,
+  onThreadMessageCreated,
   onThreadMessagesUpdated,
+  onThreadUpdated,
   onThreadsUpdated,
   postThreadMessage,
   runAgentForThreadReply,
@@ -56,6 +59,7 @@ export default function ThreadsPage() {
   const setThreadRepliesOpen = useStore((s) => s.setThreadRepliesOpen);
   const threadEmojiPickerForMessageId = useStore((s) => s.threadEmojiPickerForMessageId);
   const setThreadEmojiPickerForMessageId = useStore((s) => s.setThreadEmojiPickerForMessageId);
+  const markThreadReadLocal = useStore((s) => s.markThreadRead);
 
   const [input, setInput] = useState('');
   const [showNewChannel, setShowNewChannel] = useState(false);
@@ -80,15 +84,30 @@ export default function ThreadsPage() {
     let unsubs: (() => void)[] = [];
     (async () => {
       unsubs.push(await onThreadsUpdated(refresh));
-      unsubs.push(await onThreadMessagesUpdated((event) => loadMessages(event.payload.thread_id)));
+      unsubs.push(
+        await onThreadMessagesUpdated((event) => loadMessages(event.payload.thread_id))
+      );
+      unsubs.push(
+        await onThreadMessageCreated((event) => {
+          const { thread_id, message } = event.payload;
+          addThreadMessage(thread_id, message);
+          if (thread_id === activeThreadIdRef.current) {
+            markAsRead(thread_id);
+          }
+        })
+      );
+      unsubs.push(await onThreadUpdated(refresh));
     })();
     return () => unsubs.forEach((u) => u());
   }, []);
 
+  const activeThreadIdRef = useRef(activeThreadId);
   useEffect(() => {
+    activeThreadIdRef.current = activeThreadId;
     if (activeThreadId) {
       loadMessages(activeThreadId);
       loadParticipants(activeThreadId);
+      markAsRead(activeThreadId);
     }
   }, [activeThreadId]);
 
@@ -122,6 +141,22 @@ export default function ThreadsPage() {
     } catch {
       // ignore
     }
+  }
+
+  async function markAsRead(threadId: string) {
+    try {
+      await markThreadRead(threadId);
+      markThreadReadLocal(threadId, new Date().toISOString());
+    } catch {
+      // ignore
+    }
+  }
+
+  function unreadCount(thread: Parameters<typeof setThreads>[0][number]): number {
+    const messages = threadMessages[thread.id] ?? [];
+    if (!messages.length) return 0;
+    const lastRead = thread.last_read_at ? new Date(thread.last_read_at).getTime() : 0;
+    return messages.filter((m) => new Date(m.created_at).getTime() > lastRead).length;
   }
 
   async function openInviteUser() {
@@ -360,16 +395,20 @@ export default function ThreadsPage() {
               <button className="channel-add" onClick={() => setShowNewChannel(true)}>+</button>
             </h4>
             <div className="channel-list">
-              {channels.map((c) => (
-                <div
-                  key={c.id}
-                  className={`channel-item ${activeThreadId === c.id ? 'selected' : ''}`}
-                  onClick={() => setActiveThreadId(c.id)}
-                >
-                  <span className="channel-icon">#</span>
-                  <span className="channel-name">{c.title}</span>
-                </div>
-              ))}
+              {channels.map((c) => {
+                const unread = unreadCount(c);
+                return (
+                  <div
+                    key={c.id}
+                    className={`channel-item ${activeThreadId === c.id ? 'selected' : ''} ${unread ? 'has-unread' : ''}`}
+                    onClick={() => setActiveThreadId(c.id)}
+                  >
+                    <span className="channel-icon">#</span>
+                    <span className="channel-name">{c.title}</span>
+                    {unread > 0 && <span className="unread-badge">{unread}</span>}
+                  </div>
+                );
+              })}
               {showNewChannel && (
                 <div className="channel-item new-channel">
                   <input
@@ -387,30 +426,38 @@ export default function ThreadsPage() {
           <div className="threads-sidebar-section">
             <h4>Direct messages</h4>
             <div className="dm-list">
-              {dms.map((d) => (
-                <div
-                  key={d.id}
-                  className={`dm-item ${activeThreadId === d.id ? 'selected' : ''}`}
-                  onClick={() => setActiveThreadId(d.id)}
-                >
-                  <span className="dm-name">{d.title}</span>
-                </div>
-              ))}
+              {dms.map((d) => {
+                const unread = unreadCount(d);
+                return (
+                  <div
+                    key={d.id}
+                    className={`dm-item ${activeThreadId === d.id ? 'selected' : ''} ${unread ? 'has-unread' : ''}`}
+                    onClick={() => setActiveThreadId(d.id)}
+                  >
+                    <span className="dm-name">{d.title}</span>
+                    {unread > 0 && <span className="unread-badge">{unread}</span>}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
           <div className="threads-sidebar-section">
             <h4>Chats</h4>
             <div className="dm-list">
-              {chats.map((c) => (
-                <div
-                  key={c.id}
-                  className={`dm-item ${activeThreadId === c.id ? 'selected' : ''}`}
-                  onClick={() => setActiveThreadId(c.id)}
-                >
-                  <span className="dm-name">{c.title}</span>
-                </div>
-              ))}
+              {chats.map((c) => {
+                const unread = unreadCount(c);
+                return (
+                  <div
+                    key={c.id}
+                    className={`dm-item ${activeThreadId === c.id ? 'selected' : ''} ${unread ? 'has-unread' : ''}`}
+                    onClick={() => setActiveThreadId(c.id)}
+                  >
+                    <span className="dm-name">{c.title}</span>
+                    {unread > 0 && <span className="unread-badge">{unread}</span>}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

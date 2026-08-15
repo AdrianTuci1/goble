@@ -590,6 +590,7 @@ export interface ThreadSummary {
   tags: string[];
   created_at: string;
   updated_at: string;
+  last_read_at?: string | null;
 }
 
 export interface Participant {
@@ -702,7 +703,17 @@ export function onThreadMessagesUpdated(callback: (event: TauriEvent<{ thread_id
   return listen('thread:messages:updated', callback);
 }
 
+export function onThreadMessageCreated(callback: (event: TauriEvent<{ thread_id: string; message: ThreadMessageSummary }>) => void): Promise<() => void> {
+  return listen('thread:message:created', callback);
+}
 
+export function onThreadUpdated(callback: (event: TauriEvent<{ thread_id: string }>) => void): Promise<() => void> {
+  return listen('thread:updated', callback);
+}
+
+export async function markThreadRead(threadId: string): Promise<void> {
+  return invoke('mark_thread_read', { threadId });
+}
 
 export async function migrateLegacyChatsToThreads(): Promise<ThreadSummary[]> {
   return invoke<ThreadSummary[]>('migrate_legacy_chats_to_threads');

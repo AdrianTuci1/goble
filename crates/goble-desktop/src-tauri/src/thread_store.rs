@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use goble_core::principal::PrincipalId;
 use sha2::{Digest, Sha256};
 use goble_core::thread::{
@@ -16,6 +16,7 @@ const THREADS_FILE: &str = "threads.json";
 const MESSAGES_DIR: &str = "messages";
 const USERS_FILE: &str = "users.json";
 const KEYS_FILE: &str = "keys.json";
+const READ_RECEIPTS_FILE: &str = "read_receipts.json";
 const MIGRATION_MARKER: &str = "threads_migration_v1.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +30,7 @@ struct MigrationMarker {
 pub struct ThreadStore {
     threads: Mutex<Vec<Thread>>,
     messages: Mutex<HashMap<String, Vec<ThreadMessage>>>,
+    last_read_at: Mutex<HashMap<String, chrono::DateTime<Utc>>>,
     profile: Mutex<Option<UserProfile>>,
     keys: Mutex<Vec<AuthorizedKey>>,
     base_path: PathBuf,
@@ -43,6 +45,7 @@ impl ThreadStore {
         let store = Self {
             threads: Mutex::new(Vec::new()),
             messages: Mutex::new(HashMap::new()),
+            last_read_at: Mutex::new(HashMap::new()),
             profile: Mutex::new(None),
             keys: Mutex::new(Vec::new()),
             base_path,
@@ -54,6 +57,18 @@ impl ThreadStore {
 
     pub fn list_threads(&self) -> Vec<Thread> {
         self.threads.lock().clone()
+    }
+
+    pub fn list_threads_with_read_status(&self) -> Vec<(Thread, Option<chrono::DateTime<Utc>>)> {
+        let threads = self.threads.lock().clone();
+        let last_read = self.last_read_at.lock();
+        threads
+            .into_iter()
+            .map(|t| {
+                let read_at = last_read.get(&t.id.0).copied();
+                (t, read_at)
+            })
+            .collect()
     }
 
     pub fn create_thread(
@@ -277,6 +292,19 @@ impl ThreadStore {
         self.save()
     }
 
+    pub fn mark_thread_read(&self, thread_id: &ThreadId) -> Result<(), ThreadError> {
+        self.get_thread(thread_id)?;
+        self.last_read_at
+            .lock()
+            .insert(thread_id.0.clone(), Utc::now());
+        self.save().map_err(|_| ThreadError::Unauthorized)?;
+        Ok(())
+    }
+
+    pub fn get_last_read_at(&self, thread_id: &ThreadId) -> Option<DateTime<Utc>> {
+        self.last_read_at.lock().get(&thread_id.0).copied()
+    }
+
     pub fn list_authorized_keys(&self) -> Vec<AuthorizedKey> {
         self.keys.lock().clone()
     }
@@ -419,6 +447,12 @@ impl ThreadStore {
             serde_json::to_string_pretty(&*keys)?,
         )?;
 
+        let last_read = self.last_read_at.lock();
+        std::fs::write(
+            self.base_path.join(READ_RECEIPTS_FILE),
+            serde_json::to_string_pretty(&*last_read)?,
+        )?;
+
         Ok(())
     }
 
@@ -461,6 +495,12 @@ impl ThreadStore {
         if keys_path.exists() {
             let data = std::fs::read_to_string(&keys_path)?;
             *self.keys.lock() = serde_json::from_str(&data)?;
+        }
+
+        let read_path = self.base_path.join(READ_RECEIPTS_FILE);
+        if read_path.exists() {
+            let data = std::fs::read_to_string(&read_path)?;
+            *self.last_read_at.lock() = serde_json::from_str(&data)?;
         }
 
         Ok(())

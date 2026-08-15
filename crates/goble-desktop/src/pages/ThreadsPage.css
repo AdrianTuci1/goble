@@ -257,6 +257,16 @@
   color: #fff;
 }
 
+.channel-item.has-unread .channel-name,
+.dm-item.has-unread .dm-name {
+  font-weight: 700;
+  color: var(--tv-text);
+}
+
+.channel-item.has-unread .channel-icon {
+  color: var(--tv-text);
+}
+
 .unread-badge {
   background: var(--tv-badge);
   color: #fff;

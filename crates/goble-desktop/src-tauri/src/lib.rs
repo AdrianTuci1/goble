@@ -804,6 +804,7 @@ pub struct ThreadSummary {
     owner_id: String,
     participants: Vec<goble_core::thread::Participant>,
     tags: Vec<String>,
+    last_read_at: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -817,13 +818,14 @@ impl From<goble_core::thread::Thread> for ThreadSummary {
             owner_id: t.owner_id.0,
             participants: t.participants,
             tags: t.tags,
+            last_read_at: None,
             created_at: t.created_at.to_rfc3339(),
             updated_at: t.updated_at.to_rfc3339(),
         }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct ThreadMessageSummary {
     id: String,
     thread_id: String,
@@ -837,7 +839,7 @@ pub struct ThreadMessageSummary {
     updated_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct ThreadReactionSummary {
     emoji: String,
     participant_id: String,
@@ -880,9 +882,12 @@ fn list_threads(
 ) -> Vec<ThreadSummary> {
     state
         .thread_store()
-        .list_threads()
+        .list_threads_with_read_status()
         .into_iter()
-        .map(ThreadSummary::from)
+        .map(|(t, read_at)| ThreadSummary {
+            last_read_at: read_at.map(|dt| dt.to_rfc3339()),
+            ..ThreadSummary::from(t)
+        })
         .collect()
 }
 
@@ -1052,8 +1057,39 @@ fn post_thread_message(
         )
         .map(ThreadMessageSummary::from)
         .map_err(|e| e.to_string())?;
+    state.emit("thread:message:created", ThreadMessageCreatedPayload { thread_id: req.thread_id.clone(), message: message.clone() });
     state.emit("thread:messages:updated", ThreadMessagesUpdatedPayload { thread_id: req.thread_id });
     Ok(message)
+}
+
+#[derive(Serialize, Clone)]
+struct ThreadMessageCreatedPayload {
+    thread_id: String,
+    message: ThreadMessageSummary,
+}
+
+#[derive(Deserialize)]
+pub struct MarkThreadReadRequest {
+    thread_id: String,
+}
+
+#[tauri::command]
+fn mark_thread_read(
+    req: MarkThreadReadRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<(), String> {
+    let thread_id = req.thread_id.clone();
+    state
+        .thread_store()
+        .mark_thread_read(&goble_core::thread::ThreadId(thread_id))
+        .map_err(|e| e.to_string())?;
+    state.emit("thread:updated", ThreadUpdatedPayload { thread_id: req.thread_id });
+    Ok(())
+}
+
+#[derive(Serialize, Clone)]
+struct ThreadUpdatedPayload {
+    thread_id: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -1262,6 +1298,7 @@ pub fn run() {
             invite_user_by_public_key,
             get_thread_messages,
             post_thread_message,
+            mark_thread_read,
             add_thread_reaction,
             remove_thread_reaction,
             get_user_profile,

@@ -142,6 +142,7 @@ interface AppState {
   setActiveThreadId: (id: string | null) => void;
   setThreadMessages: (threadId: string, messages: ThreadMessageSummary[]) => void;
   addThreadMessage: (threadId: string, message: ThreadMessageSummary) => void;
+  markThreadRead: (threadId: string, timestamp: string) => void;
   setThreadParticipants: (threadId: string, participants: Participant[]) => void;
   addThreadParticipantLocal: (threadId: string, participant: Participant) => void;
   removeThreadParticipantLocal: (threadId: string, participantId: string) => void;
@@ -309,6 +310,12 @@ export const useStore = create<AppState>((set) => ({
         ...state.threadMessages,
         [threadId]: [...(state.threadMessages[threadId] || []), message],
       },
+    })),
+  markThreadRead: (threadId, timestamp) =>
+    set((state) => ({
+      threads: state.threads.map((t) =>
+        t.id === threadId ? { ...t, last_read_at: timestamp } : t
+      ),
     })),
   setThreadParticipants: (threadId, participants) =>
     set((state) => ({

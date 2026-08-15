@@ -21,6 +21,7 @@ import {
   addThreadReaction,
   removeThreadReaction,
   getUserProfile,
+  extractMentions,
   type AuthorizedKey,
 } from '../tauri/api';
 import { Lock } from 'lucide-react';
@@ -62,6 +63,9 @@ export default function ThreadsPage() {
   const markThreadReadLocal = useStore((s) => s.markThreadRead);
 
   const [input, setInput] = useState('');
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionAnchor, setMentionAnchor] = useState<{ start: number; end: number } | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const [showNewChannel, setShowNewChannel] = useState(false);
   const [newChannelName, setNewChannelName] = useState('');
   const [showParticipantPicker, setShowParticipantPicker] = useState(false);
@@ -250,6 +254,53 @@ export default function ThreadsPage() {
     } catch {
       // fallback
     }
+  }
+
+  function handleInputChange(value: string) {
+    setInput(value);
+    const inputEl = inputRef.current;
+    if (!inputEl) return;
+    const cursor = inputEl.selectionStart ?? value.length;
+    const textBefore = value.slice(0, cursor);
+    const match = /@([a-zA-Z0-9_-]*)$/.exec(textBefore);
+    if (match) {
+      setMentionQuery(match[1].toLowerCase());
+      setMentionAnchor({ start: cursor - match[0].length, end: cursor });
+    } else {
+      setMentionQuery('');
+      setMentionAnchor(null);
+    }
+  }
+
+  function mentionSuggestions(): { id: string; kind: 'user' | 'agent'; name: string }[] {
+    const query = mentionQuery.toLowerCase();
+    const agentItems = agents.map((a) => ({ id: a.spec.id['0'], kind: 'agent' as const, name: a.name }));
+    const participantItems = participants.map((p) => ({ id: p.id, kind: p.kind, name: p.id }));
+    const all = [...participantItems, ...agentItems].filter((s) => s.name.toLowerCase().includes(query));
+    const seen = new Set<string>();
+    return all.filter((s) => {
+      const key = `${s.kind}:${s.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 6);
+  }
+
+  function insertMention(id: string, kind: 'user' | 'agent') {
+    if (!mentionAnchor) return;
+    const before = input.slice(0, mentionAnchor.start);
+    const after = input.slice(mentionAnchor.end);
+    const newValue = `${before}@${kind}:${id} ${after}`;
+    setInput(newValue);
+    setMentionQuery('');
+    setMentionAnchor(null);
+    requestAnimationFrame(() => {
+      const inputEl = inputRef.current;
+      if (!inputEl) return;
+      const pos = before.length + `@${kind}:${id} `.length;
+      inputEl.focus();
+      inputEl.setSelectionRange(pos, pos);
+    });
   }
 
   async function inviteAgent(agentId: string) {
@@ -504,13 +555,45 @@ export default function ThreadsPage() {
           <div className={`threads-composer ${activeThreadId ? '' : 'hidden'}`}>
             <input
               type="text"
+              ref={inputRef}
               className="composer-input"
               value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+              onChange={(e) => handleInputChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (mentionQuery && (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === 'Escape')) {
+                  e.preventDefault();
+                }
+                if (e.key === 'Enter') {
+                  if (mentionQuery && mentionAnchor) {
+                    const list = mentionSuggestions();
+                    if (list.length > 0) {
+                      insertMention(list[0].id, list[0].kind);
+                    }
+                  } else {
+                    handleSend();
+                  }
+                }
+                if (e.key === 'Escape') {
+                  setMentionQuery('');
+                  setMentionAnchor(null);
+                }
+              }}
               placeholder={activeThread ? `Message ${activeThread.title}` : 'Select a thread'}
               disabled={!activeThreadId}
             />
+            {mentionAnchor && mentionSuggestions().length > 0 && (
+              <div className="mention-popover">
+                {mentionSuggestions().map((s) => (
+                  <div
+                    key={s.id}
+                    className="mention-option"
+                    onClick={() => insertMention(s.id, s.kind)}
+                  >
+                    {s.kind === 'agent' ? '🤖' : '👤'} {s.name}
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="composer-toolbar">
               <div className="toolbar-left">
                 <ComposerRuntimeSelector workers={workers} value={runtimeTarget} onChange={setRuntimeTarget} />
@@ -693,19 +776,4 @@ function avatarColor(author: Participant) {
   if (author.kind === 'agent') return '#10b981';
   if (author.kind === 'user') return '#2563eb';
   return '#9ca3af';
-}
-
-function extractMentions(content: string): string[] {
-  const mentions: string[] = [];
-  const seen = new Set<string>();
-  const re = /@(user|agent):([a-zA-Z0-9_-]+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(content)) !== null) {
-    const id = `${m[1]}:${m[2]}`;
-    if (!seen.has(id)) {
-      seen.add(id);
-      mentions.push(id);
-    }
-  }
-  return mentions;
 }

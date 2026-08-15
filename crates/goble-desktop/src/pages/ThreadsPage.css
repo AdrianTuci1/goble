@@ -836,3 +836,38 @@
   cursor: pointer;
   font-size: 12px;
 }
+
+/* Mention autocomplete */
+.mention-popover {
+  position: absolute;
+  bottom: 100%;
+  left: 12px;
+  right: 12px;
+  background: var(--tv-card);
+  border: 1px solid var(--tv-border);
+  border-radius: 8px;
+  padding: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 20;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.mention-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--tv-text);
+}
+
+.mention-option:hover {
+  background: var(--tv-hover);
+}
+
+.threads-composer {
+  position: relative;
+}

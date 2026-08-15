@@ -871,3 +871,28 @@
 .threads-composer {
   position: relative;
 }
+
+.threads-pending-run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  color: var(--tv-muted);
+  font-size: 13px;
+  animation: fade-in 0.2s ease;
+}
+
+.pending-run-dot {
+  color: var(--tv-button);
+  animation: pulse 1.4s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

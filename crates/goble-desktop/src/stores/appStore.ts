@@ -89,6 +89,7 @@ interface AppState {
   participantsPanelOpen: boolean;
   threadRepliesOpen: Record<string, boolean>;
   threadEmojiPickerForMessageId: string | null;
+  threadPendingRuns: Record<string, { agentId: string; name: string }[]>;
 
   selectedFlowId: string | null;
   isWorkflowDrawerOpen: boolean;
@@ -153,6 +154,8 @@ interface AppState {
   setParticipantsPanelOpen: (open: boolean) => void;
   setThreadRepliesOpen: (messageId: string, open: boolean) => void;
   setThreadEmojiPickerForMessageId: (id: string | null) => void;
+  addThreadPendingRun: (threadId: string, agentId: string, name: string) => void;
+  removeThreadPendingRun: (threadId: string, agentId: string) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -182,6 +185,7 @@ export const useStore = create<AppState>((set) => ({
   participantsPanelOpen: false,
   threadRepliesOpen: {},
   threadEmojiPickerForMessageId: null,
+  threadPendingRuns: {},
 
   selectedFlowId: null,
   isWorkflowDrawerOpen: false,
@@ -357,6 +361,24 @@ export const useStore = create<AppState>((set) => ({
       threadRepliesOpen: { ...state.threadRepliesOpen, [messageId]: open },
     })),
   setThreadEmojiPickerForMessageId: (threadEmojiPickerForMessageId) => set({ threadEmojiPickerForMessageId }),
+  addThreadPendingRun: (threadId, agentId, name) =>
+    set((state) => {
+      const existing = state.threadPendingRuns[threadId] || [];
+      if (existing.some((r) => r.agentId === agentId)) return state;
+      return {
+        threadPendingRuns: {
+          ...state.threadPendingRuns,
+          [threadId]: [...existing, { agentId, name }],
+        },
+      };
+    }),
+  removeThreadPendingRun: (threadId, agentId) =>
+    set((state) => ({
+      threadPendingRuns: {
+        ...state.threadPendingRuns,
+        [threadId]: (state.threadPendingRuns[threadId] || []).filter((r) => r.agentId !== agentId),
+      },
+    })),
 }));
 
 getUserProfile().then((profile: UserProfile | null) => {

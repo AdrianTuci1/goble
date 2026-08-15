@@ -61,6 +61,9 @@ export default function ThreadsPage() {
   const threadEmojiPickerForMessageId = useStore((s) => s.threadEmojiPickerForMessageId);
   const setThreadEmojiPickerForMessageId = useStore((s) => s.setThreadEmojiPickerForMessageId);
   const markThreadReadLocal = useStore((s) => s.markThreadRead);
+  const addThreadPendingRun = useStore((s) => s.addThreadPendingRun);
+  const removeThreadPendingRun = useStore((s) => s.removeThreadPendingRun);
+  const threadPendingRuns = useStore((s) => s.threadPendingRuns);
 
   const [input, setInput] = useState('');
   const [mentionQuery, setMentionQuery] = useState('');
@@ -244,10 +247,13 @@ export default function ThreadsPage() {
       for (const mentionId of mentions) {
         const agent = agents.find((a) => a.spec.id['0'] === mentionId);
         if (agent) {
+          addThreadPendingRun(activeThreadId, mentionId, agent.name);
           try {
             await runAgentForThreadReply(runtimeTarget, activeThreadId, mentionId, text);
           } catch {
-            // Worker may not be reachable; ignore.
+            // Worker may not be reachable; leave pending to be cleared by user? We'll clear after timeout below.
+          } finally {
+            setTimeout(() => removeThreadPendingRun(activeThreadId, mentionId), 3000);
           }
         }
       }
@@ -530,6 +536,16 @@ export default function ThreadsPage() {
                 <div className="threads-empty">No messages yet</div>
               ) : (
                 messages.filter((m) => !m.reply_to).map((msg) => renderMessage(msg))
+              )}
+              {activeThreadId && (threadPendingRuns[activeThreadId] ?? []).length > 0 && (
+                <div className="threads-pending-run">
+                  {(threadPendingRuns[activeThreadId] ?? []).map((r) => (
+                    <span key={r.agentId} className="pending-run-dot">●</span>
+                  ))}
+                  <span className="pending-run-label">
+                    {(threadPendingRuns[activeThreadId] ?? []).map((r) => r.name).join(', ')} is thinking…
+                  </span>
+                </div>
               )}
               <div ref={messagesEndRef} />
             </div>

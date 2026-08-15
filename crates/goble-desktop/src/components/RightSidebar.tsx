@@ -174,45 +174,10 @@ function AgentInfoPanel({ agent }: { agent: AgentInfo }) {
 }
 
 function HistoryPanel() {
+  const navigate = useNavigate();
   const executions = useStore((s) => s.executions);
-  const historyDetailId = useStore((s) => s.historyDetailId);
-  const setHistoryDetailId = useStore((s) => s.setHistoryDetailId);
+  const setSelectedTraceId = useStore((s) => s.setSelectedTraceId);
   const agents = useStore((s) => s.agents);
-  const workers = useStore((s) => s.workers);
-
-  const exec = historyDetailId ? executions.find((e) => e.id === historyDetailId) || null : null;
-
-  if (exec) {
-    return (
-      <>
-        <button className="back-btn" onClick={() => setHistoryDetailId(null)}>← Back</button>
-        <div className="panel-section">
-          <div className="panel-label">Execution</div>
-          <div className="panel-value">{exec.id}</div>
-        </div>
-        <div className="panel-section">
-          <div className="panel-label">Status</div>
-          <div className="panel-value">{exec.status}</div>
-        </div>
-        <div className="panel-section">
-          <div className="panel-label">Started</div>
-          <div className="panel-value">{formatTime(exec.started_at)}</div>
-        </div>
-        <div className="panel-section">
-          <div className="panel-label">Agent</div>
-          <div className="panel-value">
-            {agents.find((a) => a.id === exec.agent_id)?.name || exec.agent_id || '-'}
-          </div>
-        </div>
-        <div className="panel-section">
-          <div className="panel-label">Worker</div>
-          <div className="panel-value">
-            {workers.find((w) => w.id === exec.worker_id)?.name || exec.worker_id || '-'}
-          </div>
-        </div>
-      </>
-    );
-  }
 
   if (executions.length === 0) {
     return <div className="panel-placeholder">No executions yet</div>;
@@ -221,21 +186,51 @@ function HistoryPanel() {
   const sorted = [...executions].sort(
     (a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()
   );
+  const running = sorted.filter((e) => e.status.toLowerCase() === 'running' || e.status.toLowerCase() === 'pending');
+  const completed = sorted.filter((e) => e.status.toLowerCase() !== 'running' && e.status.toLowerCase() !== 'pending');
+
+  function openTrace(id: string) {
+    setSelectedTraceId(id);
+    navigate('/traces');
+  }
 
   return (
     <div className="panel-history-list">
-      {sorted.slice(0, 50).map((e) => (
-        <button
-          key={e.id}
-          className="panel-history-item"
-          onClick={() => setHistoryDetailId(e.id)}
-        >
-          <span className="panel-history-time">{formatTime(e.started_at)}</span>
-          <span className="panel-history-label">
-            {agents.find((a) => a.id === e.agent_id)?.name || e.id} — {e.status}
-          </span>
-        </button>
-      ))}
+      {running.length > 0 && (
+        <>
+          <div className="panel-section-label">Running</div>
+          {running.map((e) => (
+            <button
+              key={e.id}
+              className="panel-history-item running"
+              onClick={() => openTrace(e.id)}
+            >
+              <span className="panel-history-pulse" />
+              <span className="panel-history-time">{formatTime(e.started_at)}</span>
+              <span className="panel-history-label">
+                {agents.find((a) => a.id === e.agent_id)?.name || e.id}
+              </span>
+            </button>
+          ))}
+        </>
+      )}
+      {completed.length > 0 && (
+        <>
+          <div className="panel-section-label">History</div>
+          {completed.slice(0, 50).map((e) => (
+            <button
+              key={e.id}
+              className="panel-history-item"
+              onClick={() => openTrace(e.id)}
+            >
+              <span className="panel-history-time">{formatTime(e.started_at)}</span>
+              <span className="panel-history-label">
+                {agents.find((a) => a.id === e.agent_id)?.name || e.id} — {e.status}
+              </span>
+            </button>
+          ))}
+        </>
+      )}
     </div>
   );
 }

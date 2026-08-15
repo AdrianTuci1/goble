@@ -238,3 +238,29 @@
   color: #fff;
   cursor: pointer;
 }
+
+.panel-section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--tv-muted);
+  padding: 8px 12px 4px;
+}
+
+.panel-history-item.running {
+  color: var(--tv-button, #2563eb);
+}
+
+.panel-history-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tv-button, #2563eb);
+  animation: pulse 1.4s infinite;
+  flex-shrink: 0;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1); }
+}

@@ -439,13 +439,7 @@ impl Store {
         }
     }
 
-    pub fn update_agent(
-        &self,
-        id: &str,
-        name: &str,
-        spec: &str,
-        updated_at: &str,
-    ) -> Result<()> {
+    pub fn update_agent(&self, id: &str, name: &str, spec: &str, updated_at: &str) -> Result<()> {
         self.conn.lock().execute(
             "UPDATE agents SET name = ?2, spec = ?3, updated_at = ?4 WHERE id = ?1",
             params![id, name, spec, updated_at],
@@ -1646,15 +1640,24 @@ mod tests {
         assert_eq!(opened, identity);
     }
 
-
     #[test]
     fn update_agent_changes_name_and_spec() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("store.db")).unwrap();
         let id = "agent-1";
-        store.insert_agent(id, "Old", "{}", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z").unwrap();
+        store
+            .insert_agent(
+                id,
+                "Old",
+                "{}",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:00Z",
+            )
+            .unwrap();
         let spec = r#"{"prompt":"hello"}"#;
-        store.update_agent(id, "New", spec, "2024-02-01T00:00:00Z").unwrap();
+        store
+            .update_agent(id, "New", spec, "2024-02-01T00:00:00Z")
+            .unwrap();
         let agent = store.get_agent(id).unwrap().unwrap();
         assert_eq!(agent.1, "New");
         assert_eq!(agent.2, spec);

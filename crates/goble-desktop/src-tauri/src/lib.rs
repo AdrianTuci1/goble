@@ -1,23 +1,22 @@
 // Tauri + React application entry
 // This crate is not included in the Cargo workspace because it is a Tauri project.
 use goble_core::agent::{AgentId, Trigger};
+use goble_core::execution::ExecutionTrace;
+use goble_core::harness::Harness;
 use goble_core::mcp_manager::McpServerSummary;
 use goble_core::mcp_registry::McpSearchResult;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use goble_core::harness::Harness;
 use goble_core::protocol::DesktopMessage;
 use goble_core::store::Store;
 use goble_core::worker::WorkerId;
 use goble_core::workflow::{WorkflowId, WorkflowStep};
-use goble_core::execution::ExecutionTrace;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-pub mod state;
 pub mod ssh_installer;
+pub mod state;
 pub mod thread_store;
 pub mod worker_manager;
-
 
 #[derive(Deserialize)]
 struct AddWorkerRequest {
@@ -256,8 +255,9 @@ pub struct ClusterHelmInstallRequest {
     pub local_chart: Option<String>,
 }
 
-static HARNESS_CANCEL: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>> =
-    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static HARNESS_CANCEL: once_cell::sync::Lazy<
+    std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 #[tauri::command]
 fn list_workers(
@@ -271,7 +271,9 @@ fn install_worker(
     req: InstallWorkerRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<ssh_installer::WorkerInstallResult, String> {
-    let cluster = state.get_cluster_identity().ok_or("no cluster identity configured")?;
+    let cluster = state
+        .get_cluster_identity()
+        .ok_or("no cluster identity configured")?;
     let creds = ssh_installer::SshCredentials {
         host: req.host,
         user: req.user,
@@ -335,16 +337,12 @@ fn unlock_cluster_identity(
 }
 
 #[tauri::command]
-fn has_cluster_identity(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<bool, String> {
+fn has_cluster_identity(state: tauri::State<'_, Arc<state::DesktopState>>) -> Result<bool, String> {
     Ok(state.has_stored_cluster_identity())
 }
 
 #[tauri::command]
-fn export_cluster_key(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<String, String> {
+fn export_cluster_key(state: tauri::State<'_, Arc<state::DesktopState>>) -> Result<String, String> {
     state.export_cluster_key().map_err(|e| e.to_string())
 }
 
@@ -458,7 +456,9 @@ fn create_chat(
     model: Option<String>,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<String, String> {
-    state.create_chat(&title, provider.as_deref(), model.as_deref()).map_err(|e| e.to_string())
+    state
+        .create_chat(&title, provider.as_deref(), model.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -473,7 +473,9 @@ fn chat_messages(
     chat_id: String,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<Vec<state::ChatMessage>, String> {
-    state.list_chat_messages(&chat_id).map_err(|e| e.to_string())
+    state
+        .list_chat_messages(&chat_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -515,7 +517,9 @@ fn delete_agent(
     agent_id: String,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<(), String> {
-    state.delete_agent(&AgentId(agent_id)).map_err(|e| e.to_string())
+    state
+        .delete_agent(&AgentId(agent_id))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -620,7 +624,9 @@ fn unlock_vault(
     req: UnlockVaultRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<Vec<String>, String> {
-    let res = state.unlock_vault(req.passphrase).map_err(|e| e.to_string())?;
+    let res = state
+        .unlock_vault(req.passphrase)
+        .map_err(|e| e.to_string())?;
     Arc::clone(&state).restore_clients();
     Ok(res)
 }
@@ -630,7 +636,8 @@ fn set_chat_model(
     req: SetChatModelRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<(), String> {
-    state.set_chat_model(&req.chat_id, &req.provider, &req.model)
+    state
+        .set_chat_model(&req.chat_id, &req.provider, &req.model)
         .map_err(|e| e.to_string())
 }
 
@@ -640,7 +647,13 @@ fn set_llm_setting(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<(), String> {
     state
-        .set_llm_setting(&req.provider, &req.api_key, req.base_url.as_deref(), &req.model, req.temperature)
+        .set_llm_setting(
+            &req.provider,
+            &req.api_key,
+            req.base_url.as_deref(),
+            &req.model,
+            req.temperature,
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -658,14 +671,17 @@ fn list_harness_tools() -> Result<Vec<goble_core::harness::ToolSchema>, String> 
     Ok(harness.list_tools())
 }
 
-
 #[tauri::command]
 fn run_agent(
     req: RunAgentRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<(), String> {
     let worker_id = state
-        .resolve_worker_for_target(&req.target.kind, req.target.tag.as_deref(), req.target.worker_id.as_deref())
+        .resolve_worker_for_target(
+            &req.target.kind,
+            req.target.tag.as_deref(),
+            req.target.worker_id.as_deref(),
+        )
         .map_err(|e| e.to_string())?;
     let agent_id = AgentId(req.agent_id);
     state
@@ -679,7 +695,11 @@ fn run_agent_for_thread_reply(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<(), String> {
     let worker_id = state
-        .resolve_worker_for_target(&req.target.kind, req.target.tag.as_deref(), req.target.worker_id.as_deref())
+        .resolve_worker_for_target(
+            &req.target.kind,
+            req.target.tag.as_deref(),
+            req.target.worker_id.as_deref(),
+        )
         .map_err(|e| e.to_string())?;
     let agent_id = AgentId(req.agent_id);
     state
@@ -710,7 +730,12 @@ fn update_thread_message(
             req.content,
         )
         .map_err(|e| e.to_string())?;
-    state.emit("thread:messages:updated", ThreadUpdatedPayload { thread_id: req.thread_id });
+    state.emit(
+        "thread:messages:updated",
+        ThreadUpdatedPayload {
+            thread_id: req.thread_id,
+        },
+    );
     Ok(ThreadMessageSummary::from(msg))
 }
 
@@ -731,7 +756,12 @@ fn delete_thread_message(
             &goble_core::thread::ParticipantId::user(me.id.0.clone()),
         )
         .map_err(|e| e.to_string())?;
-    state.emit("thread:messages:updated", ThreadUpdatedPayload { thread_id: req.thread_id });
+    state.emit(
+        "thread:messages:updated",
+        ThreadUpdatedPayload {
+            thread_id: req.thread_id,
+        },
+    );
     Ok(())
 }
 
@@ -771,7 +801,14 @@ fn install_mcp_server(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<String, String> {
     state
-        .install_mcp_server(&req.id, &req.name, &req.source, req.source_value.as_deref(), req.secret_ids, None)
+        .install_mcp_server(
+            &req.id,
+            &req.name,
+            &req.source,
+            req.source_value.as_deref(),
+            req.secret_ids,
+            None,
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -781,7 +818,13 @@ fn update_mcp_server(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<String, String> {
     state
-        .update_mcp_server(&req.id, req.name.as_deref(), req.source_value.as_deref(), Some(req.secret_ids), None)
+        .update_mcp_server(
+            &req.id,
+            req.name.as_deref(),
+            req.source_value.as_deref(),
+            Some(req.secret_ids),
+            None,
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -791,10 +834,7 @@ fn update_mcp_server_meta(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<String, String> {
     state
-        .update_mcp_server_meta(&req.id,
-            req.secret_ids,
-            req.enabled_tools,
-        )
+        .update_mcp_server_meta(&req.id, req.secret_ids, req.enabled_tools)
         .map_err(|e| e.to_string())
 }
 
@@ -827,7 +867,11 @@ fn test_call_mcp_tool(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<serde_json::Value, String> {
     state
-        .test_call_mcp_tool(&req.id, &req.tool_name, req.arguments.unwrap_or(serde_json::json!({})))
+        .test_call_mcp_tool(
+            &req.id,
+            &req.tool_name,
+            req.arguments.unwrap_or(serde_json::json!({})),
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -843,15 +887,22 @@ fn run_harness(
     req: RunHarnessRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<(), String> {
-    use goble_core::harness::{HarnessEvent, SandboxedCommandRunner};
     use futures::StreamExt;
+    use goble_core::harness::{HarnessEvent, SandboxedCommandRunner};
 
     let (llm, model_name) = state.resolve_llm_provider(&req.provider, &req.model);
 
-    let provider_name = if req.provider.is_empty() { "openai" } else { &req.provider };
+    let provider_name = if req.provider.is_empty() {
+        "openai"
+    } else {
+        &req.provider
+    };
     let deploy_state = Arc::clone(&state);
     let cancel = Arc::new(AtomicBool::new(false));
-    HARNESS_CANCEL.lock().unwrap().insert(req.chat_id.clone(), cancel.clone());
+    HARNESS_CANCEL
+        .lock()
+        .unwrap()
+        .insert(req.chat_id.clone(), cancel.clone());
     let harness = Harness::new(state.store_clone())
         .with_llm(llm)
         .with_runner(Arc::new(SandboxedCommandRunner::default_tools()))
@@ -876,7 +927,6 @@ fn run_harness(
     });
     Ok(())
 }
-
 
 #[derive(Deserialize)]
 pub struct CreateThreadRequest {
@@ -945,7 +995,11 @@ impl From<goble_core::thread::ThreadMessage> for ThreadMessageSummary {
             content: m.content,
             reply_to: m.reply_to.map(|r| r.0),
             tags: m.tags,
-            participant_mentions: m.participant_mentions.iter().map(|p| p.to_string()).collect(),
+            participant_mentions: m
+                .participant_mentions
+                .iter()
+                .map(|p| p.to_string())
+                .collect(),
             reactions: m
                 .reactions
                 .into_iter()
@@ -960,7 +1014,6 @@ impl From<goble_core::thread::ThreadMessage> for ThreadMessageSummary {
     }
 }
 
-
 #[tauri::command]
 #[allow(dead_code)]
 fn migrate_legacy_chats_to_threads(
@@ -969,9 +1022,7 @@ fn migrate_legacy_chats_to_threads(
     state.migrate_legacy_chats_to_threads()
 }
 #[tauri::command]
-fn list_threads(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Vec<ThreadSummary> {
+fn list_threads(state: tauri::State<'_, Arc<state::DesktopState>>) -> Vec<ThreadSummary> {
     state
         .thread_store()
         .list_threads_with_read_status()
@@ -992,10 +1043,17 @@ fn create_thread(
         .thread_store()
         .get_profile()
         .map(|p| goble_core::thread::UserId(p.id.to_string()))
-        .unwrap_or_else(|| goble_core::thread::UserId::generate());
+        .unwrap_or_else(goble_core::thread::UserId::generate);
     let thread = state
         .thread_store()
-        .create_thread(req.kind, req.title, owner_id, req.is_private, req.participants, req.tags)
+        .create_thread(
+            req.kind,
+            req.title,
+            owner_id,
+            req.is_private,
+            req.participants,
+            req.tags,
+        )
         .map(ThreadSummary::from)
         .map_err(|e| e.to_string())?;
     state.emit("threads:updated", ());
@@ -1008,11 +1066,10 @@ pub struct ThreadIdRequest {
 }
 
 #[tauri::command]
-fn delete_thread(
-    req: ThreadIdRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> bool {
-    state.thread_store().delete_thread(&goble_core::thread::ThreadId(req.thread_id))
+fn delete_thread(req: ThreadIdRequest, state: tauri::State<'_, Arc<state::DesktopState>>) -> bool {
+    state
+        .thread_store()
+        .delete_thread(&goble_core::thread::ThreadId(req.thread_id))
 }
 
 #[derive(Deserialize)]
@@ -1028,7 +1085,10 @@ fn add_thread_participant(
 ) -> Result<(), String> {
     state
         .thread_store()
-        .add_participant(&goble_core::thread::ThreadId(req.thread_id), req.participant)
+        .add_participant(
+            &goble_core::thread::ThreadId(req.thread_id),
+            req.participant,
+        )
         .map_err(|e| e.to_string())?;
     state.emit("threads:updated", ());
     Ok(())
@@ -1075,10 +1135,14 @@ fn get_thread_messages(
     state
         .thread_store()
         .list_messages(&goble_core::thread::ThreadId(req.thread_id))
-        .map(|messages| messages.into_iter().map(ThreadMessageSummary::from).collect())
+        .map(|messages| {
+            messages
+                .into_iter()
+                .map(ThreadMessageSummary::from)
+                .collect()
+        })
         .map_err(|e| e.to_string())
 }
-
 
 #[derive(Deserialize)]
 pub struct InviteUserByPublicKeyRequest {
@@ -1130,8 +1194,12 @@ fn post_thread_message(
     let author = state
         .thread_store()
         .get_profile()
-        .map(|p| goble_core::thread::Participant::User(goble_core::thread::UserId(p.id.to_string())))
-        .unwrap_or_else(|| goble_core::thread::Participant::User(goble_core::thread::UserId::generate()));
+        .map(|p| {
+            goble_core::thread::Participant::User(goble_core::thread::UserId(p.id.to_string()))
+        })
+        .unwrap_or_else(|| {
+            goble_core::thread::Participant::User(goble_core::thread::UserId::generate())
+        });
     let reply_to = req.reply_to.map(goble_core::thread::MessageId);
     let mentions = req
         .mentions
@@ -1152,8 +1220,19 @@ fn post_thread_message(
         )
         .map(ThreadMessageSummary::from)
         .map_err(|e| e.to_string())?;
-    state.emit("thread:message:created", ThreadMessageCreatedPayload { thread_id: req.thread_id.clone(), message: message.clone() });
-    state.emit("thread:messages:updated", ThreadMessagesUpdatedPayload { thread_id: req.thread_id });
+    state.emit(
+        "thread:message:created",
+        ThreadMessageCreatedPayload {
+            thread_id: req.thread_id.clone(),
+            message: message.clone(),
+        },
+    );
+    state.emit(
+        "thread:messages:updated",
+        ThreadMessagesUpdatedPayload {
+            thread_id: req.thread_id,
+        },
+    );
     Ok(message)
 }
 
@@ -1178,7 +1257,12 @@ fn mark_thread_read(
         .thread_store()
         .mark_thread_read(&goble_core::thread::ThreadId(thread_id))
         .map_err(|e| e.to_string())?;
-    state.emit("thread:updated", ThreadUpdatedPayload { thread_id: req.thread_id });
+    state.emit(
+        "thread:updated",
+        ThreadUpdatedPayload {
+            thread_id: req.thread_id,
+        },
+    );
     Ok(())
 }
 
@@ -1208,7 +1292,11 @@ fn add_thread_reaction(
         .thread_store()
         .get_profile()
         .map(|p| goble_core::thread::ParticipantId::user(p.id.to_string()))
-        .unwrap_or_else(|| goble_core::thread::ParticipantId::user(goble_core::thread::UserId::generate().to_string()));
+        .unwrap_or_else(|| {
+            goble_core::thread::ParticipantId::user(
+                goble_core::thread::UserId::generate().to_string(),
+            )
+        });
     state
         .thread_store()
         .add_reaction(
@@ -1218,7 +1306,12 @@ fn add_thread_reaction(
             req.emoji,
         )
         .map_err(|e| e.to_string())?;
-    state.emit("thread:messages:updated", ThreadMessagesUpdatedPayload { thread_id: req.thread_id });
+    state.emit(
+        "thread:messages:updated",
+        ThreadMessagesUpdatedPayload {
+            thread_id: req.thread_id,
+        },
+    );
     Ok(())
 }
 
@@ -1231,7 +1324,11 @@ fn remove_thread_reaction(
         .thread_store()
         .get_profile()
         .map(|p| goble_core::thread::ParticipantId::user(p.id.to_string()))
-        .unwrap_or_else(|| goble_core::thread::ParticipantId::user(goble_core::thread::UserId::generate().to_string()));
+        .unwrap_or_else(|| {
+            goble_core::thread::ParticipantId::user(
+                goble_core::thread::UserId::generate().to_string(),
+            )
+        });
     state
         .thread_store()
         .remove_reaction(
@@ -1241,7 +1338,12 @@ fn remove_thread_reaction(
             &req.emoji,
         )
         .map_err(|e| e.to_string())?;
-    state.emit("thread:messages:updated", ThreadMessagesUpdatedPayload { thread_id: req.thread_id });
+    state.emit(
+        "thread:messages:updated",
+        ThreadMessagesUpdatedPayload {
+            thread_id: req.thread_id,
+        },
+    );
     Ok(())
 }
 
@@ -1280,7 +1382,10 @@ fn set_user_profile(
     if let Some(pem) = req.public_key_pem {
         profile = profile.with_public_key(pem);
     }
-    state.thread_store().set_profile(profile).map_err(|e| e.to_string())
+    state
+        .thread_store()
+        .set_profile(profile)
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Deserialize)]
@@ -1304,24 +1409,19 @@ fn add_authorized_key(
     req: AuthorizedKeyRequest,
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<(), String> {
-    let mut key = goble_core::user::AuthorizedKey::new(
-        req.id,
-        req.name,
-        req.public_key_pem,
-        req.fingerprint,
-    );
+    let mut key =
+        goble_core::user::AuthorizedKey::new(req.id, req.name, req.public_key_pem, req.fingerprint);
     key.thread_ids = req.thread_ids;
-    state.thread_store().add_authorized_key(key).map_err(|e| e.to_string())
+    state
+        .thread_store()
+        .add_authorized_key(key)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn remove_authorized_key(
-    id: String,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> bool {
+fn remove_authorized_key(id: String, state: tauri::State<'_, Arc<state::DesktopState>>) -> bool {
     state.thread_store().remove_authorized_key(&id)
 }
-
 
 pub fn run() {
     let state = state::DesktopState::open_default().expect("open store");

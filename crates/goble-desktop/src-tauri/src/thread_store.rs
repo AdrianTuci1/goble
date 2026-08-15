@@ -3,14 +3,14 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use goble_core::principal::PrincipalId;
-use sha2::{Digest, Sha256};
 use goble_core::thread::{
-    MessageId, Participant, ParticipantId, Reaction, Thread, ThreadError, ThreadKind,
-    ThreadMessage, ThreadId, UserId,
+    MessageId, Participant, ParticipantId, Reaction, Thread, ThreadError, ThreadId, ThreadKind,
+    ThreadMessage, UserId,
 };
 use goble_core::user::{AuthorizedKey, UserError, UserProfile};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 const THREADS_FILE: &str = "threads.json";
 const MESSAGES_DIR: &str = "messages";
@@ -169,10 +169,7 @@ impl ThreadStore {
         Ok(())
     }
 
-    pub fn list_participants(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Result<Vec<Participant>, ThreadError> {
+    pub fn list_participants(&self, thread_id: &ThreadId) -> Result<Vec<Participant>, ThreadError> {
         self.get_thread(thread_id).map(|t| t.participants)
     }
 
@@ -239,6 +236,7 @@ impl ThreadStore {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn post_message(
         &self,
         thread_id: &ThreadId,
@@ -390,11 +388,16 @@ impl ThreadStore {
         let mut mentions = Vec::new();
         for word in content.split_whitespace() {
             if let Some(stripped) = word.strip_prefix("@user:") {
-                mentions.push(ParticipantId::user(stripped.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')));
+                mentions.push(ParticipantId::user(stripped.trim_end_matches(|c: char| {
+                    !c.is_alphanumeric() && c != '-' && c != '_'
+                })));
             } else if let Some(stripped) = word.strip_prefix("@agent:") {
-                mentions.push(ParticipantId::agent(stripped.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')));
-            } else if word.starts_with("@") {
-                let raw = word[1..].trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+                mentions.push(ParticipantId::agent(stripped.trim_end_matches(
+                    |c: char| !c.is_alphanumeric() && c != '-' && c != '_',
+                )));
+            } else if let Some(stripped) = word.strip_prefix("@") {
+                let raw = stripped
+                    .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
                 if !raw.is_empty() && !raw.contains(':') {
                     mentions.push(ParticipantId::agent(raw));
                 }
@@ -420,7 +423,7 @@ impl ThreadStore {
                 kind: ThreadKind::Chat,
                 title: chat.title,
                 owner_id: owner_id.clone(),
-            is_private: false,
+                is_private: false,
                 participants: vec![Participant::User(owner_id.clone())],
                 tags: Vec::new(),
                 created_at: Utc::now(),
@@ -434,9 +437,7 @@ impl ThreadStore {
                 .map(|m| {
                     let role = m.role.to_lowercase();
                     let author = if role == "assistant" {
-                        Participant::Agent(goble_core::agent::AgentId(
-                            "goble_default".to_string(),
-                        ))
+                        Participant::Agent(goble_core::agent::AgentId("goble_default".to_string()))
                     } else {
                         Participant::User(owner_id.clone())
                     };
@@ -488,7 +489,7 @@ impl ThreadStore {
                     .join(MESSAGES_DIR)
                     .join(format!("{}.jsonl", thread_id)),
                 list.iter()
-                    .map(|m| serde_json::to_string(m))
+                    .map(serde_json::to_string)
                     .collect::<Result<Vec<_>, _>>()?
                     .join("\n"),
             )?;
@@ -569,7 +570,8 @@ impl ThreadStore {
         public_key_pem: impl Into<String>,
         name: impl Into<String>,
     ) -> Result<Participant, ThreadError> {
-        let participant = self.resolve_user_by_public_key(public_key_pem, name)
+        let participant = self
+            .resolve_user_by_public_key(public_key_pem, name)
             .map_err(|_| ThreadError::Unauthorized)?;
         self.add_participant(thread_id, participant.clone())?;
         Ok(participant)
@@ -607,7 +609,7 @@ pub struct LegacyChat {
 fn fingerprint(pem: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(pem.trim().as_bytes());
-    format!("{}", hex::encode(hasher.finalize()))
+    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]
@@ -618,8 +620,7 @@ mod tests {
     use goble_core::agent::AgentId;
     use goble_core::principal::PrincipalId;
     use goble_core::thread::{
-        MessageId, Participant, ParticipantId, Thread, ThreadError, ThreadId, ThreadKind,
-        UserId,
+        MessageId, Participant, ParticipantId, Thread, ThreadError, ThreadId, ThreadKind, UserId,
     };
     use goble_core::user::{AuthorizedKey, UserError, UserProfile};
 
@@ -759,8 +760,7 @@ mod tests {
             Some(missing.clone()),
             vec![],
             vec![],
-                        None,
-
+            None,
         );
         assert!(matches!(result, Err(ThreadError::ReplyToNotFound(id)) if id == missing));
     }
@@ -879,14 +879,16 @@ mod tests {
     fn invite_user_by_public_key_adds_participant() {
         let (_dir, store) = tmp_store();
         let owner = owner();
-        let thread = store.create_thread(
-            ThreadKind::Channel,
-            "team",
-            owner.clone(),
-            true,
-            vec![Participant::User(owner.clone())],
-            vec![],
-        ).unwrap();
+        let thread = store
+            .create_thread(
+                ThreadKind::Channel,
+                "team",
+                owner.clone(),
+                true,
+                vec![Participant::User(owner.clone())],
+                vec![],
+            )
+            .unwrap();
         let pem = "-----BEGIN PUBLIC KEY-----\n[REDACTED]\n-----END PUBLIC KEY-----";
         let participant = store
             .invite_user_by_public_key(&thread.id, pem, "Ada")
@@ -905,8 +907,8 @@ mod tests {
             ThreadKind::Direct,
             "private",
             owner.clone(),
-                false,
-                vec![Participant::User(owner.clone())],
+            false,
+            vec![Participant::User(owner.clone())],
             vec![],
         );
         assert!(matches!(
@@ -923,8 +925,8 @@ mod tests {
             ThreadKind::Channel,
             "duplicates",
             owner.clone(),
-                false,
-                vec![
+            false,
+            vec![
                 Participant::User(owner.clone()),
                 Participant::User(owner.clone()),
             ],
@@ -959,7 +961,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn post_message_rejects_non_participant_author() {
         let (_dir, store) = tmp_store();
@@ -981,8 +982,7 @@ mod tests {
             None,
             vec![],
             vec![],
-                        None,
-
+            None,
         );
         assert!(matches!(result, Err(ThreadError::Unauthorized)));
     }
@@ -1004,6 +1004,8 @@ mod tests {
             .unwrap();
         store.add_participant(&channel.id, other.clone()).unwrap();
         let parts = store.list_participants(&channel.id).unwrap();
-        assert!(parts.iter().any(|p| p.participant_id() == other.participant_id()));
+        assert!(parts
+            .iter()
+            .any(|p| p.participant_id() == other.participant_id()));
     }
 }

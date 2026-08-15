@@ -21,13 +21,40 @@ pub struct ExecutionTrace {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TraceEvent {
-    Log { timestamp: DateTime<Utc>, level: LogLevel, message: String },
-    AssistantDelta { timestamp: DateTime<Utc>, delta: String },
-    ToolCallStarted { timestamp: DateTime<Utc>, id: String, name: String, arguments: serde_json::Value },
-    ToolCallFinished { timestamp: DateTime<Utc>, id: String, result: String },
-    ToolCallError { timestamp: DateTime<Utc>, id: String, message: String },
-    AskUser { timestamp: DateTime<Utc>, question: String, quick_replies: Vec<String> },
-    Done { timestamp: DateTime<Utc>, status: ExecutionStatus },
+    Log {
+        timestamp: DateTime<Utc>,
+        level: LogLevel,
+        message: String,
+    },
+    AssistantDelta {
+        timestamp: DateTime<Utc>,
+        delta: String,
+    },
+    ToolCallStarted {
+        timestamp: DateTime<Utc>,
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolCallFinished {
+        timestamp: DateTime<Utc>,
+        id: String,
+        result: String,
+    },
+    ToolCallError {
+        timestamp: DateTime<Utc>,
+        id: String,
+        message: String,
+    },
+    AskUser {
+        timestamp: DateTime<Utc>,
+        question: String,
+        quick_replies: Vec<String>,
+    },
+    Done {
+        timestamp: DateTime<Utc>,
+        status: ExecutionStatus,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

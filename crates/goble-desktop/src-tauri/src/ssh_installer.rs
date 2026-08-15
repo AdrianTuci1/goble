@@ -89,12 +89,18 @@ pub fn install_worker(
     let platform = detect_platform(creds)?;
     let asset_url = resolve_worker_asset(&platform, release_tag, repo)?;
 
-    let local_binary = std::env::temp_dir().join(format!("goblin-{}-{}", release_tag, platform.arch));
+    let local_binary =
+        std::env::temp_dir().join(format!("goblin-{}-{}", release_tag, platform.arch));
     // Download the worker binary locally so we can copy it via the provision transport.
     let download_output = std::process::Command::new("curl")
-        .args(["-fsSL", &asset_url, "-o", &local_binary.display().to_string()])
+        .args([
+            "-fsSL",
+            &asset_url,
+            "-o",
+            &local_binary.display().to_string(),
+        ])
         .output()
-        .map_err(|e| InstallError::Io(e))?;
+        .map_err(InstallError::Io)?;
     if !download_output.status.success() {
         return Err(InstallError::Ssh(format!(
             "failed to download asset: {}",
@@ -109,7 +115,7 @@ pub fn install_worker(
         "-C",
         &std::env::temp_dir().display().to_string(),
     ]);
-    let tar_output = cmd.output().map_err(|e| InstallError::Io(e))?;
+    let tar_output = cmd.output().map_err(InstallError::Io)?;
     if !tar_output.status.success() {
         return Err(InstallError::Ssh(format!(
             "failed to extract asset: {}",

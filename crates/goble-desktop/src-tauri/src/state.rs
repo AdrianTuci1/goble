@@ -1,29 +1,29 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::ThreadSummary;
+use anyhow::Context;
+use base64::Engine;
 use chrono::Utc;
 use goble_core::agent::{AgentId, AgentSpec, Trigger};
-use goble_core::thread::{Participant, ThreadId, ThreadKind, UserId};
-use crate::ThreadSummary;
 use goble_core::cluster_key::{ClusterBackup, ClusterIdentity, ClusterKey};
 use goble_core::encrypted_wallet::IdentityWallet;
-use goble_core::execution::{ExecutionTrace, TraceEvent, LogLevel};
+use goble_core::execution::{ExecutionTrace, LogLevel, TraceEvent};
 use goble_core::identity::ClusterRole;
+use goble_core::llm::{self, CompletionRequest, LlmProvider};
 use goble_core::mcp_client::McpTool;
 use goble_core::mcp_manager::{McpManager, McpServerSummary};
 use goble_core::mcp_registry::McpSearchResult;
 use goble_core::protocol::{DesktopMessage, WorkerMessage};
 use goble_core::store::Store;
+use goble_core::thread::{Participant, ThreadId, ThreadKind, UserId};
 use goble_core::vault::CredentialVault;
-use goble_core::llm::{self, CompletionRequest, LlmProvider};
 use goble_core::worker::{WorkerConfig, WorkerId};
-use base64::Engine;
 use goble_core::worker_pool::{WorkerPool, WorkerPoolStrategy, WorkerSnapshot};
 use goble_core::workflow::{Workflow, WorkflowId, WorkflowStep};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
-use parking_lot::Mutex;
-use anyhow::Context;
 
 use crate::worker_manager::WorkerClient;
 
@@ -158,10 +158,17 @@ pub struct Intent {
 }
 
 fn fallback_mock() -> (Arc<dyn LlmProvider>, String) {
-    (Arc::new(llm::MockProvider::new("mock", llm::CompletionResponse {
-        content: "No LLM provider configured or API key missing. Add one in Settings.".to_string(),
-        tool_calls: Vec::new(),
-    })), "mock".to_string())
+    (
+        Arc::new(llm::MockProvider::new(
+            "mock",
+            llm::CompletionResponse {
+                content: "No LLM provider configured or API key missing. Add one in Settings."
+                    .to_string(),
+                tool_calls: Vec::new(),
+            },
+        )),
+        "mock".to_string(),
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,7 +189,6 @@ pub struct ExecutionInfo {
     pub started_at: String,
     pub finished_at: Option<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 struct ThreadMessagesUpdatedPayload {
@@ -277,11 +283,15 @@ impl DesktopState {
             let code = match self.vault.lock().get(&vault_key, &passphrase) {
                 Ok(Some(v)) => String::from_utf8_lossy(&v).to_string(),
                 Ok(None) => {
-                    self.add_log(format!("no stored pairing code for worker {wid}; skip reconnect"));
+                    self.add_log(format!(
+                        "no stored pairing code for worker {wid}; skip reconnect"
+                    ));
                     continue;
                 }
                 Err(e) => {
-                    self.add_log(format!("failed to decrypt pairing code for worker {wid}: {e}"));
+                    self.add_log(format!(
+                        "failed to decrypt pairing code for worker {wid}: {e}"
+                    ));
                     continue;
                 }
             };
@@ -306,10 +316,19 @@ impl DesktopState {
         if passphrase.is_empty() {
             return;
         }
-        let vault_key = format!("{WORKER_PAIRING_CODE_VAULT_PREFIX}{}:pairing_code", worker_id);
-        let _ = self.vault.lock().set(&vault_key, pairing_code.as_bytes(), &passphrase);
+        let vault_key = format!(
+            "{WORKER_PAIRING_CODE_VAULT_PREFIX}{}:pairing_code",
+            worker_id
+        );
+        let _ = self
+            .vault
+            .lock()
+            .set(&vault_key, pairing_code.as_bytes(), &passphrase);
         if let Ok(bytes) = self.vault.lock().to_bytes() {
-            let _ = self.store.lock().set_setting("vault_blob", &String::from_utf8_lossy(&bytes));
+            let _ = self
+                .store
+                .lock()
+                .set_setting("vault_blob", &String::from_utf8_lossy(&bytes));
         }
     }
 
@@ -342,11 +361,7 @@ impl DesktopState {
         self.cluster_identity.lock().clone()
     }
 
-    pub fn create_cluster(
-        &self,
-        name: &str,
-        passphrase: &str,
-    ) -> anyhow::Result<ClusterIdentity> {
+    pub fn create_cluster(&self, name: &str, passphrase: &str) -> anyhow::Result<ClusterIdentity> {
         let identity = ClusterIdentity::generate(name, &Self::device_id(), ClusterRole::Owner)?;
         self.set_cluster_identity(identity.clone(), passphrase)
     }
@@ -368,10 +383,10 @@ impl DesktopState {
         match wallet {
             Some(wallet) => {
                 let bytes = wallet.open(passphrase.as_bytes())?;
-                let identity_wallet: IdentityWallet =
-                    serde_json::from_slice(&bytes)?;
+                let identity_wallet: IdentityWallet = serde_json::from_slice(&bytes)?;
                 let device_id = Self::device_id();
-                let identity = identity_wallet.to_cluster_identity(&device_id, ClusterRole::Admin)?;
+                let identity =
+                    identity_wallet.to_cluster_identity(&device_id, ClusterRole::Admin)?;
                 *self.cluster_identity.lock() = Some(identity);
                 Ok(true)
             }
@@ -380,7 +395,12 @@ impl DesktopState {
     }
 
     pub fn has_stored_cluster_identity(&self) -> bool {
-        self.store.lock().get_cluster_wallet().ok().flatten().is_some()
+        self.store
+            .lock()
+            .get_cluster_wallet()
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     /// Generate a `helm install` command for a Goblin worker cluster. Requires an
@@ -414,7 +434,9 @@ impl DesktopState {
         let bundle_b64 = base64::engine::general_purpose::STANDARD.encode(bundle_json);
         let cluster_key_b64 = identity.export_key();
 
-        let chart_ref = local_chart.map(|p| format!("{} ", p)).unwrap_or_else(|| "goble/goblin-cluster ".to_string());
+        let chart_ref = local_chart
+            .map(|p| format!("{} ", p))
+            .unwrap_or_else(|| "goble/goblin-cluster ".to_string());
         let mut parts = vec![
             format!("helm install {} ", name),
             chart_ref,
@@ -439,7 +461,10 @@ impl DesktopState {
             parts.push(format!("--set snapshot.accessKeyId={} ", access_key_id));
         }
         if let Some(secret_access_key) = secret_access_key {
-            parts.push(format!("--set snapshot.secretAccessKey={} ", secret_access_key));
+            parts.push(format!(
+                "--set snapshot.secretAccessKey={} ",
+                secret_access_key
+            ));
         }
         if let Some(storage_class) = storage_class {
             parts.push(format!("--set persistence.storageClass={} ", storage_class));
@@ -465,12 +490,7 @@ impl DesktopState {
         *self.vault_passphrase.lock() = passphrase.into_bytes();
     }
 
-    pub fn add_worker(
-        &self,
-        worker_id: WorkerId,
-        name: String,
-        url: String,
-    ) -> anyhow::Result<()> {
+    pub fn add_worker(&self, worker_id: WorkerId, name: String, url: String) -> anyhow::Result<()> {
         let conn = WorkerConnection {
             id: worker_id.to_string(),
             name: name.clone(),
@@ -562,16 +582,27 @@ impl DesktopState {
                 let url = conn.url.clone();
                 let config = match cluster {
                     Some(identity) => {
-                        let bundle = match identity.ca.sign_worker_bundle(&wid.to_string(), &identity.cluster_name, 365) {
+                        let bundle = match identity.ca.sign_worker_bundle(
+                            &wid.to_string(),
+                            &identity.cluster_name,
+                            365,
+                        ) {
                             Ok(b) => b,
                             Err(e) => {
-                                state.add_log(format!("failed to sign worker bundle for {}: {}", wid, e));
+                                state.add_log(format!(
+                                    "failed to sign worker bundle for {}: {}",
+                                    wid, e
+                                ));
                                 return;
                             }
                         };
                         let mut cfg = WorkerConfig::new(&conn_name, &url, "");
                         cfg.id = wid.clone();
-                        cfg.port = url.split(':').last().and_then(|p| p.parse().ok()).unwrap_or(7878);
+                        cfg.port = url
+                            .split(':')
+                            .next_back()
+                            .and_then(|p| p.parse().ok())
+                            .unwrap_or(7878);
                         cfg.worker_bundle = Some(bundle);
                         cfg.desktop_identity = Some(identity.device);
                         cfg
@@ -579,17 +610,23 @@ impl DesktopState {
                     None => {
                         let mut cfg = WorkerConfig::new(&conn_name, &url, "");
                         cfg.id = wid.clone();
-                        cfg.port = url.split(':').last().and_then(|p| p.parse().ok()).unwrap_or(7878);
+                        cfg.port = url
+                            .split(':')
+                            .next_back()
+                            .and_then(|p| p.parse().ok())
+                            .unwrap_or(7878);
                         cfg
                     }
                 };
-                match WorkerClient::connect(state.clone(), wid.clone(), &config, code.clone()).await {
+                match WorkerClient::connect(state.clone(), wid.clone(), &config, code.clone()).await
+                {
                     Ok(client) => {
                         state.clients.lock().insert(wid.clone(), client);
                         if let Some(c) = state.workers.lock().get_mut(&wid) {
                             c.paired = true;
                         }
-                        let config_json = serde_json::to_string(&config).unwrap_or_else(|_| "{}".to_string());
+                        let config_json =
+                            serde_json::to_string(&config).unwrap_or_else(|_| "{}".to_string());
                         let _ = state.store.lock().insert_worker(
                             &wid.to_string(),
                             &conn_name,
@@ -615,11 +652,7 @@ impl DesktopState {
         }
     }
 
-    pub fn send_to_worker(
-        &self,
-        worker_id: &WorkerId,
-        msg: DesktopMessage,
-    ) -> anyhow::Result<()> {
+    pub fn send_to_worker(&self, worker_id: &WorkerId, msg: DesktopMessage) -> anyhow::Result<()> {
         if let Some(client) = self.clients.lock().get(worker_id) {
             let _ = client.send(msg);
             Ok(())
@@ -636,10 +669,8 @@ impl DesktopState {
         worker_id: Option<&str>,
     ) -> anyhow::Result<WorkerId> {
         let all_workers = self.list_workers();
-        let paired_workers: Vec<WorkerConnection> = all_workers
-            .into_iter()
-            .filter(|w| w.paired)
-            .collect();
+        let paired_workers: Vec<WorkerConnection> =
+            all_workers.into_iter().filter(|w| w.paired).collect();
 
         if target_kind == "worker" {
             let id = worker_id.ok_or_else(|| anyhow::anyhow!("worker target missing worker_id"))?;
@@ -689,10 +720,7 @@ impl DesktopState {
                 level,
                 message,
             } => {
-                let entry = format!(
-                    "[{}] [{}] {:?}: {}",
-                    worker_id, trace_id, level, message
-                );
+                let entry = format!("[{}] [{}] {:?}: {}", worker_id, trace_id, level, message);
                 self.add_log(entry);
                 if let Some(exec) = self.executions.lock().get_mut(&trace_id) {
                     let level = match level {
@@ -853,7 +881,12 @@ impl DesktopState {
                 }
                 self.emit("executions:updated", ());
             }
-            WorkerMessage::AgentToolResult { trace_id, step_id, name, result } => {
+            WorkerMessage::AgentToolResult {
+                trace_id,
+                step_id,
+                name,
+                result,
+            } => {
                 self.emit(
                     "agent:tool_result",
                     serde_json::json!({
@@ -865,7 +898,11 @@ impl DesktopState {
                     }),
                 );
             }
-            WorkerMessage::StatusReport { worker_id, status, load } => {
+            WorkerMessage::StatusReport {
+                worker_id,
+                status,
+                load,
+            } => {
                 self.emit(
                     "worker:status",
                     serde_json::json!({
@@ -936,7 +973,10 @@ impl DesktopState {
                     vec![],
                     Some(trace_id.clone()),
                 );
-                self.emit("thread:messages:updated", ThreadMessagesUpdatedPayload { thread_id });
+                self.emit(
+                    "thread:messages:updated",
+                    ThreadMessagesUpdatedPayload { thread_id },
+                );
             }
             _ => {
                 // Ignore unhandled agent runtime and worker message variants for now.
@@ -962,22 +1002,24 @@ impl DesktopState {
         self.add_log(message);
     }
 
-    pub fn add_chat_message(
-        &self,
-        chat_id: &str,
-        role: &str,
-        content: &str,
-    ) -> anyhow::Result<()> {
+    pub fn add_chat_message(&self, chat_id: &str, role: &str, content: &str) -> anyhow::Result<()> {
         let id = uuid::Uuid::new_v4().to_string();
         let created_at = Utc::now().to_rfc3339();
         let tool_calls = if role == "tool" {
-            serde_json::from_str::<Vec<serde_json::Value>>(content).ok().and_then(|v| serde_json::to_string(&v).ok())
+            serde_json::from_str::<Vec<serde_json::Value>>(content)
+                .ok()
+                .and_then(|v| serde_json::to_string(&v).ok())
         } else {
             None
         };
-        self.store
-            .lock()
-            .insert_chat_message(&id, chat_id, role, content, tool_calls.as_deref(), &created_at)?;
+        self.store.lock().insert_chat_message(
+            &id,
+            chat_id,
+            role,
+            content,
+            tool_calls.as_deref(),
+            &created_at,
+        )?;
         self.messages
             .lock()
             .entry(chat_id.to_string())
@@ -992,8 +1034,7 @@ impl DesktopState {
         Ok(())
     }
 
-    pub fn list_chat_messages(&self, chat_id: &str,
-    ) -> anyhow::Result<Vec<ChatMessage>> {
+    pub fn list_chat_messages(&self, chat_id: &str) -> anyhow::Result<Vec<ChatMessage>> {
         let rows = self.store.lock().list_chat_messages(chat_id)?;
         Ok(rows
             .into_iter()
@@ -1010,10 +1051,17 @@ impl DesktopState {
         self.store.lock().clone()
     }
 
-    pub fn create_chat(&self, title: &str, provider: Option<&str>, model: Option<&str>) -> anyhow::Result<String> {
+    pub fn create_chat(
+        &self,
+        title: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+    ) -> anyhow::Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        self.store.lock().insert_chat(&id, title, provider, model, &now, &now)?;
+        self.store
+            .lock()
+            .insert_chat(&id, title, provider, model, &now, &now)?;
         let chat = Chat {
             id: id.clone(),
             title: title.to_string(),
@@ -1057,13 +1105,9 @@ impl DesktopState {
         let id = spec.id.clone();
         let now = Utc::now().to_rfc3339();
         let spec_json = serde_json::to_string(&spec)?;
-        self.store.lock().insert_agent(
-            &id.to_string(),
-            name,
-            &spec_json,
-            &now,
-            &now,
-        )?;
+        self.store
+            .lock()
+            .insert_agent(&id.to_string(), name, &spec_json, &now, &now)?;
         let info = AgentInfo {
             id: id.to_string(),
             name: name.to_string(),
@@ -1099,17 +1143,19 @@ impl DesktopState {
         spec.id = id.clone();
         let now = Utc::now().to_rfc3339();
         let spec_json = serde_json::to_string(&spec)?;
-        self.store.lock().update_agent(
-            &id.to_string(),
-            name,
-            &spec_json,
-            &now,
-        )?;
+        self.store
+            .lock()
+            .update_agent(&id.to_string(), name, &spec_json, &now)?;
         let info = AgentInfo {
             id: id.to_string(),
             name: name.to_string(),
             spec,
-            created_at: self.agents.lock().get(id).map(|a| a.created_at.clone()).unwrap_or_else(|| now.clone()),
+            created_at: self
+                .agents
+                .lock()
+                .get(id)
+                .map(|a| a.created_at.clone())
+                .unwrap_or_else(|| now.clone()),
             updated_at: now,
         };
         self.agents.lock().insert(id.clone(), info.clone());
@@ -1126,7 +1172,10 @@ impl DesktopState {
     }
 
     pub fn get_execution_trace(&self, trace_id: &str) -> Option<ExecutionTrace> {
-        self.executions.lock().get(trace_id).map(|e| e.trace.clone())
+        self.executions
+            .lock()
+            .get(trace_id)
+            .map(|e| e.trace.clone())
     }
 
     pub fn create_workflow(
@@ -1188,9 +1237,7 @@ impl DesktopState {
         agent_ids: Vec<String>,
     ) -> anyhow::Result<TeamInfo> {
         let now = Utc::now().to_rfc3339();
-        self.store
-            .lock()
-            .insert_team(id, name, metadata, &now)?;
+        self.store.lock().insert_team(id, name, metadata, &now)?;
         for agent_id in &agent_ids {
             self.store.lock().insert_team_member(id, agent_id)?;
         }
@@ -1210,11 +1257,7 @@ impl DesktopState {
         self.teams.lock().values().cloned().collect()
     }
 
-    pub fn set_vault_secret(
-        &self,
-        key: &str,
-        value: &str,
-    ) -> anyhow::Result<()> {
+    pub fn set_vault_secret(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let passphrase = self.vault_passphrase.lock().clone();
         if passphrase.is_empty() {
             anyhow::bail!("vault passphrase not set");
@@ -1244,7 +1287,7 @@ impl DesktopState {
             self.vault_passphrase.lock().extend(passphrase.as_bytes());
             // Try to decrypt all entries to verify passphrase
             for key in &keys {
-                if self.vault.lock().get(key, &passphrase.as_bytes()).is_err() {
+                if self.vault.lock().get(key, passphrase.as_bytes()).is_err() {
                     anyhow::bail!("wrong passphrase");
                 }
             }
@@ -1277,7 +1320,9 @@ impl DesktopState {
         model: &str,
         temperature: Option<f32>,
     ) -> anyhow::Result<()> {
-        self.store.lock().set_llm_setting(provider, api_key, base_url, model, temperature)?;
+        self.store
+            .lock()
+            .set_llm_setting(provider, api_key, base_url, model, temperature)?;
         Ok(())
     }
 
@@ -1286,7 +1331,11 @@ impl DesktopState {
         provider_name: &str,
         model_override: &str,
     ) -> (Arc<dyn LlmProvider>, String) {
-        let provider_name = if provider_name.is_empty() { "openai" } else { provider_name };
+        let provider_name = if provider_name.is_empty() {
+            "openai"
+        } else {
+            provider_name
+        };
         match provider_name.to_lowercase().as_str() {
             "openai" | "openrouter" => {
                 let setting = self.get_llm_setting(provider_name);
@@ -1304,7 +1353,11 @@ impl DesktopState {
                         } else {
                             Arc::new(llm::OpenRouterProvider::new(s.api_key))
                         };
-                        let model = if model_override.is_empty() { s.model } else { model_override.to_string() };
+                        let model = if model_override.is_empty() {
+                            s.model
+                        } else {
+                            model_override.to_string()
+                        };
                         return (provider, model);
                     }
                 }
@@ -1314,22 +1367,48 @@ impl DesktopState {
                 let setting = self.get_llm_setting("anthropic");
                 if let Some(s) = setting {
                     if !s.api_key.is_empty() {
-                        return (Arc::new(llm::AnthropicProvider::new(s.api_key)), if model_override.is_empty() { s.model } else { model_override.to_string() });
+                        return (
+                            Arc::new(llm::AnthropicProvider::new(s.api_key)),
+                            if model_override.is_empty() {
+                                s.model
+                            } else {
+                                model_override.to_string()
+                            },
+                        );
                     }
                 }
                 fallback_mock()
             }
             "ollama" => {
                 let setting = self.get_llm_setting("ollama");
-                let base = setting.as_ref().and_then(|s| s.base_url.clone()).unwrap_or_else(|| "http://localhost:11434".to_string());
-                (Arc::new(llm::OllamaProvider::new(base)), if model_override.is_empty() { setting.map(|s| s.model).unwrap_or_default() } else { model_override.to_string() })
+                let base = setting
+                    .as_ref()
+                    .and_then(|s| s.base_url.clone())
+                    .unwrap_or_else(|| "http://localhost:11434".to_string());
+                (
+                    Arc::new(llm::OllamaProvider::new(base)),
+                    if model_override.is_empty() {
+                        setting.map(|s| s.model).unwrap_or_default()
+                    } else {
+                        model_override.to_string()
+                    },
+                )
             }
             "deepseek" => {
                 let setting = self.get_llm_setting("deepseek");
                 if let Some(s) = setting {
                     if !s.api_key.is_empty() {
-                        let base = s.base_url.unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
-                        return (Arc::new(llm::OpenAiProvider::new("deepseek", s.api_key, base)), if model_override.is_empty() { s.model } else { model_override.to_string() });
+                        let base = s
+                            .base_url
+                            .unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
+                        return (
+                            Arc::new(llm::OpenAiProvider::new("deepseek", s.api_key, base)),
+                            if model_override.is_empty() {
+                                s.model
+                            } else {
+                                model_override.to_string()
+                            },
+                        );
                     }
                 }
                 fallback_mock()
@@ -1338,25 +1417,45 @@ impl DesktopState {
         }
     }
 
-    pub async fn classify_intent(&self, provider: &str, model: &str, text: &str) -> anyhow::Result<Intent> {
+    pub async fn classify_intent(
+        &self,
+        provider: &str,
+        model: &str,
+        text: &str,
+    ) -> anyhow::Result<Intent> {
         let (llm, model_name) = self.resolve_llm_provider(provider, model);
         let system = "You are an intent classifier for a desktop AI agent app. The user can ask you to do the following in natural language. Return ONLY a JSON object with no markdown, no explanation.\n\nAvailable intents:\n- chat: general conversation\n- create_agent: user wants to create an agent (extract name, prompt, optional tools)\n- install_mcp: user wants to install an MCP connector (extract source, value)\n- search_mcp: user wants to find an MCP connector (extract query)\n- schedule_agent: user wants to schedule an agent to run repeatedly (extract agent name/id, cron expression)\n- create_workflow: user wants to create a workflow of agents (extract name, cron expression, list of agents by name or id)\n- run_agent: user wants to run an existing agent with a prompt (extract agent name/id, prompt)\n\nReturn JSON shape: {\"intent\": \"...\", \"params\": {\"name\":\"...\", \"prompt\":\"...\", \"tools\":[], \"source\":\"...\", \"value\":\"...\", \"query\":\"...\", \"agent\":\"...\", \"expression\":\"...\", \"agents\":[], \"message\":\"...\"}}".to_string();
         let req = CompletionRequest::new(provider, model_name)
             .with_system(system)
             .with_user(text);
-        let res = llm.complete(req).await.map_err(|e| anyhow::anyhow!("llm error: {e}"))?;
-        let content = res.content.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
-        let intent: Intent = serde_json::from_str(content).map_err(|e| anyhow::anyhow!("parse intent error: {e} from content: {content}"))?;
+        let res = llm
+            .complete(req)
+            .await
+            .map_err(|e| anyhow::anyhow!("llm error: {e}"))?;
+        let content = res
+            .content
+            .trim()
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim();
+        let intent: Intent = serde_json::from_str(content)
+            .map_err(|e| anyhow::anyhow!("parse intent error: {e} from content: {content}"))?;
         Ok(intent)
     }
 
     pub fn get_llm_setting(&self, provider: &str) -> Option<LlmSetting> {
-        self.store.lock().get_llm_setting(provider).ok().flatten().map(|(api_key, base_url, model, temperature)| LlmSetting {
-            api_key,
-            base_url,
-            model,
-            temperature,
-        })
+        self.store
+            .lock()
+            .get_llm_setting(provider)
+            .ok()
+            .flatten()
+            .map(|(api_key, base_url, model, temperature)| LlmSetting {
+                api_key,
+                base_url,
+                model,
+                temperature,
+            })
     }
 
     pub fn run_agent(
@@ -1405,7 +1504,8 @@ impl DesktopState {
     }
 
     /// Resolve MCP servers referenced by an agent spec, substituting vault secrets into the server config.
-    fn resolve_mcp_servers_for_agent(&self,
+    fn resolve_mcp_servers_for_agent(
+        &self,
         spec: &AgentSpec,
     ) -> anyhow::Result<Vec<goble_core::agent::McpServer>> {
         if spec.mcp_ids.is_empty() {
@@ -1454,8 +1554,10 @@ impl DesktopState {
             }
             let mut env = std::collections::HashMap::new();
             for key in &summary.secret_ids {
-                let value = self.vault.lock().get(key, passphrase)?
-                    .context(format!("vault secret {key} missing for mcp server {}", summary.id))?;
+                let value = self.vault.lock().get(key, passphrase)?.context(format!(
+                    "vault secret {key} missing for mcp server {}",
+                    summary.id
+                ))?;
                 env.insert(key.clone(), String::from_utf8_lossy(&value).to_string());
             }
             server.credentials_key = Some(serde_json::to_string(&env)?);
@@ -1463,8 +1565,7 @@ impl DesktopState {
         Ok(server)
     }
 
-    pub fn list_mcp_servers(&self,
-    ) -> Result<Vec<McpServerSummary>, anyhow::Error> {
+    pub fn list_mcp_servers(&self) -> Result<Vec<McpServerSummary>, anyhow::Error> {
         self.mcp_manager.list_mcp_servers(&self.store.lock())
     }
 
@@ -1479,7 +1580,10 @@ impl DesktopState {
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, anyhow::Error> {
         let store = self.store.lock();
-        tauri::async_runtime::block_on(self.mcp_manager.test_call_tool(&store, id, tool_name, arguments))
+        tauri::async_runtime::block_on(
+            self.mcp_manager
+                .test_call_tool(&store, id, tool_name, arguments),
+        )
     }
 
     pub fn install_mcp_server(
@@ -1492,12 +1596,19 @@ impl DesktopState {
         manifest: Option<goble_core::agent::McpManifest>,
     ) -> Result<String, anyhow::Error> {
         let store = self.store.lock().clone();
-        let secrets: Vec<goble_core::secret::Secret> = secret_ids.iter()
+        let secrets: Vec<goble_core::secret::Secret> = secret_ids
+            .iter()
             .map(|name| goble_core::secret::Secret::new(name, "mcp", vec![]))
             .collect();
-        tauri::async_runtime::block_on(
-            self.mcp_manager.install_mcp_server(&store, id, name, source, source_value, &secrets, manifest),
-        )
+        tauri::async_runtime::block_on(self.mcp_manager.install_mcp_server(
+            &store,
+            id,
+            name,
+            source,
+            source_value,
+            &secrets,
+            manifest,
+        ))
     }
 
     pub fn update_mcp_server(
@@ -1509,12 +1620,19 @@ impl DesktopState {
         manifest: Option<goble_core::agent::McpManifest>,
     ) -> Result<String, anyhow::Error> {
         let store = self.store.lock().clone();
-        let secrets = secret_ids.map(|ids| ids.iter()
-            .map(|name| goble_core::secret::Secret::new(name, "mcp", vec![]))
-            .collect::<Vec<_>>());
-        tauri::async_runtime::block_on(
-            self.mcp_manager.update_mcp_server(&store, id, name, source_value, secrets.as_deref(), manifest),
-        )
+        let secrets = secret_ids.map(|ids| {
+            ids.iter()
+                .map(|name| goble_core::secret::Secret::new(name, "mcp", vec![]))
+                .collect::<Vec<_>>()
+        });
+        tauri::async_runtime::block_on(self.mcp_manager.update_mcp_server(
+            &store,
+            id,
+            name,
+            source_value,
+            secrets.as_deref(),
+            manifest,
+        ))
     }
 
     pub fn delete_mcp_server(&self, id: &str) -> Result<String, anyhow::Error> {
@@ -1529,11 +1647,13 @@ impl DesktopState {
         enabled_tools: Vec<String>,
     ) -> Result<String, anyhow::Error> {
         let store = self.store.lock().clone();
-        self.mcp_manager.update_mcp_server_meta(&store, id, &secret_ids, &enabled_tools)
+        self.mcp_manager
+            .update_mcp_server_meta(&store, id, &secret_ids, &enabled_tools)
     }
 
     pub fn discover_mcp_tools(&self, id: &str) -> Result<Vec<McpTool>, anyhow::Error> {
-        self.mcp_manager.discover_and_enable_all(&self.store.lock(), id)?;
+        self.mcp_manager
+            .discover_and_enable_all(&self.store.lock(), id)?;
         self.mcp_manager.discover_and_register(id)
     }
 
@@ -1577,7 +1697,9 @@ impl DesktopState {
 
         let workflows = self.store.lock().list_workflows()?;
         let mut wf_map = self.workflows.lock();
-        for (id, name, description, spec_json, trigger_json, enabled, created_at, updated_at) in workflows {
+        for (id, name, description, spec_json, trigger_json, enabled, created_at, updated_at) in
+            workflows
+        {
             if let (Ok(wf), Ok(trigger)) = (
                 serde_json::from_str::<Workflow>(&spec_json),
                 serde_json::from_str::<Trigger>(&trigger_json),
@@ -1667,7 +1789,6 @@ impl DesktopState {
     }
 
     /// Convert legacy chat conversations into threads with a single participant (the user).
-
     pub fn run_agent_for_thread_reply(
         &self,
         worker_id: &WorkerId,
@@ -1727,7 +1848,9 @@ impl DesktopState {
                     let author = if msg.role == "user" {
                         Participant::User(owner.clone())
                     } else {
-                        Participant::Agent(AgentId(conv.agent_id.clone().unwrap_or_else(|| "agent".to_string())))
+                        Participant::Agent(AgentId(
+                            conv.agent_id.clone().unwrap_or_else(|| "agent".to_string()),
+                        ))
                     };
                     let _ = self.thread_store().post_message(
                         &thread.id,
@@ -1750,13 +1873,19 @@ impl DesktopState {
 mod tests {
     use super::*;
 
-
     #[test]
     fn test_state_add_worker() {
-        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
+        let state = DesktopState::new(
+            Store::open_in_memory().unwrap(),
+            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+        );
         let wid = WorkerId::generate();
         state
-            .add_worker(wid.clone(), "vps".to_string(), "wss://localhost:8787/ws".to_string())
+            .add_worker(
+                wid.clone(),
+                "vps".to_string(),
+                "wss://localhost:8787/ws".to_string(),
+            )
             .unwrap();
         let workers = state.list_workers();
         assert_eq!(workers.len(), 1);
@@ -1768,7 +1897,10 @@ mod tests {
 
     #[test]
     fn test_state_logs_and_chat() {
-        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
+        let state = DesktopState::new(
+            Store::open_in_memory().unwrap(),
+            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+        );
         state.add_log("hello");
         assert_eq!(state.get_logs().len(), 1);
         let chat_id = state.create_chat("Test chat", None, None).unwrap();
@@ -1783,7 +1915,10 @@ mod tests {
 
     #[test]
     fn test_state_agent_and_workflow() {
-        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
+        let state = DesktopState::new(
+            Store::open_in_memory().unwrap(),
+            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+        );
         let agent = state
             .create_agent("greeter", "say hello", Some("test agent"), vec![])
             .unwrap();
@@ -1808,7 +1943,10 @@ mod tests {
 
     #[test]
     fn test_state_team_and_vault() {
-        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
+        let state = DesktopState::new(
+            Store::open_in_memory().unwrap(),
+            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+        );
         state.set_vault_passphrase("passphrase".to_string());
         state.set_vault_secret("api_key", "sk-123").unwrap();
         assert_eq!(state.list_vault_secrets().len(), 1);
@@ -1820,13 +1958,19 @@ mod tests {
 
     #[test]
     fn test_worker_message_handling() {
-        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
-        let wid = WorkerId::generate();
-        state.add_worker(wid.clone(), "vps".to_string(), "ws://localhost:8787/ws".to_string()).unwrap();
-        state.handle_worker_message(
-            &wid,
-            WorkerMessage::Paired,
+        let state = DesktopState::new(
+            Store::open_in_memory().unwrap(),
+            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
         );
+        let wid = WorkerId::generate();
+        state
+            .add_worker(
+                wid.clone(),
+                "vps".to_string(),
+                "ws://localhost:8787/ws".to_string(),
+            )
+            .unwrap();
+        state.handle_worker_message(&wid, WorkerMessage::Paired);
         assert!(state.list_workers()[0].paired);
         state.handle_worker_message(
             &wid,
@@ -1842,9 +1986,14 @@ mod tests {
 
     #[test]
     fn test_agent_workflow_team_vault_roundtrip() {
-        let state = DesktopState::new(Store::open_in_memory().unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
+        let state = DesktopState::new(
+            Store::open_in_memory().unwrap(),
+            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+        );
         state.set_vault_passphrase("secret".to_string());
-        let agent = state.create_agent("greeter", "say hello", Some("test agent"), vec![]).unwrap();
+        let agent = state
+            .create_agent("greeter", "say hello", Some("test agent"), vec![])
+            .unwrap();
         let step = WorkflowStep {
             id: uuid::Uuid::new_v4().to_string(),
             name: "greet".to_string(),
@@ -1852,11 +2001,20 @@ mod tests {
             input_template: "Greet the user".to_string(),
             depends_on: vec![],
         };
-        let wf = state.create_workflow("hello", "Hello workflow", vec![step], goble_core::agent::Trigger::Manual).unwrap();
+        let wf = state
+            .create_workflow(
+                "hello",
+                "Hello workflow",
+                vec![step],
+                goble_core::agent::Trigger::Manual,
+            )
+            .unwrap();
         assert_eq!(state.list_agents().len(), 1);
         assert_eq!(state.list_workflows().len(), 1);
 
-        state.create_team("team1", "Platform", "{}", vec![agent.id.clone()]).unwrap();
+        state
+            .create_team("team1", "Platform", "{}", vec![agent.id.clone()])
+            .unwrap();
         assert_eq!(state.list_teams().len(), 1);
         assert_eq!(state.list_teams()[0].members.len(), 1);
 
@@ -1873,7 +2031,10 @@ mod tests {
     fn test_persistence_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path().join("store.db")).unwrap();
-        let state = DesktopState::new(store, crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
+        let state = DesktopState::new(
+            store,
+            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+        );
         state.set_vault_passphrase("p".to_string());
         let agent = state.create_agent("a", "prompt", None, vec![]).unwrap();
         let step = WorkflowStep {
@@ -1883,11 +2044,18 @@ mod tests {
             input_template: "in".to_string(),
             depends_on: vec![],
         };
-        state.create_workflow("wf", "desc", vec![step], goble_core::agent::Trigger::Manual).unwrap();
-        state.create_team("t", "Team", "{}", vec![agent.id]).unwrap();
+        state
+            .create_workflow("wf", "desc", vec![step], goble_core::agent::Trigger::Manual)
+            .unwrap();
+        state
+            .create_team("t", "Team", "{}", vec![agent.id])
+            .unwrap();
         state.set_vault_secret("k", "v").unwrap();
 
-        let state2 = DesktopState::new(Store::open(tmp.path().join("store.db")).unwrap(), crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap());
+        let state2 = DesktopState::new(
+            Store::open(tmp.path().join("store.db")).unwrap(),
+            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+        );
         state2.load_from_store().unwrap();
         assert_eq!(state2.list_agents().len(), 1);
         assert_eq!(state2.list_workflows().len(), 1);
@@ -1917,7 +2085,6 @@ mod tests {
         assert_eq!(loaded.cluster_name, identity.cluster_name);
     }
 
-
     #[test]
     fn migrate_legacy_chats_creates_threads() {
         let state = DesktopState::new(
@@ -1929,7 +2096,9 @@ mod tests {
         let chats = state.list_chats();
         let chat = &chats[0];
         state.add_chat_message(&chat.id, "user", "hello").unwrap();
-        state.add_chat_message(&chat.id, "user", "hi there").unwrap();
+        state
+            .add_chat_message(&chat.id, "user", "hi there")
+            .unwrap();
 
         let threads = state.migrate_legacy_chats_to_threads().unwrap();
         assert_eq!(threads.len(), 1);

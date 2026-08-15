@@ -67,12 +67,55 @@ export interface TeamInfo {
   members: string[];
 }
 
+export interface ExecutionTrace {
+  id: string;
+  agent_id: string;
+  worker_id: string | null;
+  started_at: string;
+  finished_at: string | null;
+  status: 'Pending' | 'Running' | 'Success' | 'Failure' | 'Cancelled';
+  steps: ExecutionStep[];
+  metrics: ExecutionMetric[];
+  events: TraceEvent[];
+}
+
+export interface ExecutionStep {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  logs: ExecutionLog[];
+}
+
+export interface ExecutionLog {
+  timestamp: string;
+  level: 'Debug' | 'Info' | 'Warn' | 'Error';
+  message: string;
+}
+
+export interface ExecutionMetric {
+  name: string;
+  value: number;
+  recorded_at: string;
+}
+
+export type TraceEvent =
+  | { kind: 'log'; timestamp: string; level: 'Debug' | 'Info' | 'Warn' | 'Error'; message: string }
+  | { kind: 'assistant_delta'; timestamp: string; delta: string }
+  | { kind: 'tool_call_started'; timestamp: string; id: string; name: string; arguments: Record<string, unknown> }
+  | { kind: 'tool_call_finished'; timestamp: string; id: string; result: string }
+  | { kind: 'tool_call_error'; timestamp: string; id: string; message: string }
+  | { kind: 'ask_user'; timestamp: string; question: string; quick_replies: string[] }
+  | { kind: 'done'; timestamp: string; status: string };
+
 export interface ExecutionInfo {
   id: string;
   agent_id?: string | null;
   worker_id?: string | null;
   status: string;
-  trace: unknown;
+  trace: ExecutionTrace;
   started_at: string;
   finished_at?: string | null;
 }

@@ -72,7 +72,7 @@ function InfoPanel() {
         <div className="panel-section">
           <div className="panel-label">Integrations</div>
           <div className="panel-tags">
-            {(integrations as string[]).map((tag: any) => (
+            {(integrations as string[]).map((tag) => (
               <span key={tag} className="panel-tag">{tag}</span>
             ))}
           </div>

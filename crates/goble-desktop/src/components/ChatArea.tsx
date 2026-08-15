@@ -14,7 +14,8 @@ import {
   type WorkerInfo,
 } from '../tauri/api';
 import { uid, getInitials } from '../utils/designSystem';
-import ComposerRuntimeSelector, { type RuntimeTarget, runtimeTargetLabel } from './ComposerRuntimeSelector';
+import ComposerRuntimeSelector from './ComposerRuntimeSelector';
+import { type RuntimeTarget, runtimeTargetLabel } from './ComposerRuntimeUtils';
 
 interface ChatAreaProps {
   threadsActive?: boolean;
@@ -83,7 +84,7 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
   }, [messages]);
 
   useEffect(() => {
-    let unsubs: (() => void)[] = [];
+    const unsubs: (() => void)[] = [];
     (async () => {
       unsubs.push(await onThreadsUpdated(() => listThreads().then(setThreads).catch(() => {})));
       unsubs.push(await onThreadMessagesUpdated((event) => {

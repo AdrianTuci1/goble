@@ -28,7 +28,8 @@ import {
 } from '../tauri/api';
 import { Lock } from 'lucide-react';
 import { getInitials } from '../utils/designSystem';
-import ComposerRuntimeSelector, { type RuntimeTarget, runtimeTargetLabel } from '../components/ComposerRuntimeSelector';
+import ComposerRuntimeSelector from '../components/ComposerRuntimeSelector';
+import { type RuntimeTarget, runtimeTargetLabel } from '../components/ComposerRuntimeUtils';
 
 function participantKey(p: Participant) {
   return `${p.kind}:${p.id}`;
@@ -92,10 +93,10 @@ export default function ThreadsPage() {
 
   const me = useStore((s) => s.userProfile);
   const myParticipantId = me ? `user:${me.id}` : null;
-
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     refresh();
-    let unsubs: (() => void)[] = [];
+    const unsubs: (() => void)[] = [];
     (async () => {
       unsubs.push(await onThreadsUpdated(refresh));
       unsubs.push(
@@ -114,8 +115,10 @@ export default function ThreadsPage() {
     })();
     return () => unsubs.forEach((u) => u());
   }, []);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const activeThreadIdRef = useRef(activeThreadId);
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     activeThreadIdRef.current = activeThreadId;
     if (activeThreadId) {
@@ -124,6 +127,7 @@ export default function ThreadsPage() {
       markAsRead(activeThreadId);
     }
   }, [activeThreadId]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });

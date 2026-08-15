@@ -100,7 +100,7 @@ export default function AgentTracePage() {
       <div className="page-header">
         <h2>Agent Traces</h2>
         <div className="trace-filters">
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)}>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'all' | 'running' | 'success' | 'error')}>
             <option value="all">All statuses</option>
             <option value="running">Running</option>
             <option value="success">Success</option>

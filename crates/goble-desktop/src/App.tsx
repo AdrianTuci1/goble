@@ -73,7 +73,7 @@ function AppShell() {
   }, [design]);
 
   useEffect(() => {
-    let unsubs: (() => void)[] = [];
+    const unsubs: (() => void)[] = [];
 
     async function init() {
       const savedDesign = loadDesign();
@@ -127,6 +127,7 @@ function AppShell() {
     return () => {
       unsubs.forEach((u) => u());
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function onNewChat() {

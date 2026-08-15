@@ -161,13 +161,6 @@ function ProfileSettings() {
   const [email, setEmail] = useState(profile?.email ?? '');
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    if (profile) {
-      setName(profile.name);
-      setEmail(profile.email);
-    }
-  }, [profile]);
-
   async function handleSave() {
     setSaving(true);
     try {
@@ -263,7 +256,7 @@ function NotificationsSettings() {
 
   function update(key: string, value: boolean, setter: (v: boolean) => void) {
     setter(value);
-    try { localStorage.setItem(key, String(value)); } catch {}
+    try { localStorage.setItem(key, String(value)); } catch { /* ignored */ }
   }
 
   return (

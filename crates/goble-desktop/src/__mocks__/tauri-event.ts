@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 export interface Event<T = unknown> {
   event: string;
   id: number;

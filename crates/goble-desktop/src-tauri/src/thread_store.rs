@@ -614,7 +614,7 @@ mod tests {
     use goble_core::agent::AgentId;
     use goble_core::principal::PrincipalId;
     use goble_core::thread::{
-        MessageId, Participant, ParticipantId, Thread, ThreadError, ThreadId, ThreadKind, ThreadMessage,
+        MessageId, Participant, ParticipantId, Thread, ThreadError, ThreadId, ThreadKind,
         UserId,
     };
     use goble_core::user::{AuthorizedKey, UserError, UserProfile};
@@ -887,6 +887,7 @@ mod tests {
         assert!(store.list_authorized_keys().len() >= 1);
     }
 
+    #[allow(dead_code)]
     fn create_private_thread_for_reply_requires_exactly_two_participants() {
         let (_dir, store) = tmp_store();
         let owner = owner();

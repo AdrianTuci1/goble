@@ -61,7 +61,6 @@ async fn classify_intent(
 #[derive(Deserialize)]
 struct RunAgentRequest {
     target: RuntimeTarget,
-    chat_id: Option<String>,
     agent_id: String,
     prompt: String,
 }
@@ -927,6 +926,7 @@ impl From<goble_core::thread::ThreadMessage> for ThreadMessageSummary {
 
 
 #[tauri::command]
+#[allow(dead_code)]
 fn migrate_legacy_chats_to_threads(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<Vec<ThreadSummary>, String> {
@@ -1069,6 +1069,7 @@ fn invite_user_by_public_key(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 fn get_authorized_keys(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<Vec<goble_core::user::AuthorizedKey>, String> {

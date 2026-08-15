@@ -11,6 +11,12 @@ import AgentsPage from './pages/AgentsPage';
 import ThreadsPage from './pages/ThreadsPage';
 import SettingsPage from './pages/SettingsPage';
 import AgentTracePage from './pages/AgentTracePage';
+import WorkflowsPage from './pages/WorkflowsPage';
+import TeamsPage from './pages/TeamsPage';
+import VaultPage from './pages/VaultPage';
+import ExecutionsPage from './pages/ExecutionsPage';
+import KnowledgePage from './pages/KnowledgePage';
+import SearchPage from './pages/SearchPage';
 import {
   listWorkers,
   workerLogs,
@@ -151,6 +157,12 @@ function AppShell() {
             <Route path="/connectors" element={<ConnectorsPage />} />
             <Route path="/traces" element={<AgentTracePage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/workflows" element={<WorkflowsPage />} />
+            <Route path="/teams" element={<TeamsPage />} />
+            <Route path="/vault" element={<VaultPage />} />
+            <Route path="/executions" element={<ExecutionsPage />} />
+            <Route path="/knowledge" element={<KnowledgePage />} />
+            <Route path="/search" element={<SearchPage />} />
           </Routes>
         </main>
         <RightSidebar />

@@ -1,6 +1,6 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useStore } from '../stores/appStore';
-import { agentsData, type Agent } from '../mocks/agentsData';
+import type { AgentInfo } from '../tauri/api';
 import './Sidebar.css';
 
 interface SidebarProps {
@@ -12,7 +12,18 @@ interface SidebarProps {
 
 export default function Sidebar({ collapsed, onNewChat, activeConversationId, onSelectConversation }: SidebarProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const conversations = useStore((s) => s.conversations);
+  const agents = useStore((s) => s.agents);
+  const threads = useStore((s) => s.threads);
+  const threadMessages = useStore((s) => s.threadMessages);
+
+  const unreadThreadCount = threads.reduce((sum, t) => {
+    const messages = threadMessages[t.id] || [];
+    if (!messages.length) return sum;
+    const lastRead = t.last_read_at ? new Date(t.last_read_at) : new Date(0);
+    return sum + messages.filter((m) => new Date(m.created_at) > lastRead).length;
+  }, 0);
 
   if (collapsed) {
     return (
@@ -21,11 +32,19 @@ export default function Sidebar({ collapsed, onNewChat, activeConversationId, on
           <button className="workspace active" title="Demo">D</button>
         </div>
         <div className="sidebar-nav">
-          <button className="sidebar-icon active" onClick={() => navigate('/chat')} title="Chat">💬</button>
-          <button className="sidebar-icon" onClick={() => navigate('/threads')} title="Threads">📥</button>
-          <button className="sidebar-icon" onClick={() => navigate('/agents')} title="Agents">🤖</button>
-          <button className="sidebar-icon" onClick={() => navigate('/connectors')} title="Connectors">🔌</button>
-          <button className="sidebar-icon" onClick={() => navigate('/traces')} title="Traces">🔍</button>
+          <button className={`sidebar-icon ${location.pathname === '/chat' ? 'active' : ''}`} onClick={() => navigate('/chat')} title="Chat">💬</button>
+          <button className={`sidebar-icon ${location.pathname.startsWith('/threads') ? 'active' : ''}`} onClick={() => navigate('/threads')} title="Threads">
+            📥
+            {unreadThreadCount > 0 && <span className="sidebar-badge">{unreadThreadCount}</span>}
+          </button>
+          <button className={`sidebar-icon ${location.pathname === '/agents' ? 'active' : ''}`} onClick={() => navigate('/agents')} title="Agents">🤖</button>
+          <button className={`sidebar-icon ${location.pathname === '/connectors' ? 'active' : ''}`} onClick={() => navigate('/connectors')} title="Connectors">🔌</button>
+          <button className={`sidebar-icon ${location.pathname === '/workflows' ? 'active' : ''}`} onClick={() => navigate('/workflows')} title="Workflows">⚡</button>
+          <button className={`sidebar-icon ${location.pathname === '/teams' ? 'active' : ''}`} onClick={() => navigate('/teams')} title="Teams">👥</button>
+          <button className={`sidebar-icon ${location.pathname === '/vault' ? 'active' : ''}`} onClick={() => navigate('/vault')} title="Vault">🔒</button>
+          <button className={`sidebar-icon ${location.pathname === '/executions' ? 'active' : ''}`} onClick={() => navigate('/executions')} title="Executions">▶️</button>
+          <button className={`sidebar-icon ${location.pathname === '/knowledge' ? 'active' : ''}`} onClick={() => navigate('/knowledge')} title="Knowledge">📚</button>
+          <button className={`sidebar-icon ${location.pathname === '/search' ? 'active' : ''}`} onClick={() => navigate('/search')} title="Search">🔎</button>
         </div>
         <div className="sidebar-footer">
           <button className="sidebar-icon" onClick={() => navigate('/settings')} title="Settings">⚙️</button>
@@ -46,14 +65,15 @@ export default function Sidebar({ collapsed, onNewChat, activeConversationId, on
       <div className="sidebar-section">
         <h4 className="sidebar-section-title">Agents</h4>
         <div className="sidebar-list">
-          {agentsData.map((agent: Agent) => (
+          {agents.length === 0 && <div className="sidebar-empty">No agents yet.</div>}
+          {agents.map((agent: AgentInfo) => (
             <button
               key={agent.id}
               className="sidebar-item"
               onClick={() => navigate(`/chat?agent=${agent.id}`)}
-              title={agent.description}
+              title={agent.spec.description || agent.spec.prompt}
             >
-              <span className="sidebar-item-dot" style={{ background: agent.color }} />
+              <span className="sidebar-item-dot" style={{ background: '#2563eb' }} />
               <span className="sidebar-item-label">{agent.name}</span>
             </button>
           ))}
@@ -85,23 +105,44 @@ export default function Sidebar({ collapsed, onNewChat, activeConversationId, on
 
       <div className="sidebar-section">
         <div className="sidebar-list">
-          <button className="sidebar-item" onClick={() => navigate('/threads')}>
+          <button className={`sidebar-item ${location.pathname.startsWith('/threads') ? 'active' : ''}`} onClick={() => navigate('/threads')}>
             <span className="sidebar-item-icon">📥</span>
             <span className="sidebar-item-label">Threads</span>
+            {unreadThreadCount > 0 && <span className="sidebar-item-badge">{unreadThreadCount}</span>}
           </button>
-          <button className="sidebar-item" onClick={() => navigate('/agents')}>
+          <button className={`sidebar-item ${location.pathname === '/agents' ? 'active' : ''}`} onClick={() => navigate('/agents')}>
             <span className="sidebar-item-icon">🤖</span>
             <span className="sidebar-item-label">Agents</span>
           </button>
-          <button className="sidebar-item" onClick={() => navigate('/connectors')}>
+          <button className={`sidebar-item ${location.pathname === '/connectors' ? 'active' : ''}`} onClick={() => navigate('/connectors')}>
             <span className="sidebar-item-icon">🔌</span>
             <span className="sidebar-item-label">Connectors</span>
           </button>
-          <button className="sidebar-item" onClick={() => navigate('/traces')}>
-            <span className="sidebar-item-icon">🔍</span>
-            <span className="sidebar-item-label">Traces</span>
+          <button className={`sidebar-item ${location.pathname === '/workflows' ? 'active' : ''}`} onClick={() => navigate('/workflows')}>
+            <span className="sidebar-item-icon">⚡</span>
+            <span className="sidebar-item-label">Workflows</span>
           </button>
-          <button className="sidebar-item" onClick={() => navigate('/settings')}>
+          <button className={`sidebar-item ${location.pathname === '/teams' ? 'active' : ''}`} onClick={() => navigate('/teams')}>
+            <span className="sidebar-item-icon">👥</span>
+            <span className="sidebar-item-label">Teams</span>
+          </button>
+          <button className={`sidebar-item ${location.pathname === '/vault' ? 'active' : ''}`} onClick={() => navigate('/vault')}>
+            <span className="sidebar-item-icon">🔒</span>
+            <span className="sidebar-item-label">Vault</span>
+          </button>
+          <button className={`sidebar-item ${location.pathname === '/executions' ? 'active' : ''}`} onClick={() => navigate('/executions')}>
+            <span className="sidebar-item-icon">▶️</span>
+            <span className="sidebar-item-label">Executions</span>
+          </button>
+          <button className={`sidebar-item ${location.pathname === '/knowledge' ? 'active' : ''}`} onClick={() => navigate('/knowledge')}>
+            <span className="sidebar-item-icon">📚</span>
+            <span className="sidebar-item-label">Knowledge</span>
+          </button>
+          <button className={`sidebar-item ${location.pathname === '/search' ? 'active' : ''}`} onClick={() => navigate('/search')}>
+            <span className="sidebar-item-icon">🔎</span>
+            <span className="sidebar-item-label">Search</span>
+          </button>
+          <button className={`sidebar-item ${location.pathname === '/settings' ? 'active' : ''}`} onClick={() => navigate('/settings')}>
             <span className="sidebar-item-icon">⚙️</span>
             <span className="sidebar-item-label">Settings</span>
           </button>

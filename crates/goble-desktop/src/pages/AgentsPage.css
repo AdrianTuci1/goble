@@ -137,3 +137,51 @@
   display: flex;
   gap: 8px;
 }
+
+.agents-create-form {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--tv-border);
+}
+
+.agents-create-form h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  color: var(--tv-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.agents-create-form input,
+.agents-create-form textarea {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.agents-create-form button {
+  margin-top: 4px;
+}
+
+.agent-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-edit-form input,
+.agent-edit-form textarea {
+  width: 100%;
+}
+
+.agent-edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.agent-card-btn.danger {
+  color: var(--tv-danger, #ef4444);
+  border-color: var(--tv-danger, #ef4444);
+}
+
+.agent-card-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+}

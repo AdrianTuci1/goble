@@ -268,6 +268,18 @@ export async function createAgent(
   });
 }
 
+export async function updateAgent(
+  agentId: string,
+  name: string,
+  prompt: string,
+  description?: string,
+  tools?: string[],
+): Promise<AgentInfo> {
+  return invoke('update_agent', {
+    req: { id: agentId, name, prompt, description, tools: tools ?? [] },
+  });
+}
+
 export async function deleteAgent(agentId: string): Promise<void> {
   return invoke('delete_agent', { agentId });
 }

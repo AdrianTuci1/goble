@@ -115,6 +115,15 @@ struct CreateAgentRequest {
 }
 
 #[derive(Deserialize)]
+struct UpdateAgentRequest {
+    id: String,
+    name: String,
+    prompt: String,
+    description: Option<String>,
+    tools: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct CreateWorkflowRequest {
     name: String,
     description: String,
@@ -506,6 +515,22 @@ fn delete_agent(
     state: tauri::State<'_, Arc<state::DesktopState>>,
 ) -> Result<(), String> {
     state.delete_agent(&AgentId(agent_id)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_agent(
+    req: UpdateAgentRequest,
+    state: tauri::State<'_, Arc<state::DesktopState>>,
+) -> Result<state::AgentInfo, String> {
+    state
+        .update_agent(
+            &AgentId(req.id),
+            &req.name,
+            &req.prompt,
+            req.description.as_deref(),
+            req.tools,
+        )
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1310,6 +1335,7 @@ pub fn run() {
             add_chat_message,
             list_agents,
             create_agent,
+            update_agent,
             delete_agent,
             list_workflows,
             create_workflow,

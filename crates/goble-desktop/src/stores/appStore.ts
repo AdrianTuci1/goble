@@ -112,6 +112,7 @@ interface AppState {
   updateMessage: (chatId: string, messageId: string, content: string | ((prev: string) => string)) => void;
   setAgents: (agents: AgentInfo[]) => void;
   addAgent: (agent: AgentInfo) => void;
+  updateAgent: (agent: AgentInfo) => void;
   removeAgent: (id: string) => void;
   setWorkflows: (workflows: WorkflowInfo[]) => void;
   addWorkflow: (workflow: WorkflowInfo) => void;
@@ -258,6 +259,10 @@ export const useStore = create<AppState>((set) => ({
     }),
   setAgents: (agents) => set({ agents }),
   addAgent: (agent) => set((state) => ({ agents: [agent, ...state.agents] })),
+  updateAgent: (agent) =>
+    set((state) => ({
+      agents: state.agents.map((a) => (a.id === agent.id ? agent : a)),
+    })),
   removeAgent: (id) =>
     set((state) => ({ agents: state.agents.filter((a) => a.id !== id) })),
   setWorkflows: (workflows) => set({ workflows }),

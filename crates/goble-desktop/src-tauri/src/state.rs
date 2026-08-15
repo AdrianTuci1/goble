@@ -1002,6 +1002,40 @@ impl DesktopState {
         Ok(())
     }
 
+    pub fn update_agent(
+        &self,
+        id: &AgentId,
+        name: &str,
+        prompt: &str,
+        description: Option<&str>,
+        tools: Vec<String>,
+    ) -> anyhow::Result<AgentInfo> {
+        let mut spec = AgentSpec::new(name, prompt);
+        if let Some(d) = description {
+            spec = spec.with_description(d);
+        }
+        spec = spec.with_tools(tools);
+        spec.id = id.clone();
+        let now = Utc::now().to_rfc3339();
+        let spec_json = serde_json::to_string(&spec)?;
+        self.store.lock().update_agent(
+            &id.to_string(),
+            name,
+            &spec_json,
+            &now,
+        )?;
+        let info = AgentInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            spec,
+            created_at: self.agents.lock().get(id).map(|a| a.created_at.clone()).unwrap_or_else(|| now.clone()),
+            updated_at: now,
+        };
+        self.agents.lock().insert(id.clone(), info.clone());
+        self.emit("agents:updated", ());
+        Ok(info)
+    }
+
     pub fn list_agents(&self) -> Vec<AgentInfo> {
         self.agents.lock().values().cloned().collect()
     }

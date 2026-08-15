@@ -894,3 +894,43 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid var(--tv-border);
+  border-radius: 8px;
+  background: var(--tv-card);
+}
+
+.agent-list-item .agent-name {
+  font-weight: 600;
+  color: var(--tv-text);
+}
+
+.agent-list-item .agent-meta {
+  font-size: 13px;
+  color: var(--tv-muted);
+  margin-top: 2px;
+}
+
+.agent-list-item button.danger {
+  background: transparent;
+  border: 1px solid var(--tv-border);
+  color: var(--tv-danger, #ef4444);
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.agent-list-item button.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+}

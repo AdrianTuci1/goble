@@ -13,6 +13,9 @@ import {
   addWorker,
   pairWorker,
   pingWorker,
+  createAgent,
+  deleteAgent,
+  listAgents,
   getClusterIdentity,
   createCluster,
   importClusterKey,
@@ -295,11 +298,86 @@ function AppearanceSettings() {
 }
 
 function AgentsSettings() {
-  return <Placeholder title="Agents" />;
+  const agents = useStore((s) => s.agents);
+  const setAgents = useStore((s) => s.setAgents);
+  const removeAgent = useStore((s) => s.removeAgent);
+  const [name, setName] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const [description, setDescription] = useState('');
+  const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    listAgents().then(setAgents);
+  }, [setAgents]);
+
+  async function handleCreate() {
+    if (!name.trim() || !prompt.trim()) return;
+    setCreating(true);
+    try {
+      await createAgent(name.trim(), prompt.trim(), description.trim() || undefined, []);
+      setAgents(await listAgents());
+      setName('');
+      setPrompt('');
+      setDescription('');
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    if (!confirm('Delete this agent?')) return;
+    try {
+      await deleteAgent(id);
+      removeAgent(id);
+    } catch {
+      // ignore
+    }
+  }
+
+  return (
+    <div className="settings-section">
+      <h2>Agents</h2>
+
+      <div className="settings-subsection">
+        <h3>Create agent</h3>
+        <label>Name</label>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Code Reviewer" />
+        <label>Description</label>
+        <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Short role summary" />
+        <label>Prompt</label>
+        <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="System prompt for the agent" rows={5} />
+        <button onClick={handleCreate} disabled={creating || !name.trim() || !prompt.trim()}>
+          {creating ? 'Creating...' : 'Create agent'}
+        </button>
+      </div>
+
+      <div className="settings-subsection">
+        <h3>Registered agents</h3>
+        {agents.length === 0 && <p className="empty">No agents registered.</p>}
+        <div className="agent-list">
+          {agents.map((a) => (
+            <div key={a.id} className="agent-list-item">
+              <div>
+                <div className="agent-name">{a.name}</div>
+                <div className="agent-meta">{a.spec.description || a.spec.prompt.slice(0, 80)}</div>
+              </div>
+              <button className="danger" onClick={() => handleDelete(a.id)}>Delete</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ComputeSettings() {
-  return <Placeholder title="Compute" />;
+  return (
+    <div className="settings-section">
+      <h2>Compute</h2>
+      <LlmSettings />
+      <WorkerSettings />
+    </div>
+  );
 }
 
 export function LlmSettings() {

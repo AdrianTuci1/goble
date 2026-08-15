@@ -247,13 +247,16 @@ impl ThreadStore {
         reply_to: Option<MessageId>,
         tags: Vec<String>,
         mentions: Vec<ParticipantId>,
+        trace_id: Option<String>,
     ) -> Result<ThreadMessage, ThreadError> {
         let thread = self.get_thread(thread_id)?;
         if !thread.has_participant(&author.participant_id()) {
             return Err(ThreadError::Unauthorized);
         }
 
-        let mut message = ThreadMessage::new(thread_id.clone(), author, content).with_tags(tags);
+        let mut message = ThreadMessage::new(thread_id.clone(), author, content)
+            .with_tags(tags)
+            .with_trace_id(trace_id.unwrap_or_default());
         message.participant_mentions = mentions;
 
         if let Some(ref parent_id) = reply_to {
@@ -447,6 +450,7 @@ impl ThreadStore {
                         participant_mentions: Vec::new(),
                         reactions: Vec::new(),
                         attachments: Vec::new(),
+                        trace_id: None,
                         created_at: m
                             .created_at
                             .parse::<chrono::DateTime<Utc>>()
@@ -706,6 +710,7 @@ mod tests {
                 None,
                 vec!["#team".to_string()],
                 vec![ParticipantId::agent("agent-1")],
+                None,
             )
             .unwrap();
 
@@ -717,6 +722,7 @@ mod tests {
                 Some(parent.id.clone()),
                 vec![],
                 vec![ParticipantId::user(&owner.0)],
+                None,
             )
             .unwrap();
 
@@ -753,6 +759,8 @@ mod tests {
             Some(missing.clone()),
             vec![],
             vec![],
+                        None,
+
         );
         assert!(matches!(result, Err(ThreadError::ReplyToNotFound(id)) if id == missing));
     }
@@ -780,6 +788,7 @@ mod tests {
                 None,
                 vec![],
                 vec![],
+                None,
             )
             .unwrap();
 
@@ -828,6 +837,7 @@ mod tests {
                 None,
                 vec!["#general".to_string()],
                 vec![ParticipantId::agent("agent-1")],
+                None,
             )
             .unwrap();
 
@@ -971,6 +981,8 @@ mod tests {
             None,
             vec![],
             vec![],
+                        None,
+
         );
         assert!(matches!(result, Err(ThreadError::Unauthorized)));
     }

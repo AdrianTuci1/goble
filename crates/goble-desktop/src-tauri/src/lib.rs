@@ -1108,6 +1108,7 @@ pub struct PostMessageRequest {
     reply_to: Option<String>,
     tags: Vec<String>,
     mentions: Vec<String>,
+    trace_id: Option<String>,
 }
 
 #[tauri::command]
@@ -1136,6 +1137,7 @@ fn post_thread_message(
             reply_to,
             req.tags,
             mentions,
+            req.trace_id,
         )
         .map(ThreadMessageSummary::from)
         .map_err(|e| e.to_string())?;

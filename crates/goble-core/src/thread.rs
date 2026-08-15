@@ -189,6 +189,7 @@ pub struct ThreadMessage {
     pub participant_mentions: Vec<ParticipantId>,
     pub reactions: Vec<Reaction>,
     pub attachments: Vec<Attachment>,
+    pub trace_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -206,9 +207,15 @@ impl ThreadMessage {
             participant_mentions: Vec::new(),
             reactions: Vec::new(),
             attachments: Vec::new(),
+            trace_id: None,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    pub fn with_trace_id(mut self, trace_id: impl Into<String>) -> Self {
+        self.trace_id = Some(trace_id.into());
+        self
     }
 
     pub fn with_reply_to(mut self, message_id: MessageId) -> Self {

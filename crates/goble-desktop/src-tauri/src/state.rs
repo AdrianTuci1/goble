@@ -854,6 +854,7 @@ impl DesktopState {
                     None,
                     vec![],
                     vec![],
+                    Some(trace_id.clone()),
                 );
                 self.emit("thread:messages:updated", ThreadMessagesUpdatedPayload { thread_id });
             }
@@ -1651,6 +1652,7 @@ impl DesktopState {
                         None,
                         vec![],
                         vec![],
+                        None,
                     );
                 }
             }

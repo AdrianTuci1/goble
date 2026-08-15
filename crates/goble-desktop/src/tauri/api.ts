@@ -678,7 +678,7 @@ export async function getThreadMessages(threadId: string): Promise<ThreadMessage
 export async function postThreadMessage(
   threadId: string,
   content: string,
-  options?: { reply_to?: string; tags?: string[]; mentions?: string[] },
+  options?: { reply_to?: string; tags?: string[]; mentions?: string[]; trace_id?: string },
 ): Promise<ThreadMessageSummary> {
   return invoke('post_thread_message', {
     req: {
@@ -687,6 +687,7 @@ export async function postThreadMessage(
       reply_to: options?.reply_to ?? null,
       tags: options?.tags ?? [],
       mentions: options?.mentions ?? [],
+      trace_id: options?.trace_id ?? null,
     },
   });
 }

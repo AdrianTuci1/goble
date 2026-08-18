@@ -1,14 +1,14 @@
 import { Plus } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import './TitleBar.css';
 
 interface TitleBarProps {
   collapsed: boolean;
   onToggleCollapse: () => void;
-  threadsActive?: boolean;
-  onToggleThreads?: () => void;
 }
 
-export default function TitleBar({ collapsed, onToggleCollapse, threadsActive, onToggleThreads }: TitleBarProps) {
+export default function TitleBar({ collapsed, onToggleCollapse }: TitleBarProps) {
+  const navigate = useNavigate();
   return (
     <div className="title-bar">
       <div className="title-bar-left">
@@ -19,8 +19,8 @@ export default function TitleBar({ collapsed, onToggleCollapse, threadsActive, o
       </div>
       <div className="title-bar-actions">
         <button
-          className={`title-bar-action ${threadsActive ? 'active' : ''}`}
-          onClick={onToggleThreads}
+          className="title-bar-action"
+          onClick={() => navigate('/threads')}
           title="Threads"
         >
           Threads

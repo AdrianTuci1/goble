@@ -1,0 +1,67 @@
+.chat-composer-normal {
+  flex-shrink: 0;
+  background: transparent;
+  padding: 8px 0 16px;
+}
+
+.composer-content {
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.composer-input-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.composer-input {
+  flex: 1;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--ds-text, #e4e6eb);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 38px 16px 12px;
+  outline: none;
+  resize: none;
+  max-height: 160px;
+  min-height: 0;
+  overflow-y: auto;
+  font-family: inherit;
+}
+
+.composer-input::placeholder {
+  color: var(--ds-muted, #8b949e);
+}
+
+.composer-chips {
+  position: absolute;
+  top: 10px;
+  left: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  pointer-events: none;
+}
+
+.composer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ds-muted, #8b949e);
+  font-size: 11px;
+  line-height: 1.4;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.composer-chip.model-chip.missing {
+  opacity: 0.7;
+}

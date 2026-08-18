@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../stores/appStore';
 import { listExecutions, getExecutionTrace, onExecutionsUpdated } from '../tauri/api';
 import type { ExecutionInfo, ExecutionTrace, TraceEvent } from '../tauri/api';
@@ -18,6 +18,7 @@ export default function AgentTracePage() {
   const [workerFilter, setWorkerFilter] = useState<string>('all');
   const [query, setQuery] = useState('');
   const [traces, setTraces] = useState<Record<string, ExecutionTrace>>({});
+  const fetchedTracesRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     listExecutions().then(setExecutions);
@@ -29,12 +30,13 @@ export default function AgentTracePage() {
   }, [setExecutions]);
 
   useEffect(() => {
-    if (selectedTraceId && !traces[selectedTraceId]) {
-      getExecutionTrace(selectedTraceId).then((t) =>
-        setTraces((prev) => ({ ...prev, [selectedTraceId]: t }))
-      );
-    }
-  }, [selectedTraceId, traces]);
+    if (!selectedTraceId) return;
+    if (fetchedTracesRef.current.has(selectedTraceId)) return;
+    fetchedTracesRef.current.add(selectedTraceId);
+    getExecutionTrace(selectedTraceId).then((t) =>
+      setTraces((prev) => ({ ...prev, [selectedTraceId]: t }))
+    );
+  }, [selectedTraceId, setTraces]);
 
   const filtered = useMemo(() => {
     let list = [...executions];

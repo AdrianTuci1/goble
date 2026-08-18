@@ -417,7 +417,7 @@ export type RuntimeTarget =
   | { kind: 'auto' }
   | { kind: 'local' }
   | { kind: 'tag'; tag: string }
-  | { kind: 'worker'; workerId: string };
+  | { kind: 'worker'; worker_id: string };
 
 export async function runAgent(
   target: RuntimeTarget,

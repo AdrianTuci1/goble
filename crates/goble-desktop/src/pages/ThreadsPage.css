@@ -139,12 +139,16 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
   padding: 7px 8px;
   border-radius: 6px;
   cursor: pointer;
   color: var(--tv-text);
   font-size: 15px;
   font-weight: 500;
+  background: transparent;
+  border: none;
+  text-align: left;
   transition: background 0.15s;
 }
 
@@ -175,6 +179,26 @@
   color: var(--tv-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.channel-add {
+  background: transparent;
+  border: none;
+  color: var(--tv-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.channel-add:hover {
+  background: var(--tv-hover);
+  color: var(--tv-text);
 }
 
 .channel-list,
@@ -189,12 +213,16 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   padding: 6px 8px;
   border-radius: 6px;
   cursor: pointer;
   color: var(--tv-text);
   font-size: 15px;
   font-weight: 400;
+  background: transparent;
+  border: none;
+  text-align: left;
   transition: background 0.15s;
 }
 

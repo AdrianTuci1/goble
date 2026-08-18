@@ -5,12 +5,32 @@
   --ds-border: #2a2e36;
   --ds-text: #e4e6eb;
   --ds-muted: #8b949e;
-  --ds-accent: #2563eb;
+  --ds-accent: #6b7280;
   --ds-hover: #21252e;
   --ds-selected: #2a2e36;
   --ds-radius: 8px;
   --ds-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --ds-density: 1;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Thread/legacy view tokens used outside .threads-view */
+  --tv-bg: #0f1115;
+  --tv-sidebar: #181b21;
+  --tv-workspace: #0f1115;
+  --tv-modal-bg: #4a4f5c;
+  --tv-border: #2a2e36;
+  --tv-text: #e4e6eb;
+  --tv-muted: #8b949e;
+  --tv-hover: #21252e;
+  --tv-selected: #2a2e36;
+  --tv-badge: #e01e5a;
+  --tv-card: #181b21;
+  --tv-input: #0f1115;
+  --tv-button: #2563eb;
+  --tv-button-hover: #3b82f6;
+  --tv-danger: #ef4444;
+  --tv-success: #10b981;
+  --tv-surface: #181b21;
 }
 
 html, body, #root {
@@ -52,6 +72,18 @@ body {
   --ds-muted: #6b7280;
   --ds-hover: #f3f4f6;
   --ds-selected: #e5e7eb;
+  --tv-bg: #f6f7f9;
+  --tv-sidebar: #ffffff;
+  --tv-workspace: #f6f7f9;
+  --tv-modal-bg: #ffffff;
+  --tv-border: #e2e4e9;
+  --tv-text: #1f2937;
+  --tv-muted: #6b7280;
+  --tv-hover: #f3f4f6;
+  --tv-selected: #e5e7eb;
+  --tv-card: #ffffff;
+  --tv-input: #f6f7f9;
+  --tv-surface: #ffffff;
 }
 
 #app.theme-midnight,
@@ -64,6 +96,18 @@ body {
   --ds-muted: #6b7280;
   --ds-hover: #181b23;
   --ds-selected: #1e212b;
+  --tv-bg: #0a0c10;
+  --tv-sidebar: #11131a;
+  --tv-workspace: #0a0c10;
+  --tv-modal-bg: #11131a;
+  --tv-border: #1f222b;
+  --tv-text: #e8eaed;
+  --tv-muted: #6b7280;
+  --tv-hover: #181b23;
+  --tv-selected: #1e212b;
+  --tv-card: #11131a;
+  --tv-input: #0a0c10;
+  --tv-surface: #11131a;
 }
 
 #app.font-system,
@@ -91,13 +135,36 @@ button, input, select, textarea {
   font-family: inherit;
 }
 
+input,
+select,
+textarea {
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  color: var(--ds-text);
+  padding: 8px 10px;
+  border-radius: var(--ds-radius);
+  font-size: 13px;
+  outline: none;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--ds-muted);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--ds-border);
+}
+
 a {
-  color: var(--ds-accent);
-  text-decoration: none;
+  color: var(--ds-text);
+  text-decoration: underline;
 }
 
 a:hover {
-  text-decoration: underline;
+  color: var(--ds-muted);
 }
 
 /* Render mode indicator */
@@ -124,7 +191,7 @@ a:hover {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--ds-accent);
+  background: var(--ds-muted);
   animation: pulse 1.4s infinite;
 }
 
@@ -135,9 +202,9 @@ a:hover {
 
 /* Global button */
 .btn {
-  background: var(--ds-accent);
-  color: #fff;
-  border: none;
+  background: var(--ds-surface-raised);
+  color: var(--ds-text);
+  border: 1px solid var(--ds-border);
   padding: 8px 14px;
   border-radius: var(--ds-radius);
   cursor: pointer;
@@ -145,7 +212,7 @@ a:hover {
   line-height: 1;
 }
 
-.btn:hover { opacity: 0.9; }
+.btn:hover { background: var(--ds-hover); }
 
 .btn.secondary {
   background: var(--ds-surface-raised);
@@ -154,12 +221,15 @@ a:hover {
 }
 
 .btn.danger {
-  background: #dc2626;
+  background: var(--ds-surface);
+  border-color: var(--ds-border);
+  color: var(--ds-text);
 }
 
 .btn-success {
-  background: #22c55e;
-  color: #fff;
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  color: var(--ds-text);
 }
 
 /* Utility */
@@ -176,6 +246,48 @@ a:hover {
 }
 
 /* Main shell */
+#app-root,
+#app {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.main-view-shell {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+}
+
 #main-view {
   flex: 1;
   display: flex;

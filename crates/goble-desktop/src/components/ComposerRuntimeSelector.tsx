@@ -29,7 +29,7 @@ export default function ComposerRuntimeSelector({ workers, value, onChange }: Co
           if (kind === 'auto') onChange({ kind: 'auto' });
           if (kind === 'local') onChange({ kind: 'local' });
           if (kind === 'tag') onChange({ kind: 'tag', tag: '' });
-          if (kind === 'worker') onChange({ kind: 'worker', workerId: '' });
+          if (kind === 'worker') onChange({ kind: 'worker', worker_id: '' });
         }}
         title="Runtime target"
       >
@@ -54,8 +54,8 @@ export default function ComposerRuntimeSelector({ workers, value, onChange }: Co
 
       {value.kind === 'worker' && (
         <select
-          value={value.workerId}
-          onChange={(e) => onChange({ kind: 'worker', workerId: e.target.value })}
+          value={value.worker_id}
+          onChange={(e) => onChange({ kind: 'worker', worker_id: e.target.value })}
           title="Specific worker"
         >
           <option value="">Pick worker</option>

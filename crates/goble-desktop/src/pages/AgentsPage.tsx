@@ -75,35 +75,36 @@ export default function AgentsPage() {
 
   return (
     <div className="agents-page">
-      <div className="agents-header">
-        <h2>Agents</h2>
-        <div className="agents-actions">
-          <button className="btn" onClick={() => navigate('/chat')}>Open chat</button>
+      <div className="agents-inner">
+        <div className="agents-header">
+          <h2>Agents</h2>
+          <div className="agents-actions">
+            <button className="btn" onClick={() => navigate('/chat')}>Open chat</button>
+          </div>
         </div>
-      </div>
 
-      <div className="agents-create-form">
-        <h3>Create agent</h3>
-        <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name" />
-        <input value={newDescription} onChange={(e) => setNewDescription(e.target.value)} placeholder="Description" />
-        <textarea value={newPrompt} onChange={(e) => setNewPrompt(e.target.value)} placeholder="System prompt" rows={3} />
-        <button onClick={handleCreate} disabled={creating || !newName.trim() || !newPrompt.trim()}>
-          {creating ? 'Creating...' : 'Create agent'}
-        </button>
-      </div>
+        <div className="agents-create-form">
+          <h3>Create agent</h3>
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name" />
+          <input value={newDescription} onChange={(e) => setNewDescription(e.target.value)} placeholder="Description" />
+          <textarea value={newPrompt} onChange={(e) => setNewPrompt(e.target.value)} placeholder="System prompt" rows={3} />
+          <button onClick={handleCreate} disabled={creating || !newName.trim() || !newPrompt.trim()}>
+            {creating ? 'Creating...' : 'Create agent'}
+          </button>
+        </div>
 
-      <div className="agents-list">
-        {agents.length === 0 && <p className="empty">No agents registered.</p>}
-        {agents.map((agent) => (
-          <div
-            key={agent.id}
-            data-testid="agent-card"
-            className="agent-card"
-            onClick={() => selectAgent(agent.id)}
-          >
-            <div className="agent-card-avatar" style={{ background: '#2563eb' }}>
-              {agent.name.slice(0, 2).toUpperCase()}
-            </div>
+        <div className="agents-list">
+          {agents.length === 0 && <p className="agents-empty">No agents registered.</p>}
+          {agents.map((agent) => (
+            <div
+              key={agent.id}
+              data-testid="agent-card"
+              className="agent-card"
+              onClick={() => selectAgent(agent.id)}
+            >
+              <div className="agent-card-avatar">
+                {agent.name.slice(0, 2).toUpperCase()}
+              </div>
             <div className="agent-card-body">
               {editingId === agent.id ? (
                 <div className="agent-edit-form" onClick={(e) => e.stopPropagation()}>
@@ -136,6 +137,7 @@ export default function AgentsPage() {
             </div>
           </div>
         ))}
+      </div>
       </div>
     </div>
   );

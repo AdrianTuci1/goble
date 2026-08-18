@@ -1,14 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import './pages/Pages.css';
 import { useStore } from './stores/appStore';
-import TitleBar from './components/TitleBar';
-import Sidebar from './components/Sidebar';
-import ChatArea from './components/ChatArea';
-import RightSidebar from './components/RightSidebar';
+import Topbar from './components/Topbar';
+import ChatPage from './components/ChatPage';
+import MainView from './views/MainView';
+import ThreadsView from './views/ThreadsView';
 import ConnectorsPage from './pages/ConnectorsPage';
 import AgentsPage from './pages/AgentsPage';
-import ThreadsPage from './pages/ThreadsPage';
 import SettingsPage from './pages/SettingsPage';
 import AgentTracePage from './pages/AgentTracePage';
 import WorkflowsPage from './pages/WorkflowsPage';
@@ -24,6 +23,7 @@ import {
   listVaultSecrets,
   listChats,
   listMcpServers,
+  chatMessages,
   createChat,
   onAgentStateUpdate,
   onAgentToolResult,
@@ -42,7 +42,6 @@ import { useDesignClasses, loadDesign, saveDesign } from './utils/designSystem';
 
 function AppShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [threadsActive, setThreadsActive] = useState(false);
 
   const setWorkers = useStore((s) => s.setWorkers);
   const setLogs = useStore((s) => s.setLogs);
@@ -53,8 +52,7 @@ function AppShell() {
   const setMcpServers = useStore((s) => s.setMcpServers);
   const addConversation = useStore((s) => s.addConversation);
   const setActiveChatId = useStore((s) => s.setActiveConversation);
-  const addMessage = useStore((s) => s.addMessage);
-  const chatMessagesRef = useRef(useStore.getState().messages);
+  const setMessages = useStore((s) => s.setMessages);
   const setAgentState = useStore((s) => s.setAgentState);
   const addAgentToolResult = useStore((s) => s.addAgentToolResult);
 
@@ -63,10 +61,6 @@ function AppShell() {
   const designClasses = useDesignClasses(design);
 
   const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    chatMessagesRef.current = useStore.getState().messages;
-  });
 
   useEffect(() => {
     saveDesign(design);
@@ -118,8 +112,9 @@ function AppShell() {
       unsubs.push(await onChatUpdated((event) => {
         const payload = event.payload as { chat_id?: string };
         if (payload.chat_id) {
-          const msgs = chatMessagesRef.current[payload.chat_id] || [];
-          addMessage(payload.chat_id, msgs[msgs.length - 1]);
+          chatMessages(payload.chat_id)
+            .then((msgs) => setMessages(payload.chat_id!, msgs))
+            .catch(console.error);
         }
       }));
     })();
@@ -134,26 +129,21 @@ function AppShell() {
     const chatId = await createChat('New chat', 'openai', 'gpt-4o-mini');
     addConversation({ id: chatId, title: 'New chat', provider: 'openai', model: 'gpt-4o-mini', updated_at: new Date().toISOString() });
     setActiveChatId(chatId);
-    setThreadsActive(false);
   }
 
   if (!loaded) return <div className="loading">Loading...</div>;
 
   return (
-    <div id="app-root" className={`app-shell ${designClasses}`}>
-      <TitleBar
+    <div id="app" className={`app-shell ${designClasses}`}>
+      <Topbar
         collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
-        threadsActive={threadsActive}
-        onToggleThreads={() => setThreadsActive((t) => !t)}
+        onToggleSidebar={() => setSidebarCollapsed((c) => !c)}
       />
       <div className="app-body">
-        <Sidebar collapsed={sidebarCollapsed} onNewChat={onNewChat} />
-        <main className="main-area">
-          <Routes>
-            <Route path="/" element={<Navigate to="/threads" />} />
-            <Route path="/chat" element={<ChatArea threadsActive={threadsActive} />} />
-            <Route path="/threads" element={<ThreadsPage />} />
+        <Routes>
+          <Route path="/" element={<Navigate to="/chat" replace />} />
+          <Route element={<MainView collapsed={sidebarCollapsed} onNewChat={onNewChat} />}>
+            <Route path="/chat" element={<ChatPage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/connectors" element={<ConnectorsPage />} />
             <Route path="/traces" element={<AgentTracePage />} />
@@ -164,9 +154,11 @@ function AppShell() {
             <Route path="/executions" element={<ExecutionsPage />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/search" element={<SearchPage />} />
-          </Routes>
-        </main>
-        <RightSidebar />
+          </Route>
+          <Route path="/threads" element={<ThreadsView />} />
+          <Route path="/threads/*" element={<ThreadsView />} />
+          <Route path="*" element={<Navigate to="/chat" replace />} />
+        </Routes>
       </div>
     </div>
   );

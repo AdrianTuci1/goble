@@ -407,6 +407,10 @@ export const useStore = create<AppState>((set) => ({
     })),
 }));
 
-getUserProfile().then((profile: UserProfile | null) => {
-  if (profile) useStore.setState({ userProfile: profile });
-});
+getUserProfile()
+  .then((profile: UserProfile | null) => {
+    if (profile) useStore.setState({ userProfile: profile });
+  })
+  .catch(() => {
+    // No profile configured yet; leave null.
+  });

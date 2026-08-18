@@ -26,9 +26,10 @@ import {
   extractMentions,
   type AuthorizedKey,
 } from '../tauri/api';
-import { Lock } from 'lucide-react';
+import { Lock, Inbox, Hash, MessageSquare, Plus, Users, AtSign } from 'lucide-react';
 import { getInitials } from '../utils/designSystem';
 import ComposerRuntimeSelector from '../components/ComposerRuntimeSelector';
+import WorkspaceRail from '../views/threads/WorkspaceRail';
 import { type RuntimeTarget, runtimeTargetLabel } from '../components/ComposerRuntimeUtils';
 
 function participantKey(p: Participant) {
@@ -539,12 +540,14 @@ export default function ThreadsPage() {
   return (
     <div className="threads-page">
       <div className="threads-view">
+        <WorkspaceRail />
         <div className="threads-sidebar">
           <div className="threads-sidebar-nav">
-            <div className={`nav-item inbox-item ${inboxOpen ? 'active' : ''}`} onClick={() => setInboxOpen((v) => !v)}>
-              📥 Inbox
+            <button className={`nav-item inbox-item ${inboxOpen ? 'active' : ''}`} onClick={() => setInboxOpen((v) => !v)}>
+              <span className="nav-icon"><Inbox size={18} /></span>
+              <span>Inbox</span>
               {inboxItems().length > 0 && <span className="inbox-badge">{inboxItems().length}</span>}
-            </div>
+            </button>
           </div>
 
           {inboxOpen && (
@@ -574,21 +577,21 @@ export default function ThreadsPage() {
           <div className="threads-sidebar-section">
             <h4>
               Channels
-              <button className="channel-add" onClick={() => setShowNewChannel(true)}>+</button>
+              <button className="channel-add" onClick={() => setShowNewChannel(true)} aria-label="Add channel"><Plus size={14} /></button>
             </h4>
             <div className="channel-list">
               {channels.map((c) => {
                 const unread = unreadCount(c);
                 return (
-                  <div
+                  <button
                     key={c.id}
                     className={`channel-item ${activeThreadId === c.id ? 'selected' : ''} ${unread ? 'has-unread' : ''}`}
                     onClick={() => setActiveThreadId(c.id)}
                   >
-                    <span className="channel-icon">#</span>
+                    <span className="channel-icon"><Hash size={14} /></span>
                     <span className="channel-name">{c.title}</span>
                     {unread > 0 && <span className="unread-badge">{unread}</span>}
-                  </div>
+                  </button>
                 );
               })}
               {showNewChannel && (
@@ -611,14 +614,15 @@ export default function ThreadsPage() {
               {dms.map((d) => {
                 const unread = unreadCount(d);
                 return (
-                  <div
+                  <button
                     key={d.id}
                     className={`dm-item ${activeThreadId === d.id ? 'selected' : ''} ${unread ? 'has-unread' : ''}`}
                     onClick={() => setActiveThreadId(d.id)}
                   >
+                    <span className="channel-icon"><AtSign size={14} /></span>
                     <span className="dm-name">{d.title}</span>
                     {unread > 0 && <span className="unread-badge">{unread}</span>}
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -630,14 +634,15 @@ export default function ThreadsPage() {
               {chats.map((c) => {
                 const unread = unreadCount(c);
                 return (
-                  <div
+                  <button
                     key={c.id}
                     className={`dm-item ${activeThreadId === c.id ? 'selected' : ''} ${unread ? 'has-unread' : ''}`}
                     onClick={() => setActiveThreadId(c.id)}
                   >
+                    <span className="channel-icon"><MessageSquare size={14} /></span>
                     <span className="dm-name">{c.title}</span>
                     {unread > 0 && <span className="unread-badge">{unread}</span>}
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -647,11 +652,13 @@ export default function ThreadsPage() {
         <div className="threads-main">
           <div className="threads-header">
             <div className="header-left">
-              {activeThread?.kind === 'channel' ? '#' : activeThread?.kind === 'direct' ? <Lock size={14} /> : '💬'}
+              <span className="header-icon">
+                {activeThread?.kind === 'channel' ? <Hash size={18} /> : activeThread?.kind === 'direct' ? <Lock size={14} /> : <MessageSquare size={18} />}
+              </span>
               <span className="header-title">{activeThread?.title || 'Select a thread'}</span>
             </div>
             <div className="header-right">
-              <button className="header-action" onClick={() => setParticipantsPanelOpen(true)} title="Members">👤</button>
+              <button className="header-action" onClick={() => setParticipantsPanelOpen(true)} title="Members"><Users size={18} /></button>
             </div>
           </div>
 

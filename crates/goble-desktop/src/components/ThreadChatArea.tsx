@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Users, Info, History, AtSign, Paperclip, Smile, Hash, Type, Send } from 'lucide-react';
 import { useStore, type Participant, type ThreadMessageSummary } from '../stores/appStore';
 import {
   getThreadMessages,
@@ -18,19 +19,18 @@ import { uid, getInitials } from '../utils/designSystem';
 import ComposerRuntimeSelector from './ComposerRuntimeSelector';
 import { type RuntimeTarget, runtimeTargetLabel } from './ComposerRuntimeUtils';
 
-interface ChatAreaProps {
-  threadsActive?: boolean;
-}
-
 function participantToString(p: Participant): string {
   return `${p.kind}:${p.id}`;
 }
 
-export default function ChatArea({ threadsActive }: ChatAreaProps) {
-  void threadsActive;
+const EMPTY_MESSAGES: ThreadMessageSummary[] = [];
+const EMPTY_PARTICIPANTS: Participant[] = [];
+
+export default function ThreadChatArea() {
   const navigate = useNavigate();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const autoSelectRef = useRef(false);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [pendingTraceId, setPendingTraceId] = useState<string | null>(null);
@@ -42,8 +42,8 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
 
   const threads = useStore((s) => s.threads);
   const activeThreadId = useStore((s) => s.activeThreadId);
-  const threadMessages = useStore((s) => s.threadMessages[activeThreadId || ''] || []);
-  const threadParticipants = useStore((s) => s.threadParticipants[activeThreadId || ''] || []);
+  const threadMessagesMap = useStore((s) => s.threadMessages);
+  const threadParticipantsMap = useStore((s) => s.threadParticipants);
   const replyToMessageId = useStore((s) => s.replyToMessageId);
   const pendingTags = useStore((s) => s.pendingTags);
   const agents = useStore((s) => s.agents);
@@ -61,7 +61,8 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
   const setRightSidebarTab = useStore((s) => s.setRightSidebarTab);
 
   const activeThread = threads.find((t) => t.id === activeThreadId);
-  const messages = threadMessages;
+  const messages = activeThreadId ? threadMessagesMap[activeThreadId] || EMPTY_MESSAGES : EMPTY_MESSAGES;
+  const threadParticipants = activeThreadId ? threadParticipantsMap[activeThreadId] || EMPTY_PARTICIPANTS : EMPTY_PARTICIPANTS;
 
   useEffect(() => {
     listThreads().then(setThreads).catch(() => {});
@@ -72,14 +73,17 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
   }, []);
 
   useEffect(() => {
-    if (!activeThreadId) {
-      const first = threads[0];
-      if (first) setActiveThreadId(first.id);
-      return;
+    if (!activeThreadId && threads.length > 0 && !autoSelectRef.current) {
+      autoSelectRef.current = true;
+      setActiveThreadId(threads[0].id);
     }
+  }, [activeThreadId, threads, setActiveThreadId]);
+
+  useEffect(() => {
+    if (!activeThreadId) return;
     getThreadMessages(activeThreadId).then((msgs) => setThreadMessages(activeThreadId, msgs)).catch(() => {});
     getThreadParticipants(activeThreadId).then((parts) => setThreadParticipants(activeThreadId, parts)).catch(() => {});
-  }, [activeThreadId, threads, setThreadMessages, setThreadParticipants, setActiveThreadId]);
+  }, [activeThreadId, setThreadMessages, setThreadParticipants]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -229,9 +233,9 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
           <span className="chat-header-meta">{activeThread?.kind}</span>
         </div>
         <div className="chat-header-actions">
-          <button className="chat-header-btn" onClick={() => setParticipantsPanelOpen(true)} title="Participants">👤</button>
-          <button className="chat-header-btn" onClick={() => { setRightSidebarOpen(true); setRightSidebarTab('info'); }} title="Info">ℹ️</button>
-          <button className="chat-header-btn" onClick={() => { setRightSidebarOpen(true); setRightSidebarTab('history'); }} title="History">📜</button>
+          <button className="chat-header-btn" onClick={() => setParticipantsPanelOpen(true)} title="Participants"><Users size={16} /></button>
+          <button className="chat-header-btn" onClick={() => { setRightSidebarOpen(true); setRightSidebarTab('info'); }} title="Info"><Info size={16} /></button>
+          <button className="chat-header-btn" onClick={() => { setRightSidebarOpen(true); setRightSidebarTab('history'); }} title="History"><History size={16} /></button>
         </div>
       </div>
 
@@ -283,7 +287,7 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
             onChange={(e) => onInputChange(e.target.value)}
             onKeyDown={handleKeyDown}
           />
-          <button className="composer-send" onClick={handleSend} disabled={!input.trim() || loading}>↑</button>
+          <button className="composer-send" onClick={handleSend} disabled={!input.trim() || loading}><Send size={16} /></button>
           {showMentionPicker && mentionOptions.length > 0 && (
             <div className="mention-picker">
               {mentionOptions.map((p, idx) => (
@@ -304,11 +308,11 @@ export default function ChatArea({ threadsActive }: ChatAreaProps) {
             <span className="composer-runtime-label" title="Selected runtime target">
               {runtimeTargetLabel(runtimeTarget, workers)}
             </span>
-            <button title="Mention" onClick={() => setInput((v) => v + '@')}>@</button>
-            <button title="Attach">📎</button>
-            <button title="Emoji">☺</button>
-            <button title="Tag" className={pendingTags.length ? 'active' : ''} onClick={() => togglePendingTag('#todo')}>#</button>
-            <button title="Format">Aa</button>
+            <button title="Mention" onClick={() => setInput((v) => v + '@')}><AtSign size={16} /></button>
+            <button title="Attach"><Paperclip size={16} /></button>
+            <button title="Emoji"><Smile size={16} /></button>
+            <button title="Tag" className={pendingTags.length ? 'active' : ''} onClick={() => togglePendingTag('#todo')}><Hash size={16} /></button>
+            <button title="Format"><Type size={16} /></button>
           </div>
           {loading && <button className="composer-cancel" onClick={() => setLoading(false)}>Cancel</button>}
         </div>
@@ -338,7 +342,7 @@ function MessageBubble({
       </div>
       <div className="message-body">
         <div className="message-meta">
-          <span className="message-author">{message.author.kind === 'agent' ? '🤖 ' : ''}{author}</span>
+          <span className="message-author">{author}</span>
           {message.reply_to && <span className="reply-badge">↳ reply</span>}
         </div>
         <div className="message-content">

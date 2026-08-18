@@ -42,6 +42,7 @@ import {
   Server,
   Smartphone,
   Download,
+  ArrowLeft,
 } from 'lucide-react';
 import './Pages.css';
 import ClusterInstallCard from '../components/ClusterInstallCard';
@@ -91,7 +92,10 @@ export default function SettingsPage() {
     <div className="settings-page">
       <aside className="settings-sidebar">
         <button className="settings-back" onClick={() => navigate(-1)}>
-          ← Back
+          <span className="settings-back-icon">
+            <ArrowLeft size={16} />
+          </span>
+          Back
         </button>
         <div className="settings-menu">
           {MENU_GROUPS.map((group) => (
@@ -102,7 +106,7 @@ export default function SettingsPage() {
                 return (
                   <button
                     key={item.id}
-                    className={`settings-menu-item ${activeTab === item.id ? 'active' : ''}`}
+                    className={`settings-menu-item ${activeTab === item.id ? 'selected' : ''}`}
                     onClick={() => setActiveTab(item.id as SettingsTab)}
                   >
                     <span className="settings-menu-icon">
@@ -152,6 +156,7 @@ function ProfileSettings() {
   return (
     <div className="settings-section">
       <h2>Profile</h2>
+      <p className="settings-page-sub">Manage your public profile information.</p>
       <label>Display name</label>
       <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
       <label>Email</label>
@@ -237,6 +242,7 @@ function KeysSettings() {
   return (
     <div className="settings-section">
       <h2>Keys</h2>
+      <p className="settings-page-sub">Manage cluster identity and authorized public keys.</p>
       <div className="settings-subsection">
         <h3>Cluster identity</h3>
         {cluster ? (
@@ -312,6 +318,7 @@ function NotificationsSettings() {
   return (
     <div className="settings-section">
       <h2>Notifications</h2>
+      <p className="settings-page-sub">Choose when and how Goble notifies you.</p>
       <label className="checkbox-row">
         <input type="checkbox" checked={enabled} onChange={(e) => update('goble-notifications-enabled', e.target.checked, setEnabled)} />
         Enable desktop notifications
@@ -332,6 +339,7 @@ function ShortcutsSettings() {
   return (
     <div className="settings-section">
       <h2>Keyboard shortcuts</h2>
+      <p className="settings-page-sub">Default keyboard shortcuts for Goble.</p>
       <div className="shortcut-list">
         <div className="shortcut-row">
           <kbd>Cmd</kbd> / <kbd>Ctrl</kbd> + <kbd>K</kbd>
@@ -394,6 +402,7 @@ function LocalArchiveSettings() {
   return (
     <div className="settings-section">
       <h2>Local archive</h2>
+      <p className="settings-page-sub">Export or import a local snapshot of your data.</p>
       <div className="settings-subsection">
         <h3>Export</h3>
         <p className="hint">Download a JSON snapshot of your local threads, messages, and profile.</p>
@@ -413,6 +422,7 @@ function MobileSettings() {
   return (
     <div className="settings-section">
       <h2>Mobile</h2>
+      <p className="settings-page-sub">Pair the mobile companion app when it becomes available.</p>
       <p className="hint">Mobile companion app is in development. When released, scan the QR code here to pair this device.</p>
     </div>
   );
@@ -430,6 +440,7 @@ function UpdatesSettings() {
   return (
     <div className="settings-section">
       <h2>Updates</h2>
+      <p className="settings-page-sub">Check for new Goble releases and read release notes.</p>
       <div className="panel-section">
         <div className="panel-label">Current version</div>
         <div className="panel-value">{version}</div>
@@ -442,6 +453,30 @@ function UpdatesSettings() {
   );
 }
 
+const THEMES: { id: DesignSystem['theme']; label: string }[] = [
+  { id: 'dark', label: 'Dark' },
+  { id: 'light', label: 'Light' },
+  { id: 'midnight', label: 'Midnight' },
+];
+
+const FONTS: { id: DesignSystem['font']; label: string }[] = [
+  { id: 'system', label: 'System' },
+  { id: 'mono', label: 'Mono' },
+  { id: 'serif', label: 'Serif' },
+];
+
+const RADII: { id: DesignSystem['radius']; label: string }[] = [
+  { id: 'sharp', label: 'Sharp' },
+  { id: 'default', label: 'Default' },
+  { id: 'rounded', label: 'Rounded' },
+];
+
+const DENSITIES: { id: DesignSystem['density']; label: string }[] = [
+  { id: 'compact', label: 'Compact' },
+  { id: 'default', label: 'Default' },
+  { id: 'spacious', label: 'Spacious' },
+];
+
 function AppearanceSettings() {
   const design = useStore((s) => s.design);
   const setDesign = useStore((s) => s.setDesign);
@@ -453,41 +488,68 @@ function AppearanceSettings() {
   return (
     <div className="settings-section">
       <h2>Appearance</h2>
-      <label>Theme</label>
-      <select value={design.theme} onChange={(e) => update({ theme: e.target.value as DesignSystem['theme'] })}>
-        <option value="dark">Dark</option>
-        <option value="light">Light</option>
-        <option value="midnight">Midnight</option>
-      </select>
+      <p className="settings-page-sub">Customize how Goble looks and feels.</p>
 
-      <label>Accent color</label>
-      <select value={design.accent} onChange={(e) => update({ accent: e.target.value as DesignSystem['accent'] })}>
-        <option value="blue">Blue</option>
-        <option value="green">Green</option>
-        <option value="purple">Purple</option>
-        <option value="orange">Orange</option>
-      </select>
+      <div className="settings-group">
+        <h3>Theme</h3>
+        <div className="settings-options">
+          {THEMES.map((t) => (
+            <button
+              key={t.id}
+              className={`settings-option ${design.theme === t.id ? 'selected' : ''}`}
+              onClick={() => update({ theme: t.id })}
+            >
+              <span className="settings-swatch" data-theme={t.id} />
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
-      <label>Font</label>
-      <select value={design.font} onChange={(e) => update({ font: e.target.value as DesignSystem['font'] })}>
-        <option value="system">System</option>
-        <option value="mono">Monospace</option>
-        <option value="serif">Serif</option>
-      </select>
+      <div className="settings-group">
+        <h3>Font</h3>
+        <div className="settings-options">
+          {FONTS.map((f) => (
+            <button
+              key={f.id}
+              className={`settings-option ${design.font === f.id ? 'selected' : ''}`}
+              onClick={() => update({ font: f.id })}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
-      <label>Density</label>
-      <select value={design.density} onChange={(e) => update({ density: e.target.value as DesignSystem['density'] })}>
-        <option value="compact">Compact</option>
-        <option value="default">Default</option>
-        <option value="spacious">Spacious</option>
-      </select>
+      <div className="settings-group">
+        <h3>Corner radius</h3>
+        <div className="settings-options">
+          {RADII.map((r) => (
+            <button
+              key={r.id}
+              className={`settings-option ${design.radius === r.id ? 'selected' : ''}`}
+              onClick={() => update({ radius: r.id })}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
-      <label>Radius</label>
-      <select value={design.radius} onChange={(e) => update({ radius: e.target.value as DesignSystem['radius'] })}>
-        <option value="sharp">Sharp</option>
-        <option value="default">Default</option>
-        <option value="rounded">Rounded</option>
-      </select>
+      <div className="settings-group">
+        <h3>Density</h3>
+        <div className="settings-options">
+          {DENSITIES.map((d) => (
+            <button
+              key={d.id}
+              className={`settings-option ${design.density === d.id ? 'selected' : ''}`}
+              onClick={() => update({ density: d.id })}
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -532,6 +594,7 @@ function AgentsSettings() {
   return (
     <div className="settings-section">
       <h2>Agents</h2>
+      <p className="settings-page-sub">Create and manage local agents.</p>
 
       <div className="settings-subsection">
         <h3>Create agent</h3>
@@ -569,6 +632,7 @@ function ComputeSettings() {
   return (
     <div className="settings-section">
       <h2>Compute</h2>
+      <p className="settings-page-sub">Configure workers and model providers.</p>
       <LlmSettings />
       <WorkerSettings />
     </div>

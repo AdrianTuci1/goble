@@ -1,7 +1,8 @@
 use crate::elements::{
-    AppContext, Border, EdgeInsets, Element, Fill, LayoutContext, PaintContext, Point,
+    AppContext, Border, EdgeInsets, Element, EventContext, Fill, LayoutContext, PaintContext, Point,
     SizeConstraint,
 };
+use crate::event::DispatchedEvent;
 use crate::geometry::{vec2f, Vector2F};
 
 pub struct Container {
@@ -138,5 +139,18 @@ impl Element for Container {
 
     fn origin(&self) -> Option<Point> {
         self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        if let Some(child) = self.child.as_mut() {
+            child.dispatch_event(event, ctx, app)
+        } else {
+            false
+        }
     }
 }

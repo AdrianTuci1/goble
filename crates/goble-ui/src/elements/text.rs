@@ -1,30 +1,18 @@
 use crate::color::ColorU;
 use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
-use crate::geometry::{vec2f, Vector2F};
+use crate::geometry::Vector2F;
 use crate::theme::ColorToken;
 
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.2;
-const APPROX_CHAR_WIDTH_RATIO: f32 = 0.55;
 
+/// Measure text using the platform abstraction.
+///
+/// On all platforms this currently falls back to a heuristic char-width estimate.
+/// In the future macOS can switch to core-text, Linux to cosmic-text/fontdb, and
+/// Windows to DirectWrite, following Warp's octomusui pattern.
 pub fn measure_text(text: &str, font_size: f32, line_height: f32, max_width: f32) -> Vector2F {
-    if text.is_empty() {
-        return vec2f(0.0, font_size * line_height);
-    }
-
-    let char_width = font_size * APPROX_CHAR_WIDTH_RATIO;
-    let full_width = text.chars().count() as f32 * char_width;
-
-    if full_width <= max_width || max_width.is_infinite() || max_width <= 0.0 {
-        return vec2f(full_width, font_size * line_height);
-    }
-
-    let chars_per_line = (max_width / char_width).max(1.0) as usize;
-    let total_chars = text.chars().count();
-    let raw_lines = (total_chars + chars_per_line - 1) / chars_per_line.max(1);
-    let line_count = raw_lines.max(1);
-    let width = (chars_per_line as f32 * char_width).min(full_width);
-    vec2f(width, font_size * line_height * line_count as f32)
+    crate::platform::current::estimate_text_size(text, font_size, line_height, max_width)
 }
 
 /// A single-line or wrapped body text element.
@@ -139,6 +127,7 @@ impl Element for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::vec2f;
 
     #[test]
     fn text_measures_empty_string() {

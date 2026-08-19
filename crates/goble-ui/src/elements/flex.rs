@@ -1,7 +1,8 @@
 use crate::elements::{
-    AppContext, Axis, AxisOrientation, CrossAxisAlignment, Element, LayoutContext,
+    AppContext, Axis, AxisOrientation, CrossAxisAlignment, Element, EventContext, LayoutContext,
     MainAxisAlignment, MainAxisSize, PaintContext, Point, SizeConstraint, Vector2FExt,
 };
+use crate::event::DispatchedEvent;
 use crate::geometry::{vec2f, Vector2F};
 
 pub struct Flex {
@@ -194,5 +195,19 @@ impl Element for Flex {
 
     fn origin(&self) -> Option<Point> {
         self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        for child in &mut self.children {
+            if child.dispatch_event(event, ctx, app) {
+                return true;
+            }
+        }
+        false
     }
 }

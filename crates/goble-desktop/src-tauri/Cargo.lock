@@ -1407,6 +1407,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "goble-desktop-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "dirs",
+ "futures",
+ "goble-core",
+ "hex",
+ "once_cell",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-tungstenite",
+ "uuid",
+]
+
+[[package]]
 name = "goble-desktop-tauri"
 version = "0.1.0"
 dependencies = [
@@ -1416,6 +1437,7 @@ dependencies = [
  "dirs",
  "futures",
  "goble-core",
+ "goble-desktop-service",
  "hex",
  "once_cell",
  "parking_lot",

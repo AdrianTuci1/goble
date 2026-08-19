@@ -1,0 +1,231 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::elements::chat_content::{ChatAction, ChatMessage};
+use crate::elements::{
+    AppContext, Axis, ChatComposer, ChatMessageBubble, Container, CrossAxisAlignment, EdgeInsets,
+    Element, Fill, Flex, LayoutContext, MainAxisAlignment, PaintContext, Point, QuickActionButton,
+    Scrollable, SizeConstraint,
+};
+use crate::event::DispatchedEvent;
+use crate::geometry::Vector2F;
+use crate::theme::{ColorToken, SpacingToken};
+
+pub struct ChatView {
+    header: Option<Box<dyn Element>>,
+    messages: Vec<ChatMessage>,
+    quick_actions: Vec<(String, Rc<RefCell<dyn FnMut() + 'static>>)>,
+    on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    on_action: Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
+    composer_value: Rc<RefCell<String>>,
+    root: Option<Box<dyn Element>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl ChatView {
+    pub fn new() -> Self {
+        Self {
+            header: None,
+            messages: Vec::new(),
+            quick_actions: Vec::new(),
+            on_send: None,
+            on_action: None,
+            composer_value: Rc::new(RefCell::new(String::new())),
+            root: None,
+            size: None,
+            origin: None,
+        }
+    }
+
+    pub fn with_header(mut self, header: Box<dyn Element>) -> Self {
+        self.header = Some(header);
+        self
+    }
+
+    pub fn with_messages(mut self, messages: Vec<ChatMessage>) -> Self {
+        self.messages = messages;
+        self
+    }
+
+    pub fn with_quick_action<F: FnMut() + 'static>(
+        mut self,
+        label: impl Into<String>,
+        callback: F,
+    ) -> Self {
+        self.quick_actions
+            .push((label.into(), Rc::new(RefCell::new(callback))));
+        self
+    }
+
+    pub fn with_on_send<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_send = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_action<F: FnMut(ChatAction) + 'static>(mut self, callback: F) -> Self {
+        self.on_action = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn composer_value(&self) -> String {
+        self.composer_value.borrow().clone()
+    }
+
+    fn rebuild(&mut self, app: &AppContext) {
+        let padding = app.theme.spacing_px(SpacingToken::Md);
+        let spacing = app.theme.spacing_px(SpacingToken::Md);
+
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(spacing);
+
+        if let Some(header) = self.header.take() {
+            column = column.with_child(header);
+        }
+
+        let mut message_column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(spacing);
+        for message in &self.messages {
+            let on_action = self.on_action.clone();
+            let fragments = message.fragments.clone();
+            let bubble = ChatMessageBubble::new(message.role, fragments)
+                .with_on_action(move |action| {
+                    if let Some(cb) = on_action.as_ref() {
+                        (cb.borrow_mut())(action);
+                    }
+                })
+                .finish();
+            message_column = message_column.with_child(bubble);
+        }
+        column = column.with_child(Scrollable::new(message_column.finish(), Axis::Vertical).finish());
+
+        if !self.quick_actions.is_empty() {
+            let mut row = Flex::row()
+                .with_main_axis_alignment(MainAxisAlignment::Start)
+                .with_spacing(app.theme.spacing_px(SpacingToken::Sm));
+            for (label, cb) in &self.quick_actions {
+                let cb = cb.clone();
+                row = row.with_child(
+                    QuickActionButton::new(label.clone(), move || (cb.borrow_mut())())
+                        .finish(),
+                );
+            }
+            column = column.with_child(row.finish());
+        }
+
+        let current_value = self.composer_value.borrow().clone();
+        let composer_value = self.composer_value.clone();
+        let on_send = self.on_send.clone();
+        let composer = ChatComposer::new()
+            .with_value(current_value)
+            .with_on_send(move |text| {
+                *composer_value.borrow_mut() = String::new();
+                if let Some(cb) = on_send.as_ref() {
+                    (cb.borrow_mut())(text);
+                }
+            })
+            .finish();
+        column = column.with_child(composer);
+
+        self.root = Some(
+            Container::new(column.finish())
+                .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+                .with_padding(EdgeInsets::uniform(padding))
+                .finish(),
+        );
+    }
+}
+
+impl Default for ChatView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Element for ChatView {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        self.rebuild(app);
+        let size = self
+            .root
+            .as_mut()
+            .unwrap()
+            .layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.root.as_mut().unwrap().paint(origin, ctx, app);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut crate::elements::EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.root
+            .as_mut()
+            .map(|root| root.dispatch_event(event, ctx, app))
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::elements::chat_content::{ChatFragment, ChatRole};
+    use crate::elements::LayoutContext;
+    use crate::geometry::vec2f;
+
+    #[test]
+    fn chat_view_layouts_with_messages() {
+        let app = AppContext::default();
+        let messages = vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Hi")],
+        )];
+        let mut view = ChatView::new().with_messages(messages);
+        let size = view.layout(
+            SizeConstraint::loose(vec2f(600.0, 800.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert!(size.x > 0.0);
+        assert!(size.y > 0.0);
+    }
+
+    #[test]
+    fn chat_view_renders_markdown_message() {
+        let app = AppContext::default();
+        let messages = vec![ChatMessage::from_markdown(
+            ChatRole::Assistant,
+            "**bold** and `code`",
+        )];
+        let mut view = ChatView::new().with_messages(messages);
+        let size = view.layout(
+            SizeConstraint::loose(vec2f(600.0, 800.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert!(size.x > 0.0);
+        assert!(size.y > 0.0);
+    }
+
+}

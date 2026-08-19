@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::ThreadSummary;
+use crate::event_bus::{emit_value, EventBus, NoOpEventBus};
 use anyhow::Context;
 use base64::Engine;
 use chrono::Utc;
@@ -23,8 +23,8 @@ use goble_core::worker_pool::{WorkerPool, WorkerPoolStrategy, WorkerSnapshot};
 use goble_core::workflow::{Workflow, WorkflowId, WorkflowStep};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
 
+use crate::thread_store::ThreadStore;
 use crate::worker_manager::WorkerClient;
 
 const WORKER_PAIRING_CODE_VAULT_PREFIX: &str = "worker:";
@@ -190,6 +190,97 @@ pub struct ExecutionInfo {
     pub finished_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterIdentityInfo {
+    pub cluster_name: String,
+    pub ca_cert_pem: String,
+    pub device_serial: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkerInvite {
+    pub worker_id: String,
+    pub cluster_key: String,
+    pub bundle: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadSummary {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub owner_id: String,
+    pub participants: Vec<goble_core::thread::Participant>,
+    pub tags: Vec<String>,
+    pub last_read_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<goble_core::thread::Thread> for ThreadSummary {
+    fn from(t: goble_core::thread::Thread) -> Self {
+        Self {
+            id: t.id.0,
+            kind: format!("{:?}", t.kind).to_lowercase(),
+            title: t.title,
+            owner_id: t.owner_id.0,
+            participants: t.participants,
+            tags: t.tags,
+            last_read_at: None,
+            created_at: t.created_at.to_rfc3339(),
+            updated_at: t.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadMessageSummary {
+    pub id: String,
+    pub thread_id: String,
+    pub author: goble_core::thread::Participant,
+    pub content: String,
+    pub reply_to: Option<String>,
+    pub tags: Vec<String>,
+    pub participant_mentions: Vec<String>,
+    pub reactions: Vec<ThreadReactionSummary>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadReactionSummary {
+    pub emoji: String,
+    pub participant_id: String,
+}
+
+impl From<goble_core::thread::ThreadMessage> for ThreadMessageSummary {
+    fn from(m: goble_core::thread::ThreadMessage) -> Self {
+        Self {
+            id: m.id.0,
+            thread_id: m.thread_id.0,
+            author: m.author,
+            content: m.content,
+            reply_to: m.reply_to.map(|r| r.0),
+            tags: m.tags,
+            participant_mentions: m
+                .participant_mentions
+                .iter()
+                .map(|p| p.to_string())
+                .collect(),
+            reactions: m
+                .reactions
+                .into_iter()
+                .map(|r| ThreadReactionSummary {
+                    emoji: r.emoji,
+                    participant_id: r.participant_id.to_string(),
+                })
+                .collect(),
+            created_at: m.created_at.to_rfc3339(),
+            updated_at: m.updated_at.to_rfc3339(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ThreadMessagesUpdatedPayload {
     thread_id: String,
@@ -209,9 +300,9 @@ pub struct DesktopState {
     logs: Arc<Mutex<Vec<LogEntry>>>,
     clients: Arc<Mutex<HashMap<WorkerId, WorkerClient>>>,
     mcp_manager: McpManager,
-    app_handle: Mutex<Option<AppHandle>>,
+    event_bus: Mutex<Arc<dyn EventBus>>,
     cluster_identity: Mutex<Option<ClusterIdentity>>,
-    thread_store: Arc<crate::thread_store::ThreadStore>,
+    thread_store: Arc<ThreadStore>,
 }
 impl DesktopState {
     pub fn open_default() -> anyhow::Result<Arc<Self>> {
@@ -220,13 +311,13 @@ impl DesktopState {
             .ok_or_else(|| anyhow::anyhow!("no data dir"))?
             .join("com.goble.desktop")
             .join("threads");
-        let thread_store = crate::thread_store::ThreadStore::new(thread_store_path)?;
+        let thread_store = ThreadStore::new(thread_store_path)?;
         let state = Self::new(store, thread_store);
         let _ = state.load_from_store();
         Ok(state)
     }
 
-    pub fn new(store: Store, thread_store: crate::thread_store::ThreadStore) -> Arc<Self> {
+    pub fn new(store: Store, thread_store: ThreadStore) -> Arc<Self> {
         Arc::new(Self {
             store: Arc::new(Mutex::new(store)),
             workers: Arc::new(Mutex::new(HashMap::new())),
@@ -241,17 +332,22 @@ impl DesktopState {
             logs: Arc::new(Mutex::new(Vec::new())),
             clients: Arc::new(Mutex::new(HashMap::new())),
             mcp_manager: McpManager::new(),
-            app_handle: Mutex::new(None),
+            event_bus: Mutex::new(Arc::new(NoOpEventBus)),
             cluster_identity: Mutex::new(None),
             thread_store: Arc::new(thread_store),
         })
     }
-    pub fn thread_store(&self) -> Arc<crate::thread_store::ThreadStore> {
+
+    pub fn thread_store(&self) -> Arc<ThreadStore> {
         Arc::clone(&self.thread_store)
     }
 
-    pub fn set_app_handle(&self, handle: AppHandle) {
-        *self.app_handle.lock() = Some(handle);
+    pub fn set_event_bus(&self, bus: Arc<dyn EventBus>) {
+        *self.event_bus.lock() = bus;
+    }
+
+    pub fn emit<T: Serialize>(&self, event: &str, payload: T) {
+        emit_value(&**self.event_bus.lock(), event, payload);
     }
 
     /// Reconnect workers that were previously paired and have a stored pairing code in the vault.
@@ -1593,7 +1689,11 @@ impl DesktopState {
     }
 
     pub fn search_mcp_servers(&self, query: &str) -> Vec<McpSearchResult> {
-        tauri::async_runtime::block_on(self.mcp_manager.search_mcp_servers(query))
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.block_on(self.mcp_manager.search_mcp_servers(query))
+        } else {
+            Vec::new()
+        }
     }
 
     pub fn test_call_mcp_tool(
@@ -1603,10 +1703,15 @@ impl DesktopState {
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, anyhow::Error> {
         let store = self.store.lock();
-        tauri::async_runtime::block_on(
-            self.mcp_manager
-                .test_call_tool(&store, id, tool_name, arguments),
-        )
+        tokio::runtime::Handle::try_current()
+            .map_err(|e| anyhow::anyhow!("no tokio runtime: {e}"))
+            .and_then(|h| {
+                h.block_on(
+                    self.mcp_manager
+                        .test_call_tool(&store, id, tool_name, arguments),
+                )
+                .map_err(|e| e)
+            })
     }
 
     pub fn install_mcp_server(
@@ -1623,15 +1728,20 @@ impl DesktopState {
             .iter()
             .map(|name| goble_core::secret::Secret::new(name, "mcp", vec![]))
             .collect();
-        tauri::async_runtime::block_on(self.mcp_manager.install_mcp_server(
-            &store,
-            id,
-            name,
-            source,
-            source_value,
-            &secrets,
-            manifest,
-        ))
+        tokio::runtime::Handle::try_current()
+            .map_err(|e| anyhow::anyhow!("no tokio runtime: {e}"))
+            .and_then(|h| {
+                h.block_on(self.mcp_manager.install_mcp_server(
+                    &store,
+                    id,
+                    name,
+                    source,
+                    source_value,
+                    &secrets,
+                    manifest,
+                ))
+                .map_err(|e| e)
+            })
     }
 
     pub fn update_mcp_server(
@@ -1648,14 +1758,19 @@ impl DesktopState {
                 .map(|name| goble_core::secret::Secret::new(name, "mcp", vec![]))
                 .collect::<Vec<_>>()
         });
-        tauri::async_runtime::block_on(self.mcp_manager.update_mcp_server(
-            &store,
-            id,
-            name,
-            source_value,
-            secrets.as_deref(),
-            manifest,
-        ))
+        tokio::runtime::Handle::try_current()
+            .map_err(|e| anyhow::anyhow!("no tokio runtime: {e}"))
+            .and_then(|h| {
+                h.block_on(self.mcp_manager.update_mcp_server(
+                    &store,
+                    id,
+                    name,
+                    source_value,
+                    secrets.as_deref(),
+                    manifest,
+                ))
+                .map_err(|e| e)
+            })
     }
 
     pub fn delete_mcp_server(&self, id: &str) -> Result<String, anyhow::Error> {
@@ -1803,12 +1918,6 @@ impl DesktopState {
         }
 
         Ok(())
-    }
-
-    pub fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) {
-        if let Some(handle) = self.app_handle.lock().as_ref() {
-            let _ = handle.emit(event, payload);
-        }
     }
 
     /// Convert legacy chat conversations into threads with a single participant (the user).

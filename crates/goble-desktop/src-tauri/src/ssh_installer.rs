@@ -4,26 +4,14 @@ use std::process::{Command, Stdio};
 use goble_core::cluster_key::ClusterIdentity;
 use goble_core::provision::{provision_worker, ProvisionConfig, SshTransport};
 
+pub use crate::{PlatformInfo, WorkerInstallResult};
+
 #[derive(Debug, Clone)]
 pub struct SshCredentials {
     pub host: String,
     pub user: String,
     pub port: u16,
     pub private_key: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct WorkerInstallResult {
-    pub platform: PlatformInfo,
-    pub asset_url: String,
-    pub install_log: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PlatformInfo {
-    pub os: String,
-    pub arch: String,
-    pub family: String,
 }
 
 #[derive(Debug, thiserror::Error)]

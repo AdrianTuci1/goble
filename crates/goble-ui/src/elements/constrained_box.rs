@@ -1,4 +1,5 @@
-use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
+use crate::elements::{AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint};
+use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 
 pub struct ConstrainedBox {
@@ -132,5 +133,18 @@ impl Element for ConstrainedBox {
 
     fn origin(&self) -> Option<Point> {
         self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        if let Some(child) = self.child.as_mut() {
+            child.dispatch_event(event, ctx, app)
+        } else {
+            false
+        }
     }
 }

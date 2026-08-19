@@ -35,6 +35,7 @@ dirs = "6"
 futures = "0.3"
 tempfile = "3"
 goble-core = { path = "../../goble-core" }
+goble-desktop-service = { path = "../../goble-desktop-service" }
 sha2 = "0.10"
 hex = "0.4"
 once_cell = "1"

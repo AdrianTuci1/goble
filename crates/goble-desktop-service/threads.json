@@ -1,0 +1,66 @@
+[
+  {
+    "id": "4892c841-091c-4100-8a20-f30f13b3cc35",
+    "kind": "chat",
+    "title": "legacy chat",
+    "owner_id": "9238b566-8785-486d-b5a2-6cd88ece50b7",
+    "is_private": false,
+    "participants": [
+      {
+        "kind": "user",
+        "id": "9238b566-8785-486d-b5a2-6cd88ece50b7"
+      }
+    ],
+    "tags": [],
+    "created_at": "2026-08-19T19:08:23.193705Z",
+    "updated_at": "2026-08-19T19:08:23.193705Z"
+  },
+  {
+    "id": "f956405e-9234-470e-bbbb-4aa492667d62",
+    "kind": "chat",
+    "title": "legacy chat",
+    "owner_id": "5e42b6f9-3e4c-4fd6-89ab-4fba7e9ee09d",
+    "is_private": false,
+    "participants": [
+      {
+        "kind": "user",
+        "id": "5e42b6f9-3e4c-4fd6-89ab-4fba7e9ee09d"
+      }
+    ],
+    "tags": [],
+    "created_at": "2026-08-19T19:45:14.115779Z",
+    "updated_at": "2026-08-19T19:45:14.115779Z"
+  },
+  {
+    "id": "aaae0985-d8d4-486c-9c8a-2c8285e1af1f",
+    "kind": "chat",
+    "title": "legacy chat",
+    "owner_id": "0b63868b-dda8-46ab-b195-149a922df79a",
+    "is_private": false,
+    "participants": [
+      {
+        "kind": "user",
+        "id": "0b63868b-dda8-46ab-b195-149a922df79a"
+      }
+    ],
+    "tags": [],
+    "created_at": "2026-08-19T20:11:21.539313Z",
+    "updated_at": "2026-08-19T20:11:21.539313Z"
+  },
+  {
+    "id": "a03a33ee-63e0-4954-9676-c5d45698c4e4",
+    "kind": "chat",
+    "title": "legacy chat",
+    "owner_id": "0c474327-e0ab-4275-b7bf-c6f08546aee7",
+    "is_private": false,
+    "participants": [
+      {
+        "kind": "user",
+        "id": "0c474327-e0ab-4275-b7bf-c6f08546aee7"
+      }
+    ],
+    "tags": [],
+    "created_at": "2026-08-19T20:19:02.722901Z",
+    "updated_at": "2026-08-19T20:19:02.722901Z"
+  }
+]

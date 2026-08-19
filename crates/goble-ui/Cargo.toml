@@ -6,10 +6,19 @@ authors.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Enables platform-native font/rendering paths. Currently a no-op except on macOS where the
+# core-graphics/core-text/font-kit dependencies become available for future implementation.
+native-rendering = []
+
 [dependencies]
 anyhow = "1.0"
+cfg-if = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 derivative = "2.2"
+goble-core = { path = "../goble-core" }
+goble-desktop-service = { path = "../goble-desktop-service" }
 derive_more = { version = "0.99", features = ["deref", "deref_mut", "from", "into"] }
 euclid = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -19,6 +28,7 @@ num-traits = "0.2"
 ordered-float = "3.0"
 palette = "0.7"
 parking_lot = "0.12"
+pulldown-cmark = "0.13"
 resvg = "0.47"
 rustc-hash = "2.1"
 serde = { version = "1.0", features = ["derive", "rc"] }
@@ -26,7 +36,8 @@ serde_json = "1.0"
 smallvec = "1.13"
 thiserror = "2.0"
 tokio = { version = "1.43", features = ["rt-multi-thread"] }
-wgpu = { version = "25.0", default-features = false, features = ["metal", "wgsl"] }
+# Cross-platform wgpu backends: Metal (macOS), Dx12 (Windows), Vulkan (Linux/Windows), GLES (Linux fallback).
+wgpu = { version = "25.0", default-features = false, features = ["wgsl", "metal", "dx12", "vulkan", "gles"] }
 winit = { version = "0.30", features = ["rwh_06"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

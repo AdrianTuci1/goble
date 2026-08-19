@@ -10,14 +10,52 @@ use goble_core::protocol::DesktopMessage;
 use goble_core::store::Store;
 use goble_core::worker::WorkerId;
 use goble_core::workflow::{WorkflowId, WorkflowStep};
+use goble_desktop_service::event_bus::EventBus;
+use goble_desktop_service::{
+    AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, DesktopState, ExecutionInfo, IntentParams,
+    LogEntry, LlmSetting, TeamInfo, ThreadMessageSummary, ThreadSummary, VaultSecretInfo,
+    WorkerConnection, WorkerInvite, WorkflowInfo,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+#[cfg(unix)]
 pub mod ssh_installer;
-pub mod state;
-pub mod thread_store;
-pub mod worker_manager;
+
+/// Cross-platform result type for remote worker installation attempts.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WorkerInstallResult {
+    pub platform: PlatformInfo,
+    pub asset_url: String,
+    pub install_log: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PlatformInfo {
+    pub os: String,
+    pub arch: String,
+    pub family: String,
+}
+
+/// Bridge from the service-layer event bus to Tauri's emitter.
+#[derive(Clone)]
+struct TauriEventBus {
+    handle: tauri::AppHandle,
+}
+
+impl TauriEventBus {
+    fn new(handle: tauri::AppHandle) -> Self {
+        Self { handle }
+    }
+}
+
+impl EventBus for TauriEventBus {
+    fn emit(&self, event: &str, payload: serde_json::Value) {
+        use tauri::Emitter;
+        let _ = self.handle.emit(event, payload);
+    }
+}
 
 #[derive(Deserialize)]
 struct AddWorkerRequest {
@@ -41,13 +79,13 @@ struct ClassifyIntentRequest {
 #[derive(Serialize)]
 struct ClassifyIntentResponse {
     intent: String,
-    params: state::IntentParams,
+    params: IntentParams,
 }
 
 #[tauri::command]
 async fn classify_intent(
     req: ClassifyIntentRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<ClassifyIntentResponse, String> {
     state
         .classify_intent(&req.provider, &req.model, &req.text)
@@ -214,13 +252,6 @@ pub struct McpIdRequest {
     id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClusterIdentityInfo {
-    pub cluster_name: String,
-    pub ca_cert_pem: String,
-    pub device_serial: String,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateClusterRequest {
     pub name: String,
@@ -273,46 +304,47 @@ pub struct GenerateWorkerInviteRequest {
     pub worker_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct WorkerInvite {
-    pub worker_id: String,
-    pub cluster_key: String,
-    pub bundle: String,
-}
-
 static HARNESS_CANCEL: once_cell::sync::Lazy<
     std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
 > = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 #[tauri::command]
 fn list_workers(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<state::WorkerConnection>, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<Vec<WorkerConnection>, String> {
     Ok(state.list_workers())
 }
 
 #[tauri::command]
 fn install_worker(
     req: InstallWorkerRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<ssh_installer::WorkerInstallResult, String> {
-    let cluster = state
-        .get_cluster_identity()
-        .ok_or("no cluster identity configured")?;
-    let creds = ssh_installer::SshCredentials {
-        host: req.host,
-        user: req.user,
-        port: req.port,
-        private_key: req.private_key,
-    };
-    let repo = req.repo.as_deref().unwrap_or("AdrianTuci1/goble");
-    ssh_installer::install_worker(&cluster, &creds, &req.release_tag, repo, &req.pairing_code)
-        .map_err(|e| e.to_string())
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<WorkerInstallResult, String> {
+    #[cfg(unix)]
+    {
+        let cluster = state
+            .get_cluster_identity()
+            .ok_or("no cluster identity configured")?;
+        let creds = ssh_installer::SshCredentials {
+            host: req.host,
+            user: req.user,
+            port: req.port,
+            private_key: req.private_key,
+        };
+        let repo = req.repo.as_deref().unwrap_or("AdrianTuci1/goble");
+        ssh_installer::install_worker(&cluster, &creds, &req.release_tag, repo, &req.pairing_code)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (req, state);
+        Err("Remote worker installation requires an SSH client, which is not available on this platform. Use the manual install instructions instead.".to_string())
+    }
 }
 
 #[tauri::command]
 fn get_cluster_identity(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<Option<ClusterIdentityInfo>, String> {
     Ok(state.get_cluster_identity().map(|i| ClusterIdentityInfo {
         cluster_name: i.cluster_name,
@@ -324,7 +356,7 @@ fn get_cluster_identity(
 #[tauri::command]
 fn create_cluster(
     req: CreateClusterRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<ClusterIdentityInfo, String> {
     let identity = state
         .create_cluster(&req.name, &req.passphrase)
@@ -339,7 +371,7 @@ fn create_cluster(
 #[tauri::command]
 fn import_cluster_key(
     req: ImportClusterKeyRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<ClusterIdentityInfo, String> {
     let identity = state
         .import_cluster_key(&req.key, &req.name, &req.passphrase)
@@ -354,7 +386,7 @@ fn import_cluster_key(
 #[tauri::command]
 fn unlock_cluster_identity(
     req: UnlockClusterIdentityRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<bool, String> {
     state
         .unlock_cluster_identity(&req.passphrase)
@@ -362,18 +394,18 @@ fn unlock_cluster_identity(
 }
 
 #[tauri::command]
-fn has_cluster_identity(state: tauri::State<'_, Arc<state::DesktopState>>) -> Result<bool, String> {
+fn has_cluster_identity(state: tauri::State<'_, Arc<DesktopState>>) -> Result<bool, String> {
     Ok(state.has_stored_cluster_identity())
 }
 
 #[tauri::command]
-fn export_cluster_key(state: tauri::State<'_, Arc<state::DesktopState>>) -> Result<String, String> {
+fn export_cluster_key(state: tauri::State<'_, Arc<DesktopState>>) -> Result<String, String> {
     state.export_cluster_key().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn export_cluster_backup(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<String, String> {
     let backup = state.export_cluster_backup().map_err(|e| e.to_string())?;
     serde_json::to_string(&backup).map_err(|e| e.to_string())
@@ -382,7 +414,7 @@ fn export_cluster_backup(
 #[tauri::command]
 fn export_identity_wallet(
     req: ExportIdentityRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<String, String> {
     state
         .export_identity_wallet(&req.passphrase)
@@ -392,7 +424,7 @@ fn export_identity_wallet(
 #[tauri::command]
 fn import_identity_wallet(
     req: ImportIdentityRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<ClusterIdentityInfo, String> {
     let identity = state
         .import_identity_wallet(&req.wallet, &req.passphrase)
@@ -407,7 +439,7 @@ fn import_identity_wallet(
 #[tauri::command]
 fn generate_worker_invite(
     req: GenerateWorkerInviteRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<WorkerInvite, String> {
     let identity = state
         .get_cluster_identity()
@@ -427,7 +459,7 @@ fn generate_worker_invite(
 #[tauri::command]
 fn cluster_helm_install(
     req: ClusterHelmInstallRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<String, String> {
     state
         .cluster_helm_install(
@@ -451,8 +483,8 @@ fn cluster_helm_install(
 #[tauri::command]
 fn add_worker(
     req: AddWorkerRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<state::WorkerConnection, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<WorkerConnection, String> {
     let worker_id = WorkerId::generate();
     state
         .add_worker(worker_id.clone(), req.name.clone(), req.url.clone())
@@ -461,7 +493,7 @@ fn add_worker(
         .list_workers()
         .into_iter()
         .find(|w| w.id == worker_id.to_string())
-        .unwrap_or(state::WorkerConnection {
+        .unwrap_or(WorkerConnection {
             id: worker_id.to_string(),
             name: req.name,
             url: req.url,
@@ -474,7 +506,7 @@ fn add_worker(
 fn tag_worker(
     worker_id: String,
     tag: String,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     state
         .tag_worker(&WorkerId(worker_id), tag)
@@ -484,7 +516,7 @@ fn tag_worker(
 #[tauri::command]
 fn pair_worker(
     req: PairWorkerRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<bool, String> {
     let id = WorkerId(req.worker_id);
     Arc::clone(&state)
@@ -494,15 +526,15 @@ fn pair_worker(
 
 #[tauri::command]
 fn worker_logs(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<state::LogEntry>, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<Vec<LogEntry>, String> {
     Ok(state.get_logs())
 }
 
 #[tauri::command]
 fn ping_worker(
     worker_id: String,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     let id = WorkerId(worker_id);
     state
@@ -513,7 +545,7 @@ fn ping_worker(
 #[tauri::command]
 fn add_log(
     message: String,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     state.add_chat_log(message);
     Ok(())
@@ -524,7 +556,7 @@ fn create_chat(
     title: String,
     provider: Option<String>,
     model: Option<String>,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<String, String> {
     state
         .create_chat(&title, provider.as_deref(), model.as_deref())
@@ -533,16 +565,16 @@ fn create_chat(
 
 #[tauri::command]
 fn list_chats(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<state::Chat>, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<Vec<Chat>, String> {
     Ok(state.list_chats())
 }
 
 #[tauri::command]
 fn chat_messages(
     chat_id: String,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<state::ChatMessage>, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<Vec<ChatMessage>, String> {
     state
         .list_chat_messages(&chat_id)
         .map_err(|e| e.to_string())
@@ -553,7 +585,7 @@ fn add_chat_message(
     chat_id: String,
     role: String,
     content: String,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     state
         .add_chat_message(&chat_id, &role, &content)
@@ -562,16 +594,16 @@ fn add_chat_message(
 
 #[tauri::command]
 fn list_agents(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<state::AgentInfo>, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<Vec<AgentInfo>, String> {
     Ok(state.list_agents())
 }
 
 #[tauri::command]
 fn create_agent(
     req: CreateAgentRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<state::AgentInfo, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<AgentInfo, String> {
     state
         .create_agent(
             &req.name,
@@ -585,7 +617,7 @@ fn create_agent(
 #[tauri::command]
 fn delete_agent(
     agent_id: String,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     state
         .delete_agent(&AgentId(agent_id))
@@ -595,8 +627,8 @@ fn delete_agent(
 #[tauri::command]
 fn update_agent(
     req: UpdateAgentRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<state::AgentInfo, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<AgentInfo, String> {
     state
         .update_agent(
             &AgentId(req.id),
@@ -610,16 +642,16 @@ fn update_agent(
 
 #[tauri::command]
 fn list_workflows(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<state::WorkflowInfo>, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<Vec<WorkflowInfo>, String> {
     Ok(state.list_workflows())
 }
 
 #[tauri::command]
 fn create_workflow(
     req: CreateWorkflowRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<state::WorkflowInfo, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<WorkflowInfo, String> {
     let trigger = Trigger::Cron {
         expression: req.trigger,
     };
@@ -631,7 +663,7 @@ fn create_workflow(
 #[tauri::command]
 fn delete_workflow(
     workflow_id: String,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     state
         .delete_workflow(&WorkflowId(workflow_id))
@@ -640,16 +672,16 @@ fn delete_workflow(
 
 #[tauri::command]
 fn list_teams(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<state::TeamInfo>, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<Vec<TeamInfo>, String> {
     Ok(state.list_teams())
 }
 
 #[tauri::command]
 fn create_team(
     req: CreateTeamRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<state::TeamInfo, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<TeamInfo, String> {
     state
         .create_team(&req.id, &req.name, &req.metadata, req.agent_ids)
         .map_err(|e| e.to_string())
@@ -657,15 +689,15 @@ fn create_team(
 
 #[tauri::command]
 fn list_executions(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<state::ExecutionInfo>, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<Vec<ExecutionInfo>, String> {
     Ok(state.list_executions())
 }
 
 #[tauri::command]
 fn get_execution_trace(
     trace_id: String,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<ExecutionTrace, String> {
     state
         .get_execution_trace(&trace_id)
@@ -674,15 +706,15 @@ fn get_execution_trace(
 
 #[tauri::command]
 fn list_vault_secrets(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Vec<state::VaultSecretInfo>, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<Vec<VaultSecretInfo>, String> {
     Ok(state.list_vault_secrets())
 }
 
 #[tauri::command]
 fn set_vault_secret(
     req: VaultSecretRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     state
         .set_vault_secret(&req.name, &req.value)
@@ -692,7 +724,7 @@ fn set_vault_secret(
 #[tauri::command]
 fn unlock_vault(
     req: UnlockVaultRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<Vec<String>, String> {
     let res = state
         .unlock_vault(req.passphrase)
@@ -704,7 +736,7 @@ fn unlock_vault(
 #[tauri::command]
 fn set_chat_model(
     req: SetChatModelRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     state
         .set_chat_model(&req.chat_id, &req.provider, &req.model)
@@ -714,7 +746,7 @@ fn set_chat_model(
 #[tauri::command]
 fn set_llm_setting(
     req: LlmSettingRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     state
         .set_llm_setting(
@@ -730,8 +762,8 @@ fn set_llm_setting(
 #[tauri::command]
 fn get_llm_setting(
     provider: String,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
-) -> Result<Option<state::LlmSetting>, String> {
+    state: tauri::State<'_, Arc<DesktopState>>,
+) -> Result<Option<LlmSetting>, String> {
     Ok(state.get_llm_setting(&provider))
 }
 
@@ -744,7 +776,7 @@ fn list_harness_tools() -> Result<Vec<goble_core::harness::ToolSchema>, String> 
 #[tauri::command]
 fn run_agent(
     req: RunAgentRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     let worker_id = state
         .resolve_worker_for_target(
@@ -762,7 +794,7 @@ fn run_agent(
 #[tauri::command]
 fn run_agent_for_thread_reply(
     req: RunAgentForThreadReplyRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     let worker_id = state
         .resolve_worker_for_target(
@@ -785,7 +817,7 @@ fn run_agent_for_thread_reply(
 #[tauri::command]
 fn update_thread_message(
     req: UpdateThreadMessageRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<ThreadMessageSummary, String> {
     let me = state
         .thread_store()
@@ -812,7 +844,7 @@ fn update_thread_message(
 #[tauri::command]
 fn delete_thread_message(
     req: DeleteThreadMessageRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     let me = state
         .thread_store()
@@ -838,7 +870,7 @@ fn delete_thread_message(
 #[tauri::command]
 fn schedule_agent(
     req: ScheduleRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     let worker_id = WorkerId(req.worker_id);
     let agent_id = AgentId(req.agent_id);
@@ -853,14 +885,14 @@ fn schedule_agent(
 #[tauri::command]
 fn search_mcp_servers(
     req: SearchMcpRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<Vec<McpSearchResult>, String> {
     Ok(state.search_mcp_servers(&req.query))
 }
 
 #[tauri::command]
 fn list_mcp_servers(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<Vec<McpServerSummary>, String> {
     state.list_mcp_servers().map_err(|e| e.to_string())
 }
@@ -868,7 +900,7 @@ fn list_mcp_servers(
 #[tauri::command]
 fn install_mcp_server(
     req: InstallMcpRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<String, String> {
     state
         .install_mcp_server(
@@ -885,7 +917,7 @@ fn install_mcp_server(
 #[tauri::command]
 fn update_mcp_server(
     req: UpdateMcpRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<String, String> {
     state
         .update_mcp_server(
@@ -901,7 +933,7 @@ fn update_mcp_server(
 #[tauri::command]
 fn update_mcp_server_meta(
     req: UpdateMcpMetaRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<String, String> {
     state
         .update_mcp_server_meta(&req.id, req.secret_ids, req.enabled_tools)
@@ -911,7 +943,7 @@ fn update_mcp_server_meta(
 #[tauri::command]
 fn delete_mcp_server(
     req: McpIdRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<String, String> {
     state.delete_mcp_server(&req.id).map_err(|e| e.to_string())
 }
@@ -919,7 +951,7 @@ fn delete_mcp_server(
 #[tauri::command]
 fn discover_mcp_tools(
     req: McpIdRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<Vec<goble_core::mcp_client::McpTool>, String> {
     state.discover_mcp_tools(&req.id).map_err(|e| e.to_string())
 }
@@ -934,7 +966,7 @@ struct TestCallMcpRequest {
 #[tauri::command]
 fn test_call_mcp_tool(
     req: TestCallMcpRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<serde_json::Value, String> {
     state
         .test_call_mcp_tool(
@@ -955,7 +987,7 @@ fn cancel_harness(chat_id: String) {
 #[tauri::command]
 fn run_harness(
     req: RunHarnessRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     use futures::StreamExt;
     use goble_core::harness::{HarnessEvent, SandboxedCommandRunner};
@@ -1007,92 +1039,15 @@ pub struct CreateThreadRequest {
     tags: Vec<String>,
 }
 
-#[derive(Serialize)]
-pub struct ThreadSummary {
-    id: String,
-    kind: String,
-    title: String,
-    owner_id: String,
-    participants: Vec<goble_core::thread::Participant>,
-    tags: Vec<String>,
-    last_read_at: Option<String>,
-    created_at: String,
-    updated_at: String,
-}
-
-impl From<goble_core::thread::Thread> for ThreadSummary {
-    fn from(t: goble_core::thread::Thread) -> Self {
-        Self {
-            id: t.id.0,
-            kind: format!("{:?}", t.kind).to_lowercase(),
-            title: t.title,
-            owner_id: t.owner_id.0,
-            participants: t.participants,
-            tags: t.tags,
-            last_read_at: None,
-            created_at: t.created_at.to_rfc3339(),
-            updated_at: t.updated_at.to_rfc3339(),
-        }
-    }
-}
-
-#[derive(Serialize, Clone)]
-pub struct ThreadMessageSummary {
-    id: String,
-    thread_id: String,
-    author: goble_core::thread::Participant,
-    content: String,
-    reply_to: Option<String>,
-    tags: Vec<String>,
-    participant_mentions: Vec<String>,
-    reactions: Vec<ThreadReactionSummary>,
-    created_at: String,
-    updated_at: String,
-}
-
-#[derive(Serialize, Clone)]
-pub struct ThreadReactionSummary {
-    emoji: String,
-    participant_id: String,
-}
-
-impl From<goble_core::thread::ThreadMessage> for ThreadMessageSummary {
-    fn from(m: goble_core::thread::ThreadMessage) -> Self {
-        Self {
-            id: m.id.0,
-            thread_id: m.thread_id.0,
-            author: m.author,
-            content: m.content,
-            reply_to: m.reply_to.map(|r| r.0),
-            tags: m.tags,
-            participant_mentions: m
-                .participant_mentions
-                .iter()
-                .map(|p| p.to_string())
-                .collect(),
-            reactions: m
-                .reactions
-                .into_iter()
-                .map(|r| ThreadReactionSummary {
-                    emoji: r.emoji,
-                    participant_id: r.participant_id.to_string(),
-                })
-                .collect(),
-            created_at: m.created_at.to_rfc3339(),
-            updated_at: m.updated_at.to_rfc3339(),
-        }
-    }
-}
-
 #[tauri::command]
 #[allow(dead_code)]
 fn migrate_legacy_chats_to_threads(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<Vec<ThreadSummary>, String> {
     state.migrate_legacy_chats_to_threads()
 }
 #[tauri::command]
-fn list_threads(state: tauri::State<'_, Arc<state::DesktopState>>) -> Vec<ThreadSummary> {
+fn list_threads(state: tauri::State<'_, Arc<DesktopState>>) -> Vec<ThreadSummary> {
     state
         .thread_store()
         .list_threads_with_read_status()
@@ -1107,7 +1062,7 @@ fn list_threads(state: tauri::State<'_, Arc<state::DesktopState>>) -> Vec<Thread
 #[tauri::command]
 fn create_thread(
     req: CreateThreadRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<ThreadSummary, String> {
     let owner_id = state
         .thread_store()
@@ -1136,7 +1091,7 @@ pub struct ThreadIdRequest {
 }
 
 #[tauri::command]
-fn delete_thread(req: ThreadIdRequest, state: tauri::State<'_, Arc<state::DesktopState>>) -> bool {
+fn delete_thread(req: ThreadIdRequest, state: tauri::State<'_, Arc<DesktopState>>) -> bool {
     state
         .thread_store()
         .delete_thread(&goble_core::thread::ThreadId(req.thread_id))
@@ -1151,7 +1106,7 @@ pub struct AddThreadParticipantRequest {
 #[tauri::command]
 fn add_thread_participant(
     req: AddThreadParticipantRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     state
         .thread_store()
@@ -1173,7 +1128,7 @@ pub struct RemoveThreadParticipantRequest {
 #[tauri::command]
 fn remove_thread_participant(
     req: RemoveThreadParticipantRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     state
         .thread_store()
@@ -1189,7 +1144,7 @@ fn remove_thread_participant(
 #[tauri::command]
 fn get_thread_participants(
     req: ThreadIdRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<Vec<goble_core::thread::Participant>, String> {
     state
         .thread_store()
@@ -1200,7 +1155,7 @@ fn get_thread_participants(
 #[tauri::command]
 fn get_thread_messages(
     req: ThreadIdRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<Vec<ThreadMessageSummary>, String> {
     state
         .thread_store()
@@ -1224,7 +1179,7 @@ pub struct InviteUserByPublicKeyRequest {
 #[tauri::command]
 fn invite_user_by_public_key(
     req: InviteUserByPublicKeyRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<goble_core::thread::Participant, String> {
     let participant = state
         .thread_store()
@@ -1241,7 +1196,7 @@ fn invite_user_by_public_key(
 #[tauri::command]
 #[allow(dead_code)]
 fn get_authorized_keys(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<Vec<goble_core::user::AuthorizedKey>, String> {
     Ok(state.thread_store().list_authorized_keys())
 }
@@ -1259,7 +1214,7 @@ pub struct PostMessageRequest {
 #[tauri::command]
 fn post_thread_message(
     req: PostMessageRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<ThreadMessageSummary, String> {
     let author = state
         .thread_store()
@@ -1320,7 +1275,7 @@ pub struct MarkThreadReadRequest {
 #[tauri::command]
 fn mark_thread_read(
     req: MarkThreadReadRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     let thread_id = req.thread_id.clone();
     state
@@ -1356,7 +1311,7 @@ pub struct ReactionRequest {
 #[tauri::command]
 fn add_thread_reaction(
     req: ReactionRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     let participant_id = state
         .thread_store()
@@ -1388,7 +1343,7 @@ fn add_thread_reaction(
 #[tauri::command]
 fn remove_thread_reaction(
     req: ReactionRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     let participant_id = state
         .thread_store()
@@ -1427,7 +1382,7 @@ pub struct UserProfileRequest {
 
 #[tauri::command]
 fn get_user_profile(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<goble_core::user::UserProfile, String> {
     state
         .thread_store()
@@ -1438,7 +1393,7 @@ fn get_user_profile(
 #[tauri::command]
 fn set_user_profile(
     req: UserProfileRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     let id = state
         .thread_store()
@@ -1469,7 +1424,7 @@ pub struct AuthorizedKeyRequest {
 
 #[tauri::command]
 fn list_authorized_keys(
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Vec<goble_core::user::AuthorizedKey> {
     state.thread_store().list_authorized_keys()
 }
@@ -1477,7 +1432,7 @@ fn list_authorized_keys(
 #[tauri::command]
 fn add_authorized_key(
     req: AuthorizedKeyRequest,
-    state: tauri::State<'_, Arc<state::DesktopState>>,
+    state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<(), String> {
     let mut key =
         goble_core::user::AuthorizedKey::new(req.id, req.name, req.public_key_pem, req.fingerprint);
@@ -1489,17 +1444,17 @@ fn add_authorized_key(
 }
 
 #[tauri::command]
-fn remove_authorized_key(id: String, state: tauri::State<'_, Arc<state::DesktopState>>) -> bool {
+fn remove_authorized_key(id: String, state: tauri::State<'_, Arc<DesktopState>>) -> bool {
     state.thread_store().remove_authorized_key(&id)
 }
 
 pub fn run() {
-    let state = state::DesktopState::open_default().expect("open store");
-    let state_for_setup: Arc<state::DesktopState> = Arc::clone(&state);
+    let state = DesktopState::open_default().expect("open store");
+    let state_for_setup: Arc<DesktopState> = Arc::clone(&state);
     tauri::Builder::default()
         .manage(state)
         .setup(move |app| {
-            state_for_setup.set_app_handle(app.handle().clone());
+            state_for_setup.set_event_bus(Arc::new(TauriEventBus::new(app.handle().clone())));
             Arc::clone(&state_for_setup).restore_clients();
             Ok(())
         })

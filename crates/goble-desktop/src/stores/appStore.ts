@@ -110,6 +110,7 @@ interface AppState {
   setMessages: (chatId: string, messages: ChatMessage[]) => void;
   addMessage: (chatId: string, message: ChatMessage) => void;
   updateMessage: (chatId: string, messageId: string, content: string | ((prev: string) => string)) => void;
+  removeMessage: (chatId: string, messageId: string) => void;
   setAgents: (agents: AgentInfo[]) => void;
   addAgent: (agent: AgentInfo) => void;
   updateAgent: (agent: AgentInfo) => void;
@@ -257,6 +258,13 @@ export const useStore = create<AppState>((set) => ({
         },
       };
     }),
+  removeMessage: (chatId, messageId) =>
+    set((state) => ({
+      messages: {
+        ...state.messages,
+        [chatId]: (state.messages[chatId] || []).filter((m) => m.id !== messageId),
+      },
+    })),
   setAgents: (agents) => set({ agents }),
   addAgent: (agent) => set((state) => ({ agents: [agent, ...state.agents] })),
   updateAgent: (agent) =>

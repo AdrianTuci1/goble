@@ -13,6 +13,7 @@
 }
 
 .normal-chat-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -27,6 +28,37 @@
   font-size: 14px;
   color: var(--ds-muted, #8b949e);
   letter-spacing: 0.02em;
+}
+
+.chat-header-observability-btn {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--ds-muted, #8b949e);
+  cursor: pointer;
+}
+
+.chat-header-observability-btn:hover {
+  background: var(--ds-hover, #2a2e36);
+  color: var(--ds-text, #e4e6eb);
+}
+
+.chat-header-observability-btn.active {
+  background: var(--ds-surface-raised, #21252e);
+  color: var(--ds-text, #e4e6eb);
+}
+
+.normal-chat-meta {
+  display: none;
 }
 
 .normal-chat-messages {
@@ -46,50 +78,132 @@
 
 .normal-message {
   display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  max-width: 720px;
   width: 100%;
-  align-self: center;
+  max-width: 720px;
+  margin: 4px 0;
+  line-height: 1.5;
+  font-size: 14px;
+  color: var(--ds-text, #e4e6eb);
 }
 
 .normal-message.user {
-  flex-direction: row-reverse;
+  justify-content: flex-end;
+  align-self: flex-end;
 }
 
-.normal-message.assistant,
+.normal-message.assistant {
+  justify-content: flex-start;
+  align-self: flex-start;
+}
+
 .normal-message.system {
-  align-self: center;
-}
-
-.normal-message-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  background: var(--ds-border, #2a2e36);
-  color: var(--ds-muted, #8b949e);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  font-weight: 600;
-  flex-shrink: 0;
+  justify-content: flex-start;
+  align-self: flex-start;
 }
 
 .normal-message-body {
-  background: var(--ds-surface, #181b21);
   padding: 10px 14px;
-  border-radius: 10px;
+  border-radius: 18px;
+  background: var(--ds-surface-raised, #21252e);
   border: 1px solid var(--ds-border, #2a2e36);
   color: var(--ds-text, #e4e6eb);
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 14px;
-  line-height: 1.5;
+  max-width: 70%;
 }
 
-.normal-message.user .normal-message-body {
+.normal-message.assistant .normal-message-body {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 8px 0;
+  max-width: 100%;
+}
+
+.normal-message.system .normal-message-body {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 4px 0;
+  max-width: 100%;
+  color: var(--ds-muted, #8b949e);
+  font-style: italic;
+}
+
+.normal-message-system {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.normal-message-configure-btn {
+  align-self: flex-start;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--ds-border, #2a2e36);
   background: var(--ds-surface-raised, #21252e);
+  color: var(--ds-text, #e4e6eb);
+  font-size: 12px;
+  cursor: pointer;
+  font-style: normal;
+}
+
+.normal-message-configure-btn:hover {
+  background: var(--ds-hover, #2a2e36);
+}
+
+.normal-message-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.normal-message-card .card-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ds-text, #e4e6eb);
+  font-style: normal;
+}
+
+.normal-message-card input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--ds-border, #2a2e36);
+  background: var(--ds-bg, #0f1115);
+  color: var(--ds-text, #e4e6eb);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.normal-message-card input::placeholder {
+  color: var(--ds-muted, #8b949e);
+}
+
+.normal-message-card .card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.normal-message-card .card-actions button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--ds-border, #2a2e36);
+  background: var(--ds-surface-raised, #21252e);
+  color: var(--ds-text, #e4e6eb);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.normal-message-card .card-actions button:hover:not(:disabled) {
+  background: var(--ds-hover, #2a2e36);
+}
+
+.normal-message-card .card-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .normal-chat-composer-wrap {

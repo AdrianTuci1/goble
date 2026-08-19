@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Activity } from 'lucide-react';
 import { useStore } from '../stores/appStore';
 import {
   listChats,
@@ -6,10 +8,11 @@ import {
   chatMessages,
   onChatUpdated,
   onHarnessEvent,
+  setLlmSetting,
+  LLM_PROVIDERS,
   type HarnessEventPayload,
   type ChatMessage,
 } from '../tauri/api';
-import { getInitials } from '../utils/designSystem';
 import ChatComposer from './ChatComposer';
 import './ChatPage.css';
 
@@ -29,11 +32,39 @@ export default function ChatPage() {
   const setMessages = useStore((s) => s.setMessages);
   const addMessage = useStore((s) => s.addMessage);
   const updateMessage = useStore((s) => s.updateMessage);
+  const removeMessage = useStore((s) => s.removeMessage);
+  const updateConversation = useStore((s) => s.updateConversation);
+  const rightSidebarOpen = useStore((s) => s.rightSidebarOpen);
+  const rightSidebarTab = useStore((s) => s.rightSidebarTab);
+  const setRightSidebarOpen = useStore((s) => s.setRightSidebarOpen);
+  const setRightSidebarTab = useStore((s) => s.setRightSidebarTab);
 
   const messages = activeConversationId
     ? messagesMap[activeConversationId] || EMPTY_MESSAGES
     : EMPTY_MESSAGES;
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
+  const navigate = useNavigate();
+
+  function toggleObservability() {
+    if (rightSidebarOpen && rightSidebarTab === 'history') {
+      setRightSidebarOpen(false);
+    } else {
+      setRightSidebarTab('history');
+      setRightSidebarOpen(true);
+    }
+  }
+
+  function parseCardContent(content: string): { kind: string; meta: Record<string, string> } | null {
+    if (!content.startsWith('__CARD__')) return null;
+    try {
+      const parsed = JSON.parse(content.slice('__CARD__'.length));
+      const { kind, ...meta } = parsed;
+      if (typeof kind !== 'string') return null;
+      return { kind, meta: meta as Record<string, string> };
+    } catch {
+      return null;
+    }
+  }
 
   useEffect(() => {
     listChats()
@@ -116,6 +147,52 @@ export default function ChatPage() {
     return () => unsubs.forEach((u) => u());
   }, [setMessages, addMessage, updateMessage]);
 
+  function ApiKeyCard({ messageId, provider }: { messageId: string; provider: string }) {
+    const [value, setValue] = useState('');
+    const [saving, setSaving] = useState(false);
+    const providerInfo = LLM_PROVIDERS.find((p) => p.id === provider);
+    const defaultModel = providerInfo?.defaultModel || '';
+
+    async function save() {
+      if (!value.trim() || !activeConversationId) return;
+      setSaving(true);
+      try {
+        await setLlmSetting(provider, value.trim(), defaultModel);
+        updateConversation(activeConversationId, { provider, model: defaultModel });
+        await chatMessages(activeConversationId);
+        updateMessage(activeConversationId, messageId, `API key saved for ${providerInfo?.name || provider}.`);
+      } catch {
+        updateMessage(activeConversationId, messageId, `Failed to save API key for ${providerInfo?.name || provider}.`);
+      } finally {
+        setSaving(false);
+      }
+    }
+
+    function cancel() {
+      if (!activeConversationId) return;
+      removeMessage(activeConversationId, messageId);
+    }
+
+    return (
+      <div className="normal-message-card api-key-card">
+        <div className="card-title">Configure {providerInfo?.name || provider} API key</div>
+        <input
+          type="password"
+          placeholder="sk-..."
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          disabled={saving}
+        />
+        <div className="card-actions">
+          <button onClick={save} disabled={saving || !value.trim()}>
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+          <button onClick={cancel} disabled={saving}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
   if (!activeConversationId || !activeConversation) {
     return (
       <div className="normal-chat empty">
@@ -132,25 +209,54 @@ export default function ChatPage() {
     <div className="normal-chat">
       <div className="normal-chat-header">
         <span className="normal-chat-title">{activeConversation.title || 'Chat'}</span>
-        <span className="normal-chat-meta">
-          {activeConversation.provider} / {activeConversation.model}
-        </span>
+        <button
+          type="button"
+          className={`chat-header-observability-btn ${rightSidebarOpen && rightSidebarTab === 'history' ? 'active' : ''}`}
+          title="Observability"
+          aria-label="Observability"
+          onClick={toggleObservability}
+        >
+          <Activity size={16} />
+        </button>
       </div>
 
       <div className="normal-chat-messages">
         {messages.length === 0 && (
           <div className="normal-chat-empty">Send a message to start the conversation.</div>
         )}
-        {messages.map((m) => (
-          <div key={m.id} className={`normal-message ${m.role}`}>
-            <div className="normal-message-avatar" title={m.role}>
-              {getInitials(m.role)}
+        {messages.map((m) => {
+          const card = m.role === 'system' ? parseCardContent(m.content) : null;
+          if (card?.kind === 'api-key' && activeConversationId) {
+            return (
+              <div key={m.id} className="normal-message system">
+                <div className="normal-message-body">
+                  <ApiKeyCard messageId={m.id} provider={card.meta.provider} />
+                </div>
+              </div>
+            );
+          }
+          return (
+            <div key={m.id} className={`normal-message ${m.role}`}>
+              <div className="normal-message-body">
+                {m.role === 'system' ? (
+                  <div className="normal-message-system">
+                    <span className="normal-message-content">{m.content}</span>
+                    {m.content.includes('No model configured') && (
+                      <button
+                        className="normal-message-configure-btn"
+                        onClick={() => navigate('/settings')}
+                      >
+                        Configure model
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="normal-message-content">{m.content}</div>
+                )}
+              </div>
             </div>
-            <div className="normal-message-body">
-              <div className="normal-message-content">{m.content}</div>
-            </div>
-          </div>
-        ))}
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
 

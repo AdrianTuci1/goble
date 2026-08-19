@@ -1,0 +1,28 @@
+.composer-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--ds-muted, #8b949e);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.composer-icon-btn:hover:not(:disabled) {
+  background: var(--ds-hover, #2a2e36);
+  color: var(--ds-text, #e4e6eb);
+}
+
+.composer-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.composer-icon-btn.active {
+  background: var(--ds-surface-raised, #21252e);
+  color: var(--ds-text, #e4e6eb);
+}

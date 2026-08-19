@@ -3,7 +3,7 @@ members = [
   "crates/*",
 ]
 resolver = "2"
-exclude = ["crates/goble-desktop", "crates/goble-ui"]
+exclude = ["crates/goble-desktop"]
 
 [workspace.package]
 authors = ["Goble Contributors"]

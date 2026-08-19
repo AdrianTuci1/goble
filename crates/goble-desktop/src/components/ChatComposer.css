@@ -1,67 +1,62 @@
+.normal-chat-composer-wrap {
+  width: 100%;
+  padding: 0 16px 16px;
+}
+
 .chat-composer-normal {
-  flex-shrink: 0;
-  background: transparent;
-  padding: 8px 0 16px;
-}
-
-.composer-content {
-  max-width: 720px;
-  width: 100%;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-}
-
-.composer-input-wrap {
   position: relative;
-  display: flex;
-  flex-direction: column;
+  width: 100%;
+  height: 160px;
+  background: var(--ds-surface, #181b21);
+  border: 1px solid var(--ds-border, #2a2e36);
+  border-radius: 2px;
+  overflow: visible;
 }
 
-.composer-input {
-  flex: 1;
+.composer-textarea {
+  position: absolute;
+  inset: 0;
   width: 100%;
+  height: 100%;
+  padding: 16px 12px 56px 12px;
   background: transparent;
   border: none;
+  outline: none;
+  resize: none;
   color: var(--ds-text, #e4e6eb);
   font-size: 14px;
   line-height: 1.5;
-  padding: 38px 16px 12px;
-  outline: none;
-  resize: none;
-  max-height: 160px;
-  min-height: 0;
-  overflow-y: auto;
   font-family: inherit;
+  z-index: 0;
+  pointer-events: auto;
 }
 
-.composer-input::placeholder {
+.composer-textarea::placeholder {
   color: var(--ds-muted, #8b949e);
 }
 
-.composer-chips {
+.composer-textarea:disabled {
+  opacity: 0.6;
+}
+
+.composer-left {
   position: absolute;
-  top: 10px;
-  left: 16px;
+  left: 10px;
+  bottom: 10px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  pointer-events: none;
+  gap: 6px;
+  z-index: 1;
+  pointer-events: auto;
 }
 
-.composer-chip {
-  display: inline-flex;
+.composer-right {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
   align-items: center;
-  gap: 4px;
-  color: var(--ds-muted, #8b949e);
-  font-size: 11px;
-  line-height: 1.4;
-  background: transparent;
-  border: none;
-  padding: 0;
-}
-
-.composer-chip.model-chip.missing {
-  opacity: 0.7;
+  gap: 2px;
+  z-index: 1;
+  pointer-events: auto;
 }

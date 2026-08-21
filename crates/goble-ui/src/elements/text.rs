@@ -111,8 +111,13 @@ impl Element for Text {
         size
     }
 
-    fn paint(&mut self, origin: Vector2F, _ctx: &mut PaintContext, _app: &AppContext) {
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        if let Some(size) = self.size {
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                renderer.draw_text(origin, self.text.clone(), self.font_size, self.color, size.x);
+            }
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {

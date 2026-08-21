@@ -3,7 +3,7 @@ use crate::elements::{
     SizeConstraint,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::{vec2f, Vector2F};
+use crate::geometry::{vec2f, RectF, Vector2F};
 
 pub struct Container {
     child: Option<Box<dyn Element>>,
@@ -124,8 +124,25 @@ impl Element for Container {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let size = self.size.unwrap_or(Vector2F::zero());
+        let rect = RectF::new(crate::geometry::PointF::new(origin.x, origin.y), crate::geometry::Size2F::new(size.x, size.y));
+
+        if let Fill::Solid(color) = self.background {
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                renderer.fill_rounded_rect(rect, color, self.corner_radius);
+            }
+        }
+
+        if let Some(border) = &self.border {
+            if let Fill::Solid(color) = border.color {
+                if let Some(renderer) = ctx.renderer.as_mut() {
+                    renderer.stroke_rect(rect, color, border.width, self.corner_radius);
+                }
+            }
+        }
+
         if let Some(child) = self.child.as_mut() {
-        let child_origin = vec2f(
+            let child_origin = vec2f(
                 origin.x + self.padding.left,
                 origin.y + self.padding.top,
             );

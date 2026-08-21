@@ -1,0 +1,529 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::elements::{
+    AppContext, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment,
+    Element, Empty, EventContext, Fill, Flex, Icon, IconButton, LayoutContext, MainAxisAlignment,
+    PaintContext, Point, SidebarItem, SizeConstraint, Text,
+};
+use crate::event::DispatchedEvent;
+use crate::geometry::Vector2F;
+use crate::style::EdgeInsets as Insets;
+use crate::theme::{ColorToken, SpacingToken};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidebarMode {
+    Agent,
+    Threads,
+    Drive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActiveView {
+    Chat,
+    AgentManagement,
+    Threads,
+    Drive,
+    Settings(SettingsTab),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsTab {
+    General,
+    Appearance,
+    Account,
+    Cluster,
+}
+
+impl Default for SettingsTab {
+    fn default() -> Self {
+        SettingsTab::General
+    }
+}
+
+pub struct ShellState {
+    pub sidebar_collapsed: bool,
+    pub sidebar_mode: SidebarMode,
+    pub active_view: ActiveView,
+}
+
+impl Default for ShellState {
+    fn default() -> Self {
+        Self {
+            sidebar_collapsed: false,
+            sidebar_mode: SidebarMode::Agent,
+            active_view: ActiveView::Chat,
+        }
+    }
+}
+
+pub struct ShellView {
+    state: Rc<RefCell<ShellState>>,
+    dirty: Rc<RefCell<bool>>,
+    content_resolver: Box<dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static>,
+    event_checker: Option<Rc<RefCell<dyn FnMut() -> bool>>>,
+    root: Box<dyn Element>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl ShellView {
+    pub fn new(state: ShellState, app: &AppContext) -> Self {
+        let bg = app.theme.color(ColorToken::Bg);
+        let resolver: Box<
+            dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static,
+        > = Box::new(move |_state: Rc<RefCell<ShellState>>, _dirty: Rc<RefCell<bool>>| -> Box<dyn Element> {
+            Container::new(Empty::new().finish())
+                .with_background(Fill::Solid(bg))
+                .finish()
+        });
+        Self::with_content(state, app, resolver)
+    }
+
+    pub fn with_content<F>(state: ShellState, app: &AppContext, content_resolver: F) -> Self
+    where
+        F: Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static,
+    {
+        Self::with_content_and_event_checker(state, app, content_resolver, None)
+    }
+
+    pub fn with_content_and_event_checker<F>(
+        state: ShellState,
+        app: &AppContext,
+        content_resolver: F,
+        event_checker: Option<Rc<RefCell<dyn FnMut() -> bool>>>,
+    ) -> Self
+    where
+        F: Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static,
+    {
+        let state = Rc::new(RefCell::new(state));
+        let dirty = Rc::new(RefCell::new(false));
+        let content_resolver = Box::new(content_resolver);
+        let root = Self::build_root(
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            &content_resolver,
+            app,
+        );
+        Self {
+            state,
+            dirty,
+            content_resolver,
+            event_checker,
+            root,
+            size: None,
+            origin: None,
+        }
+    }
+
+    pub fn state(&self) -> Rc<RefCell<ShellState>> {
+        Rc::clone(&self.state)
+    }
+
+    pub fn request_rebuild(&self) {
+        *self.dirty.borrow_mut() = true;
+    }
+
+    fn check_events(&self) {
+        if let Some(checker) = self.event_checker.as_ref() {
+            if (checker.borrow_mut())() {
+                self.request_rebuild();
+            }
+        }
+    }
+
+    fn rebuild(&mut self, app: &AppContext) {
+        self.root = Self::build_root(
+            Rc::clone(&self.state),
+            Rc::clone(&self.dirty),
+            &self.content_resolver,
+            app,
+        );
+        *self.dirty.borrow_mut() = false;
+    }
+
+    fn build_root(
+        state: Rc<RefCell<ShellState>>,
+        dirty: Rc<RefCell<bool>>,
+        content_resolver: &dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let topbar = Self::topbar(Rc::clone(&state), Rc::clone(&dirty), app);
+        let body = Self::body(Rc::clone(&state), Rc::clone(&dirty), content_resolver, app);
+
+        let column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(topbar)
+            .with_child(body)
+            .finish();
+
+        Container::new(column)
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+            .finish()
+    }
+
+    fn topbar(
+        state: Rc<RefCell<ShellState>>,
+        dirty: Rc<RefCell<bool>>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let spacing = app.theme.spacing_px(SpacingToken::Md);
+
+        let toggle_state = Rc::clone(&state);
+        let toggle_dirty = Rc::clone(&dirty);
+        let sidebar_toggle = IconButton::new(
+            Icon::new("menu")
+                .with_size(18.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_on_click(move || {
+            let collapsed = toggle_state.borrow().sidebar_collapsed;
+            toggle_state.borrow_mut().sidebar_collapsed = !collapsed;
+            *toggle_dirty.borrow_mut() = true;
+        })
+        .finish();
+
+        let title = Text::new("Goble")
+            .with_font_size(18.0)
+            .with_theme_color(ColorToken::Text, app)
+            .finish();
+
+        let left = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(spacing)
+            .with_child(sidebar_toggle)
+            .with_child(title)
+            .finish();
+
+        let chat_button = Self::nav_button(
+            "Chat",
+            ActiveView::Chat,
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            app,
+        );
+        let agents_button = Self::nav_button(
+            "Agents",
+            ActiveView::AgentManagement,
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            app,
+        );
+        let threads_button = Self::nav_button(
+            "Threads",
+            ActiveView::Threads,
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            app,
+        );
+        let drive_button = Self::nav_button(
+            "Drive",
+            ActiveView::Drive,
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            app,
+        );
+        let settings_button = Self::nav_button(
+            "Settings",
+            ActiveView::Settings(SettingsTab::default()),
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            app,
+        );
+
+        let right = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(spacing)
+            .with_child(chat_button)
+            .with_child(agents_button)
+            .with_child(threads_button)
+            .with_child(drive_button)
+            .with_child(settings_button)
+            .finish();
+
+        let row = Flex::row()
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(left)
+            .with_child(right)
+            .finish();
+
+        Container::new(row)
+            .with_padding(Insets::uniform(spacing))
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+            .finish()
+    }
+
+    fn nav_button(
+        label: &str,
+        view: ActiveView,
+        state: Rc<RefCell<ShellState>>,
+        dirty: Rc<RefCell<bool>>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let selected = state.borrow().active_view == view;
+        let state2 = Rc::clone(&state);
+        let dirty2 = Rc::clone(&dirty);
+        Button::new(
+            Text::new(label)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_variant(if selected {
+            ButtonVariant::Primary
+        } else {
+            ButtonVariant::Ghost
+        })
+        .with_on_click(move || {
+            state2.borrow_mut().active_view = view;
+            *dirty2.borrow_mut() = true;
+        })
+        .finish()
+    }
+
+    fn body(
+        state: Rc<RefCell<ShellState>>,
+        dirty: Rc<RefCell<bool>>,
+        content_resolver: &dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let sidebar = Self::left_panel(Rc::clone(&state), Rc::clone(&dirty), app);
+        let content = content_resolver(Rc::clone(&state), Rc::clone(&dirty));
+
+        Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(sidebar)
+            .with_child(content)
+            .finish()
+    }
+
+    fn left_panel(
+        state: Rc<RefCell<ShellState>>,
+        dirty: Rc<RefCell<bool>>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let spacing = app.theme.spacing_px(SpacingToken::Sm);
+        let s = state.borrow();
+
+        let mode_buttons = Flex::row()
+            .with_spacing(spacing)
+            .with_child(Self::mode_button(
+                "Agent",
+                SidebarMode::Agent,
+                Rc::clone(&state),
+                Rc::clone(&dirty),
+                app,
+            ))
+            .with_child(Self::mode_button(
+                "Threads",
+                SidebarMode::Threads,
+                Rc::clone(&state),
+                Rc::clone(&dirty),
+                app,
+            ))
+            .with_child(Self::mode_button(
+                "Drive",
+                SidebarMode::Drive,
+                Rc::clone(&state),
+                Rc::clone(&dirty),
+                app,
+            ))
+            .finish();
+
+        let items: Vec<Box<dyn Element>> = match s.sidebar_mode {
+            SidebarMode::Agent => vec![
+                Self::sidebar_nav_item(
+                    "New chat",
+                    ActiveView::Chat,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+                Self::sidebar_nav_item(
+                    "Agent runs",
+                    ActiveView::AgentManagement,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+            ],
+            SidebarMode::Threads => vec![
+                Self::sidebar_nav_item(
+                    "Recent",
+                    ActiveView::Threads,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+                Self::sidebar_nav_item(
+                    "Starred",
+                    ActiveView::Threads,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+            ],
+            SidebarMode::Drive => vec![
+                Self::sidebar_nav_item(
+                    "Workflows",
+                    ActiveView::Drive,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+                Self::sidebar_nav_item(
+                    "Agents",
+                    ActiveView::AgentManagement,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+                Self::sidebar_nav_item(
+                    "Teams",
+                    ActiveView::Drive,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+            ],
+        };
+
+        let column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(spacing)
+            .with_child(mode_buttons)
+            .with_children(items)
+            .finish();
+
+        let width = if s.sidebar_collapsed { 56.0 } else { 240.0 };
+        ConstrainedBox::new(
+            Container::new(column)
+                .with_padding(Insets::uniform(spacing))
+                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                .finish(),
+        )
+        .with_width(width)
+        .with_min_width(width)
+        .with_max_width(width)
+        .finish()
+    }
+
+    fn mode_button(
+        label: &str,
+        mode: SidebarMode,
+        state: Rc<RefCell<ShellState>>,
+        dirty: Rc<RefCell<bool>>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let selected = state.borrow().sidebar_mode == mode;
+        let state2 = Rc::clone(&state);
+        let dirty2 = Rc::clone(&dirty);
+        Button::new(
+            Text::new(label)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_variant(if selected {
+            ButtonVariant::Primary
+        } else {
+            ButtonVariant::Ghost
+        })
+        .with_on_click(move || {
+            state2.borrow_mut().sidebar_mode = mode;
+            *dirty2.borrow_mut() = true;
+        })
+        .finish()
+    }
+
+    fn sidebar_nav_item(
+        label: &str,
+        view: ActiveView,
+        state: Rc<RefCell<ShellState>>,
+        dirty: Rc<RefCell<bool>>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let state2 = Rc::clone(&state);
+        let dirty2 = Rc::clone(&dirty);
+        SidebarItem::new(
+            Icon::new("circle")
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+            Text::new(label)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+            None,
+            false,
+            app,
+        )
+        .with_on_click(move || {
+            state2.borrow_mut().active_view = view;
+            *dirty2.borrow_mut() = true;
+        })
+        .finish()
+    }
+
+}
+
+impl Element for ShellView {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        self.check_events();
+        if *self.dirty.borrow() {
+            self.rebuild(app);
+        }
+        let size = self.root.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.check_events();
+        if *self.dirty.borrow() {
+            self.rebuild(app);
+        }
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.root.paint(origin, ctx, app);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.root.dispatch_event(event, ctx, app)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::vec2f;
+
+    #[test]
+    fn shell_view_layouts_non_zero() {
+        let app = AppContext::default();
+        let mut shell = ShellView::new(ShellState::default(), &app);
+        let size = shell.layout(
+            SizeConstraint::loose(vec2f(1024.0, 768.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert!(size.x > 0.0);
+        assert!(size.y > 0.0);
+    }
+}

@@ -94,16 +94,17 @@ impl ChatMessageBubble {
                     );
                 }
                 crate::elements::chat_content::ChatFragmentKind::Code(code) => {
-                    let code_container = Container::new(
+                    let code_chip = Container::new(
                         Text::new(code.clone())
                             .with_theme_color(ColorToken::Text, app)
+                            .with_font_size(12.0)
                             .finish(),
                     )
                     .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                    .with_padding(EdgeInsets::uniform(padding))
-                    .with_corner_radius(radius)
+                    .with_padding(EdgeInsets::uniform(spacing / 2.0))
+                    .with_corner_radius(radius / 2.0)
                     .finish();
-                    column = column.with_child(code_container);
+                    column = column.with_child(code_chip);
                 }
                 crate::elements::chat_content::ChatFragmentKind::Link { label, url } => {
                     let on_action = self.on_action.clone();
@@ -151,6 +152,44 @@ impl ChatMessageBubble {
                     .with_corner_radius(radius)
                     .finish();
                     column = column.with_child(quote);
+                }
+                crate::elements::chat_content::ChatFragmentKind::CodeBlock { lang, code } => {
+                    let mut code_column = Flex::column()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .with_spacing(2.0);
+                    if let Some(lang) = lang {
+                        code_column = code_column.with_child(
+                            Text::new(lang.clone())
+                                .with_theme_color(ColorToken::Muted, app)
+                                .with_font_size(10.0)
+                                .finish(),
+                        );
+                    }
+                    code_column = code_column.with_child(
+                        Text::new(code.clone())
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    );
+                    let code_container = Container::new(code_column.finish())
+                        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+                        .with_padding(EdgeInsets::uniform(padding))
+                        .with_corner_radius(radius)
+                        .finish();
+                    column = column.with_child(code_container);
+                }
+                crate::elements::chat_content::ChatFragmentKind::Heading { level, text } => {
+                    let font_size = match level {
+                        1 => 20.0,
+                        2 => 18.0,
+                        3 => 16.0,
+                        _ => 14.0,
+                    };
+                    column = column.with_child(
+                        Text::new(text.clone())
+                            .with_theme_color(ColorToken::Text, app)
+                            .with_font_size(font_size)
+                            .finish(),
+                    );
                 }
                 crate::elements::chat_content::ChatFragmentKind::LineBreak => {
                     column = column.with_child(crate::elements::Spacer::new().finish());

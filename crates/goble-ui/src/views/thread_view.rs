@@ -1,11 +1,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::chat_content::{ChatAction, ChatMessage};
+use crate::elements::chat_content::{ChatAction, ChatMessage, ChatRole};
 use crate::elements::{
-    AppContext, Axis, ChatComposer, ChatMessageBubble, Container, CrossAxisAlignment, EdgeInsets,
-    Element, Fill, Flex, LayoutContext, MainAxisAlignment, PaintContext, Point, Scrollable,
-    SizeConstraint,
+    AppContext, Axis, ChatComposer, Container, CrossAxisAlignment, EdgeInsets, Element, Fill,
+    Flex, GroupChatMessageGroup, LayoutContext, MainAxisAlignment, PaintContext, Point, Scrollable,
+    SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -69,21 +69,32 @@ impl ThreadView {
             .with_spacing(spacing);
         column = column.with_child(header);
 
-        let mut message_column = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(spacing);
-        for message in &self.messages {
-            let on_action = self.on_action.clone();
-            let fragments = message.fragments.clone();
-            let bubble = ChatMessageBubble::new(message.role, fragments)
-                .with_on_action(move |action| {
-                    if let Some(cb) = on_action.as_ref() {
-                        (cb.borrow_mut())(action);
-                    }
-                })
-                .finish();
-            message_column = message_column.with_child(bubble);
-        }
+        let message_column = if self.messages.is_empty() {
+            Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_alignment(MainAxisAlignment::Center)
+                .with_child(
+                    Text::new("No messages yet.")
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+        } else {
+            let mut message_column = Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_spacing(spacing);
+            for group in group_messages_by_author(&self.messages) {
+                let on_action = self.on_action.clone();
+                let group_view = GroupChatMessageGroup::new(group)
+                    .with_on_action(move |action| {
+                        if let Some(cb) = on_action.as_ref() {
+                            (cb.borrow_mut())(action);
+                        }
+                    })
+                    .finish();
+                message_column = message_column.with_child(group_view);
+            }
+            message_column
+        };
         column = column.with_child(Scrollable::new(message_column.finish(), Axis::Vertical).finish());
 
         let current_value = self.composer_value.borrow().clone();
@@ -106,6 +117,43 @@ impl ThreadView {
                 .with_padding(EdgeInsets::uniform(padding))
                 .finish(),
         );
+    }
+}
+
+fn author_key(message: &ChatMessage) -> String {
+    message
+        .author_name
+        .clone()
+        .unwrap_or_else(|| role_label(message.role).to_string())
+}
+
+fn group_messages_by_author(messages: &[ChatMessage]) -> Vec<Vec<ChatMessage>> {
+    if messages.is_empty() {
+        return Vec::new();
+    }
+
+    let mut groups: Vec<Vec<ChatMessage>> = Vec::new();
+    let mut current_key: String = author_key(&messages[0]);
+    let mut current_group: Vec<ChatMessage> = vec![messages[0].clone()];
+
+    for message in &messages[1..] {
+        let key = author_key(message);
+        if key == current_key {
+            current_group.push(message.clone());
+        } else {
+            groups.push(current_group);
+            current_key = key;
+            current_group = vec![message.clone()];
+        }
+    }
+    groups.push(current_group);
+    groups
+}
+
+fn role_label(role: ChatRole) -> &'static str {
+    match role {
+        ChatRole::User => "You",
+        ChatRole::Assistant => "Assistant",
     }
 }
 
@@ -158,10 +206,12 @@ mod tests {
     #[test]
     fn thread_view_layouts_with_messages() {
         let app = AppContext::default();
-        let messages = vec![ChatMessage::new(
-            ChatRole::Assistant,
-            vec![ChatFragment::text("Thread message")],
-        )];
+        let messages = vec![
+            ChatMessage::new(ChatRole::Assistant, vec![ChatFragment::text("Thread message")])
+                .with_author_name("Ada"),
+            ChatMessage::new(ChatRole::Assistant, vec![ChatFragment::text("Another")])
+                .with_author_name("Ada"),
+        ];
         let mut view = ThreadView::new("General", messages);
         let size = view.layout(
             SizeConstraint::loose(vec2f(600.0, 800.0)),
@@ -170,5 +220,21 @@ mod tests {
         );
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
+    }
+
+    #[test]
+    fn thread_view_groups_messages_by_author() {
+        let messages = vec![
+            ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Hello")])
+                .with_author_name("Ada"),
+            ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Hi")])
+                .with_author_name("Ada"),
+            ChatMessage::new(ChatRole::Assistant, vec![ChatFragment::text("Hey")])
+                .with_author_name("Bot"),
+        ];
+        let groups = group_messages_by_author(&messages);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].len(), 2);
+        assert_eq!(groups[1].len(), 1);
     }
 }

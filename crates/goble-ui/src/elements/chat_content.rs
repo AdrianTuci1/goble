@@ -50,6 +50,24 @@ impl ChatFragment {
         }
     }
 
+    pub fn code_block(lang: Option<String>, code: impl Into<String>) -> Self {
+        Self {
+            kind: ChatFragmentKind::CodeBlock {
+                lang,
+                code: code.into(),
+            },
+        }
+    }
+
+    pub fn heading(level: u8, text: impl Into<String>) -> Self {
+        Self {
+            kind: ChatFragmentKind::Heading {
+                level,
+                text: text.into(),
+            },
+        }
+    }
+
     pub fn link(label: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             kind: ChatFragmentKind::Link {
@@ -92,11 +110,28 @@ impl ChatFragment {
 pub struct ChatMessage {
     pub role: ChatRole,
     pub fragments: Vec<ChatFragment>,
+    pub author_name: Option<String>,
+    pub timestamp: Option<String>,
 }
 
 impl ChatMessage {
     pub fn new(role: ChatRole, fragments: Vec<ChatFragment>) -> Self {
-        Self { role, fragments }
+        Self {
+            role,
+            fragments,
+            author_name: None,
+            timestamp: None,
+        }
+    }
+
+    pub fn with_author_name(mut self, name: impl Into<String>) -> Self {
+        self.author_name = Some(name.into());
+        self
+    }
+
+    pub fn with_timestamp(mut self, timestamp: impl Into<String>) -> Self {
+        self.timestamp = Some(timestamp.into());
+        self
     }
 
     /// Build a chat message by parsing a Markdown string into fragments.
@@ -111,7 +146,11 @@ impl ChatMessage {
         } else {
             ChatRole::Assistant
         };
+        let author_name = message.author.participant_id().raw_id().to_string();
+        let timestamp = message.created_at.to_rfc2822();
         Self::from_markdown(role, message.content.clone())
+            .with_author_name(author_name)
+            .with_timestamp(timestamp)
     }
 }
 
@@ -123,6 +162,14 @@ pub enum ChatFragmentKind {
     Italic(String),
     BoldItalic(String),
     Code(String),
+    CodeBlock {
+        lang: Option<String>,
+        code: String,
+    },
+    Heading {
+        level: u8,
+        text: String,
+    },
     Link {
         label: String,
         url: String,

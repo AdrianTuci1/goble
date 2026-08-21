@@ -2,7 +2,7 @@
 ///
 /// This mirrors the `platform::app` module in Warp's octomusui and can be
 /// extended with window creation, menu integration, and clipboard handling.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct AppContext;
 
 impl AppContext {

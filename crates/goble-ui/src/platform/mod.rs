@@ -1,4 +1,7 @@
 pub mod app;
+pub mod window;
+pub mod wgpu_render_engine;
+pub mod text_atlas;
 
 #[cfg(target_os = "macos")]
 pub mod mac;
@@ -6,6 +9,8 @@ pub mod mac;
 pub mod linux;
 #[cfg(target_os = "windows")]
 pub mod windows;
+
+pub use window::run_with_root;
 
 pub mod current {
     cfg_if::cfg_if! {

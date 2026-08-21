@@ -33,6 +33,7 @@ pub use right_panel::RightPanel;
 pub use running_indicator::RunningIndicator;
 pub use search_input::SearchInput;
 pub use select::{Select, SelectOption};
+pub use shell::{ActiveView, SettingsTab, ShellState, ShellView, SidebarMode};
 pub use sidebar::Sidebar;
 pub use sidebar_item::SidebarItem;
 pub use spacer::Spacer;
@@ -98,15 +99,32 @@ pub struct LayoutContext;
 pub struct AfterLayoutContext;
 
 /// Context available during painting.
-#[derive(Default)]
-pub struct PaintContext;
+pub struct PaintContext {
+    pub renderer: Option<crate::render::Renderer>,
+}
+
+impl PaintContext {
+    pub fn new(renderer: crate::render::Renderer) -> Self {
+        Self {
+            renderer: Some(renderer),
+        }
+    }
+}
+
+impl Default for PaintContext {
+    fn default() -> Self {
+        Self {
+            renderer: Some(crate::render::Renderer::new()),
+        }
+    }
+}
 
 /// Context available during event dispatch.
 #[derive(Default)]
 pub struct EventContext;
 
 /// Generic application context.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct AppContext {
     pub theme: crate::theme::Theme,
 }
@@ -454,6 +472,10 @@ pub mod drawer;
 pub mod dropdown_menu;
 pub mod empty;
 pub mod flex;
+pub mod group_chat_message;
+pub mod group_chat_message_group;
+pub use group_chat_message::GroupChatMessage;
+pub use group_chat_message_group::GroupChatMessageGroup;
 pub mod header;
 pub mod icon;
 pub mod icon_button;
@@ -467,6 +489,7 @@ pub mod rect;
 pub mod right_panel;
 pub mod running_indicator;
 pub mod scrollable;
+pub mod shell;
 pub mod search_input;
 pub mod select;
 pub mod sidebar;

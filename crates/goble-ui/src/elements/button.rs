@@ -95,11 +95,25 @@ impl Element for Button {
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
-        let child_size = self.child.size().unwrap_or(Vector2F::zero());
         let h_pad = self.horizontal_padding(app);
         let v_pad = self.vertical_padding(app);
+
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            let bg_color = match self.variant {
+                ButtonVariant::Primary => app.theme.color(crate::theme::ColorToken::Accent),
+                ButtonVariant::Ghost | ButtonVariant::Default => app.theme.color(crate::theme::ColorToken::Surface),
+            };
+            let rect = crate::geometry::RectF::new(
+                crate::geometry::PointF::new(origin.x, origin.y),
+                crate::geometry::Size2F::new(size.x, size.y),
+            );
+            renderer.fill_rounded_rect(rect, bg_color, app.theme.radius_px());
+        }
+
+        let child_size = self.child.size().unwrap_or(Vector2F::zero());
         let child_origin = vec2f(
             origin.x + h_pad + (size.x - child_size.x - h_pad * 2.0).max(0.0) / 2.0,
             origin.y + v_pad + (size.y - child_size.y - v_pad * 2.0).max(0.0) / 2.0,

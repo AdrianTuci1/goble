@@ -609,6 +609,10 @@ impl DesktopState {
         *self.vault_passphrase.lock() = passphrase.into_bytes();
     }
 
+    pub fn is_vault_unlocked(&self) -> bool {
+        !self.vault_passphrase.lock().is_empty()
+    }
+
     pub fn add_worker(&self, worker_id: WorkerId, name: String, url: String) -> anyhow::Result<()> {
         let conn = WorkerConnection {
             id: worker_id.to_string(),
@@ -2005,12 +2009,18 @@ impl DesktopState {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_state_add_worker() {
+    fn tmp_state() -> (tempfile::TempDir, Arc<DesktopState>) {
+        let dir = tempfile::tempdir().unwrap();
         let state = DesktopState::new(
             Store::open_in_memory().unwrap(),
-            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+            crate::thread_store::ThreadStore::new(dir.path()).unwrap(),
         );
+        (dir, state)
+    }
+
+    #[test]
+    fn test_state_add_worker() {
+        let (_dir, state) = tmp_state();
         let wid = WorkerId::generate();
         state
             .add_worker(
@@ -2029,10 +2039,7 @@ mod tests {
 
     #[test]
     fn test_state_logs_and_chat() {
-        let state = DesktopState::new(
-            Store::open_in_memory().unwrap(),
-            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
-        );
+        let (_dir, state) = tmp_state();
         state.add_log("hello");
         assert_eq!(state.get_logs().len(), 1);
         let chat_id = state.create_chat("Test chat", None, None).unwrap();
@@ -2047,10 +2054,7 @@ mod tests {
 
     #[test]
     fn test_state_agent_and_workflow() {
-        let state = DesktopState::new(
-            Store::open_in_memory().unwrap(),
-            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
-        );
+        let (_dir, state) = tmp_state();
         let agent = state
             .create_agent("greeter", "say hello", Some("test agent"), vec![])
             .unwrap();
@@ -2075,10 +2079,7 @@ mod tests {
 
     #[test]
     fn test_state_team_and_vault() {
-        let state = DesktopState::new(
-            Store::open_in_memory().unwrap(),
-            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
-        );
+        let (_dir, state) = tmp_state();
         state.set_vault_passphrase("passphrase".to_string());
         state.set_vault_secret("api_key", "sk-123").unwrap();
         assert_eq!(state.list_vault_secrets().len(), 1);
@@ -2090,10 +2091,7 @@ mod tests {
 
     #[test]
     fn test_worker_message_handling() {
-        let state = DesktopState::new(
-            Store::open_in_memory().unwrap(),
-            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
-        );
+        let (_dir, state) = tmp_state();
         let wid = WorkerId::generate();
         state
             .add_worker(
@@ -2118,10 +2116,7 @@ mod tests {
 
     #[test]
     fn test_agent_workflow_team_vault_roundtrip() {
-        let state = DesktopState::new(
-            Store::open_in_memory().unwrap(),
-            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
-        );
+        let (_dir, state) = tmp_state();
         state.set_vault_passphrase("secret".to_string());
         let agent = state
             .create_agent("greeter", "say hello", Some("test agent"), vec![])
@@ -2165,7 +2160,7 @@ mod tests {
         let store = Store::open(tmp.path().join("store.db")).unwrap();
         let state = DesktopState::new(
             store,
-            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+            crate::thread_store::ThreadStore::new(tmp.path().join("threads")).unwrap(),
         );
         state.set_vault_passphrase("p".to_string());
         let agent = state.create_agent("a", "prompt", None, vec![]).unwrap();
@@ -2186,7 +2181,7 @@ mod tests {
 
         let state2 = DesktopState::new(
             Store::open(tmp.path().join("store.db")).unwrap(),
-            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+            crate::thread_store::ThreadStore::new(tmp.path().join("threads")).unwrap(),
         );
         state2.load_from_store().unwrap();
         assert_eq!(state2.list_agents().len(), 1);
@@ -2201,14 +2196,14 @@ mod tests {
         let store = Store::open(tmp.path().join("store.db")).unwrap();
         let state = DesktopState::new(
             store,
-            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+            crate::thread_store::ThreadStore::new(tmp.path().join("threads")).unwrap(),
         );
         let identity = state.create_cluster("test-cluster", "secret-pass").unwrap();
         assert!(!identity.cluster_name.is_empty());
 
         let state2 = DesktopState::new(
             Store::open(tmp.path().join("store.db")).unwrap(),
-            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+            crate::thread_store::ThreadStore::new(tmp.path().join("threads")).unwrap(),
         );
         assert!(state2.has_stored_cluster_identity());
         assert!(state2.unlock_cluster_identity("wrong").is_err());
@@ -2219,10 +2214,7 @@ mod tests {
 
     #[test]
     fn migrate_legacy_chats_creates_threads() {
-        let state = DesktopState::new(
-            Store::open_in_memory().unwrap(),
-            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
-        );
+        let (_dir, state) = tmp_state();
         // Create a legacy chat with two messages
         state.create_chat("legacy chat", None, None).unwrap();
         let chats = state.list_chats();

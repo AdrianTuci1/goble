@@ -8,5 +8,8 @@
 .vscode/
 .idea/
 node_modules/
+*.sqlite
+crates/goble-desktop-service/messages/
+crates/goble-desktop-service/threads.json
 crates/goble-desktop/src-tauri/*.json
 crates/goble-desktop/src-tauri/messages/

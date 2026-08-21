@@ -14,9 +14,11 @@ native-rendering = []
 
 [dependencies]
 anyhow = "1.0"
+bytemuck = { workspace = true, features = ["derive"] }
 cfg-if = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 derivative = "2.2"
+fontdue = "0.9"
 goble-core = { path = "../goble-core" }
 goble-desktop-service = { path = "../goble-desktop-service" }
 derive_more = { version = "0.99", features = ["deref", "deref_mut", "from", "into"] }
@@ -28,6 +30,7 @@ num-traits = "0.2"
 ordered-float = "3.0"
 palette = "0.7"
 parking_lot = "0.12"
+pollster = "0.4"
 pulldown-cmark = "0.13"
 resvg = "0.47"
 rustc-hash = "2.1"
@@ -41,8 +44,9 @@ wgpu = { version = "25.0", default-features = false, features = ["wgsl", "metal"
 winit = { version = "0.30", features = ["rwh_06"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
 core-graphics = "0.25"
-core-text = "21.0"
+core-text = "22.0"
 font-kit = { version = "0.13", default-features = false, features = ["source"] }
 objc = "0.2"
 

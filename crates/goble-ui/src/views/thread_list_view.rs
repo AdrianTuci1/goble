@@ -93,7 +93,11 @@ impl ThreadListView {
                 .map(|id| id == &thread.id)
                 .unwrap_or(thread.selected);
 
-            let leading = Avatar::new(initial_for(&thread.title)).finish();
+            let (bg_token, fg_token, kind_label) = kind_style(thread.kind);
+            let leading = Avatar::new(format!("{}{}", kind_label, initial_for(&thread.title)))
+                .with_theme_background(bg_token, app)
+                .with_theme_foreground(fg_token, app)
+                .finish();
             let title = Text::new(thread.title.clone()).finish();
             let badge: Option<Box<dyn Element>> = if thread.unread_count > 0 {
                 Some(
@@ -140,6 +144,14 @@ fn initial_for(title: &str) -> String {
         .next()
         .map(|c| c.to_uppercase().to_string())
         .unwrap_or_else(|| "#".to_string())
+}
+
+fn kind_style(kind: ThreadKind) -> (ColorToken, ColorToken, &'static str) {
+    match kind {
+        ThreadKind::Channel => (ColorToken::Accent, ColorToken::Text, "#"),
+        ThreadKind::Chat => (ColorToken::Success, ColorToken::Text, "C"),
+        ThreadKind::Direct => (ColorToken::Warning, ColorToken::Text, "@"),
+    }
 }
 
 impl Element for ThreadListView {
@@ -214,5 +226,47 @@ mod tests {
         );
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
+    }
+
+    #[test]
+    fn thread_list_view_select_callback_fires() {
+        let app = AppContext::default();
+        let selected = Rc::new(RefCell::new(None));
+        let selected_clone = selected.clone();
+        let threads = vec![ThreadListEntry {
+            id: "t1".to_string(),
+            title: "General".to_string(),
+            kind: ThreadKind::Channel,
+            selected: false,
+            unread_count: 0,
+        }];
+        let mut view = ThreadListView::new(threads)
+            .with_selected("t1")
+            .with_on_select(move |id| {
+                *selected_clone.borrow_mut() = Some(id);
+            });
+        view.layout(
+            SizeConstraint::loose(vec2f(240.0, 600.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        view.paint(vec2f(0.0, 0.0), &mut crate::elements::PaintContext::default(), &app);
+        view.dispatch_event(
+            &crate::event::DispatchedEvent::MouseDown {
+                position: crate::geometry::vec2f(60.0, 100.0),
+                button: 0,
+            },
+            &mut crate::elements::EventContext::default(),
+            &app,
+        );
+        view.dispatch_event(
+            &crate::event::DispatchedEvent::MouseUp {
+                position: crate::geometry::vec2f(60.0, 100.0),
+                button: 0,
+            },
+            &mut crate::elements::EventContext::default(),
+            &app,
+        );
+        assert_eq!(selected.borrow().as_ref(), Some(&"t1".to_string()));
     }
 }

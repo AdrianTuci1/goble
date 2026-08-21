@@ -1,0 +1,135 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use goble_desktop_service::{CollectingEventBus, DesktopState};
+use goble_ui::elements::{
+    ActiveView, AppContext, Element, SettingsTab, ShellState, ShellView,
+};
+use goble_ui::theme::Theme;
+use tokio::runtime::Runtime;
+
+use crate::views::agent::AgentManagementView;
+use crate::views::chat::ChatViewPanel;
+use crate::views::drive::DriveViewPanel;
+use crate::views::settings::SettingsViewPanel;
+use crate::views::threads::ThreadsViewPanel;
+
+/// UI-specific state that is independent of the service layer.
+#[derive(Default, Clone)]
+pub struct UiState {
+    pub selected_chat_id: Option<String>,
+    pub selected_thread_id: String,
+    pub settings_tab: SettingsTab,
+    pub dark_mode: bool,
+}
+
+pub struct GobleApp {
+    pub runtime: Runtime,
+    pub state: Arc<DesktopState>,
+    pub bus: CollectingEventBus,
+    pub app_context: Rc<RefCell<AppContext>>,
+    pub ui_state: Rc<RefCell<UiState>>,
+}
+
+impl GobleApp {
+    pub fn new() -> anyhow::Result<Self> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let _guard = runtime.enter();
+
+        let bus = CollectingEventBus::default();
+        let state = DesktopState::open_default()?;
+        state.set_event_bus(Arc::new(bus.clone()));
+
+        let app_context = Rc::new(RefCell::new(AppContext::default()));
+        app_context.borrow_mut().theme = Theme::default();
+
+        let mut ui_state = UiState::default();
+        ui_state.dark_mode = true;
+        let ui_state = Rc::new(RefCell::new(ui_state));
+
+        Ok(Self {
+            runtime,
+            state,
+            bus,
+            app_context,
+            ui_state,
+        })
+    }
+
+    pub fn run(self) -> anyhow::Result<()> {
+        log::info!("Starting Goble native desktop app");
+        let root = self.build_root();
+        goble_ui::platform::run_with_root(root, Rc::clone(&self.app_context))?;
+        Ok(())
+    }
+
+    fn build_root(&self) -> Box<dyn Element> {
+        let shell_state = ShellState::default();
+        let state = Arc::clone(&self.state);
+        let ui_state = Rc::clone(&self.ui_state);
+        let app_context = Rc::clone(&self.app_context);
+        let app_context_for_shell = Rc::clone(&self.app_context);
+        let bus = self.bus.clone();
+
+        let event_checker = Rc::new(RefCell::new(move || {
+            let events = bus.take_events();
+            !events.is_empty()
+        }));
+
+        let shell_app = app_context_for_shell.borrow();
+        ShellView::with_content_and_event_checker(
+            shell_state,
+            &*shell_app,
+            Box::new(
+                move |shell_state: Rc<RefCell<ShellState>>, dirty: Rc<RefCell<bool>>| {
+                    {
+                        let mut ui = ui_state.borrow_mut();
+                        app_context.borrow_mut().theme =
+                            if ui.dark_mode { Theme::dark() } else { Theme::light() };
+                        ui.settings_tab = match shell_state.borrow().active_view {
+                            ActiveView::Settings(tab) => tab,
+                            _ => ui.settings_tab,
+                        };
+                    }
+                    let app = app_context.borrow();
+                    let active_view = shell_state.borrow().active_view;
+                    match active_view {
+                        ActiveView::Chat => ChatViewPanel::new(
+                            Arc::clone(&state),
+                            Rc::clone(&ui_state),
+                            dirty,
+                            &*app,
+                        )
+                        .finish(),
+                        ActiveView::AgentManagement => {
+                            AgentManagementView::new(Arc::clone(&state), dirty, &*app).finish()
+                        }
+                        ActiveView::Threads => ThreadsViewPanel::new(
+                            Arc::clone(&state),
+                            Rc::clone(&ui_state),
+                            dirty,
+                            &*app,
+                        )
+                        .finish(),
+                        ActiveView::Drive => {
+                            DriveViewPanel::new(Arc::clone(&state), dirty, &*app).finish()
+                        }
+                        ActiveView::Settings(tab) => SettingsViewPanel::new(
+                            Arc::clone(&state),
+                            Rc::clone(&ui_state),
+                            shell_state,
+                            dirty,
+                            tab,
+                            &*app,
+                            Rc::clone(&app_context),
+                        )
+                        .finish(),
+                    }
+                },
+            ),
+            Some(event_checker),
+        )
+        .finish()
+    }
+}

@@ -4,21 +4,25 @@ use std::rc::Rc;
 use crate::elements::chat_content::{ChatAction, ChatMessage};
 use crate::elements::{
     AppContext, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Fill,
-    Flex, LayoutContext, MainAxisAlignment, PaintContext, Point, SizeConstraint,
+    Flex, LayoutContext, MainAxisAlignment, PaintContext, Point, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
-use crate::views::thread_list_view::{ThreadListEntry, ThreadListView};
+use crate::views::thread_list_view::ThreadListEntry;
+use crate::views::thread_sidebar::ThreadSidebar;
 use crate::views::thread_view::ThreadView;
 
 pub struct ThreadsContainer {
     threads: Vec<ThreadListEntry>,
     messages_by_thread: std::collections::HashMap<String, Vec<ChatMessage>>,
     selected_id: String,
+    collapsed_sections: std::collections::HashSet<String>,
     on_select: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_action: Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
+    on_new: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_toggle_section: Option<Rc<RefCell<dyn FnMut(String, bool) + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -30,9 +34,12 @@ impl ThreadsContainer {
             threads: Vec::new(),
             messages_by_thread: std::collections::HashMap::new(),
             selected_id: selected_id.into(),
+            collapsed_sections: std::collections::HashSet::new(),
             on_select: None,
             on_send: None,
             on_action: None,
+            on_new: None,
+            on_toggle_section: None,
             root: None,
             size: None,
             origin: None,
@@ -53,6 +60,14 @@ impl ThreadsContainer {
         self
     }
 
+    pub fn with_collapsed_sections(
+        mut self,
+        sections: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.collapsed_sections = sections.into_iter().map(|s| s.into()).collect();
+        self
+    }
+
     pub fn with_on_select<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
         self.on_select = Some(Rc::new(RefCell::new(callback)));
         self
@@ -68,22 +83,73 @@ impl ThreadsContainer {
         self
     }
 
+    pub fn with_on_new<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_new = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_toggle_section<F: FnMut(String, bool) + 'static>(mut self, callback: F) -> Self {
+        self.on_toggle_section = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     pub fn selected_id(&self) -> &str {
         &self.selected_id
     }
 
     fn rebuild(&mut self, app: &AppContext, width: f32) {
         let spacing = app.theme.spacing_px(SpacingToken::Md);
-        let list_width = (width * 0.35).max(200.0).min(320.0);
+
+        if self.threads.is_empty() {
+            self.root = Some(
+                Container::new(
+                    Flex::column()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_main_axis_alignment(MainAxisAlignment::Center)
+                        .with_child(
+                            Text::new("No threads available.")
+                                .with_theme_color(ColorToken::Muted, app)
+                                .finish(),
+                        )
+                        .finish(),
+                )
+                .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+                .with_padding(EdgeInsets::uniform(spacing))
+                .finish(),
+            );
+            return;
+        }
+
+        let sidebar_width = (width * 0.35).max(200.0).min(320.0);
 
         let selected_id = self.selected_id.clone();
         let on_select = self.on_select.clone();
-        let mut list_view = ThreadListView::new(self.threads.clone())
-            .with_selected(selected_id.clone());
+        let on_new = self.on_new.clone();
+        let on_toggle_section = self.on_toggle_section.clone();
+        let collapsed = self.collapsed_sections.clone();
+
+        let mut sidebar = ThreadSidebar::new(self.threads.clone())
+            .with_selected(selected_id.clone())
+            .with_collapsed(collapsed);
+
         if on_select.is_some() {
-            list_view = list_view.with_on_select(move |id| {
+            sidebar = sidebar.with_on_select(move |id| {
                 if let Some(cb) = on_select.as_ref() {
                     (cb.borrow_mut())(id);
+                }
+            });
+        }
+        if on_new.is_some() {
+            sidebar = sidebar.with_on_new(move || {
+                if let Some(cb) = on_new.as_ref() {
+                    (cb.borrow_mut())();
+                }
+            });
+        }
+        if on_toggle_section.is_some() {
+            sidebar = sidebar.with_on_toggle_section(move |name, collapsed| {
+                if let Some(cb) = on_toggle_section.as_ref() {
+                    (cb.borrow_mut())(name, collapsed);
                 }
             });
         }
@@ -114,7 +180,7 @@ impl ThreadsContainer {
                 }
             });
 
-        let thread_width = (width - list_width - 1.0).max(100.0);
+        let thread_width = (width - sidebar_width - 1.0).max(100.0);
         let thread_view = ConstrainedBox::new(thread_view.finish())
             .with_max_width(thread_width)
             .finish();
@@ -123,8 +189,8 @@ impl ThreadsContainer {
             .with_main_axis_alignment(MainAxisAlignment::Start)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(
-                ConstrainedBox::new(list_view.finish())
-                    .with_max_width(list_width)
+                ConstrainedBox::new(sidebar.finish())
+                    .with_max_width(sidebar_width)
                     .finish(),
             )
             .with_child(Divider::vertical().finish())
@@ -200,7 +266,7 @@ mod tests {
             ThreadListEntry {
                 id: "t2".to_string(),
                 title: "Random".to_string(),
-                kind: ThreadKind::Channel,
+                kind: ThreadKind::Chat,
                 selected: false,
                 unread_count: 1,
             },
@@ -220,4 +286,5 @@ mod tests {
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
     }
+
 }

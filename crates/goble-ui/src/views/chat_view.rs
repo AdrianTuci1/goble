@@ -7,6 +7,7 @@ use crate::elements::{
     Element, Fill, Flex, LayoutContext, MainAxisAlignment, PaintContext, Point, QuickActionButton,
     Scrollable, SizeConstraint,
 };
+use crate::elements::{ChatSidebar, ChatSidebarTab};
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
@@ -27,6 +28,9 @@ pub struct ChatView {
     variant_options: Vec<String>,
     selected_variant: Option<String>,
     on_variant_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    right_sidebar: Option<Box<dyn Element>>,
+    sidebar_tab: ChatSidebarTab,
+    on_sidebar_tab_change: Option<Rc<RefCell<dyn FnMut(ChatSidebarTab) + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -50,6 +54,9 @@ impl ChatView {
             variant_options: Vec::new(),
             selected_variant: None,
             on_variant_change: None,
+            right_sidebar: None,
+            sidebar_tab: ChatSidebarTab::Info,
+            on_sidebar_tab_change: None,
             root: None,
             size: None,
             origin: None,
@@ -128,6 +135,18 @@ impl ChatView {
 
     pub fn with_on_variant_change<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
         self.on_variant_change = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_right_sidebar(
+        mut self,
+        sidebar: Box<dyn Element>,
+        tab: ChatSidebarTab,
+        on_tab_change: impl FnMut(ChatSidebarTab) + 'static,
+    ) -> Self {
+        self.right_sidebar = Some(sidebar);
+        self.sidebar_tab = tab;
+        self.on_sidebar_tab_change = Some(Rc::new(RefCell::new(on_tab_change)));
         self
     }
 
@@ -213,12 +232,30 @@ impl ChatView {
         let composer = composer.finish();
         column = column.with_child(composer);
 
-        self.root = Some(
-            Container::new(column.finish())
-                .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-                .with_padding(EdgeInsets::uniform(padding))
-                .finish(),
-        );
+        let content = Container::new(column.finish())
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+            .with_padding(EdgeInsets::uniform(padding))
+            .finish();
+
+        self.root = Some(if let Some(sidebar) = self.right_sidebar.take() {
+            let on_tab_change = self.on_sidebar_tab_change.clone();
+            let sidebar_tab = self.sidebar_tab;
+            let sidebar = ChatSidebar::new(sidebar_tab)
+                .with_info_content(sidebar)
+                .with_on_change_tab(move |tab| {
+                    if let Some(cb) = on_tab_change.as_ref() {
+                        (cb.borrow_mut())(tab);
+                    }
+                })
+                .finish();
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(content)
+                .with_child(sidebar)
+                .finish()
+        } else {
+            content
+        });
     }
 }
 

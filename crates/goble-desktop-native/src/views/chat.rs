@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use goble_desktop_service::{ChatMessage as ServiceChatMessage, DesktopState};
 use goble_ui::elements::{
-    AppContext, Button, ButtonVariant, ChatMessage as UiChatMessage, ChatRole, Container, EdgeInsets,
-    Element, EventContext, Fill, Flex, LayoutContext, PaintContext, Point,
-    SizeConstraint, Text, TextInput,
+    ActiveView, AppContext, Axis, Button, ButtonVariant, ChatMessage as UiChatMessage, ChatRole,
+    Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Fill, Flex, LayoutContext,
+    PaintContext, Point, Scrollable, ShellState, SizeConstraint, Text, TextInput,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
@@ -32,6 +32,7 @@ pub struct ChatViewPanel {
 impl ChatViewPanel {
     pub fn new(
         state: Arc<DesktopState>,
+        shell_state: Rc<RefCell<ShellState>>,
         ui_state: Rc<RefCell<UiState>>,
         dirty: Rc<RefCell<bool>>,
         app: &AppContext,
@@ -228,6 +229,119 @@ impl ChatViewPanel {
             .finish();
             chat = chat.with_header(card);
         }
+
+        let mut info_col = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(app.theme.spacing_px(SpacingToken::Sm));
+        match &chat_opt {
+            Some(chat) => {
+                info_col = info_col.with_child(
+                    Text::new(format!("Title: {}", chat.title))
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                );
+                let provider_text = chat.provider.clone().unwrap_or_else(|| "default".to_string());
+                info_col = info_col.with_child(
+                    Text::new(format!("Provider: {}", provider_text))
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                );
+                let model_text = chat.model.clone().unwrap_or_else(|| "not set".to_string());
+                info_col = info_col.with_child(
+                    Text::new(format!("Model: {}", model_text))
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                );
+            }
+            None => {
+                info_col = info_col.with_child(
+                    Text::new("No chat selected")
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                );
+            }
+        }
+        let info_content = Container::new(info_col.finish()).finish();
+
+        let mut history_items: Vec<Box<dyn Element>> = Vec::new();
+        let mut executions = state.list_executions();
+        executions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        for exec in executions.into_iter().take(20) {
+            let exec_id = exec.id.clone();
+            let summary = format!(
+                "{} — {} — {}",
+                &exec.id[..exec.id.len().min(8)],
+                exec.status,
+                &exec.started_at[..exec.started_at.len().min(19)]
+            );
+            let state_for_trace = Arc::clone(&state);
+            let shell_state_for_trace = Rc::clone(&shell_state);
+            let ui_state_for_trace = Rc::clone(&ui_state);
+            let dirty_for_trace = Rc::clone(&dirty);
+            let row = Flex::row()
+                .with_main_axis_alignment(goble_ui::elements::MainAxisAlignment::SpaceBetween)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(app.theme.spacing_px(SpacingToken::Sm))
+                .with_child(
+                    Text::new(summary)
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                )
+                .with_child(
+                    Button::new(Text::new("Trace").with_theme_color(ColorToken::Text, app).finish())
+                        .with_variant(ButtonVariant::Primary)
+                        .with_on_click(move || {
+                            if state_for_trace.get_execution_trace(&exec_id).is_some() {
+                                ui_state_for_trace.borrow_mut().selected_trace_id = Some(exec_id.clone());
+                                shell_state_for_trace.borrow_mut().active_view = ActiveView::AgentTrace;
+                                *dirty_for_trace.borrow_mut() = true;
+                            } else {
+                                log::warn!("execution trace not found for {}", exec_id);
+                            }
+                        })
+                        .finish(),
+                )
+                .finish();
+            history_items.push(Container::new(row).finish());
+        }
+
+        let sidebar_content: Box<dyn Element> = if history_items.is_empty() {
+            Container::new(
+                Text::new("No executions yet.")
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .finish()
+        } else {
+            Scrollable::new(
+                Flex::column()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                    .with_spacing(app.theme.spacing_px(SpacingToken::Sm))
+                    .with_children(history_items)
+                    .finish(),
+                Axis::Vertical,
+            )
+            .finish()
+        };
+
+        let sidebar_content = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(app.theme.spacing_px(SpacingToken::Md))
+            .with_child(info_content)
+            .with_child(sidebar_content)
+            .finish();
+
+        let sidebar_tab = ui_state.borrow().chat_sidebar_tab;
+        let ui_state_for_tab = Rc::clone(&ui_state);
+        let dirty_for_tab = Rc::clone(&dirty);
+        chat = chat.with_right_sidebar(
+            sidebar_content,
+            sidebar_tab,
+            move |tab| {
+                ui_state_for_tab.borrow_mut().chat_sidebar_tab = tab;
+                *dirty_for_tab.borrow_mut() = true;
+            },
+        );
 
         let content = Container::new(chat.finish())
             .with_background(Fill::Solid(bg))

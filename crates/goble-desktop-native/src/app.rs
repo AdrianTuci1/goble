@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use goble_desktop_service::{CollectingEventBus, DesktopState};
 use goble_ui::elements::{
-    ActiveView, AppContext, ConversationEntry, ConversationSidebar, Element, SettingsTab,
-    ShellState, ShellView,
+    ActiveView, AppContext, ChatSidebarTab, ConversationEntry, ConversationSidebar, Element,
+    SettingsTab, ShellState, ShellView,
 };
 use goble_ui::theme::Theme;
 use tokio::runtime::Runtime;
@@ -24,6 +24,7 @@ pub struct UiState {
     pub selected_chat_id: Option<String>,
     pub selected_thread_id: String,
     pub selected_trace_id: Option<String>,
+    pub chat_sidebar_tab: ChatSidebarTab,
     pub settings_tab: SettingsTab,
     pub dark_mode: bool,
 }
@@ -103,6 +104,7 @@ impl GobleApp {
                     match active_view {
                         ActiveView::Chat => ChatViewPanel::new(
                             Arc::clone(&state),
+                            Rc::clone(&shell_state),
                             Rc::clone(&ui_state),
                             dirty,
                             &*app,

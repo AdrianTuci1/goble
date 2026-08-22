@@ -25,7 +25,7 @@ Acest director conține task-urile incrementale pentru migrarea aplicației Gobl
 - [x] `011-chat-view.md` — Chat header, content gol pentru conversație nouă și composer.
 - [x] `012-conversation-sidebar-wiring.md` — Legarea sidebar-ului de conversație cu date reale.
 - [x] `013-chat-composer-enhancements.md` — Selector model, runtime, API key card.
-- [ ] `014-chat-right-sidebar-tabs.md` — Tab-uri Info/History în chat sidebar.
+- [x] `014-chat-right-sidebar-tabs.md` — Tab-uri Info/History în chat sidebar.
 - [ ] `015-agents-page.md` — Parity pagină agenți cu Tauri.
 - [ ] `016-connectors-page.md` — Pagina Connectors (MCP).
 - [ ] `017-workflows-page.md` — Pagina Workflows.

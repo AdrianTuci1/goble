@@ -461,6 +461,8 @@ pub mod caption;
 pub mod chat_composer;
 pub mod chat_content;
 pub mod chat_message_bubble;
+pub mod chat_sidebar;
+pub use chat_sidebar::{ChatSidebar, ChatSidebarTab};
 pub mod conversation_list_item;
 pub mod conversation_sidebar;
 pub mod checkbox;

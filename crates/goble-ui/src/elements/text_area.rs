@@ -142,14 +142,19 @@ impl Element for TextArea {
                 }
                 false
             }
-            DispatchedEvent::KeyDown { key } => {
+            DispatchedEvent::KeyDown { key, shift } => {
                 if !self.focused {
                     return false;
                 }
                 if key == "Backspace" {
                     self.value.pop();
                 } else if key == "Enter" {
-                    self.value.push('\n');
+if *shift {
+                        self.value.push('\n');
+                    } else {
+                        // Unfocused newline; let the parent composer handle send.
+                        return false;
+                    }
                 } else if key.len() == 1 {
                     self.value.push_str(key);
                 } else {

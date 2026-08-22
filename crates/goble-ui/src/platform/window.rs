@@ -21,6 +21,7 @@ pub fn run_with_root(
         root,
         app_context,
         cursor_position: vec2f(0.0, 0.0),
+        modifiers: winit::keyboard::ModifiersState::empty(),
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -32,6 +33,7 @@ struct App {
     root: Box<dyn Element>,
     app_context: Rc<RefCell<AppContext>>,
     cursor_position: Vector2F,
+    modifiers: winit::keyboard::ModifiersState,
 }
 
 impl ApplicationHandler for App {
@@ -128,11 +130,15 @@ impl ApplicationHandler for App {
                 drop(app_context);
                 window.request_redraw();
             }
+            winit::event::WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+            }
             winit::event::WindowEvent::KeyboardInput { event, .. } => {
                 if let winit::keyboard::Key::Character(c) = event.logical_key {
+                    let shift = self.modifiers.shift_key();
                     let event = match event.state {
-                        winit::event::ElementState::Pressed => DispatchedEvent::KeyDown { key: c.to_string() },
-                        winit::event::ElementState::Released => DispatchedEvent::KeyUp { key: c.to_string() },
+                        winit::event::ElementState::Pressed => DispatchedEvent::KeyDown { key: c.to_string(), shift },
+                        winit::event::ElementState::Released => DispatchedEvent::KeyUp { key: c.to_string(), shift },
                     };
                     let mut event_ctx = crate::elements::EventContext::default();
                     let app_context = self.app_context.borrow();

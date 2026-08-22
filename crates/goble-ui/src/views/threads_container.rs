@@ -18,6 +18,7 @@ pub struct ThreadsContainer {
     messages_by_thread: std::collections::HashMap<String, Vec<ChatMessage>>,
     selected_id: String,
     collapsed_sections: std::collections::HashSet<String>,
+    header: Option<Box<dyn Element>>,
     on_select: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_action: Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
@@ -35,6 +36,7 @@ impl ThreadsContainer {
             messages_by_thread: std::collections::HashMap::new(),
             selected_id: selected_id.into(),
             collapsed_sections: std::collections::HashSet::new(),
+            header: None,
             on_select: None,
             on_send: None,
             on_action: None,
@@ -65,6 +67,11 @@ impl ThreadsContainer {
         sections: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.collapsed_sections = sections.into_iter().map(|s| s.into()).collect();
+        self
+    }
+
+    pub fn with_header(mut self, header: Box<dyn Element>) -> Self {
+        self.header = Some(header);
         self
     }
 
@@ -181,7 +188,13 @@ impl ThreadsContainer {
             });
 
         let thread_width = (width - sidebar_width - 1.0).max(100.0);
-        let thread_view = ConstrainedBox::new(thread_view.finish())
+        let mut thread_column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(thread_view.finish());
+        if let Some(header) = self.header.take() {
+            thread_column = thread_column.with_child(header);
+        }
+        let thread_view = ConstrainedBox::new(thread_column.finish())
             .with_max_width(thread_width)
             .finish();
 

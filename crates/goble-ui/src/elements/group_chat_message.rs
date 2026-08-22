@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use crate::elements::chat_content::{ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole};
 use crate::elements::{
-    AppContext, Avatar, Chip, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, Fill, Flex,
-    LayoutContext, PaintContext, Point, SizeConstraint, Spacer, Text,
+    AppContext, Avatar, Button, ButtonVariant, Chip, Container, CrossAxisAlignment, EdgeInsets,
+    Element, Empty, Fill, Flex, LayoutContext, PaintContext, Point, SizeConstraint, Spacer, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -81,7 +81,9 @@ impl GroupChatMessage {
         let sm = app.theme.spacing_px(SpacingToken::Sm);
         let radius = app.theme.radius_px();
 
-        let content_column = self.build_content_column(app, spacing, radius);
+        let mut content_column = self.build_content_column(app, spacing, radius);
+        content_column = self.add_reply_indicator(content_column, app);
+        content_column = self.add_reactions(content_column, app);
 
         let row = if self.show_header {
             let avatar = Avatar::new(self.initials())
@@ -341,6 +343,103 @@ impl GroupChatMessage {
         .with_padding(EdgeInsets::new(padding / 4.0, padding / 2.0, padding / 4.0, padding / 2.0))
         .with_corner_radius(radius)
         .finish()
+    }
+    fn add_reply_indicator(
+        &self,
+        column: Box<dyn Element>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        if let (Some(id), Some(preview)) =
+            (self.message.reply_to_id.as_ref(), self.message.reply_to_preview.as_ref())
+        {
+            let text = if preview.is_empty() {
+                format!("replied to {}", id.chars().take(8).collect::<String>())
+            } else {
+                format!("replied to: {}", preview.chars().take(40).collect::<String>())
+            };
+            let mut flex = Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(column);
+            flex = flex.with_child(
+                Text::new(text)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_font_size(11.0)
+                    .finish(),
+            );
+            return flex.finish();
+        }
+        column
+    }
+
+    fn add_reactions(
+        &self,
+        column: Box<dyn Element>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let sm = app.theme.spacing_px(SpacingToken::Sm);
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(sm);
+
+        if !self.message.reactions.is_empty() {
+            for reaction in &self.message.reactions {
+                row = row.with_child(
+                    Chip::new(
+                        Text::new(format!("{} {}", reaction.emoji, reaction.count))
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .finish(),
+                );
+            }
+        }
+
+        if let Some(message_id) = self.message.id.as_ref() {
+            let on_action = self.on_action.clone();
+            let message_id = message_id.clone();
+            for emoji in ["👍", "❤️", "😂", "🚀"] {
+                let on_action = on_action.clone();
+                let mid = message_id.clone();
+                row = row.with_child(
+                    Button::new(Text::new(emoji).finish())
+                        .with_variant(ButtonVariant::Ghost)
+                        .with_on_click(move || {
+                            if let Some(cb) = on_action.as_ref() {
+                                (cb.borrow_mut())(ChatAction::ThreadReact {
+                                    message_id: mid.clone(),
+                                    emoji: emoji.to_string(),
+                                });
+                            }
+                        })
+                        .finish(),
+                );
+            }
+
+            let reply_on_action = self.on_action.clone();
+            let reply_mid = message_id.clone();
+            row = row.with_child(
+                Button::new(
+                    Text::new("reply")
+                        .with_theme_color(ColorToken::Accent, app)
+                        .finish(),
+                )
+                .with_variant(ButtonVariant::Ghost)
+                .with_on_click(move || {
+                    if let Some(cb) = reply_on_action.as_ref() {
+                        (cb.borrow_mut())(ChatAction::ThreadReplyTo {
+                            message_id: reply_mid.clone(),
+                        });
+                    }
+                })
+                .finish(),
+            );
+        }
+
+        let mut flex = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(column);
+        flex = flex.with_child(row.finish());
+        flex.finish()
     }
 }
 

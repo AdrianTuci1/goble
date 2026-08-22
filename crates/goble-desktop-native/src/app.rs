@@ -42,6 +42,7 @@ pub struct UiState {
     pub agent_edit_tools: Vec<String>,
     pub agent_edit_mcp_ids: Vec<String>,
     pub agent_schedule_cron: String,
+    pub thread_reply_to_id: Option<String>,
 }
 
 pub struct GobleApp {

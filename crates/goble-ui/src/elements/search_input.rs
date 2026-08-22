@@ -67,9 +67,7 @@ impl SearchInput {
         let icon = Icon::new("search")
             .with_theme_color(ColorToken::Muted, app)
             .finish();
-        let text = Text::new(display)
-            .with_theme_color(color, app)
-            .finish();
+        let text = Text::new(display).with_theme_color(color, app).finish();
         let row = crate::elements::Flex::row()
             .with_spacing(gap)
             .with_child(icon)
@@ -138,7 +136,7 @@ impl Element for SearchInput {
                 }
                 false
             }
-            DispatchedEvent::KeyDown { key } => {
+            DispatchedEvent::KeyDown { key, shift: _ } => {
                 if !self.focused {
                     return false;
                 }
@@ -189,6 +187,7 @@ mod tests {
         assert!(input.dispatch_event(
             &DispatchedEvent::KeyDown {
                 key: "h".to_string(),
+                shift: false,
             },
             &mut event_ctx,
             &app,

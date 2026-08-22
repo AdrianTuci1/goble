@@ -4,23 +4,20 @@ use std::sync::Arc;
 
 use goble_desktop_service::{CollectingEventBus, DesktopState};
 use goble_ui::elements::{
-    ActiveView, AppContext, Element, SettingsTab, ShellState, ShellView,
+    AppContext, ChatSidebarTab, ConversationEntry, ConversationSidebar, ConversationStatus,
+    Element, ShellState, ShellView,
 };
 use goble_ui::theme::Theme;
 use tokio::runtime::Runtime;
 
-use crate::views::agent::AgentManagementView;
 use crate::views::chat::ChatViewPanel;
-use crate::views::drive::DriveViewPanel;
-use crate::views::settings::SettingsViewPanel;
-use crate::views::threads::ThreadsViewPanel;
 
 /// UI-specific state that is independent of the service layer.
 #[derive(Default, Clone)]
 pub struct UiState {
     pub selected_chat_id: Option<String>,
-    pub selected_thread_id: String,
-    pub settings_tab: SettingsTab,
+    pub chat_sidebar_tab: ChatSidebarTab,
+    pub chat_sidebar_visible: bool,
     pub dark_mode: bool,
 }
 
@@ -46,6 +43,8 @@ impl GobleApp {
 
         let mut ui_state = UiState::default();
         ui_state.dark_mode = true;
+        ui_state.chat_sidebar_visible = true;
+        ui_state.chat_sidebar_tab = ChatSidebarTab::Info;
         let ui_state = Rc::new(RefCell::new(ui_state));
 
         Ok(Self {
@@ -78,58 +77,79 @@ impl GobleApp {
         }));
 
         let shell_app = app_context_for_shell.borrow();
+        let state_for_sidebar = Arc::clone(&self.state);
+        let ui_state_for_sidebar = Rc::clone(&self.ui_state);
         ShellView::with_content_and_event_checker(
             shell_state,
             &*shell_app,
             Box::new(
-                move |shell_state: Rc<RefCell<ShellState>>, dirty: Rc<RefCell<bool>>| {
-                    {
-                        let mut ui = ui_state.borrow_mut();
-                        app_context.borrow_mut().theme =
-                            if ui.dark_mode { Theme::dark() } else { Theme::light() };
-                        ui.settings_tab = match shell_state.borrow().active_view {
-                            ActiveView::Settings(tab) => tab,
-                            _ => ui.settings_tab,
-                        };
-                    }
+                move |_shell_state: Rc<RefCell<ShellState>>, dirty: Rc<RefCell<bool>>| {
                     let app = app_context.borrow();
-                    let active_view = shell_state.borrow().active_view;
-                    match active_view {
-                        ActiveView::Chat => ChatViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&ui_state),
-                            dirty,
-                            &*app,
-                        )
-                        .finish(),
-                        ActiveView::AgentManagement => {
-                            AgentManagementView::new(Arc::clone(&state), dirty, &*app).finish()
-                        }
-                        ActiveView::Threads => ThreadsViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&ui_state),
-                            dirty,
-                            &*app,
-                        )
-                        .finish(),
-                        ActiveView::Drive => {
-                            DriveViewPanel::new(Arc::clone(&state), dirty, &*app).finish()
-                        }
-                        ActiveView::Settings(tab) => SettingsViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&ui_state),
-                            shell_state,
-                            dirty,
-                            tab,
-                            &*app,
-                            Rc::clone(&app_context),
-                        )
-                        .finish(),
-                    }
+                    ChatViewPanel::new(Arc::clone(&state), Rc::clone(&ui_state), dirty, &*app)
+                        .finish()
                 },
             ),
             Some(event_checker),
         )
+        .with_conversation_sidebar(move |_app, dirty| {
+            let chats = state_for_sidebar.list_chats();
+            let entries: Vec<ConversationEntry> = chats
+                .iter()
+                .map(|chat| {
+                    let last_response = state_for_sidebar
+                        .list_chat_messages(&chat.id)
+                        .ok()
+                        .and_then(|msgs| msgs.last().map(|m| m.content.clone()))
+                        .unwrap_or_default();
+                    let timestamp = &chat.updated_at[..chat.updated_at.len().min(19)];
+                    ConversationEntry {
+                        id: chat.id.clone(),
+                        name: chat.title.clone(),
+                        last_response,
+                        timestamp: timestamp.to_string(),
+                        status: ConversationStatus::Default,
+                    }
+                })
+                .collect();
+
+            let state_for_delete = Arc::clone(&state_for_sidebar);
+            let state_for_create = Arc::clone(&state_for_sidebar);
+            let ui_state_for_select = Rc::clone(&ui_state_for_sidebar);
+            let ui_state_for_delete = Rc::clone(&ui_state_for_sidebar);
+            let ui_state_for_create = Rc::clone(&ui_state_for_sidebar);
+            let dirty_for_select = Rc::clone(&dirty);
+            let dirty_for_delete = Rc::clone(&dirty);
+            let dirty_for_create = Rc::clone(&dirty);
+
+            let selected_id = ui_state_for_sidebar.borrow().selected_chat_id.clone();
+
+            ConversationSidebar::new(entries)
+                .with_selected(selected_id.unwrap_or_default())
+                .with_on_select(move |id| {
+                    ui_state_for_select.borrow_mut().selected_chat_id = Some(id);
+                    *dirty_for_select.borrow_mut() = true;
+                })
+                .with_on_delete(move |id| {
+                    if let Err(e) = state_for_delete.delete_chat(&id) {
+                        log::error!("failed to delete chat: {}", e);
+                    }
+                    let remaining = state_for_delete.list_chats();
+                    ui_state_for_delete.borrow_mut().selected_chat_id =
+                        remaining.first().map(|c| c.id.clone());
+                    *dirty_for_delete.borrow_mut() = true;
+                })
+                .with_on_create(move || {
+                    match state_for_create.create_chat("New chat", None, None) {
+                        Ok(id) => {
+                            ui_state_for_create.borrow_mut().selected_chat_id = Some(id.clone());
+                            log::info!("created chat {}", id);
+                        }
+                        Err(e) => log::error!("failed to create chat: {}", e),
+                    }
+                    *dirty_for_create.borrow_mut() = true;
+                })
+                .finish()
+        })
         .finish()
     }
 }

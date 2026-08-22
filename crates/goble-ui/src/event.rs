@@ -14,9 +14,11 @@ pub enum DispatchedEvent {
     },
     KeyDown {
         key: String,
+        shift: bool,
     },
     KeyUp {
         key: String,
+        shift: bool,
     },
     Scroll {
         delta: crate::geometry::Vector2F,

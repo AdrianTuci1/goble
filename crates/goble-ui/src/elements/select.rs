@@ -160,10 +160,7 @@ mod tests {
 
     #[test]
     fn select_cycles_options_on_click() {
-        let options = vec![
-            SelectOption::new("One", "1"),
-            SelectOption::new("Two", "2"),
-        ];
+        let options = vec![SelectOption::new("One", "1"), SelectOption::new("Two", "2")];
         let mut select = Select::new(options);
         let app = AppContext::default();
         select.layout(

@@ -21,6 +21,7 @@ pub fn run_with_root(
         root,
         app_context,
         cursor_position: vec2f(0.0, 0.0),
+        modifiers: winit::keyboard::ModifiersState::empty(),
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -32,6 +33,7 @@ struct App {
     root: Box<dyn Element>,
     app_context: Rc<RefCell<AppContext>>,
     cursor_position: Vector2F,
+    modifiers: winit::keyboard::ModifiersState,
 }
 
 impl ApplicationHandler for App {
@@ -74,14 +76,16 @@ impl ApplicationHandler for App {
             }
             winit::event::WindowEvent::RedrawRequested => {
                 let size = window.inner_size();
-                let constraint = SizeConstraint::loose(vec2f(size.width as f32, size.height as f32));
+                let constraint =
+                    SizeConstraint::loose(vec2f(size.width as f32, size.height as f32));
                 let mut layout_ctx = LayoutContext::default();
                 let app_context = self.app_context.borrow();
                 let _ = self.root.layout(constraint, &mut layout_ctx, &*app_context);
                 let mut renderer = Renderer::new();
                 {
                     let mut paint_ctx = PaintContext::new(renderer);
-                    self.root.paint(vec2f(0.0, 0.0), &mut paint_ctx, &*app_context);
+                    self.root
+                        .paint(vec2f(0.0, 0.0), &mut paint_ctx, &*app_context);
                     renderer = paint_ctx.renderer.take().unwrap();
                 }
                 if let Some(surface_state) = self.surface_state.as_mut() {
@@ -98,12 +102,20 @@ impl ApplicationHandler for App {
                 };
                 let position = self.cursor_position;
                 let event = match state {
-                    winit::event::ElementState::Pressed => DispatchedEvent::MouseDown { position, button: button_id },
-                    winit::event::ElementState::Released => DispatchedEvent::MouseUp { position, button: button_id },
+                    winit::event::ElementState::Pressed => DispatchedEvent::MouseDown {
+                        position,
+                        button: button_id,
+                    },
+                    winit::event::ElementState::Released => DispatchedEvent::MouseUp {
+                        position,
+                        button: button_id,
+                    },
                 };
                 let mut event_ctx = crate::elements::EventContext::default();
                 let app_context = self.app_context.borrow();
-                let _ = self.root.dispatch_event(&event, &mut event_ctx, &*app_context);
+                let _ = self
+                    .root
+                    .dispatch_event(&event, &mut event_ctx, &*app_context);
                 drop(app_context);
                 window.request_redraw();
             }
@@ -113,7 +125,9 @@ impl ApplicationHandler for App {
                 let event = DispatchedEvent::MouseMove { position: pos };
                 let mut event_ctx = crate::elements::EventContext::default();
                 let app_context = self.app_context.borrow();
-                let _ = self.root.dispatch_event(&event, &mut event_ctx, &*app_context);
+                let _ = self
+                    .root
+                    .dispatch_event(&event, &mut event_ctx, &*app_context);
                 drop(app_context);
             }
             winit::event::WindowEvent::MouseWheel { delta, .. } => {
@@ -124,19 +138,33 @@ impl ApplicationHandler for App {
                 let event = DispatchedEvent::Scroll { delta };
                 let mut event_ctx = crate::elements::EventContext::default();
                 let app_context = self.app_context.borrow();
-                let _ = self.root.dispatch_event(&event, &mut event_ctx, &*app_context);
+                let _ = self
+                    .root
+                    .dispatch_event(&event, &mut event_ctx, &*app_context);
                 drop(app_context);
                 window.request_redraw();
             }
+            winit::event::WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+            }
             winit::event::WindowEvent::KeyboardInput { event, .. } => {
                 if let winit::keyboard::Key::Character(c) = event.logical_key {
+                    let shift = self.modifiers.shift_key();
                     let event = match event.state {
-                        winit::event::ElementState::Pressed => DispatchedEvent::KeyDown { key: c.to_string() },
-                        winit::event::ElementState::Released => DispatchedEvent::KeyUp { key: c.to_string() },
+                        winit::event::ElementState::Pressed => DispatchedEvent::KeyDown {
+                            key: c.to_string(),
+                            shift,
+                        },
+                        winit::event::ElementState::Released => DispatchedEvent::KeyUp {
+                            key: c.to_string(),
+                            shift,
+                        },
                     };
                     let mut event_ctx = crate::elements::EventContext::default();
                     let app_context = self.app_context.borrow();
-                    let _ = self.root.dispatch_event(&event, &mut event_ctx, &*app_context);
+                    let _ = self
+                        .root
+                        .dispatch_event(&event, &mut event_ctx, &*app_context);
                     drop(app_context);
                     window.request_redraw();
                 }
@@ -207,7 +235,9 @@ impl SurfaceState {
 
     fn render(&mut self, renderer: &Renderer) -> anyhow::Result<()> {
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         self.engine.render(
             &self.device,
             &self.queue,

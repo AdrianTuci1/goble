@@ -11,6 +11,16 @@ pub enum ChatAction {
     OpenUrl(String),
     RunCommand(String),
     Custom(String),
+    ThreadReact { message_id: String, emoji: String },
+    ThreadReplyTo { message_id: String },
+    ThreadMarkRead { thread_id: String },
+}
+
+/// A reaction summary on a chat message.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ChatReaction {
+    pub emoji: String,
+    pub count: usize,
 }
 
 /// A single piece of content inside a chat message.
@@ -112,6 +122,10 @@ pub struct ChatMessage {
     pub fragments: Vec<ChatFragment>,
     pub author_name: Option<String>,
     pub timestamp: Option<String>,
+    pub id: Option<String>,
+    pub reactions: Vec<ChatReaction>,
+    pub reply_to_id: Option<String>,
+    pub reply_to_preview: Option<String>,
 }
 
 impl ChatMessage {
@@ -121,6 +135,10 @@ impl ChatMessage {
             fragments,
             author_name: None,
             timestamp: None,
+            id: None,
+            reactions: Vec::new(),
+            reply_to_id: None,
+            reply_to_preview: None,
         }
     }
 
@@ -134,9 +152,28 @@ impl ChatMessage {
         self
     }
 
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    pub fn with_reactions(mut self, reactions: Vec<ChatReaction>) -> Self {
+        self.reactions = reactions;
+        self
+    }
+
+    pub fn with_reply_to(mut self, id: impl Into<String>, preview: impl Into<String>) -> Self {
+        self.reply_to_id = Some(id.into());
+        self.reply_to_preview = Some(preview.into());
+        self
+    }
+
     /// Build a chat message by parsing a Markdown string into fragments.
     pub fn from_markdown(role: ChatRole, text: impl Into<String>) -> Self {
-        Self::new(role, crate::elements::markdown::parse_markdown(&text.into()))
+        Self::new(
+            role,
+            crate::elements::markdown::parse_markdown(&text.into()),
+        )
     }
 
     /// Build a chat message from a service-layer thread message.
@@ -148,9 +185,25 @@ impl ChatMessage {
         };
         let author_name = message.author.participant_id().raw_id().to_string();
         let timestamp = message.created_at.to_rfc2822();
+        let mut reactions: Vec<ChatReaction> = Vec::new();
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for r in &message.reactions {
+            *counts.entry(r.emoji.clone()).or_insert(0) += 1;
+        }
+        for (emoji, count) in counts {
+            reactions.push(ChatReaction { emoji, count });
+        }
+        let reply_to_id = message.reply_to.as_ref().map(|id| id.0.clone());
+        let reply_to_preview = message.reply_to.as_ref().and_then(|_| Some(String::new()));
         Self::from_markdown(role, message.content.clone())
             .with_author_name(author_name)
             .with_timestamp(timestamp)
+            .with_id(message.id.0.clone())
+            .with_reactions(reactions)
+            .with_reply_to(
+                reply_to_id.unwrap_or_default(),
+                reply_to_preview.unwrap_or_default(),
+            )
     }
 }
 
@@ -162,26 +215,11 @@ pub enum ChatFragmentKind {
     Italic(String),
     BoldItalic(String),
     Code(String),
-    CodeBlock {
-        lang: Option<String>,
-        code: String,
-    },
-    Heading {
-        level: u8,
-        text: String,
-    },
-    Link {
-        label: String,
-        url: String,
-    },
-    List {
-        items: Vec<String>,
-        ordered: bool,
-    },
+    CodeBlock { lang: Option<String>, code: String },
+    Heading { level: u8, text: String },
+    Link { label: String, url: String },
+    List { items: Vec<String>, ordered: bool },
     BlockQuote(String),
     LineBreak,
-    Action {
-        label: String,
-        payload: ChatAction,
-    },
+    Action { label: String, payload: ChatAction },
 }

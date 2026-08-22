@@ -77,9 +77,8 @@ mod tests {
         let app = AppContext::default();
         let clicked = Rc::new(RefCell::new(false));
         let clicked_clone = clicked.clone();
-        let mut button = QuickActionButton::new("Explain", move || {
-            *clicked_clone.borrow_mut() = true
-        });
+        let mut button =
+            QuickActionButton::new("Explain", move || *clicked_clone.borrow_mut() = true);
 
         button.layout(
             SizeConstraint::loose(vec2f(200.0, 200.0)),

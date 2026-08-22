@@ -82,19 +82,20 @@ impl WgpuRenderEngine {
             mapped_at_creation: false,
         });
 
-        let rect_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("goble-ui rect bind group layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+        let rect_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("goble-ui rect bind group layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
 
         let rect_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("goble-ui rect bind group"),
@@ -202,37 +203,38 @@ impl WgpuRenderEngine {
             source: wgpu::ShaderSource::Wgsl(TEXT_SHADER.into()),
         });
 
-        let text_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("goble-ui text bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+        let text_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("goble-ui text bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
 
         let text_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("goble-ui text bind group"),
@@ -347,13 +349,33 @@ impl WgpuRenderEngine {
 
         for command in renderer.commands() {
             match command {
-                RenderCommand::FillRect { rect, color, corner_radius } => {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } => {
                     rect_instances.push(RectInstance::new_fill(*rect, *color, *corner_radius));
                 }
-                RenderCommand::StrokeRect { rect, color, width, corner_radius } => {
-                    rect_instances.push(RectInstance::new_stroke(*rect, *color, *width, *corner_radius));
+                RenderCommand::StrokeRect {
+                    rect,
+                    color,
+                    width,
+                    corner_radius,
+                } => {
+                    rect_instances.push(RectInstance::new_stroke(
+                        *rect,
+                        *color,
+                        *width,
+                        *corner_radius,
+                    ));
                 }
-                RenderCommand::DrawText { origin, text, font_size, color, .. } => {
+                RenderCommand::DrawText {
+                    origin,
+                    text,
+                    font_size,
+                    color,
+                    ..
+                } => {
                     if let Some(entry) = self.text_atlas.entry(text, *font_size) {
                         let left = origin.x + entry.offset[0];
                         let top = origin.y + entry.offset[1];
@@ -366,14 +388,35 @@ impl WgpuRenderEngine {
                         let color = color.to_linear_f32();
 
                         text_vertices.extend_from_slice(&[
-                            TextVertex { position: [left, top], uv: [u0, v0], color },
-                            TextVertex { position: [right, top], uv: [u1, v0], color },
-                            TextVertex { position: [left, bottom], uv: [u0, v1], color },
-                            TextVertex { position: [right, bottom], uv: [u1, v1], color },
+                            TextVertex {
+                                position: [left, top],
+                                uv: [u0, v0],
+                                color,
+                            },
+                            TextVertex {
+                                position: [right, top],
+                                uv: [u1, v0],
+                                color,
+                            },
+                            TextVertex {
+                                position: [left, bottom],
+                                uv: [u0, v1],
+                                color,
+                            },
+                            TextVertex {
+                                position: [right, bottom],
+                                uv: [u1, v1],
+                                color,
+                            },
                         ]);
                     }
                 }
-                RenderCommand::DrawIcon { origin, size, color, .. } => {
+                RenderCommand::DrawIcon {
+                    origin,
+                    size,
+                    color,
+                    ..
+                } => {
                     // MVP: icons are rendered as solid colored squares.
                     let rect = crate::geometry::RectF::new(
                         crate::geometry::PointF::new(origin.x, origin.y),

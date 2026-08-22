@@ -151,7 +151,10 @@ impl TextAtlas {
         let keys: Vec<TextKey> = commands
             .iter()
             .filter_map(|command| {
-                if let RenderCommand::DrawText { text, font_size, .. } = command {
+                if let RenderCommand::DrawText {
+                    text, font_size, ..
+                } = command
+                {
                     Some(TextKey {
                         text: text.clone(),
                         font_size: (*font_size).round() as u32,
@@ -183,7 +186,10 @@ impl TextAtlas {
                 self.row_height = self.row_height.max(height);
 
                 let uv_origin = [x as f32 / ATLAS_SIZE as f32, y as f32 / ATLAS_SIZE as f32];
-                let uv_size = [width as f32 / ATLAS_SIZE as f32, height as f32 / ATLAS_SIZE as f32];
+                let uv_size = [
+                    width as f32 / ATLAS_SIZE as f32,
+                    height as f32 / ATLAS_SIZE as f32,
+                ];
                 let entry = AtlasEntry {
                     uv_origin,
                     uv_size,
@@ -264,7 +270,10 @@ fn rasterize_text(text: &str, font_size: u32) -> Option<(AtlasEntry, Vec<u8>, u3
         max_height: None,
         ..Default::default()
     });
-    layout.append(fonts, &fontdue::layout::TextStyle::new(text, font_size as f32, 0));
+    layout.append(
+        fonts,
+        &fontdue::layout::TextStyle::new(text, font_size as f32, 0),
+    );
 
     let glyphs = layout.glyphs();
     if glyphs.is_empty() {

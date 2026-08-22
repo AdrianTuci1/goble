@@ -7,6 +7,7 @@ use crate::elements::{
     Element, Fill, Flex, LayoutContext, MainAxisAlignment, PaintContext, Point, QuickActionButton,
     Scrollable, SizeConstraint,
 };
+use crate::elements::{ChatSidebar, ChatSidebarTab};
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
@@ -18,6 +19,18 @@ pub struct ChatView {
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_action: Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
     composer_value: Rc<RefCell<String>>,
+    model_options: Vec<String>,
+    selected_model: Option<String>,
+    on_model_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    runtime_options: Vec<String>,
+    selected_runtime: Option<String>,
+    on_runtime_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    variant_options: Vec<String>,
+    selected_variant: Option<String>,
+    on_variant_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    right_sidebar: Option<Box<dyn Element>>,
+    sidebar_tab: ChatSidebarTab,
+    on_sidebar_tab_change: Option<Rc<RefCell<dyn FnMut(ChatSidebarTab) + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -32,6 +45,18 @@ impl ChatView {
             on_send: None,
             on_action: None,
             composer_value: Rc::new(RefCell::new(String::new())),
+            model_options: Vec::new(),
+            selected_model: None,
+            on_model_change: None,
+            runtime_options: Vec::new(),
+            selected_runtime: None,
+            on_runtime_change: None,
+            variant_options: Vec::new(),
+            selected_variant: None,
+            on_variant_change: None,
+            right_sidebar: None,
+            sidebar_tab: ChatSidebarTab::Info,
+            on_sidebar_tab_change: None,
             root: None,
             size: None,
             origin: None,
@@ -68,6 +93,51 @@ impl ChatView {
         self
     }
 
+    pub fn with_model_options(mut self, options: Vec<String>, selected: Option<String>) -> Self {
+        self.model_options = options;
+        self.selected_model = selected;
+        self
+    }
+
+    pub fn with_on_model_change<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_model_change = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_runtime_options(mut self, options: Vec<String>, selected: Option<String>) -> Self {
+        self.runtime_options = options;
+        self.selected_runtime = selected;
+        self
+    }
+
+    pub fn with_on_runtime_change<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_runtime_change = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_variant_options(mut self, options: Vec<String>, selected: Option<String>) -> Self {
+        self.variant_options = options;
+        self.selected_variant = selected;
+        self
+    }
+
+    pub fn with_on_variant_change<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_variant_change = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_right_sidebar(
+        mut self,
+        sidebar: Box<dyn Element>,
+        tab: ChatSidebarTab,
+        on_tab_change: impl FnMut(ChatSidebarTab) + 'static,
+    ) -> Self {
+        self.right_sidebar = Some(sidebar);
+        self.sidebar_tab = tab;
+        self.on_sidebar_tab_change = Some(Rc::new(RefCell::new(on_tab_change)));
+        self
+    }
+
     pub fn composer_value(&self) -> String {
         self.composer_value.borrow().clone()
     }
@@ -99,7 +169,8 @@ impl ChatView {
                 .finish();
             message_column = message_column.with_child(bubble);
         }
-        column = column.with_child(Scrollable::new(message_column.finish(), Axis::Vertical).finish());
+        column =
+            column.with_child(Scrollable::new(message_column.finish(), Axis::Vertical).finish());
 
         if !self.quick_actions.is_empty() {
             let mut row = Flex::row()
@@ -108,8 +179,7 @@ impl ChatView {
             for (label, cb) in &self.quick_actions {
                 let cb = cb.clone();
                 row = row.with_child(
-                    QuickActionButton::new(label.clone(), move || (cb.borrow_mut())())
-                        .finish(),
+                    QuickActionButton::new(label.clone(), move || (cb.borrow_mut())()).finish(),
                 );
             }
             column = column.with_child(row.finish());
@@ -118,23 +188,62 @@ impl ChatView {
         let current_value = self.composer_value.borrow().clone();
         let composer_value = self.composer_value.clone();
         let on_send = self.on_send.clone();
-        let composer = ChatComposer::new()
+        let on_model_change = self.on_model_change.clone();
+        let on_runtime_change = self.on_runtime_change.clone();
+        let on_variant_change = self.on_variant_change.clone();
+        let mut composer = ChatComposer::new()
             .with_value(current_value)
+            .with_model_options(self.model_options.clone(), self.selected_model.clone())
+            .with_runtime_options(self.runtime_options.clone(), self.selected_runtime.clone())
+            .with_variant_options(self.variant_options.clone(), self.selected_variant.clone())
             .with_on_send(move |text| {
                 *composer_value.borrow_mut() = String::new();
                 if let Some(cb) = on_send.as_ref() {
                     (cb.borrow_mut())(text);
                 }
-            })
-            .finish();
+            });
+        if let Some(cb) = on_model_change {
+            composer = composer.with_on_model_change(move |value| {
+                (cb.borrow_mut())(value);
+            });
+        }
+        if let Some(cb) = on_runtime_change {
+            composer = composer.with_on_runtime_change(move |value| {
+                (cb.borrow_mut())(value);
+            });
+        }
+        if let Some(cb) = on_variant_change {
+            composer = composer.with_on_variant_change(move |value| {
+                (cb.borrow_mut())(value);
+            });
+        }
+        let composer = composer.finish();
         column = column.with_child(composer);
 
-        self.root = Some(
-            Container::new(column.finish())
-                .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-                .with_padding(EdgeInsets::uniform(padding))
-                .finish(),
-        );
+        let content = Container::new(column.finish())
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+            .with_padding(EdgeInsets::uniform(padding))
+            .finish();
+
+        self.root = Some(if let Some(sidebar) = self.right_sidebar.take() {
+            let on_tab_change = self.on_sidebar_tab_change.clone();
+            let sidebar_tab = self.sidebar_tab;
+            let sidebar = ChatSidebar::new(sidebar_tab)
+                .with_info_content(sidebar)
+                .with_on_change_tab(move |tab| {
+                    if let Some(cb) = on_tab_change.as_ref() {
+                        (cb.borrow_mut())(tab);
+                    }
+                })
+                .finish();
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(content)
+                .with_child(sidebar)
+                .finish()
+        } else {
+            content
+        });
     }
 }
 
@@ -152,11 +261,7 @@ impl Element for ChatView {
         app: &AppContext,
     ) -> Vector2F {
         self.rebuild(app);
-        let size = self
-            .root
-            .as_mut()
-            .unwrap()
-            .layout(constraint, ctx, app);
+        let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size
     }
@@ -227,5 +332,4 @@ mod tests {
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
     }
-
 }

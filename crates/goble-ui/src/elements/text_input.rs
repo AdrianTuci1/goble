@@ -70,9 +70,7 @@ impl TextInput {
         } else {
             ColorToken::Text
         };
-        let text = Text::new(display)
-            .with_theme_color(color, app)
-            .finish();
+        let text = Text::new(display).with_theme_color(color, app).finish();
         let mut container = Container::new(text)
             .with_padding(EdgeInsets::uniform(padding))
             .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
@@ -136,7 +134,7 @@ impl Element for TextInput {
                 }
                 false
             }
-            DispatchedEvent::KeyDown { key } => {
+            DispatchedEvent::KeyDown { key, shift: _ } => {
                 if !self.focused {
                     return false;
                 }
@@ -190,6 +188,7 @@ mod tests {
         assert!(input.dispatch_event(
             &DispatchedEvent::KeyDown {
                 key: "a".to_string(),
+                shift: false,
             },
             &mut event_ctx,
             &app,

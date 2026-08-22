@@ -70,9 +70,7 @@ impl TextArea {
         } else {
             ColorToken::Text
         };
-        let text = Text::new(display)
-            .with_theme_color(color, app)
-            .finish();
+        let text = Text::new(display).with_theme_color(color, app).finish();
         let mut container = Container::new(text)
             .with_padding(EdgeInsets::uniform(padding))
             .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
@@ -142,14 +140,19 @@ impl Element for TextArea {
                 }
                 false
             }
-            DispatchedEvent::KeyDown { key } => {
+            DispatchedEvent::KeyDown { key, shift } => {
                 if !self.focused {
                     return false;
                 }
                 if key == "Backspace" {
                     self.value.pop();
                 } else if key == "Enter" {
-                    self.value.push('\n');
+                    if *shift {
+                        self.value.push('\n');
+                    } else {
+                        // Unfocused newline; let the parent composer handle send.
+                        return false;
+                    }
                 } else if key.len() == 1 {
                     self.value.push_str(key);
                 } else {

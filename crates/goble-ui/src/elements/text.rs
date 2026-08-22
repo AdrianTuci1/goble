@@ -115,7 +115,13 @@ impl Element for Text {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         if let Some(size) = self.size {
             if let Some(renderer) = ctx.renderer.as_mut() {
-                renderer.draw_text(origin, self.text.clone(), self.font_size, self.color, size.x);
+                renderer.draw_text(
+                    origin,
+                    self.text.clone(),
+                    self.font_size,
+                    self.color,
+                    size.x,
+                );
             }
         }
     }

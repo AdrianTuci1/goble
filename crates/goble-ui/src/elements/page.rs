@@ -12,11 +12,7 @@ pub struct Page {
 }
 
 impl Page {
-    pub fn new(
-        header: Option<Box<dyn Element>>,
-        body: Box<dyn Element>,
-        app: &AppContext,
-    ) -> Self {
+    pub fn new(header: Option<Box<dyn Element>>, body: Box<dyn Element>, app: &AppContext) -> Self {
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(body);

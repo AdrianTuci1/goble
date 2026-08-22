@@ -102,7 +102,13 @@ impl Renderer {
         });
     }
 
-    pub fn draw_icon(&mut self, origin: Vector2F, name: impl Into<String>, size: f32, color: ColorU) {
+    pub fn draw_icon(
+        &mut self,
+        origin: Vector2F,
+        name: impl Into<String>,
+        size: f32,
+        color: ColorU,
+    ) {
         self.commands.push(RenderCommand::DrawIcon {
             origin,
             name: name.into(),

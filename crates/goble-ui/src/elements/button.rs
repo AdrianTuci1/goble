@@ -95,7 +95,6 @@ impl Element for Button {
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
-
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
         let h_pad = self.horizontal_padding(app);
@@ -104,7 +103,9 @@ impl Element for Button {
         if let Some(renderer) = ctx.renderer.as_mut() {
             let bg_color = match self.variant {
                 ButtonVariant::Primary => app.theme.color(crate::theme::ColorToken::Accent),
-                ButtonVariant::Ghost | ButtonVariant::Default => app.theme.color(crate::theme::ColorToken::Surface),
+                ButtonVariant::Ghost | ButtonVariant::Default => {
+                    app.theme.color(crate::theme::ColorToken::Surface)
+                }
             };
             let rect = crate::geometry::RectF::new(
                 crate::geometry::PointF::new(origin.x, origin.y),

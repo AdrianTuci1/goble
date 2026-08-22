@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use goble_desktop_service::DesktopState;
 use goble_ui::elements::{
-    AppContext, Container, CrossAxisAlignment, Element, EventContext, Fill, Flex, LayoutContext,
-    PaintContext, Point, SizeConstraint, Text,
+    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, EdgeInsets, Element,
+    EventContext, Fill, Flex, LayoutContext, PaintContext, Point, Scrollable, SizeConstraint, Text,
+    TextInput,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
@@ -17,31 +18,86 @@ pub struct LogsViewPanel {
 
 impl LogsViewPanel {
     pub fn new(
-        _state: Arc<DesktopState>,
+        state: Arc<DesktopState>,
         _ui_state: Rc<RefCell<crate::app::UiState>>,
-        _dirty: Rc<RefCell<bool>>,
+        dirty: Rc<RefCell<bool>>,
         app: &AppContext,
     ) -> Self {
         let spacing = app.theme.spacing_px(SpacingToken::Md);
-        let content = Container::new(
-            Flex::column()
+        let sm = app.theme.spacing_px(SpacingToken::Sm);
+
+        let filter_state = Rc::new(RefCell::new(String::new()));
+        let filter_for_change = Rc::clone(&filter_state);
+        let filter_for_render = Rc::clone(&filter_state);
+
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(spacing)
+            .with_child(
+                Text::new("Logs")
+                    .with_font_size(20.0)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .with_child(
+                TextInput::new()
+                    .with_placeholder("Filter logs...")
+                    .with_on_change(move |v| *filter_for_change.borrow_mut() = v)
+                    .finish(),
+            );
+
+        let logs = state.get_logs();
+        let filter = filter_for_render.borrow().to_lowercase();
+        let filtered: Vec<_> = logs
+            .into_iter()
+            .filter(|entry| {
+                filter.is_empty()
+                    || entry.message.to_lowercase().contains(&filter)
+                    || entry.timestamp.to_lowercase().contains(&filter)
+            })
+            .collect();
+
+        if filtered.is_empty() {
+            column = column.with_child(
+                Text::new("No logs match the current filter.")
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            );
+        } else {
+            let mut list = Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_child(
-                    Text::new("Logs")
-                        .with_font_size(20.0)
-                        .with_theme_color(ColorToken::Text, app)
-                        .finish(),
-                )
-                .with_child(
-                    Text::new("Worker logs coming soon.")
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
+                .with_spacing(sm);
+            for entry in filtered.into_iter().rev().take(200) {
+                let timestamp = &entry.timestamp[..entry.timestamp.len().min(19)];
+                list = list.with_child(
+                    Container::new(
+                        Text::new(format!("{} {}", timestamp, entry.message))
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                    .with_padding(EdgeInsets::uniform(sm))
+                    .finish(),
+                );
+            }
+            column = column.with_child(Scrollable::new(list.finish(), goble_ui::elements::Axis::Vertical).finish());
+        }
+
+        let dirty_for_refresh = Rc::clone(&dirty);
+        column = column.with_child(
+            Button::new(Text::new("Refresh").with_theme_color(ColorToken::Text, app).finish())
+                .with_variant(ButtonVariant::Primary)
+                .with_on_click(move || {
+                    *dirty_for_refresh.borrow_mut() = true;
+                })
                 .finish(),
-        )
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-        .with_padding(goble_ui::elements::EdgeInsets::uniform(spacing))
-        .finish();
+        );
+
+        let content = Container::new(column.finish())
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+            .with_padding(EdgeInsets::uniform(spacing))
+            .finish();
+
         Self { content }
     }
 }

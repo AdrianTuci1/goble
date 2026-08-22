@@ -24,6 +24,8 @@ pub enum ActiveView {
     AgentManagement,
     Threads,
     Drive,
+    Executions,
+    AgentTrace,
     Settings(SettingsTab),
 }
 
@@ -228,6 +230,13 @@ impl ShellView {
             Rc::clone(&dirty),
             app,
         );
+        let executions_button = Self::nav_button(
+            "Executions",
+            ActiveView::Executions,
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            app,
+        );
         let settings_button = Self::nav_button(
             "Settings",
             ActiveView::Settings(SettingsTab::default()),
@@ -243,6 +252,7 @@ impl ShellView {
             .with_child(agents_button)
             .with_child(threads_button)
             .with_child(drive_button)
+            .with_child(executions_button)
             .with_child(settings_button)
             .finish();
 
@@ -355,6 +365,13 @@ impl ShellView {
                 Self::sidebar_nav_item(
                     "Agent runs",
                     ActiveView::AgentManagement,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+                Self::sidebar_nav_item(
+                    "Executions",
+                    ActiveView::Executions,
                     Rc::clone(&state),
                     Rc::clone(&dirty),
                     app,

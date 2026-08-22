@@ -11,8 +11,10 @@ use goble_ui::theme::Theme;
 use tokio::runtime::Runtime;
 
 use crate::views::agent::AgentManagementView;
+use crate::views::agent_trace::AgentTraceViewPanel;
 use crate::views::chat::ChatViewPanel;
 use crate::views::drive::DriveViewPanel;
+use crate::views::executions::ExecutionsViewPanel;
 use crate::views::settings::SettingsViewPanel;
 use crate::views::threads::ThreadsViewPanel;
 
@@ -21,6 +23,7 @@ use crate::views::threads::ThreadsViewPanel;
 pub struct UiState {
     pub selected_chat_id: Option<String>,
     pub selected_thread_id: String,
+    pub selected_trace_id: Option<String>,
     pub settings_tab: SettingsTab,
     pub dark_mode: bool,
 }
@@ -126,6 +129,22 @@ impl GobleApp {
                             tab,
                             &*app,
                             Rc::clone(&app_context),
+                        )
+                        .finish(),
+                        ActiveView::Executions => ExecutionsViewPanel::new(
+                            Arc::clone(&state),
+                            Rc::clone(&shell_state),
+                            Rc::clone(&ui_state),
+                            dirty,
+                            &*app,
+                        )
+                        .finish(),
+                        ActiveView::AgentTrace => AgentTraceViewPanel::new(
+                            Arc::clone(&state),
+                            Rc::clone(&shell_state),
+                            Rc::clone(&ui_state),
+                            dirty,
+                            &*app,
                         )
                         .finish(),
                     }

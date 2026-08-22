@@ -30,7 +30,7 @@ Acest director conține task-urile incrementale pentru migrarea aplicației Gobl
 - [ ] `016-connectors-page.md` — Pagina Connectors (MCP).
 - [ ] `017-workflows-page.md` — Pagina Workflows.
 - [ ] `018-teams-page.md` — Pagina Teams.
-- [ ] `019-executions-agenttrace-page.md` — Pagini Executions și AgentTrace.
+- [x] `019-executions-agenttrace-page.md` — Pagini Executions și AgentTrace.
 - [ ] `020-logs-page.md` — Pagina Logs.
 - [ ] `021-search-page.md` — Pagina Search.
 - [ ] `022-threads-enhancements.md` — Participanți, reacții, mentions, unread.

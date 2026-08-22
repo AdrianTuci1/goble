@@ -199,6 +199,7 @@ impl GobleApp {
                         ActiveView::Search => SearchViewPanel::new(
                             Arc::clone(&state),
                             Rc::clone(&ui_state),
+                            Rc::clone(&shell_state),
                             dirty,
                             &*app,
                         )

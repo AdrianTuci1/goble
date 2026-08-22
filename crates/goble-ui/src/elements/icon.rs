@@ -62,10 +62,16 @@ impl Element for Icon {
         size
     }
 
-    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let color = if self.color.a == 0 {
+            app.theme.color(ColorToken::Text)
+        } else {
+            self.color
+        };
+        let atlas_name = icon_atlas_name(self.name);
         if let Some(renderer) = ctx.renderer.as_mut() {
-            renderer.draw_icon(origin, self.name, self.size, self.color);
+            renderer.draw_icon(origin, atlas_name, self.size, color);
         }
     }
 
@@ -75,6 +81,50 @@ impl Element for Icon {
 
     fn origin(&self) -> Option<Point> {
         self.origin
+    }
+}
+
+/// Maps logical icon names used by components to canonical SVG file names in the icon atlas.
+fn icon_atlas_name(name: &str) -> &'static str {
+    match name {
+        "close" => "close",
+        "x" => "x-close",
+        "minimize" => "minimize-01",
+        "maximize" => "maximize-01",
+        "menu" | "hamburger" => "menu-01",
+        "search" => "search",
+        "bell" | "notification" => "bell",
+        "user" | "account" => "user",
+        "user-02" => "user-02",
+        "gear" | "settings" => "settings",
+        "chat" | "chat-dashed" => "message-chat-square",
+        "agent" | "agents" => "agentmode",
+        "threads" => "message-chat-square",
+        "drive" | "plug" | "layers" => "layers-three-01",
+        "users" | "team" => "users-02",
+        "chevron-down" => "chevron-down",
+        "chevron-left" => "chevron-left",
+        "chevron-right" => "chevron-right",
+        "plus" | "add" => "plus",
+        "new-conversation" => "new-conversation",
+        "message-plus-square" => "message-plus-square",
+        "circle" => "x-circle",
+        "circle-outline" => "x-circle",
+        "check" => "check",
+        "x-circle" => "x-circle",
+        "cancelled" => "cancelled",
+        "left-panel-close" => "left-panel-close",
+        "left-panel-open" => "left-panel-open",
+        "dots" | "dots-horizontal" => "dots-horizontal",
+        "trash" | "delete" => "trash-02",
+        "paperclip" | "attach" => "paperclip",
+        "send" => "send",
+        "inbox" | "inbox-01" | "mail" => "inbox-01",
+        "computer" | "monitor" | "agentmode" => "agentmode",
+        _ => {
+            log::warn!("unknown icon name: {name}");
+            "x-close"
+        }
     }
 }
 
@@ -93,5 +143,12 @@ mod tests {
         );
         assert_eq!(size.x, size.y);
         assert_eq!(size.x, DEFAULT_ICON_SIZE);
+    }
+
+    #[test]
+    fn icon_atlas_name_resolves_aliases() {
+        assert_eq!(icon_atlas_name("threads"), "message-chat-square");
+        assert_eq!(icon_atlas_name("x"), "x-close");
+        assert_eq!(icon_atlas_name("settings"), "settings");
     }
 }

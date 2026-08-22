@@ -2,8 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    AppContext, Chip, Container, CrossAxisAlignment, EdgeInsets, Element, Flex, Icon, IconButton,
+    AppContext, Chip, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex, Icon,
     LayoutContext, MainAxisAlignment, PaintContext, Point, SizeConstraint, Spacer, TextArea,
+    TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -102,6 +103,7 @@ impl ChatComposer {
     fn rebuild(&mut self, app: &AppContext) {
         let padding = app.theme.spacing_px(SpacingToken::Md);
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
+        let radius = app.theme.radius_px();
 
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -148,7 +150,6 @@ impl ChatComposer {
             }
         };
 
-        let icon_color = app.theme.color(ColorToken::Muted);
         let mut footer = Flex::row()
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
             .with_cross_axis_alignment(CrossAxisAlignment::Center);
@@ -156,38 +157,63 @@ impl ChatComposer {
         let mut left_group = Flex::row().with_spacing(spacing);
         if let Some(cb) = self.on_select_model.clone() {
             left_group = left_group.with_child(
-                IconButton::new(Icon::new("cpu").with_color(icon_color).finish())
-                    .with_on_click(move || (cb.borrow_mut())())
-                    .finish(),
+                TopbarButton::new(
+                    Icon::new("cpu")
+                        .with_size(18.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_on_click(move || (cb.borrow_mut())())
+                .finish(),
             );
         }
         if let Some(cb) = self.on_select_key.clone() {
             left_group = left_group.with_child(
-                IconButton::new(Icon::new("key").with_color(icon_color).finish())
-                    .with_on_click(move || (cb.borrow_mut())())
-                    .finish(),
+                TopbarButton::new(
+                    Icon::new("key")
+                        .with_size(18.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_on_click(move || (cb.borrow_mut())())
+                .finish(),
             );
         }
         if let Some(cb) = self.on_select_variant.clone() {
             left_group = left_group.with_child(
-                IconButton::new(Icon::new("sliders").with_color(icon_color).finish())
-                    .with_on_click(move || (cb.borrow_mut())())
-                    .finish(),
+                TopbarButton::new(
+                    Icon::new("sliders")
+                        .with_size(18.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_on_click(move || (cb.borrow_mut())())
+                .finish(),
             );
         }
         if let Some(cb) = self.on_attach.clone() {
             left_group = left_group.with_child(
-                IconButton::new(Icon::new("paperclip").with_color(icon_color).finish())
-                    .with_on_click(move || (cb.borrow_mut())())
-                    .finish(),
+                TopbarButton::new(
+                    Icon::new("paperclip")
+                        .with_size(18.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_on_click(move || (cb.borrow_mut())())
+                .finish(),
             );
         }
         footer = footer.with_child(left_group.finish());
         footer = footer.with_child(Spacer::new().finish());
         footer = footer.with_child(
-            IconButton::new(Icon::new("send").with_color(app.theme.accent_color()).finish())
-                .with_on_click(send)
-                .finish(),
+            TopbarButton::new(
+                Icon::new("send")
+                    .with_size(18.0)
+                    .with_theme_color(ColorToken::Accent, app)
+                    .finish(),
+            )
+            .with_on_click(send)
+            .finish(),
         );
 
         column = column.with_child(
@@ -199,6 +225,9 @@ impl ChatComposer {
         self.root = Some(
             Container::new(column.finish())
                 .with_padding(EdgeInsets::uniform(padding))
+                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+                .with_border(app.theme.color(ColorToken::Border).into())
+                .with_corner_radius(radius)
                 .finish(),
         );
     }

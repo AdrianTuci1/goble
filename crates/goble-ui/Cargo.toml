@@ -23,6 +23,7 @@ goble-core = { path = "../goble-core" }
 goble-desktop-service = { path = "../goble-desktop-service" }
 derive_more = { version = "0.99", features = ["deref", "deref_mut", "from", "into"] }
 euclid = "0.22"
+fontdb = "0.21"
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
 num-derive = "0.4"
@@ -52,3 +53,4 @@ objc = "0.2"
 
 [dev-dependencies]
 anyhow = "1.0"
+env_logger = "0.11"

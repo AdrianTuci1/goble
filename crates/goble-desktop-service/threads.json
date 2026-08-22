@@ -62,5 +62,53 @@
     "tags": [],
     "created_at": "2026-08-19T20:19:02.722901Z",
     "updated_at": "2026-08-19T20:19:02.722901Z"
+  },
+  {
+    "id": "61dffbfa-b579-471c-b406-e4af26a36015",
+    "kind": "chat",
+    "title": "legacy chat",
+    "owner_id": "c5dd3ea1-236a-4f8a-82da-0dff49a3ee23",
+    "is_private": false,
+    "participants": [
+      {
+        "kind": "user",
+        "id": "c5dd3ea1-236a-4f8a-82da-0dff49a3ee23"
+      }
+    ],
+    "tags": [],
+    "created_at": "2026-08-19T21:16:16.091831Z",
+    "updated_at": "2026-08-19T21:16:16.091831Z"
+  },
+  {
+    "id": "660e4b75-aa91-48d8-ae4a-a4724619a7f0",
+    "kind": "chat",
+    "title": "legacy chat",
+    "owner_id": "546887e1-02b3-4748-bf94-e83e6d3eae0b",
+    "is_private": false,
+    "participants": [
+      {
+        "kind": "user",
+        "id": "546887e1-02b3-4748-bf94-e83e6d3eae0b"
+      }
+    ],
+    "tags": [],
+    "created_at": "2026-08-21T16:59:54.314397Z",
+    "updated_at": "2026-08-21T16:59:54.314397Z"
+  },
+  {
+    "id": "9109d83a-a488-4362-95b3-5487dee51cff",
+    "kind": "chat",
+    "title": "legacy chat",
+    "owner_id": "06ad2050-4793-428e-aebe-20a818f001bd",
+    "is_private": false,
+    "participants": [
+      {
+        "kind": "user",
+        "id": "06ad2050-4793-428e-aebe-20a818f001bd"
+      }
+    ],
+    "tags": [],
+    "created_at": "2026-08-21T17:00:50.982740Z",
+    "updated_at": "2026-08-21T17:00:50.982740Z"
   }
 ]

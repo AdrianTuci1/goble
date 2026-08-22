@@ -592,6 +592,53 @@ impl DesktopState {
         Ok(parts.join(""))
     }
 
+    /// Install a worker over SSH on a remote Unix host.
+    #[cfg(unix)]
+    pub fn install_worker_ssh(
+        &self,
+        creds: crate::ssh_installer::SshCredentials,
+        release_tag: &str,
+        repo: &str,
+        pairing_code: &str,
+    ) -> Result<crate::ssh_installer::WorkerInstallResult, crate::ssh_installer::InstallError> {
+        let cluster = self
+            .get_cluster_identity()
+            .ok_or_else(|| crate::ssh_installer::InstallError::Other(
+                "no cluster identity configured".to_string(),
+            ))?;
+        crate::ssh_installer::install_worker(&cluster, &creds, release_tag, repo, pairing_code)
+    }
+
+    /// Install a worker over SSH on a remote Unix host.
+    #[cfg(not(unix))]
+    pub fn install_worker_ssh(
+        &self,
+        _creds: crate::ssh_installer::SshCredentials,
+        _release_tag: &str,
+        _repo: &str,
+        _pairing_code: &str,
+    ) -> Result<crate::ssh_installer::WorkerInstallResult, crate::ssh_installer::InstallError> {
+        Err(crate::ssh_installer::InstallError::Other(
+            "Remote worker installation requires an SSH client, which is not available on this platform.".to_string(),
+        ))
+    }
+
+    pub fn generate_worker_invite(&self, worker_id: &str) -> anyhow::Result<WorkerInvite> {
+        let identity = self
+            .get_cluster_identity()
+            .context("no cluster identity unlocked")?;
+        let bundle = identity
+            .ca
+            .sign_worker_bundle(worker_id, &identity.cluster_name, 365)
+            .context("failed to sign worker bundle")?;
+        let bundle_json = serde_json::to_string(&bundle)?;
+        Ok(WorkerInvite {
+            worker_id: worker_id.to_string(),
+            cluster_key: identity.export_key(),
+            bundle: base64::engine::general_purpose::STANDARD.encode(bundle_json),
+        })
+    }
+
     fn set_cluster_identity(
         &self,
         identity: ClusterIdentity,

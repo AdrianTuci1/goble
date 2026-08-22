@@ -35,9 +35,11 @@ fn main() -> anyhow::Result<()> {
     let app = AppContext::default();
     let mut view = SettingsView::new(SettingsPage::Profile)
         .with_profile("Ada", "ada@example.com")
-        .with_llm("openai", &model)
-        .with_on_save_profile(|name, email| println!("save profile: {} <{}>", name, email))
-        .with_on_save_llm(|provider, model| println!("save llm: {} / {}", provider, model))
+        .with_llm("openai", &model, "", "", "")
+        .with_on_save_profile(|name, email| println!("save profile: {} <{}", name, email))
+        .with_on_save_llm(|provider, model, _api_key, _base_url, _temperature| {
+            println!("save llm: {} / {}", provider, model)
+        })
         .with_on_toggle_dark_mode(|enabled| println!("dark mode: {}", enabled));
 
     let size = view.layout(

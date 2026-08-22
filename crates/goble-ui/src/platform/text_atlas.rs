@@ -6,6 +6,24 @@ use crate::render::RenderCommand;
 const ATLAS_SIZE: u32 = 2048;
 const PADDING: u32 = 4;
 
+/// Bundled Roboto font weight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum FontWeight {
+    #[default]
+    Regular,
+    Medium,
+    Bold,
+    SemiBold,
+}
+
+/// Real text metrics returned by [`measure_text`].
+#[derive(Clone, Copy, Debug)]
+pub struct TextMetrics {
+    pub width: f32,
+    pub height: f32,
+    pub baseline: f32,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct AtlasEntry {
     pub uv_origin: [f32; 2],
@@ -31,6 +49,7 @@ pub struct TextAtlas {
 struct TextKey {
     text: String,
     font_size: u32,
+    weight: FontWeight,
 }
 
 impl TextAtlas {
@@ -151,10 +170,11 @@ impl TextAtlas {
         let keys: Vec<TextKey> = commands
             .iter()
             .filter_map(|command| {
-                if let RenderCommand::DrawText { text, font_size, .. } = command {
+                if let RenderCommand::DrawText { text, font_size, font_weight, .. } = command {
                     Some(TextKey {
                         text: text.clone(),
                         font_size: (*font_size).round() as u32,
+                        weight: *font_weight,
                     })
                 } else {
                     None
@@ -166,7 +186,7 @@ impl TextAtlas {
             if self.entries.contains_key(&key) {
                 continue;
             }
-            if let Some((entry, data, width, height)) = rasterize_text(&key.text, key.font_size) {
+            if let Some((entry, data, width, height)) = rasterize_text(&key.text, key.font_size, key.weight) {
                 if self.cursor_x + width + PADDING > ATLAS_SIZE {
                     self.cursor_x = PADDING;
                     self.cursor_y += self.row_height + PADDING;
@@ -233,30 +253,117 @@ impl TextAtlas {
         );
     }
 
-    pub fn entry(&self, text: &str, font_size: f32) -> Option<&AtlasEntry> {
+    pub fn entry(&self, text: &str, font_size: f32, weight: FontWeight) -> Option<&AtlasEntry> {
         let key = TextKey {
             text: text.to_string(),
             font_size: font_size.round() as u32,
+            weight,
         };
         self.entries.get(&key)
     }
 }
 
-fn system_font() -> Option<&'static fontdue::Font> {
-    static FONT: OnceLock<Option<fontdue::Font>> = OnceLock::new();
-    FONT.get_or_init(|| {
-        let source = font_kit::source::SystemSource::new();
-        let family = source.select_family_by_name("Helvetica").ok()?;
-        let font = family.fonts().first()?.load().ok()?;
-        let data = font.copy_font_data()?;
-        let bytes: &[u8] = data.as_ref().as_slice();
-        fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
+/// Measures a single-line or wrapped text block using the bundled Roboto fonts.
+///
+/// This is the source of truth for layout in elements such as [`crate::elements::Text`].
+/// If the bundled fonts cannot be loaded it returns a conservative heuristic so that
+/// layout never panics.
+pub fn measure_text(text: &str, font_size: f32, line_height: f32, max_width: f32, weight: FontWeight) -> crate::geometry::Vector2F {
+    let Some(font_set) = font_set() else {
+        return estimate_text_size(text, font_size, line_height, max_width);
+    };
+    let font = font_set.select(weight);
+    let fonts = &[font.clone()];
+    let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
+    let settings = if max_width.is_finite() && max_width > 0.0 {
+        fontdue::layout::LayoutSettings {
+            max_width: Some(max_width),
+            max_height: None,
+            ..Default::default()
+        }
+    } else {
+        fontdue::layout::LayoutSettings::default()
+    };
+    layout.reset(&settings);
+    layout.append(fonts, &fontdue::layout::TextStyle::new(text, font_size, 0));
+
+    if layout.glyphs().is_empty() {
+        return crate::geometry::vec2f(0.0, font_size * line_height);
+    }
+
+    let width = layout
+        .glyphs()
+        .iter()
+        .map(|g| g.x + g.width as f32)
+        .fold(0.0, f32::max)
+        .ceil();
+    let height = layout.height().ceil().max(font_size * line_height);
+    crate::geometry::vec2f(width, height)
+}
+
+fn estimate_text_size(
+    text: &str,
+    font_size: f32,
+    line_height: f32,
+    max_width: f32,
+) -> crate::geometry::Vector2F {
+    const APPROX_CHAR_WIDTH_RATIO: f32 = 0.55;
+    if text.is_empty() {
+        return crate::geometry::vec2f(0.0, font_size * line_height);
+    }
+    let char_width = font_size * APPROX_CHAR_WIDTH_RATIO;
+    let full_width = text.chars().count() as f32 * char_width;
+    if full_width <= max_width || max_width.is_infinite() || max_width <= 0.0 {
+        return crate::geometry::vec2f(full_width, font_size * line_height);
+    }
+    let chars_per_line = (max_width / char_width).max(1.0) as usize;
+    let total_chars = text.chars().count();
+    let raw_lines = (total_chars + chars_per_line - 1) / chars_per_line.max(1);
+    let line_count = raw_lines.max(1);
+    let width = (chars_per_line as f32 * char_width).min(full_width);
+    crate::geometry::vec2f(width, font_size * line_height * line_count as f32)
+}
+
+struct FontSet {
+    regular: fontdue::Font,
+    medium: fontdue::Font,
+    bold: fontdue::Font,
+}
+
+impl FontSet {
+    fn select(&self, weight: FontWeight) -> &fontdue::Font {
+        match weight {
+            FontWeight::Regular => &self.regular,
+            FontWeight::Medium => &self.medium,
+            FontWeight::Bold | FontWeight::SemiBold => &self.bold,
+        }
+    }
+}
+
+fn font_set() -> Option<&'static FontSet> {
+    static FONTS: OnceLock<Option<FontSet>> = OnceLock::new();
+    FONTS.get_or_init(|| {
+        let regular = load_bundled_font(FontWeight::Regular)?;
+        let medium = load_bundled_font(FontWeight::Medium).unwrap_or_else(|| regular.clone());
+        let bold = load_bundled_font(FontWeight::Bold).unwrap_or_else(|| regular.clone());
+        Some(FontSet { regular, medium, bold })
     })
     .as_ref()
 }
 
-fn rasterize_text(text: &str, font_size: u32) -> Option<(AtlasEntry, Vec<u8>, u32, u32)> {
-    let font = system_font()?;
+fn load_bundled_font(weight: FontWeight) -> Option<fontdue::Font> {
+    let bytes: &[u8] = match weight {
+        FontWeight::Regular => include_bytes!("../../assets/fonts/roboto/Roboto-Regular.ttf"),
+        FontWeight::Medium => include_bytes!("../../assets/fonts/roboto/Roboto-Medium.ttf"),
+        FontWeight::Bold => include_bytes!("../../assets/fonts/roboto/Roboto-Bold.ttf"),
+        FontWeight::SemiBold => include_bytes!("../../assets/fonts/roboto/RobotoFlex-Semibold.ttf"),
+    };
+    fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
+}
+
+fn rasterize_text(text: &str, font_size: u32, weight: FontWeight) -> Option<(AtlasEntry, Vec<u8>, u32, u32)> {
+    let font_set = font_set()?;
+    let font = font_set.select(weight);
     let fonts = &[font.clone()];
     let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
     layout.reset(&fontdue::layout::LayoutSettings {

@@ -19,6 +19,7 @@ pub struct ThreadsContainer {
     selected_id: String,
     collapsed_sections: std::collections::HashSet<String>,
     on_select: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    on_delete: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_action: Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
     on_new: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -36,6 +37,7 @@ impl ThreadsContainer {
             selected_id: selected_id.into(),
             collapsed_sections: std::collections::HashSet::new(),
             on_select: None,
+            on_delete: None,
             on_send: None,
             on_action: None,
             on_new: None,
@@ -70,6 +72,11 @@ impl ThreadsContainer {
 
     pub fn with_on_select<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
         self.on_select = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_delete<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_delete = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -124,6 +131,7 @@ impl ThreadsContainer {
 
         let selected_id = self.selected_id.clone();
         let on_select = self.on_select.clone();
+        let on_delete = self.on_delete.clone();
         let on_new = self.on_new.clone();
         let on_toggle_section = self.on_toggle_section.clone();
         let collapsed = self.collapsed_sections.clone();
@@ -135,6 +143,13 @@ impl ThreadsContainer {
         if on_select.is_some() {
             sidebar = sidebar.with_on_select(move |id| {
                 if let Some(cb) = on_select.as_ref() {
+                    (cb.borrow_mut())(id);
+                }
+            });
+        }
+        if on_delete.is_some() {
+            sidebar = sidebar.with_on_delete(move |id| {
+                if let Some(cb) = on_delete.as_ref() {
                     (cb.borrow_mut())(id);
                 }
             });

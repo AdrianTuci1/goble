@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 anyhow = "1.0"
 base64 = "0.22"
+thiserror = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 futures = "0.3"

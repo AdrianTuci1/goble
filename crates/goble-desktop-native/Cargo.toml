@@ -15,12 +15,30 @@ path = "src/main.rs"
 name = "goble_desktop_native"
 path = "src/lib.rs"
 
+[package.metadata.bundle]
+name = "Goble"
+identifier = "com.goble.app"
+icon = [
+    "resources/icons/32x32.png",
+    "resources/icons/128x128.png",
+    "resources/icons/128x128@2x.png",
+    "resources/icons/icon.ico",
+]
+category = "public.app-category.developer-tools"
+copyright = "© 2025 Goble Contributors"
+resources = ["resources"]
+short_description = "Native desktop agent runtime for Goble."
+
 [dependencies]
 anyhow.workspace = true
+futures.workspace = true
+once_cell.workspace = true
+serde_json.workspace = true
 goble-core = { path = "../goble-core" }
 goble-desktop-service = { path = "../goble-desktop-service" }
 goble-ui = { path = "../goble-ui" }
 log.workspace = true
+rustls.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

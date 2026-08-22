@@ -17,6 +17,8 @@ pub enum SettingsPage {
     Appearance,
     Account,
     Cluster,
+    Workers,
+    Keys,
 }
 
 fn nav_item(
@@ -93,19 +95,29 @@ pub struct SettingsView {
     profile_email: String,
     llm_provider: String,
     llm_model: String,
+    llm_api_key: String,
+    llm_base_url: String,
+    llm_temperature: String,
     dark_mode: bool,
     vault_unlocked: bool,
     vault_secrets: Vec<String>,
     cluster_name: String,
     cluster_configured: bool,
+    workers: Vec<(String, String, String, bool)>, // id, name, url, paired
+    authorized_keys: Vec<(String, String, String)>, // id, name, fingerprint
     on_navigate: Option<Rc<RefCell<dyn FnMut(SettingsPage) + 'static>>>,
     on_save_profile: Option<Rc<RefCell<dyn FnMut(String, String) + 'static>>>,
-    on_save_llm: Option<Rc<RefCell<dyn FnMut(String, String) + 'static>>>,
+    on_save_llm: Option<Rc<RefCell<dyn FnMut(String, String, String, String, String) + 'static>>>,
     on_toggle_dark_mode: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     on_unlock_vault: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_add_vault_secret: Option<Rc<RefCell<dyn FnMut(String, String) + 'static>>>,
     on_create_cluster: Option<Rc<RefCell<dyn FnMut(String, String) + 'static>>>,
     on_unlock_cluster: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    on_add_worker: Option<Rc<RefCell<dyn FnMut(String, String) + 'static>>>,
+    on_pair_worker: Option<Rc<RefCell<dyn FnMut(String, String) + 'static>>>,
+    on_remove_worker: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    on_add_authorized_key: Option<Rc<RefCell<dyn FnMut(String, String, String) + 'static>>>,
+    on_remove_authorized_key: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -119,11 +131,16 @@ impl SettingsView {
             profile_email: String::new(),
             llm_provider: String::new(),
             llm_model: String::new(),
+            llm_api_key: String::new(),
+            llm_base_url: String::new(),
+            llm_temperature: String::new(),
             dark_mode: false,
             vault_unlocked: false,
             vault_secrets: Vec::new(),
             cluster_name: String::new(),
             cluster_configured: false,
+            workers: Vec::new(),
+            authorized_keys: Vec::new(),
             on_navigate: None,
             on_save_profile: None,
             on_save_llm: None,
@@ -132,6 +149,11 @@ impl SettingsView {
             on_add_vault_secret: None,
             on_create_cluster: None,
             on_unlock_cluster: None,
+            on_add_worker: None,
+            on_pair_worker: None,
+            on_remove_worker: None,
+            on_add_authorized_key: None,
+            on_remove_authorized_key: None,
             root: None,
             size: None,
             origin: None,
@@ -144,9 +166,19 @@ impl SettingsView {
         self
     }
 
-    pub fn with_llm(mut self, provider: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn with_llm(
+        mut self,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        temperature: impl Into<String>,
+    ) -> Self {
         self.llm_provider = provider.into();
         self.llm_model = model.into();
+        self.llm_api_key = api_key.into();
+        self.llm_base_url = base_url.into();
+        self.llm_temperature = temperature.into();
         self
     }
 
@@ -167,6 +199,16 @@ impl SettingsView {
         self
     }
 
+    pub fn with_workers(mut self, workers: Vec<(String, String, String, bool)>) -> Self {
+        self.workers = workers;
+        self
+    }
+
+    pub fn with_authorized_keys(mut self, keys: Vec<(String, String, String)>) -> Self {
+        self.authorized_keys = keys;
+        self
+    }
+
     pub fn with_on_navigate<F: FnMut(SettingsPage) + 'static>(mut self, callback: F) -> Self {
         self.on_navigate = Some(Rc::new(RefCell::new(callback)));
         self
@@ -177,7 +219,7 @@ impl SettingsView {
         self
     }
 
-    pub fn with_on_save_llm<F: FnMut(String, String) + 'static>(mut self, callback: F) -> Self {
+    pub fn with_on_save_llm<F: FnMut(String, String, String, String, String) + 'static>(mut self, callback: F) -> Self {
         self.on_save_llm = Some(Rc::new(RefCell::new(callback)));
         self
     }
@@ -207,6 +249,31 @@ impl SettingsView {
         self
     }
 
+    pub fn with_on_add_worker<F: FnMut(String, String) + 'static>(mut self, callback: F) -> Self {
+        self.on_add_worker = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_pair_worker<F: FnMut(String, String) + 'static>(mut self, callback: F) -> Self {
+        self.on_pair_worker = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_remove_worker<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_remove_worker = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_add_authorized_key<F: FnMut(String, String, String) + 'static>(mut self, callback: F) -> Self {
+        self.on_add_authorized_key = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_remove_authorized_key<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_remove_authorized_key = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     fn build_nav(&self, app: &AppContext) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
         let mut column = Flex::column()
@@ -219,6 +286,8 @@ impl SettingsView {
             ("Appearance", SettingsPage::Appearance),
             ("Account", SettingsPage::Account),
             ("Cluster", SettingsPage::Cluster),
+            ("Workers", SettingsPage::Workers),
+            ("Keys", SettingsPage::Keys),
         ];
         for (label, page) in pages {
             let selected = self.current_page == page;
@@ -244,6 +313,8 @@ impl SettingsView {
             SettingsPage::Appearance => self.build_appearance_page(app),
             SettingsPage::Account => self.build_account_page(app),
             SettingsPage::Cluster => self.build_cluster_page(app),
+            SettingsPage::Workers => self.build_workers_page(app),
+            SettingsPage::Keys => self.build_keys_page(app),
         }
     }
 
@@ -302,6 +373,9 @@ impl SettingsView {
 
         let provider_state = Rc::new(RefCell::new(self.llm_provider.clone()));
         let model_state = Rc::new(RefCell::new(self.llm_model.clone()));
+        let api_key_state = Rc::new(RefCell::new(self.llm_api_key.clone()));
+        let base_url_state = Rc::new(RefCell::new(self.llm_base_url.clone()));
+        let temperature_state = Rc::new(RefCell::new(self.llm_temperature.clone()));
 
         let provider_state_for_change = Rc::clone(&provider_state);
         let mut provider_select = Select::new(provider_options).with_on_change(move |idx| {
@@ -332,13 +406,43 @@ impl SettingsView {
             })
             .finish();
 
+        let api_key_state_for_change = Rc::clone(&api_key_state);
+        let api_key_input = TextInput::new()
+            .with_value(self.llm_api_key.clone())
+            .with_placeholder("API key")
+            .with_on_change(move |v| {
+                *api_key_state_for_change.borrow_mut() = v;
+            })
+            .finish();
+
+        let base_url_state_for_change = Rc::clone(&base_url_state);
+        let base_url_input = TextInput::new()
+            .with_value(self.llm_base_url.clone())
+            .with_placeholder("Optional base URL")
+            .with_on_change(move |v| {
+                *base_url_state_for_change.borrow_mut() = v;
+            })
+            .finish();
+
+        let temperature_state_for_change = Rc::clone(&temperature_state);
+        let temperature_input = TextInput::new()
+            .with_value(self.llm_temperature.clone())
+            .with_placeholder("e.g. 0.7")
+            .with_on_change(move |v| {
+                *temperature_state_for_change.borrow_mut() = v;
+            })
+            .finish();
+
         let on_save = self.on_save_llm.clone();
         let save = Button::new(Text::new("Save").finish())
             .with_on_click(move || {
                 if let Some(cb) = on_save.as_ref() {
                     let provider = provider_state.borrow().clone();
                     let model = model_state.borrow().clone();
-                    (cb.borrow_mut())(provider, model);
+                    let api_key = api_key_state.borrow().clone();
+                    let base_url = base_url_state.borrow().clone();
+                    let temperature = temperature_state.borrow().clone();
+                    (cb.borrow_mut())(provider, model, api_key, base_url, temperature);
                 }
             })
             .finish();
@@ -348,6 +452,9 @@ impl SettingsView {
             vec![
                 settings_row("Provider", provider_select, app),
                 settings_row("Model", model_input, app),
+                settings_row("API key", api_key_input, app),
+                settings_row("Base URL", base_url_input, app),
+                settings_row("Temperature", temperature_input, app),
                 save,
             ],
             app,
@@ -515,6 +622,185 @@ impl SettingsView {
         section("Cluster identity", children, app)
     }
 
+    fn build_workers_page(&self, app: &AppContext) -> Box<dyn Element> {
+        let mut children: Vec<Box<dyn Element>> = vec![];
+
+        let name_state = Rc::new(RefCell::new(String::new()));
+        let url_state = Rc::new(RefCell::new(String::new()));
+        let code_state = Rc::new(RefCell::new(String::new()));
+
+        let name_state_for_change = Rc::clone(&name_state);
+        let name_input = TextInput::new()
+            .with_placeholder("Worker name")
+            .with_on_change(move |v| *name_state_for_change.borrow_mut() = v)
+            .finish();
+        let url_state_for_change = Rc::clone(&url_state);
+        let url_input = TextInput::new()
+            .with_placeholder("wss://host:port/ws")
+            .with_on_change(move |v| *url_state_for_change.borrow_mut() = v)
+            .finish();
+        let code_state_for_change = Rc::clone(&code_state);
+        let code_input = TextInput::new()
+            .with_placeholder("Pairing code")
+            .with_on_change(move |v| *code_state_for_change.borrow_mut() = v)
+            .finish();
+
+        let on_add = self.on_add_worker.clone();
+        let name_state_for_add = Rc::clone(&name_state);
+        let add = Button::new(Text::new("Add worker").finish())
+            .with_on_click(move || {
+                if let Some(cb) = on_add.as_ref() {
+                    let name = name_state_for_add.borrow().clone();
+                    let url = url_state.borrow().clone();
+                    (cb.borrow_mut())(name, url);
+                }
+            })
+            .finish();
+        let on_pair = self.on_pair_worker.clone();
+        let pair_name_state = Rc::clone(&name_state);
+        let pair = Button::new(Text::new("Pair worker").finish())
+            .with_on_click(move || {
+                if let Some(cb) = on_pair.as_ref() {
+                    let id = pair_name_state.borrow().clone();
+                    let code = code_state.borrow().clone();
+                    (cb.borrow_mut())(id, code);
+                }
+            })
+            .finish();
+
+        children.push(section(
+            "Register / pair",
+            vec![
+                settings_row("Name", name_input, app),
+                settings_row("URL", url_input, app),
+                settings_row("Pairing code", code_input, app),
+                add,
+                pair,
+            ],
+            app,
+        ));
+
+        if !self.workers.is_empty() {
+            let mut list = Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_spacing(app.theme.spacing_px(SpacingToken::Sm));
+            for (id, name, url, paired) in &self.workers {
+                let status = if *paired { "paired" } else { "unpaired" };
+                let line = format!("{} | {} | {} | {}", &id[..id.len().min(8)], name, url, status);
+                let on_remove = self.on_remove_worker.clone();
+                let id_for_remove = id.clone();
+                let row = Flex::row()
+                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        Text::new(line).with_theme_color(ColorToken::Text, app).finish(),
+                    )
+                    .with_child(
+                        Button::new(Text::new("Remove").finish())
+                            .with_on_click(move || {
+                                if let Some(cb) = on_remove.as_ref() {
+                                    (cb.borrow_mut())(id_for_remove.clone());
+                                }
+                            })
+                            .finish(),
+                    )
+                    .finish();
+                list = list.with_child(
+                    Container::new(row)
+                        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                        .with_padding(EdgeInsets::uniform(app.theme.spacing_px(SpacingToken::Md)))
+                        .finish(),
+                );
+            }
+            children.push(section("Workers", vec![list.finish()], app));
+        }
+
+        section("Workers", children, app)
+    }
+
+    fn build_keys_page(&self, app: &AppContext) -> Box<dyn Element> {
+        let mut children: Vec<Box<dyn Element>> = vec![];
+
+        let name_state = Rc::new(RefCell::new(String::new()));
+        let pem_state = Rc::new(RefCell::new(String::new()));
+        let fp_state = Rc::new(RefCell::new(String::new()));
+
+        let name_state_for_change = Rc::clone(&name_state);
+        let name_input = TextInput::new()
+            .with_placeholder("Key label")
+            .with_on_change(move |v| *name_state_for_change.borrow_mut() = v)
+            .finish();
+        let pem_state_for_change = Rc::clone(&pem_state);
+        let pem_input = TextInput::new()
+            .with_placeholder("Public key PEM")
+            .with_on_change(move |v| *pem_state_for_change.borrow_mut() = v)
+            .finish();
+        let fp_state_for_change = Rc::clone(&fp_state);
+        let fp_input = TextInput::new()
+            .with_placeholder("Fingerprint")
+            .with_on_change(move |v| *fp_state_for_change.borrow_mut() = v)
+            .finish();
+
+        let on_add = self.on_add_authorized_key.clone();
+        let add = Button::new(Text::new("Add key").finish())
+            .with_on_click(move || {
+                if let Some(cb) = on_add.as_ref() {
+                    let name = name_state.borrow().clone();
+                    let pem = pem_state.borrow().clone();
+                    let fp = fp_state.borrow().clone();
+                    (cb.borrow_mut())(name, pem, fp);
+                }
+            })
+            .finish();
+
+        children.push(section(
+            "Add authorized key",
+            vec![
+                settings_row("Name", name_input, app),
+                settings_row("Public key", pem_input, app),
+                settings_row("Fingerprint", fp_input, app),
+                add,
+            ],
+            app,
+        ));
+
+        if !self.authorized_keys.is_empty() {
+            let mut list = Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_spacing(app.theme.spacing_px(SpacingToken::Sm));
+            for (id, name, fingerprint) in &self.authorized_keys {
+                let line = format!("{} | {}", name, fingerprint);
+                let on_remove = self.on_remove_authorized_key.clone();
+                let id_for_remove = id.clone();
+                let row = Flex::row()
+                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        Text::new(line).with_theme_color(ColorToken::Text, app).finish(),
+                    )
+                    .with_child(
+                        Button::new(Text::new("Remove").finish())
+                            .with_on_click(move || {
+                                if let Some(cb) = on_remove.as_ref() {
+                                    (cb.borrow_mut())(id_for_remove.clone());
+                                }
+                            })
+                            .finish(),
+                    )
+                    .finish();
+                list = list.with_child(
+                    Container::new(row)
+                        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                        .with_padding(EdgeInsets::uniform(app.theme.spacing_px(SpacingToken::Md)))
+                        .finish(),
+                );
+            }
+            children.push(section("Authorized keys", vec![list.finish()], app));
+        }
+
+        section("Authorized keys", children, app)
+    }
+
     fn rebuild(&mut self, app: &AppContext, width: f32) {
         let spacing = app.theme.spacing_px(SpacingToken::Md);
         let nav_width = 160.0_f32;
@@ -596,7 +882,7 @@ mod tests {
         let app = AppContext::default();
         let mut view = SettingsView::new(SettingsPage::Profile)
             .with_profile("Ada", "ada@example.com")
-            .with_llm("openai", "gpt-4o");
+            .with_llm("openai", "gpt-4o", "", "", "");
         let size = view.layout(
             SizeConstraint::loose(vec2f(800.0, 600.0)),
             &mut LayoutContext::default(),

@@ -84,7 +84,7 @@ impl ThreadsViewPanel {
             })
             .collect();
 
-        let messages: Vec<UiChatMessage> = if selected_id.is_empty() {
+        let mut messages: Vec<UiChatMessage> = if selected_id.is_empty() {
             Vec::new()
         } else {
             state
@@ -100,11 +100,23 @@ impl ThreadsViewPanel {
 
         let state_for_send = Arc::clone(&state);
         let state_for_new = Arc::clone(&state);
+        let state_for_delete = Arc::clone(&state);
         let ui_state_for_select = Rc::clone(&ui_state);
+        let ui_state_for_delete = Rc::clone(&ui_state);
         let ui_state_for_new = Rc::clone(&ui_state);
         let dirty_for_select = Rc::clone(&dirty);
+        let dirty_for_delete = Rc::clone(&dirty);
         let dirty_for_send = Rc::clone(&dirty);
         let dirty_for_new = Rc::clone(&dirty);
+
+        if let Some(streaming) = ui_state.borrow().thread_streaming.get(&selected_id) {
+            if !streaming.is_empty() {
+                messages.push(UiChatMessage::from_markdown(
+                    goble_ui::elements::ChatRole::Assistant,
+                    streaming.clone(),
+                ));
+            }
+        }
 
         let container = ThreadsContainer::new(selected_id.clone())
             .with_threads(entries)
@@ -130,6 +142,14 @@ impl ThreadsViewPanel {
                     log::error!("failed to post thread message: {}", e);
                 }
                 *dirty_for_send.borrow_mut() = true;
+            })
+            .with_on_delete(move |id| {
+                let store = state_for_delete.thread_store();
+                store.delete_thread(&goble_core::thread::ThreadId(id.clone()));
+                if ui_state_for_delete.borrow().selected_thread_id == id {
+                    ui_state_for_delete.borrow_mut().selected_thread_id.clear();
+                }
+                *dirty_for_delete.borrow_mut() = true;
             })
             .with_on_new(move || {
                 let store = state_for_new.thread_store();

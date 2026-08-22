@@ -97,7 +97,7 @@ impl TabbedApp {
                 .finish(),
             AppTab::Settings => SettingsView::new(SettingsPage::Profile)
                 .with_profile("Ada", "ada@example.com")
-                .with_llm("openai", "gpt-4o")
+                .with_llm("openai", "gpt-4o", "", "", "")
                 .finish(),
         };
 

@@ -1,6 +1,6 @@
 use crate::color::ColorU;
 use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
-use crate::geometry::{vec2f, Vector2F};
+use crate::geometry::{rectf, vec2f, Vector2F};
 use crate::theme::ColorToken;
 
 const DEFAULT_AVATAR_SIZE: f32 = 32.0;
@@ -28,7 +28,7 @@ impl Avatar {
             label: label.into(),
             size: DEFAULT_AVATAR_SIZE,
             shape: AvatarShape::default(),
-            background: ColorU::default(),
+            background: ColorU::new(0, 0, 0, 0),
             foreground: ColorU::new(255, 255, 255, 255),
             layout_size: None,
             origin: None,
@@ -87,8 +87,49 @@ impl Element for Avatar {
         size
     }
 
-    fn paint(&mut self, origin: Vector2F, _ctx: &mut PaintContext, _app: &AppContext) {
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+
+        let bg = if self.background.a == 0 {
+            app.theme.color(ColorToken::Accent)
+        } else {
+            self.background
+        };
+        let fg = if self.foreground.a == 0 {
+            app.theme.color(ColorToken::Text)
+        } else {
+            self.foreground
+        };
+
+        let radius = match self.shape {
+            AvatarShape::Circle => self.size * 0.5,
+            AvatarShape::Squircle => self.size * 0.22,
+        };
+
+        ctx.renderer
+            .as_mut()
+            .unwrap()
+            .fill_rounded_rect(
+                rectf(origin.x, origin.y, self.size, self.size),
+                bg,
+                radius,
+            );
+
+        let initials = self.initials();
+        if !initials.is_empty() {
+            let font_size = self.size * 0.45;
+            let approx_char_width = font_size * 0.55;
+            let text_width = initials.len() as f32 * approx_char_width;
+            let text_x = origin.x + (self.size - text_width) * 0.5;
+            let text_y = origin.y + (self.size - font_size) * 0.5;
+            ctx.renderer.as_mut().unwrap().draw_text(
+                vec2f(text_x, text_y),
+                initials,
+                font_size,
+                fg,
+                self.size,
+            );
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {

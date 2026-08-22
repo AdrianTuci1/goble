@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -22,6 +23,15 @@ pub struct UiState {
     pub selected_thread_id: String,
     pub settings_tab: SettingsTab,
     pub dark_mode: bool,
+    pub chat_streaming: HashMap<String, String>,
+    pub thread_streaming: HashMap<String, String>,
+    pub agent_edit_name: HashMap<String, String>,
+    pub agent_edit_prompt: HashMap<String, String>,
+    pub agent_edit_description: HashMap<String, String>,
+    pub workflow_edit_name: HashMap<String, String>,
+    pub workflow_edit_description: HashMap<String, String>,
+    pub team_edit_name: HashMap<String, String>,
+    pub mcp_edit_name: HashMap<String, String>,
 }
 
 pub struct GobleApp {
@@ -68,19 +78,82 @@ impl GobleApp {
         let shell_state = ShellState::default();
         let state = Arc::clone(&self.state);
         let ui_state = Rc::clone(&self.ui_state);
+        let ui_state_for_event = Rc::clone(&self.ui_state);
         let app_context = Rc::clone(&self.app_context);
-        let app_context_for_shell = Rc::clone(&self.app_context);
         let bus = self.bus.clone();
-
         let event_checker = Rc::new(RefCell::new(move || {
             let events = bus.take_events();
-            !events.is_empty()
+            let mut dirty = false;
+            let mut ui = ui_state_for_event.borrow_mut();
+            for (event, payload) in &events {
+                match event.as_str() {
+                    "harness:event" => {
+                        let target_id = payload
+                            .get("chat_id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .or_else(|| {
+                                payload
+                                    .get("thread_id")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                            });
+                        let is_thread = payload.get("thread_id").is_some();
+                        if let Some(target_id) = target_id {
+                            if let Some(ev) = payload.get("event") {
+                                if let Some(typ) = ev.get("type").and_then(|v| v.as_str()) {
+                                    match typ {
+                                        "AssistantDelta" => {
+                                            let delta = ev
+                                                .get("payload")
+                                                .and_then(|p| p.get("delta"))
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            if is_thread {
+                                                ui.thread_streaming
+                                                    .entry(target_id)
+                                                    .or_default()
+                                                    .push_str(delta);
+                                            } else {
+                                                ui.chat_streaming
+                                                    .entry(target_id)
+                                                    .or_default()
+                                                    .push_str(delta);
+                                            }
+                                            dirty = true;
+                                        }
+                                        "Done" | "Error" => {
+                                            if is_thread {
+                                                ui.thread_streaming.remove(&target_id);
+                                            } else {
+                                                ui.chat_streaming.remove(&target_id);
+                                            }
+                                            dirty = true;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "chat:updated" | "chats:updated" | "agents:updated" | "workflows:updated"
+                    | "teams:updated" | "executions:updated" | "vault:updated"
+                    | "workers:updated" | "cluster:updated" | "threads:updated"
+                    | "thread:updated" | "thread:messages:updated" | "thread:message:created"
+                    | "agent:log" | "agent:started" | "agent:finished" | "agent:state_update"
+                    | "agent:tool_result" | "logs:updated" => {
+                        dirty = true;
+                    }
+                    _ => {}
+                }
+            }
+            dirty
         }));
 
-        let shell_app = app_context_for_shell.borrow();
+        let shell_app = app_context.borrow().clone();
         ShellView::with_content_and_event_checker(
             shell_state,
-            &*shell_app,
+            &shell_app,
             Box::new(
                 move |shell_state: Rc<RefCell<ShellState>>, dirty: Rc<RefCell<bool>>| {
                     {
@@ -103,7 +176,13 @@ impl GobleApp {
                         )
                         .finish(),
                         ActiveView::AgentManagement => {
-                            AgentManagementView::new(Arc::clone(&state), dirty, &*app).finish()
+                            AgentManagementView::new(
+                                Arc::clone(&state),
+                                Rc::clone(&ui_state),
+                                dirty,
+                                &*app,
+                            )
+                            .finish()
                         }
                         ActiveView::Threads => ThreadsViewPanel::new(
                             Arc::clone(&state),
@@ -113,7 +192,13 @@ impl GobleApp {
                         )
                         .finish(),
                         ActiveView::Drive => {
-                            DriveViewPanel::new(Arc::clone(&state), dirty, &*app).finish()
+                            DriveViewPanel::new(
+                                Arc::clone(&state),
+                                Rc::clone(&ui_state),
+                                dirty,
+                                &*app,
+                            )
+                            .finish()
                         }
                         ActiveView::Settings(tab) => SettingsViewPanel::new(
                             Arc::clone(&state),

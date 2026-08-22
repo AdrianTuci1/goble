@@ -1,5 +1,6 @@
 use crate::color::ColorU;
 use crate::geometry::Vector2F;
+use crate::platform::text_atlas::FontWeight;
 
 /// A 2D renderer command emitted by elements during paint.
 #[derive(Clone, Debug)]
@@ -21,6 +22,7 @@ pub enum RenderCommand {
         font_size: f32,
         color: ColorU,
         max_width: f32,
+        font_weight: FontWeight,
     },
     DrawIcon {
         origin: Vector2F,
@@ -99,6 +101,26 @@ impl Renderer {
             font_size,
             color,
             max_width,
+            font_weight: FontWeight::Regular,
+        });
+    }
+
+    pub fn draw_text_weighted(
+        &mut self,
+        origin: Vector2F,
+        text: impl Into<String>,
+        font_size: f32,
+        color: ColorU,
+        max_width: f32,
+        font_weight: FontWeight,
+    ) {
+        self.commands.push(RenderCommand::DrawText {
+            origin,
+            text: text.into(),
+            font_size,
+            color,
+            max_width,
+            font_weight,
         });
     }
 

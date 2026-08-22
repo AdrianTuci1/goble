@@ -4,20 +4,27 @@ use std::sync::Arc;
 
 use goble_desktop_service::DesktopState;
 use goble_ui::elements::{
-    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, EdgeInsets, Element,
-    EventContext, Fill, Flex, Label, LabelSize, LayoutContext, PaintContext,
-    Point, SizeConstraint, Text, TextInput,
+    AgentCard, AppContext, Avatar, Button, ButtonVariant, ConnectorCard, Container,
+    CrossAxisAlignment, EdgeInsets, Element, EventContext, Fill, Flex, Icon, Label, LabelSize,
+    LayoutContext, PaintContext, Point, SizeConstraint, Text, TextInput,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
 use goble_ui::theme::{ColorToken, SpacingToken};
+
+use crate::app::UiState;
 
 pub struct DriveViewPanel {
     content: Box<dyn Element>,
 }
 
 impl DriveViewPanel {
-    pub fn new(state: Arc<DesktopState>, dirty: Rc<RefCell<bool>>, app: &AppContext) -> Self {
+    pub fn new(
+        state: Arc<DesktopState>,
+        _ui_state: Rc<RefCell<UiState>>,
+        dirty: Rc<RefCell<bool>>,
+        app: &AppContext,
+    ) -> Self {
         let spacing = app.theme.spacing_px(SpacingToken::Md);
         let sm = app.theme.spacing_px(SpacingToken::Sm);
 
@@ -101,19 +108,29 @@ impl DriveViewPanel {
             );
         } else {
             for wf in workflows {
-                let line = format!(
-                    "{} | {} | {} | {}",
-                    &wf.id[..wf.id.len().min(8)],
-                    wf.name,
-                    wf.description,
-                    if wf.enabled { "enabled" } else { "disabled" }
-                );
-                column = column.with_child(
-                    Container::new(Text::new(line).with_theme_color(ColorToken::Text, app).finish())
-                        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                        .with_padding(EdgeInsets::uniform(sm))
+                let state_for_delete = Arc::clone(&state);
+                let dirty_for_delete = Rc::clone(&dirty);
+                let wf_id = wf.id.clone();
+                let delete = Button::new(Text::new("Delete").finish())
+                    .with_on_click(move || {
+                        if let Err(e) = state_for_delete.delete_workflow(&goble_core::workflow::WorkflowId(wf_id.clone())) {
+                            log::error!("failed to delete workflow: {}", e);
+                        }
+                        *dirty_for_delete.borrow_mut() = true;
+                    })
+                    .finish();
+                let card = ConnectorCard::new(
+                    Icon::new("layers")
+                        .with_theme_color(ColorToken::Accent, app)
                         .finish(),
-                );
+                    wf.name.clone(),
+                    format!("{} | {}", &wf.id[..wf.id.len().min(8)], wf.description),
+                    [if wf.enabled { "enabled" } else { "disabled" }],
+                    Some(delete),
+                    app,
+                )
+                .finish();
+                column = column.with_child(card);
             }
         }
 
@@ -131,13 +148,35 @@ impl DriveViewPanel {
             );
         } else {
             for agent in agents {
-                let line = format!("{} | {}", &agent.id[..agent.id.len().min(8)], agent.name);
-                column = column.with_child(
-                    Container::new(Text::new(line).with_theme_color(ColorToken::Text, app).finish())
-                        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                        .with_padding(EdgeInsets::uniform(sm))
+                let state_for_run = Arc::clone(&state);
+                let dirty_for_run = Rc::clone(&dirty);
+                let run_id = agent.id.clone();
+                let card = AgentCard::new(
+                    Avatar::new(&agent.name)
+                        .with_theme_background(ColorToken::Accent, app)
+                        .with_theme_foreground(ColorToken::Text, app)
                         .finish(),
-                );
+                    agent.name.clone(),
+                    agent.spec.description.clone(),
+                    agent.spec.tools.clone(),
+                    app,
+                )
+                .with_on_click(move || {
+                    let worker_id = match state_for_run.resolve_worker_for_target("any", None, None) {
+                        Ok(wid) => wid,
+                        Err(e) => {
+                            log::error!("no worker available: {}", e);
+                            return;
+                        }
+                    };
+                    let agent_id = goble_core::agent::AgentId(run_id.clone());
+                    if let Err(e) = state_for_run.run_agent(&worker_id, &agent_id, "Run from Drive") {
+                        log::error!("failed to run agent: {}", e);
+                    }
+                    *dirty_for_run.borrow_mut() = true;
+                })
+                .finish();
+                column = column.with_child(card);
             }
         }
 
@@ -195,18 +234,18 @@ impl DriveViewPanel {
             );
         } else {
             for team in teams {
-                let line = format!(
-                    "{} | {} | members: {}",
-                    &team.id[..team.id.len().min(8)],
-                    team.name,
-                    team.members.len()
-                );
-                column = column.with_child(
-                    Container::new(Text::new(line).with_theme_color(ColorToken::Text, app).finish())
-                        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                        .with_padding(EdgeInsets::uniform(sm))
+                let card = ConnectorCard::new(
+                    Icon::new("users")
+                        .with_theme_color(ColorToken::Accent, app)
                         .finish(),
-                );
+                    team.name.clone(),
+                    format!("{} | members: {}", &team.id[..team.id.len().min(8)], team.members.len()),
+                    ["team"],
+                    None,
+                    app,
+                )
+                .finish();
+                column = column.with_child(card);
             }
         }
 
@@ -285,19 +324,35 @@ impl DriveViewPanel {
             );
         } else {
             for mcp in mcps {
-                let line = format!(
-                    "{} | {} | {} | {}",
-                    &mcp.id[..mcp.id.len().min(8)],
-                    mcp.name,
-                    mcp.source,
-                    if mcp.auth_required { "auth required" } else { "no auth" }
-                );
-                column = column.with_child(
-                    Container::new(Text::new(line).with_theme_color(ColorToken::Text, app).finish())
-                        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                        .with_padding(EdgeInsets::uniform(sm))
+                let state_for_delete = Arc::clone(&state);
+                let dirty_for_delete = Rc::clone(&dirty);
+                let mcp_id = mcp.id.clone();
+                let delete = Button::new(Text::new("Delete").finish())
+                    .with_on_click(move || {
+                        if let Err(e) = state_for_delete.delete_mcp_server(&mcp_id) {
+                            log::error!("failed to delete mcp server: {}", e);
+                        }
+                        *dirty_for_delete.borrow_mut() = true;
+                    })
+                    .finish();
+                let source_label = format!("{}", mcp.source);
+                let card = ConnectorCard::new(
+                    Icon::new("plug")
+                        .with_theme_color(ColorToken::Accent, app)
                         .finish(),
-                );
+                    mcp.name.clone(),
+                    format!(
+                        "{} | {} | {}",
+                        &mcp.id[..mcp.id.len().min(8)],
+                        source_label,
+                        if mcp.auth_required { "auth required" } else { "no auth" }
+                    ),
+                    mcp.capabilities.iter().map(String::as_str),
+                    Some(delete),
+                    app,
+                )
+                .finish();
+                column = column.with_child(card);
             }
         }
 

@@ -1,4 +1,5 @@
 use crate::color::ColorU;
+use crate::platform::icon_atlas::IconAtlas;
 use crate::platform::text_atlas::TextAtlas;
 use crate::render::{RenderCommand, Renderer};
 use wgpu::util::DeviceExt;
@@ -66,10 +67,12 @@ pub struct WgpuRenderEngine {
     text_bind_group: wgpu::BindGroup,
     text_index_buffer: wgpu::Buffer,
     text_vertex_buffer: wgpu::Buffer,
+    icon_atlas: IconAtlas,
+    icon_vertex_buffer: wgpu::Buffer,
 }
 
 impl WgpuRenderEngine {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, surface_format: wgpu::TextureFormat) -> Self {
         let rect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("goble-ui rect shader"),
             source: wgpu::ShaderSource::Wgsl(RECT_SHADER.into()),
@@ -169,7 +172,7 @@ impl WgpuRenderEngine {
                 module: &rect_shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    format: surface_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -292,7 +295,7 @@ impl WgpuRenderEngine {
                 module: &text_shader,
                 entry_point: Some("fs_text"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    format: surface_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -318,6 +321,16 @@ impl WgpuRenderEngine {
             mapped_at_creation: false,
         });
 
+        let mut icon_atlas = IconAtlas::new(device, queue);
+        icon_atlas.set_uniform_bind_group(device, &uniform_buffer);
+
+        let icon_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("goble-ui icon vertex buffer"),
+            size: (std::mem::size_of::<TextVertex>() * MAX_TEXT_VERTICES) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             rect_pipeline,
             rect_bind_group,
@@ -329,6 +342,8 @@ impl WgpuRenderEngine {
             text_bind_group,
             text_index_buffer,
             text_vertex_buffer,
+            icon_atlas,
+            icon_vertex_buffer,
         }
     }
 
@@ -344,6 +359,7 @@ impl WgpuRenderEngine {
 
         let mut rect_instances: Vec<RectInstance> = Vec::new();
         let mut text_vertices: Vec<TextVertex> = Vec::new();
+        let mut icon_vertices: Vec<TextVertex> = Vec::new();
 
         for command in renderer.commands() {
             match command {
@@ -353,8 +369,8 @@ impl WgpuRenderEngine {
                 RenderCommand::StrokeRect { rect, color, width, corner_radius } => {
                     rect_instances.push(RectInstance::new_stroke(*rect, *color, *width, *corner_radius));
                 }
-                RenderCommand::DrawText { origin, text, font_size, color, .. } => {
-                    if let Some(entry) = self.text_atlas.entry(text, *font_size) {
+                RenderCommand::DrawText { origin, text, font_size, color, font_weight, .. } => {
+                    if let Some(entry) = self.text_atlas.entry(text, *font_size, *font_weight) {
                         let left = origin.x + entry.offset[0];
                         let top = origin.y + entry.offset[1];
                         let right = left + entry.size[0];
@@ -373,13 +389,27 @@ impl WgpuRenderEngine {
                         ]);
                     }
                 }
-                RenderCommand::DrawIcon { origin, size, color, .. } => {
-                    // MVP: icons are rendered as solid colored squares.
-                    let rect = crate::geometry::RectF::new(
-                        crate::geometry::PointF::new(origin.x, origin.y),
-                        crate::geometry::Size2F::new(*size, *size),
-                    );
-                    rect_instances.push(RectInstance::new_fill(rect, *color, 0.0));
+                RenderCommand::DrawIcon { origin, name, size, color } => {
+                    const ICON_CELL: f32 = 64.0;
+                    if let Some(entry) = self.icon_atlas.entry(name) {
+                        let scale = *size / ICON_CELL;
+                        let left = origin.x + entry.offset[0] * scale;
+                        let top = origin.y + entry.offset[1] * scale;
+                        let right = left + entry.size[0] * scale;
+                        let bottom = top + entry.size[1] * scale;
+                        let u0 = entry.uv_origin[0];
+                        let v0 = entry.uv_origin[1];
+                        let u1 = u0 + entry.uv_size[0];
+                        let v1 = v0 + entry.uv_size[1];
+                        let color = color.to_linear_f32();
+
+                        icon_vertices.extend_from_slice(&[
+                            TextVertex { position: [left, top], uv: [u0, v0], color },
+                            TextVertex { position: [right, top], uv: [u1, v0], color },
+                            TextVertex { position: [left, bottom], uv: [u0, v1], color },
+                            TextVertex { position: [right, bottom], uv: [u1, v1], color },
+                        ]);
+                    }
                 }
                 RenderCommand::ClipRect(_) | RenderCommand::PopClip => {
                     // TODO: implement clipping
@@ -402,6 +432,15 @@ impl WgpuRenderEngine {
                 &self.text_vertex_buffer,
                 0,
                 bytemuck::cast_slice(&text_vertices[..text_vertex_count]),
+            );
+        }
+
+        let icon_vertex_count = icon_vertices.len().min(MAX_TEXT_VERTICES);
+        if icon_vertex_count > 0 {
+            queue.write_buffer(
+                &self.icon_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&icon_vertices[..icon_vertex_count]),
             );
         }
 
@@ -447,6 +486,15 @@ impl WgpuRenderEngine {
                 pass.set_bind_group(0, &self.text_bind_group, &[]);
                 pass.set_index_buffer(self.text_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
                 pass.set_vertex_buffer(0, self.text_vertex_buffer.slice(..));
+                pass.draw_indexed(0..index_count as u32, 0, 0..1);
+            }
+
+            if icon_vertex_count > 0 {
+                let index_count = (icon_vertex_count / 4) * 6;
+                pass.set_pipeline(&self.text_pipeline);
+                pass.set_bind_group(0, self.icon_atlas.bind_group(), &[]);
+                pass.set_index_buffer(self.text_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                pass.set_vertex_buffer(0, self.icon_vertex_buffer.slice(..));
                 pass.draw_indexed(0..index_count as u32, 0, 0..1);
             }
         }

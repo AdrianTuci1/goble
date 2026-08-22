@@ -1,18 +1,15 @@
 use crate::color::ColorU;
 use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
 use crate::geometry::Vector2F;
+use crate::platform::text_atlas::{measure_text as measure_text_atlas, FontWeight};
 use crate::theme::ColorToken;
 
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.2;
 
-/// Measure text using the platform abstraction.
-///
-/// On all platforms this currently falls back to a heuristic char-width estimate.
-/// In the future macOS can switch to core-text, Linux to cosmic-text/fontdb, and
-/// Windows to DirectWrite, following Warp's octomusui pattern.
+/// Measure text using the bundled Roboto fonts when possible.
 pub fn measure_text(text: &str, font_size: f32, line_height: f32, max_width: f32) -> Vector2F {
-    crate::platform::current::estimate_text_size(text, font_size, line_height, max_width)
+    measure_text_atlas(text, font_size, line_height, max_width, FontWeight::Regular)
 }
 
 /// A single-line or wrapped body text element.
@@ -22,6 +19,7 @@ pub struct Text {
     color: ColorU,
     line_height: f32,
     max_lines: Option<usize>,
+    weight: FontWeight,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -34,6 +32,7 @@ impl Text {
             color: ColorU::default(),
             line_height: DEFAULT_LINE_HEIGHT,
             max_lines: None,
+            weight: FontWeight::Regular,
             size: None,
             origin: None,
         }
@@ -69,6 +68,11 @@ impl Text {
         self
     }
 
+    pub fn with_weight(mut self, weight: FontWeight) -> Self {
+        self.weight = weight;
+        self
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -95,11 +99,12 @@ impl Element for Text {
         _ctx: &mut LayoutContext,
         _app: &AppContext,
     ) -> Vector2F {
-        let mut size = measure_text(
+        let mut size = measure_text_atlas(
             &self.text,
             self.font_size,
             self.line_height,
             constraint.max.x,
+            self.weight,
         );
         if let Some(max_lines) = self.max_lines {
             let max_height = self.font_size * self.line_height * max_lines as f32;
@@ -115,7 +120,7 @@ impl Element for Text {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         if let Some(size) = self.size {
             if let Some(renderer) = ctx.renderer.as_mut() {
-                renderer.draw_text(origin, self.text.clone(), self.font_size, self.color, size.x);
+                renderer.draw_text_weighted(origin, self.text.clone(), self.font_size, self.color, size.x, self.weight);
             }
         }
     }

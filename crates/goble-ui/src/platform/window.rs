@@ -41,7 +41,7 @@ impl ApplicationHandler for App {
         }
         let window_attributes = winit::window::WindowAttributes::default()
             .with_title("Goble")
-            .with_inner_size(winit::dpi::LogicalSize::new(1024.0, 768.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         let surface_state = pollster::block_on(SurfaceState::new(Arc::clone(&window))).unwrap();
         self.window = Some(window);
@@ -73,15 +73,22 @@ impl ApplicationHandler for App {
                 window.request_redraw();
             }
             winit::event::WindowEvent::RedrawRequested => {
-                let size = window.inner_size();
-                let constraint = SizeConstraint::loose(vec2f(size.width as f32, size.height as f32));
+                let (width, height) = self
+                    .surface_state
+                    .as_ref()
+                    .map(|s| (s.config.width, s.config.height))
+                    .unwrap_or_else(|| {
+                        let size = window.inner_size();
+                        (size.width, size.height)
+                    });
+                let constraint = SizeConstraint::loose(vec2f(width as f32, height as f32));
                 let mut layout_ctx = LayoutContext::default();
-                let app_context = self.app_context.borrow();
-                let _ = self.root.layout(constraint, &mut layout_ctx, &*app_context);
+                let app_context = self.app_context.borrow().clone();
+                let _ = self.root.layout(constraint, &mut layout_ctx, &app_context);
                 let mut renderer = Renderer::new();
                 {
                     let mut paint_ctx = PaintContext::new(renderer);
-                    self.root.paint(vec2f(0.0, 0.0), &mut paint_ctx, &*app_context);
+                    self.root.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app_context);
                     renderer = paint_ctx.renderer.take().unwrap();
                 }
                 if let Some(surface_state) = self.surface_state.as_mut() {
@@ -102,8 +109,8 @@ impl ApplicationHandler for App {
                     winit::event::ElementState::Released => DispatchedEvent::MouseUp { position, button: button_id },
                 };
                 let mut event_ctx = crate::elements::EventContext::default();
-                let app_context = self.app_context.borrow();
-                let _ = self.root.dispatch_event(&event, &mut event_ctx, &*app_context);
+                let app_context = self.app_context.borrow().clone();
+                let _ = self.root.dispatch_event(&event, &mut event_ctx, &app_context);
                 drop(app_context);
                 window.request_redraw();
             }
@@ -112,8 +119,8 @@ impl ApplicationHandler for App {
                 self.cursor_position = pos;
                 let event = DispatchedEvent::MouseMove { position: pos };
                 let mut event_ctx = crate::elements::EventContext::default();
-                let app_context = self.app_context.borrow();
-                let _ = self.root.dispatch_event(&event, &mut event_ctx, &*app_context);
+                let app_context = self.app_context.borrow().clone();
+                let _ = self.root.dispatch_event(&event, &mut event_ctx, &app_context);
                 drop(app_context);
             }
             winit::event::WindowEvent::MouseWheel { delta, .. } => {
@@ -123,8 +130,8 @@ impl ApplicationHandler for App {
                 };
                 let event = DispatchedEvent::Scroll { delta };
                 let mut event_ctx = crate::elements::EventContext::default();
-                let app_context = self.app_context.borrow();
-                let _ = self.root.dispatch_event(&event, &mut event_ctx, &*app_context);
+                let app_context = self.app_context.borrow().clone();
+                let _ = self.root.dispatch_event(&event, &mut event_ctx, &app_context);
                 drop(app_context);
                 window.request_redraw();
             }
@@ -135,8 +142,8 @@ impl ApplicationHandler for App {
                         winit::event::ElementState::Released => DispatchedEvent::KeyUp { key: c.to_string() },
                     };
                     let mut event_ctx = crate::elements::EventContext::default();
-                    let app_context = self.app_context.borrow();
-                    let _ = self.root.dispatch_event(&event, &mut event_ctx, &*app_context);
+                    let app_context = self.app_context.borrow().clone();
+                    let _ = self.root.dispatch_event(&event, &mut event_ctx, &app_context);
                     drop(app_context);
                     window.request_redraw();
                 }
@@ -178,18 +185,21 @@ impl SurfaceState {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
+                required_limits: wgpu::Limits::default(),
                 label: Some("goble-ui device"),
                 memory_hints: wgpu::MemoryHints::default(),
                 trace: wgpu::Trace::Off,
             })
             .await?;
         let size = window.inner_size();
-        let config = surface
-            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
+        let width = size.width.max(1);
+        let height = size.height.max(1);
+        let mut config = surface
+            .get_default_config(&adapter, width, height)
             .ok_or_else(|| anyhow::anyhow!("no surface config"))?;
+        config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
-        let engine = crate::platform::wgpu_render_engine::WgpuRenderEngine::new(&device, &queue);
+        let engine = crate::platform::wgpu_render_engine::WgpuRenderEngine::new(&device, &queue, config.format);
         Ok(Self {
             surface,
             device,

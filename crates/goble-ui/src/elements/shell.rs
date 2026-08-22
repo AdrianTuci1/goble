@@ -2,14 +2,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    AppContext, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment,
-    Element, Empty, EventContext, Fill, Flex, Icon, IconButton, LayoutContext, MainAxisAlignment,
-    PaintContext, Point, SidebarItem, SizeConstraint, Text,
+    AppContext, Container, ConversationEntry, ConversationSidebar, CrossAxisAlignment, Element,
+    Empty, EventContext, Fill, Flex, LayoutContext, PaintContext, Point, SizeConstraint, Stack,
+    Topbar,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
-use crate::style::EdgeInsets as Insets;
-use crate::theme::{ColorToken, SpacingToken};
+use crate::theme::ColorToken;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SidebarMode {
@@ -33,6 +32,8 @@ pub enum SettingsTab {
     Appearance,
     Account,
     Cluster,
+    Workers,
+    Keys,
 }
 
 impl Default for SettingsTab {
@@ -45,6 +46,7 @@ pub struct ShellState {
     pub sidebar_collapsed: bool,
     pub sidebar_mode: SidebarMode,
     pub active_view: ActiveView,
+    pub chat_sidebar_visible: bool,
 }
 
 impl Default for ShellState {
@@ -53,6 +55,7 @@ impl Default for ShellState {
             sidebar_collapsed: false,
             sidebar_mode: SidebarMode::Agent,
             active_view: ActiveView::Chat,
+            chat_sidebar_visible: false,
         }
     }
 }
@@ -148,7 +151,7 @@ impl ShellView {
         content_resolver: &dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element>,
         app: &AppContext,
     ) -> Box<dyn Element> {
-        let topbar = Self::topbar(Rc::clone(&state), Rc::clone(&dirty), app);
+        let topbar = Self::titlebar(Rc::clone(&state), Rc::clone(&dirty), app);
         let body = Self::body(Rc::clone(&state), Rc::clone(&dirty), content_resolver, app);
 
         let column = Flex::column()
@@ -162,123 +165,62 @@ impl ShellView {
             .finish()
     }
 
-    fn topbar(
+    fn titlebar(
         state: Rc<RefCell<ShellState>>,
         dirty: Rc<RefCell<bool>>,
         app: &AppContext,
     ) -> Box<dyn Element> {
-        let spacing = app.theme.spacing_px(SpacingToken::Md);
+        let active_view = state.borrow().active_view;
+        let threads_active = active_view == ActiveView::Threads;
+        let inbox_active = active_view == ActiveView::AgentManagement;
+        let settings_active = matches!(active_view, ActiveView::Settings(_));
 
-        let toggle_state = Rc::clone(&state);
-        let toggle_dirty = Rc::clone(&dirty);
-        let sidebar_toggle = IconButton::new(
-            Icon::new("menu")
-                .with_size(18.0)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
+        let menu_state = Rc::clone(&state);
+        let menu_dirty = Rc::clone(&dirty);
+        let on_menu = move || {
+            let mut s = menu_state.borrow_mut();
+            match s.active_view {
+                ActiveView::Chat => s.sidebar_collapsed = !s.sidebar_collapsed,
+                _ => s.active_view = ActiveView::Chat,
+            }
+            *menu_dirty.borrow_mut() = true;
+        };
+
+        let threads_state = Rc::clone(&state);
+        let threads_dirty = Rc::clone(&dirty);
+        let on_threads = move || {
+            let mut s = threads_state.borrow_mut();
+            s.active_view = match s.active_view {
+                ActiveView::Threads => ActiveView::Chat,
+                _ => ActiveView::Threads,
+            };
+            *threads_dirty.borrow_mut() = true;
+        };
+
+        let inbox_state = Rc::clone(&state);
+        let inbox_dirty = Rc::clone(&dirty);
+        let on_inbox = move || {
+            inbox_state.borrow_mut().active_view = ActiveView::AgentManagement;
+            *inbox_dirty.borrow_mut() = true;
+        };
+
+        let settings_state = Rc::clone(&state);
+        let settings_dirty = Rc::clone(&dirty);
+        let on_settings = move || {
+            settings_state.borrow_mut().active_view = ActiveView::Settings(SettingsTab::default());
+            *settings_dirty.borrow_mut() = true;
+        };
+
+        Topbar::new(
+            threads_active,
+            inbox_active,
+            settings_active,
+            on_menu,
+            on_threads,
+            on_inbox,
+            on_settings,
+            app,
         )
-        .with_on_click(move || {
-            let collapsed = toggle_state.borrow().sidebar_collapsed;
-            toggle_state.borrow_mut().sidebar_collapsed = !collapsed;
-            *toggle_dirty.borrow_mut() = true;
-        })
-        .finish();
-
-        let title = Text::new("Goble")
-            .with_font_size(18.0)
-            .with_theme_color(ColorToken::Text, app)
-            .finish();
-
-        let left = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
-            .with_child(sidebar_toggle)
-            .with_child(title)
-            .finish();
-
-        let chat_button = Self::nav_button(
-            "Chat",
-            ActiveView::Chat,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let agents_button = Self::nav_button(
-            "Agents",
-            ActiveView::AgentManagement,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let threads_button = Self::nav_button(
-            "Threads",
-            ActiveView::Threads,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let drive_button = Self::nav_button(
-            "Drive",
-            ActiveView::Drive,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let settings_button = Self::nav_button(
-            "Settings",
-            ActiveView::Settings(SettingsTab::default()),
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-
-        let right = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
-            .with_child(chat_button)
-            .with_child(agents_button)
-            .with_child(threads_button)
-            .with_child(drive_button)
-            .with_child(settings_button)
-            .finish();
-
-        let row = Flex::row()
-            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(left)
-            .with_child(right)
-            .finish();
-
-        Container::new(row)
-            .with_padding(Insets::uniform(spacing))
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-            .finish()
-    }
-
-    fn nav_button(
-        label: &str,
-        view: ActiveView,
-        state: Rc<RefCell<ShellState>>,
-        dirty: Rc<RefCell<bool>>,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        let selected = state.borrow().active_view == view;
-        let state2 = Rc::clone(&state);
-        let dirty2 = Rc::clone(&dirty);
-        Button::new(
-            Text::new(label)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
-        )
-        .with_variant(if selected {
-            ButtonVariant::Primary
-        } else {
-            ButtonVariant::Ghost
-        })
-        .with_on_click(move || {
-            state2.borrow_mut().active_view = view;
-            *dirty2.borrow_mut() = true;
-        })
         .finish()
     }
 
@@ -291,179 +233,50 @@ impl ShellView {
         let sidebar = Self::left_panel(Rc::clone(&state), Rc::clone(&dirty), app);
         let content = content_resolver(Rc::clone(&state), Rc::clone(&dirty));
 
-        Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_child(sidebar)
-            .with_child(content)
+        // The sidebar is an overlay so the content sees the full window width.
+        Stack::new()
+            .with_children(vec![content, sidebar])
             .finish()
     }
 
     fn left_panel(
         state: Rc<RefCell<ShellState>>,
-        dirty: Rc<RefCell<bool>>,
-        app: &AppContext,
+        _dirty: Rc<RefCell<bool>>,
+        _app: &AppContext,
     ) -> Box<dyn Element> {
-        let spacing = app.theme.spacing_px(SpacingToken::Sm);
         let s = state.borrow();
-
-        let mode_buttons = Flex::row()
-            .with_spacing(spacing)
-            .with_child(Self::mode_button(
-                "Agent",
-                SidebarMode::Agent,
-                Rc::clone(&state),
-                Rc::clone(&dirty),
-                app,
-            ))
-            .with_child(Self::mode_button(
-                "Threads",
-                SidebarMode::Threads,
-                Rc::clone(&state),
-                Rc::clone(&dirty),
-                app,
-            ))
-            .with_child(Self::mode_button(
-                "Drive",
-                SidebarMode::Drive,
-                Rc::clone(&state),
-                Rc::clone(&dirty),
-                app,
-            ))
-            .finish();
-
-        let items: Vec<Box<dyn Element>> = match s.sidebar_mode {
-            SidebarMode::Agent => vec![
-                Self::sidebar_nav_item(
-                    "New chat",
-                    ActiveView::Chat,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Agent runs",
-                    ActiveView::AgentManagement,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-            ],
-            SidebarMode::Threads => vec![
-                Self::sidebar_nav_item(
-                    "Recent",
-                    ActiveView::Threads,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Starred",
-                    ActiveView::Threads,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-            ],
-            SidebarMode::Drive => vec![
-                Self::sidebar_nav_item(
-                    "Workflows",
-                    ActiveView::Drive,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Agents",
-                    ActiveView::AgentManagement,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Teams",
-                    ActiveView::Drive,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-            ],
-        };
-
-        let column = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(spacing)
-            .with_child(mode_buttons)
-            .with_children(items)
-            .finish();
-
-        let width = if s.sidebar_collapsed { 56.0 } else { 240.0 };
-        ConstrainedBox::new(
-            Container::new(column)
-                .with_padding(Insets::uniform(spacing))
-                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                .finish(),
-        )
-        .with_width(width)
-        .with_min_width(width)
-        .with_max_width(width)
-        .finish()
+        if s.sidebar_collapsed {
+            return Empty::new().finish();
+        }
+        match s.active_view {
+            ActiveView::Chat => {
+                drop(s);
+                let conversations = sample_conversations();
+                ConversationSidebar::new(conversations)
+                    .with_selected("c1")
+                    .with_on_create(|| log::info!("new conversation clicked"))
+                    .with_on_select(|id| log::info!("selected conversation: {}", id))
+                    .with_on_delete(|id| log::info!("delete conversation: {}", id))
+                    .finish()
+            }
+            _ => Empty::new().finish(),
+        }
     }
 
-    fn mode_button(
-        label: &str,
-        mode: SidebarMode,
-        state: Rc<RefCell<ShellState>>,
-        dirty: Rc<RefCell<bool>>,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        let selected = state.borrow().sidebar_mode == mode;
-        let state2 = Rc::clone(&state);
-        let dirty2 = Rc::clone(&dirty);
-        Button::new(
-            Text::new(label)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
-        )
-        .with_variant(if selected {
-            ButtonVariant::Primary
-        } else {
-            ButtonVariant::Ghost
-        })
-        .with_on_click(move || {
-            state2.borrow_mut().sidebar_mode = mode;
-            *dirty2.borrow_mut() = true;
-        })
-        .finish()
-    }
+}
 
-    fn sidebar_nav_item(
-        label: &str,
-        view: ActiveView,
-        state: Rc<RefCell<ShellState>>,
-        dirty: Rc<RefCell<bool>>,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        let state2 = Rc::clone(&state);
-        let dirty2 = Rc::clone(&dirty);
-        SidebarItem::new(
-            Icon::new("circle")
-                .with_size(16.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-            Text::new(label)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
-            None,
-            false,
-            app,
-        )
-        .with_on_click(move || {
-            state2.borrow_mut().active_view = view;
-            *dirty2.borrow_mut() = true;
-        })
-        .finish()
-    }
-
+fn sample_conversations() -> Vec<ConversationEntry> {
+    use crate::elements::ConversationStatus;
+    vec![
+        ConversationEntry::new("c1", "Ada", "I finished the review.", "10:42")
+            .with_status(ConversationStatus::Success),
+        ConversationEntry::new("c2", "Coder", "Build failed on step 3.", "09:15")
+            .with_status(ConversationStatus::Error),
+        ConversationEntry::new("c3", "Planner", "Stopped by user.", "Yesterday")
+            .with_status(ConversationStatus::Stopped),
+        ConversationEntry::new("c4", "Research", "Here are the sources you asked for.", "Mon")
+            .with_status(ConversationStatus::Default),
+    ]
 }
 
 impl Element for ShellView {

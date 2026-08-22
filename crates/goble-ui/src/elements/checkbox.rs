@@ -6,8 +6,8 @@ use crate::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::{vec2f, Vector2F};
-use crate::theme::SpacingToken;
+use crate::geometry::{rectf, vec2f, Vector2F};
+use crate::theme::{ColorToken, SpacingToken};
 
 pub struct Checkbox {
     label: Option<Box<dyn Element>>,
@@ -102,6 +102,36 @@ impl Element for Checkbox {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+
+        let box_rect = rectf(origin.x, origin.y, self.box_size.x, self.box_size.y);
+        let radius = app.theme.radius_px() * 0.5;
+        let box_color = if self.checked {
+            app.theme.color(ColorToken::Accent)
+        } else {
+            app.theme.color(ColorToken::SurfaceRaised)
+        };
+        ctx.renderer
+            .as_mut()
+            .unwrap()
+            .fill_rounded_rect(box_rect, box_color, radius);
+        ctx.renderer
+            .as_mut()
+            .unwrap()
+            .stroke_rect(box_rect, app.theme.color(ColorToken::Border), 1.0, radius);
+
+        if self.checked {
+            let check_size = self.box_size.x.min(self.box_size.y) * 0.5;
+            let check_x = origin.x + (self.box_size.x - check_size) * 0.5;
+            let check_y = origin.y + (self.box_size.y - check_size) * 0.5;
+            ctx.renderer.as_mut().unwrap().draw_text(
+                vec2f(check_x, check_y),
+                "✓",
+                check_size,
+                app.theme.color(ColorToken::Text),
+                self.box_size.x,
+            );
+        }
+
         let gap = self.gap(app);
         if let Some(label) = self.label.as_mut() {
             let label_size = label.size().unwrap_or(Vector2F::zero());

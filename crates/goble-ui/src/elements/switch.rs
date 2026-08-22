@@ -6,7 +6,8 @@ use crate::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::{vec2f, Vector2F};
+use crate::geometry::{rectf, vec2f, Vector2F};
+use crate::theme::{ColorToken, SpacingToken};
 
 pub struct Switch {
     state: InteractiveState,
@@ -73,8 +74,37 @@ impl Element for Switch {
         self.size
     }
 
-    fn paint(&mut self, origin: Vector2F, _ctx: &mut PaintContext, _app: &AppContext) {
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+
+        let track_rect = rectf(origin.x, origin.y, self.size.x, self.size.y);
+        let radius = self.size.y * 0.5;
+        let track_color = if self.disabled {
+            app.theme.color(ColorToken::SurfaceRaised)
+        } else if self.checked {
+            app.theme.color(ColorToken::Accent)
+        } else {
+            app.theme.color(ColorToken::Border)
+        };
+        ctx.renderer
+            .as_mut()
+            .unwrap()
+            .fill_rounded_rect(track_rect, track_color, radius);
+
+        let padding = app.theme.spacing_px(SpacingToken::Xs);
+        let thumb_size = self.size.y - padding * 2.0;
+        let thumb_x = if self.checked {
+            origin.x + self.size.x - thumb_size - padding
+        } else {
+            origin.x + padding
+        };
+        let thumb_y = origin.y + padding;
+        let thumb_rect = rectf(thumb_x, thumb_y, thumb_size, thumb_size);
+        let thumb_color = app.theme.color(ColorToken::Text);
+        ctx.renderer
+            .as_mut()
+            .unwrap()
+            .fill_rounded_rect(thumb_rect, thumb_color, thumb_size * 0.5);
     }
 
     fn size(&self) -> Option<Vector2F> {

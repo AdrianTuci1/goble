@@ -2,6 +2,7 @@ pub mod app;
 pub mod window;
 pub mod wgpu_render_engine;
 pub mod text_atlas;
+pub mod icon_atlas;
 
 #[cfg(target_os = "macos")]
 pub mod mac;

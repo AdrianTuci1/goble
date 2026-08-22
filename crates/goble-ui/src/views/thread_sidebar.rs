@@ -18,6 +18,7 @@ pub struct ThreadSidebar {
     selected_id: Option<String>,
     collapsed: HashSet<String>,
     on_select: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    on_delete: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_new: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_toggle_section: Option<Rc<RefCell<dyn FnMut(String, bool) + 'static>>>,
     root: Option<Box<dyn Element>>,
@@ -32,6 +33,7 @@ impl ThreadSidebar {
             selected_id: None,
             collapsed: HashSet::new(),
             on_select: None,
+            on_delete: None,
             on_new: None,
             on_toggle_section: None,
             root: None,
@@ -52,6 +54,11 @@ impl ThreadSidebar {
 
     pub fn with_on_select<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
         self.on_select = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_delete<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_delete = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -190,6 +197,7 @@ impl ThreadSidebar {
 
                     let thread_id = thread.id.clone();
                     let on_select = self.on_select.clone();
+                    let on_delete = self.on_delete.clone();
                     let item = ThreadListItem::new(leading, title, badge, selected, app)
                         .with_on_click(move || {
                             if let Some(cb) = on_select.as_ref() {
@@ -197,7 +205,23 @@ impl ThreadSidebar {
                             }
                         })
                         .finish();
-                    list_column = list_column.with_child(item);
+                    let delete_button = IconButton::new(Text::new("×").finish())
+                        .with_on_click({
+                            let thread_id = thread.id.clone();
+                            move || {
+                                if let Some(cb) = on_delete.as_ref() {
+                                    (cb.borrow_mut())(thread_id.clone());
+                                }
+                            }
+                        })
+                        .finish();
+                    let row = Flex::row()
+                        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_child(item)
+                        .with_child(delete_button)
+                        .finish();
+                    list_column = list_column.with_child(row);
                 }
 
                 if items.is_empty() {

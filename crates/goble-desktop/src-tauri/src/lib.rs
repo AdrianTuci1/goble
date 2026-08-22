@@ -16,27 +16,10 @@ use goble_desktop_service::{
     LogEntry, LlmSetting, TeamInfo, ThreadMessageSummary, ThreadSummary, VaultSecretInfo,
     WorkerConnection, WorkerInvite, WorkflowInfo,
 };
+use goble_desktop_service::ssh_installer::{self, PlatformInfo, SshCredentials, WorkerInstallResult};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-
-#[cfg(unix)]
-pub mod ssh_installer;
-
-/// Cross-platform result type for remote worker installation attempts.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct WorkerInstallResult {
-    pub platform: PlatformInfo,
-    pub asset_url: String,
-    pub install_log: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PlatformInfo {
-    pub os: String,
-    pub arch: String,
-    pub family: String,
-}
 
 /// Bridge from the service-layer event bus to Tauri's emitter.
 #[derive(Clone)]
@@ -320,26 +303,16 @@ fn install_worker(
     req: InstallWorkerRequest,
     state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<WorkerInstallResult, String> {
-    #[cfg(unix)]
-    {
-        let cluster = state
-            .get_cluster_identity()
-            .ok_or("no cluster identity configured")?;
-        let creds = ssh_installer::SshCredentials {
-            host: req.host,
-            user: req.user,
-            port: req.port,
-            private_key: req.private_key,
-        };
-        let repo = req.repo.as_deref().unwrap_or("AdrianTuci1/goble");
-        ssh_installer::install_worker(&cluster, &creds, &req.release_tag, repo, &req.pairing_code)
-            .map_err(|e| e.to_string())
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (req, state);
-        Err("Remote worker installation requires an SSH client, which is not available on this platform. Use the manual install instructions instead.".to_string())
-    }
+    let creds = SshCredentials {
+        host: req.host,
+        user: req.user,
+        port: req.port,
+        private_key: req.private_key,
+    };
+    let repo = req.repo.as_deref().unwrap_or("AdrianTuci1/goble");
+    state
+        .install_worker_ssh(creds, &req.release_tag, repo, &req.pairing_code)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -441,19 +414,7 @@ fn generate_worker_invite(
     req: GenerateWorkerInviteRequest,
     state: tauri::State<'_, Arc<DesktopState>>,
 ) -> Result<WorkerInvite, String> {
-    let identity = state
-        .get_cluster_identity()
-        .ok_or("no cluster identity unlocked")?;
-    let bundle = identity
-        .ca
-        .sign_worker_bundle(&req.worker_id, &identity.cluster_name, 365)
-        .map_err(|e| e.to_string())?;
-    let bundle_json = serde_json::to_string(&bundle).map_err(|e| e.to_string())?;
-    Ok(WorkerInvite {
-        worker_id: req.worker_id,
-        cluster_key: identity.export_key(),
-        bundle: base64::engine::general_purpose::STANDARD.encode(bundle_json),
-    })
+    state.generate_worker_invite(&req.worker_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -5,7 +5,7 @@ use crate::elements::chat_content::{ChatAction, ChatMessage};
 use crate::elements::{
     AppContext, Axis, ChatComposer, ChatMessageBubble, Container, CrossAxisAlignment, EdgeInsets,
     Element, Fill, Flex, LayoutContext, MainAxisAlignment, PaintContext, Point, QuickActionButton,
-    Scrollable, SizeConstraint,
+    Scrollable, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -17,6 +17,8 @@ pub struct ChatView {
     quick_actions: Vec<(String, Rc<RefCell<dyn FnMut() + 'static>>)>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_action: Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
+    empty_title: Option<String>,
+    empty_subtitle: Option<String>,
     composer_value: Rc<RefCell<String>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
@@ -31,6 +33,8 @@ impl ChatView {
             quick_actions: Vec::new(),
             on_send: None,
             on_action: None,
+            empty_title: None,
+            empty_subtitle: None,
             composer_value: Rc::new(RefCell::new(String::new())),
             root: None,
             size: None,
@@ -68,8 +72,52 @@ impl ChatView {
         self
     }
 
+    pub fn with_empty_state(
+        mut self,
+        title: impl Into<String>,
+        subtitle: impl Into<String>,
+    ) -> Self {
+        self.empty_title = Some(title.into());
+        self.empty_subtitle = Some(subtitle.into());
+        self
+    }
+
     pub fn composer_value(&self) -> String {
         self.composer_value.borrow().clone()
+    }
+
+    fn build_empty_state(&self, app: &AppContext) -> Box<dyn Element> {
+        let spacing = app.theme.spacing_px(SpacingToken::Sm);
+        let xl = app.theme.spacing_px(SpacingToken::Xl);
+        let title = self
+            .empty_title
+            .clone()
+            .unwrap_or_else(|| "New conversation".to_string());
+        let subtitle = self
+            .empty_subtitle
+            .clone()
+            .unwrap_or_else(|| "Ask anything to get started.".to_string());
+
+        let column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(spacing)
+            .with_child(
+                Text::new(title)
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_font_size(18.0)
+                    .finish(),
+            )
+            .with_child(
+                Text::new(subtitle)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_font_size(14.0)
+                    .finish(),
+            )
+            .finish();
+
+        Container::new(column)
+            .with_padding(EdgeInsets::new(0.0, xl, 0.0, 0.0))
+            .finish()
     }
 
     fn rebuild(&mut self, app: &AppContext) {
@@ -84,24 +132,29 @@ impl ChatView {
             column = column.with_child(header);
         }
 
-        let mut message_column = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(spacing);
-        for message in &self.messages {
-            let on_action = self.on_action.clone();
-            let fragments = message.fragments.clone();
-            let bubble = ChatMessageBubble::new(message.role, fragments)
-                .with_on_action(move |action| {
-                    if let Some(cb) = on_action.as_ref() {
-                        (cb.borrow_mut())(action);
-                    }
-                })
-                .finish();
-            message_column = message_column.with_child(bubble);
-        }
-        column = column.with_child(Scrollable::new(message_column.finish(), Axis::Vertical).finish());
+        let message_area: Box<dyn Element> = if self.messages.is_empty() {
+            self.build_empty_state(app)
+        } else {
+            let mut message_column = Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_spacing(spacing);
+            for message in &self.messages {
+                let on_action = self.on_action.clone();
+                let fragments = message.fragments.clone();
+                let bubble = ChatMessageBubble::new(message.role, fragments)
+                    .with_on_action(move |action| {
+                        if let Some(cb) = on_action.as_ref() {
+                            (cb.borrow_mut())(action);
+                        }
+                    })
+                    .finish();
+                message_column = message_column.with_child(bubble);
+            }
+            Scrollable::new(message_column.finish(), Axis::Vertical).finish()
+        };
+        column = column.with_child(message_area);
 
-        if !self.quick_actions.is_empty() {
+        if !self.messages.is_empty() && !self.quick_actions.is_empty() {
             let mut row = Flex::row()
                 .with_main_axis_alignment(MainAxisAlignment::Start)
                 .with_spacing(app.theme.spacing_px(SpacingToken::Sm));
@@ -219,6 +272,19 @@ mod tests {
             "**bold** and `code`",
         )];
         let mut view = ChatView::new().with_messages(messages);
+        let size = view.layout(
+            SizeConstraint::loose(vec2f(600.0, 800.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert!(size.x > 0.0);
+        assert!(size.y > 0.0);
+    }
+
+    #[test]
+    fn chat_view_empty_state_layouts() {
+        let app = AppContext::default();
+        let mut view = ChatView::new().with_empty_state("Start chatting", "Type below");
         let size = view.layout(
             SizeConstraint::loose(vec2f(600.0, 800.0)),
             &mut LayoutContext::default(),

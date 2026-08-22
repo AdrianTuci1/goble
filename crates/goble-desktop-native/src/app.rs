@@ -13,10 +13,15 @@ use tokio::runtime::Runtime;
 use crate::views::agent::AgentManagementView;
 use crate::views::agent_trace::AgentTraceViewPanel;
 use crate::views::chat::ChatViewPanel;
+use crate::views::connectors::ConnectorsViewPanel;
 use crate::views::drive::DriveViewPanel;
 use crate::views::executions::ExecutionsViewPanel;
+use crate::views::logs::LogsViewPanel;
+use crate::views::search::SearchViewPanel;
 use crate::views::settings::SettingsViewPanel;
+use crate::views::teams::TeamsViewPanel;
 use crate::views::threads::ThreadsViewPanel;
+use crate::views::workflows::WorkflowsViewPanel;
 
 /// UI-specific state that is independent of the service layer.
 #[derive(Default, Clone)]
@@ -27,6 +32,16 @@ pub struct UiState {
     pub chat_sidebar_tab: ChatSidebarTab,
     pub settings_tab: SettingsTab,
     pub dark_mode: bool,
+    pub selected_agent_id: Option<String>,
+    pub agent_new_open: bool,
+    pub agent_editing: bool,
+    pub agent_scheduling: bool,
+    pub agent_edit_name: String,
+    pub agent_edit_prompt: String,
+    pub agent_edit_description: String,
+    pub agent_edit_tools: Vec<String>,
+    pub agent_edit_mcp_ids: Vec<String>,
+    pub agent_schedule_cron: String,
 }
 
 pub struct GobleApp {
@@ -110,9 +125,13 @@ impl GobleApp {
                             &*app,
                         )
                         .finish(),
-                        ActiveView::AgentManagement => {
-                            AgentManagementView::new(Arc::clone(&state), dirty, &*app).finish()
-                        }
+                        ActiveView::AgentManagement => AgentManagementView::new(
+                            Arc::clone(&state),
+                            Rc::clone(&ui_state),
+                            dirty,
+                            &*app,
+                        )
+                        .finish(),
                         ActiveView::Threads => ThreadsViewPanel::new(
                             Arc::clone(&state),
                             Rc::clone(&ui_state),
@@ -144,6 +163,41 @@ impl GobleApp {
                         ActiveView::AgentTrace => AgentTraceViewPanel::new(
                             Arc::clone(&state),
                             Rc::clone(&shell_state),
+                            Rc::clone(&ui_state),
+                            dirty,
+                            &*app,
+                        )
+                        .finish(),
+                        ActiveView::Connectors => ConnectorsViewPanel::new(
+                            Arc::clone(&state),
+                            Rc::clone(&ui_state),
+                            dirty,
+                            &*app,
+                        )
+                        .finish(),
+                        ActiveView::Workflows => WorkflowsViewPanel::new(
+                            Arc::clone(&state),
+                            Rc::clone(&ui_state),
+                            dirty,
+                            &*app,
+                        )
+                        .finish(),
+                        ActiveView::Teams => TeamsViewPanel::new(
+                            Arc::clone(&state),
+                            Rc::clone(&ui_state),
+                            dirty,
+                            &*app,
+                        )
+                        .finish(),
+                        ActiveView::Logs => LogsViewPanel::new(
+                            Arc::clone(&state),
+                            Rc::clone(&ui_state),
+                            dirty,
+                            &*app,
+                        )
+                        .finish(),
+                        ActiveView::Search => SearchViewPanel::new(
+                            Arc::clone(&state),
                             Rc::clone(&ui_state),
                             dirty,
                             &*app,

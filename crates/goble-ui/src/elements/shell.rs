@@ -26,6 +26,11 @@ pub enum ActiveView {
     Drive,
     Executions,
     AgentTrace,
+    Connectors,
+    Workflows,
+    Teams,
+    Logs,
+    Search,
     Settings(SettingsTab),
 }
 
@@ -237,6 +242,41 @@ impl ShellView {
             Rc::clone(&dirty),
             app,
         );
+        let connectors_button = Self::nav_button(
+            "Connectors",
+            ActiveView::Connectors,
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            app,
+        );
+        let workflows_button = Self::nav_button(
+            "Workflows",
+            ActiveView::Workflows,
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            app,
+        );
+        let teams_button = Self::nav_button(
+            "Teams",
+            ActiveView::Teams,
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            app,
+        );
+        let logs_button = Self::nav_button(
+            "Logs",
+            ActiveView::Logs,
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            app,
+        );
+        let search_button = Self::nav_button(
+            "Search",
+            ActiveView::Search,
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            app,
+        );
         let settings_button = Self::nav_button(
             "Settings",
             ActiveView::Settings(SettingsTab::default()),
@@ -253,6 +293,11 @@ impl ShellView {
             .with_child(threads_button)
             .with_child(drive_button)
             .with_child(executions_button)
+            .with_child(connectors_button)
+            .with_child(workflows_button)
+            .with_child(teams_button)
+            .with_child(logs_button)
+            .with_child(search_button)
             .with_child(settings_button)
             .finish();
 
@@ -372,6 +417,41 @@ impl ShellView {
                 Self::sidebar_nav_item(
                     "Executions",
                     ActiveView::Executions,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+                Self::sidebar_nav_item(
+                    "Connectors",
+                    ActiveView::Connectors,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+                Self::sidebar_nav_item(
+                    "Workflows",
+                    ActiveView::Workflows,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+                Self::sidebar_nav_item(
+                    "Teams",
+                    ActiveView::Teams,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+                Self::sidebar_nav_item(
+                    "Logs",
+                    ActiveView::Logs,
+                    Rc::clone(&state),
+                    Rc::clone(&dirty),
+                    app,
+                ),
+                Self::sidebar_nav_item(
+                    "Search",
+                    ActiveView::Search,
                     Rc::clone(&state),
                     Rc::clone(&dirty),
                     app,

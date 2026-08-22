@@ -1,7 +1,12 @@
 pub mod agent;
 pub mod agent_trace;
 pub mod chat;
+pub mod connectors;
 pub mod drive;
 pub mod executions;
+pub mod logs;
+pub mod search;
 pub mod settings;
+pub mod teams;
 pub mod threads;
+pub mod workflows;

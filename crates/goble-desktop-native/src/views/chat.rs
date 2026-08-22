@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use goble_desktop_service::{ChatMessage as ServiceChatMessage, DesktopState};
 use goble_ui::elements::{
-    ActiveView, AppContext, Axis, Button, ButtonVariant, ChatMessage as UiChatMessage, ChatRole,
-    Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Fill, Flex, LayoutContext,
-    PaintContext, Point, Scrollable, ShellState, SizeConstraint, Text, TextInput,
+    ActiveView, AppContext, Button, ButtonVariant, ChatHeader, ChatLayout,
+    ChatMessage as UiChatMessage, ChatRole, ChatSidebar, Container, CrossAxisAlignment, EdgeInsets,
+    Element, EventContext, Fill, Flex, LayoutContext, PaintContext, Point, ShellState,
+    SizeConstraint, Text, TextInput,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
@@ -85,7 +86,7 @@ impl ChatViewPanel {
         let state_for_send = Arc::clone(&state);
         let chat_id_for_send = chat_id.clone();
         let dirty_for_send = Rc::clone(&dirty);
-        let mut chat = ChatView::new()
+        let chat_view = ChatView::new()
             .with_messages(messages)
             .with_model_options(
                 vec![
@@ -143,21 +144,40 @@ impl ChatViewPanel {
                     log::error!("failed to add chat message: {}", e);
                 }
                 *dirty_for_send.borrow_mut() = true;
-            });
+            })
+            .finish();
+
+        let chat_title = chat_opt
+            .as_ref()
+            .map(|c| c.title.clone())
+            .unwrap_or_else(|| "New chat".to_string());
+        let chat_sidebar_visible = ui_state.borrow().chat_sidebar_visible;
+        let ui_state_for_toggle = Rc::clone(&ui_state);
+        let dirty_for_toggle = Rc::clone(&dirty);
+        let header = ChatHeader::new(chat_title, app)
+            .with_sidebar_toggle(chat_sidebar_visible, move || {
+                let visible = ui_state_for_toggle.borrow().chat_sidebar_visible;
+                ui_state_for_toggle.borrow_mut().chat_sidebar_visible = !visible;
+                *dirty_for_toggle.borrow_mut() = true;
+            })
+            .finish();
+
+        let mut main_col = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(header);
 
         if chat_id.is_none() {
-            chat = chat.with_header(
-                Container::new(
-                    Flex::column()
-                        .with_child(
-                            Text::new("No chat available")
-                                .with_theme_color(ColorToken::Muted, app)
-                                .finish(),
-                        )
-                        .finish(),
-                )
-                .finish(),
-            );
+            let notice = Container::new(
+                Flex::column()
+                    .with_child(
+                        Text::new("No chat available")
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
+                    .finish(),
+            )
+            .finish();
+            main_col = main_col.with_child(notice);
         } else if needs_api_key {
             let api_provider = Rc::new(RefCell::new(provider.clone()));
             let api_model = Rc::new(RefCell::new(model.clone()));
@@ -239,8 +259,15 @@ impl ChatViewPanel {
             .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
             .with_padding(EdgeInsets::uniform(padding))
             .finish();
-            chat = chat.with_header(card);
+            main_col = main_col.with_child(card);
         }
+
+        main_col = main_col.with_child(chat_view);
+
+        let main = Container::new(main_col.finish())
+            .with_background(Fill::Solid(bg))
+            .with_padding(goble_ui::elements::EdgeInsets::uniform(padding))
+            .finish();
 
         let mut info_col = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -325,44 +352,25 @@ impl ChatViewPanel {
             history_items.push(Container::new(row).finish());
         }
 
-        let sidebar_content: Box<dyn Element> = if history_items.is_empty() {
-            Container::new(
-                Text::new("No executions yet.")
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .finish()
-        } else {
-            Scrollable::new(
-                Flex::column()
-                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                    .with_spacing(app.theme.spacing_px(SpacingToken::Sm))
-                    .with_children(history_items)
-                    .finish(),
-                Axis::Vertical,
-            )
-            .finish()
-        };
-
-        let sidebar_content = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(app.theme.spacing_px(SpacingToken::Md))
-            .with_child(info_content)
-            .with_child(sidebar_content)
-            .finish();
-
         let sidebar_tab = ui_state.borrow().chat_sidebar_tab;
         let ui_state_for_tab = Rc::clone(&ui_state);
         let dirty_for_tab = Rc::clone(&dirty);
-        chat = chat.with_right_sidebar(sidebar_content, sidebar_tab, move |tab| {
-            ui_state_for_tab.borrow_mut().chat_sidebar_tab = tab;
-            *dirty_for_tab.borrow_mut() = true;
-        });
-
-        let content = Container::new(chat.finish())
-            .with_background(Fill::Solid(bg))
-            .with_padding(goble_ui::elements::EdgeInsets::uniform(padding))
+        let right_sidebar = ChatSidebar::new(sidebar_tab)
+            .with_info_content(info_content)
+            .with_history_items(history_items)
+            .with_on_change_tab(move |tab| {
+                ui_state_for_tab.borrow_mut().chat_sidebar_tab = tab;
+                *dirty_for_tab.borrow_mut() = true;
+            })
             .finish();
+
+        let content = if chat_sidebar_visible {
+            ChatLayout::new(main)
+                .with_right_sidebar(right_sidebar)
+                .finish()
+        } else {
+            ChatLayout::new(main).finish()
+        };
 
         Self { content }
     }

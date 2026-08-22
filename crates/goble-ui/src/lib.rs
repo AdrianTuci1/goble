@@ -14,15 +14,16 @@ pub use platform::current as platform_current;
 pub use color::ColorU;
 pub use elements::{
     AgentCard, Align, Alignment, AppContext, Avatar, AvatarShape, Axis, Border, Button,
-    ButtonVariant, Caption, ChatAction, ChatComposer, ChatFragment, ChatFragmentKind, ChatMessage,
-    ChatMessageBubble, ChatRole, Checkbox, Chip, Clipped, Code, ConnectorCard, Container,
-    CrossAxisAlignment, Divider, Drawer, DrawerAnchor, DropdownItem, DropdownMenu, EdgeInsets,
-    Element, EventContext, Fill, Flex, Header as UiHeader, Icon, IconButton, IconName, Label,
-    LabelSize, LayoutContext, MainAxisAlignment, MainAxisSize, Margin, Modal, Padding, Page,
-    PaintContext, Point, QuickActionButton, Rect, RightPanel, RunningIndicator, Scrollable,
-    SearchInput, Select, SelectOption, SelectableElement, Sidebar, SidebarItem, SizeConstraint,
-    Spacer, Stack, Switch, Tab, TabBar, Text, TextArea, TextInput, ThreadListItem, ToggleButton,
-    Toolbar, Vector2FExt,
+    ButtonVariant, Caption, ChatAction, ChatComposer, ChatFragment, ChatFragmentKind, ChatHeader,
+    ChatLayout, ChatMessage, ChatMessageBubble, ChatRole, Checkbox, Chip, Clipped, Code,
+    ConnectorCard, Container, ConversationStatus, CrossAxisAlignment, Divider, Drawer,
+    DrawerAnchor, DropdownItem, DropdownMenu, EdgeInsets, Element, EventContext, Fill, Flex,
+    Header as UiHeader, Icon, IconButton, IconName, Label, LabelSize, LayoutContext,
+    MainAxisAlignment, MainAxisSize, Margin, Modal, Padding, Page, PaintContext, Point,
+    QuickActionButton, Rect, RightPanel, RunningIndicator, Scrollable, SearchInput, Select,
+    SelectOption, SelectableElement, Sidebar, SidebarItem, SizeConstraint, Spacer, Stack, Switch,
+    Tab, TabBar, Text, TextArea, TextInput, ThreadListItem, TitleBar, ToggleButton, Toolbar,
+    Topbar, TopbarButton, Vector2FExt,
 };
 pub use geometry::{rectf, size2f, vec2f, PointF, RectF, Size2F, Vector2F};
 pub use views::chat_view::ChatView;

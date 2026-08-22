@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use goble_desktop_service::{CollectingEventBus, DesktopState};
 use goble_ui::elements::{
-    ActiveView, AppContext, ChatSidebarTab, ConversationEntry, ConversationSidebar, Element,
-    SettingsTab, ShellState, ShellView,
+    ActiveView, AppContext, ChatSidebarTab, ConversationEntry, ConversationSidebar,
+    ConversationStatus, Element, SettingsTab, ShellState, ShellView,
 };
 use goble_ui::theme::Theme;
 use tokio::runtime::Runtime;
@@ -30,6 +30,7 @@ pub struct UiState {
     pub selected_thread_id: String,
     pub selected_trace_id: Option<String>,
     pub chat_sidebar_tab: ChatSidebarTab,
+    pub chat_sidebar_visible: bool,
     pub settings_tab: SettingsTab,
     pub dark_mode: bool,
     pub selected_agent_id: Option<String>,
@@ -67,6 +68,7 @@ impl GobleApp {
 
         let mut ui_state = UiState::default();
         ui_state.dark_mode = true;
+        ui_state.chat_sidebar_visible = true;
         let ui_state = Rc::new(RefCell::new(ui_state));
 
         Ok(Self {
@@ -210,11 +212,10 @@ impl GobleApp {
         )
         .with_conversation_sidebar(move |_app, dirty| {
             let chats = state_for_sidebar.list_chats();
-            let selected_id = ui_state_for_sidebar.borrow().selected_chat_id.clone();
             let entries: Vec<ConversationEntry> = chats
                 .iter()
                 .map(|chat| {
-                    let preview = state_for_sidebar
+                    let last_response = state_for_sidebar
                         .list_chat_messages(&chat.id)
                         .ok()
                         .and_then(|msgs| msgs.last().map(|m| m.content.clone()))
@@ -222,10 +223,10 @@ impl GobleApp {
                     let timestamp = &chat.updated_at[..chat.updated_at.len().min(19)];
                     ConversationEntry {
                         id: chat.id.clone(),
-                        title: chat.title.clone(),
-                        preview,
+                        name: chat.title.clone(),
+                        last_response,
                         timestamp: timestamp.to_string(),
-                        selected: selected_id.as_ref() == Some(&chat.id),
+                        status: ConversationStatus::Default,
                     }
                 })
                 .collect();
@@ -239,7 +240,10 @@ impl GobleApp {
             let dirty_for_delete = Rc::clone(&dirty);
             let dirty_for_create = Rc::clone(&dirty);
 
-            ConversationSidebar::new("Conversations", entries)
+            let selected_id = ui_state_for_sidebar.borrow().selected_chat_id.clone();
+
+            ConversationSidebar::new(entries)
+                .with_selected(selected_id.unwrap_or_default())
                 .with_on_select(move |id| {
                     ui_state_for_select.borrow_mut().selected_chat_id = Some(id);
                     *dirty_for_select.borrow_mut() = true;
@@ -253,7 +257,7 @@ impl GobleApp {
                         remaining.first().map(|c| c.id.clone());
                     *dirty_for_delete.borrow_mut() = true;
                 })
-                .with_on_create_new(move || {
+                .with_on_create(move || {
                     match state_for_create.create_chat("New chat", None, None) {
                         Ok(id) => {
                             ui_state_for_create.borrow_mut().selected_chat_id = Some(id.clone());

@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use crate::elements::{
     AppContext, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment, Element,
-    Empty, EventContext, Fill, Flex, Icon, IconButton, LayoutContext, MainAxisAlignment,
-    PaintContext, Point, SidebarItem, SizeConstraint, Text,
+    Empty, EventContext, Fill, Flex, Icon, LayoutContext, PaintContext, Point, SidebarItem,
+    SizeConstraint, Text, Topbar,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -182,166 +182,54 @@ impl ShellView {
         dirty: Rc<RefCell<bool>>,
         app: &AppContext,
     ) -> Box<dyn Element> {
-        let spacing = app.theme.spacing_px(SpacingToken::Md);
+        let active = state.borrow().active_view;
+        let threads_active = active == ActiveView::Threads;
+        let inbox_active = active == ActiveView::AgentManagement;
+        let settings_active = matches!(active, ActiveView::Settings(_));
 
-        let toggle_state = Rc::clone(&state);
-        let toggle_dirty = Rc::clone(&dirty);
-        let sidebar_toggle = IconButton::new(
-            Icon::new("menu")
-                .with_size(18.0)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
+        let menu_state = Rc::clone(&state);
+        let menu_dirty = Rc::clone(&dirty);
+        let on_menu = move || {
+            if active == ActiveView::Chat {
+                let collapsed = menu_state.borrow().sidebar_collapsed;
+                menu_state.borrow_mut().sidebar_collapsed = !collapsed;
+            } else {
+                menu_state.borrow_mut().active_view = ActiveView::Chat;
+            }
+            *menu_dirty.borrow_mut() = true;
+        };
+
+        let threads_state = Rc::clone(&state);
+        let threads_dirty = Rc::clone(&dirty);
+        let on_threads = move || {
+            threads_state.borrow_mut().active_view = ActiveView::Threads;
+            *threads_dirty.borrow_mut() = true;
+        };
+
+        let inbox_state = Rc::clone(&state);
+        let inbox_dirty = Rc::clone(&dirty);
+        let on_inbox = move || {
+            inbox_state.borrow_mut().active_view = ActiveView::AgentManagement;
+            *inbox_dirty.borrow_mut() = true;
+        };
+
+        let settings_state = Rc::clone(&state);
+        let settings_dirty = Rc::clone(&dirty);
+        let on_settings = move || {
+            settings_state.borrow_mut().active_view = ActiveView::Settings(SettingsTab::General);
+            *settings_dirty.borrow_mut() = true;
+        };
+
+        Topbar::new(
+            threads_active,
+            inbox_active,
+            settings_active,
+            on_menu,
+            on_threads,
+            on_inbox,
+            on_settings,
+            app,
         )
-        .with_on_click(move || {
-            let collapsed = toggle_state.borrow().sidebar_collapsed;
-            toggle_state.borrow_mut().sidebar_collapsed = !collapsed;
-            *toggle_dirty.borrow_mut() = true;
-        })
-        .finish();
-
-        let title = Text::new("Goble")
-            .with_font_size(18.0)
-            .with_theme_color(ColorToken::Text, app)
-            .finish();
-
-        let left = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
-            .with_child(sidebar_toggle)
-            .with_child(title)
-            .finish();
-
-        let chat_button = Self::nav_button(
-            "Chat",
-            ActiveView::Chat,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let agents_button = Self::nav_button(
-            "Agents",
-            ActiveView::AgentManagement,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let threads_button = Self::nav_button(
-            "Threads",
-            ActiveView::Threads,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let drive_button = Self::nav_button(
-            "Drive",
-            ActiveView::Drive,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let executions_button = Self::nav_button(
-            "Executions",
-            ActiveView::Executions,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let connectors_button = Self::nav_button(
-            "Connectors",
-            ActiveView::Connectors,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let workflows_button = Self::nav_button(
-            "Workflows",
-            ActiveView::Workflows,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let teams_button = Self::nav_button(
-            "Teams",
-            ActiveView::Teams,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let logs_button = Self::nav_button(
-            "Logs",
-            ActiveView::Logs,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let search_button = Self::nav_button(
-            "Search",
-            ActiveView::Search,
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-        let settings_button = Self::nav_button(
-            "Settings",
-            ActiveView::Settings(SettingsTab::default()),
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            app,
-        );
-
-        let right = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
-            .with_child(chat_button)
-            .with_child(agents_button)
-            .with_child(threads_button)
-            .with_child(drive_button)
-            .with_child(executions_button)
-            .with_child(connectors_button)
-            .with_child(workflows_button)
-            .with_child(teams_button)
-            .with_child(logs_button)
-            .with_child(search_button)
-            .with_child(settings_button)
-            .finish();
-
-        let row = Flex::row()
-            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(left)
-            .with_child(right)
-            .finish();
-
-        Container::new(row)
-            .with_padding(Insets::uniform(spacing))
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-            .finish()
-    }
-
-    fn nav_button(
-        label: &str,
-        view: ActiveView,
-        state: Rc<RefCell<ShellState>>,
-        dirty: Rc<RefCell<bool>>,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        let selected = state.borrow().active_view == view;
-        let state2 = Rc::clone(&state);
-        let dirty2 = Rc::clone(&dirty);
-        Button::new(
-            Text::new(label)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
-        )
-        .with_variant(if selected {
-            ButtonVariant::Primary
-        } else {
-            ButtonVariant::Ghost
-        })
-        .with_on_click(move || {
-            state2.borrow_mut().active_view = view;
-            *dirty2.borrow_mut() = true;
-        })
         .finish()
     }
 

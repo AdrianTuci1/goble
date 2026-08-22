@@ -4,10 +4,9 @@ use std::sync::Arc;
 
 use goble_desktop_service::{ChatMessage as ServiceChatMessage, DesktopState};
 use goble_ui::elements::{
-    ActiveView, AppContext, Button, ButtonVariant, ChatHeader, ChatLayout,
-    ChatMessage as UiChatMessage, ChatRole, ChatSidebar, Container, CrossAxisAlignment, EdgeInsets,
-    Element, EventContext, Fill, Flex, LayoutContext, PaintContext, Point, ShellState,
-    SizeConstraint, Text, TextInput,
+    AppContext, Button, ButtonVariant, ChatHeader, ChatLayout, ChatMessage as UiChatMessage,
+    ChatRole, ChatSidebar, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Fill,
+    Flex, LayoutContext, PaintContext, Point, SizeConstraint, Text, TextInput,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
@@ -33,7 +32,6 @@ pub struct ChatViewPanel {
 impl ChatViewPanel {
     pub fn new(
         state: Arc<DesktopState>,
-        shell_state: Rc<RefCell<ShellState>>,
         ui_state: Rc<RefCell<UiState>>,
         dirty: Rc<RefCell<bool>>,
         app: &AppContext,
@@ -305,59 +303,12 @@ impl ChatViewPanel {
         }
         let info_content = Container::new(info_col.finish()).finish();
 
-        let mut history_items: Vec<Box<dyn Element>> = Vec::new();
-        let mut executions = state.list_executions();
-        executions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-        for exec in executions.into_iter().take(20) {
-            let exec_id = exec.id.clone();
-            let summary = format!(
-                "{} — {} — {}",
-                &exec.id[..exec.id.len().min(8)],
-                exec.status,
-                &exec.started_at[..exec.started_at.len().min(19)]
-            );
-            let state_for_trace = Arc::clone(&state);
-            let shell_state_for_trace = Rc::clone(&shell_state);
-            let ui_state_for_trace = Rc::clone(&ui_state);
-            let dirty_for_trace = Rc::clone(&dirty);
-            let row = Flex::row()
-                .with_main_axis_alignment(goble_ui::elements::MainAxisAlignment::SpaceBetween)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(app.theme.spacing_px(SpacingToken::Sm))
-                .with_child(
-                    Text::new(summary)
-                        .with_theme_color(ColorToken::Text, app)
-                        .finish(),
-                )
-                .with_child(
-                    Button::new(
-                        Text::new("Trace")
-                            .with_theme_color(ColorToken::Text, app)
-                            .finish(),
-                    )
-                    .with_variant(ButtonVariant::Primary)
-                    .with_on_click(move || {
-                        if state_for_trace.get_execution_trace(&exec_id).is_some() {
-                            ui_state_for_trace.borrow_mut().selected_trace_id =
-                                Some(exec_id.clone());
-                            shell_state_for_trace.borrow_mut().active_view = ActiveView::AgentTrace;
-                            *dirty_for_trace.borrow_mut() = true;
-                        } else {
-                            log::warn!("execution trace not found for {}", exec_id);
-                        }
-                    })
-                    .finish(),
-                )
-                .finish();
-            history_items.push(Container::new(row).finish());
-        }
-
         let sidebar_tab = ui_state.borrow().chat_sidebar_tab;
         let ui_state_for_tab = Rc::clone(&ui_state);
         let dirty_for_tab = Rc::clone(&dirty);
         let right_sidebar = ChatSidebar::new(sidebar_tab)
             .with_info_content(info_content)
-            .with_history_items(history_items)
+            .with_history_items(Vec::new())
             .with_on_change_tab(move |tab| {
                 ui_state_for_tab.borrow_mut().chat_sidebar_tab = tab;
                 *dirty_for_tab.borrow_mut() = true;

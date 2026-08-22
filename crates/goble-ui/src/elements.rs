@@ -38,7 +38,7 @@ pub use running_indicator::RunningIndicator;
 pub use scrollable::Scrollable;
 pub use search_input::SearchInput;
 pub use select::{Select, SelectOption};
-pub use shell::{ActiveView, SettingsTab, ShellState, ShellView, SidebarMode};
+pub use shell::{ShellState, ShellView};
 pub use sidebar::Sidebar;
 pub use sidebar_item::SidebarItem;
 pub use spacer::Spacer;

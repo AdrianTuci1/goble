@@ -1,12 +1,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Container, ConversationListItem, ConversationStatus, CrossAxisAlignment, Divider,
-    EdgeInsets, Element, Empty, EventContext, Fill, Flex, Icon, Label, LabelSize, LayoutContext,
-    MainAxisAlignment, PaintContext, Point, Scrollable, SearchInput, SizeConstraint, Spacer, Text,
-    TopbarButton,
+    AppContext, Container, ConversationListItem, ConversationStatus, CrossAxisAlignment,
+    EdgeInsets, Element, EventContext, Fill, Flex, Icon, LayoutContext, PaintContext, Point,
+    Scrollable, SearchInput, SizeConstraint, Text, TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -201,157 +199,12 @@ impl ConversationSidebar {
             );
         }
 
-        column = column.with_child(Spacer::new().finish());
-        column = column.with_child(Divider::horizontal().finish());
-
-        // Plugins footer.
-        let plugins_header = Label::new("Plugins")
-            .with_size(LabelSize::Xs)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish();
-        column = column.with_child(plugins_header);
-
-        let plugins = vec![
-            ("agentmode", "Agent Mode", None::<&str>),
-            ("layers-three-01", "Connectors", None::<&str>),
-            ("users-02", "Team", None::<&str>),
-        ];
-        let mut plugin_column = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(2.0);
-        for (icon, label, badge) in plugins {
-            let row = SidebarRow::new(
-                Icon::new(icon)
-                    .with_size(14.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-                Text::new(label)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(12.0)
-                    .finish(),
-                badge.map(|b: &str| {
-                    Text::new(b)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .with_font_size(11.0)
-                        .finish() as Box<dyn Element>
-                }),
-                app,
-            )
-            .finish();
-            plugin_column = plugin_column.with_child(row);
-        }
-        column = column.with_child(plugin_column.finish());
-
         self.root = Some(
             Container::new(column.finish())
                 .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
                 .with_padding(EdgeInsets::uniform(spacing))
                 .finish(),
         );
-    }
-}
-
-/// A single interactive row in the sidebar footer (e.g. a plugin entry).
-struct SidebarRow {
-    root: Box<dyn Element>,
-    state: InteractiveState,
-    size: Option<Vector2F>,
-    origin: Option<Point>,
-}
-
-impl SidebarRow {
-    fn new(
-        leading: Box<dyn Element>,
-        title: Box<dyn Element>,
-        trailing: Option<Box<dyn Element>>,
-        app: &AppContext,
-    ) -> Self {
-        let sm = app.theme.spacing_px(SpacingToken::Sm);
-        let radius = app.theme.radius_px();
-
-        let left = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(sm)
-            .with_child(leading)
-            .with_child(title)
-            .finish();
-
-        let right = trailing.unwrap_or_else(|| Empty::new().finish());
-
-        let row = Flex::row()
-            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(left)
-            .with_child(right)
-            .finish();
-
-        let root = Container::new(row)
-            .with_padding(EdgeInsets::uniform(sm))
-            .with_corner_radius(radius / 2.0)
-            .finish();
-
-        Self {
-            root,
-            state: InteractiveState::default(),
-            size: None,
-            origin: None,
-        }
-    }
-
-    fn paint_background(&self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
-        if !self.state.hover {
-            return;
-        }
-        let size = self.size.unwrap_or(Vector2F::zero());
-        let rect = crate::geometry::rectf(origin.x, origin.y, size.x, size.y);
-        if let Some(renderer) = ctx.renderer.as_mut() {
-            renderer.fill_rounded_rect(
-                rect,
-                app.theme.color(ColorToken::Hover),
-                app.theme.radius_px() / 2.0,
-            );
-        }
-    }
-}
-
-impl Element for SidebarRow {
-    fn layout(
-        &mut self,
-        constraint: SizeConstraint,
-        ctx: &mut LayoutContext,
-        app: &AppContext,
-    ) -> Vector2F {
-        let size = self.root.layout(constraint, ctx, app);
-        self.size = Some(size);
-        size
-    }
-
-    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
-        self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        self.paint_background(origin, ctx, app);
-        self.root.paint(origin, ctx, app);
-    }
-
-    fn size(&self) -> Option<Vector2F> {
-        self.size
-    }
-
-    fn origin(&self) -> Option<Point> {
-        self.origin
-    }
-
-    fn dispatch_event(
-        &mut self,
-        event: &DispatchedEvent,
-        ctx: &mut EventContext,
-        _app: &AppContext,
-    ) -> bool {
-        let bounds = match self.bounds() {
-            Some(b) => b,
-            None => return false,
-        };
-        let mut noop = || {};
-        handle_mouse_event(&mut self.state, event, bounds, ctx, &mut noop)
     }
 }
 

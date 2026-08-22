@@ -4,46 +4,21 @@ use std::sync::Arc;
 
 use goble_desktop_service::{CollectingEventBus, DesktopState};
 use goble_ui::elements::{
-    ActiveView, AppContext, ChatSidebarTab, ConversationEntry, ConversationSidebar,
-    ConversationStatus, Element, SettingsTab, ShellState, ShellView,
+    AppContext, ChatSidebarTab, ConversationEntry, ConversationSidebar, ConversationStatus,
+    Element, ShellState, ShellView,
 };
 use goble_ui::theme::Theme;
 use tokio::runtime::Runtime;
 
-use crate::views::agent::AgentManagementView;
-use crate::views::agent_trace::AgentTraceViewPanel;
 use crate::views::chat::ChatViewPanel;
-use crate::views::connectors::ConnectorsViewPanel;
-use crate::views::drive::DriveViewPanel;
-use crate::views::executions::ExecutionsViewPanel;
-use crate::views::logs::LogsViewPanel;
-use crate::views::search::SearchViewPanel;
-use crate::views::settings::SettingsViewPanel;
-use crate::views::teams::TeamsViewPanel;
-use crate::views::threads::ThreadsViewPanel;
-use crate::views::workflows::WorkflowsViewPanel;
 
 /// UI-specific state that is independent of the service layer.
 #[derive(Default, Clone)]
 pub struct UiState {
     pub selected_chat_id: Option<String>,
-    pub selected_thread_id: String,
-    pub selected_trace_id: Option<String>,
     pub chat_sidebar_tab: ChatSidebarTab,
     pub chat_sidebar_visible: bool,
-    pub settings_tab: SettingsTab,
     pub dark_mode: bool,
-    pub selected_agent_id: Option<String>,
-    pub agent_new_open: bool,
-    pub agent_editing: bool,
-    pub agent_scheduling: bool,
-    pub agent_edit_name: String,
-    pub agent_edit_prompt: String,
-    pub agent_edit_description: String,
-    pub agent_edit_tools: Vec<String>,
-    pub agent_edit_mcp_ids: Vec<String>,
-    pub agent_schedule_cron: String,
-    pub thread_reply_to_id: Option<String>,
 }
 
 pub struct GobleApp {
@@ -69,6 +44,7 @@ impl GobleApp {
         let mut ui_state = UiState::default();
         ui_state.dark_mode = true;
         ui_state.chat_sidebar_visible = true;
+        ui_state.chat_sidebar_tab = ChatSidebarTab::Info;
         let ui_state = Rc::new(RefCell::new(ui_state));
 
         Ok(Self {
@@ -107,105 +83,10 @@ impl GobleApp {
             shell_state,
             &*shell_app,
             Box::new(
-                move |shell_state: Rc<RefCell<ShellState>>, dirty: Rc<RefCell<bool>>| {
-                    {
-                        let mut ui = ui_state.borrow_mut();
-                        ui.settings_tab = match shell_state.borrow().active_view {
-                            ActiveView::Settings(tab) => tab,
-                            _ => ui.settings_tab,
-                        };
-                    }
+                move |_shell_state: Rc<RefCell<ShellState>>, dirty: Rc<RefCell<bool>>| {
                     let app = app_context.borrow();
-                    let active_view = shell_state.borrow().active_view;
-                    match active_view {
-                        ActiveView::Chat => ChatViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&shell_state),
-                            Rc::clone(&ui_state),
-                            dirty,
-                            &*app,
-                        )
-                        .finish(),
-                        ActiveView::AgentManagement => AgentManagementView::new(
-                            Arc::clone(&state),
-                            Rc::clone(&ui_state),
-                            dirty,
-                            &*app,
-                        )
-                        .finish(),
-                        ActiveView::Threads => ThreadsViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&ui_state),
-                            dirty,
-                            &*app,
-                        )
-                        .finish(),
-                        ActiveView::Drive => {
-                            DriveViewPanel::new(Arc::clone(&state), dirty, &*app).finish()
-                        }
-                        ActiveView::Settings(tab) => SettingsViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&ui_state),
-                            shell_state,
-                            dirty,
-                            tab,
-                            &*app,
-                            Rc::clone(&app_context),
-                        )
-                        .finish(),
-                        ActiveView::Executions => ExecutionsViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&shell_state),
-                            Rc::clone(&ui_state),
-                            dirty,
-                            &*app,
-                        )
-                        .finish(),
-                        ActiveView::AgentTrace => AgentTraceViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&shell_state),
-                            Rc::clone(&ui_state),
-                            dirty,
-                            &*app,
-                        )
-                        .finish(),
-                        ActiveView::Connectors => ConnectorsViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&ui_state),
-                            dirty,
-                            &*app,
-                        )
-                        .finish(),
-                        ActiveView::Workflows => WorkflowsViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&ui_state),
-                            dirty,
-                            &*app,
-                        )
-                        .finish(),
-                        ActiveView::Teams => TeamsViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&ui_state),
-                            dirty,
-                            &*app,
-                        )
-                        .finish(),
-                        ActiveView::Logs => LogsViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&ui_state),
-                            dirty,
-                            &*app,
-                        )
-                        .finish(),
-                        ActiveView::Search => SearchViewPanel::new(
-                            Arc::clone(&state),
-                            Rc::clone(&ui_state),
-                            Rc::clone(&shell_state),
-                            dirty,
-                            &*app,
-                        )
-                        .finish(),
-                    }
+                    ChatViewPanel::new(Arc::clone(&state), Rc::clone(&ui_state), dirty, &*app)
+                        .finish()
                 },
             ),
             Some(event_checker),

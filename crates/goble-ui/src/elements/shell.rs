@@ -61,6 +61,7 @@ pub struct ShellView {
     state: Rc<RefCell<ShellState>>,
     dirty: Rc<RefCell<bool>>,
     content_resolver: Box<dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static>,
+    conversation_sidebar_builder: Option<Box<dyn Fn(&AppContext, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static>>,
     event_checker: Option<Rc<RefCell<dyn FnMut() -> bool>>>,
     root: Box<dyn Element>,
     size: Option<Vector2F>,
@@ -99,21 +100,29 @@ impl ShellView {
         let state = Rc::new(RefCell::new(state));
         let dirty = Rc::new(RefCell::new(false));
         let content_resolver = Box::new(content_resolver);
-        let root = Self::build_root(
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            &content_resolver,
-            app,
-        );
-        Self {
+        let mut view = Self {
             state,
             dirty,
             content_resolver,
+            conversation_sidebar_builder: None,
             event_checker,
-            root,
+            root: Container::new(Empty::new().finish())
+                .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+                .finish(),
             size: None,
             origin: None,
-        }
+        };
+        view.rebuild(app);
+        view
+    }
+
+    pub fn with_conversation_sidebar<F>(mut self, builder: F) -> Self
+    where
+        F: Fn(&AppContext, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static,
+    {
+        self.conversation_sidebar_builder = Some(Box::new(builder));
+        self.request_rebuild();
+        self
     }
 
     pub fn state(&self) -> Rc<RefCell<ShellState>> {
@@ -133,23 +142,18 @@ impl ShellView {
     }
 
     fn rebuild(&mut self, app: &AppContext) {
-        self.root = Self::build_root(
+        self.root = self.build_root(app);
+        *self.dirty.borrow_mut() = false;
+    }
+
+    fn build_root(&self, app: &AppContext) -> Box<dyn Element> {
+        let topbar = Self::topbar(Rc::clone(&self.state), Rc::clone(&self.dirty), app);
+        let body = self.body(
             Rc::clone(&self.state),
             Rc::clone(&self.dirty),
             &self.content_resolver,
             app,
         );
-        *self.dirty.borrow_mut() = false;
-    }
-
-    fn build_root(
-        state: Rc<RefCell<ShellState>>,
-        dirty: Rc<RefCell<bool>>,
-        content_resolver: &dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element>,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        let topbar = Self::topbar(Rc::clone(&state), Rc::clone(&dirty), app);
-        let body = Self::body(Rc::clone(&state), Rc::clone(&dirty), content_resolver, app);
 
         let column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -283,12 +287,13 @@ impl ShellView {
     }
 
     fn body(
+        &self,
         state: Rc<RefCell<ShellState>>,
         dirty: Rc<RefCell<bool>>,
         content_resolver: &dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element>,
         app: &AppContext,
     ) -> Box<dyn Element> {
-        let sidebar = Self::left_panel(Rc::clone(&state), Rc::clone(&dirty), app);
+        let sidebar = self.left_panel(app);
         let content = content_resolver(Rc::clone(&state), Rc::clone(&dirty));
 
         Flex::row()
@@ -299,12 +304,16 @@ impl ShellView {
     }
 
     fn left_panel(
-        state: Rc<RefCell<ShellState>>,
-        dirty: Rc<RefCell<bool>>,
+        &self,
         app: &AppContext,
     ) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
+        let state = Rc::clone(&self.state);
+        let dirty = Rc::clone(&self.dirty);
         let s = state.borrow();
+
+        let use_conversation_sidebar = s.active_view == ActiveView::Chat
+            && self.conversation_sidebar_builder.is_some();
 
         let mode_buttons = Flex::row()
             .with_spacing(spacing)
@@ -331,7 +340,10 @@ impl ShellView {
             ))
             .finish();
 
-        let items: Vec<Box<dyn Element>> = match s.sidebar_mode {
+        let items: Vec<Box<dyn Element>> = if use_conversation_sidebar {
+            vec![(self.conversation_sidebar_builder.as_ref().unwrap())(app, Rc::clone(&self.dirty))]
+        } else {
+            match s.sidebar_mode {
             SidebarMode::Agent => vec![
                 Self::sidebar_nav_item(
                     "New chat",
@@ -387,6 +399,7 @@ impl ShellView {
                     app,
                 ),
             ],
+        }
         };
 
         let column = Flex::column()

@@ -1213,6 +1213,14 @@ impl DesktopState {
         self.chats.lock().clone()
     }
 
+    pub fn delete_chat(&self, id: &str) -> anyhow::Result<()> {
+        self.store.lock().delete_chat(id)?;
+        self.chats.lock().retain(|c| c.id != id);
+        self.messages.lock().remove(id);
+        self.emit("chats:updated", ());
+        Ok(())
+    }
+
     pub fn create_agent(
         &self,
         name: &str,

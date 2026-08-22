@@ -633,6 +633,14 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn delete_chat(&self, id: &str) -> Result<()> {
+        self.conn.lock().execute("DELETE FROM chats WHERE id = ?1", params![id])?;
+        self.conn
+            .lock()
+            .execute("DELETE FROM chat_messages WHERE chat_id = ?1", params![id])?;
+        Ok(())
+    }
+
     pub fn insert_mcp_server(
         &self,
         id: &str,

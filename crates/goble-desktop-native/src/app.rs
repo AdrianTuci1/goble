@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use goble_desktop_service::{CollectingEventBus, DesktopState};
 use goble_ui::elements::{
-    ActiveView, AppContext, Element, SettingsTab, ShellState, ShellView,
+    ActiveView, AppContext, ConversationEntry, ConversationSidebar, Element, SettingsTab,
+    ShellState, ShellView,
 };
 use goble_ui::theme::Theme;
 use tokio::runtime::Runtime;
@@ -78,6 +79,8 @@ impl GobleApp {
         }));
 
         let shell_app = app_context_for_shell.borrow();
+        let state_for_sidebar = Arc::clone(&self.state);
+        let ui_state_for_sidebar = Rc::clone(&self.ui_state);
         ShellView::with_content_and_event_checker(
             shell_state,
             &*shell_app,
@@ -130,6 +133,63 @@ impl GobleApp {
             ),
             Some(event_checker),
         )
+        .with_conversation_sidebar(move |_app, dirty| {
+            let chats = state_for_sidebar.list_chats();
+            let selected_id = ui_state_for_sidebar.borrow().selected_chat_id.clone();
+            let entries: Vec<ConversationEntry> = chats
+                .iter()
+                .map(|chat| {
+                    let preview = state_for_sidebar
+                        .list_chat_messages(&chat.id)
+                        .ok()
+                        .and_then(|msgs| msgs.last().map(|m| m.content.clone()))
+                        .unwrap_or_default();
+                    let timestamp = &chat.updated_at[..chat.updated_at.len().min(19)];
+                    ConversationEntry {
+                        id: chat.id.clone(),
+                        title: chat.title.clone(),
+                        preview,
+                        timestamp: timestamp.to_string(),
+                        selected: selected_id.as_ref() == Some(&chat.id),
+                    }
+                })
+                .collect();
+
+            let state_for_delete = Arc::clone(&state_for_sidebar);
+            let state_for_create = Arc::clone(&state_for_sidebar);
+            let ui_state_for_select = Rc::clone(&ui_state_for_sidebar);
+            let ui_state_for_delete = Rc::clone(&ui_state_for_sidebar);
+            let ui_state_for_create = Rc::clone(&ui_state_for_sidebar);
+            let dirty_for_select = Rc::clone(&dirty);
+            let dirty_for_delete = Rc::clone(&dirty);
+            let dirty_for_create = Rc::clone(&dirty);
+
+            ConversationSidebar::new("Conversations", entries)
+                .with_on_select(move |id| {
+                    ui_state_for_select.borrow_mut().selected_chat_id = Some(id);
+                    *dirty_for_select.borrow_mut() = true;
+                })
+                .with_on_delete(move |id| {
+                    if let Err(e) = state_for_delete.delete_chat(&id) {
+                        log::error!("failed to delete chat: {}", e);
+                    }
+                    let remaining = state_for_delete.list_chats();
+                    ui_state_for_delete.borrow_mut().selected_chat_id =
+                        remaining.first().map(|c| c.id.clone());
+                    *dirty_for_delete.borrow_mut() = true;
+                })
+                .with_on_create_new(move || {
+                    match state_for_create.create_chat("New chat", None, None) {
+                        Ok(id) => {
+                            ui_state_for_create.borrow_mut().selected_chat_id = Some(id.clone());
+                            log::info!("created chat {}", id);
+                        }
+                        Err(e) => log::error!("failed to create chat: {}", e),
+                    }
+                    *dirty_for_create.borrow_mut() = true;
+                })
+                .finish()
+        })
         .finish()
     }
 }

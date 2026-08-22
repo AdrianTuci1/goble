@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use goble_core::execution::{ExecutionStatus, ExecutionTrace, LogLevel, Metric, Step, TraceEvent};
 use goble_desktop_service::DesktopState;
+use goble_ui::elements::ShellState;
 use goble_ui::elements::{
     ActiveView, AppContext, Axis, Button, ButtonVariant, Container, CrossAxisAlignment, EdgeInsets,
     Element, EventContext, Fill, Flex, LayoutContext, MainAxisAlignment, PaintContext, Point,
     Scrollable, SizeConstraint, Text,
 };
-use goble_ui::elements::ShellState;
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -146,14 +146,10 @@ fn render_events(events: &[TraceEvent], app: &AppContext) -> Box<dyn Element> {
                     timestamp,
                     level,
                     message,
-                } => (
-                    timestamp,
-                    format!("[{}] {}", level_label(level), message),
-                ),
-                TraceEvent::AssistantDelta { timestamp, delta } => (
-                    timestamp,
-                    format!("[assistant delta] {}", delta),
-                ),
+                } => (timestamp, format!("[{}] {}", level_label(level), message)),
+                TraceEvent::AssistantDelta { timestamp, delta } => {
+                    (timestamp, format!("[assistant delta] {}", delta))
+                }
                 TraceEvent::ToolCallStarted {
                     timestamp,
                     id,
@@ -163,26 +159,24 @@ fn render_events(events: &[TraceEvent], app: &AppContext) -> Box<dyn Element> {
                     timestamp,
                     format!("[tool start] {} {} {}", id, name, arguments),
                 ),
-                TraceEvent::ToolCallFinished { timestamp, id, result } => (
+                TraceEvent::ToolCallFinished {
                     timestamp,
-                    format!("[tool finish] {} {}", id, result),
-                ),
-                TraceEvent::ToolCallError { timestamp, id, message } => (
+                    id,
+                    result,
+                } => (timestamp, format!("[tool finish] {} {}", id, result)),
+                TraceEvent::ToolCallError {
                     timestamp,
-                    format!("[tool error] {} {}", id, message),
-                ),
+                    id,
+                    message,
+                } => (timestamp, format!("[tool error] {} {}", id, message)),
                 TraceEvent::AskUser {
                     timestamp,
                     question,
                     quick_replies,
-                } => (
-                    timestamp,
-                    format!("[ask] {} {:?}", question, quick_replies),
-                ),
-                TraceEvent::Done { timestamp, status } => (
-                    timestamp,
-                    format!("[done] {}", status_label(status)),
-                ),
+                } => (timestamp, format!("[ask] {} {:?}", question, quick_replies)),
+                TraceEvent::Done { timestamp, status } => {
+                    (timestamp, format!("[done] {}", status_label(status)))
+                }
             };
             let ts = &timestamp.to_rfc3339()[..timestamp.to_rfc3339().len().min(19)];
             col = col.with_child(
@@ -211,7 +205,9 @@ impl AgentTraceViewPanel {
         let _sm = app.theme.spacing_px(SpacingToken::Sm);
 
         let trace_id = ui_state.borrow().selected_trace_id.clone();
-        let trace = trace_id.as_ref().and_then(|id| state.get_execution_trace(id));
+        let trace = trace_id
+            .as_ref()
+            .and_then(|id| state.get_execution_trace(id));
 
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -219,13 +215,17 @@ impl AgentTraceViewPanel {
 
         let shell_state_for_back = Rc::clone(&shell_state);
         let dirty_for_back = Rc::clone(&dirty);
-        let back = Button::new(Text::new("Back to executions").with_theme_color(ColorToken::Text, app).finish())
-            .with_variant(ButtonVariant::Ghost)
-            .with_on_click(move || {
-                shell_state_for_back.borrow_mut().active_view = ActiveView::Executions;
-                *dirty_for_back.borrow_mut() = true;
-            })
-            .finish();
+        let back = Button::new(
+            Text::new("Back to executions")
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_variant(ButtonVariant::Ghost)
+        .with_on_click(move || {
+            shell_state_for_back.borrow_mut().active_view = ActiveView::Executions;
+            *dirty_for_back.borrow_mut() = true;
+        })
+        .finish();
 
         column = column.with_child(
             Flex::row()

@@ -93,11 +93,7 @@ impl ChatView {
         self
     }
 
-    pub fn with_model_options(
-        mut self,
-        options: Vec<String>,
-        selected: Option<String>,
-    ) -> Self {
+    pub fn with_model_options(mut self, options: Vec<String>, selected: Option<String>) -> Self {
         self.model_options = options;
         self.selected_model = selected;
         self
@@ -108,11 +104,7 @@ impl ChatView {
         self
     }
 
-    pub fn with_runtime_options(
-        mut self,
-        options: Vec<String>,
-        selected: Option<String>,
-    ) -> Self {
+    pub fn with_runtime_options(mut self, options: Vec<String>, selected: Option<String>) -> Self {
         self.runtime_options = options;
         self.selected_runtime = selected;
         self
@@ -123,11 +115,7 @@ impl ChatView {
         self
     }
 
-    pub fn with_variant_options(
-        mut self,
-        options: Vec<String>,
-        selected: Option<String>,
-    ) -> Self {
+    pub fn with_variant_options(mut self, options: Vec<String>, selected: Option<String>) -> Self {
         self.variant_options = options;
         self.selected_variant = selected;
         self
@@ -181,7 +169,8 @@ impl ChatView {
                 .finish();
             message_column = message_column.with_child(bubble);
         }
-        column = column.with_child(Scrollable::new(message_column.finish(), Axis::Vertical).finish());
+        column =
+            column.with_child(Scrollable::new(message_column.finish(), Axis::Vertical).finish());
 
         if !self.quick_actions.is_empty() {
             let mut row = Flex::row()
@@ -190,8 +179,7 @@ impl ChatView {
             for (label, cb) in &self.quick_actions {
                 let cb = cb.clone();
                 row = row.with_child(
-                    QuickActionButton::new(label.clone(), move || (cb.borrow_mut())())
-                        .finish(),
+                    QuickActionButton::new(label.clone(), move || (cb.borrow_mut())()).finish(),
                 );
             }
             column = column.with_child(row.finish());
@@ -273,11 +261,7 @@ impl Element for ChatView {
         app: &AppContext,
     ) -> Vector2F {
         self.rebuild(app);
-        let size = self
-            .root
-            .as_mut()
-            .unwrap()
-            .layout(constraint, ctx, app);
+        let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size
     }
@@ -348,5 +332,4 @@ mod tests {
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
     }
-
 }

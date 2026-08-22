@@ -80,17 +80,23 @@ impl LogsViewPanel {
                     .finish(),
                 );
             }
-            column = column.with_child(Scrollable::new(list.finish(), goble_ui::elements::Axis::Vertical).finish());
+            column = column.with_child(
+                Scrollable::new(list.finish(), goble_ui::elements::Axis::Vertical).finish(),
+            );
         }
 
         let dirty_for_refresh = Rc::clone(&dirty);
         column = column.with_child(
-            Button::new(Text::new("Refresh").with_theme_color(ColorToken::Text, app).finish())
-                .with_variant(ButtonVariant::Primary)
-                .with_on_click(move || {
-                    *dirty_for_refresh.borrow_mut() = true;
-                })
-                .finish(),
+            Button::new(
+                Text::new("Refresh")
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .with_variant(ButtonVariant::Primary)
+            .with_on_click(move || {
+                *dirty_for_refresh.borrow_mut() = true;
+            })
+            .finish(),
         );
 
         let content = Container::new(column.finish())

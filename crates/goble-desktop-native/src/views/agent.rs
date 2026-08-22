@@ -24,10 +24,14 @@ fn action_button(
     on_click: impl FnMut() + 'static,
     app: &AppContext,
 ) -> Box<dyn Element> {
-    Button::new(Text::new(label).with_theme_color(ColorToken::Text, app).finish())
-        .with_variant(ButtonVariant::Ghost)
-        .with_on_click(on_click)
-        .finish()
+    Button::new(
+        Text::new(label)
+            .with_theme_color(ColorToken::Text, app)
+            .finish(),
+    )
+    .with_variant(ButtonVariant::Ghost)
+    .with_on_click(on_click)
+    .finish()
 }
 
 impl AgentManagementView {
@@ -42,9 +46,9 @@ impl AgentManagementView {
 
         let agents = state.list_agents();
         let selected_id = ui_state.borrow().selected_agent_id.clone();
-        let selected_agent = selected_id.as_ref().and_then(|id| {
-            agents.iter().find(|a| &a.id == id).cloned()
-        });
+        let selected_agent = selected_id
+            .as_ref()
+            .and_then(|id| agents.iter().find(|a| &a.id == id).cloned());
 
         let mcp_servers = state.list_mcp_servers().unwrap_or_default();
         let mut discovered_tools: Vec<String> = Vec::new();
@@ -74,13 +78,17 @@ impl AgentManagementView {
                     .finish(),
             )
             .with_child(
-                Button::new(Text::new("New agent").with_theme_color(ColorToken::Text, app).finish())
-                    .with_variant(ButtonVariant::Primary)
-                    .with_on_click(move || {
-                        ui_state_for_new_toggle.borrow_mut().agent_new_open = !new_open;
-                        *dirty_for_new_toggle.borrow_mut() = true;
-                    })
-                    .finish(),
+                Button::new(
+                    Text::new("New agent")
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                )
+                .with_variant(ButtonVariant::Primary)
+                .with_on_click(move || {
+                    ui_state_for_new_toggle.borrow_mut().agent_new_open = !new_open;
+                    *dirty_for_new_toggle.borrow_mut() = true;
+                })
+                .finish(),
             )
             .finish();
         left = left.with_child(header);
@@ -96,27 +104,36 @@ impl AgentManagementView {
             let state_for_create = Arc::clone(&state);
             let dirty_for_create = Rc::clone(&dirty);
             let ui_state_for_create = Rc::clone(&ui_state);
-            let create = Button::new(Text::new("Create").with_theme_color(ColorToken::Text, app).finish())
-                .with_variant(ButtonVariant::Primary)
-                .with_on_click(move || {
-                    let name = name_state.borrow().clone();
-                    let prompt = prompt_state.borrow().clone();
-                    let description = desc_state.borrow().clone();
-                    if name.is_empty() {
-                        log::warn!("agent name is required");
-                        return;
+            let create = Button::new(
+                Text::new("Create")
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .with_variant(ButtonVariant::Primary)
+            .with_on_click(move || {
+                let name = name_state.borrow().clone();
+                let prompt = prompt_state.borrow().clone();
+                let description = desc_state.borrow().clone();
+                if name.is_empty() {
+                    log::warn!("agent name is required");
+                    return;
+                }
+                let description = if description.is_empty() {
+                    None
+                } else {
+                    Some(description)
+                };
+                match state_for_create.create_agent(&name, &prompt, description.as_deref(), vec![])
+                {
+                    Ok(info) => {
+                        ui_state_for_create.borrow_mut().selected_agent_id = Some(info.id);
+                        ui_state_for_create.borrow_mut().agent_new_open = false;
                     }
-                    let description = if description.is_empty() { None } else { Some(description) };
-                    match state_for_create.create_agent(&name, &prompt, description.as_deref(), vec![]) {
-                        Ok(info) => {
-                            ui_state_for_create.borrow_mut().selected_agent_id = Some(info.id);
-                            ui_state_for_create.borrow_mut().agent_new_open = false;
-                        }
-                        Err(e) => log::error!("failed to create agent: {}", e),
-                    }
-                    *dirty_for_create.borrow_mut() = true;
-                })
-                .finish();
+                    Err(e) => log::error!("failed to create agent: {}", e),
+                }
+                *dirty_for_create.borrow_mut() = true;
+            })
+            .finish();
 
             let form = Container::new(
                 Flex::column()
@@ -184,82 +201,94 @@ impl AgentManagementView {
             let ui_state_for_select = Rc::clone(&ui_state);
             let dirty_for_select = Rc::clone(&dirty);
             let select_id = agent_id.clone();
-            let card = AgentCard::new(
-                avatar,
-                name.clone(),
-                description.clone(),
-                tags,
-                app,
-            )
-            .with_on_click(move || {
-                ui_state_for_select.borrow_mut().selected_agent_id = Some(select_id.clone());
-                ui_state_for_select.borrow_mut().agent_editing = false;
-                ui_state_for_select.borrow_mut().agent_scheduling = false;
-                *dirty_for_select.borrow_mut() = true;
-            })
-            .finish();
+            let card = AgentCard::new(avatar, name.clone(), description.clone(), tags, app)
+                .with_on_click(move || {
+                    ui_state_for_select.borrow_mut().selected_agent_id = Some(select_id.clone());
+                    ui_state_for_select.borrow_mut().agent_editing = false;
+                    ui_state_for_select.borrow_mut().agent_scheduling = false;
+                    *dirty_for_select.borrow_mut() = true;
+                })
+                .finish();
 
             let run_id = agent_id.clone();
             let state_for_run = Arc::clone(&state);
             let dirty_for_run = Rc::clone(&dirty);
-            let run = action_button("Run", move || {
-                let worker_id = match state_for_run.resolve_worker_for_target("any", None, None) {
-                    Ok(wid) => wid,
-                    Err(e) => {
-                        log::error!("no worker available: {}", e);
-                        return;
+            let run = action_button(
+                "Run",
+                move || {
+                    let worker_id = match state_for_run.resolve_worker_for_target("any", None, None)
+                    {
+                        Ok(wid) => wid,
+                        Err(e) => {
+                            log::error!("no worker available: {}", e);
+                            return;
+                        }
+                    };
+                    let id = AgentId(run_id.clone());
+                    if let Err(e) = state_for_run.run_agent(&worker_id, &id, "Run from UI") {
+                        log::error!("failed to run agent: {}", e);
                     }
-                };
-                let id = AgentId(run_id.clone());
-                if let Err(e) = state_for_run.run_agent(&worker_id, &id, "Run from UI") {
-                    log::error!("failed to run agent: {}", e);
-                }
-                *dirty_for_run.borrow_mut() = true;
-            }, app);
+                    *dirty_for_run.borrow_mut() = true;
+                },
+                app,
+            );
 
             let schedule_id = agent_id.clone();
             let ui_state_for_schedule = Rc::clone(&ui_state);
             let dirty_for_schedule = Rc::clone(&dirty);
-            let schedule = action_button("Schedule", move || {
-                ui_state_for_schedule.borrow_mut().selected_agent_id = Some(schedule_id.clone());
-                ui_state_for_schedule.borrow_mut().agent_scheduling = true;
-                ui_state_for_schedule.borrow_mut().agent_editing = false;
-                *dirty_for_schedule.borrow_mut() = true;
-            }, app);
+            let schedule = action_button(
+                "Schedule",
+                move || {
+                    ui_state_for_schedule.borrow_mut().selected_agent_id =
+                        Some(schedule_id.clone());
+                    ui_state_for_schedule.borrow_mut().agent_scheduling = true;
+                    ui_state_for_schedule.borrow_mut().agent_editing = false;
+                    *dirty_for_schedule.borrow_mut() = true;
+                },
+                app,
+            );
 
             let edit_id = agent_id.clone();
             let ui_state_for_edit = Rc::clone(&ui_state);
             let dirty_for_edit = Rc::clone(&dirty);
-            let edit = action_button("Edit", move || {
-                ui_state_for_edit.borrow_mut().selected_agent_id = Some(edit_id.clone());
-                ui_state_for_edit.borrow_mut().agent_editing = true;
-                ui_state_for_edit.borrow_mut().agent_scheduling = false;
-                if let Some(a) = state_for_select
-                    .list_agents()
-                    .into_iter()
-                    .find(|a| a.id == edit_id)
-                {
-                    let mut u = ui_state_for_edit.borrow_mut();
-                    u.agent_edit_name = a.name.clone();
-                    u.agent_edit_prompt = a.spec.prompt.clone();
-                    u.agent_edit_description = a.spec.description.clone();
-                    u.agent_edit_tools = a.spec.tools.clone();
-                    u.agent_edit_mcp_ids = a.spec.mcp_ids.clone();
-                }
-                *dirty_for_edit.borrow_mut() = true;
-            }, app);
+            let edit = action_button(
+                "Edit",
+                move || {
+                    ui_state_for_edit.borrow_mut().selected_agent_id = Some(edit_id.clone());
+                    ui_state_for_edit.borrow_mut().agent_editing = true;
+                    ui_state_for_edit.borrow_mut().agent_scheduling = false;
+                    if let Some(a) = state_for_select
+                        .list_agents()
+                        .into_iter()
+                        .find(|a| a.id == edit_id)
+                    {
+                        let mut u = ui_state_for_edit.borrow_mut();
+                        u.agent_edit_name = a.name.clone();
+                        u.agent_edit_prompt = a.spec.prompt.clone();
+                        u.agent_edit_description = a.spec.description.clone();
+                        u.agent_edit_tools = a.spec.tools.clone();
+                        u.agent_edit_mcp_ids = a.spec.mcp_ids.clone();
+                    }
+                    *dirty_for_edit.borrow_mut() = true;
+                },
+                app,
+            );
 
             let delete_id = agent_id.clone();
             let state_for_delete = Arc::clone(&state);
             let dirty_for_delete = Rc::clone(&dirty);
             let ui_state_for_delete = Rc::clone(&ui_state);
-            let delete = action_button("Delete", move || {
-                if let Err(e) = state_for_delete.delete_agent(&AgentId(delete_id.clone())) {
-                    log::error!("failed to delete agent: {}", e);
-                }
-                ui_state_for_delete.borrow_mut().selected_agent_id = None;
-                *dirty_for_delete.borrow_mut() = true;
-            }, app);
+            let delete = action_button(
+                "Delete",
+                move || {
+                    if let Err(e) = state_for_delete.delete_agent(&AgentId(delete_id.clone())) {
+                        log::error!("failed to delete agent: {}", e);
+                    }
+                    ui_state_for_delete.borrow_mut().selected_agent_id = None;
+                    *dirty_for_delete.borrow_mut() = true;
+                },
+                app,
+            );
 
             let actions = Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -285,7 +314,8 @@ impl AgentManagementView {
             );
         }
 
-        let list_scroll = Scrollable::new(list.finish(), goble_ui::elements::Axis::Vertical).finish();
+        let list_scroll =
+            Scrollable::new(list.finish(), goble_ui::elements::Axis::Vertical).finish();
         left = left.with_child(list_scroll);
 
         // Right panel: details / edit / schedule for selected agent.
@@ -324,29 +354,36 @@ impl AgentManagementView {
                     let ui_state_for_save = Rc::clone(&ui_state);
                     let agent_id = AgentId(agent.id.clone());
                     right_children.push(
-                        Button::new(Text::new("Save schedule").with_theme_color(ColorToken::Text, app).finish())
-                            .with_variant(ButtonVariant::Primary)
-                            .with_on_click(move || {
-                                let expression = cron_state.borrow().clone();
-                                if expression.is_empty() {
-                                    log::warn!("cron expression is required");
-                                    return;
-                                }
-                                let worker_id = match state_for_save.resolve_worker_for_target("any", None, None) {
+                        Button::new(
+                            Text::new("Save schedule")
+                                .with_theme_color(ColorToken::Text, app)
+                                .finish(),
+                        )
+                        .with_variant(ButtonVariant::Primary)
+                        .with_on_click(move || {
+                            let expression = cron_state.borrow().clone();
+                            if expression.is_empty() {
+                                log::warn!("cron expression is required");
+                                return;
+                            }
+                            let worker_id =
+                                match state_for_save.resolve_worker_for_target("any", None, None) {
                                     Ok(wid) => wid,
                                     Err(e) => {
                                         log::error!("no worker available: {}", e);
                                         return;
                                     }
                                 };
-                                let trigger = Trigger::Cron { expression };
-                                if let Err(e) = state_for_save.schedule_agent(&worker_id, &agent_id, trigger) {
-                                    log::error!("failed to schedule agent: {}", e);
-                                }
-                                ui_state_for_save.borrow_mut().agent_scheduling = false;
-                                *dirty_for_save.borrow_mut() = true;
-                            })
-                            .finish(),
+                            let trigger = Trigger::Cron { expression };
+                            if let Err(e) =
+                                state_for_save.schedule_agent(&worker_id, &agent_id, trigger)
+                            {
+                                log::error!("failed to schedule agent: {}", e);
+                            }
+                            ui_state_for_save.borrow_mut().agent_scheduling = false;
+                            *dirty_for_save.borrow_mut() = true;
+                        })
+                        .finish(),
                     );
                 } else if ui_state.borrow().agent_editing {
                     right_children.push(
@@ -412,7 +449,11 @@ impl AgentManagementView {
                             let dirty_for_tool = Rc::clone(&dirty);
                             right_children.push(
                                 Checkbox::new()
-                                    .with_label(Text::new(tool.clone()).with_theme_color(ColorToken::Text, app).finish())
+                                    .with_label(
+                                        Text::new(tool.clone())
+                                            .with_theme_color(ColorToken::Text, app)
+                                            .finish(),
+                                    )
                                     .with_checked(checked)
                                     .with_on_change(move |enabled| {
                                         let mut u = ui_state_for_tool.borrow_mut();
@@ -473,59 +514,67 @@ impl AgentManagementView {
                     let ui_state_for_update = Rc::clone(&ui_state);
                     let agent_id = AgentId(agent.id.clone());
                     right_children.push(
-                        Button::new(Text::new("Save").with_theme_color(ColorToken::Text, app).finish())
-                            .with_variant(ButtonVariant::Primary)
-                            .with_on_click(move || {
-                                let u = ui_state_for_update.borrow();
-                                let name = u.agent_edit_name.clone();
-                                let prompt = u.agent_edit_prompt.clone();
-                                let description = u.agent_edit_description.clone();
-                                let tools = u.agent_edit_tools.clone();
-                                let mcp_ids = u.agent_edit_mcp_ids.clone();
-                                drop(u);
-                                if name.is_empty() {
-                                    log::warn!("agent name is required");
-                                    return;
-                                }
-                                if let Err(e) = state_for_update.update_agent(
-                                    &agent_id,
-                                    &name,
-                                    &prompt,
-                                    if description.is_empty() { None } else { Some(&description) },
-                                    tools,
-                                ) {
-                                    log::error!("failed to update agent: {}", e);
-                                    return;
-                                }
-                                // Also update mcp_ids by reloading spec and rewriting.
-                                if let Some(info) = state_for_update
-                                    .list_agents()
-                                    .into_iter()
-                                    .find(|a| a.id == agent_id.0)
-                                {
-                                    let mut spec = info.spec.clone();
-                                    spec.mcp_ids = mcp_ids;
-                                    let now = chrono::Utc::now().to_rfc3339();
-                                    let spec_json = match serde_json::to_string(&spec) {
-                                        Ok(j) => j,
-                                        Err(e) => {
-                                            log::error!("failed to serialize agent spec: {}", e);
-                                            return;
-                                        }
-                                    };
-                                    if let Err(e) = state_for_update.store_clone().update_agent(
-                                        &agent_id.0,
-                                        &spec.name,
-                                        &spec_json,
-                                        &now,
-                                    ) {
-                                        log::error!("failed to persist mcp ids: {}", e);
+                        Button::new(
+                            Text::new("Save")
+                                .with_theme_color(ColorToken::Text, app)
+                                .finish(),
+                        )
+                        .with_variant(ButtonVariant::Primary)
+                        .with_on_click(move || {
+                            let u = ui_state_for_update.borrow();
+                            let name = u.agent_edit_name.clone();
+                            let prompt = u.agent_edit_prompt.clone();
+                            let description = u.agent_edit_description.clone();
+                            let tools = u.agent_edit_tools.clone();
+                            let mcp_ids = u.agent_edit_mcp_ids.clone();
+                            drop(u);
+                            if name.is_empty() {
+                                log::warn!("agent name is required");
+                                return;
+                            }
+                            if let Err(e) = state_for_update.update_agent(
+                                &agent_id,
+                                &name,
+                                &prompt,
+                                if description.is_empty() {
+                                    None
+                                } else {
+                                    Some(&description)
+                                },
+                                tools,
+                            ) {
+                                log::error!("failed to update agent: {}", e);
+                                return;
+                            }
+                            // Also update mcp_ids by reloading spec and rewriting.
+                            if let Some(info) = state_for_update
+                                .list_agents()
+                                .into_iter()
+                                .find(|a| a.id == agent_id.0)
+                            {
+                                let mut spec = info.spec.clone();
+                                spec.mcp_ids = mcp_ids;
+                                let now = chrono::Utc::now().to_rfc3339();
+                                let spec_json = match serde_json::to_string(&spec) {
+                                    Ok(j) => j,
+                                    Err(e) => {
+                                        log::error!("failed to serialize agent spec: {}", e);
+                                        return;
                                     }
+                                };
+                                if let Err(e) = state_for_update.store_clone().update_agent(
+                                    &agent_id.0,
+                                    &spec.name,
+                                    &spec_json,
+                                    &now,
+                                ) {
+                                    log::error!("failed to persist mcp ids: {}", e);
                                 }
-                                ui_state_for_update.borrow_mut().agent_editing = false;
-                                *dirty_for_update.borrow_mut() = true;
-                            })
-                            .finish(),
+                            }
+                            ui_state_for_update.borrow_mut().agent_editing = false;
+                            *dirty_for_update.borrow_mut() = true;
+                        })
+                        .finish(),
                     );
                 } else {
                     right_children.push(
@@ -568,7 +617,9 @@ impl AgentManagementView {
                             Trigger::Manual => "manual".to_string(),
                             Trigger::Cron { expression } => format!("cron({})", expression),
                             Trigger::Http { path } => format!("http({})", path),
-                            Trigger::Heartbeat { interval_seconds } => format!("heartbeat({}s)", interval_seconds),
+                            Trigger::Heartbeat { interval_seconds } => {
+                                format!("heartbeat({}s)", interval_seconds)
+                            }
                         })
                         .collect::<Vec<_>>()
                         .join(", ");

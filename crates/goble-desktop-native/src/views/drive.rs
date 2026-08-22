@@ -5,8 +5,8 @@ use std::sync::Arc;
 use goble_desktop_service::DesktopState;
 use goble_ui::elements::{
     AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, EdgeInsets, Element,
-    EventContext, Fill, Flex, Label, LabelSize, LayoutContext, PaintContext,
-    Point, SizeConstraint, Text, TextInput,
+    EventContext, Fill, Flex, Label, LabelSize, LayoutContext, PaintContext, Point, SizeConstraint,
+    Text, TextInput,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
@@ -33,11 +33,7 @@ impl DriveViewPanel {
         );
 
         // Workflows section with create form
-        column = column.with_child(
-            Label::new("Workflows")
-                .with_size(LabelSize::Sm)
-                .finish(),
-        );
+        column = column.with_child(Label::new("Workflows").with_size(LabelSize::Sm).finish());
 
         let wf_name_state = Rc::new(RefCell::new(String::new()));
         let wf_desc_state = Rc::new(RefCell::new(String::new()));
@@ -109,19 +105,19 @@ impl DriveViewPanel {
                     if wf.enabled { "enabled" } else { "disabled" }
                 );
                 column = column.with_child(
-                    Container::new(Text::new(line).with_theme_color(ColorToken::Text, app).finish())
-                        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                        .with_padding(EdgeInsets::uniform(sm))
-                        .finish(),
+                    Container::new(
+                        Text::new(line)
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                    .with_padding(EdgeInsets::uniform(sm))
+                    .finish(),
                 );
             }
         }
 
-        column = column.with_child(
-            Label::new("Agents")
-                .with_size(LabelSize::Sm)
-                .finish(),
-        );
+        column = column.with_child(Label::new("Agents").with_size(LabelSize::Sm).finish());
         let agents = state.list_agents();
         if agents.is_empty() {
             column = column.with_child(
@@ -133,19 +129,19 @@ impl DriveViewPanel {
             for agent in agents {
                 let line = format!("{} | {}", &agent.id[..agent.id.len().min(8)], agent.name);
                 column = column.with_child(
-                    Container::new(Text::new(line).with_theme_color(ColorToken::Text, app).finish())
-                        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                        .with_padding(EdgeInsets::uniform(sm))
-                        .finish(),
+                    Container::new(
+                        Text::new(line)
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                    .with_padding(EdgeInsets::uniform(sm))
+                    .finish(),
                 );
             }
         }
 
-        column = column.with_child(
-            Label::new("Teams")
-                .with_size(LabelSize::Sm)
-                .finish(),
-        );
+        column = column.with_child(Label::new("Teams").with_size(LabelSize::Sm).finish());
 
         let team_name_state = Rc::new(RefCell::new(String::new()));
         let team_name_input = TextInput::new()
@@ -202,19 +198,19 @@ impl DriveViewPanel {
                     team.members.len()
                 );
                 column = column.with_child(
-                    Container::new(Text::new(line).with_theme_color(ColorToken::Text, app).finish())
-                        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                        .with_padding(EdgeInsets::uniform(sm))
-                        .finish(),
+                    Container::new(
+                        Text::new(line)
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                    .with_padding(EdgeInsets::uniform(sm))
+                    .finish(),
                 );
             }
         }
 
-        column = column.with_child(
-            Label::new("MCP Servers")
-                .with_size(LabelSize::Sm)
-                .finish(),
-        );
+        column = column.with_child(Label::new("MCP Servers").with_size(LabelSize::Sm).finish());
 
         let mcp_name_state = Rc::new(RefCell::new(String::new()));
         let mcp_source_state = Rc::new(RefCell::new(String::new()));
@@ -253,8 +249,14 @@ impl DriveViewPanel {
                     return;
                 }
                 let id = uuid::Uuid::new_v4().to_string();
-                let value = if value.is_empty() { None } else { Some(value.as_str()) };
-                if let Err(e) = state_for_mcp.install_mcp_server(&id, &name, &source, value, vec![], None) {
+                let value = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.as_str())
+                };
+                if let Err(e) =
+                    state_for_mcp.install_mcp_server(&id, &name, &source, value, vec![], None)
+                {
                     log::error!("failed to install mcp server: {}", e);
                 }
                 *dirty_for_mcp.borrow_mut() = true;
@@ -290,13 +292,21 @@ impl DriveViewPanel {
                     &mcp.id[..mcp.id.len().min(8)],
                     mcp.name,
                     mcp.source,
-                    if mcp.auth_required { "auth required" } else { "no auth" }
+                    if mcp.auth_required {
+                        "auth required"
+                    } else {
+                        "no auth"
+                    }
                 );
                 column = column.with_child(
-                    Container::new(Text::new(line).with_theme_color(ColorToken::Text, app).finish())
-                        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                        .with_padding(EdgeInsets::uniform(sm))
-                        .finish(),
+                    Container::new(
+                        Text::new(line)
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                    .with_padding(EdgeInsets::uniform(sm))
+                    .finish(),
                 );
             }
         }

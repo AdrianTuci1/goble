@@ -75,7 +75,10 @@ impl DropdownMenu {
         let padding = app.theme.spacing_px(SpacingToken::Md);
         let gap = app.theme.spacing_px(SpacingToken::Sm);
         let label = if let Some(i) = self.selected_index {
-            self.items.get(i).map(|it| it.label.clone()).unwrap_or_default()
+            self.items
+                .get(i)
+                .map(|it| it.label.clone())
+                .unwrap_or_default()
         } else {
             self.label.clone()
         };
@@ -85,7 +88,11 @@ impl DropdownMenu {
             ColorToken::Muted
         };
         let text = Text::new(label).with_theme_color(color, app).finish();
-        let icon_name = if self.open { "chevron-up" } else { "chevron-down" };
+        let icon_name = if self.open {
+            "chevron-up"
+        } else {
+            "chevron-down"
+        };
         let icon = Icon::new(icon_name)
             .with_theme_color(ColorToken::Muted, app)
             .finish();
@@ -190,10 +197,7 @@ mod tests {
 
     #[test]
     fn dropdown_opens_and_selects_first() {
-        let items = vec![
-            DropdownItem::new("One", "1"),
-            DropdownItem::new("Two", "2"),
-        ];
+        let items = vec![DropdownItem::new("One", "1"), DropdownItem::new("Two", "2")];
         let mut menu = DropdownMenu::new("Choose", items);
         let app = AppContext::default();
         menu.layout(

@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::elements::chat_content::{ChatAction, ChatFragment, ChatRole};
 use crate::elements::{
-    Chip, Container, ConstrainedBox, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex,
+    Chip, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex,
     LayoutContext, MainAxisAlignment, PaintContext, Point, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
@@ -148,7 +148,12 @@ impl ChatMessageBubble {
                             .finish(),
                     )
                     .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                    .with_padding(EdgeInsets::new(padding / 2.0, padding, padding / 2.0, padding))
+                    .with_padding(EdgeInsets::new(
+                        padding / 2.0,
+                        padding,
+                        padding / 2.0,
+                        padding,
+                    ))
                     .with_corner_radius(radius)
                     .finish();
                     column = column.with_child(quote);
@@ -194,10 +199,7 @@ impl ChatMessageBubble {
                 crate::elements::chat_content::ChatFragmentKind::LineBreak => {
                     column = column.with_child(crate::elements::Spacer::new().finish());
                 }
-                crate::elements::chat_content::ChatFragmentKind::Action {
-                    label,
-                    payload,
-                } => {
+                crate::elements::chat_content::ChatFragmentKind::Action { label, payload } => {
                     let on_action = self.on_action.clone();
                     let payload = payload.clone();
                     let chip = Chip::new(
@@ -250,16 +252,17 @@ impl Element for ChatMessageBubble {
         app: &crate::elements::AppContext,
     ) -> Vector2F {
         self.rebuild(app, constraint.max.x);
-        let size = self
-            .root
-            .as_mut()
-            .unwrap()
-            .layout(constraint, ctx, app);
+        let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size
     }
 
-    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &crate::elements::AppContext) {
+    fn paint(
+        &mut self,
+        origin: Vector2F,
+        ctx: &mut PaintContext,
+        app: &crate::elements::AppContext,
+    ) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         self.root.as_mut().unwrap().paint(origin, ctx, app);
     }
@@ -294,10 +297,8 @@ mod tests {
     #[test]
     fn bubble_layouts_non_zero() {
         let app = AppContext::default();
-        let mut bubble = ChatMessageBubble::new(
-            ChatRole::Assistant,
-            vec![ChatFragment::text("Hello")],
-        );
+        let mut bubble =
+            ChatMessageBubble::new(ChatRole::Assistant, vec![ChatFragment::text("Hello")]);
         let size = bubble.layout(
             SizeConstraint::loose(vec2f(400.0, 400.0)),
             &mut LayoutContext::default(),
@@ -324,11 +325,7 @@ mod tests {
             &mut LayoutContext::default(),
             &app,
         );
-        bubble.paint(
-            vec2f(0.0, 0.0),
-            &mut PaintContext::default(),
-            &app,
-        );
+        bubble.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
 
         let mut event_ctx = crate::elements::EventContext::default();
         let down = DispatchedEvent::MouseDown {

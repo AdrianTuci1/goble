@@ -53,15 +53,19 @@ impl SearchViewPanel {
                             .finish(),
                     )
                     .with_child(
-                        Button::new(Text::new("Search").with_theme_color(ColorToken::Text, app).finish())
-                            .with_variant(ButtonVariant::Primary)
-                            .with_on_click(move || {
-                                let _ = query_for_search.borrow().clone();
-                                let _ = state_for_search.list_chats();
-                                let _ = state_for_search.list_executions();
-                                *dirty_for_search.borrow_mut() = true;
-                            })
-                            .finish(),
+                        Button::new(
+                            Text::new("Search")
+                                .with_theme_color(ColorToken::Text, app)
+                                .finish(),
+                        )
+                        .with_variant(ButtonVariant::Primary)
+                        .with_on_click(move || {
+                            let _ = query_for_search.borrow().clone();
+                            let _ = state_for_search.list_chats();
+                            let _ = state_for_search.list_executions();
+                            *dirty_for_search.borrow_mut() = true;
+                        })
+                        .finish(),
                     )
                     .finish(),
             );
@@ -96,9 +100,13 @@ impl SearchViewPanel {
                     let dirty_for_nav = Rc::clone(&dirty);
                     results = results.with_child(
                         Button::new(
-                            Text::new(format!("Chat: {} - {}", chat.title, preview.chars().take(40).collect::<String>()))
-                                .with_theme_color(ColorToken::Text, app)
-                                .finish(),
+                            Text::new(format!(
+                                "Chat: {} - {}",
+                                chat.title,
+                                preview.chars().take(40).collect::<String>()
+                            ))
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
                         )
                         .with_variant(ButtonVariant::Ghost)
                         .with_on_click(move || {
@@ -114,13 +122,8 @@ impl SearchViewPanel {
             let executions = state.list_executions();
             for exec in executions {
                 let state_for_exec_nav = Arc::clone(&state);
-                let text = format!(
-                    "{} {} {}",
-                    exec.id,
-                    exec.status,
-                    exec.started_at
-                )
-                .to_lowercase();
+                let text =
+                    format!("{} {} {}", exec.id, exec.status, exec.started_at).to_lowercase();
                 if text.contains(&query) {
                     any = true;
                     let exec_id = exec.id.clone();
@@ -141,8 +144,10 @@ impl SearchViewPanel {
                         .with_variant(ButtonVariant::Ghost)
                         .with_on_click(move || {
                             if state_for_exec_nav.get_execution_trace(&exec_id).is_some() {
-                                ui_state_for_nav.borrow_mut().selected_trace_id = Some(exec_id.clone());
-                                shell_state_for_nav.borrow_mut().active_view = ActiveView::AgentTrace;
+                                ui_state_for_nav.borrow_mut().selected_trace_id =
+                                    Some(exec_id.clone());
+                                shell_state_for_nav.borrow_mut().active_view =
+                                    ActiveView::AgentTrace;
                                 *dirty_for_nav.borrow_mut() = true;
                             }
                         })
@@ -152,7 +157,9 @@ impl SearchViewPanel {
             }
 
             if any {
-                column = column.with_child(Scrollable::new(results.finish(), goble_ui::elements::Axis::Vertical).finish());
+                column = column.with_child(
+                    Scrollable::new(results.finish(), goble_ui::elements::Axis::Vertical).finish(),
+                );
             } else {
                 column = column.with_child(
                     Text::new("No results found.")

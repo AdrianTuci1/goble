@@ -3,12 +3,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_desktop_service::{DesktopState, ExecutionInfo};
+use goble_ui::elements::{ActiveView, EdgeInsets, ShellState};
 use goble_ui::elements::{
     AppContext, Axis, Button, ButtonVariant, Container, CrossAxisAlignment, Element, EventContext,
     Fill, Flex, LayoutContext, MainAxisAlignment, PaintContext, Point, Scrollable, SizeConstraint,
     Text,
 };
-use goble_ui::elements::{EdgeInsets, ShellState, ActiveView};
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -78,18 +78,24 @@ impl ExecutionsViewPanel {
                             .finish(),
                     )
                     .with_child(
-                        Button::new(Text::new("Trace").with_theme_color(ColorToken::Text, app).finish())
-                            .with_variant(ButtonVariant::Primary)
-                            .with_on_click(move || {
-                                if state_for_trace.get_execution_trace(&exec_id).is_some() {
-                                    ui_state_for_trace.borrow_mut().selected_trace_id = Some(exec_id.clone());
-                                    shell_state_for_trace.borrow_mut().active_view = ActiveView::AgentTrace;
-                                    *dirty_for_trace.borrow_mut() = true;
-                                } else {
-                                    log::warn!("execution trace not found for {}", exec_id);
-                                }
-                            })
-                            .finish(),
+                        Button::new(
+                            Text::new("Trace")
+                                .with_theme_color(ColorToken::Text, app)
+                                .finish(),
+                        )
+                        .with_variant(ButtonVariant::Primary)
+                        .with_on_click(move || {
+                            if state_for_trace.get_execution_trace(&exec_id).is_some() {
+                                ui_state_for_trace.borrow_mut().selected_trace_id =
+                                    Some(exec_id.clone());
+                                shell_state_for_trace.borrow_mut().active_view =
+                                    ActiveView::AgentTrace;
+                                *dirty_for_trace.borrow_mut() = true;
+                            } else {
+                                log::warn!("execution trace not found for {}", exec_id);
+                            }
+                        })
+                        .finish(),
                     )
                     .finish();
                 column = column.with_child(

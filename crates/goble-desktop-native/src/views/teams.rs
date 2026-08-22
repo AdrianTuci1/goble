@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use goble_desktop_service::DesktopState;
 use goble_ui::elements::{
-    AppContext, Avatar, Button, ButtonVariant, Checkbox, Container, CrossAxisAlignment,
-    EdgeInsets, Element, EventContext, Fill, Flex, LayoutContext, PaintContext, Point, Scrollable,
+    AppContext, Avatar, Button, ButtonVariant, Checkbox, Container, CrossAxisAlignment, EdgeInsets,
+    Element, EventContext, Fill, Flex, LayoutContext, PaintContext, Point, Scrollable,
     SizeConstraint, Text, TextInput,
 };
 use goble_ui::event::DispatchedEvent;
@@ -101,23 +101,27 @@ impl TeamsViewPanel {
         }
 
         create_form = create_form.with_child(
-            Button::new(Text::new("Create").with_theme_color(ColorToken::Text, app).finish())
-                .with_variant(ButtonVariant::Primary)
-                .with_on_click(move || {
-                    let id = team_id.borrow().clone();
-                    let name = team_name.borrow().clone();
-                    let metadata = team_metadata.borrow().clone();
-                    let members = selected_agents.borrow().clone();
-                    if id.is_empty() || name.is_empty() {
-                        log::warn!("team id and name are required");
-                        return;
-                    }
-                    if let Err(e) = state_for_create.create_team(&id, &name, &metadata, members) {
-                        log::error!("failed to create team: {}", e);
-                    }
-                    *dirty_for_create.borrow_mut() = true;
-                })
-                .finish(),
+            Button::new(
+                Text::new("Create")
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .with_variant(ButtonVariant::Primary)
+            .with_on_click(move || {
+                let id = team_id.borrow().clone();
+                let name = team_name.borrow().clone();
+                let metadata = team_metadata.borrow().clone();
+                let members = selected_agents.borrow().clone();
+                if id.is_empty() || name.is_empty() {
+                    log::warn!("team id and name are required");
+                    return;
+                }
+                if let Err(e) = state_for_create.create_team(&id, &name, &metadata, members) {
+                    log::error!("failed to create team: {}", e);
+                }
+                *dirty_for_create.borrow_mut() = true;
+            })
+            .finish(),
         );
 
         column = column.with_child(
@@ -189,7 +193,9 @@ impl TeamsViewPanel {
                         .finish(),
                 );
             }
-            column = column.with_child(Scrollable::new(list.finish(), goble_ui::elements::Axis::Vertical).finish());
+            column = column.with_child(
+                Scrollable::new(list.finish(), goble_ui::elements::Axis::Vertical).finish(),
+            );
         }
 
         let content = Container::new(column.finish())

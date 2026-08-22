@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use crate::elements::{
     AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    Fill, Flex, IconButton, Label, LabelSize, LayoutContext, MainAxisAlignment, PaintContext, Point,
-    Scrollable, SizeConstraint, Text, ThreadListItem,
+    Fill, Flex, IconButton, Label, LabelSize, LayoutContext, MainAxisAlignment, PaintContext,
+    Point, Scrollable, SizeConstraint, Text, ThreadListItem,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -112,11 +112,8 @@ impl ThreadSidebar {
         ];
 
         for (section_name, kind, prefix) in sections {
-            let items: Vec<&ThreadListEntry> = self
-                .threads
-                .iter()
-                .filter(|t| t.kind == kind)
-                .collect();
+            let items: Vec<&ThreadListEntry> =
+                self.threads.iter().filter(|t| t.kind == kind).collect();
 
             let is_collapsed = self.collapsed.contains(section_name);
             let section_id = section_name.to_string();

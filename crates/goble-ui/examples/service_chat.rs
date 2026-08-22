@@ -3,8 +3,8 @@ use goble_desktop_service::{CollectingEventBus, DesktopState};
 use goble_ui::elements::{
     AppContext, ChatMessage as UiChatMessage, ChatRole, LayoutContext, SizeConstraint,
 };
-use goble_ui::{ChatView, Element};
 use goble_ui::geometry::vec2f;
+use goble_ui::{ChatView, Element};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -39,7 +39,10 @@ fn main() -> anyhow::Result<()> {
         })
         .collect();
 
-    println!("Loaded {} message(s) from service layer.", ui_messages.len());
+    println!(
+        "Loaded {} message(s) from service layer.",
+        ui_messages.len()
+    );
 
     let app = AppContext::default();
     let mut chat_view = ChatView::new().with_messages(ui_messages);

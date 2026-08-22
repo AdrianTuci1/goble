@@ -41,9 +41,7 @@ impl ChatViewPanel {
         let bg = app.theme.color(ColorToken::Bg);
         let padding = app.theme.spacing_px(SpacingToken::Md);
 
-        let chat_id = chat_id.or_else(|| {
-            state.list_chats().first().map(|c| c.id.clone())
-        });
+        let chat_id = chat_id.or_else(|| state.list_chats().first().map(|c| c.id.clone()));
 
         let chat_id = match chat_id {
             Some(id) => Some(id),
@@ -56,7 +54,7 @@ impl ChatViewPanel {
                     log::error!("failed to auto-create chat: {}", e);
                     None
                 }
-            }
+            },
         };
 
         let chat_id_for_messages = chat_id.clone();
@@ -66,9 +64,9 @@ impl ChatViewPanel {
             .map(|msgs| msgs.iter().map(map_chat_message).collect())
             .unwrap_or_default();
 
-        let chat_opt = chat_id.as_ref().and_then(|id| {
-            state.list_chats().into_iter().find(|c| &c.id == id)
-        });
+        let chat_opt = chat_id
+            .as_ref()
+            .and_then(|id| state.list_chats().into_iter().find(|c| &c.id == id));
 
         let provider = chat_opt
             .as_ref()
@@ -82,8 +80,7 @@ impl ChatViewPanel {
             .get_llm_setting(&provider)
             .map(|s| !s.api_key.is_empty())
             .unwrap_or(false);
-        let needs_api_key = chat_opt.is_some()
-            && (model.is_empty() || !api_key_present);
+        let needs_api_key = chat_opt.is_some() && (model.is_empty() || !api_key_present);
 
         let state_for_send = Arc::clone(&state);
         let chat_id_for_send = chat_id.clone();
@@ -97,14 +94,27 @@ impl ChatViewPanel {
                     "claude-3-5-sonnet".to_string(),
                     "deepseek-chat".to_string(),
                 ],
-                if model.is_empty() { None } else { Some(model.clone()) },
+                if model.is_empty() {
+                    None
+                } else {
+                    Some(model.clone())
+                },
             )
             .with_runtime_options(
-                vec!["auto".to_string(), "local".to_string(), "tag".to_string(), "worker".to_string()],
+                vec![
+                    "auto".to_string(),
+                    "local".to_string(),
+                    "tag".to_string(),
+                    "worker".to_string(),
+                ],
                 Some("auto".to_string()),
             )
             .with_variant_options(
-                vec!["creative".to_string(), "balanced".to_string(), "precise".to_string()],
+                vec![
+                    "creative".to_string(),
+                    "balanced".to_string(),
+                    "precise".to_string(),
+                ],
                 Some("balanced".to_string()),
             )
             .with_on_model_change({
@@ -189,11 +199,13 @@ impl ChatViewPanel {
                     log::warn!("provider, model and API key are required");
                     return;
                 }
-                if let Err(e) = state_for_card.set_llm_setting(&provider, &key, None, &model, None) {
+                if let Err(e) = state_for_card.set_llm_setting(&provider, &key, None, &model, None)
+                {
                     log::error!("failed to save LLM setting: {}", e);
                     return;
                 }
-                if let Err(e) = state_for_card.set_chat_model(&chat_id_for_card, &provider, &model) {
+                if let Err(e) = state_for_card.set_chat_model(&chat_id_for_card, &provider, &model)
+                {
                     log::error!("failed to update chat model: {}", e);
                     return;
                 }
@@ -240,7 +252,10 @@ impl ChatViewPanel {
                         .with_theme_color(ColorToken::Text, app)
                         .finish(),
                 );
-                let provider_text = chat.provider.clone().unwrap_or_else(|| "default".to_string());
+                let provider_text = chat
+                    .provider
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string());
                 info_col = info_col.with_child(
                     Text::new(format!("Provider: {}", provider_text))
                         .with_theme_color(ColorToken::Text, app)
@@ -288,18 +303,23 @@ impl ChatViewPanel {
                         .finish(),
                 )
                 .with_child(
-                    Button::new(Text::new("Trace").with_theme_color(ColorToken::Text, app).finish())
-                        .with_variant(ButtonVariant::Primary)
-                        .with_on_click(move || {
-                            if state_for_trace.get_execution_trace(&exec_id).is_some() {
-                                ui_state_for_trace.borrow_mut().selected_trace_id = Some(exec_id.clone());
-                                shell_state_for_trace.borrow_mut().active_view = ActiveView::AgentTrace;
-                                *dirty_for_trace.borrow_mut() = true;
-                            } else {
-                                log::warn!("execution trace not found for {}", exec_id);
-                            }
-                        })
-                        .finish(),
+                    Button::new(
+                        Text::new("Trace")
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .with_variant(ButtonVariant::Primary)
+                    .with_on_click(move || {
+                        if state_for_trace.get_execution_trace(&exec_id).is_some() {
+                            ui_state_for_trace.borrow_mut().selected_trace_id =
+                                Some(exec_id.clone());
+                            shell_state_for_trace.borrow_mut().active_view = ActiveView::AgentTrace;
+                            *dirty_for_trace.borrow_mut() = true;
+                        } else {
+                            log::warn!("execution trace not found for {}", exec_id);
+                        }
+                    })
+                    .finish(),
                 )
                 .finish();
             history_items.push(Container::new(row).finish());
@@ -334,14 +354,10 @@ impl ChatViewPanel {
         let sidebar_tab = ui_state.borrow().chat_sidebar_tab;
         let ui_state_for_tab = Rc::clone(&ui_state);
         let dirty_for_tab = Rc::clone(&dirty);
-        chat = chat.with_right_sidebar(
-            sidebar_content,
-            sidebar_tab,
-            move |tab| {
-                ui_state_for_tab.borrow_mut().chat_sidebar_tab = tab;
-                *dirty_for_tab.borrow_mut() = true;
-            },
-        );
+        chat = chat.with_right_sidebar(sidebar_content, sidebar_tab, move |tab| {
+            ui_state_for_tab.borrow_mut().chat_sidebar_tab = tab;
+            *dirty_for_tab.borrow_mut() = true;
+        });
 
         let content = Container::new(chat.finish())
             .with_background(Fill::Solid(bg))

@@ -634,7 +634,9 @@ impl Store {
     }
 
     pub fn delete_chat(&self, id: &str) -> Result<()> {
-        self.conn.lock().execute("DELETE FROM chats WHERE id = ?1", params![id])?;
+        self.conn
+            .lock()
+            .execute("DELETE FROM chats WHERE id = ?1", params![id])?;
         self.conn
             .lock()
             .execute("DELETE FROM chat_messages WHERE chat_id = ?1", params![id])?;

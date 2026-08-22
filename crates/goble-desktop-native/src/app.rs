@@ -108,8 +108,6 @@ impl GobleApp {
                 move |shell_state: Rc<RefCell<ShellState>>, dirty: Rc<RefCell<bool>>| {
                     {
                         let mut ui = ui_state.borrow_mut();
-                        app_context.borrow_mut().theme =
-                            if ui.dark_mode { Theme::dark() } else { Theme::light() };
                         ui.settings_tab = match shell_state.borrow().active_view {
                             ActiveView::Settings(tab) => tab,
                             _ => ui.settings_tab,

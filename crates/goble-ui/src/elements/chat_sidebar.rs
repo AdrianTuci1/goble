@@ -74,35 +74,43 @@ impl ChatSidebar {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(sm)
             .with_child(
-                Button::new(Text::new("Info").with_theme_color(ColorToken::Text, app).finish())
-                    .with_variant(if info_selected {
-                        ButtonVariant::Primary
-                    } else {
-                        ButtonVariant::Ghost
-                    })
-                    .with_on_click({
-                        let on_change = on_change.clone();
-                        move || {
-                            if let Some(cb) = on_change.as_ref() {
-                                (cb.borrow_mut())(ChatSidebarTab::Info);
-                            }
+                Button::new(
+                    Text::new("Info")
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                )
+                .with_variant(if info_selected {
+                    ButtonVariant::Primary
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .with_on_click({
+                    let on_change = on_change.clone();
+                    move || {
+                        if let Some(cb) = on_change.as_ref() {
+                            (cb.borrow_mut())(ChatSidebarTab::Info);
                         }
-                    })
-                    .finish(),
+                    }
+                })
+                .finish(),
             )
             .with_child(
-                Button::new(Text::new("History").with_theme_color(ColorToken::Text, app).finish())
-                    .with_variant(if history_selected {
-                        ButtonVariant::Primary
-                    } else {
-                        ButtonVariant::Ghost
-                    })
-                    .with_on_click(move || {
-                        if let Some(cb) = on_change.as_ref() {
-                            (cb.borrow_mut())(ChatSidebarTab::History);
-                        }
-                    })
-                    .finish(),
+                Button::new(
+                    Text::new("History")
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                )
+                .with_variant(if history_selected {
+                    ButtonVariant::Primary
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .with_on_click(move || {
+                    if let Some(cb) = on_change.as_ref() {
+                        (cb.borrow_mut())(ChatSidebarTab::History);
+                    }
+                })
+                .finish(),
             )
             .finish();
 

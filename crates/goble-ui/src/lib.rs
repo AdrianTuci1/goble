@@ -24,9 +24,9 @@ pub use elements::{
     Spacer, Stack, Switch, Tab, TabBar, Text, TextArea, TextInput, ThreadListItem, ToggleButton,
     Toolbar, Vector2FExt,
 };
+pub use geometry::{rectf, size2f, vec2f, PointF, RectF, Size2F, Vector2F};
 pub use views::chat_view::ChatView;
 pub use views::settings_view::{SettingsPage, SettingsView};
 pub use views::thread_list_view::{ThreadKind, ThreadListEntry, ThreadListView};
 pub use views::thread_view::ThreadView;
 pub use views::threads_container::ThreadsContainer;
-pub use geometry::{rectf, size2f, vec2f, PointF, RectF, Size2F, Vector2F};

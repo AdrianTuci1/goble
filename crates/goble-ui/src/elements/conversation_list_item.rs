@@ -34,13 +34,7 @@ impl ConversationListItem {
         let title = title.into();
         let preview = preview.into();
         let timestamp = timestamp.into();
-        let root = Self::build_root(
-            &title,
-            &preview,
-            &timestamp,
-            selected,
-            app,
-        );
+        let root = Self::build_root(&title, &preview, &timestamp, selected, app);
         Self {
             title,
             preview,

@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_core::agent::AgentId;
-use goble_core::workflow::{WorkflowStep, WorkflowId};
+use goble_core::workflow::{WorkflowId, WorkflowStep};
 use goble_desktop_service::DesktopState;
 use goble_ui::elements::{
     AppContext, Button, ButtonVariant, Checkbox, Container, CrossAxisAlignment, EdgeInsets,
@@ -91,56 +91,58 @@ impl WorkflowsViewPanel {
                             .finish(),
                     )
                     .with_child(
-                        Button::new(Text::new("Create").with_theme_color(ColorToken::Text, app).finish())
-                            .with_variant(ButtonVariant::Primary)
-                            .with_on_click(move || {
-                                let name = wf_name.borrow().clone();
-                                let description = wf_desc.borrow().clone();
-                                let steps_text = wf_steps.borrow().clone();
-                                let cron = wf_cron.borrow().clone();
-                                if name.is_empty() {
-                                    log::warn!("workflow name is required");
-                                    return;
+                        Button::new(
+                            Text::new("Create")
+                                .with_theme_color(ColorToken::Text, app)
+                                .finish(),
+                        )
+                        .with_variant(ButtonVariant::Primary)
+                        .with_on_click(move || {
+                            let name = wf_name.borrow().clone();
+                            let description = wf_desc.borrow().clone();
+                            let steps_text = wf_steps.borrow().clone();
+                            let cron = wf_cron.borrow().clone();
+                            if name.is_empty() {
+                                log::warn!("workflow name is required");
+                                return;
+                            }
+                            let mut steps = Vec::new();
+                            for (idx, part) in steps_text.split(',').enumerate() {
+                                let mut it = part.split(':');
+                                let step_name = it
+                                    .next()
+                                    .map(|s| s.trim().to_string())
+                                    .unwrap_or_else(|| format!("step-{}", idx));
+                                let agent_id =
+                                    it.next().map(|s| s.trim().to_string()).unwrap_or_default();
+                                if agent_id.is_empty() {
+                                    log::warn!("step {} missing agent id", step_name);
+                                    continue;
                                 }
-                                let mut steps = Vec::new();
-                                for (idx, part) in steps_text.split(',').enumerate() {
-                                    let mut it = part.split(':');
-                                    let step_name = it
-                                        .next()
-                                        .map(|s| s.trim().to_string())
-                                        .unwrap_or_else(|| format!("step-{}", idx));
-                                    let agent_id = it
-                                        .next()
-                                        .map(|s| s.trim().to_string())
-                                        .unwrap_or_default();
-                                    if agent_id.is_empty() {
-                                        log::warn!("step {} missing agent id", step_name);
-                                        continue;
-                                    }
-                                    steps.push(WorkflowStep {
-                                        id: format!("{}-{}", step_name, idx),
-                                        name: step_name,
-                                        agent_id: AgentId(agent_id),
-                                        input_template: String::new(),
-                                        depends_on: Vec::new(),
-                                    });
-                                }
-                                let trigger = if cron.is_empty() {
-                                    goble_core::agent::Trigger::Manual
-                                } else {
-                                    goble_core::agent::Trigger::Cron { expression: cron }
-                                };
-                                if let Err(e) = state_for_create.create_workflow(
-                                    &name,
-                                    &description,
-                                    steps,
-                                    trigger,
-                                ) {
-                                    log::error!("failed to create workflow: {}", e);
-                                }
-                                *dirty_for_create.borrow_mut() = true;
-                            })
-                            .finish(),
+                                steps.push(WorkflowStep {
+                                    id: format!("{}-{}", step_name, idx),
+                                    name: step_name,
+                                    agent_id: AgentId(agent_id),
+                                    input_template: String::new(),
+                                    depends_on: Vec::new(),
+                                });
+                            }
+                            let trigger = if cron.is_empty() {
+                                goble_core::agent::Trigger::Manual
+                            } else {
+                                goble_core::agent::Trigger::Cron { expression: cron }
+                            };
+                            if let Err(e) = state_for_create.create_workflow(
+                                &name,
+                                &description,
+                                steps,
+                                trigger,
+                            ) {
+                                log::error!("failed to create workflow: {}", e);
+                            }
+                            *dirty_for_create.borrow_mut() = true;
+                        })
+                        .finish(),
                     )
                     .finish(),
             )
@@ -167,9 +169,13 @@ impl WorkflowsViewPanel {
                 let enabled = wf.enabled;
                 let trigger_label = match &wf.trigger {
                     goble_core::agent::Trigger::Manual => "manual".to_string(),
-                    goble_core::agent::Trigger::Cron { expression } => format!("cron({})", expression),
+                    goble_core::agent::Trigger::Cron { expression } => {
+                        format!("cron({})", expression)
+                    }
                     goble_core::agent::Trigger::Http { path } => format!("http({})", path),
-                    goble_core::agent::Trigger::Heartbeat { interval_seconds } => format!("heartbeat({}s)", interval_seconds),
+                    goble_core::agent::Trigger::Heartbeat { interval_seconds } => {
+                        format!("heartbeat({}s)", interval_seconds)
+                    }
                 };
                 let _tags: Vec<String> = wf
                     .steps
@@ -181,21 +187,31 @@ impl WorkflowsViewPanel {
                 let state_for_delete = Arc::clone(&state);
                 let dirty_for_delete = Rc::clone(&dirty);
                 let id_for_delete = wf_id.clone();
-                let delete = Button::new(Text::new("Delete").with_theme_color(ColorToken::Text, app).finish())
-                    .with_variant(ButtonVariant::Ghost)
-                    .with_on_click(move || {
-                        if let Err(e) = state_for_delete.delete_workflow(&WorkflowId(id_for_delete.clone())) {
-                            log::error!("failed to delete workflow: {}", e);
-                        }
-                        *dirty_for_delete.borrow_mut() = true;
-                    })
-                    .finish();
+                let delete = Button::new(
+                    Text::new("Delete")
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                )
+                .with_variant(ButtonVariant::Ghost)
+                .with_on_click(move || {
+                    if let Err(e) =
+                        state_for_delete.delete_workflow(&WorkflowId(id_for_delete.clone()))
+                    {
+                        log::error!("failed to delete workflow: {}", e);
+                    }
+                    *dirty_for_delete.borrow_mut() = true;
+                })
+                .finish();
 
                 let state_for_toggle = Arc::clone(&state);
                 let dirty_for_toggle = Rc::clone(&dirty);
                 let id_for_toggle = wf_id.clone();
                 let toggle = Checkbox::new()
-                    .with_label(Text::new(if enabled { "Enabled" } else { "Disabled" }).with_theme_color(ColorToken::Text, app).finish())
+                    .with_label(
+                        Text::new(if enabled { "Enabled" } else { "Disabled" })
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
                     .with_checked(enabled)
                     .with_on_change(move |checked| {
                         if let Some(info) = state_for_toggle
@@ -203,8 +219,9 @@ impl WorkflowsViewPanel {
                             .into_iter()
                             .find(|w| w.id == id_for_toggle)
                         {
-                            let mut spec = goble_core::workflow::Workflow::new(&info.name, &info.description)
-                                .with_trigger(info.trigger.clone());
+                            let mut spec =
+                                goble_core::workflow::Workflow::new(&info.name, &info.description)
+                                    .with_trigger(info.trigger.clone());
                             for step in &info.steps {
                                 spec = spec.with_step(step.clone());
                             }
@@ -216,7 +233,8 @@ impl WorkflowsViewPanel {
                                     return;
                                 }
                             };
-                            let trigger_json = serde_json::to_string(&spec.trigger).unwrap_or_default();
+                            let trigger_json =
+                                serde_json::to_string(&spec.trigger).unwrap_or_default();
                             let now = chrono::Utc::now().to_rfc3339();
                             if let Err(e) = state_for_toggle.store_clone().insert_workflow(
                                 &id_for_toggle,
@@ -281,7 +299,9 @@ impl WorkflowsViewPanel {
                         .finish(),
                 );
             }
-            column = column.with_child(Scrollable::new(list.finish(), goble_ui::elements::Axis::Vertical).finish());
+            column = column.with_child(
+                Scrollable::new(list.finish(), goble_ui::elements::Axis::Vertical).finish(),
+            );
         }
 
         let content = Container::new(column.finish())

@@ -21,10 +21,14 @@ fn small_button(
     on_click: impl FnMut() + 'static,
     app: &AppContext,
 ) -> Box<dyn Element> {
-    Button::new(Text::new(label).with_theme_color(ColorToken::Text, app).finish())
-        .with_variant(ButtonVariant::Ghost)
-        .with_on_click(on_click)
-        .finish()
+    Button::new(
+        Text::new(label)
+            .with_theme_color(ColorToken::Text, app)
+            .finish(),
+    )
+    .with_variant(ButtonVariant::Ghost)
+    .with_on_click(on_click)
+    .finish()
 }
 
 impl ConnectorsViewPanel {
@@ -53,14 +57,18 @@ impl ConnectorsViewPanel {
                     .finish(),
             )
             .with_child(
-                Button::new(Text::new("Search").with_theme_color(ColorToken::Text, app).finish())
-                    .with_variant(ButtonVariant::Primary)
-                    .with_on_click(move || {
-                        let query = query_for_search.borrow().clone();
-                        let _results = state_for_search.search_mcp_servers(&query);
-                        *dirty_for_search.borrow_mut() = true;
-                    })
-                    .finish(),
+                Button::new(
+                    Text::new("Search")
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                )
+                .with_variant(ButtonVariant::Primary)
+                .with_on_click(move || {
+                    let query = query_for_search.borrow().clone();
+                    let _results = state_for_search.search_mcp_servers(&query);
+                    *dirty_for_search.borrow_mut() = true;
+                })
+                .finish(),
             )
             .finish();
 
@@ -123,31 +131,39 @@ impl ConnectorsViewPanel {
                             .finish(),
                     )
                     .with_child(
-                        Button::new(Text::new("Install").with_theme_color(ColorToken::Text, app).finish())
-                            .with_variant(ButtonVariant::Primary)
-                            .with_on_click(move || {
-                                let id = install_id.borrow().clone();
-                                let name = install_name.borrow().clone();
-                                let source = install_source.borrow().clone();
-                                let value = install_value.borrow().clone();
-                                if id.is_empty() || name.is_empty() {
-                                    log::warn!("id and name are required");
-                                    return;
-                                }
-                                let source_value = if value.is_empty() { None } else { Some(value.as_str()) };
-                                if let Err(e) = state_for_install.install_mcp_server(
-                                    &id,
-                                    &name,
-                                    &source,
-                                    source_value,
-                                    vec![],
-                                    None,
-                                ) {
-                                    log::error!("failed to install mcp server: {}", e);
-                                }
-                                *dirty_for_install.borrow_mut() = true;
-                            })
-                            .finish(),
+                        Button::new(
+                            Text::new("Install")
+                                .with_theme_color(ColorToken::Text, app)
+                                .finish(),
+                        )
+                        .with_variant(ButtonVariant::Primary)
+                        .with_on_click(move || {
+                            let id = install_id.borrow().clone();
+                            let name = install_name.borrow().clone();
+                            let source = install_source.borrow().clone();
+                            let value = install_value.borrow().clone();
+                            if id.is_empty() || name.is_empty() {
+                                log::warn!("id and name are required");
+                                return;
+                            }
+                            let source_value = if value.is_empty() {
+                                None
+                            } else {
+                                Some(value.as_str())
+                            };
+                            if let Err(e) = state_for_install.install_mcp_server(
+                                &id,
+                                &name,
+                                &source,
+                                source_value,
+                                vec![],
+                                None,
+                            ) {
+                                log::error!("failed to install mcp server: {}", e);
+                            }
+                            *dirty_for_install.borrow_mut() = true;
+                        })
+                        .finish(),
                     )
                     .finish(),
             )
@@ -180,35 +196,49 @@ impl ConnectorsViewPanel {
                 let discover_id = server_id.clone();
                 let state_for_discover = Arc::clone(&state);
                 let dirty_for_discover = Rc::clone(&dirty);
-                let discover = small_button("Discover", move || {
-                    match state_for_discover.discover_mcp_tools(&discover_id) {
-                        Ok(tools) => log::info!("discovered {} tools for {}", tools.len(), discover_id),
-                        Err(e) => log::error!("failed to discover tools: {}", e),
-                    }
-                    *dirty_for_discover.borrow_mut() = true;
-                }, app);
+                let discover = small_button(
+                    "Discover",
+                    move || {
+                        match state_for_discover.discover_mcp_tools(&discover_id) {
+                            Ok(tools) => {
+                                log::info!("discovered {} tools for {}", tools.len(), discover_id)
+                            }
+                            Err(e) => log::error!("failed to discover tools: {}", e),
+                        }
+                        *dirty_for_discover.borrow_mut() = true;
+                    },
+                    app,
+                );
 
                 let delete_id = server_id.clone();
                 let state_for_delete = Arc::clone(&state);
                 let dirty_for_delete = Rc::clone(&dirty);
-                let delete = small_button("Delete", move || {
-                    if let Err(e) = state_for_delete.delete_mcp_server(&delete_id) {
-                        log::error!("failed to delete mcp server: {}", e);
-                    }
-                    *dirty_for_delete.borrow_mut() = true;
-                }, app);
+                let delete = small_button(
+                    "Delete",
+                    move || {
+                        if let Err(e) = state_for_delete.delete_mcp_server(&delete_id) {
+                            log::error!("failed to delete mcp server: {}", e);
+                        }
+                        *dirty_for_delete.borrow_mut() = true;
+                    },
+                    app,
+                );
 
                 let test_id = server_id.clone();
                 let state_for_test = Arc::clone(&state);
                 let dirty_for_test = Rc::clone(&dirty);
-                let test = small_button("Test", move || {
-                    let args = serde_json::json!({});
-                    match state_for_test.test_call_mcp_tool(&test_id, "echo", args) {
-                        Ok(res) => log::info!("test result: {}", res),
-                        Err(e) => log::error!("test call failed: {}", e),
-                    }
-                    *dirty_for_test.borrow_mut() = true;
-                }, app);
+                let test = small_button(
+                    "Test",
+                    move || {
+                        let args = serde_json::json!({});
+                        match state_for_test.test_call_mcp_tool(&test_id, "echo", args) {
+                            Ok(res) => log::info!("test result: {}", res),
+                            Err(e) => log::error!("test call failed: {}", e),
+                        }
+                        *dirty_for_test.borrow_mut() = true;
+                    },
+                    app,
+                );
 
                 let actions = Flex::row()
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -259,9 +289,11 @@ impl ConnectorsViewPanel {
                                 } else {
                                     enabled.retain(|t| t != &tool);
                                 }
-                                if let Err(e) = state_for_toggle
-                                    .update_mcp_server_meta(&server_id, vec![], enabled)
-                                {
+                                if let Err(e) = state_for_toggle.update_mcp_server_meta(
+                                    &server_id,
+                                    vec![],
+                                    enabled,
+                                ) {
                                     log::error!("failed to update mcp meta: {}", e);
                                 }
                                 *dirty_for_toggle.borrow_mut() = true;
@@ -292,7 +324,9 @@ impl ConnectorsViewPanel {
                 };
                 list = list.with_child(tile);
             }
-            column = column.with_child(Scrollable::new(list.finish(), goble_ui::elements::Axis::Vertical).finish());
+            column = column.with_child(
+                Scrollable::new(list.finish(), goble_ui::elements::Axis::Vertical).finish(),
+            );
         }
 
         let content = Container::new(column.finish())

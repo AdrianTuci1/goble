@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import * as tauriCore from '@tauri-apps/api/core';
 import ConnectorsPage from '../pages/ConnectorsPage';
 import { useStore } from '../stores/appStore';
@@ -67,16 +67,16 @@ describe('ConnectorsPage MCP drawer flow', () => {
 
     render(<ConnectorsPage />);
 
-    fireEvent.change(screen.getByPlaceholderText('ID (e.g. mcp-postgres)'), {
+    fireEvent.change(screen.getByPlaceholderText('e.g. mcp-postgres'), {
       target: { value: 'mcp-mock' },
     });
-    fireEvent.change(screen.getByPlaceholderText('Display name'), {
+    fireEvent.change(screen.getByPlaceholderText('e.g. PostgreSQL'), {
       target: { value: 'Mock MCP' },
     });
     fireEvent.change(screen.getByDisplayValue('npm'), {
       target: { value: 'local' },
     });
-    fireEvent.change(screen.getByPlaceholderText('Package / owner/repo / path / url'), {
+    fireEvent.change(screen.getByPlaceholderText('@modelcontextprotocol/server-postgres'), {
       target: { value: '/tmp/mock' },
     });
 
@@ -97,16 +97,16 @@ describe('ConnectorsPage MCP drawer flow', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Mock MCP/ })).toBeTruthy();
+      expect(screen.getByText('Mock MCP')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: /Mock MCP/ }));
+    fireEvent.click(within(screen.getByText('Mock MCP').closest('.mcp-installed-card')!).getByRole('button', { name: /Manage/i }));
 
     await waitFor(() => {
       expect(screen.getByText(/^Vault secrets$/)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: /^Discover$/i }));
+    fireEvent.click(within(screen.getByText(/^Vault secrets$/).closest('.mcp-drawer')!).getByRole('button', { name: /^Discover$/i }));
 
     await waitFor(() => {
       expect(screen.getByLabelText('mcp_mock_echo')).toBeTruthy();

@@ -165,21 +165,32 @@ impl ThreadsViewPanel {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(sm);
 
-        let kind_text = Text::new(format!("{} • {}", thread_kind_label, selected_id.chars().take(8).collect::<String>()))
-            .with_theme_color(ColorToken::Muted, app)
-            .finish();
+        let kind_text = Text::new(format!(
+            "{} • {}",
+            thread_kind_label,
+            selected_id.chars().take(8).collect::<String>()
+        ))
+        .with_theme_color(ColorToken::Muted, app)
+        .finish();
         let mark_read_selected_id = selected_id.clone();
         let state_for_mark_read = Arc::clone(&state);
         let dirty_for_mark_read = Rc::clone(&dirty);
-        let mark_read_button = Button::new(Text::new("Mark read").with_theme_color(ColorToken::Text, app).finish())
-            .with_variant(ButtonVariant::Ghost)
-            .with_on_click(move || {
-                if let Err(e) = state_for_mark_read.thread_store().mark_thread_read(&ThreadId(mark_read_selected_id.clone())) {
-                    log::error!("failed to mark thread read: {}", e);
-                }
-                *dirty_for_mark_read.borrow_mut() = true;
-            })
-            .finish();
+        let mark_read_button = Button::new(
+            Text::new("Mark read")
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_variant(ButtonVariant::Ghost)
+        .with_on_click(move || {
+            if let Err(e) = state_for_mark_read
+                .thread_store()
+                .mark_thread_read(&ThreadId(mark_read_selected_id.clone()))
+            {
+                log::error!("failed to mark thread read: {}", e);
+            }
+            *dirty_for_mark_read.borrow_mut() = true;
+        })
+        .finish();
         let title_row = Flex::row()
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -246,33 +257,41 @@ impl ThreadsViewPanel {
                 )
                 .with_child(
                     Checkbox::new()
-                        .with_label(Text::new("agent").with_theme_color(ColorToken::Text, app).finish())
+                        .with_label(
+                            Text::new("agent")
+                                .with_theme_color(ColorToken::Text, app)
+                                .finish(),
+                        )
                         .with_on_change(move |v| *add_is_agent_change.borrow_mut() = v)
                         .finish(),
                 )
                 .with_child(
-                    Button::new(Text::new("Add").with_theme_color(ColorToken::Text, app).finish())
-                        .with_variant(ButtonVariant::Primary)
-                        .with_on_click(move || {
-                            let id = add_id.borrow().clone();
-                            let is_agent = *add_is_agent.borrow();
-                            if id.is_empty() {
-                                return;
-                            }
-                            let participant = if is_agent {
-                                Participant::Agent(AgentId(id))
-                            } else {
-                                Participant::User(UserId(id))
-                            };
-                            if let Err(e) = state_for_add
-                                .thread_store()
-                                .add_participant(&ThreadId(add_selected_id.clone()), participant)
-                            {
-                                log::error!("failed to add participant: {}", e);
-                            }
-                            *dirty_for_add.borrow_mut() = true;
-                        })
-                        .finish(),
+                    Button::new(
+                        Text::new("Add")
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .with_variant(ButtonVariant::Primary)
+                    .with_on_click(move || {
+                        let id = add_id.borrow().clone();
+                        let is_agent = *add_is_agent.borrow();
+                        if id.is_empty() {
+                            return;
+                        }
+                        let participant = if is_agent {
+                            Participant::Agent(AgentId(id))
+                        } else {
+                            Participant::User(UserId(id))
+                        };
+                        if let Err(e) = state_for_add
+                            .thread_store()
+                            .add_participant(&ThreadId(add_selected_id.clone()), participant)
+                        {
+                            log::error!("failed to add participant: {}", e);
+                        }
+                        *dirty_for_add.borrow_mut() = true;
+                    })
+                    .finish(),
                 )
                 .finish();
             header_column = header_column.with_child(add_row);
@@ -301,22 +320,23 @@ impl ThreadsViewPanel {
                         .finish(),
                 )
                 .with_child(
-                    Button::new(Text::new("Invite").with_theme_color(ColorToken::Text, app).finish())
-                        .with_variant(ButtonVariant::Primary)
-                        .with_on_click(move || {
-                            if let Err(e) = state_for_invite
-                                .thread_store()
-                                .invite_user_by_public_key(
-                                    &ThreadId(invite_selected_id.clone()),
-                                    pem.borrow().clone(),
-                                    name.borrow().clone(),
-                                )
-                            {
-                                log::error!("failed to invite by public key: {}", e);
-                            }
-                            *dirty_for_invite.borrow_mut() = true;
-                        })
-                        .finish(),
+                    Button::new(
+                        Text::new("Invite")
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .with_variant(ButtonVariant::Primary)
+                    .with_on_click(move || {
+                        if let Err(e) = state_for_invite.thread_store().invite_user_by_public_key(
+                            &ThreadId(invite_selected_id.clone()),
+                            pem.borrow().clone(),
+                            name.borrow().clone(),
+                        ) {
+                            log::error!("failed to invite by public key: {}", e);
+                        }
+                        *dirty_for_invite.borrow_mut() = true;
+                    })
+                    .finish(),
                 )
                 .finish();
             header_column = header_column.with_child(invite_row);
@@ -330,18 +350,25 @@ impl ThreadsViewPanel {
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_spacing(sm)
                 .with_child(
-                    Text::new(format!("Replying to {}", reply_id.chars().take(8).collect::<String>()))
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
+                    Text::new(format!(
+                        "Replying to {}",
+                        reply_id.chars().take(8).collect::<String>()
+                    ))
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
                 )
                 .with_child(
-                    Button::new(Text::new("Clear").with_theme_color(ColorToken::Text, app).finish())
-                        .with_variant(ButtonVariant::Ghost)
-                        .with_on_click(move || {
-                            ui_state_for_clear.borrow_mut().thread_reply_to_id = None;
-                            *dirty_for_clear.borrow_mut() = true;
-                        })
-                        .finish(),
+                    Button::new(
+                        Text::new("Clear")
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .with_variant(ButtonVariant::Ghost)
+                    .with_on_click(move || {
+                        ui_state_for_clear.borrow_mut().thread_reply_to_id = None;
+                        *dirty_for_clear.borrow_mut() = true;
+                    })
+                    .finish(),
                 )
                 .finish();
             header_column = header_column.with_child(reply_row);
@@ -398,17 +425,16 @@ impl ThreadsViewPanel {
                     .get_profile()
                     .map(|p| Participant::User(UserId(p.id.0)))
                     .unwrap_or_else(|| Participant::User(UserId::generate()));
-                let reply_to = ui_state_for_send.borrow().thread_reply_to_id.as_ref().map(|id| MessageId(id.clone()));
-                let mentions = goble_desktop_service::thread_store::ThreadStore::extract_mentions(&text);
-                if let Err(e) = store.post_message(
-                    &thread_id,
-                    author,
-                    text,
-                    reply_to,
-                    vec![],
-                    mentions,
-                    None,
-                ) {
+                let reply_to = ui_state_for_send
+                    .borrow()
+                    .thread_reply_to_id
+                    .as_ref()
+                    .map(|id| MessageId(id.clone()));
+                let mentions =
+                    goble_desktop_service::thread_store::ThreadStore::extract_mentions(&text);
+                if let Err(e) =
+                    store.post_message(&thread_id, author, text, reply_to, vec![], mentions, None)
+                {
                     log::error!("failed to post thread message: {}", e);
                 } else {
                     ui_state_for_send.borrow_mut().thread_reply_to_id = None;

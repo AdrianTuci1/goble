@@ -9,7 +9,7 @@ use goble_ui::elements::{
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
-use goble_ui::theme::{ColorToken, SpacingToken, Theme};
+use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::views::settings_view::{SettingsPage, SettingsView};
 
 use crate::app::UiState;
@@ -45,7 +45,7 @@ impl SettingsViewPanel {
         dirty: Rc<RefCell<bool>>,
         tab: SettingsTab,
         app: &AppContext,
-        app_context: Rc<RefCell<AppContext>>,
+        _app_context: Rc<RefCell<AppContext>>,
     ) -> Self {
         let page = map_tab_to_page(tab);
         let padding = app.theme.spacing_px(SpacingToken::Md);
@@ -71,7 +71,11 @@ impl SettingsViewPanel {
 
         let dark_mode = ui_state.borrow().dark_mode;
         let vault_unlocked = state.is_vault_unlocked();
-        let vault_secrets = state.list_vault_secrets().into_iter().map(|s| s.key).collect();
+        let vault_secrets = state
+            .list_vault_secrets()
+            .into_iter()
+            .map(|s| s.key)
+            .collect();
         let cluster_configured = state.has_stored_cluster_identity();
         let cluster_name = state
             .get_cluster_identity()
@@ -79,7 +83,6 @@ impl SettingsViewPanel {
             .unwrap_or_default();
 
         let ui_state_for_dark = Rc::clone(&ui_state);
-        let app_context_for_dark = Rc::clone(&app_context);
         let dirty_for_dark = Rc::clone(&dirty);
 
         let dirty_for_profile = Rc::clone(&dirty);
@@ -102,13 +105,16 @@ impl SettingsViewPanel {
             })
             .with_on_save_profile(move |name, email| {
                 let store = state_for_profile.thread_store();
-                let mut updated = store.get_profile().unwrap_or_else(|| goble_core::user::UserProfile {
-                    id: goble_core::principal::PrincipalId::generate(),
-                    name: String::new(),
-                    email: String::new(),
-                    avatar_url: None,
-                    public_key_pem: None,
-                });
+                let mut updated =
+                    store
+                        .get_profile()
+                        .unwrap_or_else(|| goble_core::user::UserProfile {
+                            id: goble_core::principal::PrincipalId::generate(),
+                            name: String::new(),
+                            email: String::new(),
+                            avatar_url: None,
+                            public_key_pem: None,
+                        });
                 updated.name = name;
                 updated.email = email;
                 if let Err(e) = store.set_profile(updated) {
@@ -124,8 +130,6 @@ impl SettingsViewPanel {
             })
             .with_on_toggle_dark_mode(move |enabled| {
                 ui_state_for_dark.borrow_mut().dark_mode = enabled;
-                app_context_for_dark.borrow_mut().theme =
-                    if enabled { Theme::dark() } else { Theme::light() };
                 *dirty_for_dark.borrow_mut() = true;
             })
             .with_on_unlock_vault(move |passphrase| {

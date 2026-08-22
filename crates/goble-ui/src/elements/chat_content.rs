@@ -162,11 +162,7 @@ impl ChatMessage {
         self
     }
 
-    pub fn with_reply_to(
-        mut self,
-        id: impl Into<String>,
-        preview: impl Into<String>,
-    ) -> Self {
+    pub fn with_reply_to(mut self, id: impl Into<String>, preview: impl Into<String>) -> Self {
         self.reply_to_id = Some(id.into());
         self.reply_to_preview = Some(preview.into());
         self
@@ -174,7 +170,10 @@ impl ChatMessage {
 
     /// Build a chat message by parsing a Markdown string into fragments.
     pub fn from_markdown(role: ChatRole, text: impl Into<String>) -> Self {
-        Self::new(role, crate::elements::markdown::parse_markdown(&text.into()))
+        Self::new(
+            role,
+            crate::elements::markdown::parse_markdown(&text.into()),
+        )
     }
 
     /// Build a chat message from a service-layer thread message.
@@ -195,16 +194,16 @@ impl ChatMessage {
             reactions.push(ChatReaction { emoji, count });
         }
         let reply_to_id = message.reply_to.as_ref().map(|id| id.0.clone());
-        let reply_to_preview = message
-            .reply_to
-            .as_ref()
-            .and_then(|_| Some(String::new()));
+        let reply_to_preview = message.reply_to.as_ref().and_then(|_| Some(String::new()));
         Self::from_markdown(role, message.content.clone())
             .with_author_name(author_name)
             .with_timestamp(timestamp)
             .with_id(message.id.0.clone())
             .with_reactions(reactions)
-            .with_reply_to(reply_to_id.unwrap_or_default(), reply_to_preview.unwrap_or_default())
+            .with_reply_to(
+                reply_to_id.unwrap_or_default(),
+                reply_to_preview.unwrap_or_default(),
+            )
     }
 }
 
@@ -216,26 +215,11 @@ pub enum ChatFragmentKind {
     Italic(String),
     BoldItalic(String),
     Code(String),
-    CodeBlock {
-        lang: Option<String>,
-        code: String,
-    },
-    Heading {
-        level: u8,
-        text: String,
-    },
-    Link {
-        label: String,
-        url: String,
-    },
-    List {
-        items: Vec<String>,
-        ordered: bool,
-    },
+    CodeBlock { lang: Option<String>, code: String },
+    Heading { level: u8, text: String },
+    Link { label: String, url: String },
+    List { items: Vec<String>, ordered: bool },
     BlockQuote(String),
     LineBreak,
-    Action {
-        label: String,
-        payload: ChatAction,
-    },
+    Action { label: String, payload: ChatAction },
 }

@@ -69,7 +69,12 @@ impl Element for Code {
         _ctx: &mut LayoutContext,
         _app: &AppContext,
     ) -> Vector2F {
-        let size = measure_text(&self.text, self.font_size, self.line_height, constraint.max.x);
+        let size = measure_text(
+            &self.text,
+            self.font_size,
+            self.line_height,
+            constraint.max.x,
+        );
         self.size = Some(size);
         size
     }

@@ -92,11 +92,7 @@ impl ChatComposer {
         self
     }
 
-    pub fn with_model_options(
-        mut self,
-        options: Vec<String>,
-        selected: Option<String>,
-    ) -> Self {
+    pub fn with_model_options(mut self, options: Vec<String>, selected: Option<String>) -> Self {
         self.model_options = options;
         self.selected_model = selected;
         self
@@ -107,11 +103,7 @@ impl ChatComposer {
         self
     }
 
-    pub fn with_runtime_options(
-        mut self,
-        options: Vec<String>,
-        selected: Option<String>,
-    ) -> Self {
+    pub fn with_runtime_options(mut self, options: Vec<String>, selected: Option<String>) -> Self {
         self.runtime_options = options;
         self.selected_runtime = selected;
         self
@@ -122,11 +114,7 @@ impl ChatComposer {
         self
     }
 
-    pub fn with_variant_options(
-        mut self,
-        options: Vec<String>,
-        selected: Option<String>,
-    ) -> Self {
+    pub fn with_variant_options(mut self, options: Vec<String>, selected: Option<String>) -> Self {
         self.variant_options = options;
         self.selected_variant = selected;
         self
@@ -312,9 +300,13 @@ impl ChatComposer {
         footer = footer.with_child(left_group.finish());
         footer = footer.with_child(Spacer::new().finish());
         footer = footer.with_child(
-            IconButton::new(Icon::new("send").with_color(app.theme.accent_color()).finish())
-                .with_on_click(send)
-                .finish(),
+            IconButton::new(
+                Icon::new("send")
+                    .with_color(app.theme.accent_color())
+                    .finish(),
+            )
+            .with_on_click(send)
+            .finish(),
         );
 
         column = column.with_child(
@@ -355,11 +347,7 @@ impl Element for ChatComposer {
         app: &AppContext,
     ) -> Vector2F {
         self.rebuild(app);
-        let size = self
-            .root
-            .as_mut()
-            .unwrap()
-            .layout(constraint, ctx, app);
+        let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size
     }

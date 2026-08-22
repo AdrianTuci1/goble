@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    AppContext, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment,
-    Element, Empty, EventContext, Fill, Flex, Icon, IconButton, LayoutContext, MainAxisAlignment,
+    AppContext, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment, Element,
+    Empty, EventContext, Fill, Flex, Icon, IconButton, LayoutContext, MainAxisAlignment,
     PaintContext, Point, SidebarItem, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
@@ -67,8 +67,10 @@ impl Default for ShellState {
 pub struct ShellView {
     state: Rc<RefCell<ShellState>>,
     dirty: Rc<RefCell<bool>>,
-    content_resolver: Box<dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static>,
-    conversation_sidebar_builder: Option<Box<dyn Fn(&AppContext, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static>>,
+    content_resolver:
+        Box<dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static>,
+    conversation_sidebar_builder:
+        Option<Box<dyn Fn(&AppContext, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static>>,
     event_checker: Option<Rc<RefCell<dyn FnMut() -> bool>>>,
     root: Box<dyn Element>,
     size: Option<Vector2F>,
@@ -80,11 +82,13 @@ impl ShellView {
         let bg = app.theme.color(ColorToken::Bg);
         let resolver: Box<
             dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static,
-        > = Box::new(move |_state: Rc<RefCell<ShellState>>, _dirty: Rc<RefCell<bool>>| -> Box<dyn Element> {
-            Container::new(Empty::new().finish())
-                .with_background(Fill::Solid(bg))
-                .finish()
-        });
+        > = Box::new(
+            move |_state: Rc<RefCell<ShellState>>, _dirty: Rc<RefCell<bool>>| -> Box<dyn Element> {
+                Container::new(Empty::new().finish())
+                    .with_background(Fill::Solid(bg))
+                    .finish()
+            },
+        );
         Self::with_content(state, app, resolver)
     }
 
@@ -358,17 +362,14 @@ impl ShellView {
             .finish()
     }
 
-    fn left_panel(
-        &self,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
+    fn left_panel(&self, app: &AppContext) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
         let state = Rc::clone(&self.state);
         let dirty = Rc::clone(&self.dirty);
         let s = state.borrow();
 
-        let use_conversation_sidebar = s.active_view == ActiveView::Chat
-            && self.conversation_sidebar_builder.is_some();
+        let use_conversation_sidebar =
+            s.active_view == ActiveView::Chat && self.conversation_sidebar_builder.is_some();
 
         let mode_buttons = Flex::row()
             .with_spacing(spacing)
@@ -396,107 +397,110 @@ impl ShellView {
             .finish();
 
         let items: Vec<Box<dyn Element>> = if use_conversation_sidebar {
-            vec![(self.conversation_sidebar_builder.as_ref().unwrap())(app, Rc::clone(&self.dirty))]
+            vec![(self.conversation_sidebar_builder.as_ref().unwrap())(
+                app,
+                Rc::clone(&self.dirty),
+            )]
         } else {
             match s.sidebar_mode {
-            SidebarMode::Agent => vec![
-                Self::sidebar_nav_item(
-                    "New chat",
-                    ActiveView::Chat,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Agent runs",
-                    ActiveView::AgentManagement,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Executions",
-                    ActiveView::Executions,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Connectors",
-                    ActiveView::Connectors,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Workflows",
-                    ActiveView::Workflows,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Teams",
-                    ActiveView::Teams,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Logs",
-                    ActiveView::Logs,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Search",
-                    ActiveView::Search,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-            ],
-            SidebarMode::Threads => vec![
-                Self::sidebar_nav_item(
-                    "Recent",
-                    ActiveView::Threads,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Starred",
-                    ActiveView::Threads,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-            ],
-            SidebarMode::Drive => vec![
-                Self::sidebar_nav_item(
-                    "Workflows",
-                    ActiveView::Drive,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Agents",
-                    ActiveView::AgentManagement,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-                Self::sidebar_nav_item(
-                    "Teams",
-                    ActiveView::Drive,
-                    Rc::clone(&state),
-                    Rc::clone(&dirty),
-                    app,
-                ),
-            ],
-        }
+                SidebarMode::Agent => vec![
+                    Self::sidebar_nav_item(
+                        "New chat",
+                        ActiveView::Chat,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                    Self::sidebar_nav_item(
+                        "Agent runs",
+                        ActiveView::AgentManagement,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                    Self::sidebar_nav_item(
+                        "Executions",
+                        ActiveView::Executions,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                    Self::sidebar_nav_item(
+                        "Connectors",
+                        ActiveView::Connectors,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                    Self::sidebar_nav_item(
+                        "Workflows",
+                        ActiveView::Workflows,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                    Self::sidebar_nav_item(
+                        "Teams",
+                        ActiveView::Teams,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                    Self::sidebar_nav_item(
+                        "Logs",
+                        ActiveView::Logs,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                    Self::sidebar_nav_item(
+                        "Search",
+                        ActiveView::Search,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                ],
+                SidebarMode::Threads => vec![
+                    Self::sidebar_nav_item(
+                        "Recent",
+                        ActiveView::Threads,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                    Self::sidebar_nav_item(
+                        "Starred",
+                        ActiveView::Threads,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                ],
+                SidebarMode::Drive => vec![
+                    Self::sidebar_nav_item(
+                        "Workflows",
+                        ActiveView::Drive,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                    Self::sidebar_nav_item(
+                        "Agents",
+                        ActiveView::AgentManagement,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                    Self::sidebar_nav_item(
+                        "Teams",
+                        ActiveView::Drive,
+                        Rc::clone(&state),
+                        Rc::clone(&dirty),
+                        app,
+                    ),
+                ],
+            }
         };
 
         let column = Flex::column()
@@ -573,7 +577,6 @@ impl ShellView {
         })
         .finish()
     }
-
 }
 
 impl Element for ShellView {

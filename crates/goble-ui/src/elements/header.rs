@@ -19,7 +19,9 @@ impl Header {
         app: &AppContext,
     ) -> Self {
         let spacing = app.theme.spacing_px(SpacingToken::Md);
-        let title = Text::new(title).with_theme_color(ColorToken::Text, app).finish();
+        let title = Text::new(title)
+            .with_theme_color(ColorToken::Text, app)
+            .finish();
         let leading = leading.unwrap_or_else(|| Empty::new().finish());
         let trailing = trailing.unwrap_or_else(|| Empty::new().finish());
 

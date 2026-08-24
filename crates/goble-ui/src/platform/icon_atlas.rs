@@ -8,7 +8,10 @@ const COLUMNS: u32 = ATLAS_SIZE / CELL_SIZE;
 
 macro_rules! icon_bytes {
     ($name:literal, $file:literal) => {
-        ($name, include_bytes!(concat!("../../assets/icons/", $file)) as &[u8])
+        (
+            $name,
+            include_bytes!(concat!("../../assets/icons/", $file)) as &[u8],
+        )
     };
 }
 
@@ -45,6 +48,21 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("send", "send.svg"),
     icon_bytes!("inbox-01", "inbox-01.svg"),
     icon_bytes!("agentmode", "agentmode.svg"),
+    icon_bytes!("mic", "mic.svg"),
+    icon_bytes!("key", "key.svg"),
+    icon_bytes!("sliders", "sliders.svg"),
+    icon_bytes!("sparkle", "sparkle.svg"),
+    icon_bytes!("ai-assistant", "ai-assistant.svg"),
+    icon_bytes!("copy", "copy.svg"),
+    icon_bytes!("refresh", "refresh.svg"),
+    icon_bytes!("terminal", "terminal.svg"),
+    icon_bytes!("terminal-input", "terminal-input.svg"),
+    icon_bytes!("prompt", "prompt.svg"),
+    icon_bytes!("image", "image.svg"),
+    icon_bytes!("code", "code.svg"),
+    icon_bytes!("link", "link.svg"),
+    icon_bytes!("stop", "stop.svg"),
+    icon_bytes!("arrow-up", "arrow-up.svg"),
 ];
 
 pub struct IconAtlas {
@@ -171,7 +189,10 @@ impl IconAtlas {
                 }
 
                 let uv_origin = [x as f32 / ATLAS_SIZE as f32, y as f32 / ATLAS_SIZE as f32];
-                let uv_size = [width as f32 / ATLAS_SIZE as f32, height as f32 / ATLAS_SIZE as f32];
+                let uv_size = [
+                    width as f32 / ATLAS_SIZE as f32,
+                    height as f32 / ATLAS_SIZE as f32,
+                ];
                 let entry = AtlasEntry {
                     uv_origin,
                     uv_size,

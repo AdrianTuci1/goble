@@ -4,8 +4,8 @@ use std::rc::Rc;
 use crate::elements::chat_content::{ChatAction, ChatMessage};
 use crate::elements::{
     AppContext, Axis, ChatComposer, ChatMessageBubble, Container, CrossAxisAlignment, EdgeInsets,
-    Element, Fill, Flex, LayoutContext, MainAxisAlignment, PaintContext, Point, QuickActionButton,
-    Scrollable, SizeConstraint, Text,
+    Element, Expanded, Fill, Flex, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext,
+    Point, QuickActionButton, Scrollable, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -20,6 +20,15 @@ pub struct ChatView {
     empty_title: Option<String>,
     empty_subtitle: Option<String>,
     composer_value: Rc<RefCell<String>>,
+    composer_focused: bool,
+    composer_model_label: Option<String>,
+    composer_stop_visible: bool,
+    on_composer_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    on_composer_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
+    on_attach: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_voice: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_select_model: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_stop: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -36,6 +45,15 @@ impl ChatView {
             empty_title: None,
             empty_subtitle: None,
             composer_value: Rc::new(RefCell::new(String::new())),
+            composer_focused: false,
+            composer_model_label: None,
+            composer_stop_visible: false,
+            on_composer_change: None,
+            on_composer_focus_change: None,
+            on_attach: None,
+            on_voice: None,
+            on_select_model: None,
+            on_stop: None,
             root: None,
             size: None,
             origin: None,
@@ -86,6 +104,58 @@ impl ChatView {
         self.composer_value.borrow().clone()
     }
 
+    /// Sets the composer draft from external state (the snapshot). The draft is
+    /// re-applied on every layout, so typing is driven by the app-owned value.
+    pub fn with_composer_value(self, value: impl Into<String>) -> Self {
+        *self.composer_value.borrow_mut() = value.into();
+        self
+    }
+
+    pub fn with_composer_on_change<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_composer_change = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_composer_focused(mut self, focused: bool) -> Self {
+        self.composer_focused = focused;
+        self
+    }
+
+    pub fn with_composer_model_label(mut self, label: impl Into<String>) -> Self {
+        self.composer_model_label = Some(label.into());
+        self
+    }
+
+    pub fn with_composer_stop_visible(mut self, visible: bool) -> Self {
+        self.composer_stop_visible = visible;
+        self
+    }
+
+    pub fn with_composer_on_focus_change<F: FnMut(bool) + 'static>(mut self, callback: F) -> Self {
+        self.on_composer_focus_change = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_composer_on_attach<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_attach = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_composer_on_voice<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_voice = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_composer_on_select_model<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_select_model = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_composer_on_stop<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_stop = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     fn build_empty_state(&self, app: &AppContext) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
         let xl = app.theme.spacing_px(SpacingToken::Xl);
@@ -126,6 +196,7 @@ impl ChatView {
 
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Max)
             .with_spacing(spacing);
 
         if let Some(header) = self.header.take() {
@@ -152,7 +223,9 @@ impl ChatView {
             }
             Scrollable::new(message_column.finish(), Axis::Vertical).finish()
         };
-        column = column.with_child(message_area);
+        // The transcript consumes the remaining space so the composer pins to
+        // the bottom of the chat view.
+        column = column.with_child(Expanded::new(message_area).finish());
 
         if !self.messages.is_empty() && !self.quick_actions.is_empty() {
             let mut row = Flex::row()
@@ -161,25 +234,52 @@ impl ChatView {
             for (label, cb) in &self.quick_actions {
                 let cb = cb.clone();
                 row = row.with_child(
-                    QuickActionButton::new(label.clone(), move || (cb.borrow_mut())())
-                        .finish(),
+                    QuickActionButton::new(label.clone(), move || (cb.borrow_mut())()).finish(),
                 );
             }
             column = column.with_child(row.finish());
         }
 
         let current_value = self.composer_value.borrow().clone();
+        let composer_value_for_change = self.composer_value.clone();
         let composer_value = self.composer_value.clone();
         let on_send = self.on_send.clone();
-        let composer = ChatComposer::new()
+        let on_composer_change = self.on_composer_change.clone();
+        let mut composer = ChatComposer::new()
             .with_value(current_value)
+            .with_focused(self.composer_focused)
+            .with_stop_visible(self.composer_stop_visible)
+            .with_on_change(move |text| {
+                *composer_value_for_change.borrow_mut() = text.clone();
+                if let Some(cb) = on_composer_change.as_ref() {
+                    (cb.borrow_mut())(text);
+                }
+            })
             .with_on_send(move |text| {
                 *composer_value.borrow_mut() = String::new();
                 if let Some(cb) = on_send.as_ref() {
                     (cb.borrow_mut())(text);
                 }
-            })
-            .finish();
+            });
+        if let Some(label) = self.composer_model_label.clone() {
+            composer = composer.with_model_label(label);
+        }
+        if let Some(cb) = self.on_composer_focus_change.clone() {
+            composer = composer.with_on_focus_change(move |focused| (cb.borrow_mut())(focused));
+        }
+        if let Some(cb) = self.on_attach.clone() {
+            composer = composer.with_on_attach(move || (cb.borrow_mut())());
+        }
+        if let Some(cb) = self.on_voice.clone() {
+            composer = composer.with_on_voice(move || (cb.borrow_mut())());
+        }
+        if let Some(cb) = self.on_select_model.clone() {
+            composer = composer.with_on_select_model(move || (cb.borrow_mut())());
+        }
+        if let Some(cb) = self.on_stop.clone() {
+            composer = composer.with_on_stop(move || (cb.borrow_mut())());
+        }
+        let composer = composer.finish();
         column = column.with_child(composer);
 
         self.root = Some(
@@ -205,11 +305,7 @@ impl Element for ChatView {
         app: &AppContext,
     ) -> Vector2F {
         self.rebuild(app);
-        let size = self
-            .root
-            .as_mut()
-            .unwrap()
-            .layout(constraint, ctx, app);
+        let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size
     }
@@ -293,5 +389,4 @@ mod tests {
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
     }
-
 }

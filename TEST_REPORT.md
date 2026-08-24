@@ -42,3 +42,17 @@ npm run tauri build
 ```
 
 All commands succeeded.
+
+## Native UI (wgpu) baseline — 2026-08-24
+
+Generated during Faza 0 of the Tauri → native migration on `feature/agent-guide-ui`.
+
+| Crate | Tests |
+|-------|-------|
+| goble-ui (lib) | 100 passed |
+| goble-desktop-service (lib) | 23 passed |
+| goble-desktop-native (check) | compiles clean |
+| goble-app (check) | compiles clean |
+| workspace `cargo check --all-targets` | passes |
+
+Fix included in baseline: `crates/goble-ui/src/elements/sheet.rs` — `Rect::contains` now receives a `PointF` (was passing a `Vector2F`), matching the pattern used by other input elements.

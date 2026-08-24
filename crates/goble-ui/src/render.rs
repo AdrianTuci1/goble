@@ -1,6 +1,7 @@
 use crate::color::ColorU;
 use crate::geometry::Vector2F;
 use crate::platform::text_atlas::FontWeight;
+use crate::theme::FontFamily;
 
 /// A 2D renderer command emitted by elements during paint.
 #[derive(Clone, Debug)]
@@ -23,6 +24,7 @@ pub enum RenderCommand {
         color: ColorU,
         max_width: f32,
         font_weight: FontWeight,
+        font_family: FontFamily,
     },
     DrawIcon {
         origin: Vector2F,
@@ -102,6 +104,7 @@ impl Renderer {
             color,
             max_width,
             font_weight: FontWeight::Regular,
+            font_family: FontFamily::System,
         });
     }
 
@@ -114,6 +117,28 @@ impl Renderer {
         max_width: f32,
         font_weight: FontWeight,
     ) {
+        self.draw_text_with_font(
+            origin,
+            text,
+            font_size,
+            color,
+            max_width,
+            font_weight,
+            FontFamily::System,
+        )
+    }
+
+    /// Draw text with an explicit font family (e.g. `FontFamily::Mono` for terminal output).
+    pub fn draw_text_with_font(
+        &mut self,
+        origin: Vector2F,
+        text: impl Into<String>,
+        font_size: f32,
+        color: ColorU,
+        max_width: f32,
+        font_weight: FontWeight,
+        font_family: FontFamily,
+    ) {
         self.commands.push(RenderCommand::DrawText {
             origin,
             text: text.into(),
@@ -121,10 +146,17 @@ impl Renderer {
             color,
             max_width,
             font_weight,
+            font_family,
         });
     }
 
-    pub fn draw_icon(&mut self, origin: Vector2F, name: impl Into<String>, size: f32, color: ColorU) {
+    pub fn draw_icon(
+        &mut self,
+        origin: Vector2F,
+        name: impl Into<String>,
+        size: f32,
+        color: ColorU,
+    ) {
         self.commands.push(RenderCommand::DrawIcon {
             origin,
             name: name.into(),

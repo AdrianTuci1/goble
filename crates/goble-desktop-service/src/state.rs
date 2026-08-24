@@ -1112,6 +1112,12 @@ impl DesktopState {
                     serde_json::json!({ "tasks": tasks }),
                 );
             }
+            WorkerMessage::RoutinesUpdated { routines } => {
+                self.emit(
+                    "worker:routines",
+                    serde_json::json!({ "worker_id": worker_id.to_string(), "routines": routines }),
+                );
+            }
             WorkerMessage::TaskCancelled { task_id } => {
                 self.add_log(format!("task {} cancelled", task_id));
                 self.emit(

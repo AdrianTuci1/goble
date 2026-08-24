@@ -15,6 +15,7 @@ use goble_core::worker::{WorkerId, WorkerStatus};
 use serde::Serialize;
 use tracing_subscriber::EnvFilter;
 
+pub mod agent_memory;
 pub mod agent_runtime;
 pub mod file_vault;
 pub mod harness_runner;

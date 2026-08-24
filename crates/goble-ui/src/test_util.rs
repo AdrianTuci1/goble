@@ -18,7 +18,11 @@ pub fn render_element(
     let renderer = Renderer::new();
     let mut paint_ctx = PaintContext::new(renderer);
     element.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
-    paint_ctx.renderer.take().map(|r| r.commands().to_vec()).unwrap_or_default()
+    paint_ctx
+        .renderer
+        .take()
+        .map(|r| r.commands().to_vec())
+        .unwrap_or_default()
 }
 
 /// Counts how many commands of each variant the element emitted.
@@ -53,7 +57,8 @@ mod tests {
     use crate::elements::chat_content::{ChatFragment, ChatMessage, ChatRole};
     use crate::elements::{
         AgentCard, AppContext, Avatar, Button, ButtonVariant, Checkbox, ConnectorCard, Container,
-        Fill, Icon, LayoutContext, ShellState, ShellView, SizeConstraint, Switch, Text, TitleBar,
+        Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, Rect, ShellState, ShellView,
+        SizeConstraint, Switch, Text, TitleBar,
     };
     use crate::geometry::vec2f;
     use crate::views::settings_view::SettingsPage;
@@ -90,17 +95,27 @@ mod tests {
         assert!(counts.fill_rect > 0, "button should render a background");
         assert!(counts.draw_text > 0, "button should render a label");
 
-        element.layout(SizeConstraint::loose(vec2f(200.0, 60.0)), &mut LayoutContext::default(), &app);
+        element.layout(
+            SizeConstraint::loose(vec2f(200.0, 60.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
         element.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
 
         let mut event_ctx = crate::elements::EventContext::default();
         element.dispatch_event(
-            &crate::event::DispatchedEvent::MouseDown { position: vec2f(10.0, 10.0), button: 0 },
+            &crate::event::DispatchedEvent::MouseDown {
+                position: vec2f(10.0, 10.0),
+                button: 0,
+            },
             &mut event_ctx,
             &app,
         );
         element.dispatch_event(
-            &crate::event::DispatchedEvent::MouseUp { position: vec2f(10.0, 10.0), button: 0 },
+            &crate::event::DispatchedEvent::MouseUp {
+                position: vec2f(10.0, 10.0),
+                button: 0,
+            },
             &mut event_ctx,
             &app,
         );
@@ -120,7 +135,10 @@ mod tests {
         .finish();
         let commands = render_element(&mut element, vec2f(400.0, 200.0), &app);
         let counts = command_counts(&commands);
-        assert!(counts.fill_rect > 0, "agent card should render a background");
+        assert!(
+            counts.fill_rect > 0,
+            "agent card should render a background"
+        );
         assert!(counts.draw_text > 0, "agent card should render text");
     }
 
@@ -138,7 +156,10 @@ mod tests {
         .finish();
         let commands = render_element(&mut element, vec2f(400.0, 200.0), &app);
         let counts = command_counts(&commands);
-        assert!(counts.fill_rect > 0, "connector card should render a background");
+        assert!(
+            counts.fill_rect > 0,
+            "connector card should render a background"
+        );
         assert!(counts.draw_text > 0, "connector card should render text");
     }
 
@@ -176,7 +197,10 @@ mod tests {
             .finish();
         let commands = render_element(&mut element, vec2f(800.0, 600.0), &app);
         let counts = command_counts(&commands);
-        assert!(counts.fill_rect > 0, "threads container should render backgrounds");
+        assert!(
+            counts.fill_rect > 0,
+            "threads container should render backgrounds"
+        );
         assert!(counts.draw_text > 0, "threads container should render text");
     }
 
@@ -190,7 +214,10 @@ mod tests {
             .finish();
         let commands = render_element(&mut element, vec2f(800.0, 600.0), &app);
         let counts = command_counts(&commands);
-        assert!(counts.fill_rect > 0, "settings view should render backgrounds");
+        assert!(
+            counts.fill_rect > 0,
+            "settings view should render backgrounds"
+        );
         assert!(counts.draw_text > 0, "settings view should render text");
     }
 
@@ -214,8 +241,14 @@ mod tests {
         let mut element = TitleBar::new("Goble", tabs, vec![], &app).finish();
         let commands = render_element(&mut element, vec2f(1024.0, 48.0), &app);
         let counts = command_counts(&commands);
-        assert!(counts.fill_rect >= 3, "title bar should render traffic lights and background");
-        assert!(counts.draw_text > 0, "title bar should render title and tabs");
+        assert!(
+            counts.fill_rect >= 3,
+            "title bar should render traffic lights and background"
+        );
+        assert!(
+            counts.draw_text > 0,
+            "title bar should render title and tabs"
+        );
     }
 
     #[test]
@@ -234,5 +267,49 @@ mod tests {
         let commands = render_element(&mut element, vec2f(100.0, 40.0), &app);
         let counts = command_counts(&commands);
         assert!(counts.fill_rect > 0, "checkbox should render a box");
+    }
+
+    #[test]
+    fn expanded_fills_remaining_flex_space() {
+        let app = app();
+        let mut element = Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_spacing(10.0)
+            .with_child(Text::new("header").finish())
+            .with_child(
+                Expanded::new(
+                    Container::new(Rect::new().finish())
+                        .with_background(Fill::Solid(crate::color::ColorU::new(0, 0, 255, 255)))
+                        .finish(),
+                )
+                .finish(),
+            )
+            .finish();
+        let commands = render_element(&mut element, vec2f(400.0, 600.0), &app);
+        assert_eq!(
+            element.size(),
+            Some(vec2f(400.0, 600.0)),
+            "flex should fill the viewport"
+        );
+
+        let mut expanded_rect = None;
+        for command in &commands {
+            if let RenderCommand::FillRect { rect, color, .. } = command {
+                if color.b == 255 && color.r == 0 && color.g == 0 {
+                    expanded_rect = Some(*rect);
+                }
+            }
+        }
+        let rect = expanded_rect.expect("expanded child should paint a background");
+        assert!(
+            rect.height() > 500.0 && rect.height() < 590.0,
+            "expanded rect should consume the remaining space, got height {}",
+            rect.height()
+        );
+        assert_eq!(
+            rect.width(),
+            400.0,
+            "expanded child should fill the cross axis"
+        );
     }
 }

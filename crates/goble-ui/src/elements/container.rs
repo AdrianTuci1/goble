@@ -1,6 +1,6 @@
 use crate::elements::{
-    AppContext, Border, EdgeInsets, Element, EventContext, Fill, LayoutContext, PaintContext, Point,
-    SizeConstraint,
+    AppContext, Border, EdgeInsets, Element, EventContext, Fill, LayoutContext, PaintContext,
+    Point, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{vec2f, RectF, Vector2F};
@@ -125,7 +125,10 @@ impl Element for Container {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
-        let rect = RectF::new(crate::geometry::PointF::new(origin.x, origin.y), crate::geometry::Size2F::new(size.x, size.y));
+        let rect = RectF::new(
+            crate::geometry::PointF::new(origin.x, origin.y),
+            crate::geometry::Size2F::new(size.x, size.y),
+        );
 
         if let Fill::Solid(color) = self.background {
             if let Some(renderer) = ctx.renderer.as_mut() {
@@ -142,10 +145,7 @@ impl Element for Container {
         }
 
         if let Some(child) = self.child.as_mut() {
-            let child_origin = vec2f(
-                origin.x + self.padding.left,
-                origin.y + self.padding.top,
-            );
+            let child_origin = vec2f(origin.x + self.padding.left, origin.y + self.padding.top);
             child.paint(child_origin, ctx, app);
         }
     }

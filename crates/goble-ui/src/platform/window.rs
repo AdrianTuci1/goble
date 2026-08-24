@@ -88,7 +88,8 @@ impl ApplicationHandler for App {
                 let mut renderer = Renderer::new();
                 {
                     let mut paint_ctx = PaintContext::new(renderer);
-                    self.root.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app_context);
+                    self.root
+                        .paint(vec2f(0.0, 0.0), &mut paint_ctx, &app_context);
                     renderer = paint_ctx.renderer.take().unwrap();
                 }
                 if let Some(surface_state) = self.surface_state.as_mut() {
@@ -105,12 +106,20 @@ impl ApplicationHandler for App {
                 };
                 let position = self.cursor_position;
                 let event = match state {
-                    winit::event::ElementState::Pressed => DispatchedEvent::MouseDown { position, button: button_id },
-                    winit::event::ElementState::Released => DispatchedEvent::MouseUp { position, button: button_id },
+                    winit::event::ElementState::Pressed => DispatchedEvent::MouseDown {
+                        position,
+                        button: button_id,
+                    },
+                    winit::event::ElementState::Released => DispatchedEvent::MouseUp {
+                        position,
+                        button: button_id,
+                    },
                 };
                 let mut event_ctx = crate::elements::EventContext::default();
                 let app_context = self.app_context.borrow().clone();
-                let _ = self.root.dispatch_event(&event, &mut event_ctx, &app_context);
+                let _ = self
+                    .root
+                    .dispatch_event(&event, &mut event_ctx, &app_context);
                 drop(app_context);
                 window.request_redraw();
             }
@@ -120,7 +129,9 @@ impl ApplicationHandler for App {
                 let event = DispatchedEvent::MouseMove { position: pos };
                 let mut event_ctx = crate::elements::EventContext::default();
                 let app_context = self.app_context.borrow().clone();
-                let _ = self.root.dispatch_event(&event, &mut event_ctx, &app_context);
+                let _ = self
+                    .root
+                    .dispatch_event(&event, &mut event_ctx, &app_context);
                 drop(app_context);
             }
             winit::event::WindowEvent::MouseWheel { delta, .. } => {
@@ -131,19 +142,23 @@ impl ApplicationHandler for App {
                 let event = DispatchedEvent::Scroll { delta };
                 let mut event_ctx = crate::elements::EventContext::default();
                 let app_context = self.app_context.borrow().clone();
-                let _ = self.root.dispatch_event(&event, &mut event_ctx, &app_context);
+                let _ = self
+                    .root
+                    .dispatch_event(&event, &mut event_ctx, &app_context);
                 drop(app_context);
                 window.request_redraw();
             }
             winit::event::WindowEvent::KeyboardInput { event, .. } => {
-                if let winit::keyboard::Key::Character(c) = event.logical_key {
+                if let Some(key) = logical_key_string(&event.logical_key) {
                     let event = match event.state {
-                        winit::event::ElementState::Pressed => DispatchedEvent::KeyDown { key: c.to_string() },
-                        winit::event::ElementState::Released => DispatchedEvent::KeyUp { key: c.to_string() },
+                        winit::event::ElementState::Pressed => DispatchedEvent::KeyDown { key },
+                        winit::event::ElementState::Released => DispatchedEvent::KeyUp { key },
                     };
                     let mut event_ctx = crate::elements::EventContext::default();
                     let app_context = self.app_context.borrow().clone();
-                    let _ = self.root.dispatch_event(&event, &mut event_ctx, &app_context);
+                    let _ = self
+                        .root
+                        .dispatch_event(&event, &mut event_ctx, &app_context);
                     drop(app_context);
                     window.request_redraw();
                 }
@@ -156,6 +171,33 @@ impl ApplicationHandler for App {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
+    }
+}
+
+/// Convert a winit logical key to the string form used by `DispatchedEvent::KeyDown`.
+///
+/// Printable keys arrive as `Key::Character`; navigation/editing keys arrive as
+/// `Key::Named` and would otherwise be swallowed by the input elements.
+fn logical_key_string(key: &winit::keyboard::Key) -> Option<String> {
+    match key {
+        winit::keyboard::Key::Character(c) => Some(c.to_string()),
+        winit::keyboard::Key::Named(named) => {
+            let s = match named {
+                winit::keyboard::NamedKey::Backspace => "Backspace",
+                winit::keyboard::NamedKey::Enter => "Enter",
+                winit::keyboard::NamedKey::Tab => "Tab",
+                winit::keyboard::NamedKey::Escape => "Escape",
+                winit::keyboard::NamedKey::Delete => "Delete",
+                winit::keyboard::NamedKey::ArrowLeft => "ArrowLeft",
+                winit::keyboard::NamedKey::ArrowRight => "ArrowRight",
+                winit::keyboard::NamedKey::ArrowUp => "ArrowUp",
+                winit::keyboard::NamedKey::ArrowDown => "ArrowDown",
+                winit::keyboard::NamedKey::Space => " ",
+                _ => return None,
+            };
+            Some(s.to_string())
+        }
+        _ => None,
     }
 }
 
@@ -199,7 +241,11 @@ impl SurfaceState {
             .ok_or_else(|| anyhow::anyhow!("no surface config"))?;
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
-        let engine = crate::platform::wgpu_render_engine::WgpuRenderEngine::new(&device, &queue, config.format);
+        let engine = crate::platform::wgpu_render_engine::WgpuRenderEngine::new(
+            &device,
+            &queue,
+            config.format,
+        );
         Ok(Self {
             surface,
             device,
@@ -217,7 +263,9 @@ impl SurfaceState {
 
     fn render(&mut self, renderer: &Renderer) -> anyhow::Result<()> {
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         self.engine.render(
             &self.device,
             &self.queue,

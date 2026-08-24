@@ -3,10 +3,10 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Container, ConversationListItem, ConversationStatus, CrossAxisAlignment,
-    Divider, EdgeInsets, Element, Empty, EventContext, Fill, Flex, Icon, Label, LabelSize,
-    LayoutContext, MainAxisAlignment, PaintContext, Point, Scrollable, SearchInput, SizeConstraint,
-    Spacer, Text, TopbarButton,
+    AppContext, Container, ConversationListItem, ConversationStatus, CrossAxisAlignment, Divider,
+    EdgeInsets, Element, Empty, EventContext, Fill, Flex, Icon, Label, LabelSize, LayoutContext,
+    MainAxisAlignment, PaintContext, Point, Scrollable, SearchInput, SizeConstraint, Spacer, Text,
+    TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;

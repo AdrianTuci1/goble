@@ -1,15 +1,22 @@
 use crate::color::ColorU;
 use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
 use crate::geometry::Vector2F;
-use crate::platform::text_atlas::{measure_text as measure_text_atlas, FontWeight};
-use crate::theme::ColorToken;
+use crate::platform::text_atlas::{measure_text_family as measure_text_atlas, FontWeight};
+use crate::theme::{ColorToken, FontFamily};
 
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.2;
 
 /// Measure text using the bundled Roboto fonts when possible.
 pub fn measure_text(text: &str, font_size: f32, line_height: f32, max_width: f32) -> Vector2F {
-    measure_text_atlas(text, font_size, line_height, max_width, FontWeight::Regular)
+    measure_text_atlas(
+        text,
+        font_size,
+        line_height,
+        max_width,
+        FontWeight::Regular,
+        FontFamily::System,
+    )
 }
 
 /// A single-line or wrapped body text element.
@@ -20,6 +27,7 @@ pub struct Text {
     line_height: f32,
     max_lines: Option<usize>,
     weight: FontWeight,
+    font_family: FontFamily,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -33,6 +41,7 @@ impl Text {
             line_height: DEFAULT_LINE_HEIGHT,
             max_lines: None,
             weight: FontWeight::Regular,
+            font_family: FontFamily::System,
             size: None,
             origin: None,
         }
@@ -73,6 +82,11 @@ impl Text {
         self
     }
 
+    pub fn with_font_family(mut self, family: FontFamily) -> Self {
+        self.font_family = family;
+        self
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -105,6 +119,7 @@ impl Element for Text {
             self.line_height,
             constraint.max.x,
             self.weight,
+            self.font_family,
         );
         if let Some(max_lines) = self.max_lines {
             let max_height = self.font_size * self.line_height * max_lines as f32;
@@ -120,7 +135,15 @@ impl Element for Text {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         if let Some(size) = self.size {
             if let Some(renderer) = ctx.renderer.as_mut() {
-                renderer.draw_text_weighted(origin, self.text.clone(), self.font_size, self.color, size.x, self.weight);
+                renderer.draw_text_with_font(
+                    origin,
+                    self.text.clone(),
+                    self.font_size,
+                    self.color,
+                    size.x,
+                    self.weight,
+                    self.font_family,
+                );
             }
         }
     }

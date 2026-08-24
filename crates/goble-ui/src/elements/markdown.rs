@@ -65,9 +65,7 @@ pub fn parse_markdown(input: &str) -> Vec<ChatFragment> {
                         in_code_block = true;
                         code_block_text.clear();
                         code_block_lang = match lang {
-                            pulldown_cmark::CodeBlockKind::Fenced(lang) => {
-                                Some(lang.to_string())
-                            }
+                            pulldown_cmark::CodeBlockKind::Fenced(lang) => Some(lang.to_string()),
                             pulldown_cmark::CodeBlockKind::Indented => None,
                         };
                     }
@@ -246,14 +244,15 @@ fn merge_adjacent_text(fragments: &mut Vec<ChatFragment>) {
     let mut merged: Vec<ChatFragment> = Vec::with_capacity(fragments.len());
     for fragment in fragments.drain(..) {
         if let Some(last) = merged.last_mut() {
-            if let (ChatFragmentKind::Text(a), ChatFragmentKind::Text(b)) = (&last.kind, &fragment.kind)
+            if let (ChatFragmentKind::Text(a), ChatFragmentKind::Text(b)) =
+                (&last.kind, &fragment.kind)
             {
-                let separator = if a.ends_with(char::is_whitespace) || b.starts_with(char::is_whitespace)
-                {
-                    ""
-                } else {
-                    " "
-                };
+                let separator =
+                    if a.ends_with(char::is_whitespace) || b.starts_with(char::is_whitespace) {
+                        ""
+                    } else {
+                        " "
+                    };
                 let combined = format!("{}{}{}", a, separator, b);
                 last.kind = ChatFragmentKind::Text(combined);
                 continue;
@@ -318,10 +317,7 @@ mod tests {
         let fragments = parse_markdown("run `cargo build`");
         assert_eq!(
             fragments,
-            vec![
-                ChatFragment::text("run"),
-                ChatFragment::code("cargo build"),
-            ]
+            vec![ChatFragment::text("run"), ChatFragment::code("cargo build"),]
         );
     }
 
@@ -330,7 +326,10 @@ mod tests {
         let fragments = parse_markdown("```rust\nfn main() {}\n```");
         assert_eq!(
             fragments,
-            vec![ChatFragment::code_block(Some("rust".to_string()), "fn main() {}")]
+            vec![ChatFragment::code_block(
+                Some("rust".to_string()),
+                "fn main() {}"
+            )]
         );
     }
 
@@ -348,7 +347,10 @@ mod tests {
         let fragments = parse_markdown("1. first\n2. second");
         assert_eq!(
             fragments,
-            vec![ChatFragment::list(vec!["first".into(), "second".into()], true)]
+            vec![ChatFragment::list(
+                vec!["first".into(), "second".into()],
+                true
+            )]
         );
     }
 

@@ -1,4 +1,6 @@
-use crate::elements::{AppContext, Axis, Element, LayoutContext, PaintContext, Point, SizeConstraint};
+use crate::elements::{
+    AppContext, Axis, Element, LayoutContext, PaintContext, Point, SizeConstraint,
+};
 use crate::geometry::{vec2f, Vector2F};
 
 const DEFAULT_THICKNESS: f32 = 1.0;

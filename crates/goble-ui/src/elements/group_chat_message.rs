@@ -1,10 +1,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::chat_content::{ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole};
+use crate::elements::chat_content::{
+    ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole,
+};
 use crate::elements::{
-    AppContext, Avatar, Chip, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, Fill, Flex,
-    LayoutContext, PaintContext, Point, SizeConstraint, Spacer, Text,
+    AppContext, Avatar, Chip, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, Fill,
+    Flex, LayoutContext, PaintContext, Point, SizeConstraint, Spacer, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -161,9 +163,13 @@ impl GroupChatMessage {
                 }
                 ChatFragmentKind::CodeBlock { lang, code } => {
                     column = flush_inline(&mut inline_buffer, column);
-                    column = column.with_child(
-                        self.render_code_block(app, lang.clone(), code.clone(), spacing, radius),
-                    );
+                    column = column.with_child(self.render_code_block(
+                        app,
+                        lang.clone(),
+                        code.clone(),
+                        spacing,
+                        radius,
+                    ));
                 }
                 ChatFragmentKind::Heading { level, text } => {
                     column = flush_inline(&mut inline_buffer, column);
@@ -175,9 +181,12 @@ impl GroupChatMessage {
                 }
                 ChatFragmentKind::BlockQuote(text) => {
                     column = flush_inline(&mut inline_buffer, column);
-                    column = column.with_child(
-                        self.render_block_quote(app, text.clone(), spacing, radius),
-                    );
+                    column = column.with_child(self.render_block_quote(
+                        app,
+                        text.clone(),
+                        spacing,
+                        radius,
+                    ));
                 }
                 _ => {
                     inline_buffer.push(self.render_inline_fragment(app, fragment, radius));
@@ -301,12 +310,7 @@ impl GroupChatMessage {
             .finish()
     }
 
-    fn render_list(
-        &self,
-        app: &AppContext,
-        items: Vec<String>,
-        ordered: bool,
-    ) -> Box<dyn Element> {
+    fn render_list(&self, app: &AppContext, items: Vec<String>, ordered: bool) -> Box<dyn Element> {
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(2.0);
@@ -338,7 +342,12 @@ impl GroupChatMessage {
                 .finish(),
         )
         .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-        .with_padding(EdgeInsets::new(padding / 4.0, padding / 2.0, padding / 4.0, padding / 2.0))
+        .with_padding(EdgeInsets::new(
+            padding / 4.0,
+            padding / 2.0,
+            padding / 4.0,
+            padding / 2.0,
+        ))
         .with_corner_radius(radius)
         .finish()
     }
@@ -372,11 +381,7 @@ impl Element for GroupChatMessage {
         app: &AppContext,
     ) -> Vector2F {
         self.rebuild(app);
-        let size = self
-            .root
-            .as_mut()
-            .unwrap()
-            .layout(constraint, ctx, app);
+        let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size
     }
@@ -416,12 +421,9 @@ mod tests {
     #[test]
     fn group_chat_message_layouts_with_header() {
         let app = AppContext::default();
-        let message = ChatMessage::new(
-            ChatRole::User,
-            vec![ChatFragment::text("Hello")],
-        )
-        .with_author_name("Ada")
-        .with_timestamp("10:42");
+        let message = ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Hello")])
+            .with_author_name("Ada")
+            .with_timestamp("10:42");
         let mut msg = GroupChatMessage::new(message);
         let size = msg.layout(
             SizeConstraint::loose(vec2f(400.0, 400.0)),
@@ -435,11 +437,8 @@ mod tests {
     #[test]
     fn group_chat_message_compact_layouts() {
         let app = AppContext::default();
-        let message = ChatMessage::new(
-            ChatRole::User,
-            vec![ChatFragment::text("Second message")],
-        )
-        .with_author_name("Ada");
+        let message = ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Second message")])
+            .with_author_name("Ada");
         let mut msg = GroupChatMessage::new(message).with_show_header(false);
         let size = msg.layout(
             SizeConstraint::loose(vec2f(400.0, 400.0)),

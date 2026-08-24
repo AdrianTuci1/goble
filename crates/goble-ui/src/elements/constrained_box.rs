@@ -1,4 +1,6 @@
-use crate::elements::{AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint};
+use crate::elements::{
+    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
+};
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 

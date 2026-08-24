@@ -14,6 +14,7 @@ pub struct TextInput {
     placeholder: String,
     focused: bool,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     on_submit: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -27,6 +28,7 @@ impl TextInput {
             placeholder: String::new(),
             focused: false,
             on_change: None,
+            on_focus_change: None,
             on_submit: None,
             size: None,
             origin: None,
@@ -46,6 +48,18 @@ impl TextInput {
 
     pub fn with_on_change<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
         self.on_change = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Set the initial focus state. Useful when the tree is rebuilt every frame
+    /// from app state (e.g. hot-reload dev loops) so focus survives a rebuild.
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    pub fn with_on_focus_change<F: FnMut(bool) + 'static>(mut self, callback: F) -> Self {
+        self.on_focus_change = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -70,9 +84,7 @@ impl TextInput {
         } else {
             ColorToken::Text
         };
-        let text = Text::new(display)
-            .with_theme_color(color, app)
-            .finish();
+        let text = Text::new(display).with_theme_color(color, app).finish();
         let mut container = Container::new(text)
             .with_padding(EdgeInsets::uniform(padding))
             .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
@@ -129,10 +141,21 @@ impl Element for TextInput {
             DispatchedEvent::MouseDown { position, .. } => {
                 if let Some(bounds) = self.bounds() {
                     if bounds.contains(PointF::new(position.x, position.y)) {
+                        let was_focused = self.focused;
                         self.focused = true;
+                        if !was_focused {
+                            if let Some(cb) = self.on_focus_change.as_ref() {
+                                (cb.borrow_mut())(true);
+                            }
+                        }
                         return true;
                     }
-                    self.focused = false;
+                    if self.focused {
+                        self.focused = false;
+                        if let Some(cb) = self.on_focus_change.as_ref() {
+                            (cb.borrow_mut())(false);
+                        }
+                    }
                 }
                 false
             }

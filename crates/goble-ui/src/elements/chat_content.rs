@@ -1,3 +1,5 @@
+use crate::elements::terminal_block::TerminalData;
+
 /// The role of a chat message participant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ChatRole {
@@ -103,6 +105,12 @@ impl ChatFragment {
             },
         }
     }
+
+    pub fn terminal(data: TerminalData) -> Self {
+        Self {
+            kind: ChatFragmentKind::Terminal(data),
+        }
+    }
 }
 
 /// A chat message composed of one or more fragments.
@@ -136,7 +144,10 @@ impl ChatMessage {
 
     /// Build a chat message by parsing a Markdown string into fragments.
     pub fn from_markdown(role: ChatRole, text: impl Into<String>) -> Self {
-        Self::new(role, crate::elements::markdown::parse_markdown(&text.into()))
+        Self::new(
+            role,
+            crate::elements::markdown::parse_markdown(&text.into()),
+        )
     }
 
     /// Build a chat message from a service-layer thread message.
@@ -162,26 +173,12 @@ pub enum ChatFragmentKind {
     Italic(String),
     BoldItalic(String),
     Code(String),
-    CodeBlock {
-        lang: Option<String>,
-        code: String,
-    },
-    Heading {
-        level: u8,
-        text: String,
-    },
-    Link {
-        label: String,
-        url: String,
-    },
-    List {
-        items: Vec<String>,
-        ordered: bool,
-    },
+    CodeBlock { lang: Option<String>, code: String },
+    Heading { level: u8, text: String },
+    Link { label: String, url: String },
+    List { items: Vec<String>, ordered: bool },
     BlockQuote(String),
     LineBreak,
-    Action {
-        label: String,
-        payload: ChatAction,
-    },
+    Action { label: String, payload: ChatAction },
+    Terminal(TerminalData),
 }

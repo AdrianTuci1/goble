@@ -106,14 +106,11 @@ impl Element for Avatar {
             AvatarShape::Squircle => self.size * 0.22,
         };
 
-        ctx.renderer
-            .as_mut()
-            .unwrap()
-            .fill_rounded_rect(
-                rectf(origin.x, origin.y, self.size, self.size),
-                bg,
-                radius,
-            );
+        ctx.renderer.as_mut().unwrap().fill_rounded_rect(
+            rectf(origin.x, origin.y, self.size, self.size),
+            bg,
+            radius,
+        );
 
         let initials = self.initials();
         if !initials.is_empty() {

@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex, Icon, LayoutContext,
-    MainAxisAlignment, PaintContext, Point, SizeConstraint, Text, TopbarButton,
+    AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex, Icon,
+    LayoutContext, MainAxisAlignment, PaintContext, Point, SizeConstraint, Text, TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -99,11 +99,7 @@ impl Element for ChatHeader {
     ) -> Vector2F {
         self.app = app.clone();
         self.rebuild();
-        let size = self
-            .root
-            .as_mut()
-            .unwrap()
-            .layout(constraint, ctx, app);
+        let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size
     }

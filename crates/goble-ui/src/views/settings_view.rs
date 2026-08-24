@@ -51,16 +51,16 @@ fn nav_item(
         .finish()
 }
 
-fn section(title: impl Into<String>, children: Vec<Box<dyn Element>>, app: &AppContext) -> Box<dyn Element> {
+fn section(
+    title: impl Into<String>,
+    children: Vec<Box<dyn Element>>,
+    app: &AppContext,
+) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Md);
     let mut column = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(spacing);
-    column = column.with_child(
-        Label::new(title.into())
-            .with_size(LabelSize::Sm)
-            .finish(),
-    );
+    column = column.with_child(Label::new(title.into()).with_size(LabelSize::Sm).finish());
     for child in children {
         column = column.with_child(child);
     }
@@ -219,7 +219,10 @@ impl SettingsView {
         self
     }
 
-    pub fn with_on_save_llm<F: FnMut(String, String, String, String, String) + 'static>(mut self, callback: F) -> Self {
+    pub fn with_on_save_llm<F: FnMut(String, String, String, String, String) + 'static>(
+        mut self,
+        callback: F,
+    ) -> Self {
         self.on_save_llm = Some(Rc::new(RefCell::new(callback)));
         self
     }
@@ -234,12 +237,18 @@ impl SettingsView {
         self
     }
 
-    pub fn with_on_add_vault_secret<F: FnMut(String, String) + 'static>(mut self, callback: F) -> Self {
+    pub fn with_on_add_vault_secret<F: FnMut(String, String) + 'static>(
+        mut self,
+        callback: F,
+    ) -> Self {
         self.on_add_vault_secret = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
-    pub fn with_on_create_cluster<F: FnMut(String, String) + 'static>(mut self, callback: F) -> Self {
+    pub fn with_on_create_cluster<F: FnMut(String, String) + 'static>(
+        mut self,
+        callback: F,
+    ) -> Self {
         self.on_create_cluster = Some(Rc::new(RefCell::new(callback)));
         self
     }
@@ -264,12 +273,18 @@ impl SettingsView {
         self
     }
 
-    pub fn with_on_add_authorized_key<F: FnMut(String, String, String) + 'static>(mut self, callback: F) -> Self {
+    pub fn with_on_add_authorized_key<F: FnMut(String, String, String) + 'static>(
+        mut self,
+        callback: F,
+    ) -> Self {
         self.on_add_authorized_key = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
-    pub fn with_on_remove_authorized_key<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+    pub fn with_on_remove_authorized_key<F: FnMut(String) + 'static>(
+        mut self,
+        callback: F,
+    ) -> Self {
         self.on_remove_authorized_key = Some(Rc::new(RefCell::new(callback)));
         self
     }
@@ -291,13 +306,7 @@ impl SettingsView {
         ];
         for (label, page) in pages {
             let selected = self.current_page == page;
-            let item = nav_item(
-                label,
-                page,
-                selected,
-                app,
-                self.on_navigate.clone(),
-            );
+            let item = nav_item(label, page, selected, app, self.on_navigate.clone());
             column = column.with_child(item);
         }
 
@@ -380,13 +389,7 @@ impl SettingsView {
         let provider_state_for_change = Rc::clone(&provider_state);
         let mut provider_select = Select::new(provider_options).with_on_change(move |idx| {
             if let Some(i) = idx {
-                let options = [
-                    "openai",
-                    "anthropic",
-                    "ollama",
-                    "deepseek",
-                    "openrouter",
-                ];
+                let options = ["openai", "anthropic", "ollama", "deepseek", "openrouter"];
                 if let Some(value) = options.get(i) {
                     *provider_state_for_change.borrow_mut() = value.to_string();
                 }
@@ -472,7 +475,11 @@ impl SettingsView {
             })
             .finish();
 
-        section("Appearance", vec![settings_row("Dark mode", switch, app)], app)
+        section(
+            "Appearance",
+            vec![settings_row("Dark mode", switch, app)],
+            app,
+        )
     }
 
     fn build_account_page(&self, app: &AppContext) -> Box<dyn Element> {
@@ -496,10 +503,8 @@ impl SettingsView {
             })
             .finish();
 
-        let mut children: Vec<Box<dyn Element>> = vec![
-            settings_row("Passphrase", passphrase_input, app),
-            unlock,
-        ];
+        let mut children: Vec<Box<dyn Element>> =
+            vec![settings_row("Passphrase", passphrase_input, app), unlock];
 
         if self.vault_unlocked {
             let secret_key_state = Rc::new(RefCell::new(String::new()));
@@ -534,11 +539,15 @@ impl SettingsView {
                 })
                 .finish();
 
-            children.push(section("Add secret", vec![
-                settings_row("Name", key_input, app),
-                settings_row("Value", value_input, app),
-                add,
-            ], app));
+            children.push(section(
+                "Add secret",
+                vec![
+                    settings_row("Name", key_input, app),
+                    settings_row("Value", value_input, app),
+                    add,
+                ],
+                app,
+            ));
 
             if !self.vault_secrets.is_empty() {
                 let mut list = Flex::column()
@@ -546,10 +555,14 @@ impl SettingsView {
                     .with_spacing(app.theme.spacing_px(SpacingToken::Sm));
                 for secret in &self.vault_secrets {
                     list = list.with_child(
-                        Container::new(Text::new(secret.clone()).with_theme_color(ColorToken::Text, app).finish())
-                            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                            .with_padding(EdgeInsets::uniform(app.theme.spacing_px(SpacingToken::Md)))
-                            .finish(),
+                        Container::new(
+                            Text::new(secret.clone())
+                                .with_theme_color(ColorToken::Text, app)
+                                .finish(),
+                        )
+                        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                        .with_padding(EdgeInsets::uniform(app.theme.spacing_px(SpacingToken::Md)))
+                        .finish(),
                     );
                 }
                 children.push(section("Saved secrets", vec![list.finish()], app));
@@ -574,9 +587,13 @@ impl SettingsView {
         if self.cluster_configured {
             let status = format!("Cluster configured: {}", self.cluster_name);
             children.push(
-                Container::new(Text::new(status).with_theme_color(ColorToken::Muted, app).finish())
-                    .with_padding(EdgeInsets::uniform(app.theme.spacing_px(SpacingToken::Md)))
-                    .finish(),
+                Container::new(
+                    Text::new(status)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_padding(EdgeInsets::uniform(app.theme.spacing_px(SpacingToken::Md)))
+                .finish(),
             );
             let on_unlock = self.on_unlock_cluster.clone();
             let unlock_state = Rc::clone(&passphrase_state);
@@ -686,14 +703,22 @@ impl SettingsView {
                 .with_spacing(app.theme.spacing_px(SpacingToken::Sm));
             for (id, name, url, paired) in &self.workers {
                 let status = if *paired { "paired" } else { "unpaired" };
-                let line = format!("{} | {} | {} | {}", &id[..id.len().min(8)], name, url, status);
+                let line = format!(
+                    "{} | {} | {} | {}",
+                    &id[..id.len().min(8)],
+                    name,
+                    url,
+                    status
+                );
                 let on_remove = self.on_remove_worker.clone();
                 let id_for_remove = id.clone();
                 let row = Flex::row()
                     .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_child(
-                        Text::new(line).with_theme_color(ColorToken::Text, app).finish(),
+                        Text::new(line)
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
                     )
                     .with_child(
                         Button::new(Text::new("Remove").finish())
@@ -776,7 +801,9 @@ impl SettingsView {
                     .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_child(
-                        Text::new(line).with_theme_color(ColorToken::Text, app).finish(),
+                        Text::new(line)
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
                     )
                     .with_child(
                         Button::new(Text::new("Remove").finish())

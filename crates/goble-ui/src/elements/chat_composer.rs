@@ -14,12 +14,21 @@ pub struct ChatComposer {
     value: Rc<RefCell<String>>,
     placeholder: String,
     attachments: Vec<String>,
+    model_label: Option<String>,
+    focused: bool,
+    stop_visible: bool,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_attach: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_select_model: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_select_key: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_select_variant: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_voice: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_image: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_code: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_link: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_stop: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -31,12 +40,21 @@ impl ChatComposer {
             value: Rc::new(RefCell::new(String::new())),
             placeholder: String::from("Ask anything..."),
             attachments: Vec::new(),
+            model_label: None,
+            focused: false,
+            stop_visible: false,
             on_change: None,
             on_send: None,
             on_attach: None,
             on_select_model: None,
             on_select_key: None,
             on_select_variant: None,
+            on_voice: None,
+            on_image: None,
+            on_code: None,
+            on_link: None,
+            on_stop: None,
+            on_focus_change: None,
             root: None,
             size: None,
             origin: None,
@@ -55,6 +73,21 @@ impl ChatComposer {
 
     pub fn with_attachments(mut self, attachments: Vec<String>) -> Self {
         self.attachments = attachments;
+        self
+    }
+
+    pub fn with_model_label(mut self, label: impl Into<String>) -> Self {
+        self.model_label = Some(label.into());
+        self
+    }
+
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    pub fn with_stop_visible(mut self, visible: bool) -> Self {
+        self.stop_visible = visible;
         self
     }
 
@@ -88,6 +121,36 @@ impl ChatComposer {
         self
     }
 
+    pub fn with_on_voice<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_voice = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_image<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_image = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_code<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_code = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_link<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_link = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_stop<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_stop = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_on_focus_change<F: FnMut(bool) + 'static>(mut self, callback: F) -> Self {
+        self.on_focus_change = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     pub fn value(&self) -> String {
         self.value.borrow().clone()
     }
@@ -109,6 +172,31 @@ impl ChatComposer {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(spacing);
 
+        // Model selector chip (sparkle + model label) above the input.
+        if let (Some(label), Some(cb)) = (self.model_label.clone(), self.on_select_model.clone()) {
+            let chip = TopbarButton::new(
+                Flex::row()
+                    .with_spacing(6.0)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        Icon::new("sparkle")
+                            .with_size(14.0)
+                            .with_theme_color(ColorToken::Accent, app)
+                            .finish(),
+                    )
+                    .with_child(
+                        crate::elements::Text::new(label)
+                            .with_theme_color(ColorToken::Text, app)
+                            .with_font_size(13.0)
+                            .finish(),
+                    )
+                    .finish(),
+            )
+            .with_on_click(move || (cb.borrow_mut())())
+            .finish();
+            column = column.with_child(chip);
+        }
+
         if !self.attachments.is_empty() {
             let mut attachment_row = Flex::row().with_spacing(spacing);
             for attachment in &self.attachments {
@@ -123,24 +211,10 @@ impl ChatComposer {
             column = column.with_child(attachment_row.finish());
         }
 
-        let value = self.value.clone();
-        let on_change = self.on_change.clone();
-        let textarea = TextArea::new()
-            .with_value(self.value.borrow().clone())
-            .with_placeholder(self.placeholder.clone())
-            .with_min_height(60.0)
-            .with_on_change(move |text| {
-                *value.borrow_mut() = text.clone();
-                if let Some(cb) = on_change.as_ref() {
-                    (cb.borrow_mut())(text);
-                }
-            })
-            .finish();
-        column = column.with_child(textarea);
-
+        // Send closure shared between Enter-to-submit and the send button.
         let value_for_send = self.value.clone();
         let on_send = self.on_send.clone();
-        let send = move || {
+        let send = Rc::new(RefCell::new(move || {
             let text = value_for_send.borrow().clone();
             if !text.is_empty() {
                 if let Some(cb) = on_send.as_ref() {
@@ -148,7 +222,31 @@ impl ChatComposer {
                 }
                 *value_for_send.borrow_mut() = String::new();
             }
-        };
+        }));
+
+        let value = self.value.clone();
+        let on_change = self.on_change.clone();
+        let on_focus_change = self.on_focus_change.clone();
+        let send_for_submit = send.clone();
+        let textarea = TextArea::new()
+            .with_value(self.value.borrow().clone())
+            .with_placeholder(self.placeholder.clone())
+            .with_min_height(60.0)
+            .with_focused(self.focused)
+            .with_on_change(move |text| {
+                *value.borrow_mut() = text.clone();
+                if let Some(cb) = on_change.as_ref() {
+                    (cb.borrow_mut())(text);
+                }
+            })
+            .with_on_focus_change(move |focused| {
+                if let Some(cb) = on_focus_change.as_ref() {
+                    (cb.borrow_mut())(focused);
+                }
+            })
+            .with_on_submit(move || (send_for_submit.borrow_mut())())
+            .finish();
+        column = column.with_child(textarea);
 
         let mut footer = Flex::row()
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
@@ -203,18 +301,84 @@ impl ChatComposer {
                 .finish(),
             );
         }
+        if let Some(cb) = self.on_image.clone() {
+            left_group = left_group.with_child(
+                TopbarButton::new(
+                    Icon::new("image")
+                        .with_size(18.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_on_click(move || (cb.borrow_mut())())
+                .finish(),
+            );
+        }
+        if let Some(cb) = self.on_code.clone() {
+            left_group = left_group.with_child(
+                TopbarButton::new(
+                    Icon::new("code")
+                        .with_size(18.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_on_click(move || (cb.borrow_mut())())
+                .finish(),
+            );
+        }
+        if let Some(cb) = self.on_link.clone() {
+            left_group = left_group.with_child(
+                TopbarButton::new(
+                    Icon::new("link")
+                        .with_size(18.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_on_click(move || (cb.borrow_mut())())
+                .finish(),
+            );
+        }
+        if let Some(cb) = self.on_voice.clone() {
+            left_group = left_group.with_child(
+                TopbarButton::new(
+                    Icon::new("mic")
+                        .with_size(18.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_on_click(move || (cb.borrow_mut())())
+                .finish(),
+            );
+        }
         footer = footer.with_child(left_group.finish());
         footer = footer.with_child(Spacer::new().finish());
-        footer = footer.with_child(
+
+        let mut right_group = Flex::row().with_spacing(spacing);
+        if self.stop_visible {
+            if let Some(cb) = self.on_stop.clone() {
+                right_group = right_group.with_child(
+                    TopbarButton::new(
+                        Icon::new("stop")
+                            .with_size(18.0)
+                            .with_theme_color(ColorToken::Error, app)
+                            .finish(),
+                    )
+                    .with_on_click(move || (cb.borrow_mut())())
+                    .finish(),
+                );
+            }
+        }
+        let send_for_button = send.clone();
+        right_group = right_group.with_child(
             TopbarButton::new(
                 Icon::new("send")
                     .with_size(18.0)
                     .with_theme_color(ColorToken::Accent, app)
                     .finish(),
             )
-            .with_on_click(send)
+            .with_on_click(move || (send_for_button.borrow_mut())())
             .finish(),
         );
+        footer = footer.with_child(right_group.finish());
 
         column = column.with_child(
             Container::new(footer.finish())
@@ -247,11 +411,7 @@ impl Element for ChatComposer {
         app: &AppContext,
     ) -> Vector2F {
         self.rebuild(app);
-        let size = self
-            .root
-            .as_mut()
-            .unwrap()
-            .layout(constraint, ctx, app);
+        let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size
     }

@@ -1,7 +1,7 @@
 use crate::color::ColorU;
 use crate::elements::{
-    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, Element, EventContext,
-    Fill, Flex, LayoutContext, MainAxisAlignment, PaintContext, Point, SizeConstraint, Text,
+    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, Element, EventContext, Fill,
+    Flex, LayoutContext, MainAxisAlignment, PaintContext, Point, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, Vector2F};
@@ -118,12 +118,7 @@ fn traffic_light(color: ColorU) -> Box<dyn Element> {
             let rect = rectf(origin.x, origin.y, self.size.x, self.size.y);
             if let Some(renderer) = ctx.renderer.as_mut() {
                 renderer.fill_rounded_rect(rect, self.color, self.size.x * 0.5);
-                renderer.stroke_rect(
-                    rect,
-                    ColorU::new(0, 0, 0, 30),
-                    1.0,
-                    self.size.x * 0.5,
-                );
+                renderer.stroke_rect(rect, ColorU::new(0, 0, 0, 30), 1.0, self.size.x * 0.5);
             }
         }
         fn size(&self) -> Option<Vector2F> {

@@ -63,6 +63,16 @@ npm run build
 npm run tauri build
 ```
 
+### Native UI (wgpu/winit) with live hot reload
+
+The product shell is the native UI in `app/` (`goble-app`) + `crates/goble-ui-hot`, built directly on `goble-ui` (wgpu/winit). View trees are built in `crates/goble-ui-hot/src/lib.rs`; state and actions live in `app/src/root_view.rs`. `crates/goble-desktop-native` is the backend-integration reference (state_api + views pattern) and is not the product shell. To iterate on the shell without rebuilding the whole binary every time:
+
+```bash
+./scripts/dev-ui.sh
+```
+
+The script builds `goble-app` once, starts it, and then watches `crates/goble-ui-hot`. Editing `crates/goble-ui-hot/src/lib.rs` rebuilds only the small hot-reload cdylib; the running app swaps it in live. Restart the script when you change `crates/goble-ui` itself (that is the ABI the executable is linked against).
+
 ## License
 
 MIT — see `LICENSE`.

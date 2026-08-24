@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::render::RenderCommand;
+use crate::theme::FontFamily;
 
 const ATLAS_SIZE: u32 = 2048;
 const PADDING: u32 = 4;
@@ -50,6 +51,7 @@ struct TextKey {
     text: String,
     font_size: u32,
     weight: FontWeight,
+    mono: bool,
 }
 
 impl TextAtlas {
@@ -170,11 +172,19 @@ impl TextAtlas {
         let keys: Vec<TextKey> = commands
             .iter()
             .filter_map(|command| {
-                if let RenderCommand::DrawText { text, font_size, font_weight, .. } = command {
+                if let RenderCommand::DrawText {
+                    text,
+                    font_size,
+                    font_weight,
+                    font_family,
+                    ..
+                } = command
+                {
                     Some(TextKey {
                         text: text.clone(),
                         font_size: (*font_size).round() as u32,
                         weight: *font_weight,
+                        mono: *font_family == FontFamily::Mono,
                     })
                 } else {
                     None
@@ -186,7 +196,9 @@ impl TextAtlas {
             if self.entries.contains_key(&key) {
                 continue;
             }
-            if let Some((entry, data, width, height)) = rasterize_text(&key.text, key.font_size, key.weight) {
+            if let Some((entry, data, width, height)) =
+                rasterize_text(&key.text, key.font_size, key.weight, key.mono)
+            {
                 if self.cursor_x + width + PADDING > ATLAS_SIZE {
                     self.cursor_x = PADDING;
                     self.cursor_y += self.row_height + PADDING;
@@ -203,7 +215,10 @@ impl TextAtlas {
                 self.row_height = self.row_height.max(height);
 
                 let uv_origin = [x as f32 / ATLAS_SIZE as f32, y as f32 / ATLAS_SIZE as f32];
-                let uv_size = [width as f32 / ATLAS_SIZE as f32, height as f32 / ATLAS_SIZE as f32];
+                let uv_size = [
+                    width as f32 / ATLAS_SIZE as f32,
+                    height as f32 / ATLAS_SIZE as f32,
+                ];
                 let entry = AtlasEntry {
                     uv_origin,
                     uv_size,
@@ -254,10 +269,21 @@ impl TextAtlas {
     }
 
     pub fn entry(&self, text: &str, font_size: f32, weight: FontWeight) -> Option<&AtlasEntry> {
+        self.entry_with_family(text, font_size, weight, FontFamily::System)
+    }
+
+    pub fn entry_with_family(
+        &self,
+        text: &str,
+        font_size: f32,
+        weight: FontWeight,
+        family: FontFamily,
+    ) -> Option<&AtlasEntry> {
         let key = TextKey {
             text: text.to_string(),
             font_size: font_size.round() as u32,
             weight,
+            mono: family == FontFamily::Mono,
         };
         self.entries.get(&key)
     }
@@ -268,11 +294,36 @@ impl TextAtlas {
 /// This is the source of truth for layout in elements such as [`crate::elements::Text`].
 /// If the bundled fonts cannot be loaded it returns a conservative heuristic so that
 /// layout never panics.
-pub fn measure_text(text: &str, font_size: f32, line_height: f32, max_width: f32, weight: FontWeight) -> crate::geometry::Vector2F {
+pub fn measure_text(
+    text: &str,
+    font_size: f32,
+    line_height: f32,
+    max_width: f32,
+    weight: FontWeight,
+) -> crate::geometry::Vector2F {
+    measure_text_family(
+        text,
+        font_size,
+        line_height,
+        max_width,
+        weight,
+        FontFamily::System,
+    )
+}
+
+/// Like [`measure_text`] but using an explicit font family (e.g. mono for terminals).
+pub fn measure_text_family(
+    text: &str,
+    font_size: f32,
+    line_height: f32,
+    max_width: f32,
+    weight: FontWeight,
+    family: FontFamily,
+) -> crate::geometry::Vector2F {
     let Some(font_set) = font_set() else {
         return estimate_text_size(text, font_size, line_height, max_width);
     };
-    let font = font_set.select(weight);
+    let font = font_set.select(weight, family);
     let fonts = &[font.clone()];
     let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
     let settings = if max_width.is_finite() && max_width > 0.0 {
@@ -328,42 +379,79 @@ struct FontSet {
     regular: fontdue::Font,
     medium: fontdue::Font,
     bold: fontdue::Font,
+    mono: fontdue::Font,
+    mono_bold: fontdue::Font,
 }
 
 impl FontSet {
-    fn select(&self, weight: FontWeight) -> &fontdue::Font {
-        match weight {
-            FontWeight::Regular => &self.regular,
-            FontWeight::Medium => &self.medium,
-            FontWeight::Bold | FontWeight::SemiBold => &self.bold,
+    fn select(&self, weight: FontWeight, family: FontFamily) -> &fontdue::Font {
+        match family {
+            FontFamily::Mono => match weight {
+                FontWeight::Regular | FontWeight::Medium => &self.mono,
+                FontWeight::Bold | FontWeight::SemiBold => &self.mono_bold,
+            },
+            FontFamily::System | FontFamily::Serif => match weight {
+                FontWeight::Regular => &self.regular,
+                FontWeight::Medium => &self.medium,
+                FontWeight::Bold | FontWeight::SemiBold => &self.bold,
+            },
         }
     }
 }
 
 fn font_set() -> Option<&'static FontSet> {
     static FONTS: OnceLock<Option<FontSet>> = OnceLock::new();
-    FONTS.get_or_init(|| {
-        let regular = load_bundled_font(FontWeight::Regular)?;
-        let medium = load_bundled_font(FontWeight::Medium).unwrap_or_else(|| regular.clone());
-        let bold = load_bundled_font(FontWeight::Bold).unwrap_or_else(|| regular.clone());
-        Some(FontSet { regular, medium, bold })
-    })
-    .as_ref()
+    FONTS
+        .get_or_init(|| {
+            let regular = load_bundled_font(FontWeight::Regular, FontFamily::System)?;
+            let medium = load_bundled_font(FontWeight::Medium, FontFamily::System)
+                .unwrap_or_else(|| regular.clone());
+            let bold = load_bundled_font(FontWeight::Bold, FontFamily::System)
+                .unwrap_or_else(|| regular.clone());
+            let mono = load_bundled_font(FontWeight::Regular, FontFamily::Mono)
+                .unwrap_or_else(|| regular.clone());
+            let mono_bold = load_bundled_font(FontWeight::Bold, FontFamily::Mono)
+                .unwrap_or_else(|| mono.clone());
+            Some(FontSet {
+                regular,
+                medium,
+                bold,
+                mono,
+                mono_bold,
+            })
+        })
+        .as_ref()
 }
 
-fn load_bundled_font(weight: FontWeight) -> Option<fontdue::Font> {
-    let bytes: &[u8] = match weight {
-        FontWeight::Regular => include_bytes!("../../assets/fonts/roboto/Roboto-Regular.ttf"),
-        FontWeight::Medium => include_bytes!("../../assets/fonts/roboto/Roboto-Medium.ttf"),
-        FontWeight::Bold => include_bytes!("../../assets/fonts/roboto/Roboto-Bold.ttf"),
-        FontWeight::SemiBold => include_bytes!("../../assets/fonts/roboto/RobotoFlex-Semibold.ttf"),
+fn load_bundled_font(weight: FontWeight, family: FontFamily) -> Option<fontdue::Font> {
+    let bytes: &[u8] = match (family, weight) {
+        (FontFamily::Mono, FontWeight::Bold | FontWeight::SemiBold) => {
+            include_bytes!("../../assets/fonts/hack/Hack-Bold.ttf")
+        }
+        (FontFamily::Mono, _) => include_bytes!("../../assets/fonts/hack/Hack-Regular.ttf"),
+        (_, FontWeight::Regular) => include_bytes!("../../assets/fonts/roboto/Roboto-Regular.ttf"),
+        (_, FontWeight::Medium) => include_bytes!("../../assets/fonts/roboto/Roboto-Medium.ttf"),
+        (_, FontWeight::Bold) => include_bytes!("../../assets/fonts/roboto/Roboto-Bold.ttf"),
+        (_, FontWeight::SemiBold) => {
+            include_bytes!("../../assets/fonts/roboto/RobotoFlex-Semibold.ttf")
+        }
     };
     fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
 }
 
-fn rasterize_text(text: &str, font_size: u32, weight: FontWeight) -> Option<(AtlasEntry, Vec<u8>, u32, u32)> {
+fn rasterize_text(
+    text: &str,
+    font_size: u32,
+    weight: FontWeight,
+    mono: bool,
+) -> Option<(AtlasEntry, Vec<u8>, u32, u32)> {
     let font_set = font_set()?;
-    let font = font_set.select(weight);
+    let family = if mono {
+        FontFamily::Mono
+    } else {
+        FontFamily::System
+    };
+    let font = font_set.select(weight, family);
     let fonts = &[font.clone()];
     let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
     layout.reset(&fontdue::layout::LayoutSettings {
@@ -371,7 +459,10 @@ fn rasterize_text(text: &str, font_size: u32, weight: FontWeight) -> Option<(Atl
         max_height: None,
         ..Default::default()
     });
-    layout.append(fonts, &fontdue::layout::TextStyle::new(text, font_size as f32, 0));
+    layout.append(
+        fonts,
+        &fontdue::layout::TextStyle::new(text, font_size as f32, 0),
+    );
 
     let glyphs = layout.glyphs();
     if glyphs.is_empty() {

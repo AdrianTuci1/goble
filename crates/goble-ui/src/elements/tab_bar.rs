@@ -36,9 +36,7 @@ impl Tab {
         } else {
             ColorToken::Bg
         };
-        let label = Text::new(&self.label)
-            .with_theme_color(color, app)
-            .finish();
+        let label = Text::new(&self.label).with_theme_color(color, app).finish();
         let root = Container::new(label)
             .with_padding(EdgeInsets::new(spacing, spacing, spacing, spacing))
             .with_background(Fill::Solid(app.theme.color(bg)))

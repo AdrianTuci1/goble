@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, ChatRole};
 use crate::elements::{
-    AppContext, Axis, ChatComposer, Container, CrossAxisAlignment, EdgeInsets, Element, Fill,
-    Flex, GroupChatMessageGroup, LayoutContext, MainAxisAlignment, PaintContext, Point, Scrollable,
+    AppContext, Axis, ChatComposer, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex,
+    GroupChatMessageGroup, LayoutContext, MainAxisAlignment, PaintContext, Point, Scrollable,
     SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
@@ -95,7 +95,8 @@ impl ThreadView {
             }
             message_column
         };
-        column = column.with_child(Scrollable::new(message_column.finish(), Axis::Vertical).finish());
+        column =
+            column.with_child(Scrollable::new(message_column.finish(), Axis::Vertical).finish());
 
         let current_value = self.composer_value.borrow().clone();
         let composer_value = self.composer_value.clone();
@@ -207,8 +208,11 @@ mod tests {
     fn thread_view_layouts_with_messages() {
         let app = AppContext::default();
         let messages = vec![
-            ChatMessage::new(ChatRole::Assistant, vec![ChatFragment::text("Thread message")])
-                .with_author_name("Ada"),
+            ChatMessage::new(
+                ChatRole::Assistant,
+                vec![ChatFragment::text("Thread message")],
+            )
+            .with_author_name("Ada"),
             ChatMessage::new(ChatRole::Assistant, vec![ChatFragment::text("Another")])
                 .with_author_name("Ada"),
         ];

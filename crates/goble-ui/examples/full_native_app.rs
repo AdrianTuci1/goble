@@ -3,16 +3,14 @@ use goble_core::thread::{Participant, ThreadKind, UserId};
 use goble_core::user::UserProfile;
 use goble_desktop_service::{CollectingEventBus, DesktopState};
 use goble_ui::elements::chat_content::ChatMessage as UiChatMessage;
-use goble_ui::elements::{
-    AppContext, Button, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element, Fill,
-    Flex, LayoutContext, MainAxisAlignment, SizeConstraint,
-};
+use goble_ui::elements::ConstrainedBox;
 use goble_ui::geometry::vec2f;
+use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::{
-    ChatView, SettingsPage, SettingsView, ThreadKind as UiThreadKind, ThreadListEntry,
+    AppContext, Button, ChatView, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex,
+    LayoutContext, MainAxisAlignment, SettingsPage, SettingsView, SizeConstraint, ThreadListEntry,
     ThreadsContainer,
 };
-use goble_ui::theme::{ColorToken, SpacingToken};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -53,7 +51,12 @@ impl TabbedApp {
         }
     }
 
-    fn tab_button(label: &str, tab: AppTab, current: AppTab, target: Rc<RefCell<AppTab>>) -> Box<dyn Element> {
+    fn tab_button(
+        label: &str,
+        tab: AppTab,
+        current: AppTab,
+        target: Rc<RefCell<AppTab>>,
+    ) -> Box<dyn Element> {
         let style = if current == tab {
             goble_ui::ButtonVariant::Primary
         } else {
@@ -75,9 +78,24 @@ impl TabbedApp {
             .with_main_axis_alignment(MainAxisAlignment::Start)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(spacing)
-            .with_child(Self::tab_button("Threads", AppTab::Threads, current, self.tab.clone()))
-            .with_child(Self::tab_button("Chat", AppTab::Chat, current, self.tab.clone()))
-            .with_child(Self::tab_button("Settings", AppTab::Settings, current, self.tab.clone()))
+            .with_child(Self::tab_button(
+                "Threads",
+                AppTab::Threads,
+                current,
+                self.tab.clone(),
+            ))
+            .with_child(Self::tab_button(
+                "Chat",
+                AppTab::Chat,
+                current,
+                self.tab.clone(),
+            ))
+            .with_child(Self::tab_button(
+                "Settings",
+                AppTab::Settings,
+                current,
+                self.tab.clone(),
+            ))
             .finish();
 
         let header = Container::new(tab_row)
@@ -86,7 +104,11 @@ impl TabbedApp {
 
         let body: Box<dyn Element> = match current {
             AppTab::Threads => {
-                let selected = self.threads.first().map(|t| t.id.clone()).unwrap_or_default();
+                let selected = self
+                    .threads
+                    .first()
+                    .map(|t| t.id.clone())
+                    .unwrap_or_default();
                 ThreadsContainer::new(&selected)
                     .with_threads(self.threads.clone())
                     .with_messages(&selected, self.thread_messages.clone())
@@ -101,9 +123,7 @@ impl TabbedApp {
                 .finish(),
         };
 
-        let body = ConstrainedBox::new(body)
-            .with_max_height(600.0)
-            .finish();
+        let body = ConstrainedBox::new(body).with_max_height(600.0).finish();
 
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -176,16 +196,14 @@ fn main() -> anyhow::Result<()> {
     state.set_event_bus(Arc::new(bus.clone()));
 
     let owner = UserId::generate();
-    let thread = state
-        .thread_store()
-        .create_thread(
-            ThreadKind::Channel,
-            "General",
-            owner.clone(),
-            false,
-            vec![Participant::User(owner.clone())],
-            vec!["#general".to_string()],
-        )?;
+    let thread = state.thread_store().create_thread(
+        ThreadKind::Channel,
+        "General",
+        owner.clone(),
+        false,
+        vec![Participant::User(owner.clone())],
+        vec!["#general".to_string()],
+    )?;
     state.thread_store().post_message(
         &thread.id,
         Participant::User(owner.clone()),
@@ -213,7 +231,7 @@ fn main() -> anyhow::Result<()> {
     let threads = vec![ThreadListEntry {
         id: thread.id.0.clone(),
         title: thread.title.clone(),
-        kind: UiThreadKind::Channel,
+        kind: goble_ui::ThreadKind::Channel,
         selected: true,
         unread_count: 0,
     }];

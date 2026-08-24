@@ -1,3 +1,4 @@
+pub mod agent_memory;
 pub mod agent_runtime;
 pub mod file_vault;
 pub mod harness_runner;

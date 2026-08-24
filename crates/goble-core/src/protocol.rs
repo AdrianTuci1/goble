@@ -102,6 +102,10 @@ pub enum WorkerMessage {
     ScheduledTasks {
         tasks: Vec<ScheduledTaskSummary>,
     },
+    // Live snapshot of scheduled routines pushed from the worker scheduler.
+    RoutinesUpdated {
+        routines: Vec<RoutineInfo>,
+    },
     TaskCancelled {
         task_id: String,
     },
@@ -170,6 +174,25 @@ pub struct ScheduledTaskSummary {
     pub agent_id: crate::agent::AgentId,
     pub trigger: crate::agent::Trigger,
     pub enabled: bool,
+}
+
+/// A scheduled routine plus its last execution state, shown in the UI panel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutineInfo {
+    pub id: String,
+    pub agent_id: crate::agent::AgentId,
+    pub trigger: crate::agent::Trigger,
+    pub enabled: bool,
+    pub last_run_at: Option<String>,
+    pub last_status: Option<String>,
+}
+
+/// A single line from the remote host stream, shown in the routines panel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteLogLine {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

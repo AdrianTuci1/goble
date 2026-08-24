@@ -1,11 +1,14 @@
-use crate::elements::{AppContext, Axis, Element, LayoutContext, PaintContext, Point, SizeConstraint};
+use crate::elements::{
+    AppContext, Axis, Element, LayoutContext, PaintContext, Point, SizeConstraint,
+};
 use crate::event::DispatchedEvent;
-use crate::geometry::Vector2F;
+use crate::geometry::{vec2f, Vector2F};
 
-/// Placeholder for a scrollable region.
+/// A scrollable region.
 ///
-/// For now it simply forwards layout and paint to its child. A full
-/// implementation will manage a scroll offset and clip/paint a scrollbar.
+/// The child is laid out with unbounded space along the scroll axis and the
+/// scrollable viewport itself fills the available space on that axis. Clipping
+/// and scroll offsets are not implemented yet.
 pub struct Scrollable {
     child: Box<dyn Element>,
     axis: Axis,
@@ -35,7 +38,40 @@ impl Element for Scrollable {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        let size = self.child.layout(constraint, ctx, app);
+        let (_, size) = match self.axis {
+            Axis::Vertical => {
+                let child_size = self.child.layout(
+                    SizeConstraint::new(vec2f(0.0, 0.0), vec2f(constraint.max.x, f32::INFINITY)),
+                    ctx,
+                    app,
+                );
+                let viewport = if constraint.max.y.is_finite() {
+                    vec2f(
+                        child_size.x.min(constraint.max.x).max(constraint.min.x),
+                        constraint.max.y,
+                    )
+                } else {
+                    child_size
+                };
+                (child_size, viewport)
+            }
+            Axis::Horizontal => {
+                let child_size = self.child.layout(
+                    SizeConstraint::new(vec2f(0.0, 0.0), vec2f(f32::INFINITY, constraint.max.y)),
+                    ctx,
+                    app,
+                );
+                let viewport = if constraint.max.x.is_finite() {
+                    vec2f(
+                        constraint.max.x,
+                        child_size.y.min(constraint.max.y).max(constraint.min.y),
+                    )
+                } else {
+                    child_size
+                };
+                (child_size, viewport)
+            }
+        };
         self.size = Some(size);
         size
     }
@@ -70,7 +106,7 @@ mod tests {
     use crate::geometry::vec2f;
 
     #[test]
-    fn scrollable_forwards_child_size() {
+    fn vertical_scrollable_fills_viewport_height() {
         let app = AppContext::default();
         let mut scrollable = Scrollable::new(
             Empty::new().with_size(vec2f(100.0, 200.0)).finish(),
@@ -81,6 +117,29 @@ mod tests {
             &mut LayoutContext::default(),
             &app,
         );
-        assert_eq!(size, vec2f(100.0, 200.0));
+        assert_eq!(
+            size,
+            vec2f(100.0, 300.0),
+            "viewport should fill the scroll axis"
+        );
+    }
+
+    #[test]
+    fn scrollable_child_can_exceed_viewport() {
+        let app = AppContext::default();
+        let mut scrollable = Scrollable::new(
+            Empty::new().with_size(vec2f(100.0, 800.0)).finish(),
+            Axis::Vertical,
+        );
+        let size = scrollable.layout(
+            SizeConstraint::loose(vec2f(300.0, 300.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert_eq!(
+            size,
+            vec2f(100.0, 300.0),
+            "viewport stays bounded even when content is taller"
+        );
     }
 }

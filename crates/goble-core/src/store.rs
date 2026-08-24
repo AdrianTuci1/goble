@@ -220,6 +220,13 @@ impl Store {
             ) STRICT;
 
             CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp DESC);
+
+            CREATE TABLE IF NOT EXISTS agent_memory (
+                agent_id TEXT PRIMARY KEY,
+                version INTEGER NOT NULL,
+                memory TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            ) STRICT;
             "#,
         )
         .context("failed to run migrations")?;
@@ -452,6 +459,46 @@ impl Store {
             .lock()
             .execute("DELETE FROM agents WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    pub fn get_agent_memory(&self, agent_id: &str) -> Result<Option<crate::agent_memory::AgentMemory>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT memory FROM agent_memory WHERE agent_id = ?1")?;
+        let mut rows = stmt.query(params![agent_id])?;
+        if let Some(row) = rows.next()? {
+            let json: String = row.get(0)?;
+            let memory =
+                serde_json::from_str(&json).context("failed to deserialize agent memory")?;
+            Ok(Some(memory))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn put_agent_memory(&self, memory: &crate::agent_memory::AgentMemory) -> Result<()> {
+        let json =
+            serde_json::to_string(memory).context("failed to serialize agent memory")?;
+        self.conn.lock().execute(
+            "INSERT INTO agent_memory (agent_id, version, memory, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(agent_id) DO UPDATE SET version=excluded.version, memory=excluded.memory,
+                                                 updated_at=excluded.updated_at",
+            params![memory.agent_id, memory.version, json, memory.updated_at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_agent_memories(&self) -> Result<Vec<crate::agent_memory::AgentMemory>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT memory FROM agent_memory ORDER BY updated_at DESC")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let json = row?;
+            out.push(
+                serde_json::from_str(&json).context("failed to deserialize agent memory")?,
+            );
+        }
+        Ok(out)
     }
 
     pub fn delete_worker(&self, id: &str) -> Result<()> {
@@ -1378,6 +1425,7 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "missions",
     "reasoning_steps",
     "pending_asks",
+    "agent_memory",
 ];
 
 #[cfg(test)]
@@ -1482,6 +1530,49 @@ mod tests {
         let servers = store.list_mcp_servers().unwrap();
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].1, "files");
+    }
+
+    #[test]
+    fn test_agent_memory_crud_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.get_agent_memory("a1").unwrap().is_none());
+
+        let mut memory = crate::agent_memory::AgentMemory::new("a1", "ship v1");
+        memory.add_goal("implement memory");
+        memory.record_decision("use sqlite", "simple");
+        store.put_agent_memory(&memory).unwrap();
+
+        let loaded = store.get_agent_memory("a1").unwrap().unwrap();
+        assert_eq!(loaded.brief, "ship v1");
+        assert_eq!(loaded.goals.len(), 1);
+        assert_eq!(loaded.decisions.len(), 1);
+        assert_eq!(loaded.version, memory.version);
+
+        // Upsert updates in place.
+        let mut updated = loaded.clone();
+        updated.add_fact("new fact");
+        store.put_agent_memory(&updated).unwrap();
+        let reloaded = store.get_agent_memory("a1").unwrap().unwrap();
+        assert_eq!(reloaded.facts.len(), 1);
+        assert_eq!(store.list_agent_memories().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_agent_memory_in_snapshot() {
+        let store = Store::open_in_memory().unwrap();
+        let mut memory = crate::agent_memory::AgentMemory::new("a1", "brief");
+        memory.add_goal("goal");
+        store.put_agent_memory(&memory).unwrap();
+
+        let payload = store.export_snapshot_payload().unwrap();
+        assert!(payload.tables.contains_key("agent_memory"));
+        assert_eq!(payload.tables["agent_memory"].len(), 1);
+
+        let store2 = Store::open_in_memory().unwrap();
+        store2.import_snapshot_payload(payload).unwrap();
+        let loaded = store2.get_agent_memory("a1").unwrap().unwrap();
+        assert_eq!(loaded.brief, "brief");
+        assert_eq!(loaded.goals.len(), 1);
     }
 
     #[test]

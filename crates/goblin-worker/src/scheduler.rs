@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use cron::Schedule;
 use goble_core::agent::{AgentId, Trigger};
-use goble_core::protocol::WorkerMessage;
+use goble_core::protocol::{RoutineInfo, WorkerMessage};
 
 use crate::leader::LeaderState;
 use crate::runner::Runner;
@@ -44,6 +44,7 @@ impl Scheduler {
             level: goble_core::execution::LogLevel::Info,
             message: format!("scheduled task {} with {:?}", task.id, task.trigger),
         });
+        self.emit_routines();
         Ok(task)
     }
 
@@ -52,11 +53,30 @@ impl Scheduler {
     }
 
     pub fn cancel_task(&self, task_id: &str) -> anyhow::Result<bool> {
-        self.store.lock().unwrap().delete(task_id)
+        let deleted = self.store.lock().unwrap().delete(task_id)?;
+        self.emit_routines();
+        Ok(deleted)
     }
 
     pub fn pause_task(&self, task_id: &str, enabled: bool) -> anyhow::Result<bool> {
-        self.store.lock().unwrap().enable(task_id, enabled)
+        let updated = self.store.lock().unwrap().enable(task_id, enabled)?;
+        self.emit_routines();
+        Ok(updated)
+    }
+
+    /// Push the current routine snapshot to the desktop (leader only).
+    pub fn emit_routines(&self) {
+        if !self.state.is_scheduler_leader() {
+            return;
+        }
+        let routines = self
+            .store
+            .lock()
+            .unwrap()
+            .list()
+            .map(|tasks| tasks.into_iter().map(routine_info).collect())
+            .unwrap_or_default();
+        self.state.emit(WorkerMessage::RoutinesUpdated { routines });
     }
 
     pub async fn trigger_agent(&self, agent_id: AgentId) -> anyhow::Result<String> {
@@ -147,19 +167,43 @@ impl Scheduler {
                         if let Trigger::Heartbeat { .. } = &task.trigger {
                             last_heartbeat.insert(task.id.clone(), Instant::now());
                         }
+                        let _ = self
+                            .store
+                            .lock()
+                            .unwrap()
+                            .mark_run(&task.id, "running");
                         let scheduler = Arc::clone(&self);
+                        let task_id = task.id.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = scheduler.trigger_agent(task.agent_id.clone()).await {
-                                scheduler.state.emit(WorkerMessage::AgentLog {
-                                    trace_id: task.id.clone(),
-                                    step_id: "scheduler".to_string(),
-                                    level: goble_core::execution::LogLevel::Error,
-                                    message: format!("trigger failed: {e}"),
-                                });
+                            let result = scheduler.trigger_agent(task.agent_id.clone()).await;
+                            match &result {
+                                Ok(_) => {
+                                    let _ = scheduler
+                                        .store
+                                        .lock()
+                                        .unwrap()
+                                        .mark_run(&task_id, "success");
+                                }
+                                Err(e) => {
+                                    let _ = scheduler
+                                        .store
+                                        .lock()
+                                        .unwrap()
+                                        .mark_run(&task_id, "error");
+                                    scheduler.state.emit(WorkerMessage::AgentLog {
+                                        trace_id: task_id,
+                                        step_id: "scheduler".to_string(),
+                                        level: goble_core::execution::LogLevel::Error,
+                                        message: format!("trigger failed: {e}"),
+                                    });
+                                }
                             }
                         });
                     }
                 }
+
+                // Keep the desktop's routine panel in sync on every tick.
+                self.emit_routines();
 
                 self.state.emit(WorkerMessage::StatusReport {
                     worker_id: self.state.worker_id.clone(),
@@ -172,6 +216,17 @@ impl Scheduler {
 
     pub fn start_heartbeat_loop(self: Arc<Self>, interval: Duration) {
         let _ = interval;
+    }
+}
+
+fn routine_info(task: ScheduledTask) -> RoutineInfo {
+    RoutineInfo {
+        id: task.id,
+        agent_id: task.agent_id,
+        trigger: task.trigger,
+        enabled: task.enabled,
+        last_run_at: task.last_run_at.map(|t| t.to_rfc3339()),
+        last_status: task.last_status,
     }
 }
 

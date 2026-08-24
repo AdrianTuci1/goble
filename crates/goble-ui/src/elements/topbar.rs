@@ -115,14 +115,10 @@ impl Topbar {
             .with_child(right)
             .finish();
 
-        let root = Container::new(
-            ConstrainedBox::new(row)
-                .with_height(TOPBAR_HEIGHT)
-                .finish(),
-        )
-        .with_padding(EdgeInsets::new(0.0, spacing, 0.0, spacing))
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-        .finish();
+        let root = Container::new(ConstrainedBox::new(row).with_height(TOPBAR_HEIGHT).finish())
+            .with_padding(EdgeInsets::new(0.0, spacing, 0.0, spacing))
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+            .finish();
 
         Self {
             root,
@@ -297,12 +293,7 @@ fn traffic_light(color: ColorU) -> Box<dyn Element> {
             let rect = rectf(origin.x, origin.y, self.size.x, self.size.y);
             if let Some(renderer) = ctx.renderer.as_mut() {
                 renderer.fill_rounded_rect(rect, self.color, self.size.x * 0.5);
-                renderer.stroke_rect(
-                    rect,
-                    ColorU::new(0, 0, 0, 30),
-                    1.0,
-                    self.size.x * 0.5,
-                );
+                renderer.stroke_rect(rect, ColorU::new(0, 0, 0, 30), 1.0, self.size.x * 0.5);
             }
         }
         fn size(&self) -> Option<Vector2F> {
@@ -327,16 +318,7 @@ mod tests {
     #[test]
     fn topbar_layouts_non_zero() {
         let app = AppContext::default();
-        let mut topbar = Topbar::new(
-            false,
-            false,
-            false,
-            || {},
-            || {},
-            || {},
-            || {},
-            &app,
-        );
+        let mut topbar = Topbar::new(false, false, false, || {}, || {}, || {}, || {}, &app);
         let size = topbar.layout(
             SizeConstraint::loose(vec2f(1024.0, 768.0)),
             &mut LayoutContext::default(),

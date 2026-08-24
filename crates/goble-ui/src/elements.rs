@@ -9,10 +9,11 @@ pub use chat_header::ChatHeader;
 pub use chat_layout::{ChatLayout, CHAT_RIGHT_SIDEBAR_WIDTH};
 pub use chat_sidebar::{ChatSidebar, CHAT_SIDEBAR_WIDTH};
 pub use conversation_list_item::{ConversationListItem, ConversationStatus};
-pub use conversation_sidebar::{ConversationEntry, ConversationSidebar, CONVERSATION_SIDEBAR_WIDTH};
+pub use conversation_sidebar::{
+    ConversationEntry, ConversationSidebar, CONVERSATION_SIDEBAR_WIDTH,
+};
 pub mod markdown;
 pub use chat_message_bubble::ChatMessageBubble;
-pub use markdown::parse_markdown;
 pub use checkbox::Checkbox;
 pub use chip::Chip;
 pub use clipped::Clipped;
@@ -24,11 +25,13 @@ pub use divider::Divider;
 pub use drawer::{Drawer, DrawerAnchor};
 pub use dropdown_menu::{DropdownItem, DropdownMenu};
 pub use empty::Empty;
+pub use expanded::Expanded;
 pub use flex::Flex;
 pub use header::Header;
 pub use icon::{Icon, IconName};
 pub use icon_button::IconButton;
 pub use label::{Label, LabelSize};
+pub use markdown::parse_markdown;
 pub use modal::Modal;
 pub use padding::Padding;
 pub use page::Page;
@@ -36,8 +39,10 @@ pub use quick_action_button::QuickActionButton;
 pub use rect::Rect;
 pub use right_panel::RightPanel;
 pub use running_indicator::RunningIndicator;
+pub use scrollable::Scrollable;
 pub use search_input::SearchInput;
 pub use select::{Select, SelectOption};
+pub use sheet::{Sheet, SHEET_DEFAULT_WIDTH};
 pub use shell::{ActiveView, SettingsTab, ShellState, ShellView, SidebarMode};
 pub use sidebar::Sidebar;
 pub use sidebar_item::SidebarItem;
@@ -45,6 +50,9 @@ pub use spacer::Spacer;
 pub use stack::Stack;
 pub use switch::Switch;
 pub use tab_bar::{Tab, TabBar};
+pub use terminal_block::{
+    TerminalBlock, TerminalData, TerminalLine, TerminalLineKind, TerminalStatus,
+};
 pub use text::Text;
 pub use text_area::TextArea;
 pub use text_input::TextInput;
@@ -53,7 +61,6 @@ pub use titlebar::TitleBar;
 pub use toggle_button::ToggleButton;
 pub use toolbar::Toolbar;
 pub use topbar::{Topbar, TopbarButton};
-pub use scrollable::Scrollable;
 
 use std::any::Any;
 
@@ -414,6 +421,10 @@ pub trait Element {
         None
     }
 
+    fn flex_grow(&self) -> Option<f32> {
+        None
+    }
+
     fn as_selectable_element(&self) -> Option<&dyn SelectableElement> {
         None
     }
@@ -470,8 +481,6 @@ pub mod chat_header;
 pub mod chat_layout;
 pub mod chat_message_bubble;
 pub mod chat_sidebar;
-pub mod conversation_list_item;
-pub mod conversation_sidebar;
 pub mod checkbox;
 pub mod chip;
 pub mod clipped;
@@ -479,10 +488,13 @@ pub mod code;
 pub mod connector_card;
 pub mod constrained_box;
 pub mod container;
+pub mod conversation_list_item;
+pub mod conversation_sidebar;
 pub mod divider;
 pub mod drawer;
 pub mod dropdown_menu;
 pub mod empty;
+pub mod expanded;
 pub mod flex;
 pub mod group_chat_message;
 pub mod group_chat_message_group;
@@ -501,15 +513,17 @@ pub mod rect;
 pub mod right_panel;
 pub mod running_indicator;
 pub mod scrollable;
-pub mod shell;
 pub mod search_input;
 pub mod select;
+pub mod sheet;
+pub mod shell;
 pub mod sidebar;
 pub mod sidebar_item;
 pub mod spacer;
 pub mod stack;
 pub mod switch;
 pub mod tab_bar;
+pub mod terminal_block;
 pub mod text;
 pub mod text_area;
 pub mod text_input;

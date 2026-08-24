@@ -72,7 +72,11 @@ pub struct WgpuRenderEngine {
 }
 
 impl WgpuRenderEngine {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, surface_format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+    ) -> Self {
         let rect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("goble-ui rect shader"),
             source: wgpu::ShaderSource::Wgsl(RECT_SHADER.into()),
@@ -85,19 +89,20 @@ impl WgpuRenderEngine {
             mapped_at_creation: false,
         });
 
-        let rect_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("goble-ui rect bind group layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+        let rect_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("goble-ui rect bind group layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
 
         let rect_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("goble-ui rect bind group"),
@@ -205,37 +210,38 @@ impl WgpuRenderEngine {
             source: wgpu::ShaderSource::Wgsl(TEXT_SHADER.into()),
         });
 
-        let text_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("goble-ui text bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+        let text_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("goble-ui text bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
 
         let text_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("goble-ui text bind group"),
@@ -363,14 +369,41 @@ impl WgpuRenderEngine {
 
         for command in renderer.commands() {
             match command {
-                RenderCommand::FillRect { rect, color, corner_radius } => {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } => {
                     rect_instances.push(RectInstance::new_fill(*rect, *color, *corner_radius));
                 }
-                RenderCommand::StrokeRect { rect, color, width, corner_radius } => {
-                    rect_instances.push(RectInstance::new_stroke(*rect, *color, *width, *corner_radius));
+                RenderCommand::StrokeRect {
+                    rect,
+                    color,
+                    width,
+                    corner_radius,
+                } => {
+                    rect_instances.push(RectInstance::new_stroke(
+                        *rect,
+                        *color,
+                        *width,
+                        *corner_radius,
+                    ));
                 }
-                RenderCommand::DrawText { origin, text, font_size, color, font_weight, .. } => {
-                    if let Some(entry) = self.text_atlas.entry(text, *font_size, *font_weight) {
+                RenderCommand::DrawText {
+                    origin,
+                    text,
+                    font_size,
+                    color,
+                    font_weight,
+                    font_family,
+                    ..
+                } => {
+                    if let Some(entry) = self.text_atlas.entry_with_family(
+                        text,
+                        *font_size,
+                        *font_weight,
+                        *font_family,
+                    ) {
                         let left = origin.x + entry.offset[0];
                         let top = origin.y + entry.offset[1];
                         let right = left + entry.size[0];
@@ -382,14 +415,35 @@ impl WgpuRenderEngine {
                         let color = color.to_linear_f32();
 
                         text_vertices.extend_from_slice(&[
-                            TextVertex { position: [left, top], uv: [u0, v0], color },
-                            TextVertex { position: [right, top], uv: [u1, v0], color },
-                            TextVertex { position: [left, bottom], uv: [u0, v1], color },
-                            TextVertex { position: [right, bottom], uv: [u1, v1], color },
+                            TextVertex {
+                                position: [left, top],
+                                uv: [u0, v0],
+                                color,
+                            },
+                            TextVertex {
+                                position: [right, top],
+                                uv: [u1, v0],
+                                color,
+                            },
+                            TextVertex {
+                                position: [left, bottom],
+                                uv: [u0, v1],
+                                color,
+                            },
+                            TextVertex {
+                                position: [right, bottom],
+                                uv: [u1, v1],
+                                color,
+                            },
                         ]);
                     }
                 }
-                RenderCommand::DrawIcon { origin, name, size, color } => {
+                RenderCommand::DrawIcon {
+                    origin,
+                    name,
+                    size,
+                    color,
+                } => {
                     const ICON_CELL: f32 = 64.0;
                     if let Some(entry) = self.icon_atlas.entry(name) {
                         let scale = *size / ICON_CELL;
@@ -404,10 +458,26 @@ impl WgpuRenderEngine {
                         let color = color.to_linear_f32();
 
                         icon_vertices.extend_from_slice(&[
-                            TextVertex { position: [left, top], uv: [u0, v0], color },
-                            TextVertex { position: [right, top], uv: [u1, v0], color },
-                            TextVertex { position: [left, bottom], uv: [u0, v1], color },
-                            TextVertex { position: [right, bottom], uv: [u1, v1], color },
+                            TextVertex {
+                                position: [left, top],
+                                uv: [u0, v0],
+                                color,
+                            },
+                            TextVertex {
+                                position: [right, top],
+                                uv: [u1, v0],
+                                color,
+                            },
+                            TextVertex {
+                                position: [left, bottom],
+                                uv: [u0, v1],
+                                color,
+                            },
+                            TextVertex {
+                                position: [right, bottom],
+                                uv: [u1, v1],
+                                color,
+                            },
                         ]);
                     }
                 }

@@ -14,9 +14,7 @@ pub struct Padding {
 impl Padding {
     pub fn new(child: Box<dyn Element>, insets: EdgeInsets) -> Self {
         Self {
-            root: Container::new(child)
-                .with_padding(insets)
-                .finish(),
+            root: Container::new(child).with_padding(insets).finish(),
             size: None,
             origin: None,
         }
@@ -62,10 +60,8 @@ mod tests {
     #[test]
     fn padding_adds_insets() {
         let app = AppContext::default();
-        let mut padding = Padding::uniform(
-            Empty::new().with_size(vec2f(50.0, 50.0)).finish(),
-            10.0,
-        );
+        let mut padding =
+            Padding::uniform(Empty::new().with_size(vec2f(50.0, 50.0)).finish(), 10.0);
         let size = padding.layout(
             SizeConstraint::loose(vec2f(200.0, 200.0)),
             &mut LayoutContext::default(),

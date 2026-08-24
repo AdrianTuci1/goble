@@ -167,7 +167,12 @@ impl Element for ThreadListView {
         size
     }
 
-    fn paint(&mut self, origin: Vector2F, ctx: &mut crate::elements::PaintContext, app: &AppContext) {
+    fn paint(
+        &mut self,
+        origin: Vector2F,
+        ctx: &mut crate::elements::PaintContext,
+        app: &AppContext,
+    ) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         self.root.as_mut().unwrap().paint(origin, ctx, app);
     }
@@ -250,7 +255,11 @@ mod tests {
             &mut LayoutContext::default(),
             &app,
         );
-        view.paint(vec2f(0.0, 0.0), &mut crate::elements::PaintContext::default(), &app);
+        view.paint(
+            vec2f(0.0, 0.0),
+            &mut crate::elements::PaintContext::default(),
+            &app,
+        );
         view.dispatch_event(
             &crate::event::DispatchedEvent::MouseDown {
                 position: crate::geometry::vec2f(60.0, 100.0),

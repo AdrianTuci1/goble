@@ -1,0 +1,19 @@
+[package]
+name = "goble-ui-hot"
+version = "0.1.0"
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+goble-ui = { path = "../goble-ui" }
+goble-core = { path = "../goble-core" }
+
+
+[lints]
+workspace = true

@@ -1,4 +1,6 @@
-use crate::elements::{AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint};
+use crate::elements::{
+    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
+};
 use crate::event::DispatchedEvent;
 use crate::geometry::{vec2f, Vector2F};
 
@@ -52,10 +54,8 @@ impl Element for ChatLayout {
         let main_size = self.main.layout(main_constraint, ctx, app);
 
         let height = if let Some(right) = self.right.as_mut() {
-            let right_constraint = SizeConstraint::tight(vec2f(
-                right_width,
-                main_size.y.max(constraint.max.y),
-            ));
+            let right_constraint =
+                SizeConstraint::tight(vec2f(right_width, main_size.y.max(constraint.max.y)));
             let right_size = right.layout(right_constraint, ctx, app);
             main_size.y.max(right_size.y)
         } else {
@@ -76,7 +76,8 @@ impl Element for ChatLayout {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         self.main.paint(origin, ctx, app);
         if let Some(right) = self.right.as_mut() {
-            let right_x = (self.size.unwrap_or(Vector2F::zero()).x - CHAT_RIGHT_SIDEBAR_WIDTH).max(0.0);
+            let right_x =
+                (self.size.unwrap_or(Vector2F::zero()).x - CHAT_RIGHT_SIDEBAR_WIDTH).max(0.0);
             right.paint(origin + vec2f(right_x, 0.0), ctx, app);
         }
     }
@@ -114,16 +115,12 @@ mod tests {
     #[test]
     fn chat_layout_with_sidebar_sizes_correctly() {
         let app = AppContext::default();
-        let mut layout = ChatLayout::new(
-            Empty::new()
-                .with_size(vec2f(100.0, 100.0))
-                .finish(),
-        )
-        .with_right_sidebar(
-            Empty::new()
-                .with_size(vec2f(CHAT_RIGHT_SIDEBAR_WIDTH, 120.0))
-                .finish(),
-        );
+        let mut layout = ChatLayout::new(Empty::new().with_size(vec2f(100.0, 100.0)).finish())
+            .with_right_sidebar(
+                Empty::new()
+                    .with_size(vec2f(CHAT_RIGHT_SIDEBAR_WIDTH, 120.0))
+                    .finish(),
+            );
         let size = layout.layout(
             SizeConstraint::loose(vec2f(800.0, 600.0)),
             &mut LayoutContext::default(),

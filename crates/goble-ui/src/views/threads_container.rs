@@ -301,5 +301,4 @@ mod tests {
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
     }
-
 }

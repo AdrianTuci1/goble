@@ -1,13 +1,13 @@
 pub mod app;
-pub mod window;
-pub mod wgpu_render_engine;
-pub mod text_atlas;
 pub mod icon_atlas;
+pub mod text_atlas;
+pub mod wgpu_render_engine;
+pub mod window;
 
-#[cfg(target_os = "macos")]
-pub mod mac;
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "macos")]
+pub mod mac;
 #[cfg(target_os = "windows")]
 pub mod windows;
 

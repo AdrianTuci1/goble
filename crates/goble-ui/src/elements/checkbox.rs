@@ -114,10 +114,12 @@ impl Element for Checkbox {
             .as_mut()
             .unwrap()
             .fill_rounded_rect(box_rect, box_color, radius);
-        ctx.renderer
-            .as_mut()
-            .unwrap()
-            .stroke_rect(box_rect, app.theme.color(ColorToken::Border), 1.0, radius);
+        ctx.renderer.as_mut().unwrap().stroke_rect(
+            box_rect,
+            app.theme.color(ColorToken::Border),
+            1.0,
+            radius,
+        );
 
         if self.checked {
             let check_size = self.box_size.x.min(self.box_size.y) * 0.5;

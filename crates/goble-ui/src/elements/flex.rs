@@ -110,13 +110,61 @@ impl Element for Flex {
 
         let mut total_main = 0.0_f32;
         let mut cross_max = 0.0_f32;
-        for child in &mut self.children {
-            let child_size = child.layout(child_constraint, ctx, app);
-            total_main += child_size.along(self.axis);
-            cross_max = cross_max.max(child_size.along(cross));
+        let mut flex_total = 0.0_f32;
+        let mut flex_indices: Vec<usize> = Vec::new();
+
+        // Pass 1: lay out non-flex children at their intrinsic size.
+        for (i, child) in self.children.iter_mut().enumerate() {
+            match child.flex_grow() {
+                Some(grow) => {
+                    flex_total += grow;
+                    flex_indices.push(i);
+                }
+                None => {
+                    let child_size = child.layout(child_constraint, ctx, app);
+                    total_main += child_size.along(self.axis);
+                    cross_max = cross_max.max(child_size.along(cross));
+                }
+            }
         }
 
         let total_spacing = self.spacing * (self.children.len().saturating_sub(1)) as f32;
+        let available_main = if self.main_axis_size == MainAxisSize::Max {
+            constraint.max.along(self.axis)
+        } else {
+            total_main + total_spacing
+        };
+
+        // Pass 2: give flex children a tight slice of the remaining space.
+        // Flex expansion only makes sense when the flex itself has a bounded
+        // main-axis size; otherwise fall back to the normal child constraint.
+        let bounded =
+            self.main_axis_size == MainAxisSize::Max && constraint.max.along(self.axis).is_finite();
+        if !flex_indices.is_empty() && flex_total > 0.0 {
+            if bounded {
+                let remaining = (available_main - total_main - total_spacing).max(0.0);
+                let per_unit = remaining / flex_total;
+                for i in flex_indices {
+                    let grow = self.children[i].flex_grow().unwrap_or(0.0);
+                    let allocated = per_unit * grow;
+                    let flex_cross_max = constraint.max.along(cross);
+                    let flex_constraint = SizeConstraint::new(
+                        self.axis.to_point(allocated, 0.0),
+                        self.axis.to_point(allocated, flex_cross_max),
+                    );
+                    let child_size = self.children[i].layout(flex_constraint, ctx, app);
+                    total_main += child_size.along(self.axis);
+                    cross_max = cross_max.max(child_size.along(cross));
+                }
+            } else {
+                for i in flex_indices {
+                    let child_size = self.children[i].layout(child_constraint, ctx, app);
+                    total_main += child_size.along(self.axis);
+                    cross_max = cross_max.max(child_size.along(cross));
+                }
+            }
+        }
+
         let main_size = if self.main_axis_size == MainAxisSize::Max {
             constraint.max.along(self.axis)
         } else {

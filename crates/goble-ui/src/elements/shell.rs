@@ -63,7 +63,8 @@ impl Default for ShellState {
 pub struct ShellView {
     state: Rc<RefCell<ShellState>>,
     dirty: Rc<RefCell<bool>>,
-    content_resolver: Box<dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static>,
+    content_resolver:
+        Box<dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static>,
     event_checker: Option<Rc<RefCell<dyn FnMut() -> bool>>>,
     root: Box<dyn Element>,
     size: Option<Vector2F>,
@@ -75,11 +76,13 @@ impl ShellView {
         let bg = app.theme.color(ColorToken::Bg);
         let resolver: Box<
             dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static,
-        > = Box::new(move |_state: Rc<RefCell<ShellState>>, _dirty: Rc<RefCell<bool>>| -> Box<dyn Element> {
-            Container::new(Empty::new().finish())
-                .with_background(Fill::Solid(bg))
-                .finish()
-        });
+        > = Box::new(
+            move |_state: Rc<RefCell<ShellState>>, _dirty: Rc<RefCell<bool>>| -> Box<dyn Element> {
+                Container::new(Empty::new().finish())
+                    .with_background(Fill::Solid(bg))
+                    .finish()
+            },
+        );
         Self::with_content(state, app, resolver)
     }
 
@@ -102,12 +105,7 @@ impl ShellView {
         let state = Rc::new(RefCell::new(state));
         let dirty = Rc::new(RefCell::new(false));
         let content_resolver = Box::new(content_resolver);
-        let root = Self::build_root(
-            Rc::clone(&state),
-            Rc::clone(&dirty),
-            &content_resolver,
-            app,
-        );
+        let root = Self::build_root(Rc::clone(&state), Rc::clone(&dirty), &content_resolver, app);
         Self {
             state,
             dirty,
@@ -234,9 +232,7 @@ impl ShellView {
         let content = content_resolver(Rc::clone(&state), Rc::clone(&dirty));
 
         // The sidebar is an overlay so the content sees the full window width.
-        Stack::new()
-            .with_children(vec![content, sidebar])
-            .finish()
+        Stack::new().with_children(vec![content, sidebar]).finish()
     }
 
     fn left_panel(
@@ -262,7 +258,6 @@ impl ShellView {
             _ => Empty::new().finish(),
         }
     }
-
 }
 
 fn sample_conversations() -> Vec<ConversationEntry> {
@@ -274,8 +269,13 @@ fn sample_conversations() -> Vec<ConversationEntry> {
             .with_status(ConversationStatus::Error),
         ConversationEntry::new("c3", "Planner", "Stopped by user.", "Yesterday")
             .with_status(ConversationStatus::Stopped),
-        ConversationEntry::new("c4", "Research", "Here are the sources you asked for.", "Mon")
-            .with_status(ConversationStatus::Default),
+        ConversationEntry::new(
+            "c4",
+            "Research",
+            "Here are the sources you asked for.",
+            "Mon",
+        )
+        .with_status(ConversationStatus::Default),
     ]
 }
 

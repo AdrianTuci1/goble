@@ -357,6 +357,7 @@ impl Harness {
 
 pub(crate) const HARNESS_SYSTEM_PROMPT: &str = r#"You are an assistant that controls a local Goble agent environment.
 You can create/update agents, workflows and teams, run shell commands, read/write files, search the store, deploy agents/workflows to workers, schedule workflows, and check execution status.
+Use memory_write to record goals, decisions, constraints and progress into an agent's persistent memory; use memory_read to review what an agent already knows. Memory survives conversation summarization.
 Only call a tool when the user explicitly asks for an action you can perform with a tool.
 If no tool is needed, reply conversationally.
 When reading or writing files, paths must be inside the workspace directory unless the user explicitly provides an absolute path."#;
@@ -781,6 +782,32 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["path", "old_text", "new_text"]
             }),
         },
+        ToolDefinition {
+            name: "memory_write".to_string(),
+            description: "Write to an agent's persistent memory (brief, facts, goals, constraints, decisions, milestones, open questions). Memory survives conversation summarization."
+                .to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": { "type": "string" },
+                    "section": { "type": "string", "enum": ["brief", "fact", "goal", "complete_goal", "constraint", "decision", "milestone", "complete_milestone", "open_question"] },
+                    "content": { "type": "string" },
+                    "rationale": { "type": "string" }
+                },
+                "required": ["agent_id", "section", "content"]
+            }),
+        },
+        ToolDefinition {
+            name: "memory_read".to_string(),
+            description: "Read an agent's full persistent memory block.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": { "type": "string" }
+                },
+                "required": ["agent_id"]
+            }),
+        },
     ]
 }
 
@@ -833,6 +860,8 @@ pub(crate) async fn execute_tool_call(
         "web_search" => web_search(&call.arguments).await,
         "read_url" => read_url(&call.arguments).await,
         "execute_python_code" => execute_python_code(&call.arguments).await,
+        "memory_write" => memory_write(store, &call.arguments),
+        "memory_read" => memory_read(store, &call.arguments),
         "mcp_call" => mcp_call(&mcp_manager, &call.arguments),
         _ => {
             if mcp_manager.is_mcp_tool(&call.name) {
@@ -925,6 +954,81 @@ fn update_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
         &spec.updated_at,
     )?;
     Ok(format!("agent {id} updated"))
+}
+
+fn memory_write(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let agent_id = args["agent_id"].as_str().context("agent_id is required")?;
+    let section = args["section"].as_str().context("section is required")?;
+    let content = args["content"].as_str().context("content is required")?;
+    let rationale = args["rationale"].as_str().unwrap_or_default();
+
+    let mut memory = match store.get_agent_memory(agent_id)? {
+        Some(memory) => memory,
+        None => {
+            let memory = crate::agent_memory::AgentMemory::new(agent_id.to_string(), "");
+            store.put_agent_memory(&memory)?;
+            memory
+        }
+    };
+
+    match section {
+        "brief" => memory.update_brief(content),
+        "fact" => memory.add_fact(content),
+        "goal" => {
+            memory.add_goal(content);
+        }
+        "complete_goal" => {
+            if let Some(goal) = memory
+                .goals
+                .iter_mut()
+                .find(|g| memory_text_matches(&g.text, content))
+            {
+                goal.done = true;
+                memory.bump_version();
+            } else {
+                anyhow::bail!("goal not found: {content}");
+            }
+        }
+        "constraint" => memory.add_constraint(content),
+        "decision" => {
+            memory.record_decision(content, rationale);
+        }
+        "milestone" => {
+            memory.add_milestone(content);
+        }
+        "complete_milestone" => {
+            if let Some(m) = memory
+                .progress
+                .iter_mut()
+                .find(|m| memory_text_matches(&m.text, content))
+            {
+                m.done = true;
+                memory.bump_version();
+            } else {
+                anyhow::bail!("milestone not found: {content}");
+            }
+        }
+        "open_question" => memory.add_open_question(content),
+        other => anyhow::bail!("unknown memory section: {other}"),
+    }
+
+    store.put_agent_memory(&memory)?;
+    Ok(format!("memory updated for agent {agent_id}"))
+}
+
+fn memory_read(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let agent_id = args["agent_id"].as_str().context("agent_id is required")?;
+    match store.get_agent_memory(agent_id)? {
+        Some(memory) => Ok(memory.render_block()),
+        None => Ok(format!("no memory for agent {agent_id}")),
+    }
+}
+
+/// Fuzzy equality used by the memory tools to locate goals/milestones.
+fn memory_text_matches(a: &str, b: &str) -> bool {
+    let a = a.trim().to_lowercase();
+    let b = b.trim().to_lowercase();
+    a == b || a.contains(&b) || b.contains(&a)
 }
 
 fn create_workflow(store: &Store, args: &serde_json::Value) -> Result<String> {

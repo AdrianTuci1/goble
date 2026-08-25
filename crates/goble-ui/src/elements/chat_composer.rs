@@ -1,13 +1,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, Chip, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex, Icon,
-    LayoutContext, MainAxisAlignment, PaintContext, Point, SizeConstraint, Spacer, TextArea,
-    TopbarButton,
+    LayoutContext, MainAxisAlignment, PaintContext, Point, PopupMenu, PopupMenuItem,
+    PopupMenuPosition, SizeConstraint, Text, TextArea, Tooltip, TooltipPosition,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::Vector2F;
+use crate::geometry::{rectf, vec2f, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
 
 pub struct ChatComposer {
@@ -29,6 +30,13 @@ pub struct ChatComposer {
     on_link: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_stop: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
+    on_profile: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    model_menu_items: Vec<PopupMenuItem>,
+    model_menu_open: Rc<RefCell<bool>>,
+    on_select_model_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    profile_menu_items: Vec<PopupMenuItem>,
+    profile_menu_open: Rc<RefCell<bool>>,
+    on_select_profile_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -55,6 +63,13 @@ impl ChatComposer {
             on_link: None,
             on_stop: None,
             on_focus_change: None,
+            on_profile: None,
+            model_menu_items: Vec::new(),
+            model_menu_open: Rc::new(RefCell::new(false)),
+            on_select_model_item: None,
+            profile_menu_items: Vec::new(),
+            profile_menu_open: Rc::new(RefCell::new(false)),
+            on_select_profile_item: None,
             root: None,
             size: None,
             origin: None,
@@ -151,6 +166,38 @@ impl ChatComposer {
         self
     }
 
+    pub fn with_on_profile<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_profile = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Set the model dropdown: `items` to show, the app-owned `open` flag (so
+    /// open state survives the per-frame rebuild), and a select callback.
+    pub fn with_model_menu<F: FnMut(usize) + 'static>(
+        mut self,
+        items: Vec<PopupMenuItem>,
+        open: Rc<RefCell<bool>>,
+        callback: F,
+    ) -> Self {
+        self.model_menu_items = items;
+        self.model_menu_open = open;
+        self.on_select_model_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Set the account/profile dropdown (same contract as `with_model_menu`).
+    pub fn with_profile_menu<F: FnMut(usize) + 'static>(
+        mut self,
+        items: Vec<PopupMenuItem>,
+        open: Rc<RefCell<bool>>,
+        callback: F,
+    ) -> Self {
+        self.profile_menu_items = items;
+        self.profile_menu_open = open;
+        self.on_select_profile_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     pub fn value(&self) -> String {
         self.value.borrow().clone()
     }
@@ -164,44 +211,18 @@ impl ChatComposer {
     }
 
     fn rebuild(&mut self, app: &AppContext) {
-        let padding = app.theme.spacing_px(SpacingToken::Md);
-        let spacing = app.theme.spacing_px(SpacingToken::Sm);
-        let radius = app.theme.radius_px();
+        let sm = app.theme.spacing_px(SpacingToken::Sm);
+        let md = app.theme.spacing_px(SpacingToken::Md);
 
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(spacing);
-
-        // Model selector chip (sparkle + model label) above the input.
-        if let (Some(label), Some(cb)) = (self.model_label.clone(), self.on_select_model.clone()) {
-            let chip = TopbarButton::new(
-                Flex::row()
-                    .with_spacing(6.0)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_child(
-                        Icon::new("sparkle")
-                            .with_size(14.0)
-                            .with_theme_color(ColorToken::Accent, app)
-                            .finish(),
-                    )
-                    .with_child(
-                        crate::elements::Text::new(label)
-                            .with_theme_color(ColorToken::Text, app)
-                            .with_font_size(13.0)
-                            .finish(),
-                    )
-                    .finish(),
-            )
-            .with_on_click(move || (cb.borrow_mut())())
-            .finish();
-            column = column.with_child(chip);
-        }
+            .with_spacing(sm);
 
         if !self.attachments.is_empty() {
-            let mut attachment_row = Flex::row().with_spacing(spacing);
+            let mut attachment_row = Flex::row().with_spacing(sm);
             for attachment in &self.attachments {
                 let chip = Chip::new(
-                    crate::elements::Text::new(attachment.clone())
+                    Text::new(attachment.clone())
                         .with_theme_color(ColorToken::Text, app)
                         .finish(),
                 )
@@ -211,7 +232,8 @@ impl ChatComposer {
             column = column.with_child(attachment_row.finish());
         }
 
-        // Send closure shared between Enter-to-submit and the send button.
+        // Send closure shared between Enter-to-submit and the (removed) send
+        // button path; keeps Enter-to-send working.
         let value_for_send = self.value.clone();
         let on_send = self.on_send.clone();
         let send = Rc::new(RefCell::new(move || {
@@ -224,6 +246,8 @@ impl ChatComposer {
             }
         }));
 
+        // The textarea fills the whole composer width and is visually part of
+        // the rich-input bar (no separate box).
         let value = self.value.clone();
         let on_change = self.on_change.clone();
         let on_focus_change = self.on_focus_change.clone();
@@ -231,7 +255,7 @@ impl ChatComposer {
         let textarea = TextArea::new()
             .with_value(self.value.borrow().clone())
             .with_placeholder(self.placeholder.clone())
-            .with_min_height(60.0)
+            .with_min_height(52.0)
             .with_focused(self.focused)
             .with_on_change(move |text| {
                 *value.borrow_mut() = text.clone();
@@ -248,150 +272,141 @@ impl ChatComposer {
             .finish();
         column = column.with_child(textarea);
 
+        // Footer: attach (+) on the left; model, profile (and stop while
+        // streaming) on the right. No send button.
         let mut footer = Flex::row()
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
             .with_cross_axis_alignment(CrossAxisAlignment::Center);
 
-        let mut left_group = Flex::row().with_spacing(spacing);
-        if let Some(cb) = self.on_select_model.clone() {
-            left_group = left_group.with_child(
-                TopbarButton::new(
-                    Icon::new("cpu")
-                        .with_size(18.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
-                .with_on_click(move || (cb.borrow_mut())())
-                .finish(),
-            );
-        }
-        if let Some(cb) = self.on_select_key.clone() {
-            left_group = left_group.with_child(
-                TopbarButton::new(
-                    Icon::new("key")
-                        .with_size(18.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
-                .with_on_click(move || (cb.borrow_mut())())
-                .finish(),
-            );
-        }
-        if let Some(cb) = self.on_select_variant.clone() {
-            left_group = left_group.with_child(
-                TopbarButton::new(
-                    Icon::new("sliders")
-                        .with_size(18.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
-                .with_on_click(move || (cb.borrow_mut())())
-                .finish(),
-            );
-        }
+        let mut left_group = Flex::row().with_spacing(sm);
         if let Some(cb) = self.on_attach.clone() {
+            let attach = ComposerButton::new(
+                Icon::new("plus")
+                    .with_size(16.0)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .with_height(28.0)
+            .with_on_click(move || (cb.borrow_mut())())
+            .finish();
             left_group = left_group.with_child(
-                TopbarButton::new(
-                    Icon::new("paperclip")
-                        .with_size(18.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
-                .with_on_click(move || (cb.borrow_mut())())
-                .finish(),
-            );
-        }
-        if let Some(cb) = self.on_image.clone() {
-            left_group = left_group.with_child(
-                TopbarButton::new(
-                    Icon::new("image")
-                        .with_size(18.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
-                .with_on_click(move || (cb.borrow_mut())())
-                .finish(),
-            );
-        }
-        if let Some(cb) = self.on_code.clone() {
-            left_group = left_group.with_child(
-                TopbarButton::new(
-                    Icon::new("code")
-                        .with_size(18.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
-                .with_on_click(move || (cb.borrow_mut())())
-                .finish(),
-            );
-        }
-        if let Some(cb) = self.on_link.clone() {
-            left_group = left_group.with_child(
-                TopbarButton::new(
-                    Icon::new("link")
-                        .with_size(18.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
-                .with_on_click(move || (cb.borrow_mut())())
-                .finish(),
-            );
-        }
-        if let Some(cb) = self.on_voice.clone() {
-            left_group = left_group.with_child(
-                TopbarButton::new(
-                    Icon::new("mic")
-                        .with_size(18.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
-                .with_on_click(move || (cb.borrow_mut())())
-                .finish(),
+                Tooltip::new(attach, "Attach")
+                    .with_position(TooltipPosition::Above)
+                    .finish(),
             );
         }
         footer = footer.with_child(left_group.finish());
-        footer = footer.with_child(Spacer::new().finish());
 
-        let mut right_group = Flex::row().with_spacing(spacing);
-        if self.stop_visible {
-            if let Some(cb) = self.on_stop.clone() {
-                right_group = right_group.with_child(
-                    TopbarButton::new(
-                        Icon::new("stop")
-                            .with_size(18.0)
-                            .with_theme_color(ColorToken::Error, app)
+        let mut right_group = Flex::row().with_spacing(sm);
+        if let Some(label) = self.model_label.clone() {
+            let model_child = || {
+                Flex::row()
+                    .with_spacing(6.0)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        Icon::new("sparkle")
+                            .with_size(14.0)
+                            .with_theme_color(ColorToken::Muted, app)
                             .finish(),
                     )
+                    .with_child(
+                        Text::new(label.clone())
+                            .with_theme_color(ColorToken::Text, app)
+                            .with_font_size(12.0)
+                            .finish(),
+                    )
+                    .with_child(
+                        Icon::new("chevron-down")
+                            .with_size(14.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
+                    .finish()
+            };
+            if !self.model_menu_items.is_empty() {
+                let trigger = Tooltip::new(
+                    ComposerButton::new(model_child()).with_height(28.0).finish(),
+                    "Select model",
+                )
+                .with_position(TooltipPosition::Above)
+                .finish();
+                let mut menu = PopupMenu::new(trigger, self.model_menu_items.clone())
+                    .with_open(self.model_menu_open.clone())
+                    .with_position(PopupMenuPosition::Above);
+                if let Some(cb) = self.on_select_model_item.clone() {
+                    menu = menu.with_on_select(move |idx| (cb.borrow_mut())(idx));
+                }
+                right_group = right_group.with_child(menu.finish());
+            } else if let Some(cb) = self.on_select_model.clone() {
+                let model = ComposerButton::new(model_child())
+                    .with_height(28.0)
                     .with_on_click(move || (cb.borrow_mut())())
-                    .finish(),
+                    .finish();
+                right_group = right_group.with_child(
+                    Tooltip::new(model, "Select model")
+                        .with_position(TooltipPosition::Above)
+                        .finish(),
                 );
             }
         }
-        let send_for_button = send.clone();
-        right_group = right_group.with_child(
-            TopbarButton::new(
-                Icon::new("send")
-                    .with_size(18.0)
-                    .with_theme_color(ColorToken::Accent, app)
-                    .finish(),
+        let profile_child = || {
+            Icon::new("user")
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish()
+        };
+        if !self.profile_menu_items.is_empty() {
+            let trigger = Tooltip::new(
+                ComposerButton::new(profile_child()).with_height(28.0).finish(),
+                "Account",
             )
-            .with_on_click(move || (send_for_button.borrow_mut())())
-            .finish(),
-        );
+            .with_position(TooltipPosition::Above)
+            .finish();
+            let mut menu = PopupMenu::new(trigger, self.profile_menu_items.clone())
+                .with_open(self.profile_menu_open.clone())
+                .with_position(PopupMenuPosition::Above);
+            if let Some(cb) = self.on_select_profile_item.clone() {
+                menu = menu.with_on_select(move |idx| (cb.borrow_mut())(idx));
+            }
+            right_group = right_group.with_child(menu.finish());
+        } else if let Some(cb) = self.on_profile.clone() {
+            let profile = ComposerButton::new(profile_child())
+                .with_height(28.0)
+                .with_on_click(move || (cb.borrow_mut())())
+                .finish();
+            right_group = right_group.with_child(
+                Tooltip::new(profile, "Account")
+                    .with_position(TooltipPosition::Above)
+                    .finish(),
+            );
+        }
+        if self.stop_visible {
+            if let Some(cb) = self.on_stop.clone() {
+                let stop = ComposerButton::new(
+                    Icon::new("stop")
+                        .with_size(16.0)
+                        .with_theme_color(ColorToken::Error, app)
+                        .finish(),
+                )
+                .with_height(28.0)
+                .with_on_click(move || (cb.borrow_mut())())
+                .finish();
+                right_group = right_group.with_child(
+                    Tooltip::new(stop, "Stop")
+                        .with_position(TooltipPosition::Above)
+                        .finish(),
+                );
+            }
+        }
         footer = footer.with_child(right_group.finish());
+        column = column.with_child(footer.finish());
 
-        column = column.with_child(
-            Container::new(footer.finish())
-                .with_padding(EdgeInsets::uniform(padding))
-                .finish(),
-        );
-
+        // Full-width bottom bar: flat surface, no card border/radius, flush
+        // with the window bottom edge.
         self.root = Some(
             Container::new(column.finish())
-                .with_padding(EdgeInsets::uniform(padding))
-                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                .with_border(app.theme.color(ColorToken::Border).into())
-                .with_corner_radius(radius)
+                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                .with_padding(EdgeInsets::new(sm, md, sm, md))
                 .finish(),
         );
     }
@@ -439,6 +454,110 @@ impl Element for ChatComposer {
             .as_mut()
             .map(|root| root.dispatch_event(event, ctx, app))
             .unwrap_or(false)
+    }
+}
+
+/// A refined, low-emphasis pill button used in the composer footer.
+///
+/// Mirrors the warp-new button style: transparent by default, a subtle rounded
+/// hover overlay, and a fixed height with auto width for icon+label content.
+struct ComposerButton {
+    child: Box<dyn Element>,
+    state: InteractiveState,
+    height: f32,
+    on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl ComposerButton {
+    fn new(child: Box<dyn Element>) -> Self {
+        Self {
+            child,
+            state: InteractiveState::default(),
+            height: 28.0,
+            on_click: None,
+            size: None,
+            origin: None,
+        }
+    }
+
+    fn with_height(mut self, height: f32) -> Self {
+        self.height = height;
+        self
+    }
+
+    fn with_on_click<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_click = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+}
+
+impl Element for ComposerButton {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let h_pad = 10.0;
+        let inner_max = vec2f(
+            (constraint.max.x - h_pad * 2.0).max(0.0),
+            (self.height - 4.0).max(0.0),
+        );
+        let child_size = self
+            .child
+            .layout(SizeConstraint::new(vec2f(0.0, 0.0), inner_max), ctx, app);
+        let size = vec2f(child_size.x + h_pad * 2.0, self.height);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let size = self.size.unwrap_or(Vector2F::zero());
+        if ctx.hovered(rectf(origin.x, origin.y, size.x, size.y)) {
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                renderer.fill_rounded_rect(
+                    rectf(origin.x, origin.y, size.x, size.y),
+                    app.theme.color(ColorToken::Hover),
+                    6.0,
+                );
+            }
+        }
+        let child_size = self.child.size().unwrap_or(Vector2F::zero());
+        let offset = vec2f(
+            (size.x - child_size.x).max(0.0) / 2.0,
+            (size.y - child_size.y).max(0.0) / 2.0,
+        );
+        self.child.paint(origin + offset, ctx, app);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut crate::elements::EventContext,
+        _app: &AppContext,
+    ) -> bool {
+        let bounds = match self.bounds() {
+            Some(b) => b,
+            None => return false,
+        };
+        let cb = self.on_click.clone();
+        let mut on_click = move || {
+            if let Some(cb) = cb.as_ref() {
+                (cb.borrow_mut())();
+            }
+        };
+        handle_mouse_event(&mut self.state, event, bounds, ctx, &mut on_click)
     }
 }
 

@@ -21,6 +21,7 @@ pub fn run_with_root(
         root,
         app_context,
         cursor_position: vec2f(0.0, 0.0),
+        cursor_inside: false,
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -32,6 +33,7 @@ struct App {
     root: Box<dyn Element>,
     app_context: Rc<RefCell<AppContext>>,
     cursor_position: Vector2F,
+    cursor_inside: bool,
 }
 
 impl ApplicationHandler for App {
@@ -39,9 +41,22 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
-        let window_attributes = winit::window::WindowAttributes::default()
+        let mut window_attributes = winit::window::WindowAttributes::default()
             .with_title("Goble")
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
+
+        // macOS: use the real OS titlebar, but make it transparent so the app
+        // content (topbar surface) doubles as the titlebar background. The
+        // traffic lights stay real and overlay the top-left of our content.
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            window_attributes = window_attributes
+                .with_titlebar_transparent(true)
+                .with_title_hidden(true)
+                .with_fullsize_content_view(true);
+        }
+
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         let surface_state = pollster::block_on(SurfaceState::new(Arc::clone(&window))).unwrap();
         self.window = Some(window);
@@ -81,22 +96,38 @@ impl ApplicationHandler for App {
                         let size = window.inner_size();
                         (size.width, size.height)
                     });
-                let constraint = SizeConstraint::loose(vec2f(width as f32, height as f32));
+                // Layout in logical points; the render pass scales by the device
+                // pixel ratio so 1 point == `scale` physical pixels. On HiDPI
+                // displays `inner_size()`/surface config are physical pixels,
+                // which would otherwise shrink every element on screen.
+                let scale = window.scale_factor();
+                let constraint = SizeConstraint::loose(vec2f(
+                    width as f32 / scale as f32,
+                    height as f32 / scale as f32,
+                ));
                 let mut layout_ctx = LayoutContext::default();
                 let app_context = self.app_context.borrow().clone();
                 let _ = self.root.layout(constraint, &mut layout_ctx, &app_context);
                 let mut renderer = Renderer::new();
                 {
                     let mut paint_ctx = PaintContext::new(renderer);
+                    paint_ctx.cursor_position = self.cursor_position;
+                    paint_ctx.cursor_inside = self.cursor_inside;
                     self.root
                         .paint(vec2f(0.0, 0.0), &mut paint_ctx, &app_context);
                     renderer = paint_ctx.renderer.take().unwrap();
                 }
                 if let Some(surface_state) = self.surface_state.as_mut() {
-                    if let Err(e) = surface_state.render(&renderer) {
+                    if let Err(e) = surface_state.render(&renderer, scale) {
                         log::error!("render error: {e}");
                     }
                 }
+            }
+            winit::event::WindowEvent::CursorEntered { .. } => {
+                self.cursor_inside = true;
+            }
+            winit::event::WindowEvent::CursorLeft { .. } => {
+                self.cursor_inside = false;
             }
             winit::event::WindowEvent::MouseInput { state, button, .. } => {
                 let button_id = match button {
@@ -124,8 +155,13 @@ impl ApplicationHandler for App {
                 window.request_redraw();
             }
             winit::event::WindowEvent::CursorMoved { position, .. } => {
-                let pos = vec2f(position.x as f32, position.y as f32);
+                // Cursor events arrive in physical pixels; convert to logical
+                // so hit-testing against the logical-layout tree stays aligned.
+                let scale = window.scale_factor();
+                let logical = position.to_logical::<f64>(scale);
+                let pos = vec2f(logical.x as f32, logical.y as f32);
                 self.cursor_position = pos;
+                self.cursor_inside = true;
                 let event = DispatchedEvent::MouseMove { position: pos };
                 let mut event_ctx = crate::elements::EventContext::default();
                 let app_context = self.app_context.borrow().clone();
@@ -135,9 +171,14 @@ impl ApplicationHandler for App {
                 drop(app_context);
             }
             winit::event::WindowEvent::MouseWheel { delta, .. } => {
+                let scale = window.scale_factor();
                 let delta = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => vec2f(x * 20.0, y * 20.0),
-                    winit::event::MouseScrollDelta::PixelDelta(p) => vec2f(p.x as f32, p.y as f32),
+                    // Pixel deltas are physical; divide by scale for logical px.
+                    winit::event::MouseScrollDelta::PixelDelta(p) => {
+                        let logical = p.to_logical::<f64>(scale);
+                        vec2f(logical.x as f32, logical.y as f32)
+                    }
                 };
                 let event = DispatchedEvent::Scroll { delta };
                 let mut event_ctx = crate::elements::EventContext::default();
@@ -261,7 +302,7 @@ impl SurfaceState {
         self.surface.configure(&self.device, &self.config);
     }
 
-    fn render(&mut self, renderer: &Renderer) -> anyhow::Result<()> {
+    fn render(&mut self, renderer: &Renderer, scale: f64) -> anyhow::Result<()> {
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
@@ -272,6 +313,7 @@ impl SurfaceState {
             &view,
             (self.config.width, self.config.height),
             renderer,
+            scale as f32,
         );
         output.present();
         Ok(())

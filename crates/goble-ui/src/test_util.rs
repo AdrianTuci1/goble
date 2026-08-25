@@ -36,6 +36,7 @@ pub fn command_counts(commands: &[RenderCommand]) -> RenderCommandCounts {
             RenderCommand::DrawIcon { .. } => counts.draw_icon += 1,
             RenderCommand::ClipRect { .. } => counts.clip_rect += 1,
             RenderCommand::PopClip => counts.pop_clip += 1,
+            RenderCommand::FillRectFadeRight { .. } => counts.fill_rect_fade += 1,
         }
     }
     counts
@@ -44,6 +45,7 @@ pub fn command_counts(commands: &[RenderCommand]) -> RenderCommandCounts {
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct RenderCommandCounts {
     pub fill_rect: usize,
+    pub fill_rect_fade: usize,
     pub stroke_rect: usize,
     pub draw_text: usize,
     pub draw_icon: usize,

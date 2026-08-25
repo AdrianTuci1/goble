@@ -5,7 +5,7 @@ use crate::elements::{
 use crate::geometry::Vector2F;
 use crate::theme::ColorToken;
 
-const DEFAULT_FONT_SIZE: f32 = 13.0;
+const DEFAULT_FONT_SIZE: f32 = 12.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.4;
 
 /// Monospaced inline or block code element.

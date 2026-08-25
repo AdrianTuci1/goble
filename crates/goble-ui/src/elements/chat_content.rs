@@ -182,3 +182,222 @@ pub enum ChatFragmentKind {
     Action { label: String, payload: ChatAction },
     Terminal(TerminalData),
 }
+
+/// The inline style of a span inside a paragraph block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InlineStyle {
+    Plain,
+    Bold,
+    Italic,
+    BoldItalic,
+    Code,
+    Link(String),
+}
+
+/// A single run of text with a uniform inline style, inside a paragraph.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InlineSpan {
+    pub text: String,
+    pub style: InlineStyle,
+}
+
+/// A block of chat content. A paragraph holds inline spans that flow and wrap
+/// together; the other variants are stand-alone widgets drawn on their own row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChatBlock {
+    Paragraph(Vec<InlineSpan>),
+    Heading { level: u8, text: String },
+    CodeBlock { lang: Option<String>, code: String },
+    List { items: Vec<String>, ordered: bool },
+    BlockQuote(String),
+    Action { label: String, payload: ChatAction },
+    Terminal(TerminalData),
+}
+
+impl InlineSpan {
+    pub fn plain(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            style: InlineStyle::Plain,
+        }
+    }
+
+    pub fn bold(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            style: InlineStyle::Bold,
+        }
+    }
+
+    pub fn italic(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            style: InlineStyle::Italic,
+        }
+    }
+
+    pub fn code(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            style: InlineStyle::Code,
+        }
+    }
+
+    pub fn link(label: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            text: label.into(),
+            style: InlineStyle::Link(url.into()),
+        }
+    }
+}
+
+fn inline_span(kind: &ChatFragmentKind) -> Option<InlineSpan> {
+    match kind {
+        ChatFragmentKind::Text(t) => Some(InlineSpan::plain(t.clone())),
+        ChatFragmentKind::Bold(t) => Some(InlineSpan::bold(t.clone())),
+        ChatFragmentKind::Italic(t) => Some(InlineSpan::italic(t.clone())),
+        ChatFragmentKind::BoldItalic(t) => Some(InlineSpan {
+            text: t.clone(),
+            style: InlineStyle::BoldItalic,
+        }),
+        ChatFragmentKind::Code(t) => Some(InlineSpan::code(t.clone())),
+        // Links stay interactive (rendered as an action chip), so they are not
+        // folded into the inline flow of a paragraph.
+        _ => None,
+    }
+}
+
+/// Group a flat list of fragments into blocks: consecutive inline fragments
+/// become a single paragraph, while structural fragments become their own block.
+pub fn group_fragments_into_blocks(fragments: &[ChatFragment]) -> Vec<ChatBlock> {
+    let mut blocks = Vec::new();
+    let mut paragraph: Vec<InlineSpan> = Vec::new();
+
+    let flush = |paragraph: &mut Vec<InlineSpan>, blocks: &mut Vec<ChatBlock>| {
+        if !paragraph.is_empty() {
+            blocks.push(ChatBlock::Paragraph(std::mem::take(paragraph)));
+        }
+    };
+
+    for fragment in fragments {
+        if let Some(span) = inline_span(&fragment.kind) {
+            paragraph.push(span);
+            continue;
+        }
+        flush(&mut paragraph, &mut blocks);
+        match &fragment.kind {
+            ChatFragmentKind::Heading { level, text } => {
+                blocks.push(ChatBlock::Heading {
+                    level: *level,
+                    text: text.clone(),
+                });
+            }
+            ChatFragmentKind::CodeBlock { lang, code } => {
+                blocks.push(ChatBlock::CodeBlock {
+                    lang: lang.clone(),
+                    code: code.clone(),
+                });
+            }
+            ChatFragmentKind::List { items, ordered } => {
+                blocks.push(ChatBlock::List {
+                    items: items.clone(),
+                    ordered: *ordered,
+                });
+            }
+            ChatFragmentKind::BlockQuote(text) => {
+                blocks.push(ChatBlock::BlockQuote(text.clone()));
+            }
+            ChatFragmentKind::Action { label, payload } => {
+                blocks.push(ChatBlock::Action {
+                    label: label.clone(),
+                    payload: payload.clone(),
+                });
+            }
+            ChatFragmentKind::Link { label, url } => {
+                blocks.push(ChatBlock::Action {
+                    label: label.clone(),
+                    payload: ChatAction::OpenUrl(url.clone()),
+                });
+            }
+            ChatFragmentKind::Terminal(data) => {
+                blocks.push(ChatBlock::Terminal(data.clone()));
+            }
+            // A line break separates paragraphs; it is represented by the flush
+            // above and does not produce a block of its own.
+            ChatFragmentKind::LineBreak => {}
+            _ => {}
+        }
+    }
+    flush(&mut paragraph, &mut blocks);
+    blocks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn groups_inline_fragments_into_paragraph() {
+        let fragments = vec![
+            ChatFragment::text("Hello "),
+            ChatFragment::bold("world"),
+            ChatFragment::code("code"),
+            ChatFragment::terminal(TerminalData::new(
+                "cargo run",
+                vec![crate::elements::terminal_block::TerminalLine::command("cargo run")],
+            )),
+            ChatFragment::text("Done"),
+        ];
+        let blocks = group_fragments_into_blocks(&fragments);
+        assert_eq!(
+            blocks,
+            vec![
+                ChatBlock::Paragraph(vec![
+                    InlineSpan::plain("Hello "),
+                    InlineSpan::bold("world"),
+                    InlineSpan::code("code"),
+                ]),
+                ChatBlock::Terminal(TerminalData::new(
+                    "cargo run",
+                    vec![crate::elements::terminal_block::TerminalLine::command("cargo run")],
+                )),
+                ChatBlock::Paragraph(vec![InlineSpan::plain("Done")]),
+            ]
+        );
+    }
+
+    #[test]
+    fn link_fragment_becomes_interactive_action() {
+        let fragments = vec![ChatFragment::link("Goble", "https://goble.dev")];
+        let blocks = group_fragments_into_blocks(&fragments);
+        assert_eq!(
+            blocks,
+            vec![ChatBlock::Action {
+                label: "Goble".to_string(),
+                payload: ChatAction::OpenUrl("https://goble.dev".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn heading_and_list_are_their_own_blocks() {
+        let fragments = vec![
+            ChatFragment::heading(1, "Title"),
+            ChatFragment::list(vec!["a".to_string(), "b".to_string()], true),
+        ];
+        let blocks = group_fragments_into_blocks(&fragments);
+        assert_eq!(
+            blocks,
+            vec![
+                ChatBlock::Heading {
+                    level: 1,
+                    text: "Title".to_string(),
+                },
+                ChatBlock::List {
+                    items: vec!["a".to_string(), "b".to_string()],
+                    ordered: true,
+                },
+            ]
+        );
+    }
+}

@@ -52,6 +52,7 @@ struct TextKey {
     font_size: u32,
     weight: FontWeight,
     mono: bool,
+    max_width: u32,
 }
 
 impl TextAtlas {
@@ -168,6 +169,7 @@ impl TextAtlas {
         _device: &wgpu::Device,
         queue: &wgpu::Queue,
         commands: &[RenderCommand],
+        scale: f32,
     ) {
         let keys: Vec<TextKey> = commands
             .iter()
@@ -177,14 +179,16 @@ impl TextAtlas {
                     font_size,
                     font_weight,
                     font_family,
+                    max_width,
                     ..
                 } = command
                 {
                     Some(TextKey {
                         text: text.clone(),
-                        font_size: (*font_size).round() as u32,
+                        font_size: (*font_size * scale).round() as u32,
                         weight: *font_weight,
                         mono: *font_family == FontFamily::Mono,
+                        max_width: (*max_width * scale).round() as u32,
                     })
                 } else {
                     None
@@ -196,9 +200,13 @@ impl TextAtlas {
             if self.entries.contains_key(&key) {
                 continue;
             }
-            if let Some((entry, data, width, height)) =
-                rasterize_text(&key.text, key.font_size, key.weight, key.mono)
-            {
+            if let Some((entry, data, width, height)) = rasterize_text(
+                &key.text,
+                key.font_size,
+                key.weight,
+                key.mono,
+                key.max_width as f32,
+            ) {
                 if self.cursor_x + width + PADDING > ATLAS_SIZE {
                     self.cursor_x = PADDING;
                     self.cursor_y += self.row_height + PADDING;
@@ -268,8 +276,14 @@ impl TextAtlas {
         );
     }
 
-    pub fn entry(&self, text: &str, font_size: f32, weight: FontWeight) -> Option<&AtlasEntry> {
-        self.entry_with_family(text, font_size, weight, FontFamily::System)
+    pub fn entry(
+        &self,
+        text: &str,
+        font_size: f32,
+        weight: FontWeight,
+        max_width: f32,
+    ) -> Option<&AtlasEntry> {
+        self.entry_with_family(text, font_size, weight, FontFamily::System, max_width)
     }
 
     pub fn entry_with_family(
@@ -278,12 +292,14 @@ impl TextAtlas {
         font_size: f32,
         weight: FontWeight,
         family: FontFamily,
+        max_width: f32,
     ) -> Option<&AtlasEntry> {
         let key = TextKey {
             text: text.to_string(),
             font_size: font_size.round() as u32,
             weight,
             mono: family == FontFamily::Mono,
+            max_width: max_width.round() as u32,
         };
         self.entries.get(&key)
     }
@@ -444,6 +460,7 @@ fn rasterize_text(
     font_size: u32,
     weight: FontWeight,
     mono: bool,
+    max_width: f32,
 ) -> Option<(AtlasEntry, Vec<u8>, u32, u32)> {
     let font_set = font_set()?;
     let family = if mono {
@@ -455,7 +472,11 @@ fn rasterize_text(
     let fonts = &[font.clone()];
     let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
     layout.reset(&fontdue::layout::LayoutSettings {
-        max_width: None,
+        max_width: if max_width.is_finite() && max_width > 0.0 {
+            Some(max_width)
+        } else {
+            None
+        },
         max_height: None,
         ..Default::default()
     });
@@ -465,36 +486,46 @@ fn rasterize_text(
     );
 
     let glyphs = layout.glyphs();
+    // Quad height follows the layout line box (ascent + descent + gap) times
+    // the number of lines. This matches `measure_text_family`: descenders
+    // (g, y, p) don't inflate a single line, while wrapped/multi-line text
+    // still gets a quad tall enough for every line.
+    let height = (layout
+        .height()
+        .ceil()
+        .max(font_size as f32 * 1.2)
+        .ceil() as u32)
+        .max(1);
+
     if glyphs.is_empty() {
         let entry = AtlasEntry {
             uv_origin: [0.0; 2],
             uv_size: [0.0; 2],
-            size: [1.0, font_size as f32],
+            size: [1.0, height as f32],
             offset: [0.0; 2],
         };
-        return Some((entry, vec![0u8; font_size as usize], 1, font_size));
+        return Some((entry, vec![0u8; height as usize], 1, height));
     }
 
-    // Compute the bounding box that contains every glyph's rasterized bitmap.
+    // Compute the horizontal bounding box that contains every glyph's
+    // rasterized bitmap. The vertical extent comes from the layout line box
+    // (above); ink stays top-aligned via the entry offset, and descenders fit
+    // inside the quad.
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
     for glyph in glyphs {
         let (metrics, _) = font.rasterize_config(glyph.key);
         let glyph_left = glyph.x + metrics.xmin as f32;
         let glyph_top = glyph.y + metrics.ymin as f32;
         let glyph_right = glyph_left + metrics.width as f32;
-        let glyph_bottom = glyph_top + metrics.height as f32;
 
         min_x = min_x.min(glyph_left);
         min_y = min_y.min(glyph_top);
         max_x = max_x.max(glyph_right);
-        max_y = max_y.max(glyph_bottom);
     }
 
     let width = ((max_x - min_x).ceil() as u32).max(1);
-    let height = ((max_y - min_y).ceil() as u32).max(1);
 
     let mut atlas = vec![0u8; (width * height) as usize];
     for glyph in glyphs {

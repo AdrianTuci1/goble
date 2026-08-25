@@ -1,101 +1,26 @@
+//! Root element of the native UI.
+//!
+//! Owns only the element tree + the hot-reload handshake. The data lives in
+//! [`crate::state`] and the callbacks live in [`crate::actions`].
+
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
+use goble_desktop_service::{CollectingEventBus, DesktopState};
 use goble_ui::elements::Empty;
 use goble_ui::event::DispatchedEvent;
 use goble_ui::{
-    AppContext, ChatFragment, ChatMessage, ChatRole, ConversationEntry, ConversationStatus,
-    Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint, TerminalData,
-    TerminalLine, TerminalStatus, Vector2F,
+    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint, Vector2F,
 };
 
-use crate::hot_ui::{build_ui, AppTab, UiActions, UiSnapshot};
+use crate::actions::make_actions;
+use crate::ai::{make_ai_actions, AiState};
+use crate::hot_ui::{build_ui, AiSnapshot, UiSnapshot};
+use crate::state::UiState;
 
 #[cfg(feature = "hot-reload")]
 use std::sync::mpsc;
-
-/// App-owned UI state.
-///
-/// The element tree is rebuilt from this state on every frame, so state lives
-/// here (in the executable) instead of inside the hot-reloaded dylib. That
-/// keeps text input focus/value across rebuilds and survives library swaps.
-#[derive(Clone)]
-struct UiState {
-    current_tab: AppTab,
-    conversations: Vec<ConversationEntry>,
-    selected_id: Option<String>,
-    search_query: String,
-    search_focused: bool,
-    new_conversation_draft: String,
-    create_focused: bool,
-    thread_messages: Vec<ChatMessage>,
-    chat_messages: Vec<ChatMessage>,
-    composer_draft: String,
-    composer_focused: bool,
-    agent_name: String,
-    agent_busy: bool,
-}
-
-impl UiState {
-    fn mock() -> Self {
-        let conversations = vec![
-            ConversationEntry::new("c1", "Ada", "Let's ship hot reload today", "10:42")
-                .with_status(ConversationStatus::Success),
-            ConversationEntry::new("c2", "Coder", "PR #12 is merged", "09:30")
-                .with_status(ConversationStatus::Success),
-            ConversationEntry::new("c3", "Ops", "Worker deployment done", "Yesterday")
-                .with_status(ConversationStatus::Default),
-            ConversationEntry::new("c4", "Research", "Drafting the plan", "2 days ago")
-                .with_status(ConversationStatus::Error),
-        ];
-
-        let thread_messages = vec![ChatMessage::from_markdown(
-            ChatRole::Assistant,
-            "Bine ai venit! Selectează o conversație din sidebar.",
-        )];
-        let chat_messages = vec![
-            ChatMessage::from_markdown(ChatRole::User, "Salut! Cum legăm goble-ui de app?"),
-            ChatMessage::new(
-                ChatRole::Assistant,
-                vec![
-                    ChatFragment::text("Am pornit aplicația:"),
-                    ChatFragment::terminal(
-                        TerminalData::new(
-                            "cargo run",
-                            vec![
-                                TerminalLine::command("cargo run"),
-                                TerminalLine::output("Compiling goble-ui v0.1.0"),
-                                TerminalLine::output("Finished `dev` profile in 1.2s"),
-                                TerminalLine::success("Running `target/debug/goble`"),
-                            ],
-                        )
-                        .with_status(TerminalStatus::Success),
-                    ),
-                ],
-            ),
-            ChatMessage::from_markdown(
-                ChatRole::Assistant,
-                "UI-ul rulează cu hot reload — modificările din `goble-ui-hot` apar instant.",
-            ),
-        ];
-
-        Self {
-            current_tab: AppTab::Chat,
-            selected_id: conversations.first().map(|c| c.id.clone()),
-            conversations,
-            search_query: String::new(),
-            search_focused: false,
-            new_conversation_draft: String::new(),
-            create_focused: false,
-            thread_messages,
-            chat_messages,
-            composer_draft: String::new(),
-            composer_focused: false,
-            agent_name: "Goble Agent".to_string(),
-            agent_busy: false,
-        }
-    }
-}
 
 #[cfg(feature = "hot-reload")]
 struct ReloadHandles {
@@ -108,6 +33,9 @@ struct ReloadHandles {
 pub struct RootView {
     element: Box<dyn Element>,
     state: Rc<RefCell<UiState>>,
+    ai_state: Rc<RefCell<AiState>>,
+    desktop: Option<Arc<DesktopState>>,
+    event_bus: Option<CollectingEventBus>,
     size: Option<Vector2F>,
     origin: Option<Point>,
     #[cfg(feature = "hot-reload")]
@@ -115,8 +43,19 @@ pub struct RootView {
 }
 
 impl RootView {
-    pub fn new(app: &AppContext) -> Self {
-        let state = Rc::new(RefCell::new(UiState::mock()));
+    pub fn new(
+        app: &AppContext,
+        desktop: Option<Arc<DesktopState>>,
+        event_bus: Option<CollectingEventBus>,
+    ) -> Self {
+        let state = Rc::new(RefCell::new(match &desktop {
+            Some(d) => UiState::from_desktop(d),
+            None => UiState::mock(),
+        }));
+        let ai_state = Rc::new(RefCell::new(match &desktop {
+            Some(d) => AiState::from_desktop(d),
+            None => AiState::mock(),
+        }));
 
         #[cfg(feature = "hot-reload")]
         let reload = spawn_reload_thread();
@@ -124,6 +63,9 @@ impl RootView {
         let mut view = Self {
             element: Box::new(Empty::new()),
             state,
+            ai_state,
+            desktop,
+            event_bus,
             size: None,
             origin: None,
             #[cfg(feature = "hot-reload")]
@@ -133,12 +75,39 @@ impl RootView {
         view
     }
 
+    /// Poll the event bus and refresh state from the backend when something
+    /// changed (chats, messages, workflows, agents). Called on every frame
+    /// before the tree is rebuilt, so backend updates show up live.
+    fn drain_events(&mut self) {
+        let Some(bus) = self.event_bus.clone() else {
+            return;
+        };
+        let events = bus.take_events();
+        if events.is_empty() {
+            return;
+        }
+        let Some(desktop) = self.desktop.clone() else {
+            return;
+        };
+        let mut state = self.state.borrow_mut();
+        for (name, _payload) in events {
+            match name.as_str() {
+                "chats:updated" | "chat:updated" => state.refresh_conversations(&desktop),
+                "workflows:updated" => state.refresh_crons(&desktop),
+                "agents:updated" => state.refresh_agent_name(&desktop),
+                "vault:updated" => self.ai_state.borrow_mut().refresh_vault(&desktop),
+                _ => {}
+            }
+        }
+    }
+
     /// Rebuild the element tree from the current app state.
     ///
     /// This drops the previous tree *before* calling into the hot library, so
     /// old dylib-owned objects are released while the old library is still
     /// loaded (`hot-lib-reloader` may swap it during the next `build_ui` call).
     fn rebuild(&mut self, app: &AppContext) {
+        self.drain_events();
         let snapshot = {
             let s = self.state.borrow();
             UiSnapshot {
@@ -153,110 +122,48 @@ impl RootView {
                 chat_messages: s.chat_messages.clone(),
                 composer_draft: s.composer_draft.clone(),
                 composer_focused: s.composer_focused,
+                models: s.models.clone(),
+                selected_model: s.selected_model.clone(),
+                model_menu_open: s.model_menu_open.clone(),
+                profile_menu_open: s.profile_menu_open.clone(),
                 agent_name: s.agent_name.clone(),
                 agent_busy: s.agent_busy,
+                crons_open: s.crons_open,
+                crons: s.crons.clone(),
+                sidebar_width: s.sidebar_width,
+                sidebar_dragging: s.sidebar_dragging,
+                agent_cards: s.agent_cards.clone(),
+                new_agent_hover: s.new_agent_hover.clone(),
             }
         };
-        let actions = Self::actions(Rc::clone(&self.state));
-        self.element = build_ui(app, &snapshot, &actions);
-    }
-
-    fn actions(state: Rc<RefCell<UiState>>) -> UiActions {
-        let on_search_change = Rc::clone(&state);
-        let on_search_focus_change = Rc::clone(&state);
-        let on_create_change = Rc::clone(&state);
-        let on_create_focus_change = Rc::clone(&state);
-        let on_create_submit = Rc::clone(&state);
-        let on_select_conversation = Rc::clone(&state);
-        let on_select_tab = Rc::clone(&state);
-        let on_composer_change = Rc::clone(&state);
-        let on_composer_focus_change = Rc::clone(&state);
-        let on_send_message = Rc::clone(&state);
-        let on_attach = Rc::clone(&state);
-        let on_voice = Rc::clone(&state);
-        let on_stop = Rc::clone(&state);
-
-        UiActions {
-            on_search_change: Rc::new(RefCell::new(move |value: String| {
-                on_search_change.borrow_mut().search_query = value;
-            })),
-            on_search_focus_change: Rc::new(RefCell::new(move |focused: bool| {
-                on_search_focus_change.borrow_mut().search_focused = focused;
-            })),
-            on_create_change: Rc::new(RefCell::new(move |value: String| {
-                on_create_change.borrow_mut().new_conversation_draft = value;
-            })),
-            on_create_focus_change: Rc::new(RefCell::new(move |focused: bool| {
-                on_create_focus_change.borrow_mut().create_focused = focused;
-            })),
-            on_create_submit: Rc::new(RefCell::new(move || {
-                let mut state = on_create_submit.borrow_mut();
-                let title = state.new_conversation_draft.trim().to_string();
-                if !title.is_empty() {
-                    let id = format!("c-{}", state.conversations.len() + 1);
-                    state.conversations.insert(
-                        0,
-                        ConversationEntry::new(id.clone(), title, "New conversation", "now"),
-                    );
-                    state.selected_id = Some(id);
-                    state.new_conversation_draft.clear();
-                }
-            })),
-            on_select_conversation: Rc::new(RefCell::new(move |id: String| {
-                on_select_conversation.borrow_mut().selected_id = Some(id);
-            })),
-            on_select_tab: Rc::new(RefCell::new(move |tab: AppTab| {
-                on_select_tab.borrow_mut().current_tab = tab;
-            })),
-            on_composer_change: Rc::new(RefCell::new(move |value: String| {
-                on_composer_change.borrow_mut().composer_draft = value;
-            })),
-            on_composer_focus_change: Rc::new(RefCell::new(move |focused: bool| {
-                on_composer_focus_change.borrow_mut().composer_focused = focused;
-            })),
-            on_send_message: Rc::new(RefCell::new(move |text: String| {
-                let mut state = on_send_message.borrow_mut();
-                state
-                    .chat_messages
-                    .push(ChatMessage::from_markdown(ChatRole::User, text.clone()));
-                state.chat_messages.push(ChatMessage::from_markdown(
-                    ChatRole::Assistant,
-                    format!("Am primit mesajul tău. Rulez acum comanda pentru „{text}”."),
-                ));
-                state.composer_draft.clear();
-                state.agent_busy = false;
-            })),
-            on_attach: Rc::new(RefCell::new(move || {
-                on_attach
-                    .borrow_mut()
-                    .chat_messages
-                    .push(ChatMessage::from_markdown(
-                        ChatRole::Assistant,
-                        "(attach — file picker coming soon)",
-                    ));
-            })),
-            on_voice: Rc::new(RefCell::new(move || {
-                on_voice
-                    .borrow_mut()
-                    .chat_messages
-                    .push(ChatMessage::from_markdown(
-                        ChatRole::Assistant,
-                        "(voice input coming soon)",
-                    ));
-            })),
-            on_select_model: Rc::new(RefCell::new(move || {
-                log::info!("model selector pressed");
-            })),
-            on_copy: Rc::new(RefCell::new(move || {
-                log::info!("copy transcript pressed");
-            })),
-            on_restart: Rc::new(RefCell::new(move || {
-                log::info!("restart agent pressed");
-            })),
-            on_stop: Rc::new(RefCell::new(move || {
-                on_stop.borrow_mut().agent_busy = false;
-            })),
-        }
+        let actions = make_actions(Rc::clone(&self.state), self.desktop.clone());
+        let ai_snapshot = {
+            let s = self.ai_state.borrow();
+            AiSnapshot {
+                connectors_open: s.connectors_open,
+                vault_open: s.vault_open,
+                vault_unlocked: s.vault_unlocked,
+                vault_secrets: s.vault_secrets.clone(),
+                vault_unlock_draft: s.vault_unlock_draft.clone(),
+                vault_new_key: s.vault_new_key.clone(),
+                vault_new_value: s.vault_new_value.clone(),
+                vault_error: s.vault_error.clone(),
+                connector_search: s.connector_search.clone(),
+                connectors: s.connectors.clone(),
+                install_open: s.install_open,
+                install_editing_id: s.install_editing_id.clone(),
+                install_name: s.install_name.clone(),
+                install_source: s.install_source.clone(),
+                install_source_value: s.install_source_value.clone(),
+                install_search_query: s.install_search_query.clone(),
+                install_search_results: s.install_search_results.clone(),
+                install_selected_secrets: s.install_selected_secrets.clone(),
+                install_error: s.install_error.clone(),
+                installing: s.installing,
+            }
+        };
+        let ai_actions = make_ai_actions(Rc::clone(&self.ai_state), self.desktop.clone());
+        self.element = build_ui(app, &snapshot, &actions, &ai_snapshot, &ai_actions);
     }
 
     /// Drain the reload handshake: when the dylib is about to be swapped,

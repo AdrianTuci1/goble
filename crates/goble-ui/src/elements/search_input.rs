@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::elements::{
     AppContext, Container, EdgeInsets, Element, EventContext, Fill, Icon, LayoutContext,
-    PaintContext, Point, SizeConstraint, Text,
+    MainAxisSize, PaintContext, Point, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{PointF, Vector2F};
@@ -13,6 +13,7 @@ pub struct SearchInput {
     value: String,
     placeholder: String,
     focused: bool,
+    compact: bool,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     size: Option<Vector2F>,
@@ -26,6 +27,7 @@ impl SearchInput {
             value: String::new(),
             placeholder: "Search...".to_string(),
             focused: false,
+            compact: false,
             on_change: None,
             on_focus_change: None,
             size: None,
@@ -61,12 +63,25 @@ impl SearchInput {
         self
     }
 
+    /// Use a tighter vertical padding and a small corner radius for compact
+    /// placements (e.g. the sidebar search box).
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
+    }
+
     pub fn value(&self) -> &str {
         &self.value
     }
 
     fn rebuild(&mut self, app: &AppContext) {
-        let padding = app.theme.spacing_px(SpacingToken::Md);
+        let token = if self.compact {
+            SpacingToken::Xs
+        } else {
+            SpacingToken::Md
+        };
+        let padding = app.theme.spacing_px(token);
+        let radius = if self.compact { 6.0 } else { 0.0 };
         let gap = app.theme.spacing_px(SpacingToken::Sm);
         let display = if self.value.is_empty() && !self.placeholder.is_empty() {
             self.placeholder.clone()
@@ -81,15 +96,22 @@ impl SearchInput {
         let icon = Icon::new("search")
             .with_theme_color(ColorToken::Muted, app)
             .finish();
-        let text = Text::new(display).with_theme_color(color, app).finish();
+        let text = Text::new(display)
+            .with_theme_color(color, app)
+            .with_max_lines(1)
+            .finish();
+        // Fill the available width so the box has equal margins on both sides
+        // when placed in a stretched column (e.g. the sidebar).
         let row = crate::elements::Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_spacing(gap)
             .with_child(icon)
             .with_child(text)
             .finish();
         let mut container = Container::new(row)
             .with_padding(EdgeInsets::uniform(padding))
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+            .with_corner_radius(radius);
         if self.focused {
             container = container.with_border(app.theme.color(ColorToken::Accent).into());
         } else {

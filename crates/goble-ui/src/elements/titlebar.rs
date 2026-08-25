@@ -36,7 +36,7 @@ impl TitleBar {
             .finish();
 
         let title = Text::new(title)
-            .with_font_size(14.0)
+            .with_font_size(12.0)
             .with_theme_color(ColorToken::Text, app)
             .finish();
 
@@ -52,7 +52,7 @@ impl TitleBar {
             tab_row = tab_row.with_child(
                 Button::new(
                     Text::new(label)
-                        .with_font_size(13.0)
+                        .with_font_size(12.0)
                         .with_theme_color(ColorToken::Text, app)
                         .finish(),
                 )

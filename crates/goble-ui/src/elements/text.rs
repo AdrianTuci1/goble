@@ -4,7 +4,7 @@ use crate::geometry::Vector2F;
 use crate::platform::text_atlas::{measure_text_family as measure_text_atlas, FontWeight};
 use crate::theme::{ColorToken, FontFamily};
 
-const DEFAULT_FONT_SIZE: f32 = 14.0;
+const DEFAULT_FONT_SIZE: f32 = 12.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.2;
 
 /// Measure text using the bundled Roboto fonts when possible.
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn text_measures_content() {
         let app = AppContext::default();
-        let mut text = Text::new("hello").with_font_size(20.0);
+        let mut text = Text::new("hello").with_font_size(12.0);
         let size = text.layout(
             SizeConstraint::loose(vec2f(200.0, 200.0)),
             &mut LayoutContext::default(),
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn text_wraps_at_max_width() {
         let app = AppContext::default();
-        let mut text = Text::new("hello world").with_font_size(20.0);
+        let mut text = Text::new("hello world").with_font_size(12.0);
         let size = text.layout(
             SizeConstraint::loose(vec2f(60.0, 200.0)),
             &mut LayoutContext::default(),

@@ -20,14 +20,14 @@ impl Theme {
         Self {
             name: "dark",
             colors: ColorScheme {
-                bg: ColorU::hex(0x0f1115),
-                surface: ColorU::hex(0x181b21),
-                surface_raised: ColorU::hex(0x21252e),
-                border: ColorU::hex(0x2a2e36),
-                text: ColorU::hex(0xe4e6eb),
-                muted: ColorU::hex(0x8b949e),
-                hover: ColorU::hex(0x21252e),
-                selected: ColorU::hex(0x2a2e36),
+                bg: ColorU::hex(0x0e0e0e),
+                surface: ColorU::hex(0x161616),
+                surface_raised: ColorU::hex(0x1e1e1e),
+                border: ColorU::hex(0x262626),
+                text: ColorU::hex(0xe8e8e8),
+                muted: ColorU::hex(0x8e8e8e),
+                hover: ColorU::hex(0x1e1e1e),
+                selected: ColorU::hex(0x2a2a2a),
                 success: ColorU::hex(0x10b981),
                 warning: ColorU::hex(0xf59e0b),
                 error: ColorU::hex(0xef4444),
@@ -46,14 +46,14 @@ impl Theme {
         Self {
             name: "light",
             colors: ColorScheme {
-                bg: ColorU::hex(0xf6f7f9),
+                bg: ColorU::hex(0xf5f5f5),
                 surface: ColorU::hex(0xffffff),
-                surface_raised: ColorU::hex(0xf3f4f6),
-                border: ColorU::hex(0xe2e4e9),
-                text: ColorU::hex(0x1f2937),
-                muted: ColorU::hex(0x6b7280),
-                hover: ColorU::hex(0xf3f4f6),
-                selected: ColorU::hex(0xe5e7eb),
+                surface_raised: ColorU::hex(0xf0f0f0),
+                border: ColorU::hex(0xe0e0e0),
+                text: ColorU::hex(0x1f1f1f),
+                muted: ColorU::hex(0x6f6f6f),
+                hover: ColorU::hex(0xf0f0f0),
+                selected: ColorU::hex(0xe2e2e2),
                 success: ColorU::hex(0x10b981),
                 warning: ColorU::hex(0xf59e0b),
                 error: ColorU::hex(0xef4444),
@@ -72,14 +72,14 @@ impl Theme {
         Self {
             name: "midnight",
             colors: ColorScheme {
-                bg: ColorU::hex(0x0a0c10),
-                surface: ColorU::hex(0x11131a),
-                surface_raised: ColorU::hex(0x181b23),
-                border: ColorU::hex(0x1f222b),
-                text: ColorU::hex(0xe8eaed),
-                muted: ColorU::hex(0x6b7280),
-                hover: ColorU::hex(0x181b23),
-                selected: ColorU::hex(0x1e212b),
+                bg: ColorU::hex(0x0a0a0a),
+                surface: ColorU::hex(0x121212),
+                surface_raised: ColorU::hex(0x191919),
+                border: ColorU::hex(0x212121),
+                text: ColorU::hex(0xeaeaea),
+                muted: ColorU::hex(0x6f6f6f),
+                hover: ColorU::hex(0x191919),
+                selected: ColorU::hex(0x222222),
                 success: ColorU::hex(0x10b981),
                 warning: ColorU::hex(0xf59e0b),
                 error: ColorU::hex(0xef4444),
@@ -183,7 +183,8 @@ pub enum AccentColor {
 impl AccentColor {
     pub fn color(&self) -> ColorU {
         match self {
-            AccentColor::Blue => ColorU::hex(0x2563eb),
+            // Neutral gray: the UI is intentionally blue-free (gray/black tints).
+            AccentColor::Blue => ColorU::hex(0x9a9a9a),
             AccentColor::Green => ColorU::hex(0x10b981),
             AccentColor::Purple => ColorU::hex(0x8b5cf6),
             AccentColor::Orange => ColorU::hex(0xf97316),
@@ -318,12 +319,12 @@ mod tests {
     fn theme_default_is_dark() {
         let theme = Theme::default();
         assert_eq!(theme.name, "dark");
-        assert_eq!(theme.color(ColorToken::Bg), ColorU::hex(0x0f1115));
+        assert_eq!(theme.color(ColorToken::Bg), ColorU::hex(0x0e0e0e));
     }
 
     #[test]
     fn accent_color_resolves() {
-        assert_eq!(AccentColor::Blue.color(), ColorU::hex(0x2563eb));
+        assert_eq!(AccentColor::Blue.color(), ColorU::hex(0x9a9a9a));
     }
 
     #[test]

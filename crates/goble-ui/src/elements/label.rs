@@ -17,8 +17,8 @@ pub enum LabelSize {
 impl LabelSize {
     pub fn font_size(self) -> f32 {
         match self {
-            LabelSize::Xs => 11.0,
-            LabelSize::Sm => 12.0,
+            LabelSize::Xs => 12.0,
+            LabelSize::Sm => 13.0,
         }
     }
 }

@@ -98,7 +98,7 @@ impl GroupChatMessage {
                 .with_child(
                     Text::new(self.author_label())
                         .with_theme_color(ColorToken::Text, app)
-                        .with_font_size(14.0)
+                        .with_font_size(12.0)
                         .finish(),
                 );
             if let Some(ts) = self.message.timestamp.as_ref() {
@@ -211,15 +211,15 @@ impl GroupChatMessage {
                 .finish(),
             ChatFragmentKind::Bold(text) => Text::new(text.clone())
                 .with_theme_color(ColorToken::Text, app)
-                .with_font_size(15.0)
+                .with_font_size(12.0)
                 .finish(),
             ChatFragmentKind::Italic(text) => Text::new(text.clone())
                 .with_theme_color(ColorToken::Text, app)
-                .with_font_size(14.0)
+                .with_font_size(12.0)
                 .finish(),
             ChatFragmentKind::BoldItalic(text) => Text::new(text.clone())
                 .with_theme_color(ColorToken::Text, app)
-                .with_font_size(15.0)
+                .with_font_size(12.0)
                 .finish(),
             ChatFragmentKind::Code(code) => Container::new(
                 Text::new(code.clone())

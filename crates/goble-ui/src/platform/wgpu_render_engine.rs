@@ -7,6 +7,21 @@ use wgpu::util::DeviceExt;
 const MAX_RECTS: usize = 4096;
 const MAX_TEXT_VERTICES: usize = 8192;
 
+/// A run of geometry produced between two clip boundaries, drawn with one
+/// scissor rect. Geometry is accumulated across the whole frame into the three
+/// vertex buffers, then each batch is drawn as a slice of those buffers so that
+/// `queue.write_buffer` ordering stays correct (all writes happen once, before
+/// the single submit).
+struct Batch {
+    scissor: (u32, u32, u32, u32),
+    rect_start: usize,
+    rect_end: usize,
+    text_start: usize,
+    text_end: usize,
+    icon_start: usize,
+    icon_end: usize,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct RectInstance {
@@ -17,7 +32,8 @@ struct RectInstance {
     radius: f32,
     stroke_width: f32,
     is_stroke: u32,
-    _pad: u32,
+    /// 1 = fade alpha 0 at the left edge -> 1 at the right edge.
+    gradient: u32,
 }
 
 impl RectInstance {
@@ -30,7 +46,20 @@ impl RectInstance {
             radius,
             stroke_width: 0.0,
             is_stroke: 0,
-            _pad: 0,
+            gradient: 0,
+        }
+    }
+
+    fn new_fade_right(rect: crate::geometry::RectF, color: ColorU, radius: f32) -> Self {
+        Self {
+            origin: [rect.origin.x, rect.origin.y],
+            size: [rect.size.width, rect.size.height],
+            color: color.to_linear_f32(),
+            stroke_color: [0.0; 4],
+            radius,
+            stroke_width: 0.0,
+            is_stroke: 0,
+            gradient: 1,
         }
     }
 
@@ -43,7 +72,7 @@ impl RectInstance {
             radius,
             stroke_width: width,
             is_stroke: 1,
-            _pad: 0,
+            gradient: 0,
         }
     }
 }
@@ -353,6 +382,11 @@ impl WgpuRenderEngine {
         }
     }
 
+    /// Render the command list, scaling from logical points to physical device
+    /// pixels by `scale` (the window's device pixel ratio). Layout runs in
+    /// logical points so UI sizes (topbar height, sidebar width, font sizes)
+    /// stay consistent across HiDPI displays.
+    #[allow(unused_assignments)]
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -360,12 +394,40 @@ impl WgpuRenderEngine {
         view: &wgpu::TextureView,
         viewport_size: (u32, u32),
         renderer: &Renderer,
+        scale: f32,
     ) {
-        self.text_atlas.prepare(device, queue, renderer.commands());
+        self.text_atlas.prepare(device, queue, renderer.commands(), scale);
+
+        let viewport = [viewport_size.0 as f32, viewport_size.1 as f32];
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&viewport));
 
         let mut rect_instances: Vec<RectInstance> = Vec::new();
         let mut text_vertices: Vec<TextVertex> = Vec::new();
         let mut icon_vertices: Vec<TextVertex> = Vec::new();
+        let mut batches: Vec<Batch> = Vec::new();
+        let mut clip_stack: Vec<crate::geometry::RectF> = Vec::new();
+        let mut prev_rect = 0usize;
+        let mut prev_text = 0usize;
+        let mut prev_icon = 0usize;
+
+        // Record a batch for the geometry accumulated since the previous clip
+        // boundary, drawing it with the scissor currently active.
+        macro_rules! record_batch {
+            () => {{
+                batches.push(Batch {
+                    scissor: clip_scissor(&clip_stack, scale, viewport_size),
+                    rect_start: prev_rect,
+                    rect_end: rect_instances.len(),
+                    text_start: prev_text,
+                    text_end: text_vertices.len(),
+                    icon_start: prev_icon,
+                    icon_end: icon_vertices.len(),
+                });
+                prev_rect = rect_instances.len();
+                prev_text = text_vertices.len();
+                prev_icon = icon_vertices.len();
+            }};
+        }
 
         for command in renderer.commands() {
             match command {
@@ -374,7 +436,22 @@ impl WgpuRenderEngine {
                     color,
                     corner_radius,
                 } => {
-                    rect_instances.push(RectInstance::new_fill(*rect, *color, *corner_radius));
+                    rect_instances.push(RectInstance::new_fill(
+                        rect.scale(scale, scale),
+                        *color,
+                        *corner_radius * scale,
+                    ));
+                }
+                RenderCommand::FillRectFadeRight {
+                    rect,
+                    color,
+                    corner_radius,
+                } => {
+                    rect_instances.push(RectInstance::new_fade_right(
+                        rect.scale(scale, scale),
+                        *color,
+                        *corner_radius * scale,
+                    ));
                 }
                 RenderCommand::StrokeRect {
                     rect,
@@ -383,10 +460,10 @@ impl WgpuRenderEngine {
                     corner_radius,
                 } => {
                     rect_instances.push(RectInstance::new_stroke(
-                        *rect,
+                        rect.scale(scale, scale),
                         *color,
-                        *width,
-                        *corner_radius,
+                        *width * scale,
+                        *corner_radius * scale,
                     ));
                 }
                 RenderCommand::DrawText {
@@ -396,16 +473,17 @@ impl WgpuRenderEngine {
                     color,
                     font_weight,
                     font_family,
-                    ..
+                    max_width,
                 } => {
                     if let Some(entry) = self.text_atlas.entry_with_family(
                         text,
-                        *font_size,
+                        *font_size * scale,
                         *font_weight,
                         *font_family,
+                        *max_width * scale,
                     ) {
-                        let left = origin.x + entry.offset[0];
-                        let top = origin.y + entry.offset[1];
+                        let left = origin.x * scale + entry.offset[0];
+                        let top = origin.y * scale + entry.offset[1];
                         let right = left + entry.size[0];
                         let bottom = top + entry.size[1];
                         let u0 = entry.uv_origin[0];
@@ -446,11 +524,11 @@ impl WgpuRenderEngine {
                 } => {
                     const ICON_CELL: f32 = 64.0;
                     if let Some(entry) = self.icon_atlas.entry(name) {
-                        let scale = *size / ICON_CELL;
-                        let left = origin.x + entry.offset[0] * scale;
-                        let top = origin.y + entry.offset[1] * scale;
-                        let right = left + entry.size[0] * scale;
-                        let bottom = top + entry.size[1] * scale;
+                        let icon_scale = (*size * scale) / ICON_CELL;
+                        let left = origin.x * scale + entry.offset[0] * icon_scale;
+                        let top = origin.y * scale + entry.offset[1] * icon_scale;
+                        let right = left + entry.size[0] * icon_scale;
+                        let bottom = top + entry.size[1] * icon_scale;
                         let u0 = entry.uv_origin[0];
                         let v0 = entry.uv_origin[1];
                         let u1 = u0 + entry.uv_size[0];
@@ -481,41 +559,42 @@ impl WgpuRenderEngine {
                         ]);
                     }
                 }
-                RenderCommand::ClipRect(_) | RenderCommand::PopClip => {
-                    // TODO: implement clipping
+                RenderCommand::ClipRect(rect) => {
+                    record_batch!();
+                    clip_stack.push(*rect);
+                }
+                RenderCommand::PopClip => {
+                    record_batch!();
+                    clip_stack.pop();
                 }
             }
         }
+        record_batch!();
 
-        let rect_count = rect_instances.len().min(MAX_RECTS);
-        if rect_count > 0 {
+        let rect_total = rect_instances.len().min(MAX_RECTS);
+        if rect_total > 0 {
             queue.write_buffer(
                 &self.rect_instance_buffer,
                 0,
-                bytemuck::cast_slice(&rect_instances[..rect_count]),
+                bytemuck::cast_slice(&rect_instances[..rect_total]),
             );
         }
-
-        let text_vertex_count = text_vertices.len().min(MAX_TEXT_VERTICES);
-        if text_vertex_count > 0 {
+        let text_total = text_vertices.len().min(MAX_TEXT_VERTICES);
+        if text_total > 0 {
             queue.write_buffer(
                 &self.text_vertex_buffer,
                 0,
-                bytemuck::cast_slice(&text_vertices[..text_vertex_count]),
+                bytemuck::cast_slice(&text_vertices[..text_total]),
             );
         }
-
-        let icon_vertex_count = icon_vertices.len().min(MAX_TEXT_VERTICES);
-        if icon_vertex_count > 0 {
+        let icon_total = icon_vertices.len().min(MAX_TEXT_VERTICES);
+        if icon_total > 0 {
             queue.write_buffer(
                 &self.icon_vertex_buffer,
                 0,
-                bytemuck::cast_slice(&icon_vertices[..icon_vertex_count]),
+                bytemuck::cast_slice(&icon_vertices[..icon_total]),
             );
         }
-
-        let viewport = [viewport_size.0 as f32, viewport_size.1 as f32];
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&viewport));
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("goble-ui render encoder"),
@@ -528,10 +607,11 @@ impl WgpuRenderEngine {
                     view,
                     resolve_target: None,
                     ops: wgpu::Operations {
+                        // Neutral gray, matching the dark theme background (0x0e0e0e).
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.06,
-                            g: 0.07,
-                            b: 0.09,
+                            r: 0.055,
+                            g: 0.055,
+                            b: 0.055,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -542,35 +622,109 @@ impl WgpuRenderEngine {
                 occlusion_query_set: None,
             });
 
-            if rect_count > 0 {
-                pass.set_pipeline(&self.rect_pipeline);
-                pass.set_bind_group(0, &self.rect_bind_group, &[]);
-                pass.set_index_buffer(self.rect_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                pass.set_vertex_buffer(0, self.rect_instance_buffer.slice(..));
-                pass.draw_indexed(0..6, 0, 0..rect_count as u32);
-            }
+            for batch in &batches {
+                let rect_start = batch.rect_start.min(rect_total);
+                let rect_end = batch.rect_end.min(rect_total).max(rect_start);
+                if rect_end > rect_start {
+                    let count = rect_end - rect_start;
+                    let bytes = std::mem::size_of::<RectInstance>();
+                    pass.set_pipeline(&self.rect_pipeline);
+                    pass.set_bind_group(0, &self.rect_bind_group, &[]);
+                    pass.set_index_buffer(self.rect_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    pass.set_vertex_buffer(
+                        0,
+                        self.rect_instance_buffer
+                            .slice(((rect_start * bytes) as u64)..((rect_end * bytes) as u64)),
+                    );
+                    pass.set_scissor_rect(batch.scissor.0, batch.scissor.1, batch.scissor.2, batch.scissor.3);
+                    pass.draw_indexed(0..6, 0, 0..count as u32);
+                }
 
-            if text_vertex_count > 0 {
-                let index_count = (text_vertex_count / 4) * 6;
-                pass.set_pipeline(&self.text_pipeline);
-                pass.set_bind_group(0, &self.text_bind_group, &[]);
-                pass.set_index_buffer(self.text_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                pass.set_vertex_buffer(0, self.text_vertex_buffer.slice(..));
-                pass.draw_indexed(0..index_count as u32, 0, 0..1);
-            }
+                let text_start = batch.text_start.min(text_total);
+                let text_end = batch.text_end.min(text_total).max(text_start);
+                if text_end > text_start {
+                    let count = text_end - text_start;
+                    let index_count = (count / 4) * 6;
+                    let bytes = std::mem::size_of::<TextVertex>();
+                    pass.set_pipeline(&self.text_pipeline);
+                    pass.set_bind_group(0, &self.text_bind_group, &[]);
+                    pass.set_index_buffer(self.text_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    pass.set_vertex_buffer(
+                        0,
+                        self.text_vertex_buffer
+                            .slice(((text_start * bytes) as u64)..((text_end * bytes) as u64)),
+                    );
+                    pass.set_scissor_rect(batch.scissor.0, batch.scissor.1, batch.scissor.2, batch.scissor.3);
+                    pass.draw_indexed(0..index_count as u32, 0, 0..1);
+                }
 
-            if icon_vertex_count > 0 {
-                let index_count = (icon_vertex_count / 4) * 6;
-                pass.set_pipeline(&self.text_pipeline);
-                pass.set_bind_group(0, self.icon_atlas.bind_group(), &[]);
-                pass.set_index_buffer(self.text_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                pass.set_vertex_buffer(0, self.icon_vertex_buffer.slice(..));
-                pass.draw_indexed(0..index_count as u32, 0, 0..1);
+                let icon_start = batch.icon_start.min(icon_total);
+                let icon_end = batch.icon_end.min(icon_total).max(icon_start);
+                if icon_end > icon_start {
+                    let count = icon_end - icon_start;
+                    let index_count = (count / 4) * 6;
+                    let bytes = std::mem::size_of::<TextVertex>();
+                    pass.set_pipeline(&self.text_pipeline);
+                    pass.set_bind_group(0, self.icon_atlas.bind_group(), &[]);
+                    pass.set_index_buffer(self.text_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    pass.set_vertex_buffer(
+                        0,
+                        self.icon_vertex_buffer
+                            .slice(((icon_start * bytes) as u64)..((icon_end * bytes) as u64)),
+                    );
+                    pass.set_scissor_rect(batch.scissor.0, batch.scissor.1, batch.scissor.2, batch.scissor.3);
+                    pass.draw_indexed(0..index_count as u32, 0, 0..1);
+                }
             }
         }
 
         queue.submit(std::iter::once(encoder.finish()));
     }
+}
+
+/// Compute the scissor rect (in physical pixels) from the active clip stack.
+/// An empty stack clips to the full viewport.
+fn clip_scissor(
+    clip_stack: &[crate::geometry::RectF],
+    scale: f32,
+    viewport: (u32, u32),
+) -> (u32, u32, u32, u32) {
+    let vw = viewport.0 as f32;
+    let vh = viewport.1 as f32;
+    let mut acc: Option<crate::geometry::RectF> = None;
+    for r in clip_stack {
+        acc = Some(match acc {
+            None => *r,
+            Some(a) => intersect(a, *r),
+        });
+    }
+    let (x0, y0, x1, y1) = match acc {
+        Some(r) => (
+            r.origin.x * scale,
+            r.origin.y * scale,
+            (r.origin.x + r.size.width) * scale,
+            (r.origin.y + r.size.height) * scale,
+        ),
+        None => (0.0, 0.0, vw, vh),
+    };
+    let sx = x0.max(0.0).min(vw);
+    let sy = y0.max(0.0).min(vh);
+    let ex = x1.max(x0).min(vw);
+    let ey = y1.max(y0).min(vh);
+    (
+        sx as u32,
+        sy as u32,
+        (ex - sx).max(0.0) as u32,
+        (ey - sy).max(0.0) as u32,
+    )
+}
+
+fn intersect(a: crate::geometry::RectF, b: crate::geometry::RectF) -> crate::geometry::RectF {
+    let x0 = a.origin.x.max(b.origin.x);
+    let y0 = a.origin.y.max(b.origin.y);
+    let x1 = (a.origin.x + a.size.width).min(b.origin.x + b.size.width);
+    let y1 = (a.origin.y + a.size.height).min(b.origin.y + b.size.height);
+    crate::geometry::rectf(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
 }
 
 fn text_indices(max_quads: usize) -> Vec<u16> {
@@ -592,6 +746,7 @@ struct VertexOutput {
     @location(4) @interpolate(flat) radius: f32,
     @location(5) @interpolate(flat) stroke_width: f32,
     @location(6) @interpolate(flat) is_stroke: u32,
+    @location(7) @interpolate(flat) gradient: u32,
 };
 
 @group(0) @binding(0)
@@ -607,7 +762,7 @@ fn vs_main(
     @location(4) radius: f32,
     @location(5) stroke_width: f32,
     @location(6) is_stroke: u32,
-    @location(7) _pad: u32,
+    @location(7) gradient: u32,
 ) -> VertexOutput {
     let corners = array<vec2<f32>, 4>(
         vec2<f32>(0.0, 0.0),
@@ -631,6 +786,7 @@ fn vs_main(
     out.radius = radius;
     out.stroke_width = stroke_width;
     out.is_stroke = is_stroke;
+    out.gradient = gradient;
     return out;
 }
 
@@ -648,7 +804,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(in.stroke_color.rgb, in.stroke_color.a * stroke_alpha);
     } else {
         let alpha = 1.0 - smoothstep(0.0, softness, dist);
-        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+        var a = in.color.a * alpha;
+        if in.gradient != 0u {
+            // Fade alpha 0 at the left edge -> full at the right edge.
+            let t = clamp(in.local.x / max(in.size.x, 0.001), 0.0, 1.0);
+            a *= t;
+        }
+        return vec4<f32>(in.color.rgb, a);
     }
 }
 "#;

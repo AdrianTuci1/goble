@@ -39,13 +39,22 @@ impl Default for Spacer {
 impl Element for Spacer {
     fn layout(
         &mut self,
-        _constraint: SizeConstraint,
+        constraint: SizeConstraint,
         _ctx: &mut LayoutContext,
         _app: &AppContext,
     ) -> Vector2F {
-        let size = Vector2F::zero();
+        // In a bounded flex pass the parent hands the spacer a tight slice of
+        // the remaining main-axis space; report it so the parent distributes
+        // it and pushes the following siblings to the far edge. In every
+        // other context the constraint minimum is zero, so the spacer stays
+        // invisible.
+        let size = constraint.min;
         self.size = Some(size);
         size
+    }
+
+    fn flex_grow(&self) -> Option<f32> {
+        Some(self.flex)
     }
 
     fn paint(&mut self, origin: Vector2F, _ctx: &mut PaintContext, _app: &AppContext) {

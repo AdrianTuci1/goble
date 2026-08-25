@@ -38,7 +38,7 @@ impl ChatSidebar {
         column = column.with_child(
             Text::new("Details")
                 .with_theme_color(ColorToken::Text, app)
-                .with_font_size(14.0)
+                .with_font_size(12.0)
                 .finish(),
         );
         column = column.with_child(crate::elements::Divider::horizontal().finish());

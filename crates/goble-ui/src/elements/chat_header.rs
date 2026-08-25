@@ -3,7 +3,8 @@ use std::rc::Rc;
 
 use crate::elements::{
     AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex, Icon,
-    LayoutContext, MainAxisAlignment, PaintContext, Point, SizeConstraint, Text, TopbarButton,
+    LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point, SizeConstraint, Text,
+    TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -54,10 +55,11 @@ impl ChatHeader {
 
         let title = Text::new(self.title.clone())
             .with_theme_color(ColorToken::Text, app)
-            .with_font_size(15.0)
+            .with_font_size(12.0)
             .finish();
 
         let mut row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(sm)
@@ -167,13 +169,15 @@ mod tests {
         );
         header.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
 
+        // With the full-width row, the toggle button sits at the right edge of
+        // the header (around x=152..184 for a 200px-wide layout).
         let mut event_ctx = EventContext::default();
         let down = DispatchedEvent::MouseDown {
-            position: vec2f(20.0, 20.0),
+            position: vec2f(180.0, 20.0),
             button: 0,
         };
         let up = DispatchedEvent::MouseUp {
-            position: vec2f(20.0, 20.0),
+            position: vec2f(180.0, 20.0),
             button: 0,
         };
 

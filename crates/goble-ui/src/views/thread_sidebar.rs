@@ -93,7 +93,7 @@ impl ThreadSidebar {
                 .with_child(
                     Text::new("Threads")
                         .with_theme_color(ColorToken::Text, app)
-                        .with_font_size(18.0)
+                        .with_font_size(12.0)
                         .finish(),
                 )
                 .with_child(

@@ -6,7 +6,7 @@ use crate::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::{vec2f, Vector2F};
+use crate::geometry::{rectf, vec2f, Vector2F};
 use crate::theme::SpacingToken;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,13 +100,18 @@ impl Element for Button {
         let h_pad = self.horizontal_padding(app);
         let v_pad = self.vertical_padding(app);
 
-        if let Some(renderer) = ctx.renderer.as_mut() {
-            let bg_color = match self.variant {
-                ButtonVariant::Primary => app.theme.color(crate::theme::ColorToken::Accent),
-                ButtonVariant::Ghost | ButtonVariant::Default => {
+        let bounds = rectf(origin.x, origin.y, size.x, size.y);
+        let bg_color = match self.variant {
+            ButtonVariant::Primary => app.theme.color(crate::theme::ColorToken::Accent),
+            ButtonVariant::Ghost | ButtonVariant::Default => {
+                if ctx.hovered(bounds) {
+                    app.theme.color(crate::theme::ColorToken::Hover)
+                } else {
                     app.theme.color(crate::theme::ColorToken::Surface)
                 }
-            };
+            }
+        };
+        if let Some(renderer) = ctx.renderer.as_mut() {
             let rect = crate::geometry::RectF::new(
                 crate::geometry::PointF::new(origin.x, origin.y),
                 crate::geometry::Size2F::new(size.x, size.y),

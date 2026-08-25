@@ -11,6 +11,13 @@ pub enum RenderCommand {
         color: ColorU,
         corner_radius: f32,
     },
+    /// A fill whose alpha ramps 0 -> 1 from left to right (used to fade text
+    /// out near an edge; `color` is the opaque right-side color).
+    FillRectFadeRight {
+        rect: crate::geometry::RectF,
+        color: ColorU,
+        corner_radius: f32,
+    },
     StrokeRect {
         rect: crate::geometry::RectF,
         color: ColorU,
@@ -68,6 +75,21 @@ impl Renderer {
         corner_radius: f32,
     ) {
         self.commands.push(RenderCommand::FillRect {
+            rect,
+            color,
+            corner_radius,
+        });
+    }
+
+    /// Fills a rect whose alpha ramps from fully transparent (left) to fully
+    /// opaque (right). Used to fade content out near the right edge of a row.
+    pub fn fill_rect_fade_right(
+        &mut self,
+        rect: crate::geometry::RectF,
+        color: ColorU,
+        corner_radius: f32,
+    ) {
+        self.commands.push(RenderCommand::FillRectFadeRight {
             rect,
             color,
             corner_radius,

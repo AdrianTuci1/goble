@@ -1449,6 +1449,21 @@ impl DesktopState {
         Ok(())
     }
 
+    /// Remove a secret from the vault and persist the updated blob.
+    pub fn delete_vault_secret(&self, key: &str) -> anyhow::Result<()> {
+        let passphrase = self.vault_passphrase.lock().clone();
+        if passphrase.is_empty() {
+            anyhow::bail!("vault passphrase not set");
+        }
+        self.vault.lock().remove(key)?;
+        let encrypted = self.vault.lock().to_bytes()?;
+        self.store
+            .lock()
+            .set_setting("vault_blob", &String::from_utf8_lossy(&encrypted))?;
+        self.emit("vault:updated", ());
+        Ok(())
+    }
+
     pub fn unlock_vault(&self, passphrase: String) -> anyhow::Result<Vec<String>> {
         let bytes = self
             .store

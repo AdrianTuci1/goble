@@ -3,26 +3,97 @@
 //! This crate is compiled as a `cdylib` and loaded at runtime by
 //! `hot-lib-reloader` (see `app/src/hot_ui.rs`). `build_ui` is the only
 //! reloadable function; keep its signature and the shapes of [`UiSnapshot`] /
-//! [`UiActions`] stable during a dev session — changing them requires
-//! rebuilding `goble-app` (the executable bakes in the ABI).
+//! [`UiActions`] (and [`AiSnapshot`] / [`AiActions`]) stable during a dev
+//! session — changing them requires rebuilding `goble-app` (the executable
+//! bakes in the ABI).
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    AppContext, Axis, Button, ButtonVariant, ChatMessage as UiChatMessage, Container,
-    ConversationEntry, ConversationListItem, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    EventContext, Fill, Flex, Icon, Label, LabelSize, LayoutContext, MainAxisAlignment,
-    MainAxisSize, PaintContext, Point, Rect, Scrollable, SearchInput, SizeConstraint, Spacer, Text,
-    TextInput, TopbarButton,
+    AgentCardUi, AppContext, ChatMessage as UiChatMessage, Container, ConversationEntry,
+    CrossAxisAlignment, Divider, Element, Expanded, Fill, Flex, MainAxisSize,
 };
-use goble_ui::event::DispatchedEvent;
-use goble_ui::geometry::{vec2f, Vector2F};
-use goble_ui::theme::{ColorToken, SpacingToken};
-use goble_ui::{ChatView, SettingsPage, SettingsView};
+use goble_ui::theme::ColorToken;
+use goble_ui::{Sheet, Stack, SHEET_DEFAULT_WIDTH};
+
+pub mod chat;
+pub mod connectors;
+pub mod crons;
+pub mod shell;
+pub mod sidebar;
+pub mod vault;
 
 /// Width of the left conversation sidebar.
-pub const SIDEBAR_WIDTH: f32 = 260.0;
+pub const SIDEBAR_WIDTH: f32 = 300.0;
+
+/// Width of the connectors sheet (wider than the default panels).
+pub const CONNECTORS_WIDTH: f32 = 480.0;
+
+/// A scheduled task (cron) shown in the agent's crons drawer.
+#[derive(Clone, Debug)]
+pub struct CronEntry {
+    pub id: String,
+    pub name: String,
+    pub schedule: String,
+    pub enabled: bool,
+    pub last_run: String,
+}
+
+impl CronEntry {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        schedule: impl Into<String>,
+        last_run: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            schedule: schedule.into(),
+            enabled: true,
+            last_run: last_run.into(),
+        }
+    }
+
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+/// A vault secret shown in the vault panel.
+#[derive(Clone, Debug)]
+pub struct VaultSecretEntry {
+    pub key: String,
+    pub updated_at: String,
+}
+
+/// An installed MCP server shown in the connectors panel.
+#[derive(Clone, Debug)]
+pub struct McpServerEntry {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    pub source_value: Option<String>,
+    pub capabilities: Vec<String>,
+    pub auth_required: bool,
+    pub discovered_tools: Vec<String>,
+    pub secret_ids: Vec<String>,
+    pub enabled_tools: Vec<String>,
+}
+
+/// A registry search result shown in the install drawer.
+#[derive(Clone, Debug)]
+pub struct McpSearchEntry {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub capabilities: Vec<String>,
+    pub auth_required: bool,
+    pub source_kind: String,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppTab {
@@ -31,8 +102,8 @@ pub enum AppTab {
     Settings,
 }
 
-/// Plain snapshot of the UI state used to build the tree. Owned by the host
-/// app; rendered from scratch every frame so state changes show up live.
+/// Plain snapshot of the main UI state used to build the tree. Owned by the
+/// host app; rendered from scratch every frame so state changes show up live.
 #[derive(Clone, Debug)]
 pub struct UiSnapshot {
     pub current_tab: AppTab,
@@ -46,12 +117,57 @@ pub struct UiSnapshot {
     pub chat_messages: Vec<UiChatMessage>,
     pub composer_draft: String,
     pub composer_focused: bool,
+    /// Model choices shown in the composer's model dropdown.
+    pub models: Vec<String>,
+    /// Currently selected model (shown as the composer's model label).
+    pub selected_model: String,
+    /// App-owned open flags for the composer model / account menus, so open
+    /// state survives the per-frame element rebuild.
+    pub model_menu_open: Rc<RefCell<bool>>,
+    pub profile_menu_open: Rc<RefCell<bool>>,
     pub agent_name: String,
     pub agent_busy: bool,
+    pub crons_open: bool,
+    pub crons: Vec<CronEntry>,
+    pub sidebar_width: f32,
+    pub sidebar_dragging: bool,
+    /// Per-card interaction state (hover / delete menu), shared with the
+    /// hot-reloaded card elements so selections and menus persist across frames.
+    pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,
+    /// Hover flag for the sidebar's "New agent" row, owned here so the row's
+    /// highlight survives the per-frame element rebuild.
+    pub new_agent_hover: Rc<RefCell<bool>>,
 }
 
-/// Callbacks supplied by the host app. Created fresh on every rebuild; they
-/// mutate app-owned state, which is rendered back on the next frame.
+/// Plain snapshot of the AI domain state (vault + MCP connectors) used to
+/// build the auxiliary panels. Owned by the host app.
+#[derive(Clone, Debug)]
+pub struct AiSnapshot {
+    pub connectors_open: bool,
+    pub vault_open: bool,
+    pub vault_unlocked: bool,
+    pub vault_secrets: Vec<VaultSecretEntry>,
+    pub vault_unlock_draft: String,
+    pub vault_new_key: String,
+    pub vault_new_value: String,
+    pub vault_error: Option<String>,
+    pub connector_search: String,
+    pub connectors: Vec<McpServerEntry>,
+    pub install_open: bool,
+    pub install_editing_id: Option<String>,
+    pub install_name: String,
+    pub install_source: String,
+    pub install_source_value: String,
+    pub install_search_query: String,
+    pub install_search_results: Vec<McpSearchEntry>,
+    pub install_selected_secrets: Vec<String>,
+    pub install_error: Option<String>,
+    pub installing: bool,
+}
+
+/// Callbacks supplied by the host app for the main view. Created fresh on
+/// every rebuild; they mutate app-owned state, which is rendered back on the
+/// next frame.
 pub struct UiActions {
     pub on_search_change: Rc<RefCell<dyn FnMut(String)>>,
     pub on_search_focus_change: Rc<RefCell<dyn FnMut(bool)>>,
@@ -66,366 +182,127 @@ pub struct UiActions {
     pub on_attach: Rc<RefCell<dyn FnMut()>>,
     pub on_voice: Rc<RefCell<dyn FnMut()>>,
     pub on_select_model: Rc<RefCell<dyn FnMut()>>,
+    /// Select a specific model from the composer dropdown by display name.
+    pub on_model_select: Rc<RefCell<dyn FnMut(String)>>,
     pub on_copy: Rc<RefCell<dyn FnMut()>>,
     pub on_restart: Rc<RefCell<dyn FnMut()>>,
     pub on_stop: Rc<RefCell<dyn FnMut()>>,
+    pub on_menu: Rc<RefCell<dyn FnMut()>>,
+    pub on_threads: Rc<RefCell<dyn FnMut()>>,
+    pub on_inbox: Rc<RefCell<dyn FnMut()>>,
+    pub on_settings: Rc<RefCell<dyn FnMut()>>,
+    pub on_plugins: Rc<RefCell<dyn FnMut()>>,
+    pub on_open_crons: Rc<RefCell<dyn FnMut()>>,
+    pub on_close_crons: Rc<RefCell<dyn FnMut()>>,
+    pub on_cron_create: Rc<RefCell<dyn FnMut()>>,
+    pub on_cron_delete: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_cron_trigger: Rc<RefCell<dyn FnMut(String)>>,
+    /// Begin dragging the sidebar divider at the given pointer x.
+    pub on_sidebar_drag_start: Rc<RefCell<dyn FnMut(f32)>>,
+    /// Move the divider while dragging, given the pointer x.
+    pub on_sidebar_drag_move: Rc<RefCell<dyn FnMut(f32)>>,
+    /// Finish a drag; the divider settles at the last width.
+    pub on_sidebar_drag_end: Rc<RefCell<dyn FnMut()>>,
+    /// Delete a conversation/agent card from the list.
+    pub on_agent_delete: Rc<RefCell<dyn FnMut(String)>>,
 }
 
-/// Build the complete app UI: a full-height sidebar on the left and the main
-/// content on the right.
-pub fn build_ui(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    let sidebar = build_sidebar(app, state, actions);
-    let main = build_main(app, state, actions);
-    let layout = SidebarLayout::new(sidebar, main, SIDEBAR_WIDTH);
-    Container::new(layout.finish())
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-        .finish()
+/// Callbacks supplied by the host app for the AI domain (vault + connectors).
+pub struct AiActions {
+    pub on_open_connectors: Rc<RefCell<dyn FnMut()>>,
+    pub on_close_connectors: Rc<RefCell<dyn FnMut()>>,
+    pub on_open_vault: Rc<RefCell<dyn FnMut()>>,
+    pub on_close_vault: Rc<RefCell<dyn FnMut()>>,
+    pub on_vault_unlock_draft_change: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_vault_unlock: Rc<RefCell<dyn FnMut()>>,
+    pub on_vault_new_key_change: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_vault_new_value_change: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_vault_secret_add: Rc<RefCell<dyn FnMut()>>,
+    pub on_vault_secret_delete: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_connector_search_change: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_install_open: Rc<RefCell<dyn FnMut()>>,
+    pub on_install_edit: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_install_pick: Rc<RefCell<dyn FnMut(String, String, String)>>,
+    pub on_install_close: Rc<RefCell<dyn FnMut()>>,
+    pub on_install_name_change: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_install_source_change: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_install_source_value_change: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_install_search_change: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_install_secret_toggle: Rc<RefCell<dyn FnMut(String, bool)>>,
+    pub on_install_submit: Rc<RefCell<dyn FnMut()>>,
+    pub on_connector_delete: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_connector_discover: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_connector_toggle: Rc<RefCell<dyn FnMut(String, bool)>>,
 }
 
-/// Left sidebar: search input on top, then a "new conversation" input, then
-/// the list of conversation cards.
-fn build_sidebar(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    let spacing = app.theme.spacing_px(SpacingToken::Md);
-    let sm = app.theme.spacing_px(SpacingToken::Sm);
-
-    // Search
-    let on_search_change = actions.on_search_change.clone();
-    let on_search_focus = actions.on_search_focus_change.clone();
-    let search = SearchInput::new()
-        .with_value(state.search_query.clone())
-        .with_focused(state.search_focused)
-        .with_placeholder("Search conversations…")
-        .with_on_change(move |value| (on_search_change.borrow_mut())(value))
-        .with_on_focus_change(move |focused| (on_search_focus.borrow_mut())(focused))
-        .finish();
-
-    // New conversation input + create button
-    let on_create_change = actions.on_create_change.clone();
-    let on_create_focus = actions.on_create_focus_change.clone();
-    let on_create_submit = actions.on_create_submit.clone();
-    let create_input = TextInput::new()
-        .with_value(state.new_conversation_draft.clone())
-        .with_focused(state.create_focused)
-        .with_placeholder("New conversation…")
-        .with_on_change(move |value| (on_create_change.borrow_mut())(value))
-        .with_on_focus_change(move |focused| (on_create_focus.borrow_mut())(focused))
-        .with_on_submit(move || (on_create_submit.borrow_mut())())
-        .finish();
-
-    let on_create_submit = actions.on_create_submit.clone();
-    let create_button = TopbarButton::new(
-        Icon::new("plus")
-            .with_size(16.0)
-            .with_theme_color(ColorToken::Text, app)
-            .finish(),
-    )
-    .with_size(32.0)
-    .with_on_click(move || (on_create_submit.borrow_mut())())
-    .finish();
-
-    let header = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(sm)
-        .with_child(create_input)
-        .with_child(create_button)
-        .finish();
-
-    // Conversation cards
-    let section_label = Label::new("Conversations")
-        .with_size(LabelSize::Xs)
-        .with_theme_color(ColorToken::Muted, app)
-        .finish();
-
-    let mut list = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(2.0);
-    for entry in &state.conversations {
-        let selected = state.selected_id.as_deref() == Some(entry.id.as_str());
-        let on_select = actions.on_select_conversation.clone();
-        let id = entry.id.clone();
-        let item = ConversationListItem::new(
-            entry.id.clone(),
-            entry.name.clone(),
-            entry.last_response.clone(),
-            entry.timestamp.clone(),
-            entry.status,
-            selected,
-        )
-        .with_on_click(move || (on_select.borrow_mut())(id.clone()))
-        .finish();
-        list = list.with_child(item);
-    }
-
-    let mut column = Flex::column()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(spacing);
-    column = column.with_child(search);
-    column = column.with_child(header);
-    column = column.with_child(Divider::horizontal().finish());
-    column = column.with_child(section_label);
-    column = column.with_child(Scrollable::new(list.finish(), Axis::Vertical).finish());
-
-    Container::new(column.finish())
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-        .with_padding(EdgeInsets::uniform(spacing))
-        .finish()
-}
-
-/// Main content area: tab bar + tab body.
-fn build_main(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    let spacing = app.theme.spacing_px(SpacingToken::Md);
-
-    let tab_row = Flex::row()
-        .with_main_axis_alignment(MainAxisAlignment::Start)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(spacing)
-        .with_child(tab_button(
-            "Threads",
-            AppTab::Threads,
-            state.current_tab,
-            actions,
-        ))
-        .with_child(tab_button("Chat", AppTab::Chat, state.current_tab, actions))
-        .with_child(tab_button(
-            "Settings",
-            AppTab::Settings,
-            state.current_tab,
-            actions,
-        ))
-        .finish();
-
-    let body: Box<dyn Element> = match state.current_tab {
-        AppTab::Threads => ChatView::new()
-            .with_messages(state.thread_messages.clone())
-            .finish(),
-        AppTab::Chat => build_agent_chat(app, state, actions),
-        AppTab::Settings => SettingsView::new(SettingsPage::Profile)
-            .with_profile("Ada", "ada@example.com")
-            .with_llm("openai", "gpt-4o", "", "", "")
-            .finish(),
-    };
-
-    let mut column = Flex::column()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(spacing);
-    column = column.with_child(
-        Container::new(tab_row)
-            .with_padding(EdgeInsets::uniform(spacing))
-            .finish(),
-    );
-    column = column.with_child(body);
-
-    Container::new(column.finish())
-        .with_padding(EdgeInsets::uniform(spacing))
-        .finish()
-}
-
-/// Agent chat tab: a header row with the agent avatar/status/copy/restart,
-/// then the message transcript + composer (which fills the remaining space).
-fn build_agent_chat(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    let header = build_agent_header(app, state, actions);
-
-    let on_composer_change = actions.on_composer_change.clone();
-    let on_composer_focus = actions.on_composer_focus_change.clone();
-    let on_send_message = actions.on_send_message.clone();
-    let on_attach = actions.on_attach.clone();
-    let on_voice = actions.on_voice.clone();
-    let on_select_model = actions.on_select_model.clone();
-    let on_stop = actions.on_stop.clone();
-
-    ChatView::new()
-        .with_header(header)
-        .with_messages(state.chat_messages.clone())
-        .with_composer_value(state.composer_draft.clone())
-        .with_composer_focused(state.composer_focused)
-        .with_composer_model_label("goble-agent")
-        .with_composer_stop_visible(state.agent_busy)
-        .with_composer_on_change(move |text| (on_composer_change.borrow_mut())(text))
-        .with_composer_on_focus_change(move |focused| (on_composer_focus.borrow_mut())(focused))
-        .with_composer_on_attach(move || (on_attach.borrow_mut())())
-        .with_composer_on_voice(move || (on_voice.borrow_mut())())
-        .with_composer_on_select_model(move || (on_select_model.borrow_mut())())
-        .with_composer_on_stop(move || (on_stop.borrow_mut())())
-        .with_on_send(move |text| (on_send_message.borrow_mut())(text))
-        .finish()
-}
-
-/// Agent identity row: avatar, name + status dot, then copy/restart actions.
-fn build_agent_header(
+/// Build the complete app UI: topbar, sidebar, main content, and the
+/// auxiliary sheets (crons, connectors, vault) stacked on top.
+///
+/// `#[no_mangle]` exposes the symbol so `app/src/hot_ui.rs` can generate a
+/// hot-reloadable wrapper for it; without it the app would never reload this
+/// function and UI edits would not show up live.
+#[allow(unsafe_code)]
+#[no_mangle]
+pub fn build_ui(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
+    ai: &AiSnapshot,
+    ai_actions: &AiActions,
 ) -> Box<dyn Element> {
-    let spacing = app.theme.spacing_px(SpacingToken::Sm);
-    let md = app.theme.spacing_px(SpacingToken::Md);
-    let radius = app.theme.radius_px();
+    let topbar = shell::build_topbar(app, state, actions);
+    let sidebar = sidebar::build_sidebar(app, state, actions, ai_actions);
+    let main = shell::build_main(app, state, actions);
+    let on_drag_start = actions.on_sidebar_drag_start.clone();
+    let on_drag_move = actions.on_sidebar_drag_move.clone();
+    let on_drag_end = actions.on_sidebar_drag_end.clone();
+    let body = shell::SidebarLayout::new(sidebar, main, state.sidebar_width)
+        .with_dragging(state.sidebar_dragging)
+        .with_on_drag_start(move |x| (on_drag_start.borrow_mut())(x))
+        .with_on_drag_move(move |x| (on_drag_move.borrow_mut())(x))
+        .with_on_drag_end(move || (on_drag_end.borrow_mut())());
 
-    let avatar = Container::new(
-        Icon::new("ai-assistant")
-            .with_size(20.0)
-            .with_theme_color(ColorToken::Text, app)
-            .finish(),
-    )
-    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-    .with_padding(EdgeInsets::uniform(spacing))
-    .with_corner_radius(radius)
-    .finish();
+    let mut shell_col = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    shell_col = shell_col.with_child(topbar);
+    // Separator below the topbar, like the sidebar separators. The topbar is
+    // a fixed height and is not resizable, so this is purely a visual rule.
+    shell_col = shell_col.with_child(Divider::horizontal().finish());
+    // The body must consume only the *remaining* height below the topbar, so
+    // wrap it in `Expanded`; otherwise the chat composer would be pushed past
+    // the bottom edge of the window.
+    shell_col = shell_col.with_child(Expanded::new(body.finish()).finish());
 
-    let status_color = if state.agent_busy {
-        ColorToken::Accent
-    } else {
-        ColorToken::Success
-    };
-    let status_label = if state.agent_busy {
-        "working…"
-    } else {
-        "online"
-    };
-    let status_row = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(6.0)
-        .with_child(
-            Container::new(Rect::new().with_size(vec2f(8.0, 8.0)).finish())
-                .with_background(Fill::Solid(app.theme.color(status_color)))
-                .with_corner_radius(4.0)
-                .finish(),
-        )
-        .with_child(
-            Text::new(status_label)
-                .with_theme_color(ColorToken::Muted, app)
-                .with_font_size(12.0)
-                .finish(),
-        )
+    let on_close_crons = actions.on_close_crons.clone();
+    let crons_sheet = Sheet::new(crons::build_crons_drawer(app, state, actions))
+        .with_expanded(state.crons_open)
+        .with_width(SHEET_DEFAULT_WIDTH)
+        .with_on_close(move || (on_close_crons.borrow_mut())())
         .finish();
 
-    let identity = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_spacing(2.0)
-        .with_child(
-            Text::new(state.agent_name.clone())
-                .with_theme_color(ColorToken::Text, app)
-                .with_font_size(15.0)
-                .finish(),
-        )
-        .with_child(status_row)
+    let on_close_connectors = ai_actions.on_close_connectors.clone();
+    let connectors_sheet = Sheet::new(connectors::build_connectors_sheet(app, ai, ai_actions))
+        .with_expanded(ai.connectors_open)
+        .with_width(CONNECTORS_WIDTH)
+        .with_on_close(move || (on_close_connectors.borrow_mut())())
         .finish();
 
-    let on_copy = actions.on_copy.clone();
-    let on_restart = actions.on_restart.clone();
-    let copy_button = TopbarButton::new(
-        Icon::new("copy")
-            .with_size(16.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_on_click(move || (on_copy.borrow_mut())())
-    .finish();
-    let restart_button = TopbarButton::new(
-        Icon::new("refresh")
-            .with_size(16.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_on_click(move || (on_restart.borrow_mut())())
-    .finish();
+    let on_close_vault = ai_actions.on_close_vault.clone();
+    let vault_sheet = Sheet::new(vault::build_vault_sheet(app, ai, ai_actions))
+        .with_expanded(ai.vault_open)
+        .with_width(SHEET_DEFAULT_WIDTH)
+        .with_on_close(move || (on_close_vault.borrow_mut())())
+        .finish();
 
-    Container::new(
-        Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
-            .with_child(avatar)
-            .with_child(identity)
-            .with_child(Spacer::new().finish())
-            .with_child(copy_button)
-            .with_child(restart_button)
-            .finish(),
-    )
-    .with_padding(EdgeInsets::new(0.0, md, 0.0, md))
-    .finish()
-}
+    let stack = Stack::new().with_children(vec![
+        shell_col.finish(),
+        crons_sheet,
+        connectors_sheet,
+        vault_sheet,
+    ]);
 
-fn tab_button(label: &str, tab: AppTab, current: AppTab, actions: &UiActions) -> Box<dyn Element> {
-    let style = if tab == current {
-        ButtonVariant::Primary
-    } else {
-        ButtonVariant::Default
-    };
-    let on_select_tab = actions.on_select_tab.clone();
-    Button::new(Text::new(label).finish())
-        .with_variant(style)
-        .with_on_click(move || (on_select_tab.borrow_mut())(tab))
+    Container::new(stack.finish())
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
         .finish()
-}
-
-/// Splits horizontal space: fixed-width sidebar + main area filling the rest.
-/// The engine's `Flex` cannot yet distribute remaining space, so this custom
-/// element does the split at layout time.
-struct SidebarLayout {
-    sidebar: Box<dyn Element>,
-    main: Box<dyn Element>,
-    width: f32,
-    size: Option<Vector2F>,
-    origin: Option<Point>,
-}
-
-impl SidebarLayout {
-    fn new(sidebar: Box<dyn Element>, main: Box<dyn Element>, width: f32) -> Self {
-        Self {
-            sidebar,
-            main,
-            width,
-            size: None,
-            origin: None,
-        }
-    }
-}
-
-impl Element for SidebarLayout {
-    fn layout(
-        &mut self,
-        constraint: SizeConstraint,
-        ctx: &mut LayoutContext,
-        app: &AppContext,
-    ) -> Vector2F {
-        let sidebar_constraint =
-            SizeConstraint::new(vec2f(0.0, 0.0), vec2f(self.width, constraint.max.y));
-        let _ = self.sidebar.layout(sidebar_constraint, ctx, app);
-
-        let main_width = (constraint.max.x - self.width).max(0.0);
-        let main_constraint =
-            SizeConstraint::new(vec2f(0.0, 0.0), vec2f(main_width, constraint.max.y));
-        let _ = self.main.layout(main_constraint, ctx, app);
-
-        let size = vec2f(constraint.max.x, constraint.max.y);
-        self.size = Some(size);
-        size
-    }
-
-    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
-        self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        self.sidebar.paint(origin, ctx, app);
-        self.main.paint(origin + vec2f(self.width, 0.0), ctx, app);
-    }
-
-    fn size(&self) -> Option<Vector2F> {
-        self.size
-    }
-
-    fn origin(&self) -> Option<Point> {
-        self.origin
-    }
-
-    fn dispatch_event(
-        &mut self,
-        event: &DispatchedEvent,
-        ctx: &mut EventContext,
-        app: &AppContext,
-    ) -> bool {
-        if self.sidebar.dispatch_event(event, ctx, app) {
-            return true;
-        }
-        self.main.dispatch_event(event, ctx, app)
-    }
 }

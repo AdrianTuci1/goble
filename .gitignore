@@ -9,6 +9,7 @@
 .idea/
 node_modules/
 *.sqlite
+*.sqlite.bak
 crates/goble-desktop-service/messages/
 crates/goble-desktop-service/threads.json
 crates/goble-desktop/src-tauri/*.json

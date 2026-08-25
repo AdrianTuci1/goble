@@ -88,4 +88,8 @@ opt-level = 3
 opt-level = 0
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny` (not `forbid`): hot-lib-reloader's reloadable entry point
+# (`goble-ui-hot`'s `build_ui`) needs `#[no_mangle]`, an unsafe attribute.
+# `deny` keeps every other unsafe use a hard error while still letting that
+# one function opt in with `#[allow(unsafe_code)]`.
+unsafe_code = "deny"

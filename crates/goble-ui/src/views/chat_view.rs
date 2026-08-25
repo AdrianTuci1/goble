@@ -3,9 +3,9 @@ use std::rc::Rc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage};
 use crate::elements::{
-    AppContext, Axis, ChatComposer, ChatMessageBubble, Container, CrossAxisAlignment, EdgeInsets,
-    Element, Expanded, Fill, Flex, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext,
-    Point, QuickActionButton, Scrollable, SizeConstraint, Text,
+    AppContext, Axis, ChatComposer, ChatMessageBubble, Container, CrossAxisAlignment, Divider,
+    EdgeInsets, Element, Expanded, Fill, Flex, LayoutContext, MainAxisAlignment, MainAxisSize,
+    PaintContext, Point, PopupMenuItem, QuickActionButton, Scrollable, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -29,6 +29,13 @@ pub struct ChatView {
     on_voice: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_select_model: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_stop: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_profile: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    composer_model_items: Vec<PopupMenuItem>,
+    composer_model_menu_open: Rc<RefCell<bool>>,
+    on_select_model_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    composer_profile_items: Vec<PopupMenuItem>,
+    composer_profile_menu_open: Rc<RefCell<bool>>,
+    on_select_profile_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -54,6 +61,13 @@ impl ChatView {
             on_voice: None,
             on_select_model: None,
             on_stop: None,
+            on_profile: None,
+            composer_model_items: Vec::new(),
+            composer_model_menu_open: Rc::new(RefCell::new(false)),
+            on_select_model_item: None,
+            composer_profile_items: Vec::new(),
+            composer_profile_menu_open: Rc::new(RefCell::new(false)),
+            on_select_profile_item: None,
             root: None,
             size: None,
             origin: None,
@@ -156,6 +170,37 @@ impl ChatView {
         self
     }
 
+    pub fn with_composer_on_profile<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_profile = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Set the composer's model dropdown (items, app-owned open flag, select callback).
+    pub fn with_composer_model_menu<F: FnMut(usize) + 'static>(
+        mut self,
+        items: Vec<PopupMenuItem>,
+        open: Rc<RefCell<bool>>,
+        callback: F,
+    ) -> Self {
+        self.composer_model_items = items;
+        self.composer_model_menu_open = open;
+        self.on_select_model_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Set the composer's account/profile dropdown.
+    pub fn with_composer_profile_menu<F: FnMut(usize) + 'static>(
+        mut self,
+        items: Vec<PopupMenuItem>,
+        open: Rc<RefCell<bool>>,
+        callback: F,
+    ) -> Self {
+        self.composer_profile_items = items;
+        self.composer_profile_menu_open = open;
+        self.on_select_profile_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     fn build_empty_state(&self, app: &AppContext) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
         let xl = app.theme.spacing_px(SpacingToken::Xl);
@@ -174,13 +219,13 @@ impl ChatView {
             .with_child(
                 Text::new(title)
                     .with_theme_color(ColorToken::Text, app)
-                    .with_font_size(18.0)
+                    .with_font_size(12.0)
                     .finish(),
             )
             .with_child(
                 Text::new(subtitle)
                     .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(14.0)
+                    .with_font_size(12.0)
                     .finish(),
             )
             .finish();
@@ -191,7 +236,6 @@ impl ChatView {
     }
 
     fn rebuild(&mut self, app: &AppContext) {
-        let padding = app.theme.spacing_px(SpacingToken::Md);
         let spacing = app.theme.spacing_px(SpacingToken::Md);
 
         let mut column = Flex::column()
@@ -204,7 +248,10 @@ impl ChatView {
         }
 
         let message_area: Box<dyn Element> = if self.messages.is_empty() {
-            self.build_empty_state(app)
+            // Wrap in a scrollable so it fills the remaining height and pins
+            // the composer to the bottom of the window (a bare container would
+            // size to its content and leave a gap under the composer).
+            Scrollable::new(self.build_empty_state(app), Axis::Vertical).finish()
         } else {
             let mut message_column = Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -279,13 +326,34 @@ impl ChatView {
         if let Some(cb) = self.on_stop.clone() {
             composer = composer.with_on_stop(move || (cb.borrow_mut())());
         }
+        if let Some(cb) = self.on_profile.clone() {
+            composer = composer.with_on_profile(move || (cb.borrow_mut())());
+        }
+        if let Some(cb) = self.on_select_model_item.clone() {
+            composer = composer.with_model_menu(
+                self.composer_model_items.clone(),
+                self.composer_model_menu_open.clone(),
+                move |idx| (cb.borrow_mut())(idx),
+            );
+        }
+        if let Some(cb) = self.on_select_profile_item.clone() {
+            composer = composer.with_profile_menu(
+                self.composer_profile_items.clone(),
+                self.composer_profile_menu_open.clone(),
+                move |idx| (cb.borrow_mut())(idx),
+            );
+        }
         let composer = composer.finish();
+        // A separator line above the rich input separates it from the
+        // transcript. The composer still pins flush to the bottom of the view.
+        column = column.with_child(Divider::horizontal().finish());
         column = column.with_child(composer);
 
+        // No outer padding: the header and composer span the full width and
+        // the composer pins flush to the bottom of the window.
         self.root = Some(
             Container::new(column.finish())
                 .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-                .with_padding(EdgeInsets::uniform(padding))
                 .finish(),
         );
     }

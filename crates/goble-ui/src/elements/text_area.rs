@@ -2,12 +2,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    AppContext, Container, EdgeInsets, Element, EventContext, Fill, LayoutContext, PaintContext,
-    Point, SizeConstraint, Text,
+    AppContext, Container, Element, EventContext, LayoutContext, PaintContext, Point,
+    SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{PointF, Vector2F};
-use crate::theme::{ColorToken, SpacingToken};
+use crate::theme::ColorToken;
 
 pub struct TextArea {
     value: String,
@@ -89,7 +89,6 @@ impl TextArea {
     }
 
     fn rebuild(&mut self, app: &AppContext) {
-        let padding = app.theme.spacing_px(SpacingToken::Md);
         let display = if self.value.is_empty() && !self.placeholder.is_empty() {
             self.placeholder.clone()
         } else {
@@ -101,15 +100,9 @@ impl TextArea {
             ColorToken::Text
         };
         let text = Text::new(display).with_theme_color(color, app).finish();
-        let mut container = Container::new(text)
-            .with_padding(EdgeInsets::uniform(padding))
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
-        if self.focused {
-            container = container.with_border(app.theme.color(ColorToken::Accent).into());
-        } else {
-            container = container.with_border(app.theme.color(ColorToken::Border).into());
-        }
-        self.root = Some(container.finish());
+        // Transparent: no background/border or internal padding so the textarea
+        // reads as part of the surrounding rich-input bar.
+        self.root = Some(Container::new(text).finish());
     }
 }
 
@@ -130,11 +123,16 @@ impl Element for TextArea {
         self.rebuild(app);
         let mut inner_constraint = constraint;
         inner_constraint.min.y = inner_constraint.min.y.max(self.min_height);
-        let size = self
+        let mut size = self
             .root
             .as_mut()
             .unwrap()
             .layout(inner_constraint, ctx, app);
+        // The root is transparent, so keep the reported/hit area at least the
+        // requested minimum: the whole composer bar row stays clickable even
+        // when the displayed text is empty.
+        size.x = size.x.max(inner_constraint.min.x);
+        size.y = size.y.max(inner_constraint.min.y);
         self.size = Some(size);
         size
     }
@@ -243,9 +241,13 @@ mod tests {
         let app = app();
         let focus_changes = Rc::new(RefCell::new(Vec::new()));
         let changes_clone = focus_changes.clone();
-        let mut area = TextArea::new().with_on_focus_change(move |focused| {
-            changes_clone.borrow_mut().push(focused);
-        });
+        // The textarea is transparent, so the clickable area is the text
+        // extent; a placeholder gives it a real hit box at (10, 10).
+        let mut area = TextArea::new()
+            .with_placeholder("Type a message")
+            .with_on_focus_change(move |focused| {
+                changes_clone.borrow_mut().push(focused);
+            });
         area.layout(
             SizeConstraint::loose(Vector2F::new(200.0, 100.0)),
             &mut LayoutContext::default(),

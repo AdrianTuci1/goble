@@ -8,7 +8,7 @@ pub use chat_content::{ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, 
 pub use chat_header::ChatHeader;
 pub use chat_layout::{ChatLayout, CHAT_RIGHT_SIDEBAR_WIDTH};
 pub use chat_sidebar::{ChatSidebar, CHAT_SIDEBAR_WIDTH};
-pub use conversation_list_item::{ConversationListItem, ConversationStatus};
+pub use conversation_list_item::{AgentCardUi, ConversationListItem, ConversationStatus};
 pub use conversation_sidebar::{
     ConversationEntry, ConversationSidebar, CONVERSATION_SIDEBAR_WIDTH,
 };
@@ -28,13 +28,16 @@ pub use empty::Empty;
 pub use expanded::Expanded;
 pub use flex::Flex;
 pub use header::Header;
+pub use hover_button::HoverButton;
 pub use icon::{Icon, IconName};
 pub use icon_button::IconButton;
+pub use inline_text::{resolve_span as resolve_inline_span, InlineText, TextSpan};
 pub use label::{Label, LabelSize};
 pub use markdown::parse_markdown;
 pub use modal::Modal;
 pub use padding::Padding;
 pub use page::Page;
+pub use popup_menu::{PopupMenu, PopupMenuItem, PopupMenuPosition};
 pub use quick_action_button::QuickActionButton;
 pub use rect::Rect;
 pub use right_panel::RightPanel;
@@ -60,6 +63,7 @@ pub use thread_list_item::ThreadListItem;
 pub use titlebar::TitleBar;
 pub use toggle_button::ToggleButton;
 pub use toolbar::Toolbar;
+pub use tooltip::{Tooltip, TooltipPosition};
 pub use topbar::{Topbar, TopbarButton};
 
 use std::any::Any;
@@ -115,13 +119,29 @@ pub struct AfterLayoutContext;
 /// Context available during painting.
 pub struct PaintContext {
     pub renderer: Option<crate::render::Renderer>,
+    /// Logical pointer position (window coordinates). Hover is computed at
+    /// paint time from this, because the tree is rebuilt every frame, so
+    /// element-local hover state would otherwise be reset before it is drawn.
+    pub cursor_position: Vector2F,
+    /// Whether the pointer is currently over the window. When the pointer
+    /// leaves the window there is no hover.
+    pub cursor_inside: bool,
 }
 
 impl PaintContext {
     pub fn new(renderer: crate::render::Renderer) -> Self {
         Self {
             renderer: Some(renderer),
+            cursor_position: vec2f(0.0, 0.0),
+            cursor_inside: false,
         }
+    }
+
+    /// True when the given bounds contain the current pointer. Used at paint
+    /// time for hover overlays; returns false when the pointer is outside.
+    pub fn hovered(&self, bounds: RectF) -> bool {
+        self.cursor_inside
+            && crate::elements::interactive::contains(bounds, self.cursor_position)
     }
 }
 
@@ -129,6 +149,8 @@ impl Default for PaintContext {
     fn default() -> Self {
         Self {
             renderer: Some(crate::render::Renderer::new()),
+            cursor_position: vec2f(0.0, 0.0),
+            cursor_inside: false,
         }
     }
 }
@@ -501,13 +523,16 @@ pub mod group_chat_message_group;
 pub use group_chat_message::GroupChatMessage;
 pub use group_chat_message_group::GroupChatMessageGroup;
 pub mod header;
+pub mod hover_button;
 pub mod icon;
 pub mod icon_button;
+pub mod inline_text;
 pub mod interactive;
 pub mod label;
 pub mod modal;
 pub mod padding;
 pub mod page;
+pub mod popup_menu;
 pub mod quick_action_button;
 pub mod rect;
 pub mod right_panel;
@@ -531,4 +556,5 @@ pub mod thread_list_item;
 pub mod titlebar;
 pub mod toggle_button;
 pub mod toolbar;
+pub mod tooltip;
 pub mod topbar;

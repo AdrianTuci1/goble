@@ -193,3 +193,37 @@ Delivered in this phase:
   exercised (native wgpu app, no browser automation); behavior is verified through the
   headless render tests and the app integration suite.
 
+## Native UI (wgpu) — Faza 6 settings view — 2026-08-25
+
+Generated during Faza 6 of the Tauri → native migration on `feature/agent-guide-ui`:
+the Settings view is now wired into the live app with real app-owned state/actions
+and a Back button (previously it was a hardcoded preview).
+
+| Crate | Tests |
+|-------|-------|
+| goble-ui (lib) | 121 passed (incl. Back-button render + callback tests) |
+| goble-app (integration) | 21 passed (incl. `settings_navigate_and_back_flip_state`, `toggle_dark_mode_updates_state`) |
+| workspace `cargo check --workspace --all-targets` | passes |
+
+Delivered in this phase:
+- **Back button**: `SettingsView` gains a top-left Back button (chevron + label)
+  via `with_on_back`, returning to the chat view.
+- **App-owned settings state** (`UiState` / `UiSnapshot`): current `settings_page`,
+  profile (name/email), dark-mode toggle, LLM config, workers, cluster + authorized
+  keys lists, and vault-unlocked flag. Navigation and control changes survive the
+  per-frame element rebuild.
+- **Wired actions** (`UiActions`): `on_settings_back`, `on_settings_navigate`,
+  `on_toggle_dark_mode`, `on_save_profile`, `on_save_llm` (persists via
+  `DesktopState::set_llm_setting`), `on_add_worker` / `on_remove_worker`
+  (persist via `add_worker` / `remove_worker`), `on_vault_unlock`, `on_create_cluster`
+  / `on_unlock_cluster` (real cluster APIs), and app-owned authorized-key add/remove.
+- **Live shell wiring**: the Settings tab builds `SettingsView` from the snapshot with
+  all data + callbacks; pages render their controls (Appearance→Switch, LLM→Select +
+  inputs, Profile/Workers/Keys→TextInput/Button). The sidebar lists 7 pages
+  (Profile, LLM, Appearance, Account, Cluster, Workers, Keys).
+
+Verification: `cargo test -p goble-ui -p goble-desktop-service -p goble-app`,
+`cargo check --workspace --all-targets` — all pass. Live window interaction was not
+exercised (native wgpu app, no browser automation); verified via headless render
+tests + the app integration suite.
+

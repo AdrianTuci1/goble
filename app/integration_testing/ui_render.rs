@@ -10,12 +10,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_app::actions::make_actions;
+use goble_app::hot_ui::AppTab;
 use goble_app::root_view::RootView;
 use goble_app::state::UiState;
 use goble_desktop_service::DesktopState;
 use goble_ui::elements::AppContext;
 use goble_ui::test_util::{command_counts, render_element, RenderCommandCounts};
-use goble_ui::{vec2f, Element};
+use goble_ui::{vec2f, Element, SettingsPage};
 
 fn render(desktop: &Arc<DesktopState>) -> RenderCommandCounts {
     let app = AppContext::default();
@@ -61,4 +62,31 @@ fn toggle_right_sidebar_action_flips_state() {
         !state.borrow().right_sidebar_open,
         "toggling again hides the sidebar"
     );
+}
+
+#[test]
+fn settings_navigate_and_back_flip_state() {
+    let state = Rc::new(RefCell::new(UiState::mock()));
+    let actions = make_actions(Rc::clone(&state), None);
+
+    assert_eq!(state.borrow().current_tab, AppTab::Chat);
+    (actions.on_settings_navigate.borrow_mut())(SettingsPage::Llm);
+    assert_eq!(state.borrow().settings_page, SettingsPage::Llm);
+    (actions.on_settings_back.borrow_mut())();
+    assert_eq!(state.borrow().current_tab, AppTab::Chat, "back returns to chat");
+    assert_eq!(
+        state.borrow().settings_page,
+        SettingsPage::Llm,
+        "back keeps the last selected settings page"
+    );
+}
+
+#[test]
+fn toggle_dark_mode_updates_state() {
+    let state = Rc::new(RefCell::new(UiState::mock()));
+    let actions = make_actions(Rc::clone(&state), None);
+
+    assert!(!state.borrow().settings_dark_mode);
+    (actions.on_toggle_dark_mode.borrow_mut())(true);
+    assert!(state.borrow().settings_dark_mode);
 }

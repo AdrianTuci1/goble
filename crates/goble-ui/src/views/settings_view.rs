@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use crate::elements::{
     AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    Fill, Flex, Label, LabelSize, LayoutContext, MainAxisAlignment, PaintContext, Point, Select,
-    SelectOption, SizeConstraint, Switch, Text, TextInput,
+    Fill, Flex, Icon, Label, LabelSize, LayoutContext, MainAxisAlignment, MainAxisSize,
+    PaintContext, Point, Select, SelectOption, SizeConstraint, Switch, Text, TextInput,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -118,6 +118,7 @@ pub struct SettingsView {
     on_remove_worker: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_add_authorized_key: Option<Rc<RefCell<dyn FnMut(String, String, String) + 'static>>>,
     on_remove_authorized_key: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    on_back: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -154,6 +155,7 @@ impl SettingsView {
             on_remove_worker: None,
             on_add_authorized_key: None,
             on_remove_authorized_key: None,
+            on_back: None,
             root: None,
             size: None,
             origin: None,
@@ -286,6 +288,13 @@ impl SettingsView {
         callback: F,
     ) -> Self {
         self.on_remove_authorized_key = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Set a callback fired by the top-left Back button (returns to the previous
+    /// view). Without a callback the button is not rendered.
+    pub fn with_on_back<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_back = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -850,8 +859,44 @@ impl SettingsView {
             .with_child(Divider::vertical().finish())
             .with_child(pane);
 
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_spacing(spacing);
+
+        // Top-left Back button returns to the previous view.
+        if let Some(cb) = self.on_back.clone() {
+            let back_label = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(app.theme.spacing_px(SpacingToken::Sm))
+                .with_child(
+                    Icon::new("chevron-left")
+                        .with_size(16.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_child(
+                    Text::new("Back")
+                        .with_theme_color(ColorToken::Text, app)
+                        .with_font_size(12.0)
+                        .finish(),
+                )
+                .finish();
+            let back = Button::new(back_label)
+                .with_variant(ButtonVariant::Ghost)
+                .with_on_click(move || (cb.borrow_mut())())
+                .finish();
+            column = column.with_child(
+                Container::new(back)
+                    .with_padding(EdgeInsets::uniform(app.theme.spacing_px(SpacingToken::Sm)))
+                    .finish(),
+            );
+        }
+
+        column = column.with_child(row.finish());
+
         self.root = Some(
-            Container::new(row.finish())
+            Container::new(column.finish())
                 .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
                 .with_padding(EdgeInsets::uniform(spacing))
                 .finish(),
@@ -901,8 +946,11 @@ impl Element for SettingsView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elements::{AppContext, LayoutContext};
+    use crate::elements::{AppContext, EventContext, LayoutContext, PaintContext};
+    use crate::event::DispatchedEvent;
     use crate::geometry::vec2f;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[test]
     fn settings_view_layouts() {
@@ -917,5 +965,50 @@ mod tests {
         );
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
+    }
+
+    #[test]
+    fn settings_view_renders_back_button_when_callback_set() {
+        let app = AppContext::default();
+        let mut element: Box<dyn Element> =
+            SettingsView::new(SettingsPage::Profile).with_on_back(|| {}).finish();
+        let commands = crate::test_util::render_element(&mut element, vec2f(800.0, 600.0), &app);
+        let has_back = commands.iter().any(|c| {
+            matches!(c, crate::render::RenderCommand::DrawText { text, .. } if text == "Back")
+        });
+        let has_chevron = commands.iter().any(|c| {
+            matches!(c, crate::render::RenderCommand::DrawIcon { name, .. } if name == "chevron-left")
+        });
+        assert!(has_back, "settings with a back callback should render a Back button");
+        assert!(has_chevron, "settings back button should render a chevron icon");
+    }
+
+    #[test]
+    fn settings_view_back_callback_fires() {
+        let clicked = Rc::new(RefCell::new(false));
+        let clicked_clone = clicked.clone();
+        let app = AppContext::default();
+        let mut element: Box<dyn Element> = SettingsView::new(SettingsPage::Profile)
+            .with_on_back(move || *clicked_clone.borrow_mut() = true)
+            .finish();
+        element.layout(
+            SizeConstraint::loose(vec2f(800.0, 600.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        element.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+
+        let mut event_ctx = EventContext::default();
+        let down = DispatchedEvent::MouseDown {
+            position: vec2f(40.0, 40.0),
+            button: 0,
+        };
+        let up = DispatchedEvent::MouseUp {
+            position: vec2f(40.0, 40.0),
+            button: 0,
+        };
+        let _ = element.dispatch_event(&down, &mut event_ctx, &app);
+        let _ = element.dispatch_event(&up, &mut event_ctx, &app);
+        assert!(*clicked.borrow());
     }
 }

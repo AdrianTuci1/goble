@@ -11,7 +11,7 @@ use goble_ui::elements::{
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::ColorToken;
-use goble_ui::{ChatView, SettingsPage, SettingsView, Topbar};
+use goble_ui::{ChatView, SettingsView, Topbar};
 
 use crate::chat;
 use crate::{AppTab, UiActions, UiSnapshot};
@@ -43,11 +43,61 @@ pub fn build_main(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> 
             .with_messages(state.thread_messages.clone())
             .finish(),
         AppTab::Chat => chat::build_agent_chat(app, state, actions),
-        AppTab::Settings => SettingsView::new(SettingsPage::Profile)
-            .with_profile("Ada", "ada@example.com")
-            .with_llm("openai", "gpt-4o", "", "", "")
-            .finish(),
+        AppTab::Settings => build_settings(app, state, actions),
     }
+}
+
+/// Full settings view: a Back button, a sidebar of settings pages, and the
+/// active page's form (profile, LLM, appearance, account/vault, cluster,
+/// workers, keys). Driven entirely from app-owned state + actions so navigation
+/// and control changes survive the per-frame element rebuild.
+fn build_settings(_app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+    let on_navigate = actions.on_settings_navigate.clone();
+    let on_back = actions.on_settings_back.clone();
+    let on_save_profile = actions.on_save_profile.clone();
+    let on_save_llm = actions.on_save_llm.clone();
+    let on_toggle_dark = actions.on_toggle_dark_mode.clone();
+    let on_unlock_vault = actions.on_vault_unlock.clone();
+    let on_create_cluster = actions.on_create_cluster.clone();
+    let on_unlock_cluster = actions.on_unlock_cluster.clone();
+    let on_add_worker = actions.on_add_worker.clone();
+    let on_remove_worker = actions.on_remove_worker.clone();
+    let on_add_key = actions.on_add_authorized_key.clone();
+    let on_remove_key = actions.on_remove_authorized_key.clone();
+
+    SettingsView::new(state.settings_page)
+        .with_profile(
+            state.settings_profile_name.clone(),
+            state.settings_profile_email.clone(),
+        )
+        .with_llm(
+            state.settings_llm_provider.clone(),
+            state.settings_llm_model.clone(),
+            state.settings_llm_api_key.clone(),
+            state.settings_llm_base_url.clone(),
+            state.settings_llm_temperature.clone(),
+        )
+        .with_dark_mode(state.settings_dark_mode)
+        .with_vault_state(state.settings_vault_unlocked, Vec::new())
+        .with_cluster_state(
+            state.settings_cluster_name.clone(),
+            state.settings_cluster_configured,
+        )
+        .with_workers(state.settings_workers.clone())
+        .with_authorized_keys(state.settings_authorized_keys.clone())
+        .with_on_navigate(move |page| (on_navigate.borrow_mut())(page))
+        .with_on_back(move || (on_back.borrow_mut())())
+        .with_on_save_profile(move |name, email| (on_save_profile.borrow_mut())(name, email))
+        .with_on_save_llm(move |p, m, k, b, t| (on_save_llm.borrow_mut())(p, m, k, b, t))
+        .with_on_toggle_dark_mode(move |v| (on_toggle_dark.borrow_mut())(v))
+        .with_on_unlock_vault(move |pass| (on_unlock_vault.borrow_mut())(pass))
+        .with_on_create_cluster(move |name, pass| (on_create_cluster.borrow_mut())(name, pass))
+        .with_on_unlock_cluster(move |pass| (on_unlock_cluster.borrow_mut())(pass))
+        .with_on_add_worker(move |name, url| (on_add_worker.borrow_mut())(name, url))
+        .with_on_remove_worker(move |id| (on_remove_worker.borrow_mut())(id))
+        .with_on_add_authorized_key(move |n, p, f| (on_add_key.borrow_mut())(n, p, f))
+        .with_on_remove_authorized_key(move |id| (on_remove_key.borrow_mut())(id))
+        .finish()
 }
 
 /// Splits horizontal space: fixed-width sidebar + main area filling the rest.

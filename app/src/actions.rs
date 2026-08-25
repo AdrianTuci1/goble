@@ -9,9 +9,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_core::agent::Trigger;
+use goble_core::worker::WorkerId;
 use goble_core::workflow::WorkflowId;
 use goble_desktop_service::DesktopState;
-use goble_ui::{ChatMessage, ChatRole, ConversationEntry};
+use goble_ui::{ChatMessage, ChatRole, ConversationEntry, SettingsPage};
 
 use crate::hot_ui::{AppTab, CronEntry, UiActions};
 use crate::state::UiState;
@@ -46,12 +47,30 @@ pub fn make_actions(
     let on_sidebar_drag_move = Rc::clone(&state);
     let on_sidebar_drag_end = Rc::clone(&state);
     let on_agent_delete = Rc::clone(&state);
+    let on_settings_back = Rc::clone(&state);
+    let on_settings_navigate = Rc::clone(&state);
+    let on_toggle_dark_mode = Rc::clone(&state);
+    let on_save_profile = Rc::clone(&state);
+    let on_save_llm = Rc::clone(&state);
+    let on_add_worker = Rc::clone(&state);
+    let on_remove_worker = Rc::clone(&state);
+    let on_vault_unlock = Rc::clone(&state);
+    let on_create_cluster = Rc::clone(&state);
+    let on_unlock_cluster = Rc::clone(&state);
+    let on_add_authorized_key = Rc::clone(&state);
+    let on_remove_authorized_key = Rc::clone(&state);
 
     let desktop_create = desktop.clone();
     let desktop_select = desktop.clone();
     let desktop_send = desktop.clone();
     let desktop_cron_create = desktop.clone();
     let desktop_cron_delete = desktop.clone();
+    let desktop_save_llm = desktop.clone();
+    let desktop_add_worker = desktop.clone();
+    let desktop_remove_worker = desktop.clone();
+    let desktop_unlock_vault = desktop.clone();
+    let desktop_create_cluster = desktop.clone();
+    let desktop_unlock_cluster = desktop.clone();
 
     UiActions {
         on_search_change: Rc::new(RefCell::new(move |value: String| {
@@ -263,6 +282,125 @@ pub fn make_actions(
             if state.selected_id.as_deref() == Some(id.as_str()) {
                 state.selected_id = state.conversations.first().map(|c| c.id.clone());
             }
+        })),
+        on_settings_back: Rc::new(RefCell::new(move || {
+            on_settings_back.borrow_mut().current_tab = AppTab::Chat;
+        })),
+        on_settings_navigate: Rc::new(RefCell::new(move |page: SettingsPage| {
+            on_settings_navigate.borrow_mut().settings_page = page;
+        })),
+        on_toggle_dark_mode: Rc::new(RefCell::new(move |enabled: bool| {
+            on_toggle_dark_mode.borrow_mut().settings_dark_mode = enabled;
+        })),
+        on_save_profile: Rc::new(RefCell::new(move |name: String, email: String| {
+            let mut state = on_save_profile.borrow_mut();
+            state.settings_profile_name = name;
+            state.settings_profile_email = email;
+        })),
+        on_save_llm: Rc::new(RefCell::new(move |provider: String, model: String, api_key: String, base_url: String, temperature: String| {
+            let mut state = on_save_llm.borrow_mut();
+            state.settings_llm_provider = provider.clone();
+            state.settings_llm_model = model;
+            state.settings_llm_api_key = api_key;
+            state.settings_llm_base_url = base_url;
+            state.settings_llm_temperature = temperature;
+            if let Some(desktop) = &desktop_save_llm {
+                let base = if state.settings_llm_base_url.trim().is_empty() {
+                    None
+                } else {
+                    Some(state.settings_llm_base_url.as_str())
+                };
+                let temperature = state.settings_llm_temperature.parse::<f32>().ok();
+                if let Err(e) = desktop.set_llm_setting(
+                    &provider,
+                    &state.settings_llm_api_key,
+                    base,
+                    &state.settings_llm_model,
+                    temperature,
+                ) {
+                    log::warn!("set_llm_setting failed: {e}");
+                }
+            }
+        })),
+        on_add_worker: Rc::new(RefCell::new(move |name: String, url: String| {
+            let mut state = on_add_worker.borrow_mut();
+            let id = format!(
+                "w-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            );
+            if let Some(desktop) = &desktop_add_worker {
+                if let Err(e) = desktop.add_worker(WorkerId(id), name.clone(), url) {
+                    log::warn!("add_worker failed: {e}");
+                }
+                state.refresh_settings(desktop);
+            } else {
+                state.settings_workers.push((id, name, url, false));
+            }
+        })),
+        on_remove_worker: Rc::new(RefCell::new(move |id: String| {
+            let mut state = on_remove_worker.borrow_mut();
+            if let Some(desktop) = &desktop_remove_worker {
+                desktop.remove_worker(&WorkerId(id.clone()));
+                state.refresh_settings(desktop);
+            } else {
+                state.settings_workers.retain(|w| w.0 != id);
+            }
+        })),
+        on_vault_unlock: Rc::new(RefCell::new(move |passphrase: String| {
+            let mut state = on_vault_unlock.borrow_mut();
+            if let Some(desktop) = &desktop_unlock_vault {
+                match desktop.unlock_vault(passphrase) {
+                    Ok(_) => {
+                        state.settings_vault_unlocked = true;
+                        state.refresh_settings(desktop);
+                    }
+                    Err(e) => log::warn!("unlock_vault failed: {e}"),
+                }
+            } else {
+                state.settings_vault_unlocked = true;
+            }
+        })),
+        on_create_cluster: Rc::new(RefCell::new(move |name: String, passphrase: String| {
+            let mut state = on_create_cluster.borrow_mut();
+            if let Some(desktop) = &desktop_create_cluster {
+                match desktop.create_cluster(&name, &passphrase) {
+                    Ok(_) => {
+                        state.settings_cluster_name = name;
+                        state.settings_cluster_configured = true;
+                    }
+                    Err(e) => log::warn!("create_cluster failed: {e}"),
+                }
+            } else {
+                state.settings_cluster_name = name;
+                state.settings_cluster_configured = true;
+            }
+        })),
+        on_unlock_cluster: Rc::new(RefCell::new(move |passphrase: String| {
+            let mut state = on_unlock_cluster.borrow_mut();
+            if let Some(desktop) = &desktop_unlock_cluster {
+                match desktop.unlock_cluster_identity(&passphrase) {
+                    Ok(true) => state.refresh_settings(desktop),
+                    Ok(false) => log::warn!("unlock_cluster_identity returned false"),
+                    Err(e) => log::warn!("unlock_cluster_identity failed: {e}"),
+                }
+            } else {
+                state.settings_cluster_configured = true;
+            }
+        })),
+        on_add_authorized_key: Rc::new(RefCell::new(move |name: String, pem: String, fingerprint: String| {
+            let mut state = on_add_authorized_key.borrow_mut();
+            let id = format!("k-{}", state.settings_authorized_keys.len() + 1);
+            state.settings_authorized_keys.push((id, name, fingerprint));
+            let _ = pem;
+        })),
+        on_remove_authorized_key: Rc::new(RefCell::new(move |id: String| {
+            on_remove_authorized_key
+                .borrow_mut()
+                .settings_authorized_keys
+                .retain(|k| k.0 != id);
         })),
     }
 }

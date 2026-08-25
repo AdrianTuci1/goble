@@ -16,7 +16,7 @@ use goble_core::agent::Trigger;
 use goble_desktop_service::DesktopState;
 use goble_ui::{
     AgentCardUi, ChatFragment, ChatMessage, ChatRole, ConversationEntry, ConversationStatus,
-    TerminalData, TerminalLine, TerminalStatus,
+    SettingsPage, TerminalData, TerminalLine, TerminalStatus,
 };
 
 use crate::hot_ui::{AppTab, CronEntry};
@@ -71,6 +71,20 @@ pub struct UiState {
     pub right_sidebar_open: bool,
     pub crons_open: bool,
     pub crons: Vec<CronEntry>,
+    pub settings_page: SettingsPage,
+    pub settings_profile_name: String,
+    pub settings_profile_email: String,
+    pub settings_dark_mode: bool,
+    pub settings_llm_provider: String,
+    pub settings_llm_model: String,
+    pub settings_llm_api_key: String,
+    pub settings_llm_base_url: String,
+    pub settings_llm_temperature: String,
+    pub settings_workers: Vec<(String, String, String, bool)>,
+    pub settings_cluster_name: String,
+    pub settings_cluster_configured: bool,
+    pub settings_authorized_keys: Vec<(String, String, String)>,
+    pub settings_vault_unlocked: bool,
     pub sidebar_width: f32,
     pub sidebar_dragging: bool,
     pub sidebar_drag_origin_x: f32,
@@ -113,6 +127,20 @@ impl UiState {
             right_sidebar_open: false,
             crons_open: false,
             crons: Vec::new(),
+            settings_page: SettingsPage::Profile,
+            settings_profile_name: String::new(),
+            settings_profile_email: String::new(),
+            settings_dark_mode: false,
+            settings_llm_provider: "openai".to_string(),
+            settings_llm_model: "gpt-4o".to_string(),
+            settings_llm_api_key: String::new(),
+            settings_llm_base_url: String::new(),
+            settings_llm_temperature: "0.7".to_string(),
+            settings_workers: Vec::new(),
+            settings_cluster_name: String::new(),
+            settings_cluster_configured: false,
+            settings_authorized_keys: Vec::new(),
+            settings_vault_unlocked: false,
             sidebar_width: SIDEBAR_WIDTH,
             sidebar_dragging: false,
             sidebar_drag_origin_x: 0.0,
@@ -129,6 +157,7 @@ impl UiState {
         self.refresh_conversations(desktop);
         self.refresh_crons(desktop);
         self.refresh_agent_name(desktop);
+        self.refresh_settings(desktop);
     }
 
     pub fn refresh_conversations(&mut self, desktop: &DesktopState) {
@@ -212,6 +241,31 @@ impl UiState {
         }
     }
 
+    /// Reload settings data (workers, cluster, vault, LLM) from the backend.
+    pub fn refresh_settings(&mut self, desktop: &DesktopState) {
+        self.settings_workers = desktop
+            .list_workers()
+            .into_iter()
+            .map(|w| (w.id.clone(), w.name.clone(), w.url.clone(), w.paired))
+            .collect();
+        if let Some(identity) = desktop.get_cluster_identity() {
+            self.settings_cluster_name = identity.cluster_name.clone();
+            self.settings_cluster_configured = true;
+        } else {
+            self.settings_cluster_configured = false;
+        }
+        self.settings_vault_unlocked = desktop.is_vault_unlocked();
+        if let Some(s) = desktop.get_llm_setting("openai") {
+            self.settings_llm_provider = "openai".to_string();
+            self.settings_llm_model = s.model;
+            self.settings_llm_api_key = s.api_key;
+            self.settings_llm_base_url = s.base_url.unwrap_or_default();
+            if let Some(t) = s.temperature {
+                self.settings_llm_temperature = t.to_string();
+            }
+        }
+    }
+
     /// Mock data used when the backend store cannot be opened (dev fallback).
     pub fn mock() -> Self {
         let conversations = vec![
@@ -287,6 +341,20 @@ impl UiState {
             right_sidebar_open: false,
             crons_open: false,
             crons,
+            settings_page: SettingsPage::Profile,
+            settings_profile_name: "Ada".to_string(),
+            settings_profile_email: "ada@example.com".to_string(),
+            settings_dark_mode: false,
+            settings_llm_provider: "openai".to_string(),
+            settings_llm_model: "gpt-4o".to_string(),
+            settings_llm_api_key: String::new(),
+            settings_llm_base_url: String::new(),
+            settings_llm_temperature: "0.7".to_string(),
+            settings_workers: Vec::new(),
+            settings_cluster_name: String::new(),
+            settings_cluster_configured: false,
+            settings_authorized_keys: Vec::new(),
+            settings_vault_unlocked: false,
             sidebar_width: SIDEBAR_WIDTH,
             sidebar_dragging: false,
             sidebar_drag_origin_x: 0.0,

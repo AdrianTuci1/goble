@@ -16,7 +16,7 @@ use goble_ui::elements::{
     CrossAxisAlignment, Divider, Element, Expanded, Fill, Flex, MainAxisSize,
 };
 use goble_ui::theme::ColorToken;
-use goble_ui::{Sheet, Stack, SHEET_DEFAULT_WIDTH};
+use goble_ui::{SettingsPage, Sheet, Stack, SHEET_DEFAULT_WIDTH};
 
 pub mod chat;
 pub mod connectors;
@@ -130,6 +130,20 @@ pub struct UiSnapshot {
     pub right_sidebar_open: bool,
     pub crons_open: bool,
     pub crons: Vec<CronEntry>,
+    pub settings_page: SettingsPage,
+    pub settings_profile_name: String,
+    pub settings_profile_email: String,
+    pub settings_dark_mode: bool,
+    pub settings_llm_provider: String,
+    pub settings_llm_model: String,
+    pub settings_llm_api_key: String,
+    pub settings_llm_base_url: String,
+    pub settings_llm_temperature: String,
+    pub settings_workers: Vec<(String, String, String, bool)>,
+    pub settings_cluster_name: String,
+    pub settings_cluster_configured: bool,
+    pub settings_authorized_keys: Vec<(String, String, String)>,
+    pub settings_vault_unlocked: bool,
     pub sidebar_width: f32,
     pub sidebar_dragging: bool,
     /// Per-card interaction state (hover / delete menu), shared with the
@@ -207,6 +221,30 @@ pub struct UiActions {
     pub on_sidebar_drag_end: Rc<RefCell<dyn FnMut()>>,
     /// Delete a conversation/agent card from the list.
     pub on_agent_delete: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings: return to the previous view (chat).
+    pub on_settings_back: Rc<RefCell<dyn FnMut()>>,
+    /// Settings: switch the active settings page.
+    pub on_settings_navigate: Rc<RefCell<dyn FnMut(SettingsPage)>>,
+    /// Settings: toggle dark mode.
+    pub on_toggle_dark_mode: Rc<RefCell<dyn FnMut(bool)>>,
+    /// Settings: save the profile (name, email).
+    pub on_save_profile: Rc<RefCell<dyn FnMut(String, String)>>,
+    /// Settings: save the LLM config (provider, model, api_key, base_url, temperature).
+    pub on_save_llm: Rc<RefCell<dyn FnMut(String, String, String, String, String)>>,
+    /// Settings: register a worker (name, url).
+    pub on_add_worker: Rc<RefCell<dyn FnMut(String, String)>>,
+    /// Settings: remove a worker by id.
+    pub on_remove_worker: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings: unlock the vault with a passphrase.
+    pub on_vault_unlock: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings: create a cluster identity (name, passphrase).
+    pub on_create_cluster: Rc<RefCell<dyn FnMut(String, String)>>,
+    /// Settings: unlock the cluster identity (passphrase).
+    pub on_unlock_cluster: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings: add an authorized key (name, pem, fingerprint).
+    pub on_add_authorized_key: Rc<RefCell<dyn FnMut(String, String, String)>>,
+    /// Settings: remove an authorized key by id.
+    pub on_remove_authorized_key: Rc<RefCell<dyn FnMut(String)>>,
 }
 
 /// Callbacks supplied by the host app for the AI domain (vault + connectors).

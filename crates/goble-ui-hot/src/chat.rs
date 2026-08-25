@@ -1,8 +1,8 @@
 //! Agent chat tab: identity header + message transcript + composer.
 
 use goble_ui::elements::{
-    AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex, Icon, MainAxisSize,
-    PopupMenuItem, Spacer, Text, TopbarButton,
+    AppContext, ChatLayout, ChatSidebar, Container, CrossAxisAlignment, EdgeInsets, Element, Fill,
+    Flex, Icon, MainAxisSize, PopupMenuItem, RoutineItem, Spacer, Text, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::ChatView;
@@ -48,7 +48,7 @@ pub fn build_agent_chat(app: &AppContext, state: &UiSnapshot, actions: &UiAction
     let on_profile_select = actions.on_settings.clone();
     let profile_menu_open = state.profile_menu_open.clone();
 
-    ChatView::new()
+    let chat = ChatView::new()
         .with_header(header)
         .with_messages(state.chat_messages.clone())
         .with_composer_value(state.composer_draft.clone())
@@ -73,7 +73,34 @@ pub fn build_agent_chat(app: &AppContext, state: &UiSnapshot, actions: &UiAction
             }
         })
         .with_on_send(move |text| (on_send_message.borrow_mut())(text))
-        .finish()
+        .finish();
+
+    // Right chat-sidebar: hidden by default, toggled from the chat header.
+    // When open, wrap the chat surface in a ChatLayout with a ChatSidebar whose
+    // routines come from the agent's real scheduled tasks. The sidebar's "+"
+    // button opens the crons drawer (which can create a new scheduled task).
+    if state.right_sidebar_open {
+        let on_add = actions.on_open_crons.clone();
+        let routines = state
+            .crons
+            .iter()
+            .map(|cron| {
+                let schedule = if cron.last_run == "unknown" {
+                    cron.schedule.clone()
+                } else {
+                    cron.last_run.clone()
+                };
+                RoutineItem::new(cron.name.clone(), schedule, cron.enabled)
+            })
+            .collect();
+        let sidebar = ChatSidebar::new(app)
+            .with_routines(routines)
+            .with_on_add(move || (on_add.borrow_mut())())
+            .finish();
+        ChatLayout::new(chat).with_right_sidebar(sidebar).finish()
+    } else {
+        chat
+    }
 }
 
 /// Agent identity row: name + status dot, then copy/restart/cron actions.
@@ -126,6 +153,22 @@ fn build_agent_header(
     )
     .with_on_click(move || (on_open_crons.borrow_mut())())
     .finish();
+    // Right chat-sidebar toggle: shows/hides the Computer Use + Routines
+    // panel. The icon reflects the current state (open handler vs. closed).
+    let on_toggle_sidebar = actions.on_toggle_right_sidebar.clone();
+    let panel_icon = if state.right_sidebar_open {
+        "left-panel-close"
+    } else {
+        "left-panel-open"
+    };
+    let panel_button = TopbarButton::new(
+        Icon::new(panel_icon)
+            .with_size(16.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_on_click(move || (on_toggle_sidebar.borrow_mut())())
+    .finish();
 
     Container::new(
         Flex::row()
@@ -137,6 +180,7 @@ fn build_agent_header(
             .with_child(copy_button)
             .with_child(restart_button)
             .with_child(cron_button)
+            .with_child(panel_button)
             .finish(),
     )
     .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))

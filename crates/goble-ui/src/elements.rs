@@ -7,7 +7,7 @@ pub use chat_composer::ChatComposer;
 pub use chat_content::{ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole};
 pub use chat_header::ChatHeader;
 pub use chat_layout::{ChatLayout, CHAT_RIGHT_SIDEBAR_WIDTH};
-pub use chat_sidebar::{ChatSidebar, CHAT_SIDEBAR_WIDTH};
+pub use chat_sidebar::{ChatSidebar, RoutineItem, CHAT_SIDEBAR_WIDTH};
 pub use conversation_list_item::{AgentCardUi, ConversationListItem, ConversationStatus};
 pub use conversation_sidebar::{
     ConversationEntry, ConversationSidebar, CONVERSATION_SIDEBAR_WIDTH,

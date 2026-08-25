@@ -163,3 +163,33 @@ Delivered in this phase:
 
 Verification: `cargo test -p goble-ui`, `cargo check --workspace --all-targets`,
 `cargo build -p goble-app` — all pass.
+
+## Native UI (wgpu) — Faza 5 right chat-sidebar — 2026-08-25
+
+Generated during Faza 5 of the Tauri → native migration on `feature/agent-guide-ui`:
+the right chat-sidebar (Computer Use preview + Routines) is now wired into the
+live chat view and toggled from the chat header.
+
+| Crate | Tests |
+|-------|-------|
+| goble-ui (lib) | 119 passed (incl. sidebar rendering + ChatLayout composite tests) |
+| goble-app (integration) | 19 passed (incl. new `toggle_right_sidebar_action_flips_state`) |
+| workspace `cargo check --workspace --all-targets` | passes |
+
+Delivered in this phase:
+- **Header toggle**: the agent chat header gains a panel button (`left-panel-open` /
+  `left-panel-close`, reflecting the current state) that shows/hides the right
+  chat-sidebar. New app-owned `right_sidebar_open` on `UiState` / `UiSnapshot`, and a
+  new `UiActions::on_toggle_right_sidebar` mutation.
+- **Sidebar wiring**: when open, `build_agent_chat` wraps the `ChatView` in a
+  `ChatLayout` with a `ChatSidebar` on the right. Hidden by default, per the design spec.
+- **Routines from real data**: `ChatSidebar` now takes a `Vec<RoutineItem>` (title +
+  schedule + enabled) derived from the agent's scheduled tasks (`state.crons`); a plus
+  button in the Routines header opens the crons drawer so the user can add a task.
+  Computer Use preview section is retained. `CHAT_SIDEBAR_WIDTH` and
+  `CHAT_RIGHT_SIDEBAR_WIDTH` aligned to the 280px spec.
+- **Verification**: `cargo test -p goble-ui -p goble-desktop-service -p goble-app`,
+  `cargo check --workspace --all-targets` — all pass. Live window interaction was not
+  exercised (native wgpu app, no browser automation); behavior is verified through the
+  headless render tests and the app integration suite.
+

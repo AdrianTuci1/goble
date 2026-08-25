@@ -5,9 +5,13 @@
 
 mod common;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
+use goble_app::actions::make_actions;
 use goble_app::root_view::RootView;
+use goble_app::state::UiState;
 use goble_desktop_service::DesktopState;
 use goble_ui::elements::AppContext;
 use goble_ui::test_util::{command_counts, render_element, RenderCommandCounts};
@@ -42,4 +46,19 @@ fn full_app_renders_with_chat_data() {
     let counts = render(&desktop);
     assert!(counts.fill_rect > 0, "shell should paint backgrounds");
     assert!(counts.draw_text > 0, "shell should paint text");
+}
+
+#[test]
+fn toggle_right_sidebar_action_flips_state() {
+    let state = Rc::new(RefCell::new(UiState::mock()));
+    let actions = make_actions(Rc::clone(&state), None);
+
+    assert!(!state.borrow().right_sidebar_open, "sidebar starts hidden");
+    (actions.on_toggle_right_sidebar.borrow_mut())();
+    assert!(state.borrow().right_sidebar_open, "toggle opens the sidebar");
+    (actions.on_toggle_right_sidebar.borrow_mut())();
+    assert!(
+        !state.borrow().right_sidebar_open,
+        "toggling again hides the sidebar"
+    );
 }

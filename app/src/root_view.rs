@@ -128,6 +128,7 @@ impl RootView {
                 profile_menu_open: s.profile_menu_open.clone(),
                 agent_name: s.agent_name.clone(),
                 agent_busy: s.agent_busy,
+                right_sidebar_open: s.right_sidebar_open,
                 crons_open: s.crons_open,
                 crons: s.crons.clone(),
                 sidebar_width: s.sidebar_width,

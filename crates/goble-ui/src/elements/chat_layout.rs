@@ -4,7 +4,7 @@ use crate::elements::{
 use crate::event::DispatchedEvent;
 use crate::geometry::{vec2f, Vector2F};
 
-pub const CHAT_RIGHT_SIDEBAR_WIDTH: f32 = 260.0;
+pub const CHAT_RIGHT_SIDEBAR_WIDTH: f32 = 280.0;
 
 /// Lays out a main chat surface and an optional right sidebar.
 ///

@@ -17,6 +17,7 @@ pub use elements::{
     AgentCard, Align, Alignment, AppContext, Avatar, AvatarShape, Axis, Border, Button,
     ButtonVariant, Caption, ChatAction, ChatComposer, ChatFragment, ChatFragmentKind, ChatHeader,
     ChatLayout, ChatMessage, ChatMessageBubble, ChatRole, ChatSidebar, Checkbox, Chip, Clipped,
+    RoutineItem,
     AgentCardUi, Code, ConnectorCard, Container, ConversationEntry, ConversationListItem,
     ConversationSidebar,
     ConversationStatus, CrossAxisAlignment, Divider, Drawer, DrawerAnchor, DropdownItem,

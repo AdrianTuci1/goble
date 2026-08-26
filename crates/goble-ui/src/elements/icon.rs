@@ -137,6 +137,8 @@ fn icon_atlas_name(name: &str) -> &'static str {
         "arrow-up" | "send-up" => "arrow-up",
         "inbox" | "inbox-01" | "mail" => "inbox-01",
         "computer" | "monitor" | "agentmode" => "agentmode",
+        "info" => "info",
+        "local-only" | "cloud-off" | "not-synced" => "cloud-off",
         _ => {
             log::warn!("unknown icon name: {name}");
             "x-close"

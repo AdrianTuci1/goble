@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use crate::elements::{
     AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    Fill, Flex, Icon, Label, LabelSize, LayoutContext, MainAxisAlignment, MainAxisSize,
-    PaintContext, Point, Select, SelectOption, SizeConstraint, Switch, Text, TextInput,
+    Expanded, Fill, Flex, Icon, Label, LabelSize, LayoutContext, MainAxisAlignment, MainAxisSize,
+    PaintContext, Point, Select, SelectOption, SizeConstraint, Switch, Text, TextInput, Tooltip,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -70,25 +70,156 @@ fn section(
         .finish()
 }
 
-fn settings_row(
-    label: impl Into<String>,
+const ROW_FONT_SIZE: f32 = 12.0;
+const ROW_HEADER_PADDING: f32 = 15.0;
+const ROW_CONTROL_RIGHT_PADDING: f32 = 5.0;
+const ROW_DESCRIPTION_RIGHT_PAD: f32 = 100.0;
+const ROW_ICON_SIZE: f32 = 13.0;
+const ROW_LOCAL_ONLY_TOOLTIP: &str = "This setting is not synced to your other devices";
+
+/// A settings row at the warp-new level of complexity: a leading title (plus
+/// optional muted secondary text, an info/tooltip icon and a not-cloud-synced
+/// icon), the control on the right, and an optional muted description paragraph
+/// below that wraps before reaching the control.
+struct SettingsRow<'a> {
+    app: &'a AppContext,
+    label: String,
     control: Box<dyn Element>,
-    app: &AppContext,
-) -> Box<dyn Element> {
-    let spacing = app.theme.spacing_px(SpacingToken::Md);
-    Container::new(
-        Flex::row()
-            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+    description: Option<String>,
+    tooltip: Option<String>,
+    secondary: Option<String>,
+    local_only: bool,
+}
+
+impl<'a> SettingsRow<'a> {
+    fn new(app: &'a AppContext, label: impl Into<String>, control: Box<dyn Element>) -> Self {
+        Self {
+            app,
+            label: label.into(),
+            control,
+            description: None,
+            tooltip: None,
+            secondary: None,
+            local_only: false,
+        }
+    }
+
+    fn with_description(mut self, text: impl Into<String>) -> Self {
+        self.description = Some(text.into());
+        self
+    }
+
+    fn with_tooltip(mut self, text: impl Into<String>) -> Self {
+        self.tooltip = Some(text.into());
+        self
+    }
+
+    fn with_secondary(mut self, text: impl Into<String>) -> Self {
+        self.secondary = Some(text.into());
+        self
+    }
+
+    /// Marks the setting as local-only (not synced to other devices).
+    fn with_local_only(mut self) -> Self {
+        self.local_only = true;
+        self
+    }
+
+    fn build(self) -> Box<dyn Element> {
+        let app = self.app;
+        let spacing = app.theme.spacing_px(SpacingToken::Md);
+
+        // Leading label: the title with any icons / secondary text hanging
+        // inline to the right of it. The row expands to fill the header, so the
+        // control is pushed to the right edge of the card.
+        let mut label_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
-            .with_child(Text::new(label.into()).finish())
-            .with_child(control)
-            .finish(),
-    )
-    .with_padding(EdgeInsets::uniform(spacing))
-    .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-    .with_corner_radius(app.theme.radius_px())
-    .finish()
+            .with_spacing(4.0)
+            .with_child(
+                Text::new(self.label.clone())
+                    .with_font_size(ROW_FONT_SIZE)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            );
+
+        if let Some(tooltip_text) = self.tooltip {
+            label_row = label_row.with_child(
+                Tooltip::new(
+                    Icon::new("info")
+                        .with_size(ROW_ICON_SIZE)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                    tooltip_text,
+                )
+                .finish(),
+            );
+        }
+        if self.local_only {
+            label_row = label_row.with_child(
+                Tooltip::new(
+                    Icon::new("cloud-off")
+                        .with_size(ROW_ICON_SIZE)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                    ROW_LOCAL_ONLY_TOOLTIP,
+                )
+                .finish(),
+            );
+        }
+        if let Some(secondary) = self.secondary {
+            label_row = label_row.with_child(
+                Text::new(secondary)
+                    .with_font_size(ROW_FONT_SIZE)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            );
+        }
+        let label_row = label_row.finish();
+
+        // Header row: the (expanded) label followed by the control inset from
+        // the right edge, mirroring warp-new's Shrinkable + control padding.
+        let header = Expanded::new(label_row).finish();
+        let control = Container::new(self.control)
+            .with_padding_right(ROW_CONTROL_RIGHT_PADDING)
+            .finish();
+
+        let mut header_row = Container::new(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(header)
+                .with_child(control)
+                .finish(),
+        );
+        if self.description.is_none() {
+            header_row = header_row.with_padding_bottom(ROW_HEADER_PADDING);
+        }
+        let header_row = header_row.finish();
+
+        // Description paragraph wraps before the control and sits under the row.
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(header_row);
+        if let Some(description) = self.description {
+            let description = Text::new(description)
+                .with_font_size(ROW_FONT_SIZE)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish();
+            column = column.with_child(
+                Container::new(description)
+                    .with_padding_right(ROW_DESCRIPTION_RIGHT_PAD)
+                    .with_padding_bottom(ROW_HEADER_PADDING)
+                    .finish(),
+            );
+        }
+
+        Container::new(column.finish())
+            .with_padding(EdgeInsets::uniform(spacing))
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+            .with_corner_radius(app.theme.radius_px())
+            .finish()
+    }
 }
 
 pub struct SettingsView {
@@ -371,8 +502,12 @@ impl SettingsView {
         section(
             "Profile",
             vec![
-                settings_row("Name", name_input, app),
-                settings_row("Email", email_input, app),
+                SettingsRow::new(app, "Name", name_input)
+                    .with_description("Shown to your agent and to peers on the cluster.")
+                    .build(),
+                SettingsRow::new(app, "Email", email_input)
+                    .with_description("Used to identify your account.")
+                    .build(),
                 save,
             ],
             app,
@@ -464,11 +599,25 @@ impl SettingsView {
         section(
             "LLM Provider",
             vec![
-                settings_row("Provider", provider_select, app),
-                settings_row("Model", model_input, app),
-                settings_row("API key", api_key_input, app),
-                settings_row("Base URL", base_url_input, app),
-                settings_row("Temperature", temperature_input, app),
+                SettingsRow::new(app, "Provider", provider_select)
+                    .with_tooltip("Which service serves chat and agent messages.")
+                    .with_description("The provider used for chat and agent messages.")
+                    .build(),
+                SettingsRow::new(app, "Model", model_input)
+                    .with_description("The model identifier for the selected provider.")
+                    .build(),
+                SettingsRow::new(app, "API key", api_key_input)
+                    .with_tooltip("Saved locally, never synced to the cluster.")
+                    .with_local_only()
+                    .with_description("Stored locally and never sent to the cluster.")
+                    .build(),
+                SettingsRow::new(app, "Base URL", base_url_input)
+                    .with_description("Leave blank to use the provider's default endpoint.")
+                    .build(),
+                SettingsRow::new(app, "Temperature", temperature_input)
+                    .with_secondary("0.0 - 2.0")
+                    .with_description("Higher values produce more varied output.")
+                    .build(),
                 save,
             ],
             app,
@@ -488,7 +637,10 @@ impl SettingsView {
 
         section(
             "Appearance",
-            vec![settings_row("Dark mode", switch, app)],
+            vec![SettingsRow::new(app, "Dark mode", switch)
+                .with_tooltip("Toggles the in-app color theme.")
+                .with_description("Use a dark color theme for the app.")
+                .build()],
             app,
         )
     }
@@ -514,8 +666,13 @@ impl SettingsView {
             })
             .finish();
 
-        let mut children: Vec<Box<dyn Element>> =
-            vec![settings_row("Passphrase", passphrase_input, app), unlock];
+        let mut children: Vec<Box<dyn Element>> = vec![
+            SettingsRow::new(app, "Passphrase", passphrase_input)
+                .with_local_only()
+                .with_description("Encrypts the vault stored on this device.")
+                .build(),
+            unlock,
+        ];
 
         if self.vault_unlocked {
             let secret_key_state = Rc::new(RefCell::new(String::new()));
@@ -553,8 +710,12 @@ impl SettingsView {
             children.push(section(
                 "Add secret",
                 vec![
-                    settings_row("Name", key_input, app),
-                    settings_row("Value", value_input, app),
+                    SettingsRow::new(app, "Name", key_input)
+                        .with_description("A name for the secret, used to reference it.")
+                        .build(),
+                    SettingsRow::new(app, "Value", value_input)
+                        .with_description("The value stored for this secret.")
+                        .build(),
                     add,
                 ],
                 app,
@@ -616,7 +777,12 @@ impl SettingsView {
                     }
                 })
                 .finish();
-            children.push(settings_row("Passphrase", passphrase_input, app));
+            children.push(
+                SettingsRow::new(app, "Passphrase", passphrase_input)
+                    .with_local_only()
+                    .with_description("Encrypts the cluster identity on this device.")
+                    .build(),
+            );
             children.push(unlock);
         } else {
             let name_state = Rc::new(RefCell::new(self.cluster_name.clone()));
@@ -642,8 +808,17 @@ impl SettingsView {
                 })
                 .finish();
 
-            children.push(settings_row("Name", name_input, app));
-            children.push(settings_row("Passphrase", passphrase_input, app));
+            children.push(
+                SettingsRow::new(app, "Name", name_input)
+                    .with_description("A label for this cluster.")
+                    .build(),
+            );
+            children.push(
+                SettingsRow::new(app, "Passphrase", passphrase_input)
+                    .with_local_only()
+                    .with_description("Encrypts the cluster identity on this device.")
+                    .build(),
+            );
             children.push(create);
         }
 
@@ -699,9 +874,15 @@ impl SettingsView {
         children.push(section(
             "Register / pair",
             vec![
-                settings_row("Name", name_input, app),
-                settings_row("URL", url_input, app),
-                settings_row("Pairing code", code_input, app),
+                SettingsRow::new(app, "Name", name_input)
+                    .with_description("A human-readable label for the worker.")
+                    .build(),
+                SettingsRow::new(app, "URL", url_input)
+                    .with_description("The WebSocket endpoint the app can reach.")
+                    .build(),
+                SettingsRow::new(app, "Pairing code", code_input)
+                    .with_description("A one-time code from the worker's pairing command.")
+                    .build(),
                 add,
                 pair,
             ],
@@ -792,9 +973,16 @@ impl SettingsView {
         children.push(section(
             "Add authorized key",
             vec![
-                settings_row("Name", name_input, app),
-                settings_row("Public key", pem_input, app),
-                settings_row("Fingerprint", fp_input, app),
+                SettingsRow::new(app, "Name", name_input)
+                    .with_description("A label used to recognize this key.")
+                    .build(),
+                SettingsRow::new(app, "Public key", pem_input)
+                    .with_tooltip("Paste a public key in PEM or SSH format.")
+                    .with_description("Public key in PEM or SSH format.")
+                    .build(),
+                SettingsRow::new(app, "Fingerprint", fp_input)
+                    .with_description("A hash used to verify the key on the cluster.")
+                    .build(),
                 add,
             ],
             app,
@@ -972,17 +1160,24 @@ mod tests {
     #[test]
     fn settings_view_renders_back_button_when_callback_set() {
         let app = AppContext::default();
-        let mut element: Box<dyn Element> =
-            SettingsView::new(SettingsPage::Profile).with_on_back(|| {}).finish();
+        let mut element: Box<dyn Element> = SettingsView::new(SettingsPage::Profile)
+            .with_on_back(|| {})
+            .finish();
         let commands = crate::test_util::render_element(&mut element, vec2f(800.0, 600.0), &app);
-        let has_back = commands.iter().any(|c| {
-            matches!(c, crate::render::RenderCommand::DrawText { text, .. } if text == "Back")
-        });
+        let has_back = commands.iter().any(
+            |c| matches!(c, crate::render::RenderCommand::DrawText { text, .. } if text == "Back"),
+        );
         let has_chevron = commands.iter().any(|c| {
             matches!(c, crate::render::RenderCommand::DrawIcon { name, .. } if name == "chevron-left")
         });
-        assert!(has_back, "settings with a back callback should render a Back button");
-        assert!(has_chevron, "settings back button should render a chevron icon");
+        assert!(
+            has_back,
+            "settings with a back callback should render a Back button"
+        );
+        assert!(
+            has_chevron,
+            "settings back button should render a chevron icon"
+        );
     }
 
     #[test]
@@ -1012,5 +1207,45 @@ mod tests {
         let _ = element.dispatch_event(&down, &mut event_ctx, &app);
         let _ = element.dispatch_event(&up, &mut event_ctx, &app);
         assert!(*clicked.borrow());
+    }
+
+    #[test]
+    fn settings_row_renders_description_and_tooltip_icon() {
+        let app = AppContext::default();
+        let mut element: Box<dyn Element> = SettingsView::new(SettingsPage::Appearance)
+            .with_dark_mode(true)
+            .finish();
+        let commands = crate::test_util::render_element(&mut element, vec2f(800.0, 600.0), &app);
+        let has_description = commands.iter().any(|c| {
+            matches!(c, crate::render::RenderCommand::DrawText { text, .. }
+                if text == "Use a dark color theme for the app.")
+        });
+        let has_info_icon = commands.iter().any(
+            |c| matches!(c, crate::render::RenderCommand::DrawIcon { name, .. } if name == "info"),
+        );
+        assert!(
+            has_description,
+            "a settings row with a description should render that text"
+        );
+        assert!(
+            has_info_icon,
+            "a settings row with a tooltip should render an info icon"
+        );
+    }
+
+    #[test]
+    fn settings_row_renders_local_only_icon() {
+        let app = AppContext::default();
+        let mut element: Box<dyn Element> = SettingsView::new(SettingsPage::Llm)
+            .with_llm("openai", "gpt-4o", "", "", "")
+            .finish();
+        let commands = crate::test_util::render_element(&mut element, vec2f(800.0, 600.0), &app);
+        let has_local_only = commands.iter().any(|c| {
+            matches!(c, crate::render::RenderCommand::DrawIcon { name, .. } if name == "cloud-off")
+        });
+        assert!(
+            has_local_only,
+            "the API key row is local-only and should render a cloud-off icon"
+        );
     }
 }

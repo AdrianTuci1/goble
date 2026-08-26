@@ -276,6 +276,7 @@ impl Element for TerminalBlock {
             HEADER_FONT_SIZE,
             muted,
             f32::INFINITY,
+            1.2,
             FontWeight::Regular,
             FontFamily::System,
         );
@@ -298,6 +299,7 @@ impl Element for TerminalBlock {
                     HEADER_FONT_SIZE,
                     status.color(app),
                     f32::INFINITY,
+                    1.2,
                     FontWeight::Regular,
                     FontFamily::System,
                 );
@@ -326,6 +328,7 @@ impl Element for TerminalBlock {
                         FONT_SIZE,
                         app.theme.color(ColorToken::Accent),
                         f32::INFINITY,
+                        LINE_HEIGHT,
                         FontWeight::Regular,
                         FontFamily::Mono,
                     );
@@ -335,6 +338,7 @@ impl Element for TerminalBlock {
                         FONT_SIZE,
                         color,
                         (max_text_width - prefix_width).max(0.0),
+                        LINE_HEIGHT,
                         FontWeight::Regular,
                         FontFamily::Mono,
                     );
@@ -346,6 +350,7 @@ impl Element for TerminalBlock {
                         FONT_SIZE,
                         color,
                         max_text_width,
+                        LINE_HEIGHT,
                         FontWeight::Regular,
                         FontFamily::Mono,
                     );

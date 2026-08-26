@@ -131,6 +131,7 @@ impl Element for Checkbox {
                 check_size,
                 app.theme.color(ColorToken::Text),
                 self.box_size.x,
+                1.2,
             );
         }
 

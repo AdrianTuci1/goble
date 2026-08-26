@@ -30,6 +30,7 @@ pub enum RenderCommand {
         font_size: f32,
         color: ColorU,
         max_width: f32,
+        line_height: f32,
         font_weight: FontWeight,
         font_family: FontFamily,
     },
@@ -118,6 +119,7 @@ impl Renderer {
         font_size: f32,
         color: ColorU,
         max_width: f32,
+        line_height: f32,
     ) {
         self.commands.push(RenderCommand::DrawText {
             origin,
@@ -125,6 +127,7 @@ impl Renderer {
             font_size,
             color,
             max_width,
+            line_height,
             font_weight: FontWeight::Regular,
             font_family: FontFamily::System,
         });
@@ -145,6 +148,7 @@ impl Renderer {
             font_size,
             color,
             max_width,
+            1.2,
             font_weight,
             FontFamily::System,
         )
@@ -158,6 +162,7 @@ impl Renderer {
         font_size: f32,
         color: ColorU,
         max_width: f32,
+        line_height: f32,
         font_weight: FontWeight,
         font_family: FontFamily,
     ) {
@@ -167,6 +172,7 @@ impl Renderer {
             font_size,
             color,
             max_width,
+            line_height,
             font_weight,
             font_family,
         });

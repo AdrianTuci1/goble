@@ -474,6 +474,7 @@ impl WgpuRenderEngine {
                     font_weight,
                     font_family,
                     max_width,
+                    line_height,
                 } => {
                     if let Some(entry) = self.text_atlas.entry_with_family(
                         text,
@@ -481,6 +482,7 @@ impl WgpuRenderEngine {
                         *font_weight,
                         *font_family,
                         *max_width * scale,
+                        *line_height,
                     ) {
                         let left = origin.x * scale + entry.offset[0];
                         let top = origin.y * scale + entry.offset[1];

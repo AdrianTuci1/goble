@@ -141,6 +141,7 @@ impl Element for Text {
                     self.font_size,
                     self.color,
                     size.x,
+                    self.line_height,
                     self.weight,
                     self.font_family,
                 );

@@ -221,6 +221,7 @@ impl Element for InlineText {
                 self.font_size,
                 placed.span.color,
                 placed.max_width,
+                self.line_height,
                 placed.span.weight,
                 placed.span.family,
             );

@@ -125,6 +125,7 @@ impl Element for Avatar {
                 font_size,
                 fg,
                 self.size,
+                1.2,
             );
         }
     }

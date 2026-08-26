@@ -53,6 +53,8 @@ struct TextKey {
     weight: FontWeight,
     mono: bool,
     max_width: u32,
+    /// Line-height multiplier (e.g. 1.2) encoded ×100 so the key stays hashable.
+    line_height: u32,
 }
 
 impl TextAtlas {
@@ -180,6 +182,7 @@ impl TextAtlas {
                     font_weight,
                     font_family,
                     max_width,
+                    line_height,
                     ..
                 } = command
                 {
@@ -189,6 +192,7 @@ impl TextAtlas {
                         weight: *font_weight,
                         mono: *font_family == FontFamily::Mono,
                         max_width: (*max_width * scale).round() as u32,
+                        line_height: (*line_height * 100.0).round() as u32,
                     })
                 } else {
                     None
@@ -206,6 +210,7 @@ impl TextAtlas {
                 key.weight,
                 key.mono,
                 key.max_width as f32,
+                key.line_height as f32 / 100.0,
             ) {
                 if self.cursor_x + width + PADDING > ATLAS_SIZE {
                     self.cursor_x = PADDING;
@@ -282,8 +287,16 @@ impl TextAtlas {
         font_size: f32,
         weight: FontWeight,
         max_width: f32,
+        line_height: f32,
     ) -> Option<&AtlasEntry> {
-        self.entry_with_family(text, font_size, weight, FontFamily::System, max_width)
+        self.entry_with_family(
+            text,
+            font_size,
+            weight,
+            FontFamily::System,
+            max_width,
+            line_height,
+        )
     }
 
     pub fn entry_with_family(
@@ -293,6 +306,7 @@ impl TextAtlas {
         weight: FontWeight,
         family: FontFamily,
         max_width: f32,
+        line_height: f32,
     ) -> Option<&AtlasEntry> {
         let key = TextKey {
             text: text.to_string(),
@@ -300,6 +314,7 @@ impl TextAtlas {
             weight,
             mono: family == FontFamily::Mono,
             max_width: max_width.round() as u32,
+            line_height: (line_height * 100.0).round() as u32,
         };
         self.entries.get(&key)
     }
@@ -342,16 +357,16 @@ pub fn measure_text_family(
     let font = font_set.select(weight, family);
     let fonts = &[font.clone()];
     let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
-    let settings = if max_width.is_finite() && max_width > 0.0 {
-        fontdue::layout::LayoutSettings {
-            max_width: Some(max_width),
-            max_height: None,
-            ..Default::default()
-        }
-    } else {
-        fontdue::layout::LayoutSettings::default()
-    };
-    layout.reset(&settings);
+    layout.reset(&fontdue::layout::LayoutSettings {
+        max_width: if max_width.is_finite() && max_width > 0.0 {
+            Some(max_width)
+        } else {
+            None
+        },
+        max_height: None,
+        line_height,
+        ..Default::default()
+    });
     layout.append(fonts, &fontdue::layout::TextStyle::new(text, font_size, 0));
 
     if layout.glyphs().is_empty() {
@@ -394,6 +409,7 @@ fn estimate_text_size(
 struct FontSet {
     regular: fontdue::Font,
     medium: fontdue::Font,
+    semibold: fontdue::Font,
     bold: fontdue::Font,
     mono: fontdue::Font,
     mono_bold: fontdue::Font,
@@ -403,13 +419,14 @@ impl FontSet {
     fn select(&self, weight: FontWeight, family: FontFamily) -> &fontdue::Font {
         match family {
             FontFamily::Mono => match weight {
-                FontWeight::Regular | FontWeight::Medium => &self.mono,
                 FontWeight::Bold | FontWeight::SemiBold => &self.mono_bold,
+                FontWeight::Regular | FontWeight::Medium => &self.mono,
             },
             FontFamily::System | FontFamily::Serif => match weight {
                 FontWeight::Regular => &self.regular,
                 FontWeight::Medium => &self.medium,
-                FontWeight::Bold | FontWeight::SemiBold => &self.bold,
+                FontWeight::SemiBold => &self.semibold,
+                FontWeight::Bold => &self.bold,
             },
         }
     }
@@ -424,6 +441,8 @@ fn font_set() -> Option<&'static FontSet> {
                 .unwrap_or_else(|| regular.clone());
             let bold = load_bundled_font(FontWeight::Bold, FontFamily::System)
                 .unwrap_or_else(|| regular.clone());
+            let semibold = load_bundled_font(FontWeight::SemiBold, FontFamily::System)
+                .unwrap_or_else(|| bold.clone());
             let mono = load_bundled_font(FontWeight::Regular, FontFamily::Mono)
                 .unwrap_or_else(|| regular.clone());
             let mono_bold = load_bundled_font(FontWeight::Bold, FontFamily::Mono)
@@ -431,6 +450,7 @@ fn font_set() -> Option<&'static FontSet> {
             Some(FontSet {
                 regular,
                 medium,
+                semibold,
                 bold,
                 mono,
                 mono_bold,
@@ -461,6 +481,7 @@ fn rasterize_text(
     weight: FontWeight,
     mono: bool,
     max_width: f32,
+    line_height: f32,
 ) -> Option<(AtlasEntry, Vec<u8>, u32, u32)> {
     let font_set = font_set()?;
     let family = if mono {
@@ -478,26 +499,23 @@ fn rasterize_text(
             None
         },
         max_height: None,
+        line_height,
         ..Default::default()
     });
-    layout.append(
-        fonts,
-        &fontdue::layout::TextStyle::new(text, font_size as f32, 0),
-    );
+    layout.append(fonts, &fontdue::layout::TextStyle::new(text, font_size as f32, 0));
 
     let glyphs = layout.glyphs();
-    // Quad height follows the layout line box (ascent + descent + gap) times
-    // the number of lines. This matches `measure_text_family`: descenders
-    // (g, y, p) don't inflate a single line, while wrapped/multi-line text
-    // still gets a quad tall enough for every line.
-    let height = (layout
+    // The quad spans the block's line box, so the drawn ink lands exactly where
+    // `measure_text_family` sized the element (ascents, descents and line gaps
+    // are all accounted for by `layout.height`).
+    let line_box_height = layout
         .height()
         .ceil()
-        .max(font_size as f32 * 1.2)
-        .ceil() as u32)
-        .max(1);
+        .max(font_size as f32 * line_height)
+        .ceil();
 
     if glyphs.is_empty() {
+        let height = line_box_height.max(1.0) as u32;
         let entry = AtlasEntry {
             uv_origin: [0.0; 2],
             uv_size: [0.0; 2],
@@ -507,25 +525,33 @@ fn rasterize_text(
         return Some((entry, vec![0u8; height as usize], 1, height));
     }
 
-    // Compute the horizontal bounding box that contains every glyph's
-    // rasterized bitmap. The vertical extent comes from the layout line box
-    // (above); ink stays top-aligned via the entry offset, and descenders fit
-    // inside the quad.
+    // Fontdue already bakes a glyph's bearings into its position (`glyph.x` is
+    // the bitmap's left edge, `glyph.y` its top), so the bitmap is copied
+    // straight to its layout coordinates instead of adding `xmin`/`ymin` again.
+    // Measuring both `max_x` and `max_y` lets the quad shrink to the ink when
+    // that is taller/narrower than the line box, so nothing gets clipped.
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
     for glyph in glyphs {
         let (metrics, _) = font.rasterize_config(glyph.key);
-        let glyph_left = glyph.x + metrics.xmin as f32;
-        let glyph_top = glyph.y + metrics.ymin as f32;
-        let glyph_right = glyph_left + metrics.width as f32;
-
-        min_x = min_x.min(glyph_left);
-        min_y = min_y.min(glyph_top);
-        max_x = max_x.max(glyph_right);
+        if metrics.width == 0 || metrics.height == 0 {
+            continue;
+        }
+        min_x = min_x.min(glyph.x);
+        min_y = min_y.min(glyph.y);
+        max_x = max_x.max(glyph.x + metrics.width as f32);
+        max_y = max_y.max(glyph.y + metrics.height as f32);
     }
 
-    let width = ((max_x - min_x).ceil() as u32).max(1);
+    // Anchor the bitmap at the line-box origin so the quad aligns with the
+    // element box; glyphs that overhang above/left still fit instead of being
+    // clipped.
+    let left = min_x.min(0.0).floor();
+    let top = min_y.min(0.0).floor();
+    let width = ((max_x - left).ceil() as u32).max(1);
+    let height = ((line_box_height.max(max_y - top).ceil()).max(1.0)) as u32;
 
     let mut atlas = vec![0u8; (width * height) as usize];
     for glyph in glyphs {
@@ -533,8 +559,8 @@ fn rasterize_text(
         if metrics.width == 0 || metrics.height == 0 {
             continue;
         }
-        let x_offset = (glyph.x + metrics.xmin as f32 - min_x).floor() as i32;
-        let y_offset = (glyph.y + metrics.ymin as f32 - min_y).floor() as i32;
+        let x_offset = (glyph.x - left).floor() as i32;
+        let y_offset = (glyph.y - top).floor() as i32;
         for row in 0..metrics.height {
             for col in 0..metrics.width {
                 let src = row * metrics.width + col;
@@ -553,8 +579,129 @@ fn rasterize_text(
         uv_origin: [0.0; 2],
         uv_size: [0.0; 2],
         size: [width as f32, height as f32],
-        offset: [-min_x, -min_y],
+        offset: [-left, -top],
     };
 
     Some((entry, atlas, width, height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_height_grows_wrapped_block_height() {
+        let short = measure_text_family(
+            "one two three four five",
+            13.0,
+            1.2,
+            40.0,
+            FontWeight::Regular,
+            FontFamily::System,
+        );
+        let tall = measure_text_family(
+            "one two three four five",
+            13.0,
+            2.0,
+            40.0,
+            FontWeight::Regular,
+            FontFamily::System,
+        );
+        assert!(
+            short.y > 0.0,
+            "wrapped text should occupy more than one line"
+        );
+        assert!(
+            tall.y > short.y,
+            "a larger line-height multiplier must grow the block height"
+        );
+    }
+
+    #[test]
+    fn semibold_uses_static_distinct_font() {
+        let set = font_set().expect("bundled fonts must load");
+        let regular = set.select(FontWeight::Regular, FontFamily::System).file_hash();
+        let semibold = set
+            .select(FontWeight::SemiBold, FontFamily::System)
+            .file_hash();
+        let bold = set.select(FontWeight::Bold, FontFamily::System).file_hash();
+        assert_ne!(
+            semibold, bold,
+            "SemiBold must not resolve to the Bold font file"
+        );
+        assert_ne!(semibold, regular, "SemiBold must differ from Regular");
+        assert_ne!(bold, regular, "Bold must differ from Regular");
+    }
+
+    #[test]
+    fn raster_quad_agrees_with_measure_for_single_line() {
+        let text = "Hello, world!";
+        let (entry, atlas, width, height) = rasterize_text(text, 13, FontWeight::Regular, false, 400.0, 1.2)
+            .expect("single line must rasterize");
+
+        // The quad the renderer draws (origin `offset`, size `size`) must match the
+        // box `measure_text_family` produced for the element, otherwise text is
+        // clipped or shifted.
+        let measured =
+            measure_text_family(text, 13.0, 1.2, 400.0, FontWeight::Regular, FontFamily::System);
+        assert!(
+            (entry.size[0] - measured.x).abs() <= 2.0,
+            "quad width {} vs measured {}",
+            entry.size[0],
+            measured.x
+        );
+        assert!(
+            (entry.size[1] - measured.y).abs() <= 2.0,
+            "quad height {} vs measured {}",
+            entry.size[1],
+            measured.y
+        );
+
+        assert_eq!(entry.size[0], width as f32);
+        assert_eq!(entry.size[1], height as f32);
+
+        // No double-counted left bearing: the ink must start at the element origin.
+        assert!(
+            entry.offset[0].abs() <= 1.0,
+            "left offset should be ~0, got {}",
+            entry.offset[0]
+        );
+        assert!(
+            entry.offset[1].abs() <= 1.0,
+            "top offset should be ~0, got {}",
+            entry.offset[1]
+        );
+
+        // The atlas region must actually contain ink, not be blank.
+        assert!(
+            atlas.iter().any(|&p| p > 0),
+            "rasterized region must contain non-zero coverage"
+        );
+    }
+
+    #[test]
+    fn raster_quad_agrees_with_measure_for_wrapped_block() {
+        let text = "line one\nline two\nline three";
+        let (entry, atlas, _w, _h) =
+            rasterize_text(text, 13, FontWeight::Regular, false, 400.0, 1.5)
+                .expect("multi-line must rasterize");
+        let measured = measure_text_family(
+            text,
+            13.0,
+            1.5,
+            400.0,
+            FontWeight::Regular,
+            FontFamily::System,
+        );
+        assert!(
+            (entry.size[1] - measured.y).abs() <= 2.0,
+            "quad height {} vs measured {}",
+            entry.size[1],
+            measured.y
+        );
+        assert!(
+            atlas.iter().any(|&p| p > 0),
+            "multi-line raster must contain ink"
+        );
+    }
 }

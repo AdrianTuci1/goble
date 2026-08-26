@@ -1,8 +1,8 @@
 //! Integration tests for the harness chat-turn wiring: with a configured LLM,
 //! sending a message drives the real harness — a deterministic `MockProvider`
 //! in tests, so no network — which persists the user + assistant/tool messages
-//! and emits `chat:updated` so the UI refreshes. The no-key path keeps the
-//! canned reply.
+//! and emits `chat:updated` so the UI refreshes. The reply must come from the
+//! provider, never from the no-key canned string.
 
 mod common;
 

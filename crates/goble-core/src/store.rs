@@ -86,6 +86,7 @@ impl Store {
                 model TEXT,
                 agent_id TEXT,
                 worker_id TEXT,
+                workspace_routing TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             ) STRICT;
@@ -243,6 +244,22 @@ impl Store {
             "#,
         )
         .context("failed to run migrations")?;
+
+        // `CREATE TABLE IF NOT EXISTS` does not add a column to a table that
+        // already exists, so add `workspace_routing` to pre-existing `chats`
+        // tables (created before the column existed).
+        let has_routing: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'workspace_routing'",
+                [],
+                |r| r.get(0),
+            )
+            .context("failed to check for chats.workspace_routing")?;
+        if !has_routing {
+            conn.execute("ALTER TABLE chats ADD COLUMN workspace_routing TEXT", [])
+                .context("failed to add chats.workspace_routing")?;
+        }
+
         Ok(())
     }
 
@@ -655,6 +672,27 @@ impl Store {
                 row.get::<_, Option<String>>(0)?,
                 row.get::<_, Option<String>>(1)?,
             )))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Persist the workspace routing (`local` / `remote`) for a chat.
+    pub fn set_chat_workspace_routing(&self, id: &str, routing: Option<&str>) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chats SET workspace_routing = ?1 WHERE id = ?2",
+            params![routing, id],
+        )?;
+        Ok(())
+    }
+
+    /// Read the workspace routing for a chat, if it has been chosen.
+    pub fn get_chat_workspace_routing(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT workspace_routing FROM chats WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(row.get::<_, Option<String>>(0)?)
         } else {
             Ok(None)
         }
@@ -1556,6 +1594,34 @@ mod tests {
             store.get_setting("theme").unwrap(),
             Some("light".to_string())
         );
+    }
+
+    #[test]
+    fn test_chat_workspace_routing_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_chat("c1", "Demo", None, None, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(store.get_chat_workspace_routing("c1").unwrap(), None);
+
+        store.set_chat_workspace_routing("c1", Some("local")).unwrap();
+        assert_eq!(
+            store.get_chat_workspace_routing("c1").unwrap(),
+            Some("local".to_string())
+        );
+
+        store.set_chat_workspace_routing("c1", Some("remote")).unwrap();
+        assert_eq!(
+            store.get_chat_workspace_routing("c1").unwrap(),
+            Some("remote".to_string())
+        );
+
+        // Clearing the choice is allowed (falls back to the default).
+        store.set_chat_workspace_routing("c1", None).unwrap();
+        assert_eq!(store.get_chat_workspace_routing("c1").unwrap(), None);
+
+        // Unknown chats have no routing.
+        assert_eq!(store.get_chat_workspace_routing("missing").unwrap(), None);
     }
 
     #[test]

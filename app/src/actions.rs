@@ -15,7 +15,7 @@ use goble_desktop_service::DesktopState;
 use goble_ui::{ChatMessage, ChatRole, ConversationEntry, SettingsPage};
 
 use crate::hot_ui::{AppTab, CronEntry, UiActions, WorkspaceRouting};
-use crate::state::UiState;
+use crate::state::{routing_to_str, UiState};
 
 pub fn make_actions(
     state: Rc<RefCell<UiState>>,
@@ -84,6 +84,7 @@ pub fn make_actions(
     let desktop_unlock_vault = desktop.clone();
     let desktop_create_cluster = desktop.clone();
     let desktop_unlock_cluster = desktop.clone();
+    let desktop_choose_workspace = desktop.clone();
 
     UiActions {
         on_search_change: Rc::new(RefCell::new(move |value: String| {
@@ -162,6 +163,15 @@ pub fn make_actions(
                 state.selected_model.clone()
             };
             if let (Some(desktop), Some(chat_id)) = (&desktop_send, state.selected_id.clone()) {
+                // Route the turn to the conversation's chosen runtime. Chat turns
+                // run on the local harness (the only wired target today); a
+                // `Remote` routing is persisted but remote chat execution is not
+                // implemented yet, so it degrades to local and the gap is logged.
+                if state.workspace_routing == Some(WorkspaceRouting::Remote) {
+                    log::warn!(
+                        "conversation {chat_id} is routed remote, but remote chat execution is not wired yet; running locally"
+                    );
+                }
                 if configured {
                     // Run the real harness turn on a background task. The harness
                     // inserts the user message and the assistant/tool output into
@@ -187,15 +197,11 @@ pub fn make_actions(
                         ran_turn = true;
                     }
                 } else {
-                    // No key configured yet: append the user message + fall back
-                    // to the canned reply and surface the banner so the user
-                    // configures a provider.
+                    // No key configured yet: keep the user's message but do not
+                    // fabricate a canned response (nothing is actually running).
+                    // Surface the model-key banner overlay so the user configures
+                    // a provider before the agent replies.
                     let _ = desktop.add_chat_message(&chat_id, "user", &text);
-                    let _ = desktop.add_chat_message(
-                        &chat_id,
-                        "assistant",
-                        &format!("Am primit mesajul tău. Rulez acum comanda pentru „{text}”."),
-                    );
                     state.show_llm_key_banner = true;
                 }
                 state.refresh_messages(desktop);
@@ -203,10 +209,6 @@ pub fn make_actions(
                 state
                     .chat_messages
                     .push(ChatMessage::from_markdown(ChatRole::User, text.clone()));
-                state.chat_messages.push(ChatMessage::from_markdown(
-                    ChatRole::Assistant,
-                    format!("Am primit mesajul tău. Rulez acum comanda pentru „{text}”."),
-                ));
                 if !configured {
                     state.show_llm_key_banner = true;
                 }
@@ -584,6 +586,15 @@ pub fn make_actions(
             state.workspace_routing = Some(routing);
             state.show_workspace_choice = false;
             state.show_llm_key_banner = false;
+            // Persist the decision on the selected conversation so it survives
+            // restarts and is tracked per-conversation.
+            if let Some(desktop) = &desktop_choose_workspace {
+                if let Some(chat_id) = state.selected_id.clone() {
+                    if let Err(e) = desktop.set_chat_workspace_routing(&chat_id, Some(routing_to_str(routing))) {
+                        log::warn!("set_chat_workspace_routing failed: {e}");
+                    }
+                }
+            }
             // Returning to chat lets the conversation continue in the chosen
             // workspace.
             state.current_tab = AppTab::Chat;

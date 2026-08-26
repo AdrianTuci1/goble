@@ -1,6 +1,6 @@
 # 02 — First-run & local/remote routing
 
-**Status:** `[~]` — the banner → model-provider overlay dialog → local/remote → continue-local flow is implemented + integration-tested. Harness + real model stream and the `local` runtime target still pending (see `TRACKER.md`).
+**Status:** `[~]` — the banner (modal overlay, no canned reply) → model-provider overlay dialog → local/remote → continue-local flow is implemented + integration-tested, and the routing choice persists per conversation across restarts. The `local` runtime target is valid for chat turns; remote/worker execution and the agent/workflow `resolve_worker_for_target` `bail!` are still pending (see `TRACKER.md`).
 **Owns:** the onboarding flow and the decision "does this run local or remote?".
 **Depends on:** [`../01-vision/README.md`](../01-vision/README.md), [`../03-workspace-model/README.md`](../03-workspace-model/README.md)
 

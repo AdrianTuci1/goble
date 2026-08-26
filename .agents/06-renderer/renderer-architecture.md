@@ -31,8 +31,8 @@ flowchart LR
 
 ## Current gaps (vs target product)
 
-- The **first-run flow is wired**: no-key banner → Settings→LLM → local/remote choice → continue local, driven via `chat.rs` + `actions.rs` and covered by `integration_testing/first_run_flow.rs`.
-- `on_send_message` drives the **harness** (`DesktopState::run_chat_turn` → `Harness::run_turn`), which persists the user + assistant/tool messages and emits `chat:updated` (deterministic `MockProvider` in tests; canned reply only on the no-key path). Assistant deltas **stream** into a single message row, so the renderer shows the reply progressively; the Stop button cancels the turn.
+- The **first-run flow is wired**: no-key banner (modal overlay) → Settings→LLM → local/remote choice → continue local, driven via `chat.rs` + `actions.rs` and covered by `integration_testing/first_run_flow.rs`. The routing choice persists per conversation on the `chats.workspace_routing` column and is restored on load.
+- `on_send_message` drives the **harness** (`DesktopState::run_chat_turn` → `Harness::run_turn`), which persists the user + assistant/tool messages and emits `chat:updated` (deterministic `MockProvider` in tests; the no-key path keeps the user message and surfaces the banner overlay — no canned reply). Assistant deltas **stream** into a single message row, so the renderer shows the reply progressively; the Stop button cancels the turn.
 - The composer **model selector** drives `run_chat_turn` (populated from the provider catalog) and the **Stop button** cancels a running turn; `agent_busy` now reflects the turn lifecycle (true on send, cleared by `chat:turn_finished` or Stop). attach/voice, copy/restart/menu are still stubs/logs.
 - `AppTab` only has Threads/Chat/Settings; agents/executions/logs/teams/workflows pages are not in the native shell (they exist in the legacy React app).
 - Threads tab content is mock-only (not wired to `ThreadStore`).

@@ -1,6 +1,6 @@
 # 02 — Onboarding: no model key configured
 
-**Status:** `[~]` — banner + model-provider overlay dialog implemented and integration-tested; the canned assistant reply is still sent alongside it (harness pending)
+**Status:** `[x]` — the empty-key banner is a modal overlay (no canned reply) and the model-provider overlay dialog + workspace-type prompt flow is implemented and integration-tested.
 **Owns:** the empty-key state in the chat/composer
 **Depends on:** [`README.md`](README.md), [`../03-workspace-model/shared-secrets-and-toml.md`](../03-workspace-model/shared-secrets-and-toml.md)
 
@@ -29,6 +29,6 @@ A brand-new user opens the app and sends a first message. Nothing is configured 
 
 ## Tasks
 
-- [~] Show an "empty LLM key" banner in the chat instead of the canned reply (banner is in; the canned reply removal is pending the harness).
+- [x] Show an "empty LLM key" banner as a modal overlay instead of the canned reply — the canned reply is no longer sent on the no-key path; `on_send_message` keeps the user message and surfaces the banner overlay.
 - [x] Wire the banner click to open the model-provider overlay dialog (`goble-ui` `Dialog` + `goble-ui-hot` `model_form`).
 - [x] After a key is saved, close the dialog and re-route to the workspace-type prompt (see `router-local-vs-remote.md`).

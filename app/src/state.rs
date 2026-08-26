@@ -22,6 +22,23 @@ use goble_ui::{
 use crate::hot_ui::{AppTab, CronEntry, LlmFormField, WorkspaceRouting};
 use goble_ui_hot::SIDEBAR_WIDTH;
 
+/// The string form of a workspace routing choice as persisted on a chat.
+pub(crate) fn routing_to_str(routing: WorkspaceRouting) -> &'static str {
+    match routing {
+        WorkspaceRouting::Local => "local",
+        WorkspaceRouting::Remote => "remote",
+    }
+}
+
+/// Parse a persisted workspace-routing string back into a [`WorkspaceRouting`].
+pub(crate) fn routing_from_str(value: &str) -> Option<WorkspaceRouting> {
+    match value {
+        "local" => Some(WorkspaceRouting::Local),
+        "remote" => Some(WorkspaceRouting::Remote),
+        _ => None,
+    }
+}
+
 /// Format an RFC3339 timestamp as a short relative "time ago" label (e.g.
 /// "40 min ago"). Falls back to the raw string when it cannot be parsed.
 fn time_ago(updated_at: &str) -> String {
@@ -272,6 +289,13 @@ impl UiState {
             self.pending_ask = None;
             return;
         };
+        // Restore the runtime choice for this conversation so the Local/Remote
+        // decision survives restarts and is tracked per-conversation.
+        self.workspace_routing = desktop
+            .get_chat_workspace_routing(&chat_id)
+            .ok()
+            .flatten()
+            .and_then(|s| routing_from_str(&s));
         // A suspended ask persists in the store, so the inline card survives a
         // refresh; answering clears it (status becomes `answered`).
         self.pending_ask = desktop

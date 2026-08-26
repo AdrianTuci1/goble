@@ -1,9 +1,10 @@
 //! Integration tests for the first-run model-connect flow, driven through the
 //! app's real action callbacks against a live [`DesktopState`]:
 //! no key -> banner on first send -> model-provider dialog -> save key ->
-//! workspace choice -> local. The chat send path keeps its canned assistant
-//! reply (the agent harness is a separate slice), so these tests assert the
-//! state + navigation transitions.
+//! workspace choice -> local. With no key the send path keeps the user's
+//! message but emits no canned assistant reply (nothing is actually running);
+//! the agent harness is a separate slice, so these tests assert the state +
+//! navigation transitions.
 
 mod common;
 
@@ -57,13 +58,12 @@ fn first_run_send_message_surfaces_key_banner() {
         assert!(s.show_llm_key_banner, "no key -> banner should surface");
         assert!(!s.show_workspace_choice);
         assert_eq!(s.workspace_routing, None);
-        assert_eq!(s.chat_messages.len(), 2, "message still sends a canned reply");
+        assert_eq!(s.chat_messages.len(), 1, "no canned reply when no key is configured");
     }
 
     let messages = desktop.list_chat_messages(&chat_id).expect("list messages");
-    assert_eq!(messages.len(), 2);
+    assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, "user");
-    assert_eq!(messages[1].role, "assistant");
 }
 
 #[test]
@@ -170,8 +170,8 @@ fn choosing_local_sets_routing_and_continues_conversation() {
         assert!(!s.show_workspace_choice, "choice clears after deciding");
         assert!(!s.show_llm_key_banner, "banner stays cleared");
         assert_eq!(s.current_tab, AppTab::Chat, "returns to the conversation");
-        // The canned assistant reply remains, so the conversation continues.
-        assert_eq!(s.chat_messages.len(), 2);
+        // Only the user's message remains (no canned reply for the no-key send).
+        assert_eq!(s.chat_messages.len(), 1);
     }
 }
 
@@ -189,4 +189,69 @@ fn choosing_remote_sets_routing() {
         assert_eq!(s.workspace_routing, Some(WorkspaceRouting::Remote));
         assert!(!s.show_workspace_choice);
     }
+}
+
+#[test]
+fn workspace_routing_persists_and_reloads_per_conversation() {
+    let (desktop, _dir) = common::desktop_state();
+    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let (state, actions) = build(&desktop);
+
+    // The newly created chat is the selected conversation.
+    assert_eq!(state.borrow().selected_id.as_deref(), Some(chat_id.as_str()));
+
+    // No key yet: the first send surfaces the key banner (no canned reply).
+    (actions.on_send_message.borrow_mut())("Hi".to_string());
+    assert!(state.borrow().show_llm_key_banner);
+
+    // Configuring a key presents the workspace choice.
+    save_key(&actions, "sk-test");
+    assert!(state.borrow().show_workspace_choice);
+
+    // Choosing Local persists the decision on the conversation.
+    (actions.on_choose_workspace.borrow_mut())(WorkspaceRouting::Local);
+    assert_eq!(state.borrow().workspace_routing, Some(WorkspaceRouting::Local));
+    assert_eq!(
+        desktop
+            .list_chats()
+            .iter()
+            .find(|c| c.id == chat_id)
+            .and_then(|c| c.workspace_routing.clone()),
+        Some("local".to_string()),
+        "routing should be persisted on the chat"
+    );
+
+    // A fresh state loaded from the backend restores the routing, so the
+    // choice survives an app restart.
+    let (state2, _) = build(&desktop);
+    assert_eq!(
+        state2.borrow().workspace_routing,
+        Some(WorkspaceRouting::Local),
+        "routing should be restored when reloading the conversation"
+    );
+}
+
+#[test]
+fn choosing_remote_persists_on_conversation() {
+    let (desktop, _dir) = common::desktop_state();
+    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let (state, actions) = build(&desktop);
+
+    (actions.on_send_message.borrow_mut())("Hi".to_string());
+    save_key(&actions, "sk-test");
+    (actions.on_choose_workspace.borrow_mut())(WorkspaceRouting::Remote);
+
+    assert_eq!(
+        state.borrow().workspace_routing,
+        Some(WorkspaceRouting::Remote)
+    );
+    assert_eq!(
+        desktop
+            .list_chats()
+            .iter()
+            .find(|c| c.id == chat_id)
+            .and_then(|c| c.workspace_routing.clone()),
+        Some("remote".to_string()),
+        "remote choice should be persisted on the chat"
+    );
 }

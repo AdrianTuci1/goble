@@ -75,6 +75,13 @@ impl RootView {
         view
     }
 
+    /// Expose the backing UI state so integration render tests can drive
+    /// first-run flags (e.g. the model-key banner overlay) before mounting.
+    #[doc(hidden)]
+    pub fn state_rc(&self) -> Rc<RefCell<UiState>> {
+        Rc::clone(&self.state)
+    }
+
     /// Poll the event bus and refresh state from the backend when something
     /// changed (chats, messages, workflows, agents). Called on every frame
     /// before the tree is rebuilt, so backend updates show up live.

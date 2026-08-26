@@ -86,6 +86,9 @@ pub struct Chat {
     pub model: Option<String>,
     pub agent_id: Option<String>,
     pub worker_id: Option<String>,
+    /// Where the agent for this conversation should run: `"local"` or `"remote"`.
+    /// `None` when the user has not chosen yet.
+    pub workspace_routing: Option<String>,
     pub updated_at: String,
 }
 
@@ -1409,6 +1412,7 @@ impl DesktopState {
             model: model.map(|s| s.to_string()),
             agent_id: None,
             worker_id: None,
+            workspace_routing: None,
             updated_at: now,
         };
         self.chats.lock().push(chat);
@@ -1424,6 +1428,25 @@ impl DesktopState {
         }
         self.emit("chats:updated", ());
         Ok(())
+    }
+
+    /// Persist where a conversation's agent should run (`"local"` / `"remote"`).
+    pub fn set_chat_workspace_routing(
+        &self,
+        id: &str,
+        routing: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.store.lock().set_chat_workspace_routing(id, routing)?;
+        if let Some(chat) = self.chats.lock().iter_mut().find(|c| c.id == id) {
+            chat.workspace_routing = routing.map(|s| s.to_string());
+        }
+        self.emit("chats:updated", ());
+        Ok(())
+    }
+
+    /// Read where a conversation's agent should run, if the user chose.
+    pub fn get_chat_workspace_routing(&self, id: &str) -> anyhow::Result<Option<String>> {
+        self.store.lock().get_chat_workspace_routing(id)
     }
 
     pub fn list_chats(&self) -> Vec<Chat> {
@@ -2370,6 +2393,7 @@ impl DesktopState {
         let chats = self.store.lock().list_chats()?;
         let mut chats_vec = self.chats.lock();
         for (id, title, provider, model, _created_at, updated_at) in chats {
+            let workspace_routing = self.store.lock().get_chat_workspace_routing(&id)?;
             chats_vec.push(Chat {
                 id,
                 title,
@@ -2377,6 +2401,7 @@ impl DesktopState {
                 model,
                 agent_id: None,
                 worker_id: None,
+                workspace_routing,
                 updated_at,
             });
         }

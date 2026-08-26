@@ -85,19 +85,19 @@ fn send_message_appends_and_persists() {
     (actions.on_composer_change.borrow_mut())("Salut!".to_string());
     (actions.on_send_message.borrow_mut())("Salut!".to_string());
 
+    // No key is configured, so the send path keeps the user's message (no
+    // fabricated assistant reply) and surfaces the model-key banner overlay.
     {
         let state = state.borrow();
         assert_eq!(state.composer_draft, "");
-        assert_eq!(state.chat_messages.len(), 2);
+        assert_eq!(state.chat_messages.len(), 1);
         assert_eq!(state.chat_messages[0].role, ChatRole::User);
-        assert_eq!(state.chat_messages[1].role, ChatRole::Assistant);
-        assert!(message_text(&state.chat_messages[1]).contains("Salut!"));
+        assert!(state.show_llm_key_banner, "no key -> banner overlay should surface");
     }
 
     let messages = desktop.list_chat_messages(&chat_id).expect("list messages");
-    assert_eq!(messages.len(), 2);
+    assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, "user");
-    assert_eq!(messages[1].role, "assistant");
 }
 
 #[test]

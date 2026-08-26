@@ -16,7 +16,7 @@ use goble_ui::elements::{
     CrossAxisAlignment, Divider, Element, Expanded, Fill, Flex, MainAxisSize,
 };
 use goble_ui::theme::ColorToken;
-use goble_ui::{SettingsPage, Sheet, Stack, SHEET_DEFAULT_WIDTH, vec2f};
+use goble_ui::{DIALOG_DEFAULT_WIDTH, Dialog, SettingsPage, Sheet, Stack, SHEET_DEFAULT_WIDTH, vec2f};
 
 pub mod chat;
 pub mod connectors;
@@ -393,17 +393,37 @@ pub fn build_ui(
         .with_on_close(move || (on_close_vault.borrow_mut())())
         .finish();
 
-    // The model-provider dialog floats above everything (including the sheets).
-    let llm_dialog = model_form::build_llm_dialog(app, state, actions);
+    let mut stack = Stack::new().with_children(vec![
+        shell_col.finish(),
+        crons_sheet,
+        connectors_sheet,
+        vault_sheet,
+    ]);
 
-    let stack = Stack::new()
-        .with_children(vec![
-            shell_col.finish(),
-            crons_sheet,
-            connectors_sheet,
-            vault_sheet,
-        ])
-        .with_overlay(llm_dialog, vec2f(0.0, 0.0));
+    // First-run onboarding overlays: the model-key banner, then (once a key is
+    // set) the local/remote workspace choice. Both are centered modal dialogs
+    // with no `on_close`, so the dimmed backdrop is a blocking prompt the user
+    // must act on.
+    if state.show_llm_key_banner {
+        stack = stack.with_overlay(
+            Dialog::new(chat::build_llm_key_banner(app, actions))
+                .with_open(true)
+                .with_width(DIALOG_DEFAULT_WIDTH)
+                .finish(),
+            vec2f(0.0, 0.0),
+        );
+    } else if state.show_workspace_choice {
+        stack = stack.with_overlay(
+            Dialog::new(chat::build_workspace_choice(app, actions))
+                .with_open(true)
+                .with_width(DIALOG_DEFAULT_WIDTH)
+                .finish(),
+            vec2f(0.0, 0.0),
+        );
+    }
+
+    // The model-provider dialog floats above everything (including the sheets).
+    stack = stack.with_overlay(model_form::build_llm_dialog(app, state, actions), vec2f(0.0, 0.0));
 
     Container::new(stack.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))

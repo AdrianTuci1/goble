@@ -2,7 +2,7 @@
 
 use goble_ui::elements::{
     AppContext, Button, ButtonVariant, ChatLayout, ChatSidebar, Container, CrossAxisAlignment,
-    EdgeInsets, Element, Expanded, Fill, Flex, Icon, MainAxisSize, PopupMenuItem, RoutineItem,
+    EdgeInsets, Element, Fill, Flex, Icon, MainAxisSize, PopupMenuItem, RoutineItem,
     Spacer, Text, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -116,35 +116,17 @@ pub fn build_agent_chat(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         chat
     };
 
-    // First-run overlays: a "configure a model key" banner and/or the
-    // "local or remote workspace?" choice sit above the transcript. They only
-    // render when the app state asks for them, so the normal chat path is
-    // unchanged.
-    if state.show_llm_key_banner || state.show_workspace_choice {
-        let spacing = app.theme.spacing_px(SpacingToken::Md);
-        let mut wrapper = Flex::column()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(spacing);
-        if state.show_llm_key_banner {
-            wrapper = wrapper.with_child(build_llm_key_banner(app, actions));
-        }
-        if state.show_workspace_choice {
-            wrapper = wrapper.with_child(build_workspace_choice(app, actions));
-        }
-        wrapper = wrapper.with_child(Expanded::new(chat_el).finish());
-        Container::new(wrapper.finish())
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-            .finish()
-    } else {
-        chat_el
-    }
+    // The first-run prompts (configure a model key, pick local/remote) are
+    // rendered as modal overlays over the whole app in `build_ui`, so the chat
+    // surface here is always the plain transcript + composer.
+    chat_el
 }
 
-/// First-run banner shown in the chat when no model key is configured yet.
-fn build_llm_key_banner(app: &AppContext, actions: &UiActions) -> Box<dyn Element> {
+/// First-run modal content shown when no model key is configured yet.
+pub(crate) fn build_llm_key_banner(app: &AppContext, actions: &UiActions) -> Box<dyn Element> {
     let on_config = actions.on_config_llm_key.clone();
     let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let md = app.theme.spacing_px(SpacingToken::Md);
     let label = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -156,22 +138,28 @@ fn build_llm_key_banner(app: &AppContext, actions: &UiActions) -> Box<dyn Elemen
                 .finish(),
         )
         .with_child(
-            Text::new(
-                "You don't have any key configured, please click here to configure a model key.",
-            )
-            .with_theme_color(ColorToken::Text, app)
-            .with_font_size(12.0)
-            .finish(),
+            Text::new("You don't have a model key configured yet.")
+                .with_theme_color(ColorToken::Text, app)
+                .with_font_size(13.0)
+                .finish(),
+        )
+        .with_child(Spacer::new().finish())
+        .with_child(
+            Button::new(Text::new("Configure a key").finish())
+                .with_variant(ButtonVariant::Primary)
+                .with_on_click(move || (on_config.borrow_mut())())
+                .finish(),
         )
         .finish();
-    Button::new(label)
-        .with_variant(ButtonVariant::Ghost)
-        .with_on_click(move || (on_config.borrow_mut())())
+    Container::new(label)
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .with_corner_radius(app.theme.radius_px())
+        .with_padding(EdgeInsets::uniform(md))
         .finish()
 }
 
 /// First-run choice prompt: pick where the agent should run.
-fn build_workspace_choice(app: &AppContext, actions: &UiActions) -> Box<dyn Element> {
+pub(crate) fn build_workspace_choice(app: &AppContext, actions: &UiActions) -> Box<dyn Element> {
     let md = app.theme.spacing_px(SpacingToken::Md);
     let local = {
         let on_choose = actions.on_choose_workspace.clone();

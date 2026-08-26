@@ -1,6 +1,6 @@
 # 02 — Router: local vs remote
 
-**Status:** `[~]` decision model settled; router not implemented
+**Status:** `[~]` decision model settled; per-conversation routing persisted, remote/worker execution not wired yet
 **Owns:** the local/remote routing decision
 **Depends on:** [`../03-workspace-model/workspace.md`](../03-workspace-model/workspace.md), [`../05-execution-router-and-targets/runtime-targets.md`](../05-execution-router-and-targets/runtime-targets.md)
 
@@ -50,6 +50,6 @@ enum Routing {
 
 ## Tasks
 
-- [ ] Define the `Routing` decision type and attach it to a conversation/workspace.
-- [ ] Make `local` a valid runtime target (remove the `bail!` for `local`).
-- [ ] Persist the routing choice so a conversation stays stable across restarts.
+- [x] Define the `Routing` decision type and attach it to a conversation — `WorkspaceRouting{Local,Remote}` in `goble-ui-hot`, persisted per conversation on the `chats.workspace_routing` column and restored on load.
+- [~] Make `local` a valid runtime target — chat turns run on the local harness for `local`/unset routing; the `resolve_worker_for_target` `bail!` for the agent/workflow deploy path is still pending a local agent runner.
+- [x] Persist the routing choice so a conversation stays stable across restarts (store column + `set/get_chat_workspace_routing` + `on_choose_workspace` + `refresh_messages` restore).

@@ -65,12 +65,12 @@ fn seed_demo_conversations(desktop: &DesktopState) -> anyhow::Result<()> {
         "# Pași de lucru\n\nAcesta e un exemplu de `rendere personalizate`:\n\n1. Heading\n2. Listă\n3. Bloc de cod\n4. Citat\n5. Link\n\n> Un citat cu stil propriu.\n\n```rust\nfn main() {\n    println!(\"salut\");\n}\n```\n\nTotul e **bold** și [un link](https://goble.dev).",
     )?;
 
-    let hot = desktop.create_chat("Demo · Hot reload", None, None)?;
-    desktop.add_chat_message(&hot, "user", "Salut! Ce înseamnă hot reload aici?")?;
+    let runtime = desktop.create_chat("Demo · Runtime local", None, None)?;
+    desktop.add_chat_message(&runtime, "user", "Unde rulează turn-urile mele?")?;
     desktop.add_chat_message(
-        &hot,
+        &runtime,
         "assistant",
-        "Înseamnă că modificările din `goble-ui-hot` apar în fereastră **fără** să recompilezi totul. Doar cdylib-ul se reconstruiește și aplicația îl încarcă live.",
+        "Chat-ul rulează pe harness-ul din `goble-core`, orchestrat din `app` — la fel cum warp-new ține runtime-ul în app, nu într-un crate separat.",
     )?;
 
     Ok(())

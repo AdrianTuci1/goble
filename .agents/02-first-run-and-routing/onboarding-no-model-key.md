@@ -30,5 +30,5 @@ A brand-new user opens the app and sends a first message. Nothing is configured 
 ## Tasks
 
 - [x] Show an "empty LLM key" banner as a modal overlay instead of the canned reply — the canned reply is no longer sent on the no-key path; `on_send_message` keeps the user message and surfaces the banner overlay.
-- [x] Wire the banner click to open the model-provider overlay dialog (`goble-ui` `Dialog` + `goble-ui-hot` `model_form`).
+- [x] Wire the banner click to open the model-provider overlay dialog (`goble-ui` `Dialog` + `app/src/ui/model_form`).
 - [x] After a key is saved, close the dialog and re-route to the workspace-type prompt (see `router-local-vs-remote.md`).

@@ -13,8 +13,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_app::actions::make_actions;
-use goble_app::hot_ui::{AppTab, UiActions, WorkspaceRouting};
 use goble_app::state::UiState;
+use goble_app::ui::{AppTab, UiActions, WorkspaceRouting};
 use goble_desktop_service::DesktopState;
 
 fn build(desktop: &Arc<DesktopState>) -> (Rc<RefCell<UiState>>, UiActions) {
@@ -37,7 +37,9 @@ fn save_key(actions: &UiActions, api_key: &str) {
 #[test]
 fn first_run_send_message_surfaces_key_banner() {
     let (desktop, _dir) = common::desktop_state();
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
     let (state, actions) = build(&desktop);
 
     // No key configured yet, so no overlay is showing.
@@ -58,7 +60,11 @@ fn first_run_send_message_surfaces_key_banner() {
         assert!(s.show_llm_key_banner, "no key -> banner should surface");
         assert!(!s.show_workspace_choice);
         assert_eq!(s.workspace_routing, None);
-        assert_eq!(s.chat_messages.len(), 1, "no canned reply when no key is configured");
+        assert_eq!(
+            s.chat_messages.len(),
+            1,
+            "no canned reply when no key is configured"
+        );
     }
 
     let messages = desktop.list_chat_messages(&chat_id).expect("list messages");
@@ -78,8 +84,15 @@ fn banner_click_opens_model_dialog() {
     (actions.on_config_llm_key.borrow_mut())();
     {
         let s = state.borrow();
-        assert!(s.llm_dialog_open, "banner click should open the model dialog");
-        assert_eq!(s.current_tab, AppTab::Chat, "dialog overlays chat, no navigation");
+        assert!(
+            s.llm_dialog_open,
+            "banner click should open the model dialog"
+        );
+        assert_eq!(
+            s.current_tab,
+            AppTab::Chat,
+            "dialog overlays chat, no navigation"
+        );
         // The form is pre-filled with the configured provider/model.
         assert_eq!(*s.llm_dialog_provider.borrow(), "openai");
         assert_eq!(*s.llm_dialog_model.borrow(), "gpt-4o");
@@ -100,7 +113,10 @@ fn model_dialog_cancel_closes_without_saving() {
         let s = state.borrow();
         assert!(!s.llm_dialog_open, "cancel should close the dialog");
         assert!(s.settings_llm_api_key.is_empty(), "no key saved on cancel");
-        assert!(s.show_llm_key_banner, "banner stays since no key is configured");
+        assert!(
+            s.show_llm_key_banner,
+            "banner stays since no key is configured"
+        );
         assert!(!s.show_workspace_choice);
     }
 }
@@ -126,7 +142,9 @@ fn model_dialog_save_closes_and_presents_choice() {
     }
 
     // The key is persisted to the backend store.
-    let setting = desktop.get_llm_setting("openai").expect("setting persisted");
+    let setting = desktop
+        .get_llm_setting("openai")
+        .expect("setting persisted");
     assert_eq!(setting.api_key, "sk-test");
 }
 
@@ -149,7 +167,9 @@ fn key_configured_presents_workspace_choice() {
     }
 
     // The key is persisted to the backend store.
-    let setting = desktop.get_llm_setting("openai").expect("setting persisted");
+    let setting = desktop
+        .get_llm_setting("openai")
+        .expect("setting persisted");
     assert_eq!(setting.api_key, "sk-test");
 }
 
@@ -194,11 +214,16 @@ fn choosing_remote_sets_routing() {
 #[test]
 fn workspace_routing_persists_and_reloads_per_conversation() {
     let (desktop, _dir) = common::desktop_state();
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
     let (state, actions) = build(&desktop);
 
     // The newly created chat is the selected conversation.
-    assert_eq!(state.borrow().selected_id.as_deref(), Some(chat_id.as_str()));
+    assert_eq!(
+        state.borrow().selected_id.as_deref(),
+        Some(chat_id.as_str())
+    );
 
     // No key yet: the first send surfaces the key banner (no canned reply).
     (actions.on_send_message.borrow_mut())("Hi".to_string());
@@ -210,7 +235,10 @@ fn workspace_routing_persists_and_reloads_per_conversation() {
 
     // Choosing Local persists the decision on the conversation.
     (actions.on_choose_workspace.borrow_mut())(WorkspaceRouting::Local);
-    assert_eq!(state.borrow().workspace_routing, Some(WorkspaceRouting::Local));
+    assert_eq!(
+        state.borrow().workspace_routing,
+        Some(WorkspaceRouting::Local)
+    );
     assert_eq!(
         desktop
             .list_chats()
@@ -234,7 +262,9 @@ fn workspace_routing_persists_and_reloads_per_conversation() {
 #[test]
 fn choosing_remote_persists_on_conversation() {
     let (desktop, _dir) = common::desktop_state();
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
     let (state, actions) = build(&desktop);
 
     (actions.on_send_message.borrow_mut())("Hi".to_string());

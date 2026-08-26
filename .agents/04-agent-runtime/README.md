@@ -8,7 +8,7 @@
 
 It is the loop that turns user intent into executed work: resolve a model, assemble the system prompt from the agent's persona, run tools/MCP, spawn sub-agents, keep the conversation state, compact it as it grows, and emit events for the renderer.
 
-**Principle: our renderer, their harness.** Execution logic (tools, sandbox, sub-agents, sampler, MCP, compaction) is taken from the modular, highest-standard harness in `~/Projects/grok-build` (`xai-*` crates). The **UI design, custom render and rich-input** come from `~/Projects/warp-new` (see [`../06-renderer/README.md`](../06-renderer/README.md)) — and we build the renderer on `goble-ui`/`goble-ui-hot`, not a library.
+**Principle: our renderer, their harness.** Execution logic (tools, sandbox, sub-agents, sampler, MCP, compaction) is taken from the modular, highest-standard harness in `~/Projects/grok-build` (`xai-*` crates). The **UI design, custom render and rich-input** come from `~/Projects/warp-new` (see [`../06-renderer/README.md`](../06-renderer/README.md)) — and we build the renderer on `goble-ui` + the in-app `app/src/ui` tree, not a library.
 
 ```mermaid
 flowchart TD

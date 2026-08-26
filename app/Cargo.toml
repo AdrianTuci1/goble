@@ -3,17 +3,10 @@ name = "goble-app"
 version = "0.1.0"
 edition = "2021"
 
-[features]
-default = []
-hot-reload = ["dep:hot-lib-reloader"]
-
 [dependencies]
 goble-ui = { path = "../crates/goble-ui" }
-goble-ui-hot = { path = "../crates/goble-ui-hot" }
 goble-core = { path = "../crates/goble-core" }
 goble-desktop-service = { path = "../crates/goble-desktop-service" }
-
-hot-lib-reloader = { version = "0.7", optional = true }
 
 wgpu = { version = "25.0", default-features = false, features = ["wgsl", "metal", "dx12", "vulkan", "gles"] }
 winit = { version = "0.30", features = ["rwh_06"] }
@@ -30,28 +23,28 @@ tempfile = "3"
 
 [[test]]
 name = "chat_flow"
-path = "integration_testing/chat_flow.rs"
+path = "src/integration_testing/chat_flow.rs"
 
 [[test]]
 name = "cron_flow"
-path = "integration_testing/cron_flow.rs"
+path = "src/integration_testing/cron_flow.rs"
 
 [[test]]
 name = "vault_flow"
-path = "integration_testing/vault_flow.rs"
+path = "src/integration_testing/vault_flow.rs"
 
 [[test]]
 name = "connector_flow"
-path = "integration_testing/connector_flow.rs"
+path = "src/integration_testing/connector_flow.rs"
 
 [[test]]
 name = "ui_render"
-path = "integration_testing/ui_render.rs"
+path = "src/integration_testing/ui_render.rs"
 
 [[test]]
 name = "first_run_flow"
-path = "integration_testing/first_run_flow.rs"
+path = "src/integration_testing/first_run_flow.rs"
 
 [[test]]
 name = "harness_flow"
-path = "integration_testing/harness_flow.rs"
+path = "src/integration_testing/harness_flow.rs"

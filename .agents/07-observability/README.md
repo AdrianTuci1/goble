@@ -30,7 +30,7 @@ The harness emits events as it runs (agent started/finished, tool calls, assista
 
 ## Key gap
 
-The **native shell does not surface any of it yet** — there is no executions/traces/logs page in `goble-ui-hot`. The legacy React app has them; the native shell does not.
+The **native shell does not surface any of it yet** — there is no executions/traces/logs page in `app/src/ui`. The legacy React app has them; the native shell does not.
 
 ## Tasks
 

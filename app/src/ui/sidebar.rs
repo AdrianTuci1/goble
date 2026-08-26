@@ -10,7 +10,7 @@ use goble_ui::elements::{
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 
-use crate::{AiActions, UiActions, UiSnapshot};
+use super::{AiActions, UiActions, UiSnapshot};
 
 /// Left sidebar: search box on top, then "new conversation", then the list of
 /// conversation cards. Divider lines separate the three sections.

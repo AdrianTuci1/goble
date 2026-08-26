@@ -27,5 +27,5 @@ We have to bind config-workflows — most prominently **connecting any type of m
 
 - [~] Add overlay + form primitives to `goble-ui` — `Dialog` (backdrop + centered panel, click-outside close, unit-tested) is in; `FormField`/`SecretField`/`Toggle` still pending.
 - [ ] Port the provider/API-endpoint connector logic from grok-build model config.
-- [~] Build the provider-settings overlay form (`goble-ui-hot`/`model_form`) done; remote-bootstrap custom composer still pending.
+- [~] Build the provider-settings overlay form (`app/src/ui/model_form`) done; remote-bootstrap custom composer still pending.
 - [ ] Let skills/plugins request structured input through the overlay.

@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_app::ai::{make_ai_actions, AiState};
+use goble_app::ui::AiActions;
 use goble_desktop_service::DesktopState;
-use goble_ui_hot::AiActions;
 
 fn build(desktop: &Arc<DesktopState>) -> (Rc<RefCell<AiState>>, AiActions) {
     let state = Rc::new(RefCell::new(AiState::from_desktop(desktop)));

@@ -110,7 +110,7 @@ The aggregated, ordered work list lives in [`TRACKER.md`](TRACKER.md).
 ## Conventions
 
 - **No UI libraries.** The renderer is written from scratch on `wgpu` + Rust; the harness is reused, the renderer is ours.
-- **Design direction comes from `~/Projects/warp-new`.** We take the UI direction, design system/interaction, the icon SVG set (`app/assets/bundled/svg`), and the theme/token model (`app/src/themes/`) from there. `warp-new`'s `octomusui` is a reference for a from-scratch Rust renderer; our renderer is `goble-ui`/`goble-ui-hot`. (See [`06-renderer/README.md`](06-renderer/README.md).)
+- **Design direction comes from `~/Projects/warp-new`.** We take the UI direction, design system/interaction, the icon SVG set (`app/assets/bundled/svg`), and the theme/token model (`app/src/themes/`) from there. `warp-new`'s `octomusui` is a reference for a from-scratch Rust renderer; our renderer is `goble-ui` with the shell tree built in `app/src/ui`. (See [`06-renderer/README.md`](06-renderer/README.md).)
 - **Surface documents are short** (≤ ~60 lines). Detail lives in the leaf docs; the README only maps the subsystem and links down.
 - **English**, matching the rest of the repo.
 - **One subsystem per folder.** If a feature is genuinely complex, split it into subfolders/leaf docs here rather than growing one document.

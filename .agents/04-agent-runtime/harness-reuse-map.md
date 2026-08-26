@@ -36,7 +36,7 @@
 
 ## Gaps to fill ourselves
 
-- The **chat renderer** (ours: `goble-ui`/`goble-ui-hot` on `wgpu`) — see [`../06-renderer/README.md`](../06-renderer/README.md).
+- The **chat renderer** (ours: `goble-ui` on `wgpu`, shell tree in `app/src/ui`) — see [`../06-renderer/README.md`](../06-renderer/README.md).
 - **Workspace-as-a-package** that ships to a remote host (grok-build has a workspace daemon, but we need a remote *bootstrap* that self-configures from the TOML) — see [`../02-first-run-and-routing/remote-bootstrap.md`](../02-first-run-and-routing/remote-bootstrap.md).
 - The **routing / local↔remote promotion** and the **worker-as-workspace** story.
 

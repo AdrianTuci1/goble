@@ -1,11 +1,9 @@
-//! Hot-reloadable UI for the native Goble app.
+//! UI builder for the native Goble app.
 //!
-//! This crate is compiled as a `cdylib` and loaded at runtime by
-//! `hot-lib-reloader` (see `app/src/hot_ui.rs`). `build_ui` is the only
-//! reloadable function; keep its signature and the shapes of [`UiSnapshot`] /
-//! [`UiActions`] (and [`AiSnapshot`] / [`AiActions`]) stable during a dev
-//! session — changing them requires rebuilding `goble-app` (the executable
-//! bakes in the ABI).
+//! Builds the complete element tree from a [`UiSnapshot`] / [`AiSnapshot`]
+//! every frame. Lives in the executable (matching warp-new's "thick app"
+//! model) so the app owns both the state and the tree; there is no separate
+//! hot-reusable dylib or ABI boundary anymore.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -16,7 +14,9 @@ use goble_ui::elements::{
     CrossAxisAlignment, Divider, Element, Expanded, Fill, Flex, MainAxisSize,
 };
 use goble_ui::theme::ColorToken;
-use goble_ui::{DIALOG_DEFAULT_WIDTH, Dialog, SettingsPage, Sheet, Stack, SHEET_DEFAULT_WIDTH, vec2f};
+use goble_ui::{
+    vec2f, Dialog, SettingsPage, Sheet, Stack, DIALOG_DEFAULT_WIDTH, SHEET_DEFAULT_WIDTH,
+};
 
 pub mod chat;
 pub mod connectors;
@@ -187,7 +187,7 @@ pub struct UiSnapshot {
     pub sidebar_width: f32,
     pub sidebar_dragging: bool,
     /// Per-card interaction state (hover / delete menu), shared with the
-    /// hot-reloaded card elements so selections and menus persist across frames.
+    /// card elements so selections and menus persist across frames.
     pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,
     /// Hover flag for the sidebar's "New agent" row, owned here so the row's
     /// highlight survives the per-frame element rebuild.
@@ -335,12 +335,6 @@ pub struct AiActions {
 
 /// Build the complete app UI: topbar, sidebar, main content, and the
 /// auxiliary sheets (crons, connectors, vault) stacked on top.
-///
-/// `#[no_mangle]` exposes the symbol so `app/src/hot_ui.rs` can generate a
-/// hot-reloadable wrapper for it; without it the app would never reload this
-/// function and UI edits would not show up live.
-#[allow(unsafe_code)]
-#[no_mangle]
 pub fn build_ui(
     app: &AppContext,
     state: &UiSnapshot,
@@ -423,7 +417,10 @@ pub fn build_ui(
     }
 
     // The model-provider dialog floats above everything (including the sheets).
-    stack = stack.with_overlay(model_form::build_llm_dialog(app, state, actions), vec2f(0.0, 0.0));
+    stack = stack.with_overlay(
+        model_form::build_llm_dialog(app, state, actions),
+        vec2f(0.0, 0.0),
+    );
 
     Container::new(stack.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))

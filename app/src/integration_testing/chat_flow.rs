@@ -9,10 +9,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_app::actions::make_actions;
-use goble_app::hot_ui::{AppTab, UiActions};
 use goble_app::state::UiState;
+use goble_app::ui::{AppTab, UiActions};
 use goble_desktop_service::DesktopState;
-use goble_ui::{ChatMessage, ChatRole, ChatFragmentKind};
+use goble_ui::{ChatFragmentKind, ChatMessage, ChatRole};
 
 /// Concatenate the human-readable text of a message's inline fragments.
 fn message_text(msg: &ChatMessage) -> String {
@@ -79,7 +79,9 @@ fn blank_title_creates_default_agent() {
 #[test]
 fn send_message_appends_and_persists() {
     let (desktop, _dir) = common::desktop_state();
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
     let (state, actions) = build(&desktop);
 
     (actions.on_composer_change.borrow_mut())("Salut!".to_string());
@@ -92,7 +94,10 @@ fn send_message_appends_and_persists() {
         assert_eq!(state.composer_draft, "");
         assert_eq!(state.chat_messages.len(), 1);
         assert_eq!(state.chat_messages[0].role, ChatRole::User);
-        assert!(state.show_llm_key_banner, "no key -> banner overlay should surface");
+        assert!(
+            state.show_llm_key_banner,
+            "no key -> banner overlay should surface"
+        );
     }
 
     let messages = desktop.list_chat_messages(&chat_id).expect("list messages");

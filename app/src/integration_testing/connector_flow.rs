@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_app::ai::{make_ai_actions, AiState};
-use goble_ui_hot::AiActions;
+use goble_app::ui::AiActions;
 
 fn build() -> (Rc<RefCell<AiState>>, AiActions) {
     // `AiState::mock()` ships with sample connectors; start from a clean slate
@@ -45,7 +45,10 @@ fn install_connector_adds_entry_and_closes_drawer() {
     assert_eq!(state.connectors.len(), 1);
     assert_eq!(state.connectors[0].name, "Postgres");
     assert_eq!(state.connectors[0].source, "npm");
-    assert_eq!(state.connectors[0].source_value.as_deref(), Some("@mcp/postgres"));
+    assert_eq!(
+        state.connectors[0].source_value.as_deref(),
+        Some("@mcp/postgres")
+    );
 }
 
 #[test]
@@ -79,7 +82,10 @@ fn discover_then_toggle_tools() {
     {
         let state = state.borrow();
         let server = &state.connectors[0];
-        assert_eq!(server.discovered_tools, vec!["mock_tool_one", "mock_tool_two"]);
+        assert_eq!(
+            server.discovered_tools,
+            vec!["mock_tool_one", "mock_tool_two"]
+        );
         assert_eq!(server.enabled_tools, server.discovered_tools);
     }
 

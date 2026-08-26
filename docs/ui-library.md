@@ -6,18 +6,16 @@ contributors who need to add or change UI.
 
 ## Crate layout
 
-The UI is split into two crates:
+The UI is split into a library and an in-app builder:
 
 - `crates/goble-ui` — the **library**. Platform-agnostic elements (buttons,
   inputs, lists, chat, sheets), the theme, text measurement/rasterization, and
-  the winit/wgpu window backend. This crate is compiled into the app binary
-  and cannot be hot-reloaded.
-- `crates/goble-ui-hot` — the **hot-reloadable app shell**. Built as a
-  `cdylib` and loaded at runtime by `hot-lib-reloader` (see
-  `app/src/hot_ui.rs`). `build_ui` is the only reloadable function; it
-  receives a snapshot of app state (`UiSnapshot` / `AiSnapshot`) plus
-  callback bundles (`UiActions` / `AiActions`) and returns a fresh element
-  tree every frame.
+  the winit/wgpu window backend. This crate is compiled into the app binary.
+- `app/src/ui` — the **in-app shell**. `build_ui` and the snapshot/action
+  types (`UiSnapshot` / `UiActions` / `AiSnapshot` / `AiActions`) plus the
+  per-screen modules (`chat`, `sidebar`, `shell`, `crons`, `connectors`,
+  `vault`, `model_form`) live here, in the `goble-app` crate, mirroring how
+  warp-new builds its windows in `app`. There is no cdylib/ABI boundary.
 
 The flow is:
 
@@ -181,27 +179,24 @@ gray (`0x9a9a9a`), and UI highlights use `Selected`/`Hover`/`Muted`.
 ## Composing a full screen (checklist)
 
 1. **State snapshot**: add fields to `UiSnapshot` (or `AiSnapshot`) in
-   `goble-ui-hot/src/lib.rs`; add matching callbacks to `UiActions`.
-2. **Builder module**: create `goble-ui-hot/src/<screen>.rs` with a
+   `app/src/ui/mod.rs`; add matching callbacks to `UiActions`.
+2. **Builder module**: create `app/src/ui/<screen>.rs` with a
    `build_<screen>(app, state, actions) -> Box<dyn Element>` function. Compose
    primitive elements; never store state in elements.
 3. **Wiring**: call the builder from `shell::build_main` (or a sheet/drawer in
-   `lib.rs::build_ui`).
+   `app/src/ui/mod.rs::build_ui`).
 4. **Layout checks**: the top-level column is `MainAxisSize::Max` +
    `Stretch`; any area that must fill leftover height is wrapped in
    `Expanded`; full-width bars contain a `MainAxisSize::Max` row.
 5. **Tests**: add a layout smoke test (non-zero size) next to the element.
 
-## Hot reload workflow
+## Dev loop
 
-- `scripts/dev-ui.sh` runs `cargo run -p goble-app --features hot-reload` and
-  watches `crates/goble-ui-hot` with cargo-watch.
-- Changes inside `goble-ui-hot` are recompiled and hot-swapped at runtime —
-  no app restart needed.
-- Changes inside `goble-ui` (elements, theme, text atlas) are **not**
-  hot-reloaded; you must restart `scripts/dev-ui.sh`.
-- Changing the ABI of `build_ui` / snapshot / actions structs also requires a
-  full rebuild of `goble-app`.
+- There is no live hot reload. `scripts/dev-ui.sh` builds and runs
+  `goble-app`; with `cargo-watch` installed it rebuilds and restarts the app
+  whenever any `app` or `crates` source file changes.
+- Editing the snapshot/action structs is fine — there is no ABI boundary, so a
+  normal rebuild picks everything up.
 
 ## macOS specifics
 
@@ -239,7 +234,7 @@ Flex::column()
     .finish()
 ```
 
-Make a full-width flat bar (see `goble-ui-hot/src/chat.rs`):
+Make a full-width flat bar (see `app/src/ui/chat.rs`):
 
 ```rust
 Container::new(

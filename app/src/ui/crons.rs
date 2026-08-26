@@ -7,11 +7,15 @@ use goble_ui::elements::{
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
 
-use crate::{CronEntry, UiActions, UiSnapshot};
+use super::{CronEntry, UiActions, UiSnapshot};
 
 /// Right-anchored crons drawer content: header with close, scrollable list of
 /// scheduled tasks, and a create button at the bottom.
-pub fn build_crons_drawer(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+pub fn build_crons_drawer(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Md);
     let sm = app.theme.spacing_px(SpacingToken::Sm);
 
@@ -97,10 +101,13 @@ fn build_cron_row(app: &AppContext, cron: &CronEntry, actions: &UiActions) -> Bo
                 .finish(),
         )
         .with_child(
-            Text::new(format!("{} · {} · last run {}", cron.schedule, status, cron.last_run))
-                .with_font_size(11.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
+            Text::new(format!(
+                "{} · {} · last run {}",
+                cron.schedule, status, cron.last_run
+            ))
+            .with_font_size(11.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
         )
         .finish();
 

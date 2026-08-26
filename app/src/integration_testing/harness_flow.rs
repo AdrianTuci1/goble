@@ -10,8 +10,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_app::actions::make_actions;
-use goble_app::hot_ui::UiActions;
 use goble_app::state::UiState;
+use goble_app::ui::UiActions;
 use goble_desktop_service::DesktopState;
 use goble_ui::{ChatFragmentKind, ChatRole};
 
@@ -47,7 +47,9 @@ fn wait_for_messages(desktop: &DesktopState, chat_id: &str, expected: usize) {
 #[test]
 fn run_chat_turn_appends_mock_reply() {
     let (desktop, _dir) = common::desktop_state();
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
     desktop
         .add_chat_message(&chat_id, "user", "Hello from test")
         .expect("add user");
@@ -62,7 +64,10 @@ fn run_chat_turn_appends_mock_reply() {
     let messages = desktop.list_chat_messages(&chat_id).expect("list messages");
     let last = messages.last().expect("assistant reply appended");
     assert_eq!(last.role, "assistant");
-    assert_eq!(last.content, MOCK_REPLY, "reply should come from the provider, not the canned string");
+    assert_eq!(
+        last.content, MOCK_REPLY,
+        "reply should come from the provider, not the canned string"
+    );
 }
 
 /// The harness task emits a `chat:updated` event after it writes messages, so
@@ -70,13 +75,15 @@ fn run_chat_turn_appends_mock_reply() {
 /// for the caller to explicitly refresh).
 #[test]
 fn run_chat_turn_emits_chat_updated() {
-    use std::sync::Arc;
     use goble_desktop_service::CollectingEventBus;
+    use std::sync::Arc;
 
     let (desktop, _dir) = common::desktop_state();
     let concrete = Arc::new(CollectingEventBus::new());
     desktop.set_event_bus(concrete.clone());
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
 
     let rt = tokio::runtime::Runtime::new().expect("build runtime");
     let _guard = rt.enter();
@@ -96,7 +103,9 @@ fn run_chat_turn_emits_chat_updated() {
 #[test]
 fn send_with_config_provider_appends_model_reply() {
     let (desktop, _dir) = common::desktop_state();
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
     let (state, actions) = build(&desktop);
 
     // Configure a (mock) provider with a non-empty key so the send path treats
@@ -131,7 +140,9 @@ fn send_with_config_provider_appends_model_reply() {
 #[test]
 fn model_dropdown_populates_and_selects() {
     let (desktop, _dir) = common::desktop_state();
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
     desktop
         .set_llm_setting("openai", "test-key", None, "gpt-4o-mini", None)
         .expect("save llm setting");
@@ -147,8 +158,14 @@ fn model_dropdown_populates_and_selects() {
             Some("gpt-4o-mini"),
             "configured model should lead the dropdown"
         );
-        assert!(s.models.iter().any(|m| m == "gpt-4o"), "catalog has more models");
-        assert_eq!(s.selected_model, "gpt-4o-mini", "default selection is the configured model");
+        assert!(
+            s.models.iter().any(|m| m == "gpt-4o"),
+            "catalog has more models"
+        );
+        assert_eq!(
+            s.selected_model, "gpt-4o-mini",
+            "default selection is the configured model"
+        );
     }
 
     // Picking another item updates the composer selection and closes the menu.
@@ -159,7 +176,10 @@ fn model_dropdown_populates_and_selects() {
     {
         let s = state.borrow();
         assert_eq!(s.selected_model, "gpt-4o");
-        assert!(!*s.model_menu_open.borrow(), "menu should close after selecting");
+        assert!(
+            !*s.model_menu_open.borrow(),
+            "menu should close after selecting"
+        );
     }
 
     // The selection survives a refresh (not overwritten back to the default).
@@ -178,7 +198,9 @@ fn model_dropdown_populates_and_selects() {
 #[test]
 fn send_uses_composer_selected_model() {
     let (desktop, _dir) = common::desktop_state();
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
     let (state, actions) = build(&desktop);
 
     {
@@ -212,7 +234,9 @@ fn send_uses_composer_selected_model() {
 #[test]
 fn send_sets_agent_busy_and_stop_clears() {
     let (desktop, _dir) = common::desktop_state();
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
     let (state, actions) = build(&desktop);
 
     {
@@ -245,13 +269,15 @@ fn send_sets_agent_busy_and_stop_clears() {
 /// its cancel slot is removed so `cancel_chat_turn` reports no running turn.
 #[test]
 fn run_chat_turn_emits_turn_finished() {
-    use std::sync::Arc;
     use goble_desktop_service::CollectingEventBus;
+    use std::sync::Arc;
 
     let (desktop, _dir) = common::desktop_state();
     let concrete = Arc::new(CollectingEventBus::new());
     desktop.set_event_bus(concrete.clone());
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
 
     let rt = tokio::runtime::Runtime::new().expect("build runtime");
     let _guard = rt.enter();
@@ -279,7 +305,9 @@ fn run_chat_turn_emits_turn_finished() {
 #[test]
 fn refresh_messages_maps_tool_rows_and_evokes() {
     let (desktop, _dir) = common::desktop_state();
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
     let now = "2026-08-25T00:00:00Z";
 
     let store = desktop.store_clone();
@@ -311,7 +339,11 @@ fn refresh_messages_maps_tool_rows_and_evokes() {
     assert_eq!(msgs.len(), 3, "user + assistant + tool rows");
     assert_eq!(msgs[0].role, ChatRole::User);
     assert_eq!(msgs[1].role, ChatRole::Assistant);
-    assert_eq!(msgs[1].tool_calls.len(), 1, "assistant carries its tool-call metadata");
+    assert_eq!(
+        msgs[1].tool_calls.len(),
+        1,
+        "assistant carries its tool-call metadata"
+    );
     assert_eq!(msgs[1].tool_calls[0].name, "ls");
     assert_eq!(
         msgs[2].role,

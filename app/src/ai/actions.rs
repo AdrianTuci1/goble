@@ -1,5 +1,5 @@
 //! Callback wiring for the AI domain: turns app state + backend into
-//! [`goble_ui_hot::AiActions`] closures.
+//! [`crate::ui::AiActions`] closures.
 //!
 //! Most MCP mutations go through `DesktopState`, which requires a tokio
 //! runtime entered on the calling thread (main.rs keeps one alive for the
@@ -9,8 +9,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::ui::{AiActions, McpServerEntry, VaultSecretEntry};
 use goble_desktop_service::DesktopState;
-use goble_ui_hot::{AiActions, McpServerEntry, VaultSecretEntry};
 
 use super::state::AiState;
 
@@ -176,16 +176,18 @@ pub fn make_ai_actions(
                 }
             }
         })),
-        on_install_pick: Rc::new(RefCell::new(move |name: String, source: String, source_value: String| {
-            let mut s = on_install_pick.borrow_mut();
-            s.install_open = true;
-            s.install_editing_id = None;
-            s.install_name = name;
-            s.install_source = source;
-            s.install_source_value = source_value;
-            s.install_selected_secrets.clear();
-            s.install_error = None;
-        })),
+        on_install_pick: Rc::new(RefCell::new(
+            move |name: String, source: String, source_value: String| {
+                let mut s = on_install_pick.borrow_mut();
+                s.install_open = true;
+                s.install_editing_id = None;
+                s.install_name = name;
+                s.install_source = source;
+                s.install_source_value = source_value;
+                s.install_selected_secrets.clear();
+                s.install_error = None;
+            },
+        )),
         on_install_close: Rc::new(RefCell::new(move || {
             let mut s = on_install_close.borrow_mut();
             s.install_open = false;
@@ -200,7 +202,9 @@ pub fn make_ai_actions(
             on_install_source_change.borrow_mut().install_source = value;
         })),
         on_install_source_value_change: Rc::new(RefCell::new(move |value: String| {
-            on_install_source_value_change.borrow_mut().install_source_value = value;
+            on_install_source_value_change
+                .borrow_mut()
+                .install_source_value = value;
         })),
         on_install_search_change: Rc::new(RefCell::new(move |value: String| {
             let mut s = on_install_search_change.borrow_mut();
@@ -297,10 +301,8 @@ pub fn make_ai_actions(
                 }
                 s.refresh_connectors(desktop);
             } else if let Some(server) = s.connectors.iter_mut().find(|c| c.id == id) {
-                server.discovered_tools = vec![
-                    "mock_tool_one".to_string(),
-                    "mock_tool_two".to_string(),
-                ];
+                server.discovered_tools =
+                    vec!["mock_tool_one".to_string(), "mock_tool_two".to_string()];
                 server.enabled_tools = server.discovered_tools.clone();
             }
         })),

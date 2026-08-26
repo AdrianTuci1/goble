@@ -1,8 +1,8 @@
 //! App-owned UI state.
 //!
 //! The element tree is rebuilt from this state on every frame, so state lives
-//! here (in the executable) instead of inside the hot-reloaded dylib. That
-//! keeps text input focus/value across rebuilds and survives library swaps.
+//! here in the executable alongside the UI builder. That keeps text input
+//! focus/value across rebuilds.
 //!
 //! This module owns the data only — the callbacks that mutate it live in
 //! [`crate::actions`].
@@ -19,8 +19,7 @@ use goble_ui::{
     ConversationStatus, SettingsPage, TerminalData, TerminalLine, TerminalStatus, ToolCall,
 };
 
-use crate::hot_ui::{AppTab, CronEntry, LlmFormField, WorkspaceRouting};
-use goble_ui_hot::SIDEBAR_WIDTH;
+use crate::ui::{AppTab, CronEntry, LlmFormField, WorkspaceRouting, SIDEBAR_WIDTH};
 
 /// The string form of a workspace routing choice as persisted on a chat.
 pub(crate) fn routing_to_str(routing: WorkspaceRouting) -> &'static str {
@@ -92,8 +91,11 @@ fn tool_terminal_data(content: &str) -> TerminalData {
     } else {
         TerminalStatus::Success
     };
-    TerminalData::new(if title.is_empty() { "tool" } else { title }.to_string(), lines)
-        .with_status(status)
+    TerminalData::new(
+        if title.is_empty() { "tool" } else { title }.to_string(),
+        lines,
+    )
+    .with_status(status)
 }
 
 #[derive(Clone)]
@@ -456,14 +458,19 @@ impl UiState {
             ),
             ChatMessage::from_markdown(
                 ChatRole::Assistant,
-                "UI-ul rulează cu hot reload — modificările din `goble-ui-hot` apar instant.",
+                "UI-ul e construit în `app` — modificările apar la recompilare.",
             ),
         ];
 
         let crons = vec![
             CronEntry::new("cr1", "Daily digest", "0 9 * * *", "Today 09:00"),
-            CronEntry::new("cr2", "Nightly vault backup", "0 2 * * *", "Yesterday 02:00")
-                .with_enabled(false),
+            CronEntry::new(
+                "cr2",
+                "Nightly vault backup",
+                "0 2 * * *",
+                "Yesterday 02:00",
+            )
+            .with_enabled(false),
             CronEntry::new("cr3", "Weekly report", "0 18 * * 5", "Last Friday 18:00"),
         ];
 

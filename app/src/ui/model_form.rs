@@ -11,13 +11,17 @@ use goble_ui::elements::{
 use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::{Dialog, DIALOG_DEFAULT_WIDTH};
 
-use crate::{LlmFormField, UiActions, UiSnapshot};
+use super::{LlmFormField, UiActions, UiSnapshot};
 
 const PROVIDERS: [&str; 5] = ["openai", "anthropic", "ollama", "deepseek", "openrouter"];
 
 /// Build the model-provider dialog. Always present in the tree; it only paints
 /// and intercepts events when [`UiSnapshot::llm_dialog_open`] is set.
-pub fn build_llm_dialog(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+pub fn build_llm_dialog(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Md);
     let on_close = actions.on_close_llm_dialog.clone();
 
@@ -33,8 +37,16 @@ pub fn build_llm_dialog(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         .with_child(form_field(app, "Provider", build_provider_select(state)))
         .with_child(form_field(app, "Model", build_model_input(app, state)))
         .with_child(form_field(app, "API key", build_api_key_input(app, state)))
-        .with_child(form_field(app, "Base URL", build_base_url_input(app, state)))
-        .with_child(form_field(app, "Temperature", build_temperature_input(app, state)))
+        .with_child(form_field(
+            app,
+            "Base URL",
+            build_base_url_input(app, state),
+        ))
+        .with_child(form_field(
+            app,
+            "Temperature",
+            build_temperature_input(app, state),
+        ))
         .with_child(build_actions(app, state, actions))
         .finish();
 

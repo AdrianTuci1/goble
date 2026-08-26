@@ -13,8 +13,8 @@ use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::ColorToken;
 use goble_ui::{ChatView, SettingsView, Topbar};
 
-use crate::chat;
-use crate::{AppTab, UiActions, UiSnapshot};
+use super::chat;
+use super::{AppTab, UiActions, UiSnapshot};
 
 /// Main topbar: threads on the left, inbox + user settings on the right.
 pub fn build_topbar(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {

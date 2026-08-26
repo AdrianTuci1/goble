@@ -19,13 +19,13 @@
 
 - Create a window, pick a backend (Metal/Vulkan/Gles), size the swapchain, and present the painted scene.
 - Own the text + icon atlases so glyph/icon rendering is cheap (no per-frame layout work in the hot path).
-- Expose `Element` layout/paint/event dispatch (in `goble-ui`), which the hot UI (see [`../06-renderer/renderer-architecture.md`](../06-renderer/renderer-architecture.md)) builds against.
+- Expose `Element` layout/paint/event dispatch (in `goble-ui`), which the in-app UI tree (see [`../06-renderer/renderer-architecture.md`](../06-renderer/renderer-architecture.md)) builds against.
 
 ## Constraints
 
 - The element tree is rebuilt each frame; the platform layer must tolerate that (no stale atlas references after a rebuild).
 - Keep resize + DPI change cheap.
-- The ABI (`goble-ui`) is what the executable links against; the hot crate (`goble-ui-hot`) is the thing swapped live.
+- The element tree is built in the app crate (`app/src/ui`) against `goble-ui`; there is no separately-linked hot crate.
 
 ## Tasks
 

@@ -1,10 +1,10 @@
 //! AI domain state: vault + MCP connectors.
 //!
-//! Mirrors the plain [`goble_ui_hot::AiSnapshot`] but lives in the
-//! executable so it survives hot library swaps and is owned by the app.
+//! Mirrors the plain [`crate::ui::AiSnapshot`] but lives in the executable so
+//! it is owned by the app.
 
+use crate::ui::{McpSearchEntry, McpServerEntry, VaultSecretEntry};
 use goble_desktop_service::DesktopState;
-use goble_ui_hot::{McpSearchEntry, McpServerEntry, VaultSecretEntry};
 
 #[derive(Clone)]
 pub struct AiState {

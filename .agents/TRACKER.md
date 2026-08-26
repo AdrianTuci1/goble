@@ -33,6 +33,7 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done.
 - [x] Seed a Goble user guide into `~/.goble/docs/user-guide` on first launch (ported from `.grok` and Goble-ified; base-only, so it exists for remote-only users too) and expose a `user_guide` harness tool (list/read topics) + a system-prompt pointer so the model answers product questions from the guide — incl. remote/self-as-worker via Tailscale and mobile access (`workspace.md`, `docs.rs`/`app_home.rs`)
 
 ## 04 — Agent runtime (harness)
+- [ ] Fix the hardcoded `workspace_root = /var/goblin/workspaces` default in `goblin-worker` so harness tests/dev runs don't hit `Permission denied` on machines without that dir (currently breaks `goblin-worker` runner/scheduler unit tests and `goble-cli`'s `e2e_worker` in a stock dev environment) (`sandbox-and-cwd.md`)
 - [ ] Define durable **state** vs compacting **transcript** boundaries (`agent-state-and-compaction.md`)
 - [ ] Wire compaction triggers by token/size budget; persist the rolling summary (`agent-state-and-compaction.md`)
 - [ ] Key state by `agent_id` and make it survive local↔remote routing (`agent-state-and-compaction.md`)
@@ -73,6 +74,9 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done.
 - [ ] Implement local→remote promotion, preserving agent+conversation state (`execution-router.md`)
 
 ## 06 — Renderer
+- [x] Merge the hot-reloadable UI crate into the app — the UI builder (`build_ui`) + snapshot/action types + per-screen modules now live in `app/src/ui`, built directly in the app crate like warp-new builds its windows in `app`; `goble-ui-hot`, the cdylib/`#[no_mangle]`/ABI boundary and the hot-reload handshake are gone (`renderer-architecture.md`)
+- [x] Move `integration_testing/` under `app/src/integration_testing/` and point the `app` test targets there (`renderer-architecture.md`)
+- [x] Route chat turns through `app/src/runtime` (`crate::runtime::run_turn`) — local harness today; remote degrades to local with a logged warning (`renderer-architecture.md`)
 - [x] Drive the chat from the harness (replace the canned reply with real events) (`renderer-architecture.md`)
 - [x] Render tool calls distinctly — `role="tool"` rows render as terminal blocks, and the assistant message shows "⚙ tool" invocation chips (`renderer-architecture.md`)
 - [x] Align chat + composer with warp-new's UI model — tool/command blocks render as `surface_2` raised cards (1px border, radius 8); the composer is a floating `surface_2` card (border, radius 8, 80px editor) with `surface_1`→`surface_2` pill buttons for model / profile / attach / stop; `ColorToken` maps to warp-new's `surface_1`/`surface_2`/`outline`/`text_sub` (`design-tokens.md`)
@@ -85,7 +89,7 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done.
 - [ ] (Later) optional renderer-on-remote frame streaming (`remote-terminal-renderer.md`)
 - [~] Add overlay + form primitives to `goble-ui` — `Dialog` (backdrop + centered panel) in; `FormField`/`SecretField`/`Toggle` pending (`form-components.md`)
 - [ ] Port the provider/API-endpoint connector logic from grok-build model config (`form-components.md`)
-- [~] Build the provider-settings overlay form (`goble-ui-hot`/`model_form`) done; remote-bootstrap composer pending (`form-components.md`)
+- [~] Build the provider-settings overlay form (`app/src/ui/model_form`) done; remote-bootstrap composer pending (`form-components.md`)
 - [ ] Let skills/plugins request structured input through the overlay (`form-components.md`)
 
 ## 07 — Observability

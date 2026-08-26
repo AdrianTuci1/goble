@@ -1,6 +1,6 @@
 # 06 — Renderer (custom wgpu/Rust chat)
 
-**Status:** `[x]` working (goble-ui + goble-ui-hot + goble-app); hardening + remote capture pending
+**Status:** `[x]` working (goble-ui + goble-app); hardening + remote capture pending
 **Owns:** the from-scratch chat/UI renderer. No UI libraries.
 **Depends on:** [`../04-agent-runtime/README.md`](../04-agent-runtime/README.md), [`../10-platform-and-performance/README.md`](../10-platform-and-performance/README.md)
 
@@ -13,7 +13,7 @@ flowchart TD
   harness["agent harness (grok-build reus)"] -->|"events"| bus["event bus"]
   bus --> state["app state (app/src)"]
   state --> actions["actions (app/src)"]
-  actions --> shell["goble-ui-hot tree"]
+  actions --> shell["app/src/ui tree"]
   shell --> gobleui["goble-ui (wgpu/winit)"]
 ```
 
@@ -22,8 +22,8 @@ flowchart TD
 | Layer | Crate | Role |
 | --- | --- | --- |
 | Base UI/rendering | `goble-ui` | elements, layout, paint, wgpu/winit platform, theme, text atlas |
-| Hot UI tree | `goble-ui-hot` | the reloadable element tree (`build_ui`) |
-| App shell | `app/` (`goble-app`) | state + actions + `RootView`, hot-reload handshake |
+| UI tree | `app/src/ui` | the in-app element tree (`build_ui`) + snapshot/action types |
+| App shell | `app/` (`goble-app`) | state + actions + `RootView` + runtime orchestration (`crate::runtime`) |
 | Backend | `goble-desktop-service` | `DesktopState` (the real data/actions) |
 
 ## Design direction

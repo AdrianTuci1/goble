@@ -39,7 +39,7 @@ sequenceDiagram
 
 ## The gap
 
-`root_view.rs` only drains `chats:updated`, `workflows:updated`, `agents:updated`, `vault:updated`. It does **not** subscribe to `executions:updated` / `agent:*`, and `goble-ui-hot` has no executions view. So executions are computed but invisible.
+`root_view.rs` only drains `chats:updated`, `workflows:updated`, `agents:updated`, `vault:updated`. It does **not** subscribe to `executions:updated` / `agent:*`, and `app/src/ui` has no executions view. So executions are computed but invisible.
 
 ## Tasks
 

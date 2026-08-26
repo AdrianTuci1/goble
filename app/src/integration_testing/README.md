@@ -3,7 +3,7 @@
 Testele din acest director conduc fluxul real al aplicației (starea + callback-urile din
 `app/src`) contra unui backend `goble-desktop-service` real, cu un store SQLite în memorie
 și un director temporar pentru thread store. Pentru a le putea accesa, modulul aplicației
-(`app/src/lib.rs`) expune acum modulele `state`, `actions`, `ai` și `root_view`.
+(`app/src/lib.rs`) expune modulele `state`, `actions`, `ai`, `root_view`, `ui` și `runtime`.
 
 ## Cum se rulează
 

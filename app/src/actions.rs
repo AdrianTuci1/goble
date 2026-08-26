@@ -1,6 +1,6 @@
 //! Callback wiring: turns app state + backend into [`UiActions`] closures.
 //!
-//! The view tree built by `goble-ui-hot` only knows about these callbacks; the
+//! The view tree built by [`crate::ui`] only knows about these callbacks; the
 //! actual behavior (mutating [`UiState`], persisting through [`DesktopState`])
 //! lives here in the executable.
 
@@ -14,13 +14,10 @@ use goble_core::workflow::WorkflowId;
 use goble_desktop_service::DesktopState;
 use goble_ui::{ChatMessage, ChatRole, ConversationEntry, SettingsPage};
 
-use crate::hot_ui::{AppTab, CronEntry, UiActions, WorkspaceRouting};
 use crate::state::{routing_to_str, UiState};
+use crate::ui::{AppTab, CronEntry, UiActions, WorkspaceRouting};
 
-pub fn make_actions(
-    state: Rc<RefCell<UiState>>,
-    desktop: Option<Arc<DesktopState>>,
-) -> UiActions {
+pub fn make_actions(state: Rc<RefCell<UiState>>, desktop: Option<Arc<DesktopState>>) -> UiActions {
     let on_search_change = Rc::clone(&state);
     let on_search_focus_change = Rc::clone(&state);
     let on_create_change = Rc::clone(&state);
@@ -163,25 +160,19 @@ pub fn make_actions(
                 state.selected_model.clone()
             };
             if let (Some(desktop), Some(chat_id)) = (&desktop_send, state.selected_id.clone()) {
-                // Route the turn to the conversation's chosen runtime. Chat turns
-                // run on the local harness (the only wired target today); a
-                // `Remote` routing is persisted but remote chat execution is not
-                // implemented yet, so it degrades to local and the gap is logged.
-                if state.workspace_routing == Some(WorkspaceRouting::Remote) {
-                    log::warn!(
-                        "conversation {chat_id} is routed remote, but remote chat execution is not wired yet; running locally"
-                    );
-                }
                 if configured {
-                    // Run the real harness turn on a background task. The harness
-                    // inserts the user message and the assistant/tool output into
-                    // the store and emits `chat:updated`, so the UI refreshes as
-                    // the turn progresses (including any tool-call output).
-                    if let Err(e) = desktop.run_chat_turn(
+                    // Run the real harness turn on a background task, routed to
+                    // the conversation's chosen runtime. The harness inserts the
+                    // user message and the assistant/tool output into the store
+                    // and emits `chat:updated`, so the UI refreshes as the turn
+                    // progresses (including any tool-call output).
+                    if let Err(e) = crate::runtime::run_turn(
+                        desktop,
                         &chat_id,
                         &text,
                         &state.settings_llm_provider,
                         &model,
+                        state.workspace_routing,
                     ) {
                         log::warn!("run_chat_turn failed: {e}");
                         let _ = desktop.add_chat_message(
@@ -255,31 +246,34 @@ pub fn make_actions(
             }
             state.agent_busy = false;
         })),
-        on_answer_ask: Rc::new(RefCell::new(move |response: String, credential: Option<(String, String)>| {
-            let mut state = on_answer_ask.borrow_mut();
-            let model = if state.selected_model.trim().is_empty() {
-                state.settings_llm_model.clone()
-            } else {
-                state.selected_model.clone()
-            };
-            if let (Some(desktop), Some(chat_id)) = (&desktop_answer, state.selected_id.clone()) {
-                if let Err(e) = desktop.resume_chat_turn(
-                    &chat_id,
-                    &response,
-                    credential,
-                    &state.settings_llm_provider,
-                    &model,
-                ) {
-                    log::warn!("resume_chat_turn failed: {e}");
+        on_answer_ask: Rc::new(RefCell::new(
+            move |response: String, credential: Option<(String, String)>| {
+                let mut state = on_answer_ask.borrow_mut();
+                let model = if state.selected_model.trim().is_empty() {
+                    state.settings_llm_model.clone()
                 } else {
-                    state.agent_busy = true;
+                    state.selected_model.clone()
+                };
+                if let (Some(desktop), Some(chat_id)) = (&desktop_answer, state.selected_id.clone())
+                {
+                    if let Err(e) = desktop.resume_chat_turn(
+                        &chat_id,
+                        &response,
+                        credential,
+                        &state.settings_llm_provider,
+                        &model,
+                    ) {
+                        log::warn!("resume_chat_turn failed: {e}");
+                    } else {
+                        state.agent_busy = true;
+                        state.pending_ask = None;
+                    }
+                    state.refresh_messages(desktop);
+                } else {
                     state.pending_ask = None;
                 }
-                state.refresh_messages(desktop);
-            } else {
-                state.pending_ask = None;
-            }
-        })),
+            },
+        )),
         on_skip_ask: Rc::new(RefCell::new(move || {
             let mut state = on_skip_ask.borrow_mut();
             let model = if state.selected_model.trim().is_empty() {
@@ -324,15 +318,19 @@ pub fn make_actions(
             } else {
                 state.selected_model.clone()
             };
-            if let (Some(desktop), Some(chat_id)) = (&desktop_send_queued, state.selected_id.clone())
+            if let (Some(desktop), Some(chat_id)) =
+                (&desktop_send_queued, state.selected_id.clone())
             {
-                // "Send now": interrupt the in-flight turn and submit immediately.
+                // "Send now": interrupt the in-flight turn and submit immediately,
+                // routed to the conversation's chosen runtime.
                 let _ = desktop.cancel_chat_turn(&chat_id);
-                if let Err(e) = desktop.run_chat_turn(
+                if let Err(e) = crate::runtime::run_turn(
+                    desktop,
                     &chat_id,
                     &prompt,
                     &state.settings_llm_provider,
                     &model,
+                    state.workspace_routing,
                 ) {
                     log::warn!("run_chat_turn (queued) failed: {e}");
                 } else {
@@ -428,8 +426,7 @@ pub fn make_actions(
         on_sidebar_drag_move: Rc::new(RefCell::new(move |pointer_x: f32| {
             let mut state = on_sidebar_drag_move.borrow_mut();
             let delta = pointer_x - state.sidebar_drag_origin_x;
-            state.sidebar_width =
-                (state.sidebar_drag_start_width + delta).clamp(200.0, 480.0);
+            state.sidebar_width = (state.sidebar_drag_start_width + delta).clamp(200.0, 480.0);
         })),
         on_sidebar_drag_end: Rc::new(RefCell::new(move || {
             on_sidebar_drag_end.borrow_mut().sidebar_dragging = false;
@@ -456,43 +453,49 @@ pub fn make_actions(
             state.settings_profile_name = name;
             state.settings_profile_email = email;
         })),
-        on_save_llm: Rc::new(RefCell::new(move |provider: String, model: String, api_key: String, base_url: String, temperature: String| {
-            let mut state = on_save_llm.borrow_mut();
-            state.settings_llm_provider = provider.clone();
-            state.settings_llm_model = model;
-            state.settings_llm_api_key = api_key;
-            state.settings_llm_base_url = base_url;
-            state.settings_llm_temperature = temperature;
-            if let Some(desktop) = &desktop_save_llm {
-                let base = if state.settings_llm_base_url.trim().is_empty() {
-                    None
-                } else {
-                    Some(state.settings_llm_base_url.as_str())
-                };
-                let temperature = state.settings_llm_temperature.parse::<f32>().ok();
-                if let Err(e) = desktop.set_llm_setting(
-                    &provider,
-                    &state.settings_llm_api_key,
-                    base,
-                    &state.settings_llm_model,
-                    temperature,
-                ) {
-                    log::warn!("set_llm_setting failed: {e}");
+        on_save_llm: Rc::new(RefCell::new(
+            move |provider: String,
+                  model: String,
+                  api_key: String,
+                  base_url: String,
+                  temperature: String| {
+                let mut state = on_save_llm.borrow_mut();
+                state.settings_llm_provider = provider.clone();
+                state.settings_llm_model = model;
+                state.settings_llm_api_key = api_key;
+                state.settings_llm_base_url = base_url;
+                state.settings_llm_temperature = temperature;
+                if let Some(desktop) = &desktop_save_llm {
+                    let base = if state.settings_llm_base_url.trim().is_empty() {
+                        None
+                    } else {
+                        Some(state.settings_llm_base_url.as_str())
+                    };
+                    let temperature = state.settings_llm_temperature.parse::<f32>().ok();
+                    if let Err(e) = desktop.set_llm_setting(
+                        &provider,
+                        &state.settings_llm_api_key,
+                        base,
+                        &state.settings_llm_model,
+                        temperature,
+                    ) {
+                        log::warn!("set_llm_setting failed: {e}");
+                    }
                 }
-            }
-            // The composer should reflect the newly configured model.
-            state.selected_model = state.settings_llm_model.clone();
-            if let Some(desktop) = &desktop_save_llm {
-                state.models = desktop.available_models(&state.settings_llm_provider);
-            }
-            state.llm_dialog_open = false;
-            // First run: now that a key is configured, ask where the agent
-            // should run before continuing the conversation.
-            if !state.settings_llm_api_key.trim().is_empty() {
-                state.show_llm_key_banner = false;
-                state.show_workspace_choice = true;
-            }
-        })),
+                // The composer should reflect the newly configured model.
+                state.selected_model = state.settings_llm_model.clone();
+                if let Some(desktop) = &desktop_save_llm {
+                    state.models = desktop.available_models(&state.settings_llm_provider);
+                }
+                state.llm_dialog_open = false;
+                // First run: now that a key is configured, ask where the agent
+                // should run before continuing the conversation.
+                if !state.settings_llm_api_key.trim().is_empty() {
+                    state.show_llm_key_banner = false;
+                    state.show_workspace_choice = true;
+                }
+            },
+        )),
         on_add_worker: Rc::new(RefCell::new(move |name: String, url: String| {
             let mut state = on_add_worker.borrow_mut();
             let id = format!(
@@ -561,12 +564,14 @@ pub fn make_actions(
                 state.settings_cluster_configured = true;
             }
         })),
-        on_add_authorized_key: Rc::new(RefCell::new(move |name: String, pem: String, fingerprint: String| {
-            let mut state = on_add_authorized_key.borrow_mut();
-            let id = format!("k-{}", state.settings_authorized_keys.len() + 1);
-            state.settings_authorized_keys.push((id, name, fingerprint));
-            let _ = pem;
-        })),
+        on_add_authorized_key: Rc::new(RefCell::new(
+            move |name: String, pem: String, fingerprint: String| {
+                let mut state = on_add_authorized_key.borrow_mut();
+                let id = format!("k-{}", state.settings_authorized_keys.len() + 1);
+                state.settings_authorized_keys.push((id, name, fingerprint));
+                let _ = pem;
+            },
+        )),
         on_remove_authorized_key: Rc::new(RefCell::new(move |id: String| {
             on_remove_authorized_key
                 .borrow_mut()
@@ -590,7 +595,9 @@ pub fn make_actions(
             // restarts and is tracked per-conversation.
             if let Some(desktop) = &desktop_choose_workspace {
                 if let Some(chat_id) = state.selected_id.clone() {
-                    if let Err(e) = desktop.set_chat_workspace_routing(&chat_id, Some(routing_to_str(routing))) {
+                    if let Err(e) =
+                        desktop.set_chat_workspace_routing(&chat_id, Some(routing_to_str(routing)))
+                    {
                         log::warn!("set_chat_workspace_routing failed: {e}");
                     }
                 }

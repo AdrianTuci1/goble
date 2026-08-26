@@ -2,12 +2,12 @@
 
 use goble_ui::elements::{
     AppContext, Axis, Button, ButtonVariant, Container, CrossAxisAlignment, Divider, EdgeInsets,
-    Element, Fill, Flex, Icon, Label, LabelSize, MainAxisSize, Scrollable, Spacer, Text,
-    TextInput, TopbarButton,
+    Element, Fill, Flex, Icon, Label, LabelSize, MainAxisSize, Scrollable, Spacer, Text, TextInput,
+    TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 
-use crate::{AiActions, AiSnapshot};
+use super::{AiActions, AiSnapshot};
 
 /// Right-anchored vault sheet: unlock form when locked, secret list + add
 /// form when unlocked.
@@ -64,11 +64,7 @@ pub fn build_vault_sheet(
 }
 
 /// Locked state: passphrase input + unlock button.
-fn build_locked(
-    app: &AppContext,
-    ai: &AiSnapshot,
-    ai_actions: &AiActions,
-) -> Box<dyn Element> {
+fn build_locked(app: &AppContext, ai: &AiSnapshot, ai_actions: &AiActions) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Md);
 
     let on_draft = ai_actions.on_vault_unlock_draft_change.clone();
@@ -112,11 +108,7 @@ fn build_locked(
 }
 
 /// Unlocked state: secret rows with delete, plus a new-secret form.
-fn build_unlocked(
-    app: &AppContext,
-    ai: &AiSnapshot,
-    ai_actions: &AiActions,
-) -> Box<dyn Element> {
+fn build_unlocked(app: &AppContext, ai: &AiSnapshot, ai_actions: &AiActions) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Md);
     let sm = app.theme.spacing_px(SpacingToken::Sm);
 
@@ -195,7 +187,7 @@ fn build_unlocked(
 /// One secret row: key + updated timestamp + delete button.
 fn build_secret_row(
     app: &AppContext,
-    secret: &crate::VaultSecretEntry,
+    secret: &super::VaultSecretEntry,
     ai_actions: &AiActions,
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Sm);

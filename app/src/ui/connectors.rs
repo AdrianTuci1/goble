@@ -9,7 +9,7 @@ use goble_ui::elements::{
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
 
-use crate::{AiActions, AiSnapshot, McpSearchEntry, McpServerEntry};
+use super::{AiActions, AiSnapshot, McpSearchEntry, McpServerEntry};
 
 /// The install sources offered in the drawer, in select order.
 const INSTALL_SOURCES: [&str; 4] = ["npm", "github", "local", "url"];
@@ -175,9 +175,8 @@ fn build_connector_row(
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(4.0);
     for cap in server.capabilities.iter().take(4) {
-        chips = chips.with_child(
-            Chip::new(Text::new(cap.clone()).with_font_size(10.0).finish()).finish(),
-        );
+        chips = chips
+            .with_child(Chip::new(Text::new(cap.clone()).with_font_size(10.0).finish()).finish());
     }
 
     let on_toggle = ai_actions.on_connector_toggle.clone();
@@ -458,7 +457,11 @@ fn build_search_result_card(
     entry: &McpSearchEntry,
     ai_actions: &AiActions,
 ) -> Box<dyn Element> {
-    let auth = if entry.auth_required { "auth" } else { "no auth" };
+    let auth = if entry.auth_required {
+        "auth"
+    } else {
+        "no auth"
+    };
     let mut tags = entry.capabilities.clone();
     tags.push(auth.to_string());
 

@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_app::actions::make_actions;
-use goble_app::hot_ui::UiActions;
 use goble_app::state::UiState;
+use goble_app::ui::UiActions;
 use goble_core::agent::Trigger;
 use goble_desktop_service::DesktopState;
 use goble_ui::{ChatFragmentKind, ChatMessage, ChatRole};

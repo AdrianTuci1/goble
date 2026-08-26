@@ -63,15 +63,15 @@ npm run build
 npm run tauri build
 ```
 
-### Native UI (wgpu/winit) with live hot reload
+### Native UI (wgpu/winit)
 
-The product shell is the native UI in `app/` (`goble-app`) + `crates/goble-ui-hot`, built directly on `goble-ui` (wgpu/winit). View trees are built in `crates/goble-ui-hot/src/lib.rs`; state and actions live in `app/src/root_view.rs`. `crates/goble-desktop-native` is the backend-integration reference (state_api + views pattern) and is not the product shell. To iterate on the shell without rebuilding the whole binary every time:
+The product shell is the native UI in `app/` (`goble-app`), built directly on `goble-ui` (wgpu/winit). View trees are built in `app/src/ui` (`build_ui` + per-screen modules); state and actions live in `app/src/root_view.rs` and `app/src/actions.rs`, with runtime orchestration in `app/src/runtime.rs`. `crates/goble-desktop-native` is the backend-integration reference (state_api + views pattern) and is not the product shell. There is no live hot reload — editing any `app` or `crates` source needs a normal rebuild:
 
 ```bash
 ./scripts/dev-ui.sh
 ```
 
-The script builds `goble-app` once, starts it, and then watches `crates/goble-ui-hot`. Editing `crates/goble-ui-hot/src/lib.rs` rebuilds only the small hot-reload cdylib; the running app swaps it in live. Restart the script when you change `crates/goble-ui` itself (that is the ABI the executable is linked against).
+`scripts/dev-ui.sh` builds and runs `goble-app`; with `cargo-watch` installed it rebuilds and restarts the app whenever a `app` or `crates` source file changes.
 
 ## License
 

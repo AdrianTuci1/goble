@@ -7,8 +7,8 @@
 ## Components
 
 - **`goble-ui`** — the primitive layer: elements, layout (`warp::LayoutContext`-style), paint, geometry, color/theme, `platform/*` (winit window, wgpu render engine, text + icon atlas). Its design direction/tokens/icon assets come from `~/Projects/warp-new` (see [`README.md`](README.md)); `octomusui` in warp-new is the sibling reference for a from-scratch Rust renderer.
-- **`goble-ui-hot`** — the cdylib that owns `build_ui(...)` and the snapshot/action types (`UiSnapshot`, `UiActions`, `AiSnapshot`, `AiActions`, `AppTab`). It is hot-reloaded (see `app/src/hot_ui.rs`).
-- **`app/` (`goble-app`)** — the executable: owns `UiState`/`AiState`, the `make_actions`/`make_ai_actions` callbacks, `RootView`, and the hot-reload handshake. The element tree is rebuilt from state **every frame**; state is kept in the executable so text focus/value survive rebuilds.
+- **`app/src/ui`** — the in-app UI builder: owns `build_ui(...)` and the snapshot/action types (`UiSnapshot`, `UiActions`, `AiSnapshot`, `AiActions`, `AppTab`), plus the per-screen modules (`chat`, `sidebar`, `shell`, `crons`, `connectors`, `vault`, `model_form`). Built directly in the app crate — like warp-new builds its windows in `app` — so there is no hot-reload cdylib or ABI boundary.
+- **`app/` (`goble-app`)** — the executable: owns `UiState`/`AiState`, the `make_actions`/`make_ai_actions` callbacks, `RootView`, and the runtime orchestration (`crate::runtime`) that decides where a turn runs (local harness today, remote pending). The element tree is rebuilt from state **every frame**; state is kept in the executable so text focus/value survive rebuilds.
 
 ## Data flow
 
@@ -31,7 +31,7 @@ flowchart LR
 
 ## Current gaps (vs target product)
 
-- The **first-run flow is wired**: no-key banner (modal overlay) → Settings→LLM → local/remote choice → continue local, driven via `chat.rs` + `actions.rs` and covered by `integration_testing/first_run_flow.rs`. The routing choice persists per conversation on the `chats.workspace_routing` column and is restored on load.
+- The **first-run flow is wired**: no-key banner (modal overlay) → Settings→LLM → local/remote choice → continue local, driven via `chat.rs` + `actions.rs` and covered by `app/src/integration_testing/first_run_flow.rs`. The routing choice persists per conversation on the `chats.workspace_routing` column and is restored on load.
 - `on_send_message` drives the **harness** (`DesktopState::run_chat_turn` → `Harness::run_turn`), which persists the user + assistant/tool messages and emits `chat:updated` (deterministic `MockProvider` in tests; the no-key path keeps the user message and surfaces the banner overlay — no canned reply). Assistant deltas **stream** into a single message row, so the renderer shows the reply progressively; the Stop button cancels the turn.
 - The composer **model selector** drives `run_chat_turn` (populated from the provider catalog) and the **Stop button** cancels a running turn; `agent_busy` now reflects the turn lifecycle (true on send, cleared by `chat:turn_finished` or Stop). attach/voice, copy/restart/menu are still stubs/logs.
 - `AppTab` only has Threads/Chat/Settings; agents/executions/logs/teams/workflows pages are not in the native shell (they exist in the legacy React app).

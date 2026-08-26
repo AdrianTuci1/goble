@@ -1,7 +1,7 @@
 //! Smoke tests for the whole app shell: mounting the real [`RootView`] over a
 //! live [`DesktopState`] and laying it out + painting it headlessly must not
 //! panic and must emit render commands. This exercises the seam where the
-//! backend data flows into the hot-reloadable element tree (`build_ui`).
+//! backend data flows into the app-owned element tree (`build_ui`).
 
 mod common;
 
@@ -10,9 +10,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_app::actions::make_actions;
-use goble_app::hot_ui::AppTab;
 use goble_app::root_view::RootView;
 use goble_app::state::UiState;
+use goble_app::ui::AppTab;
 use goble_desktop_service::DesktopState;
 use goble_ui::elements::AppContext;
 use goble_ui::test_util::{command_counts, render_element, RenderCommandCounts};
@@ -27,7 +27,10 @@ fn render(desktop: &Arc<DesktopState>) -> RenderCommandCounts {
 
 /// Render the whole shell with a given first-run flag forced on, to exercise
 /// the modal overlay path headlessly (no browser for this native app).
-fn render_with_flag(desktop: &Arc<DesktopState>, set: impl FnOnce(&mut UiState)) -> RenderCommandCounts {
+fn render_with_flag(
+    desktop: &Arc<DesktopState>,
+    set: impl FnOnce(&mut UiState),
+) -> RenderCommandCounts {
     let app = AppContext::default();
     let mut view = RootView::new(&app, Some(Arc::clone(desktop)), None);
     set(&mut view.state_rc().borrow_mut());
@@ -47,7 +50,9 @@ fn full_app_renders_from_empty_backend() {
 #[test]
 fn full_app_renders_with_chat_data() {
     let (desktop, _dir) = common::desktop_state();
-    let chat_id = desktop.create_chat("Demo", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Demo", None, None)
+        .expect("create chat");
     desktop
         .add_chat_message(&chat_id, "user", "Salut!")
         .expect("add user message");
@@ -64,16 +69,28 @@ fn full_app_renders_with_chat_data() {
 fn full_app_renders_key_banner_overlay() {
     let (desktop, _dir) = common::desktop_state();
     let counts = render_with_flag(&desktop, |s| s.show_llm_key_banner = true);
-    assert!(counts.fill_rect > 0, "banner overlay should paint its panel");
-    assert!(counts.draw_text > 0, "banner overlay should paint its label");
+    assert!(
+        counts.fill_rect > 0,
+        "banner overlay should paint its panel"
+    );
+    assert!(
+        counts.draw_text > 0,
+        "banner overlay should paint its label"
+    );
 }
 
 #[test]
 fn full_app_renders_workspace_choice_overlay() {
     let (desktop, _dir) = common::desktop_state();
     let counts = render_with_flag(&desktop, |s| s.show_workspace_choice = true);
-    assert!(counts.fill_rect > 0, "workspace choice overlay should paint");
-    assert!(counts.draw_text > 0, "workspace choice overlay should paint its label");
+    assert!(
+        counts.fill_rect > 0,
+        "workspace choice overlay should paint"
+    );
+    assert!(
+        counts.draw_text > 0,
+        "workspace choice overlay should paint its label"
+    );
 }
 
 #[test]
@@ -83,7 +100,10 @@ fn toggle_right_sidebar_action_flips_state() {
 
     assert!(!state.borrow().right_sidebar_open, "sidebar starts hidden");
     (actions.on_toggle_right_sidebar.borrow_mut())();
-    assert!(state.borrow().right_sidebar_open, "toggle opens the sidebar");
+    assert!(
+        state.borrow().right_sidebar_open,
+        "toggle opens the sidebar"
+    );
     (actions.on_toggle_right_sidebar.borrow_mut())();
     assert!(
         !state.borrow().right_sidebar_open,
@@ -100,7 +120,11 @@ fn settings_navigate_and_back_flip_state() {
     (actions.on_settings_navigate.borrow_mut())(SettingsPage::Llm);
     assert_eq!(state.borrow().settings_page, SettingsPage::Llm);
     (actions.on_settings_back.borrow_mut())();
-    assert_eq!(state.borrow().current_tab, AppTab::Chat, "back returns to chat");
+    assert_eq!(
+        state.borrow().current_tab,
+        AppTab::Chat,
+        "back returns to chat"
+    );
     assert_eq!(
         state.borrow().settings_page,
         SettingsPage::Llm,

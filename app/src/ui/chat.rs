@@ -2,17 +2,21 @@
 
 use goble_ui::elements::{
     AppContext, Button, ButtonVariant, ChatLayout, ChatSidebar, Container, CrossAxisAlignment,
-    EdgeInsets, Element, Fill, Flex, Icon, MainAxisSize, PopupMenuItem, RoutineItem,
-    Spacer, Text, TopbarButton,
+    EdgeInsets, Element, Fill, Flex, Icon, MainAxisSize, PopupMenuItem, RoutineItem, Spacer, Text,
+    TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::ChatView;
 
-use crate::{UiActions, UiSnapshot, WorkspaceRouting};
+use super::{UiActions, UiSnapshot, WorkspaceRouting};
 
 /// Agent chat tab: a header row with the agent identity/status/copy/restart,
 /// then the message transcript + composer (which fills the remaining space).
-pub fn build_agent_chat(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+pub fn build_agent_chat(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
     let header = build_agent_header(app, state, actions);
 
     let on_composer_change = actions.on_composer_change.clone();

@@ -1,7 +1,8 @@
 //! Root element of the native UI.
 //!
-//! Owns only the element tree + the hot-reload handshake. The data lives in
-//! [`crate::state`] and the callbacks live in [`crate::actions`].
+//! Owns only the element tree. The data lives in [`crate::state`], the
+//! callbacks live in [`crate::actions`], and runtime orchestration (where a
+//! turn executes) lives in [`crate::runtime`].
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,20 +17,10 @@ use goble_ui::{
 
 use crate::actions::make_actions;
 use crate::ai::{make_ai_actions, AiState};
-use crate::hot_ui::{build_ui, AiSnapshot, UiSnapshot};
 use crate::state::UiState;
+use crate::ui::{build_ui, AiSnapshot, UiSnapshot};
 
-#[cfg(feature = "hot-reload")]
-use std::sync::mpsc;
-
-#[cfg(feature = "hot-reload")]
-struct ReloadHandles {
-    drop_request: mpsc::Receiver<()>,
-    drop_done: mpsc::Sender<()>,
-}
-
-/// Root element that renders the hot-reloadable UI and coordinates library
-/// swaps with the running `hot-lib-reloader` watcher.
+/// Root element that renders the app UI and drives the event loop.
 pub struct RootView {
     element: Box<dyn Element>,
     state: Rc<RefCell<UiState>>,
@@ -38,8 +29,6 @@ pub struct RootView {
     event_bus: Option<CollectingEventBus>,
     size: Option<Vector2F>,
     origin: Option<Point>,
-    #[cfg(feature = "hot-reload")]
-    reload: ReloadHandles,
 }
 
 impl RootView {
@@ -57,9 +46,6 @@ impl RootView {
             None => AiState::mock(),
         }));
 
-        #[cfg(feature = "hot-reload")]
-        let reload = spawn_reload_thread();
-
         let mut view = Self {
             element: Box::new(Empty::new()),
             state,
@@ -68,8 +54,6 @@ impl RootView {
             event_bus,
             size: None,
             origin: None,
-            #[cfg(feature = "hot-reload")]
-            reload,
         };
         view.rebuild(app);
         view
@@ -111,11 +95,13 @@ impl RootView {
                             state.selected_model.clone()
                         };
                         if let Some(chat_id) = state.selected_id.clone() {
-                            if let Err(e) = desktop.run_chat_turn(
+                            if let Err(e) = crate::runtime::run_turn(
+                                &desktop,
                                 &chat_id,
                                 &prompt,
                                 &state.settings_llm_provider,
                                 &model,
+                                state.workspace_routing,
                             ) {
                                 log::warn!("auto-submit queued prompt failed: {e}");
                             } else {
@@ -150,10 +136,6 @@ impl RootView {
     }
 
     /// Rebuild the element tree from the current app state.
-    ///
-    /// This drops the previous tree *before* calling into the hot library, so
-    /// old dylib-owned objects are released while the old library is still
-    /// loaded (`hot-lib-reloader` may swap it during the next `build_ui` call).
     fn rebuild(&mut self, app: &AppContext) {
         self.drain_events();
         let snapshot = {
@@ -241,51 +223,6 @@ impl RootView {
         let ai_actions = make_ai_actions(Rc::clone(&self.ai_state), self.desktop.clone());
         self.element = build_ui(app, &snapshot, &actions, &ai_snapshot, &ai_actions);
     }
-
-    /// Drain the reload handshake: when the dylib is about to be swapped,
-    /// replace the old tree with an app-owned placeholder *before* the swap is
-    /// allowed to proceed, so no dylib-owned objects outlive the library.
-    #[cfg(feature = "hot-reload")]
-    fn handle_reload(&mut self) {
-        if self.reload.drop_request.try_recv().is_ok() {
-            self.element = Empty::new().finish();
-            let _ = self.reload.drop_done.send(());
-        }
-    }
-
-    #[cfg(not(feature = "hot-reload"))]
-    fn handle_reload(&mut self) {}
-}
-
-/// Watches `hot-lib-reloader` reload events.
-///
-/// `wait_for_about_to_reload` returns a token that *blocks the swap* while it
-/// is alive. We hold it until the main thread confirms the old element tree
-/// was dropped, then release it and wait for the new library to be loaded.
-#[cfg(feature = "hot-reload")]
-fn spawn_reload_thread() -> ReloadHandles {
-    let observer = crate::hot_ui::ui_hot::subscribe();
-    let (drop_tx, drop_rx) = mpsc::channel();
-    let (done_tx, done_rx) = mpsc::channel();
-
-    std::thread::spawn(move || loop {
-        let blocker = observer.wait_for_about_to_reload();
-        // Ask the main thread to drop the old element tree (safe: the old dylib
-        // is still mapped and the swap is blocked).
-        if drop_tx.send(()).is_err() {
-            return;
-        }
-        if done_rx.recv().is_err() {
-            return;
-        }
-        drop(blocker);
-        observer.wait_for_reload();
-    });
-
-    ReloadHandles {
-        drop_request: drop_rx,
-        drop_done: done_tx,
-    }
 }
 
 impl Element for RootView {
@@ -295,7 +232,6 @@ impl Element for RootView {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        self.handle_reload();
         self.rebuild(app);
         let size = self.element.layout(constraint, ctx, app);
         self.size = Some(size);

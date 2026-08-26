@@ -1,6 +1,6 @@
-//! Integration tests for the chat lifecycle, driven through the app's real
-//! action callbacks against a live [`DesktopState`]: creating a conversation,
-//! sending a message, switching between conversations, and switching tabs.
+//! Integration tests for the routine lifecycle, driven through the app's real
+//! action callbacks against a live [`DesktopState`]: creating a routine,
+//! switching between routines, and switching tabs.
 
 mod common;
 
@@ -12,23 +12,6 @@ use goble_app::actions::make_actions;
 use goble_app::state::UiState;
 use goble_app::ui::{AppTab, UiActions};
 use goble_desktop_service::DesktopState;
-use goble_ui::{ChatFragmentKind, ChatMessage, ChatRole};
-
-/// Concatenate the human-readable text of a message's inline fragments.
-fn message_text(msg: &ChatMessage) -> String {
-    msg.fragments
-        .iter()
-        .filter_map(|f| match &f.kind {
-            ChatFragmentKind::Text(s)
-            | ChatFragmentKind::Bold(s)
-            | ChatFragmentKind::Italic(s)
-            | ChatFragmentKind::BoldItalic(s)
-            | ChatFragmentKind::BlockQuote(s) => Some(s.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
 
 fn build(desktop: &Arc<DesktopState>) -> (Rc<RefCell<UiState>>, UiActions) {
     let state = Rc::new(RefCell::new(UiState::from_desktop(desktop)));
@@ -37,11 +20,11 @@ fn build(desktop: &Arc<DesktopState>) -> (Rc<RefCell<UiState>>, UiActions) {
 }
 
 #[test]
-fn create_chat_persists_and_selects() {
+fn create_routine_persists_and_selects() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);
 
-    assert!(state.borrow().conversations.is_empty());
+    assert!(state.borrow().routines.is_empty());
 
     (actions.on_create_change.borrow_mut())("Planul de lansare".to_string());
     (actions.on_create_submit.borrow_mut())();
@@ -50,17 +33,17 @@ fn create_chat_persists_and_selects() {
         let state = state.borrow();
         assert_eq!(state.new_conversation_draft, "");
         assert!(state.selected_id.is_some());
-        assert_eq!(state.conversations.len(), 1);
-        assert_eq!(state.conversations[0].name, "Planul de lansare");
+        assert_eq!(state.routines.len(), 1);
+        assert_eq!(state.routines[0].name, "Planul de lansare");
     }
 
-    let chats = desktop.list_chats();
-    assert_eq!(chats.len(), 1);
-    assert_eq!(chats[0].title, "Planul de lansare");
+    let workflows = desktop.list_workflows();
+    assert_eq!(workflows.len(), 1);
+    assert_eq!(workflows[0].name, "Planul de lansare");
 }
 
 #[test]
-fn blank_title_creates_default_agent() {
+fn blank_title_creates_default_routine() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);
 
@@ -69,61 +52,39 @@ fn blank_title_creates_default_agent() {
 
     {
         let state = state.borrow();
-        assert_eq!(state.conversations.len(), 1);
-        assert_eq!(state.conversations[0].name, "New agent");
+        assert_eq!(state.routines.len(), 1);
+        assert_eq!(state.routines[0].name, "New routine");
         assert!(state.selected_id.is_some());
     }
-    assert_eq!(desktop.list_chats().len(), 1);
+    assert_eq!(desktop.list_workflows().len(), 1);
 }
 
 #[test]
-fn send_message_appends_and_persists() {
+fn select_routine_updates_selected_id() {
     let (desktop, _dir) = common::desktop_state();
-    let chat_id = desktop
-        .create_chat("Demo", None, None)
-        .expect("create chat");
-    let (state, actions) = build(&desktop);
-
-    (actions.on_composer_change.borrow_mut())("Salut!".to_string());
-    (actions.on_send_message.borrow_mut())("Salut!".to_string());
-
-    // No key is configured, so the send path keeps the user's message (no
-    // fabricated assistant reply) and surfaces the model-key banner overlay.
-    {
-        let state = state.borrow();
-        assert_eq!(state.composer_draft, "");
-        assert_eq!(state.chat_messages.len(), 1);
-        assert_eq!(state.chat_messages[0].role, ChatRole::User);
-        assert!(
-            state.show_llm_key_banner,
-            "no key -> banner overlay should surface"
-        );
-    }
-
-    let messages = desktop.list_chat_messages(&chat_id).expect("list messages");
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].role, "user");
-}
-
-#[test]
-fn select_conversation_refreshes_messages() {
-    let (desktop, _dir) = common::desktop_state();
-    let chat_a = desktop.create_chat("A", None, None).expect("create chat A");
-    let chat_b = desktop.create_chat("B", None, None).expect("create chat B");
-    desktop
-        .add_chat_message(&chat_a, "user", "mesaj din A")
-        .expect("add message");
+    let wf_a = desktop
+        .create_workflow("A", "", vec![], goble_core::agent::Trigger::Manual)
+        .expect("create workflow A");
+    let wf_b = desktop
+        .create_workflow("B", "", vec![], goble_core::agent::Trigger::Manual)
+        .expect("create workflow B");
 
     let (state, actions) = build(&desktop);
 
-    assert_eq!(state.borrow().selected_id.as_deref(), Some(chat_a.as_str()));
-    assert_eq!(state.borrow().chat_messages.len(), 1);
+    let first_id = state.borrow().selected_id.clone().expect("a routine is selected");
+    let second_id = if first_id == wf_a.id { &wf_b.id } else { &wf_a.id };
 
-    (actions.on_select_conversation.borrow_mut())(chat_b.clone());
-    assert!(state.borrow().chat_messages.is_empty());
+    (actions.on_select_conversation.borrow_mut())(second_id.clone());
+    assert_eq!(
+        state.borrow().selected_id.as_deref(),
+        Some(second_id.as_str())
+    );
 
-    (actions.on_select_conversation.borrow_mut())(chat_a.clone());
-    assert_eq!(state.borrow().chat_messages.len(), 1);
+    (actions.on_select_conversation.borrow_mut())(first_id.clone());
+    assert_eq!(
+        state.borrow().selected_id.as_deref(),
+        Some(first_id.as_str())
+    );
 }
 
 #[test]
@@ -133,4 +94,33 @@ fn select_tab_switches_views() {
 
     (actions.on_select_tab.borrow_mut())(AppTab::Settings);
     assert_eq!(state.borrow().current_tab, AppTab::Settings);
+}
+
+#[test]
+fn delete_routine_removes_it() {
+    let (desktop, _dir) = common::desktop_state();
+    let (state, actions) = build(&desktop);
+
+    (actions.on_create_submit.borrow_mut())();
+    let routine_id = state.borrow().routines[0].id.clone();
+
+    (actions.on_agent_delete.borrow_mut())(routine_id.clone());
+    assert!(state.borrow().routines.is_empty());
+    assert!(desktop.list_workflows().is_empty());
+}
+
+#[test]
+fn toggle_routine_enabled_flips_flag() {
+    let (desktop, _dir) = common::desktop_state();
+    let (state, actions) = build(&desktop);
+
+    (actions.on_create_submit.borrow_mut())();
+    let routine_id = state.borrow().routines[0].id.clone();
+    assert!(state.borrow().routines[0].enabled);
+
+    (actions.on_routine_toggle_enabled.borrow_mut())(routine_id.clone());
+    assert!(!state.borrow().routines[0].enabled);
+
+    (actions.on_routine_toggle_enabled.borrow_mut())(routine_id.clone());
+    assert!(state.borrow().routines[0].enabled);
 }

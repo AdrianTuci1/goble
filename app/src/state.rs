@@ -11,12 +11,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use chrono::{DateTime, Utc};
 use goble_core::agent::Trigger;
 use goble_desktop_service::DesktopState;
 use goble_ui::{
-    AgentCardUi, AskUserUi, ChatFragment, ChatMessage, ChatRole, ConversationEntry,
-    ConversationStatus, SettingsPage, TerminalData, TerminalLine, TerminalStatus, ToolCall,
+    AskUserUi, ChatFragment, ChatMessage, ChatRole, RoutineCardUi, RoutineEntry, RoutineStatus,
+    RoutineTrigger, SettingsPage, TerminalData, TerminalLine, TerminalStatus, ToolCall,
 };
 
 use crate::ui::{AppTab, CronEntry, LlmFormField, WorkspaceRouting, SIDEBAR_WIDTH};
@@ -35,30 +34,6 @@ pub(crate) fn routing_from_str(value: &str) -> Option<WorkspaceRouting> {
         "local" => Some(WorkspaceRouting::Local),
         "remote" => Some(WorkspaceRouting::Remote),
         _ => None,
-    }
-}
-
-/// Format an RFC3339 timestamp as a short relative "time ago" label (e.g.
-/// "40 min ago"). Falls back to the raw string when it cannot be parsed.
-fn time_ago(updated_at: &str) -> String {
-    match DateTime::parse_from_rfc3339(updated_at) {
-        Ok(ts) => {
-            let now = Utc::now();
-            let dur = now.signed_duration_since(ts.with_timezone(&Utc));
-            let secs = dur.num_seconds().max(0);
-            if secs < 60 {
-                "just now".to_string()
-            } else if secs < 3600 {
-                format!("{} min ago", secs / 60)
-            } else if secs < 86400 {
-                format!("{}h ago", secs / 3600)
-            } else if secs < 172800 {
-                "Yesterday".to_string()
-            } else {
-                format!("{} days ago", secs / 86400)
-            }
-        }
-        Err(_) => updated_at.to_string(),
     }
 }
 
@@ -101,7 +76,7 @@ fn tool_terminal_data(content: &str) -> TerminalData {
 #[derive(Clone)]
 pub struct UiState {
     pub current_tab: AppTab,
-    pub conversations: Vec<ConversationEntry>,
+    pub routines: Vec<RoutineEntry>,
     pub selected_id: Option<String>,
     pub search_query: String,
     pub search_focused: bool,
@@ -167,8 +142,8 @@ pub struct UiState {
     pub sidebar_drag_origin_x: f32,
     pub sidebar_drag_start_width: f32,
     /// Per-card interaction state (hover / delete menu), owned here so it
-    /// survives the per-frame element rebuild. Keyed by conversation id.
-    pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,
+    /// survives the per-frame element rebuild. Keyed by routine id.
+    pub routine_cards: HashMap<String, Rc<RefCell<RoutineCardUi>>>,
     /// Hover flag for the sidebar's "New agent" row, owned here so the row
     /// highlight survives the per-frame element rebuild.
     pub new_agent_hover: Rc<RefCell<bool>>,
@@ -176,13 +151,13 @@ pub struct UiState {
 
 impl UiState {
     /// Start from real backend data. Falls back to an empty state when the
-    /// store has no conversations yet; the sidebar shows an empty list until
-    /// the user creates the first chat.
+    /// store has no routines yet; the sidebar shows an empty list until
+    /// the user creates the first routine.
     pub fn from_desktop(desktop: &DesktopState) -> Self {
         let mut state = Self {
             current_tab: AppTab::Chat,
             selected_id: None,
-            conversations: Vec::new(),
+            routines: Vec::new(),
             search_query: String::new(),
             search_focused: false,
             new_conversation_draft: String::new(),
@@ -231,7 +206,7 @@ impl UiState {
             sidebar_dragging: false,
             sidebar_drag_origin_x: 0.0,
             sidebar_drag_start_width: SIDEBAR_WIDTH,
-            agent_cards: HashMap::new(),
+            routine_cards: HashMap::new(),
             new_agent_hover: Rc::new(RefCell::new(false)),
         };
         state.refresh_from_desktop(desktop);
@@ -239,48 +214,46 @@ impl UiState {
         state
     }
 
-    /// Reload conversations, messages, crons and agent name from the backend.
+    /// Reload routines, messages, crons and agent name from the backend.
     pub fn refresh_from_desktop(&mut self, desktop: &DesktopState) {
-        self.refresh_conversations(desktop);
+        self.refresh_routines(desktop);
         self.refresh_crons(desktop);
         self.refresh_agent_name(desktop);
         self.refresh_settings(desktop);
         self.auto_approve = desktop.get_auto_approve();
     }
 
-    pub fn refresh_conversations(&mut self, desktop: &DesktopState) {
-        let chats = desktop.list_chats();
-        self.conversations = chats
+    pub fn refresh_routines(&mut self, desktop: &DesktopState) {
+        let workflows = desktop.list_workflows();
+        self.routines = workflows
             .iter()
-            .map(|c| {
-                let last = desktop
-                    .list_chat_messages(&c.id)
-                    .ok()
-                    .and_then(|msgs| {
-                        msgs.last()
-                            .map(|m| m.content.clone())
-                            .filter(|s| !s.trim().is_empty())
-                    })
-                    .unwrap_or_else(|| "New conversation".to_string());
-                ConversationEntry::new(c.id.clone(), c.title.clone(), last, time_ago(&c.updated_at))
+            .map(|wf| {
+                let trigger = match wf.trigger {
+                    Trigger::Cron { .. } => RoutineTrigger::Cron,
+                    _ => RoutineTrigger::Manual,
+                };
+                RoutineEntry::new(wf.id.clone(), wf.name.clone())
+                    .with_trigger(trigger)
+                    .with_enabled(wf.enabled)
+                    .with_status(RoutineStatus::Idle)
             })
             .collect();
-        // Keep one shared card-state entry per conversation id so hover / the
-        // delete menu survive across frames; drop entries for removed chats.
+        // Keep one shared card-state entry per routine id so hover / the
+        // delete menu survive across frames; drop entries for removed workflows.
         let ids: std::collections::HashSet<String> =
-            self.conversations.iter().map(|c| c.id.clone()).collect();
-        self.agent_cards.retain(|id, _| ids.contains(id));
-        for c in &self.conversations {
-            self.agent_cards
-                .entry(c.id.clone())
-                .or_insert_with(|| Rc::new(RefCell::new(AgentCardUi::default())));
+            self.routines.iter().map(|r| r.id.clone()).collect();
+        self.routine_cards.retain(|id, _| ids.contains(id));
+        for r in &self.routines {
+            self.routine_cards
+                .entry(r.id.clone())
+                .or_insert_with(|| Rc::new(RefCell::new(RoutineCardUi::default())));
         }
         if let Some(selected) = &self.selected_id {
-            if !chats.iter().any(|c| &c.id == selected) {
-                self.selected_id = chats.first().map(|c| c.id.clone());
+            if !workflows.iter().any(|wf| &wf.id == selected) {
+                self.selected_id = workflows.first().map(|wf| wf.id.clone());
             }
         } else {
-            self.selected_id = chats.first().map(|c| c.id.clone());
+            self.selected_id = workflows.first().map(|wf| wf.id.clone());
         }
         self.refresh_messages(desktop);
     }
@@ -421,15 +394,19 @@ impl UiState {
 
     /// Mock data used when the backend store cannot be opened (dev fallback).
     pub fn mock() -> Self {
-        let conversations = vec![
-            ConversationEntry::new("c1", "Ada", "Let's ship hot reload today", "10:42")
-                .with_status(ConversationStatus::Success),
-            ConversationEntry::new("c2", "Coder", "PR #12 is merged", "09:30")
-                .with_status(ConversationStatus::Success),
-            ConversationEntry::new("c3", "Ops", "Worker deployment done", "Yesterday")
-                .with_status(ConversationStatus::Default),
-            ConversationEntry::new("c4", "Research", "Drafting the plan", "2 days ago")
-                .with_status(ConversationStatus::Error),
+        let routines = vec![
+            RoutineEntry::new("r1", "Ada")
+                .with_trigger(RoutineTrigger::Manual)
+                .with_status(RoutineStatus::Success),
+            RoutineEntry::new("r2", "Coder")
+                .with_trigger(RoutineTrigger::Cron)
+                .with_status(RoutineStatus::Success),
+            RoutineEntry::new("r3", "Ops")
+                .with_trigger(RoutineTrigger::Manual)
+                .with_status(RoutineStatus::Idle),
+            RoutineEntry::new("r4", "Research")
+                .with_trigger(RoutineTrigger::Manual)
+                .with_status(RoutineStatus::Error),
         ];
 
         let thread_messages = vec![ChatMessage::from_markdown(
@@ -476,8 +453,8 @@ impl UiState {
 
         Self {
             current_tab: AppTab::Chat,
-            selected_id: conversations.first().map(|c| c.id.clone()),
-            conversations,
+            selected_id: routines.first().map(|r| r.id.clone()),
+            routines,
             search_query: String::new(),
             search_focused: false,
             new_conversation_draft: String::new(),
@@ -530,7 +507,7 @@ impl UiState {
             sidebar_dragging: false,
             sidebar_drag_origin_x: 0.0,
             sidebar_drag_start_width: SIDEBAR_WIDTH,
-            agent_cards: HashMap::new(),
+            routine_cards: HashMap::new(),
             new_agent_hover: Rc::new(RefCell::new(false)),
         }
     }

@@ -32,7 +32,7 @@ fn render_with_flag(
     set: impl FnOnce(&mut UiState),
 ) -> RenderCommandCounts {
     let app = AppContext::default();
-    let mut view = RootView::new(&app, Some(Arc::clone(desktop)), None);
+    let view = RootView::new(&app, Some(Arc::clone(desktop)), None);
     set(&mut view.state_rc().borrow_mut());
     let mut root: Box<dyn Element> = Box::new(view);
     let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);

@@ -9,9 +9,9 @@ pub use chat_content::{ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, 
 pub use chat_header::ChatHeader;
 pub use chat_layout::{ChatLayout, CHAT_RIGHT_SIDEBAR_WIDTH};
 pub use chat_sidebar::{ChatSidebar, RoutineItem, CHAT_SIDEBAR_WIDTH};
-pub use conversation_list_item::{AgentCardUi, ConversationListItem, ConversationStatus};
-pub use conversation_sidebar::{
-    ConversationEntry, ConversationSidebar, CONVERSATION_SIDEBAR_WIDTH,
+pub use routine_list_item::{RoutineCardUi, RoutineListItem};
+pub use routine_sidebar::{
+    RoutineEntry, RoutineSidebar, RoutineStatus, RoutineTrigger, ROUTINE_SIDEBAR_WIDTH,
 };
 pub use dialog::{Dialog, DIALOG_DEFAULT_WIDTH};
 pub mod markdown;
@@ -513,8 +513,8 @@ pub mod code;
 pub mod connector_card;
 pub mod constrained_box;
 pub mod container;
-pub mod conversation_list_item;
-pub mod conversation_sidebar;
+pub mod routine_list_item;
+pub mod routine_sidebar;
 pub mod dialog;
 pub mod divider;
 pub mod drawer;

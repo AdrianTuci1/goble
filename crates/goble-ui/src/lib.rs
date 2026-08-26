@@ -18,10 +18,8 @@ pub use elements::{
     Border, Button, ButtonVariant, Caption, ChatAction, ChatComposer, ChatFragment,
     ChatFragmentKind, ChatHeader, ChatLayout, ChatMessage, ChatMessageBubble, ChatRole, ChatSidebar,
     Checkbox, Chip, Clipped,
-    RoutineItem,
-    AgentCardUi, Code, ConnectorCard, Container, ConversationEntry, ConversationListItem,
-    ConversationSidebar,
-    ConversationStatus, CrossAxisAlignment, Dialog, Divider, Drawer, DrawerAnchor, DropdownItem,
+    RoutineCardUi, RoutineEntry, RoutineListItem, RoutineSidebar, RoutineStatus, RoutineTrigger,
+    Code, ConnectorCard, Container, CrossAxisAlignment, Dialog, Divider, Drawer, DrawerAnchor, DropdownItem,
     DropdownMenu, EdgeInsets, Element, EventContext, Expanded, Fill, Flex, Header as UiHeader,
     Icon, IconButton, IconName, Label, LabelSize, LayoutContext, MainAxisAlignment, MainAxisSize,
     Margin, Modal, Padding, Page, PaintContext, Point, QuickActionButton, Rect, RightPanel,
@@ -29,8 +27,8 @@ pub use elements::{
     SidebarItem, SizeConstraint, Sheet, Spacer, Stack, Switch, Tab, TabBar, TerminalBlock,
     TerminalData, TerminalLine, TerminalLineKind, TerminalStatus, Text, TextArea, TextInput,
     ToolCall,
-    ThreadListItem, ToggleButton, Toolbar, Topbar, TopbarButton, Vector2FExt,
-    CHAT_RIGHT_SIDEBAR_WIDTH, CONVERSATION_SIDEBAR_WIDTH, DIALOG_DEFAULT_WIDTH, SHEET_DEFAULT_WIDTH,
+    ThreadListItem, ToggleButton, Toolbar, Tooltip, Topbar, TopbarButton, Vector2FExt,
+    CHAT_RIGHT_SIDEBAR_WIDTH, ROUTINE_SIDEBAR_WIDTH, DIALOG_DEFAULT_WIDTH, SHEET_DEFAULT_WIDTH,
 };
 pub use geometry::{rectf, size2f, vec2f, PointF, RectF, Size2F, Vector2F};
 pub use views::chat_view::ChatView;

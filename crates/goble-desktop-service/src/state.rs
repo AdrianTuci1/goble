@@ -1588,6 +1588,24 @@ impl DesktopState {
         Ok(())
     }
 
+    pub fn toggle_workflow_enabled(&self, id: &WorkflowId) -> anyhow::Result<WorkflowInfo> {
+        let mut workflows = self.workflows.lock();
+        let mut info = workflows
+            .get(id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("workflow not found"))?;
+        info.enabled = !info.enabled;
+        self.store
+            .lock()
+            .set_workflow_enabled(&id.to_string(), info.enabled)?;
+        let now = chrono::Utc::now().to_rfc3339();
+        info.updated_at = now.clone();
+        workflows.insert(id.clone(), info.clone());
+        drop(workflows);
+        self.emit("workflows:updated", ());
+        Ok(info)
+    }
+
     pub fn list_workflows(&self) -> Vec<WorkflowInfo> {
         self.workflows.lock().values().cloned().collect()
     }

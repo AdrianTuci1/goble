@@ -404,21 +404,25 @@ pub struct CreateWorkflowRequest {
     pub name: String,
     pub description: String,
     pub steps: Vec<WorkflowStep>,
-    pub trigger: String,
+    pub trigger: Trigger,
 }
 
 pub fn create_workflow(
     state: &Arc<DesktopState>,
     req: CreateWorkflowRequest,
 ) -> anyhow::Result<WorkflowInfo> {
-    let trigger = Trigger::Cron {
-        expression: req.trigger,
-    };
-    state.create_workflow(&req.name, &req.description, req.steps, trigger)
+    state.create_workflow(&req.name, &req.description, req.steps, req.trigger)
 }
 
 pub fn delete_workflow(state: &Arc<DesktopState>, workflow_id: &str) -> anyhow::Result<()> {
     state.delete_workflow(&WorkflowId(workflow_id.to_string()))
+}
+
+pub fn toggle_workflow_enabled(
+    state: &Arc<DesktopState>,
+    workflow_id: &str,
+) -> anyhow::Result<WorkflowInfo> {
+    state.toggle_workflow_enabled(&WorkflowId(workflow_id.to_string()))
 }
 
 // ---------------------------------------------------------------------------

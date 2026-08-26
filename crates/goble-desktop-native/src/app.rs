@@ -3,13 +3,16 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use goble_desktop_service::{CollectingEventBus, DesktopState};
+use goble_core::agent::Trigger;
+use goble_desktop_service::{CollectingEventBus, DesktopState, WorkflowInfo};
 use goble_ui::elements::{
-    ActiveView, AppContext, Element, SettingsTab, ShellState, ShellView,
+    ActiveView, AppContext, Element, RoutineEntry, RoutineSidebar, RoutineStatus, RoutineTrigger,
+    SettingsTab, ShellState, ShellView,
 };
 use goble_ui::theme::Theme;
 use tokio::runtime::Runtime;
 
+use crate::state_api;
 use crate::views::agent::AgentManagementView;
 use crate::views::chat::ChatViewPanel;
 use crate::views::drive::DriveViewPanel;
@@ -20,6 +23,7 @@ use crate::views::threads::ThreadsViewPanel;
 #[derive(Default, Clone)]
 pub struct UiState {
     pub selected_chat_id: Option<String>,
+    pub selected_routine_id: Option<String>,
     pub selected_thread_id: String,
     pub settings_tab: SettingsTab,
     pub dark_mode: bool,
@@ -151,6 +155,72 @@ impl GobleApp {
         }));
 
         let shell_app = app_context.borrow().clone();
+
+        fn map_workflow_to_routine(info: &WorkflowInfo) -> RoutineEntry {
+            let trigger = match &info.trigger {
+                Trigger::Cron { .. } => RoutineTrigger::Cron,
+                _ => RoutineTrigger::Manual,
+            };
+            RoutineEntry::new(&info.id, &info.name)
+                .with_trigger(trigger)
+                .with_enabled(info.enabled)
+                .with_status(RoutineStatus::Idle)
+        }
+
+        let state_for_sidebar = Arc::clone(&state);
+        let ui_state_for_sidebar = Rc::clone(&ui_state);
+        let sidebar_resolver =
+            move |_shell_state: Rc<RefCell<ShellState>>, dirty: Rc<RefCell<bool>>| {
+                let workflows = state_api::list_workflows(&state_for_sidebar);
+                let routines: Vec<RoutineEntry> = workflows
+                    .iter()
+                    .map(map_workflow_to_routine)
+                    .collect();
+                let selected_id = ui_state_for_sidebar.borrow().selected_routine_id.clone();
+                let state_for_create = Arc::clone(&state_for_sidebar);
+                let ui_state_for_create = Rc::clone(&ui_state_for_sidebar);
+                let dirty_for_create = Rc::clone(&dirty);
+                let _state_for_select = Arc::clone(&state_for_sidebar);
+                let ui_state_for_select = Rc::clone(&ui_state_for_sidebar);
+                let dirty_for_select = Rc::clone(&dirty);
+                let state_for_delete = Arc::clone(&state_for_sidebar);
+                let dirty_for_delete = Rc::clone(&dirty);
+                let state_for_toggle = Arc::clone(&state_for_sidebar);
+                let dirty_for_toggle = Rc::clone(&dirty);
+
+                RoutineSidebar::new(routines)
+                    .with_selected(selected_id)
+                    .with_on_create(move || {
+                        let req = state_api::CreateWorkflowRequest {
+                            name: "New routine".to_string(),
+                            description: "".to_string(),
+                            steps: vec![],
+                            trigger: Trigger::Manual,
+                        };
+                        if let Ok(info) = state_api::create_workflow(&state_for_create, req) {
+                            ui_state_for_create.borrow_mut().selected_routine_id = Some(info.id);
+                            *dirty_for_create.borrow_mut() = true;
+                        }
+                    })
+                    .with_on_select(move |id| {
+                        ui_state_for_select.borrow_mut().selected_routine_id = Some(id);
+                        *dirty_for_select.borrow_mut() = true;
+                    })
+                    .with_on_delete(move |id| {
+                        if let Err(e) = state_api::delete_workflow(&state_for_delete, &id) {
+                            log::error!("failed to delete routine {}: {}", id, e);
+                        }
+                        *dirty_for_delete.borrow_mut() = true;
+                    })
+                    .with_on_toggle_enabled(move |id| {
+                        if let Err(e) = state_api::toggle_workflow_enabled(&state_for_toggle, &id) {
+                            log::error!("failed to toggle routine {}: {}", id, e);
+                        }
+                        *dirty_for_toggle.borrow_mut() = true;
+                    })
+                    .finish()
+            };
+
         ShellView::with_content_and_event_checker(
             shell_state,
             &shell_app,
@@ -215,6 +285,7 @@ impl GobleApp {
             ),
             Some(event_checker),
         )
+        .with_sidebar(sidebar_resolver)
         .finish()
     }
 }

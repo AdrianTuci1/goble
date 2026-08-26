@@ -83,7 +83,7 @@ impl RootView {
         let mut state = self.state.borrow_mut();
         for (name, payload) in events {
             match name.as_str() {
-                "chats:updated" | "chat:updated" => state.refresh_conversations(&desktop),
+                "chats:updated" | "chat:updated" => state.refresh_routines(&desktop),
                 "chat:turn_finished" => {
                     state.agent_busy = false;
                     // A prompt queued while the agent was running is submitted
@@ -142,7 +142,7 @@ impl RootView {
             let s = self.state.borrow();
             UiSnapshot {
                 current_tab: s.current_tab,
-                conversations: s.conversations.clone(),
+                routines: s.routines.clone(),
                 selected_id: s.selected_id.clone(),
                 search_query: s.search_query.clone(),
                 search_focused: s.search_focused,
@@ -190,7 +190,7 @@ impl RootView {
                 llm_dialog_focus: s.llm_dialog_focus.clone(),
                 sidebar_width: s.sidebar_width,
                 sidebar_dragging: s.sidebar_dragging,
-                agent_cards: s.agent_cards.clone(),
+                routine_cards: s.routine_cards.clone(),
                 new_agent_hover: s.new_agent_hover.clone(),
             }
         };

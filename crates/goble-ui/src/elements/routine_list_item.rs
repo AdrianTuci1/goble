@@ -4,40 +4,34 @@ use std::rc::Rc;
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, Avatar, AvatarShape, Button, ButtonVariant, Container, CrossAxisAlignment,
-    Element, EventContext, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisAlignment,
-    MainAxisSize, PaintContext, Point, SizeConstraint, Text, TopbarButton,
+    Element, Empty, EventContext, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisAlignment,
+    MainAxisSize, PaintContext, Point, SizeConstraint, Switch, Text, TopbarButton,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::{rectf, RectF, Vector2F};
+use crate::geometry::{rectf, vec2f, RectF, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
+use crate::elements::routine_sidebar::{RoutineStatus, RoutineTrigger};
 
 /// Per-card interaction state that must survive the per-frame element rebuild.
-/// Owned by the app (a map keyed by conversation id) and shared with the card
+/// Owned by the app (a map keyed by routine id) and shared with the card
 /// through `Rc<RefCell<_>>`, so hover / the delete menu persist across frames.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct AgentCardUi {
+pub struct RoutineCardUi {
     pub hover: bool,
     pub menu_open: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum ConversationStatus {
-    #[default]
-    Default,
-    Success,
-    Error,
-    Stopped,
-}
-
-pub struct ConversationListItem {
+pub struct RoutineListItem {
     id: String,
     name: String,
-    last_response: String,
-    timestamp: String,
+    trigger: RoutineTrigger,
+    enabled: bool,
+    status: RoutineStatus,
     selected: bool,
-    ui: Rc<RefCell<AgentCardUi>>,
+    ui: Rc<RefCell<RoutineCardUi>>,
     on_select: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_delete: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_toggle_enabled: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     root: Option<Box<dyn Element>>,
     bg: crate::color::ColorU,
     state: InteractiveState,
@@ -45,24 +39,27 @@ pub struct ConversationListItem {
     origin: Option<Point>,
 }
 
-impl ConversationListItem {
+impl RoutineListItem {
     pub fn new(
         id: impl Into<String>,
         name: impl Into<String>,
-        last_response: impl Into<String>,
-        timestamp: impl Into<String>,
-        ui: Rc<RefCell<AgentCardUi>>,
+        trigger: RoutineTrigger,
+        enabled: bool,
+        status: RoutineStatus,
+        ui: Rc<RefCell<RoutineCardUi>>,
         selected: bool,
     ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
-            last_response: last_response.into(),
-            timestamp: timestamp.into(),
+            trigger,
+            enabled,
+            status,
             selected,
             ui,
             on_select: None,
             on_delete: None,
+            on_toggle_enabled: None,
             root: None,
             bg: crate::color::ColorU::default(),
             state: InteractiveState::default(),
@@ -81,13 +78,15 @@ impl ConversationListItem {
         self
     }
 
+    pub fn with_on_toggle_enabled<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_toggle_enabled = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// Build the root tree once, reflecting the current hover/menu state. It is
-    /// called from `layout` (which has `app`); it is *not* rebuilt during
-    /// `paint`/`dispatch`, so the sizes computed by `layout` are preserved.
     fn ensure_root(&mut self, app: &AppContext) {
         if self.root.is_some() {
             return;
@@ -108,6 +107,24 @@ impl ConversationListItem {
         };
         self.bg = bg;
 
+        let status_color = match self.status {
+            RoutineStatus::Running => ColorToken::Accent,
+            RoutineStatus::Success => ColorToken::Success,
+            RoutineStatus::Error => ColorToken::Error,
+            RoutineStatus::Stopped => ColorToken::Muted,
+            RoutineStatus::Idle => ColorToken::Muted,
+        };
+
+        let status_dot = Container::new(Empty::new().finish())
+            .with_background(Fill::Solid(app.theme.color(status_color)))
+            .with_corner_radius(4.0)
+            .finish();
+
+        let meta_text = format!("{} • {}",
+            self.trigger.label(),
+            if self.enabled { "enabled" } else { "disabled" }
+        );
+
         let name_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
@@ -118,21 +135,16 @@ impl ConversationListItem {
                     .with_font_size(12.0)
                     .finish(),
             )
-            .with_child(
-                Text::new(self.timestamp.clone())
-                    .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(12.0)
-                    .finish(),
-            )
+            .with_child(status_dot)
             .finish();
 
-        let last_row = Flex::row()
+        let meta_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(xs)
             .with_child(
-                Text::new(self.last_response.clone())
+                Text::new(meta_text)
                     .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(12.0)
+                    .with_font_size(11.0)
                     .with_max_lines(1)
                     .finish(),
             )
@@ -142,7 +154,7 @@ impl ConversationListItem {
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_spacing(2.0)
             .with_child(name_row)
-            .with_child(last_row)
+            .with_child(meta_row)
             .finish();
 
         let avatar = Avatar::new(self.name.clone())
@@ -182,11 +194,14 @@ impl ConversationListItem {
             .with_main_axis_size(MainAxisSize::Min)
             .with_child(row.finish());
 
-        // Delete menu, shown as a row under the card while open.
+        // Action menu, shown as a row under the card while open.
         if menu_open {
+            let toggle = self.toggle_enabled_button(app);
             let delete = self.delete_button(app);
             let del_row = Flex::row()
-                .with_main_axis_alignment(MainAxisAlignment::End)
+                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(toggle)
                 .with_child(delete)
                 .finish();
             column = column.with_child(
@@ -217,7 +232,7 @@ impl ConversationListItem {
                     .finish(),
             )
             .with_child(
-                Text::new("Delete agent")
+                Text::new("Delete routine")
                     .with_theme_color(ColorToken::Error, app)
                     .with_font_size(12.0)
                     .finish(),
@@ -232,9 +247,33 @@ impl ConversationListItem {
             })
             .finish()
     }
+
+    fn toggle_enabled_button(&self, app: &AppContext) -> Box<dyn Element> {
+        let on_toggle = self.on_toggle_enabled.clone();
+        let label = if self.enabled { "Disable" } else { "Enable" };
+        let row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(6.0)
+            .with_child(
+                Text::new(label)
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_font_size(12.0)
+                    .finish(),
+            )
+            .with_child(Switch::new().with_checked(self.enabled).with_size(vec2f(14.0, 14.0)).finish())
+            .finish();
+        Button::new(row)
+            .with_variant(ButtonVariant::Ghost)
+            .with_on_click(move || {
+                if let Some(cb) = on_toggle.as_ref() {
+                    (cb.borrow_mut())();
+                }
+            })
+            .finish()
+    }
 }
 
-impl Element for ConversationListItem {
+impl Element for RoutineListItem {
     fn layout(
         &mut self,
         constraint: SizeConstraint,
@@ -250,10 +289,6 @@ impl Element for ConversationListItem {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
 
-        // Clip the card content to its own bounds so a long one-line last
-        // message is cut at the card's right edge instead of spilling into the
-        // main area. The fade (drawn after pop) stays unclipped so it can cover
-        // that edge.
         if let Some(b) = self.size.map(|s| rectf(origin.x, origin.y, s.x, s.y)) {
             if let Some(renderer) = ctx.renderer.as_mut() {
                 renderer.clip_rect(b);
@@ -266,9 +301,6 @@ impl Element for ConversationListItem {
             renderer.pop_clip();
         }
 
-        // Fade the right edge of the row until the 3-dot menu appears (which
-        // then truncates the text itself). Skip while the menu is open so the
-        // fade never covers the delete button.
         let ui = self.ui.borrow();
         if !ui.hover && !ui.menu_open {
             if let Some(size) = self.size {
@@ -303,8 +335,6 @@ impl Element for ConversationListItem {
             None => return false,
         };
 
-        // Let the inner 3-dot button (and the delete button) consume the event
-        // first; otherwise the row itself would swallow the click.
         if let Some(root) = self.root.as_mut() {
             if root.dispatch_event(event, ctx, app) {
                 return true;
@@ -331,8 +361,7 @@ impl Element for ConversationListItem {
     }
 }
 
-/// A small helper used by tests to find a card's hover bounds.
-pub fn card_bounds(item: &ConversationListItem) -> Option<RectF> {
+pub fn card_bounds(item: &RoutineListItem) -> Option<RectF> {
     item.bounds()
 }
 
@@ -342,14 +371,15 @@ mod tests {
     use crate::geometry::vec2f;
 
     #[test]
-    fn conversation_list_item_layouts() {
+    fn routine_list_item_layouts() {
         let app = AppContext::default();
-        let ui = Rc::new(RefCell::new(AgentCardUi::default()));
-        let mut item = ConversationListItem::new(
-            "c1",
-            "Ada",
-            "I finished the task.",
-            "40 min ago",
+        let ui = Rc::new(RefCell::new(RoutineCardUi::default()));
+        let mut item = RoutineListItem::new(
+            "r1",
+            "Morning summary",
+            RoutineTrigger::Manual,
+            true,
+            RoutineStatus::Idle,
             ui,
             false,
         );
@@ -363,16 +393,17 @@ mod tests {
     }
 
     #[test]
-    fn conversation_list_item_click_fires_callback() {
+    fn routine_list_item_click_fires_callback() {
         let clicked = Rc::new(RefCell::new(false));
         let clicked_clone = clicked.clone();
         let app = AppContext::default();
-        let ui = Rc::new(RefCell::new(AgentCardUi::default()));
-        let mut item = ConversationListItem::new(
-            "c1",
-            "Ada",
-            "Hello",
-            "5 min ago",
+        let ui = Rc::new(RefCell::new(RoutineCardUi::default()));
+        let mut item = RoutineListItem::new(
+            "r1",
+            "Morning summary",
+            RoutineTrigger::Manual,
+            true,
+            RoutineStatus::Idle,
             ui,
             false,
         )
@@ -403,12 +434,13 @@ mod tests {
     #[test]
     fn hover_updates_shared_state() {
         let app = AppContext::default();
-        let ui = Rc::new(RefCell::new(AgentCardUi::default()));
-        let mut item = ConversationListItem::new(
-            "c1",
-            "Ada",
-            "Hello",
-            "5 min ago",
+        let ui = Rc::new(RefCell::new(RoutineCardUi::default()));
+        let mut item = RoutineListItem::new(
+            "r1",
+            "Morning summary",
+            RoutineTrigger::Manual,
+            true,
+            RoutineStatus::Idle,
             Rc::clone(&ui),
             false,
         );
@@ -428,52 +460,5 @@ mod tests {
             &app,
         );
         assert!(ui.borrow().hover);
-    }
-
-    #[test]
-    fn fade_emits_gradient_command() {
-        let app = AppContext::default();
-        let ui = Rc::new(RefCell::new(AgentCardUi::default()));
-        let item = ConversationListItem::new(
-            "c1",
-            "Ada",
-            "A very long last message that should fade out at the right edge",
-            "5 min ago",
-            ui,
-            false,
-        );
-        let mut element: Box<dyn Element> = Box::new(item);
-        let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
-        let counts = crate::test_util::command_counts(&commands);
-        assert_eq!(counts.fill_rect_fade, 1, "idle card should emit a right fade");
-        assert!(counts.draw_text > 0, "card should render text");
-    }
-
-    #[test]
-    fn hover_renders_dots_and_menu_renders_delete() {
-        let app = AppContext::default();
-        let ui = Rc::new(RefCell::new(AgentCardUi {
-            hover: true,
-            menu_open: true,
-        }));
-        let item = ConversationListItem::new(
-            "c1",
-            "Ada",
-            "A long last message",
-            "5 min ago",
-            ui,
-            false,
-        );
-        let mut element: Box<dyn Element> = Box::new(item);
-        let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
-
-        let has_dots = commands.iter().any(|c| {
-            matches!(c, crate::render::RenderCommand::DrawIcon { name, .. } if name == "dots-horizontal")
-        });
-        let has_delete = commands.iter().any(|c| {
-            matches!(c, crate::render::RenderCommand::DrawText { text, .. } if text.contains("Delete agent"))
-        });
-        assert!(has_dots, "hover/menu card should render the 3-dot icon");
-        assert!(has_delete, "open menu should render a 'Delete agent' action");
     }
 }

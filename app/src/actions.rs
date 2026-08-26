@@ -12,7 +12,7 @@ use goble_core::agent::Trigger;
 use goble_core::worker::WorkerId;
 use goble_core::workflow::WorkflowId;
 use goble_desktop_service::DesktopState;
-use goble_ui::{ChatMessage, ChatRole, ConversationEntry, SettingsPage};
+use goble_ui::{ChatMessage, ChatRole, RoutineEntry, RoutineTrigger, SettingsPage};
 
 use crate::state::{routing_to_str, UiState};
 use crate::ui::{AppTab, CronEntry, UiActions, WorkspaceRouting};
@@ -49,6 +49,7 @@ pub fn make_actions(state: Rc<RefCell<UiState>>, desktop: Option<Arc<DesktopStat
     let on_sidebar_drag_move = Rc::clone(&state);
     let on_sidebar_drag_end = Rc::clone(&state);
     let on_agent_delete = Rc::clone(&state);
+    let on_routine_toggle_enabled = Rc::clone(&state);
     let on_settings_back = Rc::clone(&state);
     let on_settings_navigate = Rc::clone(&state);
     let on_toggle_dark_mode = Rc::clone(&state);
@@ -67,6 +68,7 @@ pub fn make_actions(state: Rc<RefCell<UiState>>, desktop: Option<Arc<DesktopStat
 
     let desktop_create = desktop.clone();
     let desktop_select = desktop.clone();
+    let desktop_delete = desktop.clone();
     let desktop_send = desktop.clone();
     let desktop_stop = desktop.clone();
     let desktop_answer = desktop.clone();
@@ -75,6 +77,7 @@ pub fn make_actions(state: Rc<RefCell<UiState>>, desktop: Option<Arc<DesktopStat
     let desktop_send_queued = desktop.clone();
     let desktop_cron_create = desktop.clone();
     let desktop_cron_delete = desktop.clone();
+    let desktop_toggle = desktop.clone();
     let desktop_save_llm = desktop.clone();
     let desktop_add_worker = desktop.clone();
     let desktop_remove_worker = desktop.clone();
@@ -99,26 +102,37 @@ pub fn make_actions(state: Rc<RefCell<UiState>>, desktop: Option<Arc<DesktopStat
         on_create_submit: Rc::new(RefCell::new(move || {
             let mut state = on_create_submit.borrow_mut();
             let title = if state.new_conversation_draft.trim().is_empty() {
-                // The sidebar's "New agent" row has no text field, so a blank
+                // The sidebar's "New routine" row has no text field, so a blank
                 // draft means the user clicked it directly: create a default.
-                "New agent".to_string()
+                "New routine".to_string()
             } else {
                 state.new_conversation_draft.trim().to_string()
             };
             if let Some(desktop) = &desktop_create {
-                match desktop.create_chat(&title, None, None) {
-                    Ok(id) => {
+                match desktop.create_workflow(
+                    &title,
+                    "Created from the sidebar",
+                    vec![],
+                    Trigger::Manual,
+                ) {
+                    Ok(wf) => {
                         state.new_conversation_draft.clear();
-                        state.selected_id = Some(id);
-                        state.refresh_from_desktop(desktop);
+                        state.selected_id = Some(wf.id.clone());
+                        state.refresh_routines(desktop);
                     }
-                    Err(e) => log::warn!("create_chat failed: {e}"),
+                    Err(e) => log::warn!("create_workflow failed: {e}"),
                 }
             } else {
-                let id = format!("c-{}", state.conversations.len() + 1);
-                state.conversations.insert(
+                let id = format!("r-{}", state.routines.len() + 1);
+                state.routines.insert(
                     0,
-                    ConversationEntry::new(id.clone(), title, "New conversation", "now"),
+                    RoutineEntry::new(id.clone(), title)
+                        .with_trigger(RoutineTrigger::Manual)
+                        .with_status(goble_ui::RoutineStatus::Idle),
+                );
+                state.routine_cards.insert(
+                    id.clone(),
+                    Rc::new(RefCell::new(goble_ui::RoutineCardUi::default())),
                 );
                 state.selected_id = Some(id);
                 state.new_conversation_draft.clear();
@@ -433,10 +447,28 @@ pub fn make_actions(state: Rc<RefCell<UiState>>, desktop: Option<Arc<DesktopStat
         })),
         on_agent_delete: Rc::new(RefCell::new(move |id: String| {
             let mut state = on_agent_delete.borrow_mut();
-            state.conversations.retain(|c| c.id != id);
-            state.agent_cards.remove(&id);
-            if state.selected_id.as_deref() == Some(id.as_str()) {
-                state.selected_id = state.conversations.first().map(|c| c.id.clone());
+            if let Some(desktop) = &desktop_delete {
+                if let Err(e) = desktop.delete_workflow(&WorkflowId(id.clone())) {
+                    log::warn!("delete_workflow failed: {e}");
+                }
+                state.refresh_routines(desktop);
+            } else {
+                state.routines.retain(|r| r.id != id);
+                state.routine_cards.remove(&id);
+                if state.selected_id.as_deref() == Some(id.as_str()) {
+                    state.selected_id = state.routines.first().map(|r| r.id.clone());
+                }
+            }
+        })),
+        on_routine_toggle_enabled: Rc::new(RefCell::new(move |id: String| {
+            let mut state = on_routine_toggle_enabled.borrow_mut();
+            if let Some(desktop) = &desktop_toggle {
+                if let Err(e) = desktop.toggle_workflow_enabled(&WorkflowId(id.clone())) {
+                    log::warn!("toggle_workflow_enabled failed: {e}");
+                }
+                state.refresh_routines(desktop);
+            } else if let Some(routine) = state.routines.iter_mut().find(|r| r.id == id) {
+                routine.enabled = !routine.enabled;
             }
         })),
         on_settings_back: Rc::new(RefCell::new(move || {

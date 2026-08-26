@@ -4,8 +4,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    AgentCardUi, AppContext, Axis, Container, ConversationListItem, CrossAxisAlignment, Divider,
-    EdgeInsets, Element, Fill, Flex, HoverButton, Icon, Label, LabelSize, MainAxisSize, Scrollable,
+    AppContext, Axis, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Fill, Flex,
+    HoverButton, Icon, Label, LabelSize, MainAxisSize, RoutineCardUi, RoutineListItem, Scrollable,
     SearchInput, Spacer, Text, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -36,8 +36,8 @@ pub fn build_sidebar(
         .with_on_focus_change(move |focused| (on_search_focus.borrow_mut())(focused))
         .finish();
 
-    // "New agent" row: a gray "+" box in front of the label. The whole row
-    // highlights on hover and creates a new agent on click. The hover flag
+    // "New routine" row: a gray "+" box in front of the label. The whole row
+    // highlights on hover and creates a new routine on click. The hover flag
     // lives in app state so the highlight survives the per-frame rebuild.
     let on_create_submit = actions.on_create_submit.clone();
     let plus_box = Container::new(
@@ -57,7 +57,7 @@ pub fn build_sidebar(
             .with_spacing(sm)
             .with_child(plus_box)
             .with_child(
-                Text::new("New agent")
+                Text::new("New routine")
                     .with_theme_color(ColorToken::Muted, app)
                     .with_font_size(12.0)
                     .finish(),
@@ -70,7 +70,7 @@ pub fn build_sidebar(
     .finish();
 
     // Conversation cards.
-    let section_label = Label::new("Conversations")
+    let section_label = Label::new("Routines")
         .with_size(LabelSize::Xs)
         .with_theme_color(ColorToken::Muted, app)
         .finish();
@@ -78,27 +78,31 @@ pub fn build_sidebar(
     let mut list = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(2.0);
-    for entry in &state.conversations {
+    for entry in &state.routines {
         let click_id = entry.id.clone();
         let delete_id = entry.id.clone();
+        let toggle_id = entry.id.clone();
         let selected = state.selected_id.as_deref() == Some(entry.id.as_str());
         let on_select = actions.on_select_conversation.clone();
         let on_delete = actions.on_agent_delete.clone();
+        let on_toggle_enabled = actions.on_routine_toggle_enabled.clone();
         let ui = state
-            .agent_cards
+            .routine_cards
             .get(&entry.id)
             .cloned()
-            .unwrap_or_else(|| Rc::new(RefCell::new(AgentCardUi::default())));
-        let item = ConversationListItem::new(
+            .unwrap_or_else(|| Rc::new(RefCell::new(RoutineCardUi::default())));
+        let item = RoutineListItem::new(
             entry.id.clone(),
             entry.name.clone(),
-            entry.last_response.clone(),
-            entry.timestamp.clone(),
+            entry.trigger,
+            entry.enabled,
+            entry.status,
             ui,
             selected,
         )
         .with_on_click(move || (on_select.borrow_mut())(click_id.clone()))
         .with_on_delete(move || (on_delete.borrow_mut())(delete_id.clone()))
+        .with_on_toggle_enabled(move || (on_toggle_enabled.borrow_mut())(toggle_id.clone()))
         .finish();
         list = list.with_child(item);
     }

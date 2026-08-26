@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    AgentCardUi, AppContext, ChatMessage as UiChatMessage, Container, ConversationEntry,
-    CrossAxisAlignment, Divider, Element, Expanded, Fill, Flex, MainAxisSize,
+    AppContext, ChatMessage as UiChatMessage, Container, CrossAxisAlignment, Divider, Element,
+    Expanded, Fill, Flex, MainAxisSize, RoutineCardUi, RoutineEntry,
 };
 use goble_ui::theme::ColorToken;
 use goble_ui::{
@@ -125,7 +125,7 @@ pub enum LlmFormField {
 #[derive(Clone, Debug)]
 pub struct UiSnapshot {
     pub current_tab: AppTab,
-    pub conversations: Vec<ConversationEntry>,
+    pub routines: Vec<RoutineEntry>,
     pub selected_id: Option<String>,
     pub search_query: String,
     pub search_focused: bool,
@@ -188,7 +188,7 @@ pub struct UiSnapshot {
     pub sidebar_dragging: bool,
     /// Per-card interaction state (hover / delete menu), shared with the
     /// card elements so selections and menus persist across frames.
-    pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,
+    pub routine_cards: HashMap<String, Rc<RefCell<RoutineCardUi>>>,
     /// Hover flag for the sidebar's "New agent" row, owned here so the row's
     /// highlight survives the per-frame element rebuild.
     pub new_agent_hover: Rc<RefCell<bool>>,
@@ -273,6 +273,8 @@ pub struct UiActions {
     pub on_sidebar_drag_end: Rc<RefCell<dyn FnMut()>>,
     /// Delete a conversation/agent card from the list.
     pub on_agent_delete: Rc<RefCell<dyn FnMut(String)>>,
+    /// Toggle a routine's enabled flag.
+    pub on_routine_toggle_enabled: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: return to the previous view (chat).
     pub on_settings_back: Rc<RefCell<dyn FnMut()>>,
     /// Settings: switch the active settings page.

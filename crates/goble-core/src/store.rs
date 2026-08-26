@@ -1168,6 +1168,15 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_workflow_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.lock().execute(
+            "UPDATE workflows SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
+            params![enabled as i32, now, id],
+        )?;
+        Ok(())
+    }
+
     pub fn insert_execution(
         &self,
         id: &str,

@@ -2,9 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    AppContext, Container, ConversationEntry, ConversationSidebar, CrossAxisAlignment, Element,
-    Empty, EventContext, Fill, Flex, LayoutContext, PaintContext, Point, SizeConstraint, Stack,
-    Topbar,
+    AppContext, Container, CrossAxisAlignment, Element, Empty, EventContext, Fill, Flex,
+    LayoutContext, PaintContext, Point, SizeConstraint, Stack, Topbar,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -65,6 +64,8 @@ pub struct ShellView {
     dirty: Rc<RefCell<bool>>,
     content_resolver:
         Box<dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static>,
+    sidebar_resolver:
+        Option<Box<dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static>>,
     event_checker: Option<Rc<RefCell<dyn FnMut() -> bool>>>,
     root: Box<dyn Element>,
     size: Option<Vector2F>,
@@ -105,16 +106,26 @@ impl ShellView {
         let state = Rc::new(RefCell::new(state));
         let dirty = Rc::new(RefCell::new(false));
         let content_resolver = Box::new(content_resolver);
-        let root = Self::build_root(Rc::clone(&state), Rc::clone(&dirty), &content_resolver, app);
+        let root = Self::build_root(Rc::clone(&state), Rc::clone(&dirty), &content_resolver, None, app);
         Self {
             state,
             dirty,
             content_resolver,
+            sidebar_resolver: None,
             event_checker,
             root,
             size: None,
             origin: None,
         }
+    }
+
+    pub fn with_sidebar<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static,
+    {
+        self.sidebar_resolver = Some(Box::new(resolver));
+        self.request_rebuild();
+        self
     }
 
     pub fn state(&self) -> Rc<RefCell<ShellState>> {
@@ -138,6 +149,7 @@ impl ShellView {
             Rc::clone(&self.state),
             Rc::clone(&self.dirty),
             &self.content_resolver,
+            self.sidebar_resolver.as_ref().map(|v| &**v),
             app,
         );
         *self.dirty.borrow_mut() = false;
@@ -147,10 +159,17 @@ impl ShellView {
         state: Rc<RefCell<ShellState>>,
         dirty: Rc<RefCell<bool>>,
         content_resolver: &dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element>,
+        sidebar_resolver: Option<&dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element>>,
         app: &AppContext,
     ) -> Box<dyn Element> {
         let topbar = Self::titlebar(Rc::clone(&state), Rc::clone(&dirty), app);
-        let body = Self::body(Rc::clone(&state), Rc::clone(&dirty), content_resolver, app);
+        let body = Self::body(
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            content_resolver,
+            sidebar_resolver,
+            app,
+        );
 
         let column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -180,7 +199,7 @@ impl ShellView {
             match s.active_view {
                 ActiveView::Chat => s.sidebar_collapsed = !s.sidebar_collapsed,
                 _ => s.active_view = ActiveView::Chat,
-            }
+            };
             *menu_dirty.borrow_mut() = true;
         };
 
@@ -226,9 +245,15 @@ impl ShellView {
         state: Rc<RefCell<ShellState>>,
         dirty: Rc<RefCell<bool>>,
         content_resolver: &dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element>,
+        sidebar_resolver: Option<&dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element>>,
         app: &AppContext,
     ) -> Box<dyn Element> {
-        let sidebar = Self::left_panel(Rc::clone(&state), Rc::clone(&dirty), app);
+        let sidebar = Self::left_panel(
+            Rc::clone(&state),
+            Rc::clone(&dirty),
+            sidebar_resolver,
+            app,
+        );
         let content = content_resolver(Rc::clone(&state), Rc::clone(&dirty));
 
         // The sidebar is an overlay so the content sees the full window width.
@@ -238,6 +263,7 @@ impl ShellView {
     fn left_panel(
         state: Rc<RefCell<ShellState>>,
         _dirty: Rc<RefCell<bool>>,
+        sidebar_resolver: Option<&dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element>>,
         _app: &AppContext,
     ) -> Box<dyn Element> {
         let s = state.borrow();
@@ -247,36 +273,15 @@ impl ShellView {
         match s.active_view {
             ActiveView::Chat => {
                 drop(s);
-                let conversations = sample_conversations();
-                ConversationSidebar::new(conversations)
-                    .with_selected("c1")
-                    .with_on_create(|| log::info!("new conversation clicked"))
-                    .with_on_select(|id| log::info!("selected conversation: {}", id))
-                    .with_on_delete(|id| log::info!("delete conversation: {}", id))
-                    .finish()
+                if let Some(resolver) = sidebar_resolver {
+                    resolver(Rc::clone(&state), _dirty)
+                } else {
+                    Empty::new().finish()
+                }
             }
             _ => Empty::new().finish(),
         }
     }
-}
-
-fn sample_conversations() -> Vec<ConversationEntry> {
-    use crate::elements::ConversationStatus;
-    vec![
-        ConversationEntry::new("c1", "Ada", "I finished the review.", "10:42")
-            .with_status(ConversationStatus::Success),
-        ConversationEntry::new("c2", "Coder", "Build failed on step 3.", "09:15")
-            .with_status(ConversationStatus::Error),
-        ConversationEntry::new("c3", "Planner", "Stopped by user.", "Yesterday")
-            .with_status(ConversationStatus::Stopped),
-        ConversationEntry::new(
-            "c4",
-            "Research",
-            "Here are the sources you asked for.",
-            "Mon",
-        )
-        .with_status(ConversationStatus::Default),
-    ]
 }
 
 impl Element for ShellView {

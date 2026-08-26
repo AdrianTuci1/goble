@@ -62,6 +62,8 @@ mod tests {
         Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, Rect, ShellState, ShellView,
         SizeConstraint, Switch, Text, TitleBar,
     };
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use crate::geometry::vec2f;
     use crate::views::settings_view::SettingsPage;
     use crate::{ChatView, SettingsView, ThreadKind, ThreadListEntry, ThreadsContainer};
@@ -226,7 +228,11 @@ mod tests {
     #[test]
     fn shell_view_renders() {
         let app = app();
-        let mut element = ShellView::new(ShellState::default(), &app).finish();
+        let content: Box<dyn Fn(Rc<RefCell<ShellState>>, Rc<RefCell<bool>>) -> Box<dyn Element> + 'static> =
+            Box::new(move |_state, _dirty| {
+                Text::new("Hello").with_font_size(16.0).finish()
+            });
+        let mut element = ShellView::with_content(ShellState::default(), &app, content).finish();
         let commands = render_element(&mut element, vec2f(1024.0, 768.0), &app);
         let counts = command_counts(&commands);
         assert!(counts.fill_rect > 0, "shell view should render backgrounds");

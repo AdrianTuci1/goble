@@ -2126,14 +2126,14 @@ fn mcp_call(manager: &McpManager, args: &serde_json::Value) -> Result<String> {
 
 fn resolve_path(path: &str, workspace_dir: &std::path::Path) -> Result<PathBuf> {
     let p = PathBuf::from(path);
-    let resolved = if p.is_absolute() {
-        p
-    } else {
-        workspace_dir.join(p)
-    };
     let canonical_base = workspace_dir
         .canonicalize()
         .unwrap_or_else(|_| workspace_dir.to_path_buf());
+    let resolved = if p.is_absolute() {
+        p
+    } else {
+        canonical_base.join(p)
+    };
     let canonical_resolved = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
     if !canonical_resolved.starts_with(&canonical_base) {
         anyhow::bail!("path {path:?} escapes workspace directory {canonical_base:?}");

@@ -20,13 +20,14 @@ const BASE_DIRS: &[&str] = &[
 
 /// Directories that only materialize when the workspace runs **on this machine**
 /// (local / self-as-worker): bundled tooling, worktrees, the thread server,
-/// downloaded binaries and user-installed plugins/skills/workflows. A remote-only
-/// user's home stays minimal — a thin client holding identity + essentials.
+/// downloaded binaries, agent workspaces and user-installed plugins/skills/workflows.
+/// A remote-only user's home stays minimal — a thin client holding identity + essentials.
 const WORKSPACE_DIRS: &[&str] = &[
     "bundled/agents",
     "bundled/roles",
     "bundled/personas",
     "bundled/skills",
+    "workspaces",
     "worktrees",
     "threads",
     "downloads",
@@ -78,6 +79,10 @@ impl GobleHome {
 
     pub fn threads_dir(&self) -> PathBuf {
         self.root.join("threads")
+    }
+
+    pub fn workspaces_dir(&self) -> PathBuf {
+        self.root.join("workspaces")
     }
 
     pub fn principals_dir(&self) -> PathBuf {

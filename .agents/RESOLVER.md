@@ -27,6 +27,12 @@
 
 | Date | Item | Verification (what passed) |
 | --- | --- | --- |
+| 2026-08-26 | Fix hardcoded `/var/goblin/workspaces` in `goblin-worker` (`04-agent-runtime/sandbox-and-cwd.md`) | `cargo test -p goblin-worker` lib + integration passed; `cargo test -p goble-cli --test e2e_worker` passed |
+
+## Recently resolved
+
+| Date | Item | Verification (what passed) |
+| --- | --- | --- |
 | *(yyyy-mm-dd)* | *(id + doc)* | *(command / test result)* |
 
 ## Rule: no `[x]` without proof

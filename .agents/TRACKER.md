@@ -33,7 +33,7 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done.
 - [x] Seed a Goble user guide into `~/.goble/docs/user-guide` on first launch (ported from `.grok` and Goble-ified; base-only, so it exists for remote-only users too) and expose a `user_guide` harness tool (list/read topics) + a system-prompt pointer so the model answers product questions from the guide — incl. remote/self-as-worker via Tailscale and mobile access (`workspace.md`, `docs.rs`/`app_home.rs`)
 
 ## 04 — Agent runtime (harness)
-- [ ] Fix the hardcoded `workspace_root = /var/goblin/workspaces` default in `goblin-worker` so harness tests/dev runs don't hit `Permission denied` on machines without that dir (currently breaks `goblin-worker` runner/scheduler unit tests and `goble-cli`'s `e2e_worker` in a stock dev environment) (`sandbox-and-cwd.md`)
+- [x] Fix the hardcoded `workspace_root = /var/goblin/workspaces` default in `goblin-worker` so harness tests/dev runs don't hit `Permission denied` on machines without that dir (currently breaks `goblin-worker` runner/scheduler unit tests and `goble-cli`'s `e2e_worker` in a stock dev environment) (`sandbox-and-cwd.md`)
 - [ ] Define durable **state** vs compacting **transcript** boundaries (`agent-state-and-compaction.md`)
 - [ ] Wire compaction triggers by token/size budget; persist the rolling summary (`agent-state-and-compaction.md`)
 - [ ] Key state by `agent_id` and make it survive local↔remote routing (`agent-state-and-compaction.md`)

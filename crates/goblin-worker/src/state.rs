@@ -8,6 +8,7 @@ use crate::file_vault::FileVault;
 use crate::leader::LeaderState;
 use crate::scheduler::Scheduler;
 use goble_core::agent::{AgentId, AgentSpec, McpServer};
+use goble_core::app_home::GobleHome;
 use goble_core::cluster_key::ClusterKey;
 use goble_core::execution::ExecutionTrace;
 use goble_core::identity::Identity;
@@ -48,10 +49,28 @@ pub struct WorkerConfig {
     pub llm_base_url: Option<String>,
 }
 
+fn default_workspace_root() -> PathBuf {
+    GobleHome::locate()
+        .and_then(|h| {
+            h.ensure_workspace().ok();
+            Ok(h.workspaces_dir())
+        })
+        .unwrap_or_else(|_| PathBuf::from("/tmp/goblin/workspaces"))
+}
+
+fn default_vault_path() -> PathBuf {
+    GobleHome::locate()
+        .and_then(|h| {
+            h.ensure_base().ok();
+            Ok(h.root().join("vault.json"))
+        })
+        .unwrap_or_else(|_| PathBuf::from("/tmp/goblin/vault.json"))
+}
+
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
-            workspace_root: std::path::PathBuf::from("/var/goblin/workspaces"),
+            workspace_root: default_workspace_root(),
             llm_provider: std::env::var("LLM_PROVIDER").ok(),
             llm_model: std::env::var("LLM_MODEL").ok(),
             llm_base_url: std::env::var("LLM_BASE_URL").ok(),
@@ -70,7 +89,7 @@ impl AppState {
             agents: Mutex::new(std::collections::HashMap::new()),
             mcp_servers: Mutex::new(std::collections::HashMap::new()),
             secrets: Mutex::new(std::collections::HashMap::new()),
-            file_vault: Mutex::new(FileVault::new(PathBuf::from("/var/goblin/vault.json"))),
+            file_vault: Mutex::new(FileVault::new(default_vault_path())),
             traces: Mutex::new(std::collections::HashMap::new()),
             event_tx,
             scheduler: Mutex::new(None),

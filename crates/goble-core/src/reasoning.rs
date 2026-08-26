@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::harness::{
     arc_to_sender_ref, execute_tool_call, harness_tool_definitions, HarnessEvent, ThinkingMode,
-    HARNESS_SYSTEM_PROMPT,
+    WebSearchConfig, HARNESS_SYSTEM_PROMPT,
 };
 use crate::llm::{
     CompletionRequest, CompletionStreamEvent, LlmProvider, LlmToolCall, Message, Role,
@@ -319,6 +319,8 @@ pub fn run_mission_turn(
     provider: String,
     model: String,
     reasoning_enabled: bool,
+    auto_approve: bool,
+    web_search: WebSearchConfig,
 ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
     Box::pin(async_stream::stream! {
         let now = Utc::now().to_rfc3339();
@@ -442,26 +444,44 @@ pub fn run_mission_turn(
 
                 if decision == ReasoningDecision::AskUser {
                     if let Some(ask) = extract_ask_user(&tool_calls) {
-                        let now = Utc::now().to_rfc3339();
-                        if let Err(e) = store.insert_pending_ask(
-                            &ask.id,
-                            &chat_id,
-                            Some(&mission.id),
-                            &ask.question,
-                            &ask.quick_replies.join("\n"),
-                            "pending",
-                            &now,
-                            &now,
-                        ) {
-                            yield HarnessEvent::Error(e.to_string());
+                        if auto_approve {
+                            // Auto-approve: skip suspending on the question and
+                            // record a synthetic answer so the next reasoning /
+                            // execution step sees the user already responded.
+                            let now = Utc::now().to_rfc3339();
+                            if let Err(e) = store.insert_chat_message(
+                                &uuid::Uuid::new_v4().to_string(),
+                                &chat_id,
+                                "user",
+                                &format!("(auto-approved; no answer to: {})", ask.question),
+                                None,
+                                &now,
+                            ) {
+                                yield HarnessEvent::Error(e.to_string());
+                                return;
+                            }
+                        } else {
+                            let now = Utc::now().to_rfc3339();
+                            if let Err(e) = store.insert_pending_ask(
+                                &ask.id,
+                                &chat_id,
+                                Some(&mission.id),
+                                &ask.question,
+                                &ask.quick_replies.join("\n"),
+                                "pending",
+                                &now,
+                                &now,
+                            ) {
+                                yield HarnessEvent::Error(e.to_string());
+                                return;
+                            }
+                            mission.pending_ask = Some(ask.clone());
+                            yield HarnessEvent::AskUser {
+                                question: ask.question,
+                                quick_replies: ask.quick_replies,
+                            };
                             return;
                         }
-                        mission.pending_ask = Some(ask.clone());
-                        yield HarnessEvent::AskUser {
-                            question: ask.question,
-                            quick_replies: ask.quick_replies,
-                        };
-                        return;
                     }
                 }
 
@@ -516,6 +536,11 @@ pub fn run_mission_turn(
 
             let mut assistant_content = String::new();
             let mut tool_calls = Vec::new();
+            // Stream the assistant reply into a single chat message row as deltas
+            // arrive, so the renderer can show it progressively instead of only at
+            // the end of the turn. The message id is kept to attach tool-call
+            // metadata once the stream finishes.
+            let mut assistant_msg_id: Option<String> = None;
             while let Some(event) = stream.next().await {
                 if cancel.load(Ordering::Relaxed) {
                     yield HarnessEvent::Error("cancelled".to_string());
@@ -524,6 +549,29 @@ pub fn run_mission_turn(
                 match event {
                     CompletionStreamEvent::AssistantDelta(delta) => {
                         assistant_content.push_str(&delta);
+                        match &assistant_msg_id {
+                            Some(id) => {
+                                if let Err(e) = store.append_chat_message_content(id, &delta) {
+                                    yield HarnessEvent::Error(e.to_string());
+                                    return;
+                                }
+                            }
+                            None => {
+                                let id = uuid::Uuid::new_v4().to_string();
+                                if let Err(e) = store.insert_chat_message(
+                                    &id,
+                                    &chat_id,
+                                    "assistant",
+                                    &delta,
+                                    None,
+                                    &Utc::now().to_rfc3339(),
+                                ) {
+                                    yield HarnessEvent::Error(e.to_string());
+                                    return;
+                                }
+                                assistant_msg_id = Some(id);
+                            }
+                        }
                         yield HarnessEvent::AssistantDelta(delta);
                     }
                     CompletionStreamEvent::ToolCalls(calls) => {
@@ -537,19 +585,31 @@ pub fn run_mission_turn(
                 }
             }
 
-            if !assistant_content.is_empty() || !tool_calls.is_empty() {
+            // Attach tool-call metadata to the streamed message, or create the
+            // tool-call-only assistant message, so the next iteration's history
+            // carries the calls.
+            if !tool_calls.is_empty() {
                 let tool_calls_json = serde_json::to_string(&tool_calls).unwrap_or_default();
-                let tool_calls_opt = if tool_calls.is_empty() { None } else { Some(tool_calls_json.as_str()) };
-                if let Err(e) = store.insert_chat_message(
-                    &uuid::Uuid::new_v4().to_string(),
-                    &chat_id,
-                    "assistant",
-                    &assistant_content,
-                    tool_calls_opt,
-                    &Utc::now().to_rfc3339(),
-                ) {
-                    yield HarnessEvent::Error(e.to_string());
-                    return;
+                match &assistant_msg_id {
+                    Some(id) => {
+                        if let Err(e) = store.set_chat_message_tool_calls(id, &tool_calls_json) {
+                            yield HarnessEvent::Error(e.to_string());
+                            return;
+                        }
+                    }
+                    None => {
+                        if let Err(e) = store.insert_chat_message(
+                            &uuid::Uuid::new_v4().to_string(),
+                            &chat_id,
+                            "assistant",
+                            "",
+                            Some(&tool_calls_json),
+                            &Utc::now().to_rfc3339(),
+                        ) {
+                            yield HarnessEvent::Error(e.to_string());
+                            return;
+                        }
+                    }
                 }
             }
 
@@ -575,7 +635,7 @@ pub fn run_mission_turn(
                 };
 
                 let sender_ref = deploy_sender.as_ref().map(|f| arc_to_sender_ref(f));
-                let result = execute_tool_call(&store, &*runner, sender_ref, &mcp_manager, &workspace_dir, call
+                let result = execute_tool_call(&store, &*runner, sender_ref, &mcp_manager, &workspace_dir, call, &web_search
                 ).await;
                 match result {
                     Ok(value) => {
@@ -635,8 +695,11 @@ pub fn resume_mission_turn(
     workspace_dir: std::path::PathBuf,
     chat_id: String,
     response: String,
+    credential: Option<(String, String)>,
     provider: String,
     model: String,
+    auto_approve: bool,
+    web_search: WebSearchConfig,
 ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
     Box::pin(async_stream::stream! {
         let now = Utc::now().to_rfc3339();
@@ -653,7 +716,24 @@ pub fn resume_mission_turn(
             return;
         }
 
-        let answer = format!("Answer to question '{}': {}", ask.3, response);
+        let mut answer = format!("Answer to question '{}': {}", ask.3, response);
+        // A credential entered in the ask card is stored by name and referenced
+        // in the transcript by that name only, so the raw secret never reaches
+        // the model or the conversation history.
+        if let Some((name, value)) = credential {
+            let name = if name.trim().is_empty() {
+                format!("cred_{}", uuid::Uuid::new_v4().simple())
+            } else {
+                name
+            };
+            if let Err(e) = store.set_credential(&name, &value) {
+                yield HarnessEvent::Error(e.to_string());
+                return;
+            }
+            answer.push_str(&format!(
+                "\nCredential stored as {name}. Reference it in run_command as {{{{credential:{name}}}}}."
+            ));
+        }
         if let Err(e) = store.insert_chat_message(
             &uuid::Uuid::new_v4().to_string(),
             &chat_id,
@@ -679,6 +759,8 @@ pub fn resume_mission_turn(
             provider,
             model,
             true,
+            auto_approve,
+            web_search,
         );
         while let Some(event) = inner.next().await {
             yield event;
@@ -863,12 +945,154 @@ mod tests {
         );
         let harness2 = Harness::new(store.clone()).with_llm(llm2);
         let events2: Vec<_> = harness2
-            .resume_turn(&chat_id, "postgres", "mock", "mock")
+            .resume_turn(&chat_id, "postgres", None, "mock", "mock")
             .collect()
             .await;
         assert!(events2
             .iter()
             .any(|e| matches!(e, HarnessEvent::ReasoningDone { .. })));
         assert!(store.get_pending_ask(&chat_id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_resume_stores_credential_by_name_not_value() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let llm = llm_with_reasoning_tools(
+            "Need a token.",
+            vec![LlmToolCall {
+                id: "tc3".to_string(),
+                name: "ask_user".to_string(),
+                arguments: serde_json::json!({
+                    "question": "What's the GitHub token?",
+                    "quick_replies": []
+                }),
+            }],
+        );
+        let harness = Harness::new(store.clone()).with_llm(llm).with_reasoning(true);
+        let _: Vec<_> = harness
+            .run_turn(&chat_id, "set up a deploy", "mock", "mock")
+            .collect()
+            .await;
+
+        let llm2 = llm_with_reasoning_tools(
+            "Got it.",
+            vec![LlmToolCall {
+                id: "tc4".to_string(),
+                name: "execute".to_string(),
+                arguments: serde_json::json!({}),
+            }],
+        );
+        let harness2 = Harness::new(store.clone()).with_llm(llm2);
+        let _: Vec<_> = harness2
+            .resume_turn(
+                &chat_id,
+                "here you go",
+                Some(("github_token".to_string(), "ghs_secret".to_string())),
+                "mock",
+                "mock",
+            )
+            .collect()
+            .await;
+
+        // The secret is stored by name and only the name enters the transcript.
+        assert_eq!(
+            store.get_credential("github_token").unwrap(),
+            Some("ghs_secret".to_string())
+        );
+        let rows = store.list_chat_messages(&chat_id).unwrap();
+        let user_turn = rows
+            .iter()
+            .filter(|(_, role, _, _, _)| role == "user")
+            .map(|(_, _, content, _, _)| content.clone())
+            .find(|c| c.contains("Answer to question"))
+            .unwrap_or_default();
+        assert!(user_turn.contains("Credential stored as github_token"));
+        assert!(user_turn.contains("{{credential:github_token}}"));
+        assert!(!user_turn.contains("ghs_secret"));
+    }
+
+    #[tokio::test]
+    async fn test_auto_approve_skips_ask_user() {
+        // With auto-approve on, the harness must not suspend on `ask_user`: it
+        // neither emits an AskUser event nor persists a pending ask.
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let llm = llm_with_reasoning_tools(
+            "Need more info.",
+            vec![LlmToolCall {
+                id: "tc5".to_string(),
+                name: "ask_user".to_string(),
+                arguments: serde_json::json!({
+                    "question": "Which database should I query?",
+                    "quick_replies": ["postgres"]
+                }),
+            }],
+        );
+        let harness = Harness::new(store.clone())
+            .with_llm(llm)
+            .with_reasoning(true)
+            .with_auto_approve(true);
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "automate reports", "mock", "mock")
+            .collect()
+            .await;
+        assert!(!events.iter().any(|e| matches!(e, HarnessEvent::AskUser { .. })));
+        assert!(store.get_pending_ask(&chat_id).unwrap().is_none());
+        // The harness records that the question was auto-approved so the next
+        // reasoning/execution step sees an answer in history.
+        let messages = store.list_chat_messages(&chat_id).unwrap();
+        assert!(messages
+            .iter()
+            .any(|(_, role, content, _, _)| role == "user" && content.contains("auto-approved")));
+    }
+
+    /// The execution phase streams assistant deltas into a single message row as
+    /// they arrive (so the renderer can show the reply progressively), and the
+    /// final content is the full concatenation.
+    #[tokio::test]
+    async fn test_execution_streams_assistant_deltas_into_one_message() {
+        use std::pin::Pin;
+        use futures::Stream;
+        use crate::llm::CompletionResponse;
+
+        struct SplitProvider;
+        #[async_trait::async_trait]
+        impl LlmProvider for SplitProvider {
+            fn name(&self) -> &str {
+                "split"
+            }
+            async fn complete(&self, _req: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+                Ok(CompletionResponse {
+                    content: "Hello world".to_string(),
+                    tool_calls: Vec::new(),
+                })
+            }
+            async fn complete_stream(
+                &self,
+                _req: CompletionRequest,
+            ) -> anyhow::Result<Pin<Box<dyn Stream<Item = CompletionStreamEvent> + Send>>> {
+                let events = vec![
+                    CompletionStreamEvent::AssistantDelta("Hello ".to_string()),
+                    CompletionStreamEvent::AssistantDelta("world".to_string()),
+                    CompletionStreamEvent::Done,
+                ];
+                Ok(Box::pin(futures::stream::iter(events)))
+            }
+        }
+
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let harness = Harness::new(store.clone()).with_llm(Arc::new(SplitProvider));
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "hi", "mock", "mock")
+            .collect()
+            .await;
+        assert!(events.iter().any(|e| matches!(e, HarnessEvent::AssistantDelta(d) if d == "Hello ")));
+        assert!(events.iter().any(|e| matches!(e, HarnessEvent::AssistantDelta(d) if d == "world")));
+
+        let msgs = store.list_chat_messages(&chat_id).unwrap();
+        let assistant = msgs.into_iter().find(|m| m.1 == "assistant").unwrap();
+        assert_eq!(assistant.2, "Hello world", "deltas should be concatenated into one assistant message");
     }
 }

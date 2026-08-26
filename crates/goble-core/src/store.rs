@@ -146,6 +146,15 @@ impl Store {
                 updated_at TEXT NOT NULL
             ) STRICT;
 
+            CREATE TABLE IF NOT EXISTS access_grants (
+                id TEXT PRIMARY KEY,
+                principal_id TEXT NOT NULL,
+                grant TEXT NOT NULL,
+                scope TEXT,
+                created_at TEXT NOT NULL
+            ) STRICT;
+            CREATE INDEX IF NOT EXISTS idx_access_grants_principal ON access_grants(principal_id);
+
             CREATE TABLE IF NOT EXISTS workflows (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -209,6 +218,10 @@ impl Store {
                 base_url TEXT,
                 model TEXT NOT NULL,
                 temperature REAL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS credentials (
+                name TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             ) STRICT;
             CREATE TABLE IF NOT EXISTS audit_log (
                 id TEXT PRIMARY KEY,
@@ -286,6 +299,37 @@ impl Store {
         let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
         let mut rows = stmt.query(params![key])?;
         Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
+    }
+
+    /// Upsert a named credential (API key, token, secret). The value is stored
+    /// in plaintext, consistent with `llm_settings` and `settings`; the harness
+    /// exposes only the *name* to the model and substitutes the value at
+    /// execution time so it never appears in the transcript.
+    pub fn set_credential(&self, name: &str, value: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO credentials (name, value) VALUES (?1, ?2)
+             ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+            params![name, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_credential(&self, name: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT value FROM credentials WHERE name = ?1")?;
+        let mut rows = stmt.query(params![name])?;
+        Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
+    }
+
+    pub fn list_credential_names(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT name FROM credentials ORDER BY name")?;
+        let mut rows = stmt.query([])?;
+        let mut names = Vec::new();
+        while let Some(row) = rows.next()? {
+            names.push(row.get::<_, String>(0)?);
+        }
+        Ok(names)
     }
 
     /// Store the encrypted cluster wallet (IdentityWallet) under a dedicated
@@ -379,6 +423,7 @@ impl Store {
                     "worker" => crate::audit::AuditCategory::Worker,
                     "agent" => crate::audit::AuditCategory::Agent,
                     "cluster" => crate::audit::AuditCategory::Cluster,
+                    "credentials" => crate::audit::AuditCategory::Settings,
                     "settings" => crate::audit::AuditCategory::Settings,
                     _ => crate::audit::AuditCategory::Settings,
                 };
@@ -680,6 +725,28 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Append `delta` to an existing chat message's content. Used by the harness
+    /// to stream assistant deltas into a single message row so the renderer can
+    /// show the reply progressively.
+    pub fn append_chat_message_content(&self, message_id: &str, delta: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chat_messages SET content = content || ?1 WHERE id = ?2",
+            params![delta, message_id],
+        )?;
+        Ok(())
+    }
+
+    /// Attach tool-call JSON to an existing chat message. Used by the harness to
+    /// record the tool-call metadata on the streamed assistant message once the
+    /// current turn's stream finishes.
+    pub fn set_chat_message_tool_calls(&self, message_id: &str, tool_calls: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chat_messages SET tool_calls = ?1 WHERE id = ?2",
+            params![tool_calls, message_id],
+        )?;
+        Ok(())
+    }
+
     pub fn insert_mcp_server(
         &self,
         id: &str,
@@ -798,6 +865,48 @@ impl Store {
             .lock()
             .execute("DELETE FROM principals WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// Grant `grant` (e.g. "run", "read") over `scope` (e.g. "workspace",
+    /// "mcp:search") to a principal. Grants record what every principal with
+    /// access to this workspace may do.
+    pub fn grant_access(&self, principal_id: &str, grant: &str, scope: &str) -> Result<()> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.lock().execute(
+            "INSERT INTO access_grants (id, principal_id, grant, scope, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, principal_id, grant, scope, now],
+        )?;
+        Ok(())
+    }
+
+    /// List the grants for a principal as `(grant, scope, created_at)`.
+    pub fn list_access(&self, principal_id: &str) -> Result<Vec<(String, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT grant, scope, created_at FROM access_grants WHERE principal_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let mut rows = stmt.query(params![principal_id])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                row.get::<_, String>(2)?,
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Remove a matching grant (by principal + grant + scope). Returns whether a
+    /// row was deleted.
+    pub fn revoke_access(&self, principal_id: &str, grant: &str, scope: &str) -> Result<bool> {
+        let removed = self.conn.lock().execute(
+            "DELETE FROM access_grants WHERE principal_id = ?1 AND grant = ?2 AND (scope = ?3 OR scope IS NULL)",
+            params![principal_id, grant, scope],
+        )?;
+        Ok(removed > 0)
     }
 
     pub fn insert_mcp_account(
@@ -1418,10 +1527,12 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "mcp_servers",
     "mcp_accounts",
     "principals",
+    "access_grants",
     "vault_secrets",
     "workflows",
     "executions",
     "llm_settings",
+    "credentials",
     "missions",
     "reasoning_steps",
     "pending_asks",
@@ -1445,6 +1556,46 @@ mod tests {
             store.get_setting("theme").unwrap(),
             Some("light".to_string())
         );
+    }
+
+    #[test]
+    fn test_credentials_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_credential("github_token").unwrap(), None);
+        store.set_credential("github_token", "ghs_secret").unwrap();
+        assert_eq!(
+            store.get_credential("github_token").unwrap(),
+            Some("ghs_secret".to_string())
+        );
+        assert_eq!(store.list_credential_names().unwrap(), vec!["github_token"]);
+        // Upsert updates in place; the name set is unchanged.
+        store.set_credential("github_token", "rotated").unwrap();
+        assert_eq!(store.get_credential("github_token").unwrap(), Some("rotated".to_string()));
+        assert_eq!(
+            store.list_credential_names().unwrap(),
+            vec!["github_token"]
+        );
+    }
+
+    #[test]
+    fn test_access_grants_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_principal("p1", "user", "Ada", "2024-01-01T00:00:00Z")
+            .unwrap();
+        assert!(store.list_access("p1").unwrap().is_empty());
+
+        store.grant_access("p1", "run", "workspace").unwrap();
+        store.grant_access("p1", "read", "mcp:search").unwrap();
+        let grants = store.list_access("p1").unwrap();
+        assert_eq!(grants.len(), 2);
+        assert!(grants.iter().any(|(g, s, _)| g == "run" && s == "workspace"));
+
+        assert!(store.revoke_access("p1", "run", "workspace").unwrap());
+        assert!(!store.revoke_access("p1", "run", "workspace").unwrap());
+        let grants = store.list_access("p1").unwrap();
+        assert_eq!(grants.len(), 1);
+        assert!(grants.iter().all(|(g, _, _)| g != "run"));
     }
 
     #[test]

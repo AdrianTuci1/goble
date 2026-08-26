@@ -1,0 +1,41 @@
+# Resolver — live work registry
+
+**Status:** `[x]` mechanism adopted
+**Owns:** the single item being resolved **right now**, and its proof.
+**Depends on:** [`TRACKER.md`](TRACKER.md) (the full backlog), [`GUIDE.md`](GUIDE.md) (how to execute).
+
+`TRACKER.md` is the complete backlog. **This file is the living side of the plan**: it records exactly one item in flight, its plan, and the verification that proves it is done. Its whole purpose is that neither we nor the model ever lose sight of what is being resolved — so nothing gets silently dropped and nothing is marked done without evidence.
+
+## How the model uses this (each turn)
+
+1. Pick **one** item from `TRACKER.md` — the smallest fully-defined, unblocked item.
+2. Copy it into **Active work** below; fill in plan, files, and definition of done.
+3. Implement it. Then **verify** with a real command (cargo / tsc / npm) or, for UI, the browser. Record the exact verification.
+4. Flip the item to `[x]` in `TRACKER.md`, move it to **Recently resolved** here, clear **Active work**, and repeat.
+5. If an item is too big to implement + verify in one turn, split it into smaller items **in its owning doc first** — do not attempt "the whole system".
+
+## Active work
+
+- **Item:** — *(id + link to the owning doc)*
+- **Status:** `[~]` in progress
+- **Definition of done:** — *(what observable behavior proves this is complete)*
+- **Files touched:** — *(concrete paths)*
+- **Verification run:** — *(exact command / browser steps + result)*
+- **Blockers:** none
+
+## Recently resolved
+
+| Date | Item | Verification (what passed) |
+| --- | --- | --- |
+| *(yyyy-mm-dd)* | *(id + doc)* | *(command / test result)* |
+
+## Rule: no `[x]` without proof
+
+An item is only `[x]` in `TRACKER.md` when this file records the command / test / browser check that actually passed. If something could not be verified, it stays `[~]` and the reason is written here — never silently dropped.
+
+## Anti-laziness contract (also in [`GUIDE.md`](GUIDE.md))
+
+- One small item per turn; stop when it is verified.
+- Read the owning doc + the real code before writing.
+- No placeholder comments; implement fully or don't touch.
+- State plainly what was **not** verified and why.

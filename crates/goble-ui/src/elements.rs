@@ -1,10 +1,11 @@
 pub use agent_card::AgentCard;
 pub use align::{Align, Alignment};
+pub use ask_user::{AskUserCard, AskUserUi};
 pub use avatar::{Avatar, AvatarShape};
 pub use button::{Button, ButtonVariant};
 pub use caption::Caption;
 pub use chat_composer::ChatComposer;
-pub use chat_content::{ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole};
+pub use chat_content::{ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, ToolCall};
 pub use chat_header::ChatHeader;
 pub use chat_layout::{ChatLayout, CHAT_RIGHT_SIDEBAR_WIDTH};
 pub use chat_sidebar::{ChatSidebar, RoutineItem, CHAT_SIDEBAR_WIDTH};
@@ -12,6 +13,7 @@ pub use conversation_list_item::{AgentCardUi, ConversationListItem, Conversation
 pub use conversation_sidebar::{
     ConversationEntry, ConversationSidebar, CONVERSATION_SIDEBAR_WIDTH,
 };
+pub use dialog::{Dialog, DIALOG_DEFAULT_WIDTH};
 pub mod markdown;
 pub use chat_message_bubble::ChatMessageBubble;
 pub use checkbox::Checkbox;
@@ -494,6 +496,7 @@ where
 
 pub mod agent_card;
 pub mod align;
+pub mod ask_user;
 pub mod avatar;
 pub mod button;
 pub mod caption;
@@ -512,6 +515,7 @@ pub mod constrained_box;
 pub mod container;
 pub mod conversation_list_item;
 pub mod conversation_sidebar;
+pub mod dialog;
 pub mod divider;
 pub mod drawer;
 pub mod dropdown_menu;

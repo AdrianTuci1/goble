@@ -47,6 +47,7 @@ fn nav_item(
 
     Container::new(button)
         .with_background(bg)
+        .with_corner_radius(app.theme.radius_px())
         .with_padding(EdgeInsets::uniform(padding))
         .finish()
 }
@@ -86,6 +87,7 @@ fn settings_row(
     )
     .with_padding(EdgeInsets::uniform(spacing))
     .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+    .with_corner_radius(app.theme.radius_px())
     .finish()
 }
 

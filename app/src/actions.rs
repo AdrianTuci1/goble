@@ -14,7 +14,7 @@ use goble_core::workflow::WorkflowId;
 use goble_desktop_service::DesktopState;
 use goble_ui::{ChatMessage, ChatRole, ConversationEntry, SettingsPage};
 
-use crate::hot_ui::{AppTab, CronEntry, UiActions};
+use crate::hot_ui::{AppTab, CronEntry, UiActions, WorkspaceRouting};
 use crate::state::UiState;
 
 pub fn make_actions(
@@ -35,6 +35,11 @@ pub fn make_actions(
     let on_voice = Rc::clone(&state);
     let on_model_select = Rc::clone(&state);
     let on_stop = Rc::clone(&state);
+    let on_answer_ask = Rc::clone(&state);
+    let on_skip_ask = Rc::clone(&state);
+    let on_toggle_auto_approve = Rc::clone(&state);
+    let on_send_queued = Rc::clone(&state);
+    let on_dismiss_queued = Rc::clone(&state);
     let on_threads = Rc::clone(&state);
     let on_settings = Rc::clone(&state);
     let on_open_crons = Rc::clone(&state);
@@ -59,10 +64,18 @@ pub fn make_actions(
     let on_unlock_cluster = Rc::clone(&state);
     let on_add_authorized_key = Rc::clone(&state);
     let on_remove_authorized_key = Rc::clone(&state);
+    let on_config_llm_key = Rc::clone(&state);
+    let on_choose_workspace = Rc::clone(&state);
+    let on_close_llm_dialog = Rc::clone(&state);
 
     let desktop_create = desktop.clone();
     let desktop_select = desktop.clone();
     let desktop_send = desktop.clone();
+    let desktop_stop = desktop.clone();
+    let desktop_answer = desktop.clone();
+    let desktop_skip = desktop.clone();
+    let desktop_auto = desktop.clone();
+    let desktop_send_queued = desktop.clone();
     let desktop_cron_create = desktop.clone();
     let desktop_cron_delete = desktop.clone();
     let desktop_save_llm = desktop.clone();
@@ -131,13 +144,60 @@ pub fn make_actions(
         })),
         on_send_message: Rc::new(RefCell::new(move |text: String| {
             let mut state = on_send_message.borrow_mut();
+            let configured = !state.settings_llm_api_key.trim().is_empty();
+            // While a turn is running, don't start a second one (that would
+            // interrupt the agent). Queue the prompt and render it as a pending
+            // block; it is sent when the current turn finishes or via "Send now".
+            if state.agent_busy {
+                state.queued_prompt = Some(text);
+                state.composer_draft.clear();
+                return;
+            }
+            let mut ran_turn = false;
+            // The model used is the composer's selected model, falling back to
+            // the configured setting when nothing is selected yet.
+            let model = if state.selected_model.trim().is_empty() {
+                state.settings_llm_model.clone()
+            } else {
+                state.selected_model.clone()
+            };
             if let (Some(desktop), Some(chat_id)) = (&desktop_send, state.selected_id.clone()) {
-                let _ = desktop.add_chat_message(&chat_id, "user", &text);
-                let _ = desktop.add_chat_message(
-                    &chat_id,
-                    "assistant",
-                    &format!("Am primit mesajul tău. Rulez acum comanda pentru „{text}”."),
-                );
+                if configured {
+                    // Run the real harness turn on a background task. The harness
+                    // inserts the user message and the assistant/tool output into
+                    // the store and emits `chat:updated`, so the UI refreshes as
+                    // the turn progresses (including any tool-call output).
+                    if let Err(e) = desktop.run_chat_turn(
+                        &chat_id,
+                        &text,
+                        &state.settings_llm_provider,
+                        &model,
+                    ) {
+                        log::warn!("run_chat_turn failed: {e}");
+                        let _ = desktop.add_chat_message(
+                            &chat_id,
+                            "assistant",
+                            &format!("(nu am putut porni modelul: {e})"),
+                        );
+                    } else {
+                        // A turn is now in flight on a background task; keep the
+                        // Stop button visible until `chat:turn_finished` (or Stop)
+                        // clears it.
+                        state.agent_busy = true;
+                        ran_turn = true;
+                    }
+                } else {
+                    // No key configured yet: append the user message + fall back
+                    // to the canned reply and surface the banner so the user
+                    // configures a provider.
+                    let _ = desktop.add_chat_message(&chat_id, "user", &text);
+                    let _ = desktop.add_chat_message(
+                        &chat_id,
+                        "assistant",
+                        &format!("Am primit mesajul tău. Rulez acum comanda pentru „{text}”."),
+                    );
+                    state.show_llm_key_banner = true;
+                }
                 state.refresh_messages(desktop);
             } else {
                 state
@@ -147,9 +207,12 @@ pub fn make_actions(
                     ChatRole::Assistant,
                     format!("Am primit mesajul tău. Rulez acum comanda pentru „{text}”."),
                 ));
+                if !configured {
+                    state.show_llm_key_banner = true;
+                }
             }
             state.composer_draft.clear();
-            state.agent_busy = false;
+            state.agent_busy = ran_turn;
         })),
         on_attach: Rc::new(RefCell::new(move || {
             on_attach
@@ -184,7 +247,101 @@ pub fn make_actions(
             log::info!("restart agent pressed");
         })),
         on_stop: Rc::new(RefCell::new(move || {
-            on_stop.borrow_mut().agent_busy = false;
+            let mut state = on_stop.borrow_mut();
+            if let (Some(desktop), Some(chat_id)) = (&desktop_stop, state.selected_id.clone()) {
+                let _ = desktop.cancel_chat_turn(&chat_id);
+            }
+            state.agent_busy = false;
+        })),
+        on_answer_ask: Rc::new(RefCell::new(move |response: String, credential: Option<(String, String)>| {
+            let mut state = on_answer_ask.borrow_mut();
+            let model = if state.selected_model.trim().is_empty() {
+                state.settings_llm_model.clone()
+            } else {
+                state.selected_model.clone()
+            };
+            if let (Some(desktop), Some(chat_id)) = (&desktop_answer, state.selected_id.clone()) {
+                if let Err(e) = desktop.resume_chat_turn(
+                    &chat_id,
+                    &response,
+                    credential,
+                    &state.settings_llm_provider,
+                    &model,
+                ) {
+                    log::warn!("resume_chat_turn failed: {e}");
+                } else {
+                    state.agent_busy = true;
+                    state.pending_ask = None;
+                }
+                state.refresh_messages(desktop);
+            } else {
+                state.pending_ask = None;
+            }
+        })),
+        on_skip_ask: Rc::new(RefCell::new(move || {
+            let mut state = on_skip_ask.borrow_mut();
+            let model = if state.selected_model.trim().is_empty() {
+                state.settings_llm_model.clone()
+            } else {
+                state.selected_model.clone()
+            };
+            if let (Some(desktop), Some(chat_id)) = (&desktop_skip, state.selected_id.clone()) {
+                if let Err(e) = desktop.resume_chat_turn(
+                    &chat_id,
+                    "(skipped)",
+                    None,
+                    &state.settings_llm_provider,
+                    &model,
+                ) {
+                    log::warn!("resume_chat_turn (skip) failed: {e}");
+                } else {
+                    state.agent_busy = true;
+                    state.pending_ask = None;
+                }
+                state.refresh_messages(desktop);
+            } else {
+                state.pending_ask = None;
+            }
+        })),
+        on_toggle_auto_approve: Rc::new(RefCell::new(move |enabled: bool| {
+            let mut state = on_toggle_auto_approve.borrow_mut();
+            state.auto_approve = enabled;
+            if let Some(desktop) = &desktop_auto {
+                if let Err(e) = desktop.set_auto_approve(enabled) {
+                    log::warn!("set_auto_approve failed: {e}");
+                }
+            }
+        })),
+        on_send_queued: Rc::new(RefCell::new(move || {
+            let mut state = on_send_queued.borrow_mut();
+            let Some(prompt) = state.queued_prompt.take() else {
+                return;
+            };
+            let model = if state.selected_model.trim().is_empty() {
+                state.settings_llm_model.clone()
+            } else {
+                state.selected_model.clone()
+            };
+            if let (Some(desktop), Some(chat_id)) = (&desktop_send_queued, state.selected_id.clone())
+            {
+                // "Send now": interrupt the in-flight turn and submit immediately.
+                let _ = desktop.cancel_chat_turn(&chat_id);
+                if let Err(e) = desktop.run_chat_turn(
+                    &chat_id,
+                    &prompt,
+                    &state.settings_llm_provider,
+                    &model,
+                ) {
+                    log::warn!("run_chat_turn (queued) failed: {e}");
+                } else {
+                    state.agent_busy = true;
+                }
+                state.refresh_messages(desktop);
+            }
+        })),
+        on_dismiss_queued: Rc::new(RefCell::new(move || {
+            let mut state = on_dismiss_queued.borrow_mut();
+            state.queued_prompt = None;
         })),
         on_menu: Rc::new(RefCell::new(move || {
             log::info!("menu pressed");
@@ -321,6 +478,18 @@ pub fn make_actions(
                     log::warn!("set_llm_setting failed: {e}");
                 }
             }
+            // The composer should reflect the newly configured model.
+            state.selected_model = state.settings_llm_model.clone();
+            if let Some(desktop) = &desktop_save_llm {
+                state.models = desktop.available_models(&state.settings_llm_provider);
+            }
+            state.llm_dialog_open = false;
+            // First run: now that a key is configured, ask where the agent
+            // should run before continuing the conversation.
+            if !state.settings_llm_api_key.trim().is_empty() {
+                state.show_llm_key_banner = false;
+                state.show_workspace_choice = true;
+            }
         })),
         on_add_worker: Rc::new(RefCell::new(move |name: String, url: String| {
             let mut state = on_add_worker.borrow_mut();
@@ -401,6 +570,23 @@ pub fn make_actions(
                 .borrow_mut()
                 .settings_authorized_keys
                 .retain(|k| k.0 != id);
+        })),
+        on_config_llm_key: Rc::new(RefCell::new(move || {
+            let mut state = on_config_llm_key.borrow_mut();
+            state.prime_llm_form();
+            state.llm_dialog_open = true;
+        })),
+        on_close_llm_dialog: Rc::new(RefCell::new(move || {
+            on_close_llm_dialog.borrow_mut().llm_dialog_open = false;
+        })),
+        on_choose_workspace: Rc::new(RefCell::new(move |routing: WorkspaceRouting| {
+            let mut state = on_choose_workspace.borrow_mut();
+            state.workspace_routing = Some(routing);
+            state.show_workspace_choice = false;
+            state.show_llm_key_banner = false;
+            // Returning to chat lets the conversation continue in the chosen
+            // workspace.
+            state.current_tab = AppTab::Chat;
         })),
     }
 }

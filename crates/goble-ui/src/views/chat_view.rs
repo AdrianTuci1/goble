@@ -3,9 +3,10 @@ use std::rc::Rc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage};
 use crate::elements::{
-    AppContext, Axis, ChatComposer, ChatMessageBubble, Container, CrossAxisAlignment, Divider,
-    EdgeInsets, Element, Expanded, Fill, Flex, LayoutContext, MainAxisAlignment, MainAxisSize,
-    PaintContext, Point, PopupMenuItem, QuickActionButton, Scrollable, SizeConstraint, Text,
+    AppContext, AskUserCard, AskUserUi, Axis, Border, Button, ButtonVariant, ChatComposer,
+    ChatMessageBubble, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill,
+    Flex, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point, PopupMenuItem,
+    QuickActionButton, Scrollable, SizeConstraint, Switch, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -36,6 +37,16 @@ pub struct ChatView {
     composer_profile_items: Vec<PopupMenuItem>,
     composer_profile_menu_open: Rc<RefCell<bool>>,
     on_select_profile_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    pending_ask: Option<AskUserUi>,
+    on_answer_ask: Option<Rc<RefCell<dyn FnMut(String, Option<(String, String)>) + 'static>>>,
+    on_skip_ask: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    auto_approve: bool,
+    on_toggle_auto_approve: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
+    /// A prompt the user sent while the agent was running, queued (not
+    /// interrupted) and shown inline as a pending block (warp-new model).
+    queued_prompt: Option<String>,
+    on_send_queued: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_dismiss_queued: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -68,6 +79,14 @@ impl ChatView {
             composer_profile_items: Vec::new(),
             composer_profile_menu_open: Rc::new(RefCell::new(false)),
             on_select_profile_item: None,
+            pending_ask: None,
+            on_answer_ask: None,
+            on_skip_ask: None,
+            auto_approve: false,
+            on_toggle_auto_approve: None,
+            queued_prompt: None,
+            on_send_queued: None,
+            on_dismiss_queued: None,
             root: None,
             size: None,
             origin: None,
@@ -201,6 +220,61 @@ impl ChatView {
         self
     }
 
+    /// Set the pending ask rendered inline at the end of the transcript. When
+    /// `Some`, the chat renders an `AskUserCard` (warp-new model) in the
+    /// message stream instead of pinning a question to the composer.
+    pub fn with_pending_ask(mut self, ask: Option<AskUserUi>) -> Self {
+        self.pending_ask = ask;
+        self
+    }
+
+    /// Fired with the composed response when the user submits the inline ask.
+    pub fn with_on_answer_ask<F: FnMut(String, Option<(String, String)>) + 'static>(
+        mut self,
+        callback: F,
+    ) -> Self {
+        self.on_answer_ask = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Fired when the user skips the inline ask.
+    pub fn with_on_skip_ask<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_skip_ask = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Whether the agent auto-approves `ask_user` questions (skip the ask and
+    /// continue). Shown as a toggle in the controls strip above the composer.
+    pub fn with_auto_approve(mut self, enabled: bool) -> Self {
+        self.auto_approve = enabled;
+        self
+    }
+
+    /// Fired when the user toggles the auto-approve switch.
+    pub fn with_on_toggle_auto_approve<F: FnMut(bool) + 'static>(mut self, callback: F) -> Self {
+        self.on_toggle_auto_approve = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// A prompt queued while the agent was busy, shown inline as a pending block.
+    pub fn with_queued_prompt(mut self, prompt: Option<String>) -> Self {
+        self.queued_prompt = prompt;
+        self
+    }
+
+    /// Fired when the user clicks "Send now" on a queued prompt (sends it
+    /// immediately and interrupts the in-flight turn).
+    pub fn with_on_send_queued<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_send_queued = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Fired when the user dismisses a queued prompt.
+    pub fn with_on_dismiss_queued<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_dismiss_queued = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     fn build_empty_state(&self, app: &AppContext) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
         let xl = app.theme.spacing_px(SpacingToken::Xl);
@@ -247,7 +321,8 @@ impl ChatView {
             column = column.with_child(header);
         }
 
-        let message_area: Box<dyn Element> = if self.messages.is_empty() {
+        let message_area: Box<dyn Element> = if self.messages.is_empty() && self.pending_ask.is_none()
+        {
             // Wrap in a scrollable so it fills the remaining height and pins
             // the composer to the bottom of the window (a bare container would
             // size to its content and leave a gap under the composer).
@@ -260,6 +335,7 @@ impl ChatView {
                 let on_action = self.on_action.clone();
                 let fragments = message.fragments.clone();
                 let bubble = ChatMessageBubble::new(message.role, fragments)
+                    .with_tool_calls(message.tool_calls.clone())
                     .with_on_action(move |action| {
                         if let Some(cb) = on_action.as_ref() {
                             (cb.borrow_mut())(action);
@@ -267,6 +343,83 @@ impl ChatView {
                     })
                     .finish();
                 message_column = message_column.with_child(bubble);
+            }
+            // A pending ask sits inline at the end of the transcript (warp-new
+            // model) so it scrolls with the conversation rather than pinning to
+            // the bottom of the window.
+            if let Some(ask) = &self.pending_ask {
+                let mut card = AskUserCard::new(ask.question.clone(), ask.quick_replies.clone());
+                if let Some(cb) = self.on_answer_ask.clone() {
+                    card = card.with_on_answer(move |resp, cred| (cb.borrow_mut())(resp, cred));
+                }
+                if let Some(cb) = self.on_skip_ask.clone() {
+                    card = card.with_on_skip(move || (cb.borrow_mut())());
+                }
+                message_column = message_column.with_child(card.finish());
+            }
+            // A prompt queued while the agent was running renders as a pending
+            // block in the transcript (warp-new model) with "Send now" + dismiss.
+            if let Some(prompt) = &self.queued_prompt {
+                let sm = app.theme.spacing_px(SpacingToken::Sm);
+                let md = app.theme.spacing_px(SpacingToken::Md);
+                let mut header = Flex::row()
+                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        Text::new("Pending message")
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_size(12.0)
+                            .finish(),
+                    );
+                if let Some(cb) = self.on_dismiss_queued.clone() {
+                    let dismiss = Button::new(
+                        Text::new("✕")
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_size(12.0)
+                            .finish(),
+                    )
+                    .with_variant(ButtonVariant::Ghost)
+                    .with_on_click(move || (cb.borrow_mut())())
+                    .finish();
+                    header = header.with_child(dismiss);
+                }
+                let mut footer = Flex::row()
+                    .with_main_axis_alignment(MainAxisAlignment::End);
+                if let Some(cb) = self.on_send_queued.clone() {
+                    let send_now = Button::new(
+                        Text::new("Send now")
+                            .with_theme_color(ColorToken::Bg, app)
+                            .with_font_size(12.0)
+                            .finish(),
+                    )
+                    .with_variant(ButtonVariant::Primary)
+                    .with_on_click(move || (cb.borrow_mut())())
+                    .finish();
+                    footer = footer.with_child(send_now);
+                }
+                let queued_card = Container::new(
+                    Flex::column()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .with_spacing(sm)
+                        .with_child(header.finish())
+                        .with_child(
+                            Text::new(prompt.clone())
+                                .with_theme_color(ColorToken::Text, app)
+                                .with_font_size(12.0)
+                                .finish(),
+                        )
+                        .with_child(footer.finish())
+                        .finish(),
+                )
+                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                .with_border(
+                    Border::all(1.0)
+                        .with_border_fill(Fill::Solid(app.theme.color(ColorToken::Border))),
+                )
+                .with_padding(EdgeInsets::uniform(md))
+                .with_corner_radius(8.0)
+                .finish();
+                message_column = message_column.with_child(queued_card);
             }
             Scrollable::new(message_column.finish(), Axis::Vertical).finish()
         };
@@ -285,6 +438,35 @@ impl ChatView {
                 );
             }
             column = column.with_child(row.finish());
+        }
+
+        // Control strip above the rich input: the auto-approve toggle. Stop
+        // lives in the composer footer (visible while the agent is streaming).
+        if let Some(cb) = self.on_toggle_auto_approve.clone() {
+            let sm = app.theme.spacing_px(SpacingToken::Sm);
+            let md = app.theme.spacing_px(SpacingToken::Md);
+            let switch = Switch::new()
+                .with_checked(self.auto_approve)
+                .with_size(Vector2F::new(36.0, 20.0))
+                .with_on_change(move |checked| (cb.borrow_mut())(checked))
+                .finish();
+            let controls = Container::new(
+                Flex::row()
+                    .with_main_axis_alignment(MainAxisAlignment::Start)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(sm)
+                    .with_child(
+                        Text::new("Auto-approve")
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_size(12.0)
+                            .finish(),
+                    )
+                    .with_child(switch)
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::new(0.0, md, 0.0, 0.0))
+            .finish();
+            column = column.with_child(controls);
         }
 
         let current_value = self.composer_value.borrow().clone();

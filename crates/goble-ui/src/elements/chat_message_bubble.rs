@@ -3,12 +3,12 @@ use std::rc::Rc;
 
 use crate::elements::chat_content::{
     group_fragments_into_blocks, ChatAction, ChatBlock, ChatFragment, ChatRole, InlineSpan as
-    ModelSpan, InlineStyle,
+    ModelSpan, InlineStyle, ToolCall,
 };
 use crate::elements::{
-    resolve_inline_span, Chip, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
-    Fill, Flex, InlineText, LayoutContext, MainAxisAlignment, PaintContext, Point, SizeConstraint,
-    TerminalBlock, Text, TextSpan,
+    resolve_inline_span, Border, Chip, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets,
+    Element, Fill, Flex, Icon, InlineText, LayoutContext, MainAxisAlignment, PaintContext, Point,
+    SizeConstraint, TerminalBlock, Text, TextSpan,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -32,9 +32,70 @@ fn to_text_span(span: &ModelSpan, app: &crate::elements::AppContext) -> TextSpan
     resolve_inline_span(text, bold, italic, is_code, is_link, app)
 }
 
+/// A raised `surface_2` card per tool invocation, matching warp-new's tool /
+/// command block: full-width, 1px `surface_2` border, radius 8, leading status
+/// icon and mono body. Stacked one per call.
+fn build_tool_call_cards(
+    tool_calls: &[ToolCall],
+    app: &crate::elements::AppContext,
+) -> Box<dyn Element> {
+    let mut column = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(8.0);
+
+    for call in tool_calls {
+        let label = if call.arguments.is_empty() || call.arguments == "{}" {
+            call.name.clone()
+        } else {
+            format!("{} {}", call.name, call.arguments)
+        };
+        column = column.with_child(
+            Container::new(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(8.0)
+                    .with_child(
+                        Icon::new("cpu")
+                            .with_size(14.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
+                    .with_child(
+                        Flex::column()
+                            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                            .with_spacing(2.0)
+                            .with_child(
+                                Text::new("tool")
+                                    .with_theme_color(ColorToken::Muted, app)
+                                    .with_font_size(10.0)
+                                    .finish(),
+                            )
+                            .with_child(
+                                Text::new(label)
+                                    .with_theme_color(ColorToken::Text, app)
+                                    .with_font_size(12.0)
+                                    .finish(),
+                            )
+                            .finish(),
+                    )
+                    .finish(),
+            )
+            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+            .with_border(
+                Border::all(1.0).with_border_fill(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised))),
+            )
+            .with_padding(EdgeInsets::new(16.0, 12.0, 16.0, 12.0))
+            .with_corner_radius(8.0)
+            .finish(),
+        );
+    }
+    column.finish()
+}
+
 pub struct ChatMessageBubble {
     role: ChatRole,
     fragments: Vec<ChatFragment>,
+    tool_calls: Vec<ToolCall>,
     on_action: Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
@@ -46,11 +107,17 @@ impl ChatMessageBubble {
         Self {
             role,
             fragments,
+            tool_calls: Vec::new(),
             on_action: None,
             root: None,
             size: None,
             origin: None,
         }
+    }
+
+    pub fn with_tool_calls(mut self, tool_calls: Vec<ToolCall>) -> Self {
+        self.tool_calls = tool_calls;
+        self
     }
 
     pub fn with_on_action<F: FnMut(ChatAction) + 'static>(mut self, callback: F) -> Self {
@@ -71,14 +138,28 @@ impl ChatMessageBubble {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
         let radius = app.theme.radius_px();
 
+        // Warp-new renders a message block on `surface_1`, and a tool/command
+        // block is a raised `surface_2` card inside it (1px `surface_2` border,
+        // radius 8) — not a chip row and not floating on the transcript bg. So
+        // the assistant/tool rows use the same `Surface` as the block, and the
+        // terminal-style command area is what carries the `SurfaceRaised`
+        // (`surface_2`) styling and border.
         let bg = match self.role {
             ChatRole::User => app.theme.color(ColorToken::SurfaceRaised),
             ChatRole::Assistant => app.theme.color(ColorToken::Surface),
+            ChatRole::Tool => app.theme.color(ColorToken::Surface),
         };
 
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(spacing);
+
+        // Tool invocations attached to this (assistant) message render as a
+        // raised card above the prose so the read is "the agent called these
+        // tools, then produced this reply".
+        if !self.tool_calls.is_empty() {
+            column = column.with_child(build_tool_call_cards(&self.tool_calls, app));
+        }
 
         for block in group_fragments_into_blocks(&self.fragments) {
             match block {
@@ -199,7 +280,7 @@ impl ChatMessageBubble {
 
         let alignment = match self.role {
             ChatRole::User => MainAxisAlignment::End,
-            ChatRole::Assistant => MainAxisAlignment::Start,
+            ChatRole::Assistant | ChatRole::Tool => MainAxisAlignment::Start,
         };
 
         let bubble_max_width = (max_width * BUBBLE_MAX_WIDTH_RATIO).max(80.0);
@@ -264,8 +345,9 @@ impl Element for ChatMessageBubble {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elements::{AppContext, LayoutContext};
+    use crate::elements::{AppContext, LayoutContext, PaintContext, TerminalData, TerminalLine};
     use crate::geometry::vec2f;
+    use crate::render::{RenderCommand, Renderer};
 
     #[test]
     fn bubble_layouts_non_zero() {
@@ -279,6 +361,49 @@ mod tests {
         );
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
+    }
+
+    #[test]
+    fn tool_bubble_renders_card_and_result_block() {
+        let app = AppContext::default();
+        let mut bubble = ChatMessageBubble::new(
+            ChatRole::Tool,
+            vec![ChatFragment::terminal(TerminalData::new(
+                "call_1",
+                vec![TerminalLine::output("file.txt")],
+            ))],
+        )
+        .with_tool_calls(vec![ToolCall {
+            name: "ls".to_string(),
+            arguments: "{}".to_string(),
+        }]);
+        let size = bubble.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert!(size.x > 0.0);
+        assert!(size.y > 0.0);
+
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx
+            .renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default();
+        // The invocation card draws a "cpu" icon (atlas name "prompt"); the
+        // tool-result block draws a "terminal" header icon.
+        let tool_icons = commands
+            .iter()
+            .filter(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name == "prompt"))
+            .count();
+        let terminal_icons = commands
+            .iter()
+            .filter(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name == "terminal"))
+            .count();
+        assert!(tool_icons >= 1, "expected a tool invocation card icon");
+        assert!(terminal_icons >= 1, "expected a tool-result block icon");
     }
 
     #[test]

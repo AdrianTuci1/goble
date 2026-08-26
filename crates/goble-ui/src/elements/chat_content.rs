@@ -5,6 +5,7 @@ use crate::elements::terminal_block::TerminalData;
 pub enum ChatRole {
     User,
     Assistant,
+    Tool,
 }
 
 /// An action that can be triggered from a chat fragment.
@@ -113,6 +114,37 @@ impl ChatFragment {
     }
 }
 
+/// A single tool invocation recorded on an assistant message. `arguments` is the
+/// JSON arguments the tool was called with, rendered alongside the name so the
+/// user can see what the agent actually invoked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolCall {
+    pub name: String,
+    pub arguments: String,
+}
+
+impl ToolCall {
+    /// Parse tool-call metadata from the harness-produced `tool_calls` JSON column
+    /// into renderable calls. Malformed or unknown JSON yields an empty list
+    /// rather than failing the whole transcript.
+    pub fn from_llm_json(json: &str) -> Vec<ToolCall> {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            name: String,
+            #[serde(default)]
+            arguments: serde_json::Value,
+        }
+        serde_json::from_str::<Vec<Raw>>(json)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|raw| ToolCall {
+                name: raw.name,
+                arguments: serde_json::to_string(&raw.arguments).unwrap_or_default(),
+            })
+            .collect()
+    }
+}
+
 /// A chat message composed of one or more fragments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatMessage {
@@ -120,6 +152,9 @@ pub struct ChatMessage {
     pub fragments: Vec<ChatFragment>,
     pub author_name: Option<String>,
     pub timestamp: Option<String>,
+    /// Tool invocations attached to an assistant message (the calls the agent
+    /// made during this turn). Empty for user and tool-result rows.
+    pub tool_calls: Vec<ToolCall>,
 }
 
 impl ChatMessage {
@@ -129,7 +164,13 @@ impl ChatMessage {
             fragments,
             author_name: None,
             timestamp: None,
+            tool_calls: Vec::new(),
         }
+    }
+
+    pub fn with_tool_calls(mut self, tool_calls: Vec<ToolCall>) -> Self {
+        self.tool_calls = tool_calls;
+        self
     }
 
     pub fn with_author_name(mut self, name: impl Into<String>) -> Self {
@@ -399,5 +440,19 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn tool_call_parses_harness_json() {
+        let calls = ToolCall::from_llm_json(
+            r#"[{"id":"call_1","name":"ls","arguments":{"path":"/tmp"}}]"#,
+        );
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "ls");
+        assert!(calls[0].arguments.contains("/tmp"));
+
+        // Malformed JSON is tolerated (empty list), never panics a transcript.
+        assert!(ToolCall::from_llm_json("not json").is_empty());
+        assert!(ToolCall::from_llm_json("").is_empty());
     }
 }

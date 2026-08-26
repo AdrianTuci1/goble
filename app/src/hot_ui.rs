@@ -8,7 +8,10 @@ pub mod ui_hot {
     // itself is generated below from the `#[no_mangle]` function in
     // goble_ui_hot, so we must NOT `pub use goble_ui_hot::build_ui` here.
     use goble_ui::elements::{AppContext, Element};
-    pub use goble_ui_hot::{AiActions, AiSnapshot, AppTab, CronEntry, UiActions, UiSnapshot};
+    pub use goble_ui_hot::{
+        AiActions, AiSnapshot, AppTab, CronEntry, LlmFormField, UiActions, UiSnapshot,
+        WorkspaceRouting,
+    };
 
     // Path is resolved relative to the cargo working directory. Run cargo
     // from the workspace root (as scripts/dev-ui.sh does).
@@ -25,4 +28,6 @@ pub mod ui_hot {
     pub use goble_ui_hot::*;
 }
 
-pub use ui_hot::{build_ui, AiSnapshot, AppTab, CronEntry, UiActions, UiSnapshot};
+pub use ui_hot::{
+    build_ui, AiSnapshot, AppTab, CronEntry, LlmFormField, UiActions, UiSnapshot, WorkspaceRouting,
+};

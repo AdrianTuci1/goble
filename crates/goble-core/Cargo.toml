@@ -40,6 +40,7 @@ urlencoding = "2"
 rusqlite.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
+dirs = "6"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

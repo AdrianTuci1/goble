@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Chip, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex, Icon,
-    LayoutContext, MainAxisAlignment, PaintContext, Point, PopupMenu, PopupMenuItem,
+    AppContext, Border, Chip, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex, Icon,
+    LayoutContext, MainAxisAlignment, PaintContext, Padding, Point, PopupMenu, PopupMenuItem,
     PopupMenuPosition, SizeConstraint, Text, TextArea, Tooltip, TooltipPosition,
 };
 use crate::event::DispatchedEvent;
@@ -255,7 +255,7 @@ impl ChatComposer {
         let textarea = TextArea::new()
             .with_value(self.value.borrow().clone())
             .with_placeholder(self.placeholder.clone())
-            .with_min_height(52.0)
+            .with_min_height(80.0)
             .with_focused(self.focused)
             .with_on_change(move |text| {
                 *value.borrow_mut() = text.clone();
@@ -283,7 +283,7 @@ impl ChatComposer {
             let attach = ComposerButton::new(
                 Icon::new("plus")
                     .with_size(16.0)
-                    .with_theme_color(ColorToken::Text, app)
+                    .with_theme_color(ColorToken::Muted, app)
                     .finish(),
             )
             .with_height(28.0)
@@ -311,7 +311,7 @@ impl ChatComposer {
                     )
                     .with_child(
                         Text::new(label.clone())
-                            .with_theme_color(ColorToken::Text, app)
+                            .with_theme_color(ColorToken::Muted, app)
                             .with_font_size(12.0)
                             .finish(),
                     )
@@ -352,7 +352,7 @@ impl ChatComposer {
         let profile_child = || {
             Icon::new("user")
                 .with_size(16.0)
-                .with_theme_color(ColorToken::Text, app)
+                .with_theme_color(ColorToken::Muted, app)
                 .finish()
         };
         if !self.profile_menu_items.is_empty() {
@@ -401,14 +401,18 @@ impl ChatComposer {
         footer = footer.with_child(right_group.finish());
         column = column.with_child(footer.finish());
 
-        // Full-width bottom bar: flat surface, no card border/radius, flush
-        // with the window bottom edge.
-        self.root = Some(
-            Container::new(column.finish())
-                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                .with_padding(EdgeInsets::new(sm, md, sm, md))
-                .finish(),
-        );
+        // A floating card (warp-new v2 input) on the raised `surface_2` input
+        // surface, a 1px `Border` (outline) and radius 8, with side + bottom
+        // gutters so it no longer runs flush to the window edges.
+        let card = Container::new(column.finish())
+            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+            .with_border(
+                Border::all(1.0).with_border_fill(Fill::Solid(app.theme.color(ColorToken::Border))),
+            )
+            .with_padding(EdgeInsets::new(md, md, md, sm))
+            .with_corner_radius(8.0)
+            .finish();
+        self.root = Some(Padding::new(card, EdgeInsets::new(md, sm, md, md)).finish());
     }
 }
 
@@ -516,14 +520,16 @@ impl Element for ComposerButton {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
-        if ctx.hovered(rectf(origin.x, origin.y, size.x, size.y)) {
-            if let Some(renderer) = ctx.renderer.as_mut() {
-                renderer.fill_rounded_rect(
-                    rectf(origin.x, origin.y, size.x, size.y),
-                    app.theme.color(ColorToken::Hover),
-                    6.0,
-                );
+        let rect = rectf(origin.x, origin.y, size.x, size.y);
+        let hovered = ctx.hovered(rect);
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            // warp-new `AgentInputButton`: a `surface_1` pill that brightens to
+            // `surface_2` on hover, with a 1px `neutral_3` border.
+            renderer.fill_rounded_rect(rect, app.theme.color(ColorToken::Surface), 6.0);
+            if hovered {
+                renderer.fill_rounded_rect(rect, app.theme.color(ColorToken::Hover), 6.0);
             }
+            renderer.stroke_rect(rect, app.theme.color(ColorToken::Border), 1.0, 6.0);
         }
         let child_size = self.child.size().unwrap_or(Vector2F::zero());
         let offset = vec2f(
@@ -597,5 +603,54 @@ mod tests {
         assert!(size.y > 0.0);
         assert_eq!(composer.value(), "hello");
         assert_eq!(composer.attachments(), &["doc.md".to_string()]);
+    }
+
+    #[test]
+    fn composer_renders_model_profile_attach_and_stop_pills() {
+        use crate::elements::PaintContext;
+        use crate::render::{RenderCommand, Renderer};
+
+        let app = AppContext::default();
+        let mut composer = ChatComposer::new()
+            .with_model_label("gpt-4o")
+            .with_on_attach(|| {})
+            .with_on_select_model(|| {})
+            .with_on_profile(|| {})
+            .with_on_stop(|| {})
+            .with_stop_visible(true);
+
+        let size = composer.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert!(size.x > 0.0);
+        assert!(size.y > 0.0);
+
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx
+            .renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default();
+
+        let icons: Vec<String> = commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        for expected in ["sparkle", "user", "plus", "stop"] {
+            assert!(icons.iter().any(|n| n == expected), "missing icon {expected}");
+        }
+
+        // Each pill draws a surface + a 1px border.
+        let strokes = commands
+            .iter()
+            .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
+            .count();
+        assert!(strokes >= 3, "expected 3+ button borders, got {strokes}");
     }
 }

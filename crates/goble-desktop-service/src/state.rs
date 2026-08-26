@@ -1,5 +1,12 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
+
+use futures::Stream;
+use futures::StreamExt;
+use goble_core::harness::{HarnessEvent, WebSearchConfig};
 
 use crate::event_bus::{emit_value, EventBus, NoOpEventBus};
 use anyhow::Context;
@@ -87,6 +94,9 @@ pub struct ChatMessage {
     pub id: String,
     pub role: String,
     pub content: String,
+    /// JSON array of tool-call metadata (`[{id,name,arguments}]`) attached to an
+    /// assistant message that invoked tools. `None` for user/tool-result rows.
+    pub tool_calls: Option<String>,
     pub created_at: String,
 }
 
@@ -303,18 +313,147 @@ pub struct DesktopState {
     event_bus: Mutex<Arc<dyn EventBus>>,
     cluster_identity: Mutex<Option<ClusterIdentity>>,
     thread_store: Arc<ThreadStore>,
+    config: parking_lot::Mutex<goble_core::config::GobleConfig>,
+    chat_cancels: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
 }
+/// Drain a harness turn stream, nudging the UI to re-read the transcript on
+/// every event and forwarding the rich events it needs to render inline state
+/// (an ask-user question, a mission phase). Emits `chat:turn_finished` and
+/// clears the chat's cancel flag when the stream ends.
+async fn drain_harness_stream(
+    this: Arc<DesktopState>,
+    chat_id: String,
+    mut stream: Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>,
+) {
+    while let Some(event) = stream.next().await {
+        this.emit("chat:updated", serde_json::json!({ "chat_id": chat_id.clone() }));
+        match event {
+            HarnessEvent::AskUser {
+                question,
+                quick_replies,
+            } => {
+                this.emit(
+                    "chat:ask_user",
+                    serde_json::json!({
+                        "chat_id": chat_id.clone(),
+                        "question": question,
+                        "quick_replies": quick_replies,
+                    }),
+                );
+            }
+            HarnessEvent::MissionUpdated {
+                mission_id,
+                status,
+            } => {
+                this.emit(
+                    "chat:mission",
+                    serde_json::json!({
+                        "chat_id": chat_id.clone(),
+                        "mission_id": mission_id,
+                        "status": status,
+                    }),
+                );
+            }
+            _ => {}
+        }
+    }
+    this.emit("chat:turn_finished", serde_json::json!({ "chat_id": chat_id.clone() }));
+    this.chat_cancels.lock().remove(&chat_id);
+}
+
+/// Copy legacy state into the new `~/.goble` home the first time it appears, so
+/// an existing installation is not left behind. Legacy store was a bare relative
+/// path (`goble_store.sqlite` in the CWD) and threads lived in
+/// `dirs::data_dir()/com.goble.desktop/threads`. A migration only runs when the
+/// new home file/dir is absent, so it never clobbers a fresh home.
+fn migrate_legacy_home(home: &goble_core::app_home::GobleHome) {
+    let legacy_store = Path::new("goble_store.sqlite");
+    if legacy_store.exists() && !home.store_path().exists() {
+        if let Err(e) = fs::copy(legacy_store, home.store_path()) {
+            log::warn!("migrate store failed: {e}");
+        } else {
+            record_migration(home, "store", &legacy_store.to_string_lossy());
+        }
+    }
+
+    let legacy_threads = dirs::data_dir()
+        .map(|d| d.join("com.goble.desktop").join("threads"));
+    if let Some(src) = legacy_threads {
+        if src.is_dir() && !home.threads_dir().exists() {
+            if let Err(e) = copy_dir_all(&src, &home.threads_dir()) {
+                log::warn!("migrate threads failed: {e}");
+            } else {
+                record_migration(home, "threads", &src.to_string_lossy());
+            }
+        }
+    }
+}
+
+fn record_migration(home: &goble_core::app_home::GobleHome, kind: &str, source: &str) {
+    let note = home.root().join("last-copy.txt");
+    let mut text = std::fs::read_to_string(&note).unwrap_or_default();
+    text.push_str(&format!("{kind}: {source}\n"));
+    let _ = std::fs::write(&note, text);
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 impl DesktopState {
     pub fn open_default() -> anyhow::Result<Arc<Self>> {
-        let store = Store::open("goble_store.sqlite")?;
-        let thread_store_path = dirs::data_dir()
-            .ok_or_else(|| anyhow::anyhow!("no data dir"))?
-            .join("com.goble.desktop")
-            .join("threads");
-        let thread_store = ThreadStore::new(thread_store_path)?;
+        let home = goble_core::app_home::GobleHome::locate()?;
+        // Every user gets the base home (identity/auth/config/sessions/logs).
+        // The workspace payload (bundled tooling, worktrees, threads) and a local
+        // store are only materialized when the workspace runs on this machine.
+        // Routing is not wired yet, so today every deployment is local; when it
+        // lands, a remote-only workspace skips `ensure_workspace()` and the local
+        // store and runs as a thin client against the remote worker.
+        home.ensure_base()?;
+        home.ensure_workspace()?;
+        migrate_legacy_home(&home);
+        let store = Store::open(home.store_path())?;
+        let thread_store = ThreadStore::new(home.threads_dir())?;
         let state = Self::new(store, thread_store);
+        state.reload_config(&home.config_path());
         let _ = state.load_from_store();
         Ok(state)
+    }
+
+    /// Load `~/.goble/config.toml` into memory on startup; a missing or malformed
+    /// file leaves the in-memory config at its default.
+    pub fn reload_config(&self, path: &Path) {
+        if let Ok(toml) = fs::read_to_string(path) {
+            if let Ok(config) = goble_core::config::GobleConfig::from_toml(&toml) {
+                *self.config.lock() = config;
+            }
+        }
+    }
+
+    /// The agent-visible configuration, resolved from `~/.goble/config.toml`.
+    pub fn config(&self) -> goble_core::config::GobleConfig {
+        self.config.lock().clone()
+    }
+
+    /// Persist the config to `~/.goble/config.toml` and update the in-memory copy.
+    pub fn save_config(&self, config: &goble_core::config::GobleConfig) -> anyhow::Result<()> {
+        let home = goble_core::app_home::GobleHome::locate()?;
+        let toml = config.to_toml()?;
+        fs::write(home.config_path(), toml).context("write config.toml")?;
+        *self.config.lock() = config.clone();
+        Ok(())
     }
 
     pub fn new(store: Store, thread_store: ThreadStore) -> Arc<Self> {
@@ -335,6 +474,8 @@ impl DesktopState {
             event_bus: Mutex::new(Arc::new(NoOpEventBus)),
             cluster_identity: Mutex::new(None),
             thread_store: Arc::new(thread_store),
+            config: parking_lot::Mutex::new(goble_core::config::GobleConfig::default()),
+            chat_cancels: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -1204,6 +1345,7 @@ impl DesktopState {
                 id,
                 role: role.to_string(),
                 content: content.to_string(),
+                tool_calls: tool_calls.clone(),
                 created_at,
             });
         self.emit("chat:updated", serde_json::json!({ "chat_id": chat_id }));
@@ -1214,13 +1356,35 @@ impl DesktopState {
         let rows = self.store.lock().list_chat_messages(chat_id)?;
         Ok(rows
             .into_iter()
-            .map(|(id, role, content, _, created_at)| ChatMessage {
+            .map(|(id, role, content, tool_calls, created_at)| ChatMessage {
                 id,
                 role,
                 content,
+                tool_calls,
                 created_at,
             })
             .collect())
+    }
+
+    /// Return the single still-pending ask for a chat, if any. The harness
+    /// persists questions it asked so the inline ask card survives a refresh or
+    /// an app restart; answering clears it (status becomes `answered`).
+    pub fn get_pending_ask(&self, chat_id: &str) -> anyhow::Result<Option<serde_json::Value>> {
+        match self.store.lock().get_pending_ask(chat_id)? {
+            Some((id, _chat_id, _mission_id, question, quick_replies, _status)) => {
+                let quick: Vec<String> = quick_replies
+                    .split('\n')
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                Ok(Some(serde_json::json!({
+                    "id": id,
+                    "question": question,
+                    "quick_replies": quick,
+                })))
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn store_clone(&self) -> Store {
@@ -1635,6 +1799,106 @@ impl DesktopState {
         Ok(intent)
     }
 
+    /// Whether the agent auto-approves `ask_user` questions instead of
+    /// suspending on them. Persisted under a dedicated settings key.
+    pub fn get_auto_approve(&self) -> bool {
+        self.store
+            .lock()
+            .get_setting("auto_approve")
+            .ok()
+            .flatten()
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    }
+
+    pub fn set_auto_approve(&self, enabled: bool) -> anyhow::Result<()> {
+        self.store
+            .lock()
+            .set_setting("auto_approve", if enabled { "1" } else { "0" })?;
+        Ok(())
+    }
+
+    /// Web-search backend (hosted xAI-style endpoint + API key + optional model),
+    /// persisted alongside the LLM/model settings. When neither key nor URL is
+    /// set, the harness falls back to DuckDuckGo for the `web_search` tool.
+    pub fn get_web_search_setting(&self) -> WebSearchConfig {
+        let store = self.store.lock();
+        let api_key = store
+            .get_setting("web_search_api_key")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let base_url = store
+            .get_setting("web_search_base_url")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let model = store
+            .get_setting("web_search_model")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        WebSearchConfig {
+            api_key,
+            base_url,
+            model,
+        }
+    }
+
+    pub fn set_web_search_setting(
+        &self,
+        api_key: &str,
+        base_url: &str,
+        model: &str,
+    ) -> anyhow::Result<()> {
+        let store = self.store.lock();
+        store.set_setting("web_search_api_key", api_key)?;
+        store.set_setting("web_search_base_url", base_url)?;
+        store.set_setting("web_search_model", model)?;
+        Ok(())
+    }
+
+    /// Store a named credential. The value is persisted in plaintext, matching
+    /// how LLM keys are stored; only the name is exposed to the agent.
+    pub fn set_credential(&self, name: &str, value: &str) -> anyhow::Result<()> {
+        self.store.lock().set_credential(name, value)
+    }
+
+    pub fn get_credential(&self, name: &str) -> anyhow::Result<Option<String>> {
+        self.store.lock().get_credential(name)
+    }
+
+    pub fn list_credential_names(&self) -> anyhow::Result<Vec<String>> {
+        self.store.lock().list_credential_names()
+    }
+
+    /// Record that a principal may perform `grant` over `scope`.
+    pub fn grant_access(&self, principal_id: &str, grant: &str, scope: &str) -> anyhow::Result<()> {
+        self.store.lock().grant_access(principal_id, grant, scope)
+    }
+
+    /// The grants a principal holds as `(grant, scope, created_at)`.
+    pub fn list_principal_access(
+        &self,
+        principal_id: &str,
+    ) -> anyhow::Result<Vec<(String, String, String)>> {
+        self.store.lock().list_access(principal_id)
+    }
+
+    /// Remove a matching grant; returns whether a row was removed.
+    pub fn revoke_access(&self, principal_id: &str, grant: &str, scope: &str) -> anyhow::Result<bool> {
+        self.store.lock().revoke_access(principal_id, grant, scope)
+    }
+
+    /// Ensure `~/.goble/principals/<id>/` exists so a principal's credentials and
+    /// context have a home alongside the workspace state.
+    pub fn ensure_principal_dir(&self, principal_id: &str) -> anyhow::Result<()> {
+        let home = goble_core::app_home::GobleHome::locate()?;
+        let dir = home.principals_dir().join(principal_id);
+        std::fs::create_dir_all(&dir)?;
+        Ok(())
+    }
+
     pub fn get_llm_setting(&self, provider: &str) -> Option<LlmSetting> {
         self.store
             .lock()
@@ -1647,6 +1911,141 @@ impl DesktopState {
                 model,
                 temperature,
             })
+    }
+
+    /// Model ids offered in the composer's model dropdown for a provider. The
+    /// configured model (if any) is promoted to the front so the dropdown always
+    /// offers what is currently set; the base catalog comes from
+    /// [`goble_core::llm::provider_models`].
+    pub fn available_models(&self, provider: &str) -> Vec<String> {
+        let provider = if provider.is_empty() { "openai" } else { provider };
+        let mut models = llm::provider_models(provider);
+        if let Some(s) = self.get_llm_setting(provider) {
+            if !s.model.is_empty() {
+                if let Some(pos) = models.iter().position(|m| m == &s.model) {
+                    let m = models.remove(pos);
+                    models.insert(0, m);
+                } else {
+                    models.insert(0, s.model);
+                }
+            }
+        }
+        if models.is_empty() {
+            models.push(llm::default_model_for(provider).to_string());
+        }
+        models
+    }
+
+    /// The model to select by default for a provider: the configured model when
+    /// present, otherwise the provider's default id.
+    pub fn default_model(&self, provider: &str) -> String {
+        let provider = if provider.is_empty() { "openai" } else { provider };
+        if let Some(s) = self.get_llm_setting(provider) {
+            if !s.model.is_empty() {
+                return s.model;
+            }
+        }
+        llm::default_model_for(provider).to_string()
+    }
+
+    /// Run one conversational turn for a chat through the harness and return a
+    /// handle that completes when the turn has finished.
+    ///
+    /// Resolves the provider/model from the configured LLM setting (falling
+    /// back to a deterministic `MockProvider` when a `mock` provider or no key
+    /// is configured), builds a real [`goble_core::harness::Harness`] over the
+    /// shared store and runs it on a background task so the caller's thread is
+    /// not blocked. The harness persists the user/assistant/tool messages into
+    /// the store itself and this task emits `chat:updated` after each event, so
+    /// the native UI re-reads the transcript — including any tool-call output —
+    /// on the following frame.
+    pub fn run_chat_turn(
+        self: &Arc<Self>,
+        chat_id: &str,
+        prompt: &str,
+        provider: &str,
+        model: &str,
+    ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+        let (llm, model_name) = self.resolve_llm_provider(provider, model);
+        let store = self.store.lock().clone();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let auto_approve = self.get_auto_approve();
+        let web_search = self.get_web_search_setting();
+        self.chat_cancels
+            .lock()
+            .insert(chat_id.to_string(), cancel.clone());
+        let harness = goble_core::harness::Harness::new(store)
+            .with_llm(llm)
+            .with_runner(Arc::new(
+                goble_core::harness::SandboxedCommandRunner::default_tools(),
+            ))
+            .with_cancel(Arc::clone(&cancel))
+            // Reasoning powers the `ask_user` / mission flow. Without it the
+            // harness never suspends to ask the user a question.
+            .with_reasoning(true)
+            .with_auto_approve(auto_approve)
+            .with_web_search(web_search);
+        let this = Arc::clone(self);
+        let chat_id = chat_id.to_string();
+        let prompt = prompt.to_string();
+        let provider = provider.to_string();
+        let handle = tokio::spawn(async move {
+            let stream = harness.run_turn(&chat_id, &prompt, &provider, &model_name);
+            drain_harness_stream(this, chat_id, stream).await;
+        });
+        Ok(handle)
+    }
+
+    /// Resume a chat turn that suspended waiting on a user answer. The harness
+    /// resolves the pending ask in the store and re-runs the mission, streaming
+    /// the same events as [`run_chat_turn`] so the UI keeps rendering inline.
+    pub fn resume_chat_turn(
+        self: &Arc<Self>,
+        chat_id: &str,
+        response: &str,
+        credential: Option<(String, String)>,
+        provider: &str,
+        model: &str,
+    ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+        let (llm, model_name) = self.resolve_llm_provider(provider, model);
+        let store = self.store.lock().clone();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let auto_approve = self.get_auto_approve();
+        let web_search = self.get_web_search_setting();
+        self.chat_cancels
+            .lock()
+            .insert(chat_id.to_string(), cancel.clone());
+        let harness = goble_core::harness::Harness::new(store)
+            .with_llm(llm)
+            .with_runner(Arc::new(
+                goble_core::harness::SandboxedCommandRunner::default_tools(),
+            ))
+            .with_cancel(Arc::clone(&cancel))
+            .with_auto_approve(auto_approve)
+            .with_web_search(web_search);
+        let this = Arc::clone(self);
+        let chat_id = chat_id.to_string();
+        let response = response.to_string();
+        let provider = provider.to_string();
+        let handle = tokio::spawn(async move {
+            let stream = harness.resume_turn(&chat_id, &response, credential, &provider, &model_name);
+            drain_harness_stream(this, chat_id, stream).await;
+        });
+        Ok(handle)
+    }
+
+    /// Request cancellation of a running chat turn started by [`run_chat_turn`].
+    ///
+    /// Sets the harness cancel flag so the running turn yields/terminates, and
+    /// returns whether a turn was actually in flight for this chat.
+    pub fn cancel_chat_turn(&self, chat_id: &str) -> bool {
+        match self.chat_cancels.lock().get(chat_id) {
+            Some(flag) => {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn run_agent(

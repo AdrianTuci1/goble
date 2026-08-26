@@ -20,6 +20,7 @@ cargo test -p goble-app
 | `vault_flow.rs` | Secrete (vault): deblocare, adăugare, ștergere, erori | deblocare + adăugare + ștergere, cheie goală → eroare, adăugare înainte de deblocare → eroare |
 | `connector_flow.rs` | Conectori MCP: instalare, descoperire unelte, activare/dezactivare, ștergere | instalare + închidere sertar, nume gol → eroare, descoperire + toggle, ștergere |
 | `ui_render.rs` | Render întreg shell-ul UI prin `RootView` | randează fără panică pe backend gol și cu mesaje |
+| `first_run_flow.rs` | Primul rulaj: configurare cheie model -> setări LLM -> alegere local/remote | banner la primul mesaj fără cheie, navigare la setări, alegere workspace |
 
 ## Note de implementare
 

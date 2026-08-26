@@ -14,6 +14,7 @@ pub struct TextArea {
     placeholder: String,
     focused: bool,
     min_height: f32,
+    masked: bool,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     on_submit: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -29,6 +30,7 @@ impl TextArea {
             placeholder: String::new(),
             focused: false,
             min_height: 80.0,
+            masked: false,
             on_change: None,
             on_focus_change: None,
             on_submit: None,
@@ -50,6 +52,13 @@ impl TextArea {
 
     pub fn with_min_height(mut self, height: f32) -> Self {
         self.min_height = height;
+        self
+    }
+
+    /// Render the typed value as a masked (bullet) string while keeping the real
+    /// value intact — used for credential/secret fields.
+    pub fn with_masked(mut self, masked: bool) -> Self {
+        self.masked = masked;
         self
     }
 
@@ -89,7 +98,9 @@ impl TextArea {
     }
 
     fn rebuild(&mut self, app: &AppContext) {
-        let display = if self.value.is_empty() && !self.placeholder.is_empty() {
+        let display = if self.masked && !self.value.is_empty() {
+            "•".repeat(self.value.chars().count())
+        } else if self.value.is_empty() && !self.placeholder.is_empty() {
             self.placeholder.clone()
         } else {
             self.value.clone()

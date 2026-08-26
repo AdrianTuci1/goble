@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod agent_memory;
+pub mod app_home;
 pub mod agent_runtime;
 pub mod audit;
 pub mod cluster_key;

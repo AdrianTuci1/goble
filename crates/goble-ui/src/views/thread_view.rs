@@ -155,6 +155,7 @@ fn role_label(role: ChatRole) -> &'static str {
     match role {
         ChatRole::User => "You",
         ChatRole::Assistant => "Assistant",
+        ChatRole::Tool => "Tool",
     }
 }
 

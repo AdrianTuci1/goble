@@ -16,11 +16,12 @@ use goble_ui::elements::{
     CrossAxisAlignment, Divider, Element, Expanded, Fill, Flex, MainAxisSize,
 };
 use goble_ui::theme::ColorToken;
-use goble_ui::{SettingsPage, Sheet, Stack, SHEET_DEFAULT_WIDTH};
+use goble_ui::{SettingsPage, Sheet, Stack, SHEET_DEFAULT_WIDTH, vec2f};
 
 pub mod chat;
 pub mod connectors;
 pub mod crons;
+pub mod model_form;
 pub mod shell;
 pub mod sidebar;
 pub mod vault;
@@ -102,6 +103,23 @@ pub enum AppTab {
     Settings,
 }
 
+/// Where the first-run agent should run its execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkspaceRouting {
+    Local,
+    Remote,
+}
+
+/// The text field currently focused inside the model-provider dialog. Tracked
+/// in app state so focus survives the per-frame element rebuild.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LlmFormField {
+    Model,
+    ApiKey,
+    BaseUrl,
+    Temperature,
+}
+
 /// Plain snapshot of the main UI state used to build the tree. Owned by the
 /// host app; rendered from scratch every frame so state changes show up live.
 #[derive(Clone, Debug)]
@@ -115,6 +133,10 @@ pub struct UiSnapshot {
     pub create_focused: bool,
     pub thread_messages: Vec<UiChatMessage>,
     pub chat_messages: Vec<UiChatMessage>,
+    /// A suspended agent question shown inline at the end of the transcript.
+    pub pending_ask: Option<goble_ui::AskUserUi>,
+    /// A prompt the user sent while the agent was busy, shown as a pending block.
+    pub queued_prompt: Option<String>,
     pub composer_draft: String,
     pub composer_focused: bool,
     /// Model choices shown in the composer's model dropdown.
@@ -127,6 +149,8 @@ pub struct UiSnapshot {
     pub profile_menu_open: Rc<RefCell<bool>>,
     pub agent_name: String,
     pub agent_busy: bool,
+    /// Whether the agent auto-approves `ask_user` questions.
+    pub auto_approve: bool,
     pub right_sidebar_open: bool,
     pub crons_open: bool,
     pub crons: Vec<CronEntry>,
@@ -144,6 +168,22 @@ pub struct UiSnapshot {
     pub settings_cluster_configured: bool,
     pub settings_authorized_keys: Vec<(String, String, String)>,
     pub settings_vault_unlocked: bool,
+    /// First-run: whether the "configure a model key" banner is shown in chat.
+    pub show_llm_key_banner: bool,
+    /// First-run: whether the "local or remote workspace?" choice is shown.
+    pub show_workspace_choice: bool,
+    /// First-run routing decision once the user picks Local or Remote.
+    pub workspace_routing: Option<WorkspaceRouting>,
+    /// First-run: whether the model-provider dialog is open over the chat.
+    pub llm_dialog_open: bool,
+    /// Editable model-form fields, held in app-owned ref cells so the text and
+    /// focus survive the per-frame element rebuild while the dialog is open.
+    pub llm_dialog_provider: Rc<RefCell<String>>,
+    pub llm_dialog_model: Rc<RefCell<String>>,
+    pub llm_dialog_api_key: Rc<RefCell<String>>,
+    pub llm_dialog_base_url: Rc<RefCell<String>>,
+    pub llm_dialog_temperature: Rc<RefCell<String>>,
+    pub llm_dialog_focus: Rc<RefCell<Option<LlmFormField>>>,
     pub sidebar_width: f32,
     pub sidebar_dragging: bool,
     /// Per-card interaction state (hover / delete menu), shared with the
@@ -202,6 +242,18 @@ pub struct UiActions {
     pub on_copy: Rc<RefCell<dyn FnMut()>>,
     pub on_restart: Rc<RefCell<dyn FnMut()>>,
     pub on_stop: Rc<RefCell<dyn FnMut()>>,
+    /// Submit the composed answer of the inline ask-user card. The optional
+    /// `(name, value)` carries a credential entered in the card, threaded out
+    /// separately from the answer so the secret never enters the transcript.
+    pub on_answer_ask: Rc<RefCell<dyn FnMut(String, Option<(String, String)>)>>,
+    /// Skip the inline ask-user card.
+    pub on_skip_ask: Rc<RefCell<dyn FnMut()>>,
+    /// Toggle the auto-approve (autonomy) switch above the composer.
+    pub on_toggle_auto_approve: Rc<RefCell<dyn FnMut(bool)>>,
+    /// Send a queued prompt now (interrupting the in-flight turn).
+    pub on_send_queued: Rc<RefCell<dyn FnMut()>>,
+    /// Dismiss a queued prompt.
+    pub on_dismiss_queued: Rc<RefCell<dyn FnMut()>>,
     pub on_menu: Rc<RefCell<dyn FnMut()>>,
     pub on_threads: Rc<RefCell<dyn FnMut()>>,
     pub on_inbox: Rc<RefCell<dyn FnMut()>>,
@@ -245,6 +297,12 @@ pub struct UiActions {
     pub on_add_authorized_key: Rc<RefCell<dyn FnMut(String, String, String)>>,
     /// Settings: remove an authorized key by id.
     pub on_remove_authorized_key: Rc<RefCell<dyn FnMut(String)>>,
+    /// First-run: open Settings->LLM to configure a model key (banner click).
+    pub on_config_llm_key: Rc<RefCell<dyn FnMut()>>,
+    /// First-run: choose the workspace routing (Local or Remote).
+    pub on_choose_workspace: Rc<RefCell<dyn FnMut(WorkspaceRouting)>>,
+    /// First-run: close the model-provider dialog without saving.
+    pub on_close_llm_dialog: Rc<RefCell<dyn FnMut()>>,
 }
 
 /// Callbacks supplied by the host app for the AI domain (vault + connectors).
@@ -335,12 +393,17 @@ pub fn build_ui(
         .with_on_close(move || (on_close_vault.borrow_mut())())
         .finish();
 
-    let stack = Stack::new().with_children(vec![
-        shell_col.finish(),
-        crons_sheet,
-        connectors_sheet,
-        vault_sheet,
-    ]);
+    // The model-provider dialog floats above everything (including the sheets).
+    let llm_dialog = model_form::build_llm_dialog(app, state, actions);
+
+    let stack = Stack::new()
+        .with_children(vec![
+            shell_col.finish(),
+            crons_sheet,
+            connectors_sheet,
+            vault_sheet,
+        ])
+        .with_overlay(llm_dialog, vec2f(0.0, 0.0));
 
     Container::new(stack.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))

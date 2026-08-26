@@ -15,11 +15,11 @@ use chrono::{DateTime, Utc};
 use goble_core::agent::Trigger;
 use goble_desktop_service::DesktopState;
 use goble_ui::{
-    AgentCardUi, ChatFragment, ChatMessage, ChatRole, ConversationEntry, ConversationStatus,
-    SettingsPage, TerminalData, TerminalLine, TerminalStatus,
+    AgentCardUi, AskUserUi, ChatFragment, ChatMessage, ChatRole, ConversationEntry,
+    ConversationStatus, SettingsPage, TerminalData, TerminalLine, TerminalStatus, ToolCall,
 };
 
-use crate::hot_ui::{AppTab, CronEntry};
+use crate::hot_ui::{AppTab, CronEntry, LlmFormField, WorkspaceRouting};
 use goble_ui_hot::SIDEBAR_WIDTH;
 
 /// Format an RFC3339 timestamp as a short relative "time ago" label (e.g.
@@ -46,6 +46,39 @@ fn time_ago(updated_at: &str) -> String {
     }
 }
 
+/// Build a terminal-style block from a stored tool-result message. The harness
+/// writes tool output as `"<call_id>\n<output>"`, so the first line becomes the
+/// block title and the remaining lines render as mono output (or error) lines.
+fn tool_terminal_data(content: &str) -> TerminalData {
+    let mut parts = content.splitn(2, '\n');
+    let title = parts.next().unwrap_or("tool").trim();
+    let body = parts.next().unwrap_or("").trim();
+    let has_error = body.contains("ERROR:");
+
+    let mut lines = Vec::new();
+    for line in body.lines() {
+        let text = line.trim_end().to_string();
+        if has_error || text.contains("ERROR:") {
+            lines.push(TerminalLine::error(text));
+        } else if text.is_empty() {
+            lines.push(TerminalLine::info(" "));
+        } else {
+            lines.push(TerminalLine::output(text));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(TerminalLine::info("(no output)"));
+    }
+
+    let status = if has_error {
+        TerminalStatus::Error
+    } else {
+        TerminalStatus::Success
+    };
+    TerminalData::new(if title.is_empty() { "tool" } else { title }.to_string(), lines)
+        .with_status(status)
+}
+
 #[derive(Clone)]
 pub struct UiState {
     pub current_tab: AppTab,
@@ -57,6 +90,13 @@ pub struct UiState {
     pub create_focused: bool,
     pub thread_messages: Vec<ChatMessage>,
     pub chat_messages: Vec<ChatMessage>,
+    /// A suspended agent question, rendered inline at the end of the transcript.
+    /// Set from the `chat:ask_user` event and re-read from the store so it
+    /// survives a refresh or app restart.
+    pub pending_ask: Option<AskUserUi>,
+    /// A prompt sent while the agent was busy, queued so it does not interrupt
+    /// the running turn. Shown as a pending block with "Send now" / dismiss.
+    pub queued_prompt: Option<String>,
     pub composer_draft: String,
     pub composer_focused: bool,
     /// Model choices shown in the composer's model dropdown.
@@ -68,6 +108,8 @@ pub struct UiState {
     pub profile_menu_open: Rc<RefCell<bool>>,
     pub agent_name: String,
     pub agent_busy: bool,
+    /// Whether the agent auto-approves `ask_user` questions (skip the ask).
+    pub auto_approve: bool,
     pub right_sidebar_open: bool,
     pub crons_open: bool,
     pub crons: Vec<CronEntry>,
@@ -85,6 +127,22 @@ pub struct UiState {
     pub settings_cluster_configured: bool,
     pub settings_authorized_keys: Vec<(String, String, String)>,
     pub settings_vault_unlocked: bool,
+    /// First-run: whether the "configure a model key" banner is shown in chat.
+    pub show_llm_key_banner: bool,
+    /// First-run: whether the "local or remote workspace?" choice is shown.
+    pub show_workspace_choice: bool,
+    /// First-run routing decision once the user picks Local or Remote.
+    pub workspace_routing: Option<WorkspaceRouting>,
+    /// First-run: whether the model-provider dialog is open over the chat.
+    pub llm_dialog_open: bool,
+    /// Editable model-provider form values + focus, held here so text/focus
+    /// survive the per-frame element rebuild while the dialog is open.
+    pub llm_dialog_provider: Rc<RefCell<String>>,
+    pub llm_dialog_model: Rc<RefCell<String>>,
+    pub llm_dialog_api_key: Rc<RefCell<String>>,
+    pub llm_dialog_base_url: Rc<RefCell<String>>,
+    pub llm_dialog_temperature: Rc<RefCell<String>>,
+    pub llm_dialog_focus: Rc<RefCell<Option<LlmFormField>>>,
     pub sidebar_width: f32,
     pub sidebar_dragging: bool,
     pub sidebar_drag_origin_x: f32,
@@ -112,18 +170,17 @@ impl UiState {
             create_focused: false,
             thread_messages: Vec::new(),
             chat_messages: Vec::new(),
+            pending_ask: None,
+            queued_prompt: None,
             composer_draft: String::new(),
             composer_focused: false,
-            models: vec![
-                "goble-agent".to_string(),
-                "goble-agent (fast)".to_string(),
-                "goble-agent (reasoning)".to_string(),
-            ],
-            selected_model: "goble-agent".to_string(),
+            models: Vec::new(),
+            selected_model: String::new(),
             model_menu_open: Rc::new(RefCell::new(false)),
             profile_menu_open: Rc::new(RefCell::new(false)),
             agent_name: "Goble Agent".to_string(),
             agent_busy: false,
+            auto_approve: false,
             right_sidebar_open: false,
             crons_open: false,
             crons: Vec::new(),
@@ -141,6 +198,16 @@ impl UiState {
             settings_cluster_configured: false,
             settings_authorized_keys: Vec::new(),
             settings_vault_unlocked: false,
+            show_llm_key_banner: false,
+            show_workspace_choice: false,
+            workspace_routing: None,
+            llm_dialog_open: false,
+            llm_dialog_provider: Rc::new(RefCell::new(String::new())),
+            llm_dialog_model: Rc::new(RefCell::new(String::new())),
+            llm_dialog_api_key: Rc::new(RefCell::new(String::new())),
+            llm_dialog_base_url: Rc::new(RefCell::new(String::new())),
+            llm_dialog_temperature: Rc::new(RefCell::new(String::new())),
+            llm_dialog_focus: Rc::new(RefCell::new(None)),
             sidebar_width: SIDEBAR_WIDTH,
             sidebar_dragging: false,
             sidebar_drag_origin_x: 0.0,
@@ -149,6 +216,7 @@ impl UiState {
             new_agent_hover: Rc::new(RefCell::new(false)),
         };
         state.refresh_from_desktop(desktop);
+        state.prime_llm_form();
         state
     }
 
@@ -158,6 +226,7 @@ impl UiState {
         self.refresh_crons(desktop);
         self.refresh_agent_name(desktop);
         self.refresh_settings(desktop);
+        self.auto_approve = desktop.get_auto_approve();
     }
 
     pub fn refresh_conversations(&mut self, desktop: &DesktopState) {
@@ -200,8 +269,28 @@ impl UiState {
     pub fn refresh_messages(&mut self, desktop: &DesktopState) {
         let Some(chat_id) = self.selected_id.clone() else {
             self.chat_messages.clear();
+            self.pending_ask = None;
             return;
         };
+        // A suspended ask persists in the store, so the inline card survives a
+        // refresh; answering clears it (status becomes `answered`).
+        self.pending_ask = desktop
+            .get_pending_ask(&chat_id)
+            .ok()
+            .flatten()
+            .and_then(|v| {
+                let question = v.get("question")?.as_str()?.to_string();
+                let quick: Vec<String> = v
+                    .get("quick_replies")
+                    .and_then(|q| q.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(AskUserUi::new(question, quick))
+            });
         match desktop.list_chat_messages(&chat_id) {
             Ok(msgs) => {
                 self.chat_messages = msgs
@@ -209,9 +298,24 @@ impl UiState {
                     .filter_map(|m| {
                         let role = match m.role.as_str() {
                             "user" => ChatRole::User,
+                            "tool" => ChatRole::Tool,
                             _ => ChatRole::Assistant,
                         };
-                        Some(ChatMessage::from_markdown(role, m.content))
+                        // Tool results are stored as "<call_id>\n<output>". Present
+                        // them as a distinct terminal block instead of assistant
+                        // prose so the user can tell execution output apart.
+                        let mut message = if role == ChatRole::Tool {
+                            ChatMessage::new(
+                                role,
+                                vec![ChatFragment::terminal(tool_terminal_data(&m.content))],
+                            )
+                        } else {
+                            ChatMessage::from_markdown(role, m.content)
+                        };
+                        if let Some(tc) = m.tool_calls.as_deref() {
+                            message = message.with_tool_calls(ToolCall::from_llm_json(tc));
+                        }
+                        Some(message)
                     })
                     .collect();
             }
@@ -264,6 +368,29 @@ impl UiState {
                 self.settings_llm_temperature = t.to_string();
             }
         }
+        self.refresh_llm_models(desktop);
+    }
+
+    /// Populate the composer's model dropdown from the configured provider and
+    /// default the selected model. The selection is only set on first load, so
+    /// a user's per-session model choice survives subsequent refreshes.
+    pub fn refresh_llm_models(&mut self, desktop: &DesktopState) {
+        self.models = desktop.available_models(&self.settings_llm_provider);
+        if self.selected_model.trim().is_empty() {
+            self.selected_model = desktop.default_model(&self.settings_llm_provider);
+        }
+    }
+
+    /// Copy the current LLM settings into the dialog's editable fields, so the
+    /// model-provider dialog opens pre-filled with what's configured (empty on
+    /// first run) and with no field focused.
+    pub fn prime_llm_form(&self) {
+        *self.llm_dialog_provider.borrow_mut() = self.settings_llm_provider.clone();
+        *self.llm_dialog_model.borrow_mut() = self.settings_llm_model.clone();
+        *self.llm_dialog_api_key.borrow_mut() = self.settings_llm_api_key.clone();
+        *self.llm_dialog_base_url.borrow_mut() = self.settings_llm_base_url.clone();
+        *self.llm_dialog_temperature.borrow_mut() = self.settings_llm_temperature.clone();
+        *self.llm_dialog_focus.borrow_mut() = None;
     }
 
     /// Mock data used when the backend store cannot be opened (dev fallback).
@@ -326,6 +453,8 @@ impl UiState {
             create_focused: false,
             thread_messages,
             chat_messages,
+            pending_ask: None,
+            queued_prompt: None,
             composer_draft: String::new(),
             composer_focused: false,
             models: vec![
@@ -338,6 +467,7 @@ impl UiState {
             profile_menu_open: Rc::new(RefCell::new(false)),
             agent_name: "Goble Agent".to_string(),
             agent_busy: false,
+            auto_approve: false,
             right_sidebar_open: false,
             crons_open: false,
             crons,
@@ -355,6 +485,16 @@ impl UiState {
             settings_cluster_configured: false,
             settings_authorized_keys: Vec::new(),
             settings_vault_unlocked: false,
+            show_llm_key_banner: false,
+            show_workspace_choice: false,
+            workspace_routing: None,
+            llm_dialog_open: false,
+            llm_dialog_provider: Rc::new(RefCell::new(String::new())),
+            llm_dialog_model: Rc::new(RefCell::new(String::new())),
+            llm_dialog_api_key: Rc::new(RefCell::new(String::new())),
+            llm_dialog_base_url: Rc::new(RefCell::new(String::new())),
+            llm_dialog_temperature: Rc::new(RefCell::new(String::new())),
+            llm_dialog_focus: Rc::new(RefCell::new(None)),
             sidebar_width: SIDEBAR_WIDTH,
             sidebar_dragging: false,
             sidebar_drag_origin_x: 0.0,

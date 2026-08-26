@@ -1,13 +1,14 @@
 //! Agent chat tab: identity header + message transcript + composer.
 
 use goble_ui::elements::{
-    AppContext, ChatLayout, ChatSidebar, Container, CrossAxisAlignment, EdgeInsets, Element, Fill,
-    Flex, Icon, MainAxisSize, PopupMenuItem, RoutineItem, Spacer, Text, TopbarButton,
+    AppContext, Button, ButtonVariant, ChatLayout, ChatSidebar, Container, CrossAxisAlignment,
+    EdgeInsets, Element, Expanded, Fill, Flex, Icon, MainAxisSize, PopupMenuItem, RoutineItem,
+    Spacer, Text, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::ChatView;
 
-use crate::{UiActions, UiSnapshot};
+use crate::{UiActions, UiSnapshot, WorkspaceRouting};
 
 /// Agent chat tab: a header row with the agent identity/status/copy/restart,
 /// then the message transcript + composer (which fills the remaining space).
@@ -21,6 +22,11 @@ pub fn build_agent_chat(app: &AppContext, state: &UiSnapshot, actions: &UiAction
     let on_voice = actions.on_voice.clone();
     let on_select_model = actions.on_select_model.clone();
     let on_stop = actions.on_stop.clone();
+    let on_answer_ask = actions.on_answer_ask.clone();
+    let on_skip_ask = actions.on_skip_ask.clone();
+    let on_toggle_auto_approve = actions.on_toggle_auto_approve.clone();
+    let on_send_queued = actions.on_send_queued.clone();
+    let on_dismiss_queued = actions.on_dismiss_queued.clone();
     let on_profile = actions.on_settings.clone();
 
     // Model dropdown: one item per available model; the current one is marked
@@ -62,6 +68,14 @@ pub fn build_agent_chat(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         .with_composer_on_select_model(move || (on_select_model.borrow_mut())())
         .with_composer_on_stop(move || (on_stop.borrow_mut())())
         .with_composer_on_profile(move || (on_profile.borrow_mut())())
+        .with_pending_ask(state.pending_ask.clone())
+        .with_on_answer_ask(move |resp, cred| (on_answer_ask.borrow_mut())(resp, cred))
+        .with_on_skip_ask(move || (on_skip_ask.borrow_mut())())
+        .with_auto_approve(state.auto_approve)
+        .with_on_toggle_auto_approve(move |on| (on_toggle_auto_approve.borrow_mut())(on))
+        .with_queued_prompt(state.queued_prompt.clone())
+        .with_on_send_queued(move || (on_send_queued.borrow_mut())())
+        .with_on_dismiss_queued(move || (on_dismiss_queued.borrow_mut())())
         .with_composer_model_menu(model_items, model_menu_open, move |index| {
             if let Some(name) = models_for_select.get(index) {
                 (on_model_select.borrow_mut())(name.clone());
@@ -79,7 +93,7 @@ pub fn build_agent_chat(app: &AppContext, state: &UiSnapshot, actions: &UiAction
     // When open, wrap the chat surface in a ChatLayout with a ChatSidebar whose
     // routines come from the agent's real scheduled tasks. The sidebar's "+"
     // button opens the crons drawer (which can create a new scheduled task).
-    if state.right_sidebar_open {
+    let chat_el = if state.right_sidebar_open {
         let on_add = actions.on_open_crons.clone();
         let routines = state
             .crons
@@ -100,7 +114,98 @@ pub fn build_agent_chat(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         ChatLayout::new(chat).with_right_sidebar(sidebar).finish()
     } else {
         chat
+    };
+
+    // First-run overlays: a "configure a model key" banner and/or the
+    // "local or remote workspace?" choice sit above the transcript. They only
+    // render when the app state asks for them, so the normal chat path is
+    // unchanged.
+    if state.show_llm_key_banner || state.show_workspace_choice {
+        let spacing = app.theme.spacing_px(SpacingToken::Md);
+        let mut wrapper = Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(spacing);
+        if state.show_llm_key_banner {
+            wrapper = wrapper.with_child(build_llm_key_banner(app, actions));
+        }
+        if state.show_workspace_choice {
+            wrapper = wrapper.with_child(build_workspace_choice(app, actions));
+        }
+        wrapper = wrapper.with_child(Expanded::new(chat_el).finish());
+        Container::new(wrapper.finish())
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+            .finish()
+    } else {
+        chat_el
     }
+}
+
+/// First-run banner shown in the chat when no model key is configured yet.
+fn build_llm_key_banner(app: &AppContext, actions: &UiActions) -> Box<dyn Element> {
+    let on_config = actions.on_config_llm_key.clone();
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let label = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(
+            Icon::new("key")
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Warning, app)
+                .finish(),
+        )
+        .with_child(
+            Text::new(
+                "You don't have any key configured, please click here to configure a model key.",
+            )
+            .with_theme_color(ColorToken::Text, app)
+            .with_font_size(12.0)
+            .finish(),
+        )
+        .finish();
+    Button::new(label)
+        .with_variant(ButtonVariant::Ghost)
+        .with_on_click(move || (on_config.borrow_mut())())
+        .finish()
+}
+
+/// First-run choice prompt: pick where the agent should run.
+fn build_workspace_choice(app: &AppContext, actions: &UiActions) -> Box<dyn Element> {
+    let md = app.theme.spacing_px(SpacingToken::Md);
+    let local = {
+        let on_choose = actions.on_choose_workspace.clone();
+        Button::new(Text::new("Local").finish())
+            .with_variant(ButtonVariant::Primary)
+            .with_on_click(move || (on_choose.borrow_mut())(WorkspaceRouting::Local))
+            .finish()
+    };
+    let remote = {
+        let on_choose = actions.on_choose_workspace.clone();
+        Button::new(Text::new("Remote").finish())
+            .with_variant(ButtonVariant::Ghost)
+            .with_on_click(move || (on_choose.borrow_mut())(WorkspaceRouting::Remote))
+            .finish()
+    };
+    let row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(md)
+        .with_child(
+            Text::new("Run the agent locally or on a remote worker?")
+                .with_theme_color(ColorToken::Text, app)
+                .with_font_size(12.0)
+                .finish(),
+        )
+        .with_child(Spacer::new().finish())
+        .with_child(local)
+        .with_child(remote)
+        .finish();
+    Container::new(row)
+        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+        .with_corner_radius(app.theme.radius_px())
+        .with_padding(EdgeInsets::uniform(md))
+        .finish()
 }
 
 /// Agent identity row: name + status dot, then copy/restart/cron actions.

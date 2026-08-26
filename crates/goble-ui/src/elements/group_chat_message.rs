@@ -75,6 +75,7 @@ impl GroupChatMessage {
         match self.message.role {
             ChatRole::User => ColorToken::Accent,
             ChatRole::Assistant => ColorToken::Success,
+            ChatRole::Tool => ColorToken::Warning,
         }
     }
 
@@ -357,6 +358,7 @@ fn role_label(role: ChatRole) -> &'static str {
     match role {
         ChatRole::User => "You",
         ChatRole::Assistant => "Assistant",
+        ChatRole::Tool => "Tool",
     }
 }
 

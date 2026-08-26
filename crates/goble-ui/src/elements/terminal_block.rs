@@ -253,7 +253,9 @@ impl Element for TerminalBlock {
         let size = self.size.unwrap_or(Vector2F::zero());
         let rect = RectF::new(PointF::new(origin.x, origin.y), Size2F::new(size.x, size.y));
 
-        let surface = app.theme.color(ColorToken::Surface);
+        // A command/IO area sits on a raised surface inside the message block
+        // (warp-new: `surface_2`) bounded by an outline border.
+        let surface = app.theme.color(ColorToken::SurfaceRaised);
         let border = app.theme.color(ColorToken::Border);
         let muted = app.theme.color(ColorToken::Muted);
 

@@ -218,6 +218,17 @@ impl std::str::FromStr for ThinkingMode {
     }
 }
 
+/// Web-search backend configuration, resolved by the caller (e.g. from the
+/// model/LLM settings) and passed into the harness. When `api_key` and
+/// `base_url` are both set, `web_search` uses the hosted backend; otherwise it
+/// falls back to scraping DuckDuckGo. An empty config means DuckDuckGo always.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchConfig {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
+
 pub struct Harness {
     store: Store,
     runner: Arc<dyn CommandRunner>,
@@ -227,6 +238,8 @@ pub struct Harness {
     cancel: Arc<AtomicBool>,
     workspace_dir: PathBuf,
     reasoning_enabled: bool,
+    auto_approve: bool,
+    web_search: WebSearchConfig,
 }
 
 impl Harness {
@@ -246,11 +259,20 @@ impl Harness {
             cancel: Arc::new(AtomicBool::new(false)),
             workspace_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             reasoning_enabled: false,
+            auto_approve: false,
+            web_search: WebSearchConfig::default(),
         }
     }
 
     pub fn with_reasoning(mut self, enabled: bool) -> Self {
         self.reasoning_enabled = enabled;
+        self
+    }
+
+    /// When set, the agent does not suspend to ask the user a question: an
+    /// `ask_user` tool call is auto-skipped and the mission continues.
+    pub fn with_auto_approve(mut self, auto_approve: bool) -> Self {
+        self.auto_approve = auto_approve;
         self
     }
 
@@ -284,6 +306,13 @@ impl Harness {
 
     pub fn with_mcp_manager(mut self, manager: McpManager) -> Self {
         self.mcp_manager = manager;
+        self
+    }
+
+    /// Configure the web-search backend. When `api_key` + `base_url` are set the
+    /// hosted backend is used; otherwise `web_search` falls back to DuckDuckGo.
+    pub fn with_web_search(mut self, config: WebSearchConfig) -> Self {
+        self.web_search = config;
         self
     }
 
@@ -328,6 +357,8 @@ impl Harness {
             provider.to_string(),
             model.to_string(),
             self.reasoning_enabled,
+            self.auto_approve,
+            self.web_search.clone(),
         )
     }
 
@@ -336,6 +367,7 @@ impl Harness {
         &self,
         chat_id: &str,
         response: &str,
+        credential: Option<(String, String)>,
         provider: &str,
         model: &str,
     ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
@@ -349,8 +381,11 @@ impl Harness {
             self.workspace_dir.clone(),
             chat_id.to_string(),
             response.to_string(),
+            credential,
             provider.to_string(),
             model.to_string(),
+            self.auto_approve,
+            self.web_search.clone(),
         )
     }
 }
@@ -453,7 +488,7 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "run_command".to_string(),
-            description: "Run an allowed shell command with a timeout.".to_string(),
+            description: "Run an allowed shell command with a timeout. To use a stored credential without exposing it, write {{{{credential:<name>}}}} anywhere in the command or args; the harness substitutes the stored value at execution time and it never appears in this tool's arguments or result.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -461,6 +496,22 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
                     "args": { "type": "array", "items": { "type": "string" } }
                 },
                 "required": ["command"]
+            }),
+        },
+        ToolDefinition {
+            name: "credentials".to_string(),
+            description: "List the names of stored credentials (API keys, tokens). Values are never returned; to use a credential inside run_command, reference it as {{{{credential:<name>}}}}.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "principals".to_string(),
+            description: "List every principal with access to this workspace, their kind/name and the grants (grant:scope) each holds.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
             }),
         },
         ToolDefinition {
@@ -726,11 +777,14 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "web_search".to_string(),
-            description: "Search the web using DuckDuckGo HTML. Returns up to 10 results with title, snippet and URL.".to_string(),
+            description: "Search the web and return results with title, snippet and URL. Uses the configured hosted search backend when its API key is set, otherwise DuckDuckGo. `advanced` runs a deeper search: when using DuckDuckGo it follows pagination to gather more distinct results (defaulting to up to 30); when a hosted backend is configured it requests the advanced model.".
+                to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string" }
+                    "query": { "type": "string", "description": "Search query" },
+                    "max_results": { "type": "integer", "minimum": 1, "maximum": 30, "description": "Max results (default 10, 30 for advanced)" },
+                    "advanced": { "type": "boolean", "description": "Deep/advanced search" }
                 },
                 "required": ["query"]
             }),
@@ -823,6 +877,7 @@ pub(crate) async fn execute_tool_call(
     mcp_manager: &McpManager,
     workspace_dir: &std::path::Path,
     call: &LlmToolCall,
+    web_search_config: &WebSearchConfig,
 ) -> Result<String> {
     match call.name.as_str() {
         "create_agent" => create_agent(store, &call.arguments),
@@ -831,7 +886,9 @@ pub(crate) async fn execute_tool_call(
         "update_workflow" => update_workflow(store, &call.arguments),
         "create_team" => create_team(store, &call.arguments),
         "update_team" => update_team(store, &call.arguments),
-        "run_command" => run_command(runner, &call.arguments).await,
+        "run_command" => run_command(store, runner, &call.arguments).await,
+        "credentials" => list_credentials(store),
+        "principals" => list_principals(store),
         "list_entities" => list_entities(store, &call.arguments),
         "search_store" => search_store(store, &call.arguments),
         "deploy_agent" => deploy_agent(store, deploy_sender, &call.arguments),
@@ -857,7 +914,7 @@ pub(crate) async fn execute_tool_call(
         "read_file" => read_file(&call.arguments, workspace_dir),
         "write_file" => write_file(&call.arguments, workspace_dir),
         "edit_file" => edit_file(&call.arguments, workspace_dir),
-        "web_search" => web_search(&call.arguments).await,
+        "web_search" => web_search(&call.arguments, web_search_config).await,
         "read_url" => read_url(&call.arguments).await,
         "execute_python_code" => execute_python_code(&call.arguments).await,
         "memory_write" => memory_write(store, &call.arguments),
@@ -1143,8 +1200,12 @@ fn update_team(store: &Store, args: &serde_json::Value) -> Result<String> {
     create_team(store, args)
 }
 
-async fn run_command(runner: &dyn CommandRunner, args: &serde_json::Value) -> Result<String> {
-    let command = args["command"].as_str().unwrap_or_default();
+async fn run_command(
+    store: &Store,
+    runner: &dyn CommandRunner,
+    args: &serde_json::Value,
+) -> Result<String> {
+    let command = expand_credential_refs(store, args["command"].as_str().unwrap_or_default())?;
     let cmd_args: Vec<String> = args["args"]
         .as_array()
         .map(|arr| {
@@ -1153,7 +1214,87 @@ async fn run_command(runner: &dyn CommandRunner, args: &serde_json::Value) -> Re
                 .collect()
         })
         .unwrap_or_default();
-    runner.run(command, &cmd_args).await
+    let cmd_args = cmd_args
+        .iter()
+        .map(|a| expand_credential_refs(store, a))
+        .collect::<Result<Vec<_>>>()?;
+    runner.run(&command, &cmd_args).await
+}
+
+/// Substitute `{{credential:<name>}}` placeholders with the stored secret value
+/// at execution time. Only the placeholder (a name) is ever exposed to the
+/// model; the value is resolved here and passed to the process argv, so it never
+/// appears in the transcript or a tool result.
+fn expand_credential_refs(store: &Store, s: &str) -> Result<String> {
+    const OPEN: &str = "{{credential:";
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    loop {
+        match rest.find(OPEN) {
+            None => {
+                out.push_str(rest);
+                break;
+            }
+            Some(pos) => {
+                out.push_str(&rest[..pos]);
+                let tail = &rest[pos + OPEN.len()..];
+                match tail.find("}}") {
+                    None => {
+                        out.push_str(OPEN);
+                        out.push_str(tail);
+                        break;
+                    }
+                    Some(end) => {
+                        let name = tail[..end].trim();
+                        match store.get_credential(name)? {
+                            Some(value) => out.push_str(&value),
+                            None => anyhow::bail!(
+                                "unknown credential `{name}`; use the `credentials` tool to list stored credentials"
+                            ),
+                        }
+                        rest = &tail[end + 2..];
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn list_credentials(store: &Store) -> Result<String> {
+    let names = store.list_credential_names()?;
+    if names.is_empty() {
+        return Ok("no credentials stored".to_string());
+    }
+    Ok(format!("stored credentials: {}", names.join(", ")))
+}
+
+fn list_principals(store: &Store) -> Result<String> {
+    let principals = store.list_principals()?;
+    if principals.is_empty() {
+        return Ok("no principals".to_string());
+    }
+    let mut lines = Vec::new();
+    for (id, kind, name, _created) in principals {
+        let grants = store.list_access(&id)?;
+        let grants_s = if grants.is_empty() {
+            "no grants".to_string()
+        } else {
+            grants
+                .iter()
+                .map(|(g, s, _)| {
+                    if s.is_empty() {
+                        g.clone()
+                    } else {
+                        format!("{g}:{s}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        lines.push(format!("principal {id} ({kind}, {name}) grants=[{grants_s}]"));
+    }
+    Ok(lines.join("\n"))
 }
 
 fn list_entities(store: &Store, args: &serde_json::Value) -> Result<String> {
@@ -1612,50 +1753,148 @@ fn run_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
     ))
 }
 
-async fn web_search(args: &serde_json::Value) -> Result<String> {
+async fn web_search(args: &serde_json::Value, config: &WebSearchConfig) -> Result<String> {
     let query = args["query"].as_str().context("query is required")?;
-    let encoded = urlencoding::encode(query);
-    let url = format!("https://html.duckduckgo.com/html/?q={}", encoded);
+    let advanced = args["advanced"].as_bool().unwrap_or(false);
+    let caller_max = args["max_results"].as_u64().unwrap_or(0) as usize;
+    // A deeper search defaults to more results; callers can still cap it.
+    let default = if advanced { 30 } else { 10 };
+    let max_results = if caller_max > 0 {
+        caller_max.clamp(1, 30)
+    } else {
+        default.clamp(1, 30)
+    };
+    // Hosted backend (e.g. xAI) when configured; otherwise DuckDuckGo. The
+    // `advanced` flag drives a deeper, paged DDG search when no backend is set.
+    if !config.api_key.is_empty() && !config.base_url.is_empty() {
+        return hosted_web_search(&config.base_url, &config.api_key, query, max_results, advanced).await;
+    }
+    ddg_web_search(query, max_results, advanced).await
+}
+
+async fn hosted_web_search(
+    endpoint: &str,
+    api_key: &str,
+    query: &str,
+    max_results: usize,
+    advanced: bool,
+) -> Result<String> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(20))
         .build()?;
     let resp = client
-        .get(&url)
-        .header("User-Agent", "Mozilla/5.0 (compatible; Goble/1.0)")
+        .post(endpoint)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({ "query": query, "max_results": max_results, "advanced": advanced }))
         .send()
         .await
-        .context("web_search request failed")?
+        .context("hosted web_search request failed")?
         .text()
         .await
-        .context("web_search failed to read body")?;
-    let mut results = Vec::new();
-    for result_html in resp.split(r#"class="result""#).skip(1) {
-        let title = regex_lite::Regex::new(r#"class="result__a"[^>]*>(.*?)</a>"#)
-            .ok()
-            .and_then(|re| re.captures(result_html))
-            .and_then(|c| c.get(1))
-            .map(|m| html_unescape(m.as_str()))
-            .unwrap_or_default();
-        let snippet = regex_lite::Regex::new(r#"class="result__snippet"[^>]*>(.*?)</a>"#)
-            .ok()
-            .and_then(|re| re.captures(result_html))
-            .and_then(|c| c.get(1))
-            .map(|m| html_unescape(m.as_str()))
-            .unwrap_or_default();
-        let href = regex_lite::Regex::new(r#"class="result__a"[^>]*href="([^"]+)""#)
-            .ok()
-            .and_then(|re| re.captures(result_html))
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
+        .context("hosted web_search failed to read body")?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&resp).context("hosted web_search returned invalid JSON")?;
+    let empty: Vec<serde_json::Value> = Vec::new();
+    let results = parsed
+        .get("results")
+        .and_then(|r| r.as_array())
+        .unwrap_or(&empty);
+    let mut out = Vec::new();
+    for result in results.iter().take(max_results) {
+        let title = result.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let url = result.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        let snippet = result.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
         if title.is_empty() && snippet.is_empty() {
             continue;
         }
-        results.push(format!(
-            "TITLE: {}\nURL: {}\nSNIPPET: {}\n",
-            title, href, snippet
-        ));
-        if results.len() >= 10 {
+        out.push(format!("TITLE: {}\nURL: {}\nSNIPPET: {}\n", title, url, snippet));
+    }
+    Ok(format!("{} results\n{}", out.len(), out.join("\n")))
+}
+
+/// Decode a DuckDuckGo redirect `//duckduckgo.com/l/?uddg=<encoded>&rut=...` to
+/// the real destination URL, falling back to the original href when it is not a
+/// DDG redirect.
+fn decode_ddg_url(href: &str) -> String {
+    let idx = href.find("uddg=").map(|i| i + 5).unwrap_or(usize::MAX);
+    if idx < href.len() {
+        let rest = &href[idx..];
+        let encoded = rest.split('&').next().unwrap_or(rest);
+        if let Ok(decoded) = urlencoding::decode(encoded) {
+            let decoded = decoded.into_owned();
+            if decoded.starts_with("http://") || decoded.starts_with("https://") {
+                return decoded;
+            }
+        }
+    }
+    href.to_string()
+}
+
+async fn ddg_web_search(query: &str, max_results: usize, advanced: bool) -> Result<String> {
+    let encoded = urlencoding::encode(query);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let base_url = format!("https://html.duckduckgo.com/html/?q={}", encoded);
+    let mut results: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut offset: Option<usize> = None;
+    // `advanced` runs a deeper, best-effort paged scan to gather more distinct
+    // results than the handful a single page returns; duplicates are dropped.
+    let max_pages = if advanced { 3 } else { 1 };
+    for _ in 0..max_pages {
+        let url = match offset {
+            Some(s) => format!("{base_url}&s={s}"),
+            None => base_url.clone(),
+        };
+        let resp = client
+            .get(&url)
+            .header("User-Agent", "Mozilla/5.0 (compatible; Goble/1.0)")
+            .send()
+            .await
+            .context("web_search request failed")?
+            .text()
+            .await
+            .context("web_search failed to read body")?;
+        offset = regex_lite::Regex::new(r#"name="s" value="(\d+)""#)
+            .ok()
+            .and_then(|re| re.captures(&resp))
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse::<usize>().ok())
+            .filter(|&s| s > 0);
+        for result_html in resp.split(r#"class="result""#).skip(1) {
+            let title = regex_lite::Regex::new(r#"class="result__a"[^>]*>(.*?)</a>"#)
+                .ok()
+                .and_then(|re| re.captures(result_html))
+                .and_then(|c| c.get(1))
+                .map(|m| html_unescape(m.as_str()))
+                .unwrap_or_default();
+            let snippet = regex_lite::Regex::new(r#"class="result__snippet"[^>]*>(.*?)</a>"#)
+                .ok()
+                .and_then(|re| re.captures(result_html))
+                .and_then(|c| c.get(1))
+                .map(|m| html_unescape(m.as_str()))
+                .unwrap_or_default();
+            let href = regex_lite::Regex::new(r#"class="result__a"[^>]*href="([^"]+)""#)
+                .ok()
+                .and_then(|re| re.captures(result_html))
+                .and_then(|c| c.get(1))
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            let url = decode_ddg_url(&href);
+            if title.is_empty() && snippet.is_empty() {
+                continue;
+            }
+            if !seen.insert(url.clone()) {
+                continue;
+            }
+            results.push(format!("TITLE: {}\nURL: {}\nSNIPPET: {}\n", title, url, snippet));
+            if results.len() >= max_results {
+                break;
+            }
+        }
+        if results.len() >= max_results || !advanced {
             break;
         }
     }
@@ -2517,5 +2756,98 @@ mod tests {
             .collect();
         assert!(finished.iter().any(|r| r.contains("echo")));
         assert!(finished.iter().any(|r| r.contains("hello from harness")));
+    }
+
+    #[test]
+    fn test_web_search_tool_schema() {
+        let store = Store::open_in_memory().unwrap();
+        let harness = Harness::new(store);
+        let tool = harness
+            .list_tools()
+            .into_iter()
+            .find(|t| t.name == "web_search")
+            .expect("web_search tool should exist");
+        let props = tool
+            .parameters
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("web_search schema should have properties");
+        assert!(props.contains_key("query"));
+        assert!(props.contains_key("max_results"), "web_search should expose max_results");
+        assert!(props.contains_key("advanced"), "web_search should expose advanced");
+        assert_eq!(props["max_results"]["maximum"], 30);
+        let required = tool
+            .parameters
+            .get("required")
+            .and_then(|r| r.as_array())
+            .expect("web_search schema should list required");
+        assert!(required.iter().any(|v| v == "query"));
+    }
+
+    #[test]
+    fn test_decode_ddg_url() {
+        assert_eq!(
+            decode_ddg_url("//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fcyanheads%2Ffilesystem-mcp-server&rut=abc"),
+            "https://github.com/cyanheads/filesystem-mcp-server"
+        );
+        assert_eq!(
+            decode_ddg_url("https://example.com/page"),
+            "https://example.com/page"
+        );
+        // Non-http decoded values are not trusted; the original href is kept.
+        assert_eq!(
+            decode_ddg_url("//duckduckgo.com/l/?uddg=not-a-url"),
+            "//duckduckgo.com/l/?uddg=not-a-url"
+        );
+    }
+
+    #[test]
+    fn test_credential_expansion_and_listing() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(list_credentials(&store).unwrap(), "no credentials stored");
+
+        store.set_credential("github_token", "ghs_secret").unwrap();
+        assert_eq!(list_credentials(&store).unwrap(), "stored credentials: github_token");
+
+        // Placeholder is substituted server-side; the value only flows into the
+        // process argv, never into a returned tool result or the transcript.
+        let cmd = r#"curl -H "Authorization: Bearer {{credential:github_token}}" url"#;
+        assert_eq!(
+            expand_credential_refs(&store, cmd).unwrap(),
+            r#"curl -H "Authorization: Bearer ghs_secret" url"#
+        );
+        assert_eq!(
+            expand_credential_refs(&store, "echo {{credential:github_token}} {{credential:github_token}}")
+                .unwrap(),
+            "echo ghs_secret ghs_secret"
+        );
+        // A command with no credential reference passes through untouched.
+        assert_eq!(
+            expand_credential_refs(&store, "git status").unwrap(),
+            "git status"
+        );
+        // An unknown credential is an error, never a silently-expanded secret.
+        assert!(expand_credential_refs(&store, "{{credential:nope}}").is_err());
+
+        // The `credentials` tool is advertised to the model and only lists names.
+        let harness = Harness::new(store);
+        assert!(harness.list_tools().iter().any(|t| t.name == "credentials"));
+    }
+
+    #[test]
+    fn test_principals_lists_grants() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_principal("p1", "user", "Ada", "2024-01-01T00:00:00Z")
+            .unwrap();
+        assert!(list_principals(&store).unwrap().contains("no grants"));
+
+        store.grant_access("p1", "run", "workspace").unwrap();
+        let listing = list_principals(&store).unwrap();
+        assert!(listing.contains("principal p1 (user, Ada)"));
+        assert!(listing.contains("run:workspace"));
+
+        let harness = Harness::new(store);
+        assert!(harness.list_tools().iter().any(|t| t.name == "principals"));
     }
 }

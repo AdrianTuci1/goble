@@ -90,9 +90,50 @@ impl RootView {
             return;
         };
         let mut state = self.state.borrow_mut();
-        for (name, _payload) in events {
+        for (name, payload) in events {
             match name.as_str() {
                 "chats:updated" | "chat:updated" => state.refresh_conversations(&desktop),
+                "chat:turn_finished" => {
+                    state.agent_busy = false;
+                    // A prompt queued while the agent was running is submitted
+                    // automatically now that the turn finished (warp-new model).
+                    if let Some(prompt) = state.queued_prompt.take() {
+                        let model = if state.selected_model.trim().is_empty() {
+                            state.settings_llm_model.clone()
+                        } else {
+                            state.selected_model.clone()
+                        };
+                        if let Some(chat_id) = state.selected_id.clone() {
+                            if let Err(e) = desktop.run_chat_turn(
+                                &chat_id,
+                                &prompt,
+                                &state.settings_llm_provider,
+                                &model,
+                            ) {
+                                log::warn!("auto-submit queued prompt failed: {e}");
+                            } else {
+                                state.agent_busy = true;
+                            }
+                        }
+                    }
+                }
+                // The agent suspended to ask the user a question; render the
+                // inline ask card in the transcript.
+                "chat:ask_user" => {
+                    if let Some(question) = payload.get("question").and_then(|v| v.as_str()) {
+                        let quick: Vec<String> = payload
+                            .get("quick_replies")
+                            .and_then(|q| q.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        state.pending_ask = Some(goble_ui::AskUserUi::new(question, quick));
+                        state.refresh_messages(&desktop);
+                    }
+                }
                 "workflows:updated" => state.refresh_crons(&desktop),
                 "agents:updated" => state.refresh_agent_name(&desktop),
                 "vault:updated" => self.ai_state.borrow_mut().refresh_vault(&desktop),
@@ -120,6 +161,8 @@ impl RootView {
                 create_focused: s.create_focused,
                 thread_messages: s.thread_messages.clone(),
                 chat_messages: s.chat_messages.clone(),
+                pending_ask: s.pending_ask.clone(),
+                queued_prompt: s.queued_prompt.clone(),
                 composer_draft: s.composer_draft.clone(),
                 composer_focused: s.composer_focused,
                 models: s.models.clone(),
@@ -128,6 +171,7 @@ impl RootView {
                 profile_menu_open: s.profile_menu_open.clone(),
                 agent_name: s.agent_name.clone(),
                 agent_busy: s.agent_busy,
+                auto_approve: s.auto_approve,
                 right_sidebar_open: s.right_sidebar_open,
                 crons_open: s.crons_open,
                 crons: s.crons.clone(),
@@ -145,6 +189,16 @@ impl RootView {
                 settings_cluster_configured: s.settings_cluster_configured,
                 settings_authorized_keys: s.settings_authorized_keys.clone(),
                 settings_vault_unlocked: s.settings_vault_unlocked,
+                show_llm_key_banner: s.show_llm_key_banner,
+                show_workspace_choice: s.show_workspace_choice,
+                workspace_routing: s.workspace_routing,
+                llm_dialog_open: s.llm_dialog_open,
+                llm_dialog_provider: s.llm_dialog_provider.clone(),
+                llm_dialog_model: s.llm_dialog_model.clone(),
+                llm_dialog_api_key: s.llm_dialog_api_key.clone(),
+                llm_dialog_base_url: s.llm_dialog_base_url.clone(),
+                llm_dialog_temperature: s.llm_dialog_temperature.clone(),
+                llm_dialog_focus: s.llm_dialog_focus.clone(),
                 sidebar_width: s.sidebar_width,
                 sidebar_dragging: s.sidebar_dragging,
                 agent_cards: s.agent_cards.clone(),

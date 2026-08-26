@@ -47,3 +47,11 @@ path = "integration_testing/connector_flow.rs"
 [[test]]
 name = "ui_render"
 path = "integration_testing/ui_render.rs"
+
+[[test]]
+name = "first_run_flow"
+path = "integration_testing/first_run_flow.rs"
+
+[[test]]
+name = "harness_flow"
+path = "integration_testing/harness_flow.rs"

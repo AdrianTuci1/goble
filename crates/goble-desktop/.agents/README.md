@@ -23,34 +23,49 @@ Acest director conține task-urile incrementale pentru migrarea aplicației Gobl
 - [x] `009-topbar.md` — Topbar nativ premium.
 - [x] `010-conversation-sidebar.md` — Sidebar de conversație custom.
 - [x] `011-chat-view.md` — Chat header, content gol pentru conversație nouă și composer.
-- [ ] `012-conversation-sidebar-wiring.md` — Legarea sidebar-ului de conversație cu date reale.
-- [ ] `013-chat-composer-enhancements.md` — Selector model, runtime, API key card.
-- [ ] `014-chat-right-sidebar-tabs.md` — Tab-uri Info/History în chat sidebar.
-- [ ] `015-agents-page.md` — Parity pagină agenți cu Tauri.
+- [ ] `012-conversation-sidebar-wiring.md` — Legarea sidebar-ului cu date reale (agenți + rutine + search).
+- [ ] `013-agent-composer-enhancements.md` — Composer-ul principal devine creator/editor de agenți.
+- [ ] `014-agent-right-sidebar-tabs.md` — Sidebar dreapta Info/Trace pentru agent/rutină selectată.
+- [ ] `015-agents-in-sidebar.md` — Agenții apar în sidebar, nu ca pagină separată.
 - [ ] `016-connectors-page.md` — Pagina Connectors (MCP).
-- [ ] `017-workflows-page.md` — Pagina Workflows.
+- [ ] `017-routines-in-sidebar.md` — Workflow-urile apar ca rutine în sidebar.
 - [ ] `018-teams-page.md` — Pagina Teams.
-- [ ] `019-executions-agenttrace-page.md` — Pagini Executions și AgentTrace.
-- [ ] `020-logs-page.md` — Pagina Logs.
-- [ ] `021-search-page.md` — Pagina Search.
+- [ ] `019-routine-trace-panel.md` — Trace/execuții în interiorul unei rutine/agent.
+- [ ] `020-routine-logs-inline.md` — Log-uri în interiorul vizualizării de rutină/agent.
+- [ ] `021-sidebar-search-filter.md` — Search în sidebar, deasupra agenților.
 - [ ] `022-threads-enhancements.md` — Participanți, reacții, mentions, unread.
 - [ ] `023-dual-build-qa.md` — Dual build și QA final.
 
 ## Graf de dependențe (simplificat)
 
 ```
-009-topbar ─┬─> 010-conversation-sidebar ─┬─> 011-chat-view ─┬─> 012-conversation-sidebar-wiring
-            │                             │                  └─> 013-chat-composer-enhancements
-            │                             │                  └─> 014-chat-right-sidebar-tabs
+009-topbar ─┬─> 010-conversation-sidebar ─┬─> 011-chat-view
             │                             │
-            ├─> 015-agents-page ──────────┴────────────────> 014-chat-right-sidebar-tabs
+            │                             ├──> 012-conversation-sidebar-wiring
+            │                             │     ├──> 015-agents-in-sidebar
+            │                             │     ├──> 017-routines-in-sidebar
+            │                             │     ├──> 021-sidebar-search-filter
+            │                             │     │
+            │                             │     └──> 013-agent-composer-enhancements
+            │                             │            │
+            │                             │            └─> 014-agent-right-sidebar-tabs
+            │                             │
             ├─> 016-connectors-page
-            ├─> 017-workflows-page
             ├─> 018-teams-page
-            ├─> 019-executions-agenttrace-page ────────────> 014-chat-right-sidebar-tabs
-            ├─> 020-logs-page
-            └─> 021-search-page
+            ├─> 019-routine-trace-panel ──> 014-agent-right-sidebar-tabs
+            ├─> 020-routine-logs-inline
+            │
+            └─> 022-threads-enhancements (parallel cu 012-021)
 
-022-threads-enhancements (parallel cu 012-021, depinde de 011)
 023-dual-build-qa (depinde de toate celelalte)
 ```
+
+## Notă despre direcția corectă față de Tauri
+
+Aplicația nativă nu va replica one-to-one paginile din Tauri. Diferențele principale:
+
+- **Nu există pagină “Agenți” standalone.** Agenții sunt entități principale în sidebar.
+- **View-ul principal nu creează o conversație, ci un agent.** Composer-ul central este instrumentul de definire/creare a agenților.
+- **Workflow-urile apar ca “rutine” în sidebar-ul de conversație**, nu ca pagină separată.
+- **Logs și traces sunt conținute în interiorul rutinelor/workflow-urilor**, nu ca pagini standalone.
+- **Search-ul este în sidebar, deasupra agenților**, nu pagină separată.

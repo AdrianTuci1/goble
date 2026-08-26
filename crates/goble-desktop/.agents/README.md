@@ -23,16 +23,13 @@ Acest director conține task-urile incrementale pentru migrarea aplicației Gobl
 - [x] `009-topbar.md` — Topbar nativ premium.
 - [x] `010-conversation-sidebar.md` — Sidebar de conversație custom.
 - [x] `011-chat-view.md` — Chat header, content gol pentru conversație nouă și composer.
-- [ ] `012-conversation-sidebar-wiring.md` — Legarea sidebar-ului cu date reale (agenți + rutine + search).
-- [ ] `013-agent-composer-enhancements.md` — Composer-ul principal devine creator/editor de agenți.
-- [ ] `014-agent-right-sidebar-tabs.md` — Sidebar dreapta Info/Trace pentru agent/rutină selectată.
-- [ ] `015-agents-in-sidebar.md` — Agenții apar în sidebar, nu ca pagină separată.
+- [ ] `012-routines-sidebar-wiring.md` — Sidebar stânga cu rutine reale și resizable.
+- [ ] `013-agent-chat-composer.md` — Composerul chat-ului principal: limbaj natural + slash extras.
+- [ ] `014-routine-chips.md` — Chips în topbar-ul chat-ului pentru rutine deschise.
+- [ ] `015-routine-trace-in-chat.md` — Trace/log-uri ale rutinei afișate în view-ul de chat.
 - [ ] `016-connectors-page.md` — Pagina Connectors (MCP).
-- [ ] `017-routines-in-sidebar.md` — Workflow-urile apar ca rutine în sidebar.
+- [ ] `017-routines-list-item-design.md` — Designul vizual al item-ilor de rutină în sidebar.
 - [ ] `018-teams-page.md` — Pagina Teams.
-- [ ] `019-routine-trace-panel.md` — Trace/execuții în interiorul unei rutine/agent.
-- [ ] `020-routine-logs-inline.md` — Log-uri în interiorul vizualizării de rutină/agent.
-- [ ] `021-sidebar-search-filter.md` — Search în sidebar, deasupra agenților.
 - [ ] `022-threads-enhancements.md` — Participanți, reacții, mentions, unread.
 - [ ] `023-dual-build-qa.md` — Dual build și QA final.
 
@@ -41,31 +38,32 @@ Acest director conține task-urile incrementale pentru migrarea aplicației Gobl
 ```
 009-topbar ─┬─> 010-conversation-sidebar ─┬─> 011-chat-view
             │                             │
-            │                             ├──> 012-conversation-sidebar-wiring
-            │                             │     ├──> 015-agents-in-sidebar
-            │                             │     ├──> 017-routines-in-sidebar
-            │                             │     ├──> 021-sidebar-search-filter
+            │                             ├──> 012-routines-sidebar-wiring
+            │                             │     ├──> 017-routines-list-item-design
             │                             │     │
-            │                             │     └──> 013-agent-composer-enhancements
-            │                             │            │
-            │                             │            └─> 014-agent-right-sidebar-tabs
+            │                             │     └──> 015-routine-trace-in-chat
+            │                             │
+            │                             ├──> 013-agent-chat-composer
+            │                             │     │
+            │                             │     └──> 014-routine-chips
+            │                             │           │
+            │                             │           └──> 015-routine-trace-in-chat
             │                             │
             ├─> 016-connectors-page
             ├─> 018-teams-page
-            ├─> 019-routine-trace-panel ──> 014-agent-right-sidebar-tabs
-            ├─> 020-routine-logs-inline
             │
             └─> 022-threads-enhancements (parallel cu 012-021)
 
 023-dual-build-qa (depinde de toate celelalte)
 ```
 
-## Notă despre direcția corectă față de Tauri
+## Modelul de interfață curent
 
-Aplicația nativă nu va replica one-to-one paginile din Tauri. Diferențele principale:
-
-- **Nu există pagină “Agenți” standalone.** Agenții sunt entități principale în sidebar.
-- **View-ul principal nu creează o conversație, ci un agent.** Composer-ul central este instrumentul de definire/creare a agenților.
-- **Workflow-urile apar ca “rutine” în sidebar-ul de conversație**, nu ca pagină separată.
-- **Logs și traces sunt conținute în interiorul rutinelor/workflow-urilor**, nu ca pagini standalone.
-- **Search-ul este în sidebar, deasupra agenților**, nu pagină separată.
+- **Sidebar stânga conține DOAR rutine.** Fără search, fără listă de agenți. Trebuie să fie resizable.
+- **Chat-ul principal este shell-ul agentului.** Utilizatorul scrie în limbaj natural în rich input. Există și comenzi cu slash ca extra.
+- **Nu există “conversație nouă”.** Chat-ul este infinit; putem începe o sesiune nouă doar opțional (de ex. `/new`), dar nu e cazul principal.
+- **Rutina = subagent.** Abstractizarea internă este subagent, dar în UI ne referim la el ca **rutină**.
+- **Click pe o rutină din sidebar deschide rutina în chat.** Chat-ul devine interfața rutinei; se poate închide chip-ul și ne întoarcem la agentul principal.
+- **Trace-ul/log-urile unei rutine se văd în acel view de chat**, nu într-o pagină separată.
+- **Agentul principal scaffoldează rutine** — creează/modifică rutine prin limbaj natural.
+- **Rutinele în derulare** nu apar live în chat-ul principal decât dacă cerem explicit (verifică, modifică, șterge etc.).

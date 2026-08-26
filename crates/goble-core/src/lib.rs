@@ -7,6 +7,7 @@ pub mod cluster_key;
 pub mod config;
 pub mod crypto;
 pub mod device_transfer;
+pub mod docs;
 pub mod encrypted_wallet;
 pub mod execution;
 pub mod harness;

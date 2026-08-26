@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::config::GobleConfig;
+use crate::docs;
 use crate::principal::PrincipalId;
 
 /// Directories that every user's home has, regardless of whether their workspace
@@ -83,6 +84,11 @@ impl GobleHome {
         self.root.join("principals")
     }
 
+    /// The user-guide docs directory. Seeded on first launch from `docs::USER_GUIDE`.
+    pub fn docs_user_guide_dir(&self) -> PathBuf {
+        self.root.join("docs/user-guide")
+    }
+
     /// Every user's home. Always run: seeds identity/auth/config/sessions/logs so
     /// even a remote-only user has identity + essential data locally. Idempotent.
     pub fn ensure_base(&self) -> Result<()> {
@@ -98,6 +104,7 @@ impl GobleHome {
         )?;
         self.seed_file_if_missing("principal_id", &PrincipalId::default_user().0)?;
         self.seed_file_if_missing("auth.json", "{}\n")?;
+        self.seed_docs()?;
         Ok(())
     }
 
@@ -133,6 +140,23 @@ impl GobleHome {
             return Ok(());
         }
         fs::write(&path, contents).with_context(|| format!("write {name}"))?;
+        Ok(())
+    }
+
+    /// Seed `~/.goble/docs/user-guide/` from the embedded user guide. Only writes
+    /// files that are missing so it never clobbers the user's edits.
+    fn seed_docs(&self) -> Result<()> {
+        let dir = self.docs_user_guide_dir();
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("create docs dir {}", dir.display()))?;
+        for (name, contents) in docs::USER_GUIDE {
+            let path = dir.join(name);
+            if path.exists() {
+                continue;
+            }
+            fs::write(&path, contents)
+                .with_context(|| format!("write user guide doc {name}"))?;
+        }
         Ok(())
     }
 }
@@ -202,5 +226,34 @@ mod tests {
         home.ensure().unwrap();
         let toml = fs::read_to_string(home.config_path()).unwrap();
         assert!(toml.contains("version = 99"));
+    }
+
+    #[test]
+    fn ensure_base_seeds_user_guide_docs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = GobleHome::at(tmp.path().to_path_buf());
+        home.ensure_base().unwrap();
+
+        let dir = home.docs_user_guide_dir();
+        assert!(dir.is_dir());
+        for (name, _) in docs::USER_GUIDE {
+            assert!(dir.join(name).exists(), "missing seeded doc {name}");
+        }
+        let content = fs::read_to_string(dir.join("01-getting-started.md")).unwrap();
+        assert!(content.contains("# Getting Started"));
+    }
+
+    #[test]
+    fn ensure_base_does_not_clobber_user_guide_edits() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = GobleHome::at(tmp.path().to_path_buf());
+        home.ensure_base().unwrap();
+
+        let doc = home.docs_user_guide_dir().join("07-mobile-access.md");
+        fs::write(&doc, "# My custom edit\n").unwrap();
+        home.ensure_base().unwrap();
+
+        let content = fs::read_to_string(&doc).unwrap();
+        assert_eq!(content, "# My custom edit\n");
     }
 }

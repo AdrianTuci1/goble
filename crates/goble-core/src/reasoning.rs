@@ -314,6 +314,7 @@ pub fn run_mission_turn(
     mcp_manager: McpManager,
     cancel: Arc<AtomicBool>,
     workspace_dir: std::path::PathBuf,
+    docs_dir: std::path::PathBuf,
     chat_id: String,
     prompt: String,
     provider: String,
@@ -635,7 +636,7 @@ pub fn run_mission_turn(
                 };
 
                 let sender_ref = deploy_sender.as_ref().map(|f| arc_to_sender_ref(f));
-                let result = execute_tool_call(&store, &*runner, sender_ref, &mcp_manager, &workspace_dir, call, &web_search
+                let result = execute_tool_call(&store, &*runner, sender_ref, &mcp_manager, &workspace_dir, &docs_dir, call, &web_search
                 ).await;
                 match result {
                     Ok(value) => {
@@ -693,6 +694,7 @@ pub fn resume_mission_turn(
     mcp_manager: McpManager,
     cancel: Arc<AtomicBool>,
     workspace_dir: std::path::PathBuf,
+    docs_dir: std::path::PathBuf,
     chat_id: String,
     response: String,
     credential: Option<(String, String)>,
@@ -754,6 +756,7 @@ pub fn resume_mission_turn(
             mcp_manager,
             cancel,
             workspace_dir,
+            docs_dir,
             chat_id,
             response,
             provider,

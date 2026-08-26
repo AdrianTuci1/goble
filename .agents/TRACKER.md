@@ -30,6 +30,7 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done.
 - [x] Populate a credential from the ask-user card by name and keep the value out of the transcript — card gains name + masked value; harness `credentials` tool lists names and `run_command` expands `{{credential:<name>}}` server-side, so the model never sees the key (`shared-secrets-and-toml.md`)
 - [x] Give the machine a hidden home `~/.goble` mirroring `~/.grok`, split into a universal **base** (identity/auth/config/sessions/logs, for every user) and a **workspace payload** (bundled tooling, worktrees, threads, local store — only when the workspace runs locally); remote-only users keep a minimal home (`workspace.md`, `shared-secrets-and-toml.md`)
 - [x] Track every principal with access + their grants — `access_grants` table + store methods; harness `principals` tool lists principals and grants; per-principal `principals/<id>/` home dir (`shared-secrets-and-toml.md`)
+- [x] Seed a Goble user guide into `~/.goble/docs/user-guide` on first launch (ported from `.grok` and Goble-ified; base-only, so it exists for remote-only users too) and expose a `user_guide` harness tool (list/read topics) + a system-prompt pointer so the model answers product questions from the guide — incl. remote/self-as-worker via Tailscale and mobile access (`workspace.md`, `docs.rs`/`app_home.rs`)
 
 ## 04 — Agent runtime (harness)
 - [ ] Define durable **state** vs compacting **transcript** boundaries (`agent-state-and-compaction.md`)

@@ -237,6 +237,7 @@ pub struct Harness {
     mcp_manager: McpManager,
     cancel: Arc<AtomicBool>,
     workspace_dir: PathBuf,
+    docs_dir: PathBuf,
     reasoning_enabled: bool,
     auto_approve: bool,
     web_search: WebSearchConfig,
@@ -258,6 +259,9 @@ impl Harness {
             mcp_manager: McpManager::new(),
             cancel: Arc::new(AtomicBool::new(false)),
             workspace_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            docs_dir: crate::app_home::GobleHome::locate()
+                .map(|h| h.docs_user_guide_dir())
+                .unwrap_or_else(|_| PathBuf::from(".goble/docs/user-guide")),
             reasoning_enabled: false,
             auto_approve: false,
             web_search: WebSearchConfig::default(),
@@ -293,6 +297,13 @@ impl Harness {
 
     pub fn with_workspace_dir(mut self, workspace_dir: impl Into<std::path::PathBuf>) -> Self {
         self.workspace_dir = workspace_dir.into();
+        self
+    }
+
+    /// Directory holding the seeded user guide (`~/.goble/docs/user-guide`), used
+    /// by the `user_guide` tool. Defaults to the workspace home's docs dir.
+    pub fn with_docs_dir(mut self, docs_dir: impl Into<std::path::PathBuf>) -> Self {
+        self.docs_dir = docs_dir.into();
         self
     }
 
@@ -352,6 +363,7 @@ impl Harness {
             self.mcp_manager.clone(),
             self.cancel.clone(),
             self.workspace_dir.clone(),
+            self.docs_dir.clone(),
             chat_id.to_string(),
             prompt.to_string(),
             provider.to_string(),
@@ -379,6 +391,7 @@ impl Harness {
             self.mcp_manager.clone(),
             self.cancel.clone(),
             self.workspace_dir.clone(),
+            self.docs_dir.clone(),
             chat_id.to_string(),
             response.to_string(),
             credential,
@@ -395,6 +408,7 @@ You can create/update agents, workflows and teams, run shell commands, read/writ
 Use memory_write to record goals, decisions, constraints and progress into an agent's persistent memory; use memory_read to review what an agent already knows. Memory survives conversation summarization.
 Only call a tool when the user explicitly asks for an action you can perform with a tool.
 If no tool is needed, reply conversationally.
+There is a user guide for this product at ~/.goble/docs/user-guide. For questions about how to set up or use Goble (credentials, workspaces, principals, remote/self-as-worker access, reaching this machine from the mobile app via Tailscale), call the user_guide tool to look up the relevant topic before answering.
 When reading or writing files, paths must be inside the workspace directory unless the user explicitly provides an absolute path."#;
 
 pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
@@ -512,6 +526,16 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "user_guide".to_string(),
+            description: "Look up a topic in the Goble user guide at ~/.goble/docs/user-guide. Call with no topic to list the available topics, or with a topic name to read that guide entry in full. Use this to answer questions about how to set up or use Goble: workspaces, credentials, principals, agents, tools, sandbox, remote access (exposing a machine via Tailscale / self-as-worker) and mobile access.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "topic": { "type": "string" }
+                }
             }),
         },
         ToolDefinition {
@@ -876,6 +900,7 @@ pub(crate) async fn execute_tool_call(
     deploy_sender: Option<&(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync)>,
     mcp_manager: &McpManager,
     workspace_dir: &std::path::Path,
+    docs_dir: &std::path::Path,
     call: &LlmToolCall,
     web_search_config: &WebSearchConfig,
 ) -> Result<String> {
@@ -889,6 +914,7 @@ pub(crate) async fn execute_tool_call(
         "run_command" => run_command(store, runner, &call.arguments).await,
         "credentials" => list_credentials(store),
         "principals" => list_principals(store),
+        "user_guide" => user_guide(&call.arguments, docs_dir),
         "list_entities" => list_entities(store, &call.arguments),
         "search_store" => search_store(store, &call.arguments),
         "deploy_agent" => deploy_agent(store, deploy_sender, &call.arguments),
@@ -1295,6 +1321,89 @@ fn list_principals(store: &Store) -> Result<String> {
         lines.push(format!("principal {id} ({kind}, {name}) grants=[{grants_s}]"));
     }
     Ok(lines.join("\n"))
+}
+
+/// `user_guide` tool handler. With no `topic`, lists the seeded guide topics; with
+/// a `topic` (filename, `NN-topic`, or bare `topic` name), returns that entry in
+/// full. Resolution is against the `.md` files already present in `docs_dir`, so it
+/// never reads a path outside the guide directory.
+fn user_guide(args: &serde_json::Value, docs_dir: &std::path::Path) -> Result<String> {
+    let topic = args["topic"].as_str().map(str::to_string).unwrap_or_default();
+
+    if !docs_dir.is_dir() {
+        return Ok(concat!(
+            "The user guide is not available yet (no user-guide directory). ",
+            "It is seeded into ~/.goble/docs/user-guide on first launch."
+        )
+        .to_string());
+    }
+
+    let mut names: Vec<String> = std::fs::read_dir(docs_dir)
+        .map_err(|e| anyhow::anyhow!("read user guide dir: {e}"))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".md"))
+        .collect();
+    names.sort();
+
+    if topic.trim().is_empty() {
+        let mut out = String::from("User guide topics:\n");
+        for name in &names {
+            out.push_str(&format!("- {} — {}\n", user_guide_topic(name), user_guide_title(&docs_dir.join(name))));
+        }
+        return Ok(out);
+    }
+
+    let want = topic.trim();
+    let target = names
+        .iter()
+        .find(|name| {
+            name.as_str() == want
+                || user_guide_topic(name).eq_ignore_ascii_case(want)
+                || name
+                    .strip_suffix(".md")
+                    .is_some_and(|s| s.eq_ignore_ascii_case(want))
+        });
+
+    match target {
+        Some(name) => std::fs::read_to_string(docs_dir.join(name))
+            .map_err(|e| anyhow::anyhow!("read user guide doc {name}: {e}")),
+        None => {
+            let mut out = format!("No user guide topic ‘{want}’.\nAvailable topics:\n");
+            for name in &names {
+                out.push_str(&format!("- {}\n", user_guide_topic(name)));
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// `06-remote-access.md` → `remote-access`. Only strips the `NN-` prefix when the
+/// file is numbered (two leading digits + a dash).
+fn user_guide_topic(name: &str) -> &str {
+    let bare = name.strip_suffix(".md").unwrap_or(name);
+    let bytes = bare.as_bytes();
+    if bare.len() >= 3
+        && bare.as_bytes().get(2) == Some(&b'-')
+        && bytes[0].is_ascii_digit()
+        && bytes[1].is_ascii_digit()
+    {
+        &bare[3..]
+    } else {
+        bare
+    }
+}
+
+/// First `# Heading` line of a guide doc, if any.
+fn user_guide_title(path: &std::path::Path) -> String {
+    let s = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    s.lines()
+        .find(|l| l.starts_with("# "))
+        .map(|l| l.trim_start_matches("# ").trim().to_string())
+        .unwrap_or_default()
 }
 
 fn list_entities(store: &Store, args: &serde_json::Value) -> Result<String> {
@@ -2849,5 +2958,64 @@ mod tests {
 
         let harness = Harness::new(store);
         assert!(harness.list_tools().iter().any(|t| t.name == "principals"));
+    }
+
+    #[test]
+    fn test_user_guide_lists_topics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(dir.join("06-remote-access.md"), "# Remote Access\nBody\n").unwrap();
+        std::fs::write(dir.join("07-mobile-access.md"), "# Mobile Access\nBody\n").unwrap();
+
+        let out = user_guide(&serde_json::json!({}), &dir).unwrap();
+        assert!(out.contains("remote-access"));
+        assert!(out.contains("Mobile Access"));
+    }
+
+    #[test]
+    fn test_user_guide_reads_topic_by_bare_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(
+            dir.join("06-remote-access.md"),
+            "# Remote Access\n\nYou can expose this machine via Tailscale.\n",
+        )
+        .unwrap();
+
+        let out = user_guide(&serde_json::json!({"topic": "remote-access"}), &dir).unwrap();
+        assert!(out.contains("Tailscale"));
+    }
+
+    #[test]
+    fn test_user_guide_reads_topic_by_filename() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(dir.join("04-credentials.md"), "# Credentials\n\nSecrets stay hidden.\n").unwrap();
+
+        let out = user_guide(&serde_json::json!({"topic": "04-credentials.md"}), &dir).unwrap();
+        assert!(out.contains("Secrets stay hidden"));
+    }
+
+    #[test]
+    fn test_user_guide_unknown_topic_lists_available() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(dir.join("09-tools.md"), "# Tools\n").unwrap();
+
+        let out = user_guide(&serde_json::json!({"topic": "nope"}), &dir).unwrap();
+        assert!(out.contains("No user guide topic"));
+        assert!(out.contains("tools"));
+    }
+
+    #[test]
+    fn test_user_guide_missing_dir_is_helpful() {
+        let out = user_guide(&serde_json::json!({}), std::path::Path::new("/no/such/dir")).unwrap();
+        assert!(out.contains("not available yet"));
+    }
+
+    #[test]
+    fn test_system_prompt_mentions_user_guide() {
+        assert!(HARNESS_SYSTEM_PROMPT.contains("user_guide"));
+        assert!(harness_tool_definitions().iter().any(|t| t.name == "user_guide"));
     }
 }

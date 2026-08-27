@@ -463,6 +463,18 @@ impl DesktopState {
         Ok(())
     }
 
+    /// Persist the workspace's default execution target (local or a specific/
+    /// any remote worker) into `config.toml`. This is the self-config the router
+    /// reads when the caller passes target kind `"any"`.
+    pub fn set_workspace_default_target(
+        &self,
+        target: goble_core::config::WorkspaceTarget,
+    ) -> anyhow::Result<()> {
+        let mut config = self.config();
+        config.workspace.default_target = target;
+        self.save_config(&config)
+    }
+
     pub fn new(store: Store, thread_store: ThreadStore) -> Arc<Self> {
         Arc::new(Self {
             store: Arc::new(Mutex::new(store)),
@@ -1000,6 +1012,30 @@ impl DesktopState {
 
         if target_kind == "local" {
             return Ok(WorkerId(LOCAL_TARGET.to_string()));
+        }
+
+        // "any" consults the workspace default target (set in config.toml). The caller is
+        // responsible for applying any per-conversation override before reaching the router.
+        if target_kind == "any" {
+            match self.config().workspace.default_target.clone() {
+                goble_core::config::WorkspaceTarget::Local => {
+                    return Ok(WorkerId(LOCAL_TARGET.to_string()));
+                }
+                goble_core::config::WorkspaceTarget::Remote {
+                    worker_id: Some(id),
+                } => {
+                    if paired_workers.iter().any(|w| w.id == id) {
+                        return Ok(WorkerId(id));
+                    }
+                    anyhow::bail!(
+                        "workspace default worker {} is not paired",
+                        id
+                    );
+                }
+                goble_core::config::WorkspaceTarget::Remote { worker_id: None } => {
+                    // fall through to pool selection
+                }
+            }
         }
 
         let strategy = match tag {
@@ -2864,5 +2900,81 @@ mod tests {
         assert_eq!(executions.len(), 1);
         assert_eq!(executions[0].agent_id.as_deref(), Some(agent.id.as_str()));
         assert_eq!(executions[0].worker_id.as_deref(), Some(LOCAL_TARGET));
+    }
+
+    #[test]
+    fn test_resolve_any_uses_workspace_default_local() {
+        let (_dir, state) = tmp_state();
+        state.workers.lock().insert(
+            WorkerId("w1".to_string()),
+            WorkerConnection {
+                id: "w1".to_string(),
+                name: "vps".to_string(),
+                url: "wss://localhost:8787/ws".to_string(),
+                paired: true,
+                tags: vec![],
+            },
+        );
+        state.config.lock().workspace.default_target =
+            goble_core::config::WorkspaceTarget::Local;
+
+        let wid = state.resolve_worker_for_target("any", None, None).unwrap();
+        assert_eq!(wid.0, LOCAL_TARGET);
+    }
+
+    #[test]
+    fn test_resolve_any_uses_workspace_default_remote_specific_worker() {
+        let (_dir, state) = tmp_state();
+        state.workers.lock().insert(
+            WorkerId("w1".to_string()),
+            WorkerConnection {
+                id: "w1".to_string(),
+                name: "vps".to_string(),
+                url: "wss://localhost:8787/ws".to_string(),
+                paired: true,
+                tags: vec![],
+            },
+        );
+        state.config.lock().workspace.default_target =
+            goble_core::config::WorkspaceTarget::Remote {
+                worker_id: Some("w1".to_string()),
+            };
+
+        let wid = state.resolve_worker_for_target("any", None, None).unwrap();
+        assert_eq!(wid.0, "w1");
+    }
+
+    #[test]
+    fn test_resolve_any_uses_workspace_default_remote_any_worker() {
+        let (_dir, state) = tmp_state();
+        state.workers.lock().insert(
+            WorkerId("w1".to_string()),
+            WorkerConnection {
+                id: "w1".to_string(),
+                name: "vps".to_string(),
+                url: "wss://localhost:8787/ws".to_string(),
+                paired: true,
+                tags: vec![],
+            },
+        );
+        state.config.lock().workspace.default_target =
+            goble_core::config::WorkspaceTarget::Remote { worker_id: None };
+
+        let wid = state.resolve_worker_for_target("any", None, None).unwrap();
+        assert_eq!(wid.0, "w1");
+    }
+
+    #[test]
+    fn test_resolve_any_errors_when_workspace_default_remote_worker_not_paired() {
+        let (_dir, state) = tmp_state();
+        state.config.lock().workspace.default_target =
+            goble_core::config::WorkspaceTarget::Remote {
+                worker_id: Some("w1".to_string()),
+            };
+
+        let err = state
+            .resolve_worker_for_target("any", None, None)
+            .unwrap_err();
+        assert!(err.to_string().contains("w1"));
     }
 }

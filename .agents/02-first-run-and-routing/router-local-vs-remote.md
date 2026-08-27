@@ -45,11 +45,11 @@ enum Routing {
 
 ## Gaps vs current code
 
-- `DesktopState::resolve_worker_for_target` already picks a worker (`target_kind` = `worker`), but returns an error for `local` ("local runtime target is not supported yet"). The router must make `local` a first-class target.
+- `DesktopState::resolve_worker_for_target` already picks a worker (`target_kind` = `worker`), but returned an error for `local`. It now returns the `local` sentinel id, and `run_agent` / `run_agent_for_thread_reply` execute in-process through the harness when pointed at it. The **workflow** deploy path still has no local runner.
 - There is no explicit routing-decision type or a "this conversation is routed to X" record yet.
 
 ## Tasks
 
 - [x] Define the `Routing` decision type and attach it to a conversation — `WorkspaceRouting{Local,Remote}` in `app/src/ui`, persisted per conversation on the `chats.workspace_routing` column and restored on load.
-- [~] Make `local` a valid runtime target — chat turns run on the local harness for `local`/unset routing; the `resolve_worker_for_target` `bail!` for the agent/workflow deploy path is still pending a local agent runner.
+- [~] Make `local` a valid runtime target — chat turns run on the local harness for `local`/unset routing; `resolve_worker_for_target("local")` now returns the `local` sentinel and `run_agent`/`run_agent_for_thread_reply` run in-process through the harness. Still pending: a **workflow** local runner.
 - [x] Persist the routing choice so a conversation stays stable across restarts (store column + `set/get_chat_workspace_routing` + `on_choose_workspace` + `refresh_messages` restore).

@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use futures::Stream;
 use futures::StreamExt;
-use goble_core::harness::{HarnessEvent, WebSearchConfig};
+use goble_core::harness::{Harness, HarnessEvent, SandboxedCommandRunner, WebSearchConfig};
 
 use crate::event_bus::{emit_value, EventBus, NoOpEventBus};
 use anyhow::Context;
@@ -35,6 +36,9 @@ use crate::thread_store::ThreadStore;
 use crate::worker_manager::WorkerClient;
 
 const WORKER_PAIRING_CODE_VAULT_PREFIX: &str = "worker:";
+
+/// Sentinel worker id meaning "run on the local machine" (in-process harness).
+pub const LOCAL_TARGET: &str = "local";
 
 fn parse_mcp_source(
     source: &str,
@@ -362,6 +366,61 @@ async fn drain_harness_stream(
     }
     this.emit("chat:turn_finished", serde_json::json!({ "chat_id": chat_id.clone() }));
     this.chat_cancels.lock().remove(&chat_id);
+}
+
+/// Drain a locally-run agent turn, recording an execution and nudging the UI
+/// to re-read executions on every event. Emits `agents:updated` when the turn
+/// ends, matching the worker path's event surface.
+async fn drain_agent_stream(
+    this: Arc<DesktopState>,
+    trace_id: String,
+    agent_id: AgentId,
+    mut stream: Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>,
+) {
+    this.executions.lock().insert(
+        trace_id.clone(),
+        ExecutionInfo {
+            id: trace_id.clone(),
+            agent_id: Some(agent_id.to_string()),
+            worker_id: Some(LOCAL_TARGET.to_string()),
+            status: "running".to_string(),
+            trace: ExecutionTrace::new(agent_id.clone()),
+            started_at: Utc::now().to_rfc3339(),
+            finished_at: None,
+        },
+    );
+    this.emit("executions:updated", ());
+    while let Some(event) = stream.next().await {
+        this.emit("executions:updated", ());
+        match event {
+            HarnessEvent::AssistantDelta(delta) => {
+                this.add_log(format!("[local] [{trace_id}] assistant: {delta}"));
+            }
+            HarnessEvent::ToolCallStarted { id, name, arguments } => {
+                this.add_log(format!(
+                    "[local] [{trace_id}] tool {name} {id}: {arguments}"
+                ));
+            }
+            HarnessEvent::ToolCallFinished { id, result } => {
+                this.add_log(format!("[local] [{trace_id}] tool {id} done: {result}"));
+            }
+            HarnessEvent::ToolCallError { id, message } => {
+                this.add_log(format!("[local] [{trace_id}] tool {id} error: {message}"));
+            }
+            HarnessEvent::MissionUpdated { mission_id, status } => {
+                this.add_log(format!(
+                    "[local] [{trace_id}] mission {mission_id} {status}"
+                ));
+            }
+            _ => {}
+        }
+    }
+    if let Some(exec) = this.executions.lock().get_mut(&trace_id) {
+        exec.status = "done".to_string();
+        exec.finished_at = Some(Utc::now().to_rfc3339());
+    }
+    this.emit("executions:updated", ());
+    this.emit("agents:updated", ());
 }
 
 /// Copy legacy state into the new `~/.goble` home the first time it appears, so
@@ -995,7 +1054,7 @@ impl DesktopState {
         }
 
         if target_kind == "local" {
-            anyhow::bail!("local runtime target is not supported yet");
+            return Ok(WorkerId(LOCAL_TARGET.to_string()));
         }
 
         let strategy = match tag {
@@ -2090,11 +2149,14 @@ impl DesktopState {
     }
 
     pub fn run_agent(
-        &self,
+        self: &Arc<Self>,
         worker_id: &WorkerId,
         agent_id: &AgentId,
         prompt: &str,
     ) -> anyhow::Result<()> {
+        if worker_id.0 == LOCAL_TARGET {
+            return self.run_agent_local(agent_id, prompt);
+        }
         let spec = if let Some(agent) = self.agents.lock().get(agent_id) {
             agent.spec.clone()
         } else {
@@ -2110,6 +2172,52 @@ impl DesktopState {
                 mcp_servers,
             },
         )
+    }
+
+    /// Run an agent in-process on the local machine (the `local` runtime target).
+    ///
+    /// Builds a harness over the shared store with the resolved LLM setting and
+    /// streams the agent's turn on a background task, emitting
+    /// `executions:updated` events so the native UI can render progress. The
+    /// returned value means "the turn was started", not "it finished".
+    pub fn run_agent_local(
+        self: &Arc<Self>,
+        agent_id: &AgentId,
+        prompt: &str,
+    ) -> anyhow::Result<()> {
+        // Prefer the agent's configured system prompt; fall back to the caller's
+        // prompt when the agent does not exist yet.
+        let prompt = {
+            let agents = self.agents.lock();
+            agents
+                .get(agent_id)
+                .map(|a| a.spec.prompt.clone())
+                .unwrap_or_else(|| prompt.to_string())
+        };
+        let provider = self.config().llm.default_provider.clone();
+        let model = self.default_model(&provider);
+        let (llm, model_name) = self.resolve_llm_provider(&provider, &model);
+        let store = self.store.lock().clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let auto_approve = self.get_auto_approve();
+        let web_search = self.get_web_search_setting();
+        let harness = Harness::new(store.clone())
+            .with_llm(llm)
+            .with_runner(Arc::new(SandboxedCommandRunner::default_tools()))
+            .with_cancel(Arc::clone(&cancel))
+            .with_reasoning(true)
+            .with_auto_approve(auto_approve)
+            .with_web_search(web_search);
+        let trace_id = format!("desktop-{}", uuid::Uuid::new_v4());
+        let this = Arc::clone(self);
+        let agent_id = agent_id.clone();
+        let prompt = prompt.to_string();
+        let provider_name = provider.clone();
+        tokio::spawn(async move {
+            let stream = harness.run_turn(&trace_id, &prompt, &provider_name, &model_name);
+            drain_agent_stream(this, trace_id, agent_id, stream).await;
+        });
+        Ok(())
     }
 
     pub fn schedule_agent(
@@ -2436,12 +2544,15 @@ impl DesktopState {
 
     /// Convert legacy chat conversations into threads with a single participant (the user).
     pub fn run_agent_for_thread_reply(
-        &self,
+        self: &Arc<Self>,
         worker_id: &WorkerId,
         thread_id: &ThreadId,
         agent_id: &AgentId,
         prompt: &str,
     ) -> anyhow::Result<()> {
+        if worker_id.0 == LOCAL_TARGET {
+            return self.run_agent_local(agent_id, prompt);
+        }
         let (id, name, spec, created_at, updated_at) = self
             .store
             .lock()
@@ -2744,5 +2855,27 @@ mod tests {
             .list_messages(&goble_core::thread::ThreadId(summary.id.clone()))
             .unwrap();
         assert_eq!(messages.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_local_runtime_target_runs_agent_in_process() {
+        let (_dir, state) = tmp_state();
+        let wid = state
+            .resolve_worker_for_target("local", None, None)
+            .unwrap();
+        assert_eq!(wid.0, LOCAL_TARGET);
+
+        let agent = state
+            .create_agent("local-agent", "do nothing", Some("test agent"), vec![])
+            .unwrap();
+        let agent_id = AgentId(agent.id.clone());
+        state.run_agent(&wid, &agent_id, "ping").unwrap();
+
+        // The harness runs on a background task; give it a moment to finish.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let executions = state.list_executions();
+        assert_eq!(executions.len(), 1);
+        assert_eq!(executions[0].agent_id.as_deref(), Some(agent.id.as_str()));
+        assert_eq!(executions[0].worker_id.as_deref(), Some(LOCAL_TARGET));
     }
 }

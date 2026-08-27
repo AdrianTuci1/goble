@@ -28,6 +28,7 @@
 | Date | Item | Verification (what passed) |
 | --- | --- | --- |
 | 2026-08-26 | Fix hardcoded `/var/goblin/workspaces` in `goblin-worker` (`04-agent-runtime/sandbox-and-cwd.md`) | `cargo test -p goblin-worker` lib + integration passed; `cargo test -p goble-cli --test e2e_worker` passed |
+| 2026-08-27 | Make `local` a valid runtime target: `resolve_worker_for_target("local")` returns the `local` sentinel and `run_agent`/`run_agent_for_thread_reply` run in-process via the harness (`02-first-run-and-routing/router-local-vs-remote.md`) | `cargo test -p goble-desktop-service` passed (24 tests, incl. new `test_local_runtime_target_runs_agent_in_process`) |
 
 ## Recently resolved
 

@@ -9,7 +9,7 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done.
 - [x] Wire the banner click to the model-provider overlay dialog (`onboarding-no-model-key.md`)
 - [x] After a key is saved, close the dialog and move to the workspace-type prompt (`onboarding-no-model-key.md`)
 - [x] Define the `Routing` decision type and attach it to a conversation — `WorkspaceRouting{Local,Remote}` is persisted per conversation on the `chats.workspace_routing` column and restored on load (`router-local-vs-remote.md`)
-- [~] Make `local` a valid runtime target — chat turns run on the local harness for `local`/unset routing; the `resolve_worker_for_target` `bail!` for the agent/workflow deploy path is still pending a local agent runner (`router-local-vs-remote.md`)
+- [~] Make `local` a valid runtime target — chat turns run on the local harness for `local`/unset routing; `resolve_worker_for_target("local")` now returns the `local` sentinel and `run_agent`/`run_agent_for_thread_reply` run in-process through the harness. Still pending: a **workflow** local runner (`router-local-vs-remote.md`)
 - [x] Persist the routing choice across restarts (`router-local-vs-remote.md`)
 - [ ] Define the "workspace package" to ship to a remote host (`remote-bootstrap.md`)
 - [ ] Add the remote self-configuration step (read TOML → resolve providers/models) (`remote-bootstrap.md`)

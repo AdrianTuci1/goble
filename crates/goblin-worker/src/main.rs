@@ -138,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cluster_mode = args.mode == "cluster";
     state.set_cluster_mode(cluster_mode);
+    state.set_ssh_proxy_mode(args.ssh_proxy);
 
     let pvc_root = args.pvc_root.clone();
     let task_store_path = if cluster_mode && !args.task_store.is_absolute() {

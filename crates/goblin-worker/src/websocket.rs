@@ -78,7 +78,12 @@ pub async fn handle_desktop_message(
             pairing_code_hash,
         } => {
             if worker_id == state.worker_id {
-                if state.is_mtls_active()
+                if state.is_ssh_proxy_mode() && state.pairing_hash.lock().is_none() {
+                    if let Some(hash) = pairing_code_hash.clone() {
+                        state.set_pairing_hash(hash);
+                    }
+                    state.emit(WorkerMessage::Paired);
+                } else if state.is_mtls_active()
                     || state.is_paired(pairing_code_hash.as_deref().unwrap_or_default())
                 {
                     state.emit(WorkerMessage::Paired);

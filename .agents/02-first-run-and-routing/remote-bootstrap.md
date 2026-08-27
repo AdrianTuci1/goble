@@ -41,9 +41,11 @@ The **remote harness** reads the workspace TOML on the remote host and configure
 
 This rides on the existing worker pairing/install path in `goble-desktop-service` (`pair_worker`, `WorkerClient::connect`, `cluster_helm_install`, `install_worker_ssh`) plus the mTLS bundle signing in `goble-core`. The remote *package* is new: what gets shipped and how it self-configures.
 
+The new SSH transport is implemented in `goble-desktop-service/src/worker_manager.rs`: `WorkerClient::connect_ssh` writes the private key to a temp file, spawns `ssh <host> <goblin-binary> --ssh-proxy`, and translates `DesktopMessage`/`WorkerMessage` NDJSON over stdin/stdout. A fresh `goblin --ssh-proxy` worker stores the first pairing hash it receives and emits `WorkerMessage::Paired`, so no separate HTTP `/pair` step is required. The `WorkerClient` keeps the `Child` handle alive for the lifetime of the connection so the remote process is not killed when the spawn call returns.
+
 ## Tasks
 
 - [ ] Define the "workspace package" to ship to a remote host (harness + TOML + secrets).
 - [ ] Add the remote self-configuration step (read TOML → resolve providers/models).
-- [ ] Reuse the existing pairing/SSH/helm install path to bring up the remote workspace.
+- [~] Reuse the existing pairing/SSH/helm install path to bring up the remote workspace. SSH transport is done: `WorkerClient::connect_ssh` spawns `goblin --ssh-proxy` over SSH and speaks NDJSON; the worker auto-pairs on first `PairRequest`. Still pending: full remote bootstrap/package wiring.
 - [ ] Publish a workspace endpoint the router can point a conversation at.

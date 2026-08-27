@@ -98,6 +98,37 @@ pub fn install_worker(
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+pub struct ConnectSshWorkerRequest {
+    pub worker_id: String,
+    pub name: String,
+    pub host: String,
+    pub user: String,
+    pub port: u16,
+    pub private_key: String,
+    pub remote_binary: String,
+    pub pairing_code: String,
+}
+
+#[cfg(unix)]
+pub fn connect_ssh_worker(
+    state: Arc<DesktopState>,
+    req: ConnectSshWorkerRequest,
+) -> anyhow::Result<()> {
+    let creds = goble_desktop_service::SshCredentials {
+        host: req.host,
+        user: req.user,
+        port: req.port,
+        private_key: req.private_key,
+    };
+    state.connect_ssh_worker(
+        WorkerId(req.worker_id),
+        req.name,
+        creds,
+        std::path::PathBuf::from(req.remote_binary),
+        req.pairing_code,
+    )
+}
+
 pub fn generate_worker_invite(state: &Arc<DesktopState>, worker_id: &str) -> anyhow::Result<WorkerInvite> {
     state.generate_worker_invite(worker_id)
 }

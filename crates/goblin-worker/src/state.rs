@@ -39,6 +39,7 @@ pub struct AppState {
     pub snapshot_provider: Mutex<Option<Arc<dyn SnapshotProvider>>>,
     pub cluster_mode: Mutex<bool>,
     pub leader_state: Mutex<Option<LeaderState>>,
+    pub ssh_proxy_mode: Mutex<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,7 +101,16 @@ impl AppState {
             snapshot_provider: Mutex::new(None),
             cluster_mode: Mutex::new(false),
             leader_state: Mutex::new(None),
+            ssh_proxy_mode: Mutex::new(false),
         })
+    }
+
+    pub fn set_ssh_proxy_mode(&self, ssh_proxy_mode: bool) {
+        *self.ssh_proxy_mode.lock() = ssh_proxy_mode;
+    }
+
+    pub fn is_ssh_proxy_mode(&self) -> bool {
+        *self.ssh_proxy_mode.lock()
     }
 
     pub fn set_cluster_mode(&self, cluster_mode: bool) {

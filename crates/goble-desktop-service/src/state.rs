@@ -896,6 +896,51 @@ impl DesktopState {
         }
     }
 
+    /// Connect to a worker over SSH and add it to the active client pool.
+    ///
+    /// This spawns `goblin --ssh-proxy` on the remote host using the provided SSH
+    /// credentials, so the remote machine only needs port 22 exposed; no worker
+    /// port is opened.
+    #[cfg(unix)]
+    pub fn connect_ssh_worker(
+        self: Arc<Self>,
+        worker_id: WorkerId,
+        name: String,
+        creds: crate::ssh_installer::SshCredentials,
+        remote_binary: std::path::PathBuf,
+        pairing_code: String,
+    ) -> anyhow::Result<()> {
+        let url = format!("ssh://{}@{}:{}", creds.user, creds.host, creds.port);
+        self.add_worker(worker_id.clone(), name, url)?;
+        let state = self.clone();
+        tokio::spawn(async move {
+            match WorkerClient::connect_ssh(
+                state.clone(),
+                worker_id.clone(),
+                &creds,
+                &remote_binary,
+                pairing_code,
+            )
+            .await
+            {
+                Ok(client) => {
+                    state.clients.lock().insert(worker_id.clone(), client);
+                    if let Some(conn) = state.workers.lock().get_mut(&worker_id) {
+                        conn.paired = true;
+                    }
+                    state.emit("workers:updated", ());
+                    state.add_log(format!("worker {worker_id} connected via SSH"));
+                }
+                Err(e) => {
+                    state.add_log(format!(
+                        "failed to connect worker {worker_id} via SSH: {e}"
+                    ));
+                }
+            }
+        });
+        Ok(())
+    }
+
     pub fn pair_worker(
         self: Arc<Self>,
         worker_id: &WorkerId,

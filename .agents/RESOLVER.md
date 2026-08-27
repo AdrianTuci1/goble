@@ -27,6 +27,7 @@
 
 | Date | Item | Verification (what passed) |
 | --- | --- | --- |
+| 2026-08-27 | Align local + remote on a single runner core (`02-first-run-and-routing/router-local-vs-remote.md`, `04-agent-runtime/sandbox-and-cwd.md`): local agent runs now route through `goblin_worker::Runner` in-process (shared store via `AppState::set_store`, event bridge `event_tx` → `DesktopState::handle_worker_message`, knobs via `HarnessOptions`), so local and remote share memory/MCP/workspace/compaction semantics. `AppState::set_store` + `HarnessOptions` added; `drain_agent_stream` removed. | `cargo check --workspace` passed; `cargo test -p goble-desktop-service` passed (24, incl. `test_local_runtime_target_runs_agent_in_process`); `cargo test -p goblin-worker --lib` passed (32, incl. `runner::test_run_agent_success`/`test_run_team_success`); `cargo test -p goblin-worker --test agent_runtime_integration` passed (2); `cargo test -p goble-cli --test e2e_worker` passed |
 | 2026-08-26 | Fix hardcoded `/var/goblin/workspaces` in `goblin-worker` (`04-agent-runtime/sandbox-and-cwd.md`) | `cargo test -p goblin-worker` lib + integration passed; `cargo test -p goble-cli --test e2e_worker` passed |
 | 2026-08-27 | Make `local` a valid runtime target: `resolve_worker_for_target("local")` returns the `local` sentinel and `run_agent`/`run_agent_for_thread_reply` run in-process via the harness (`02-first-run-and-routing/router-local-vs-remote.md`) | `cargo test -p goble-desktop-service` passed (24 tests, incl. new `test_local_runtime_target_runs_agent_in_process`) |
 

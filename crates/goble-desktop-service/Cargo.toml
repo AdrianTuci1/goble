@@ -14,6 +14,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 futures = "0.3"
 goble-core = { path = "../goble-core" }
+goblin-worker = { path = "../goblin-worker" }
 hex = "0.4"
 log = "0.4"
 once_cell = "1"

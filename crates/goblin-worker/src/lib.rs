@@ -13,4 +13,5 @@ pub mod state;
 pub mod task_store;
 pub mod websocket;
 
+pub use harness_runner::HarnessOptions;
 pub use state::AppState;

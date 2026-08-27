@@ -196,6 +196,14 @@ impl AppState {
         self.store_path.lock().clone()
     }
 
+    /// Inject an already-open [`Store`] so the consumer (e.g. the desktop binary
+    /// running a worker in-process) shares its existing SQLite connection instead
+    /// of opening a second handle to the same file. `Store` is `Clone` over an
+    /// `Arc<Mutex<Connection>>`, so clones share one connection.
+    pub fn set_store(&self, store: Store) {
+        *self.store.lock() = Some(store);
+    }
+
     pub fn store(&self) -> anyhow::Result<Store> {
         let mut store = self.store.lock();
         if store.is_none() {

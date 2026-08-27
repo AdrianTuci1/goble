@@ -58,6 +58,29 @@ impl Runner {
         mcp_servers: Vec<McpServer>,
         secrets: Vec<Secret>,
     ) -> anyhow::Result<()> {
+        self.run_agent_opts(
+            trace_id,
+            agent_id,
+            spec,
+            mcp_servers,
+            secrets,
+            harness_runner::HarnessOptions::default(),
+        )
+        .await
+    }
+
+    /// [`Runner::run_agent`] with explicit execution options so a caller (e.g. the
+    /// desktop binary running the worker in-process) can route local runs through
+    /// the same core while honouring reasoning / auto-approve / web-search / cancel.
+    pub async fn run_agent_opts(
+        &self,
+        trace_id: String,
+        agent_id: AgentId,
+        spec: AgentSpec,
+        mcp_servers: Vec<McpServer>,
+        secrets: Vec<Secret>,
+        options: harness_runner::HarnessOptions,
+    ) -> anyhow::Result<()> {
         let provider = (self.provider_factory)()?;
         let model_name = self
             .state
@@ -75,6 +98,7 @@ impl Runner {
             secrets,
             provider,
             &model_name,
+            options,
         )
         .await
     }
@@ -106,6 +130,7 @@ impl Runner {
             secrets,
             provider,
             &model_name,
+            harness_runner::HarnessOptions::default(),
         )
         .await?;
         Ok(content)
@@ -179,6 +204,7 @@ impl Runner {
                 secrets.clone(),
                 provider,
                 &model_name,
+                harness_runner::HarnessOptions::default(),
             )
             .await
             {

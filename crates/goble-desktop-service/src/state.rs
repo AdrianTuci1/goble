@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use futures::Stream;
 use futures::StreamExt;
-use goble_core::harness::{Harness, HarnessEvent, SandboxedCommandRunner, WebSearchConfig};
+use goble_core::harness::{HarnessEvent, WebSearchConfig};
 
 use crate::event_bus::{emit_value, EventBus, NoOpEventBus};
 use anyhow::Context;
@@ -366,61 +366,6 @@ async fn drain_harness_stream(
     }
     this.emit("chat:turn_finished", serde_json::json!({ "chat_id": chat_id.clone() }));
     this.chat_cancels.lock().remove(&chat_id);
-}
-
-/// Drain a locally-run agent turn, recording an execution and nudging the UI
-/// to re-read executions on every event. Emits `agents:updated` when the turn
-/// ends, matching the worker path's event surface.
-async fn drain_agent_stream(
-    this: Arc<DesktopState>,
-    trace_id: String,
-    agent_id: AgentId,
-    mut stream: Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>,
-) {
-    this.executions.lock().insert(
-        trace_id.clone(),
-        ExecutionInfo {
-            id: trace_id.clone(),
-            agent_id: Some(agent_id.to_string()),
-            worker_id: Some(LOCAL_TARGET.to_string()),
-            status: "running".to_string(),
-            trace: ExecutionTrace::new(agent_id.clone()),
-            started_at: Utc::now().to_rfc3339(),
-            finished_at: None,
-        },
-    );
-    this.emit("executions:updated", ());
-    while let Some(event) = stream.next().await {
-        this.emit("executions:updated", ());
-        match event {
-            HarnessEvent::AssistantDelta(delta) => {
-                this.add_log(format!("[local] [{trace_id}] assistant: {delta}"));
-            }
-            HarnessEvent::ToolCallStarted { id, name, arguments } => {
-                this.add_log(format!(
-                    "[local] [{trace_id}] tool {name} {id}: {arguments}"
-                ));
-            }
-            HarnessEvent::ToolCallFinished { id, result } => {
-                this.add_log(format!("[local] [{trace_id}] tool {id} done: {result}"));
-            }
-            HarnessEvent::ToolCallError { id, message } => {
-                this.add_log(format!("[local] [{trace_id}] tool {id} error: {message}"));
-            }
-            HarnessEvent::MissionUpdated { mission_id, status } => {
-                this.add_log(format!(
-                    "[local] [{trace_id}] mission {mission_id} {status}"
-                ));
-            }
-            _ => {}
-        }
-    }
-    if let Some(exec) = this.executions.lock().get_mut(&trace_id) {
-        exec.status = "done".to_string();
-        exec.finished_at = Some(Utc::now().to_rfc3339());
-    }
-    this.emit("executions:updated", ());
-    this.emit("agents:updated", ());
 }
 
 /// Copy legacy state into the new `~/.goble` home the first time it appears, so
@@ -2176,10 +2121,13 @@ impl DesktopState {
 
     /// Run an agent in-process on the local machine (the `local` runtime target).
     ///
-    /// Builds a harness over the shared store with the resolved LLM setting and
-    /// streams the agent's turn on a background task, emitting
-    /// `executions:updated` events so the native UI can render progress. The
-    /// returned value means "the turn was started", not "it finished".
+    /// Routes through the same [`goblin_worker::Runner`] the remote worker uses,
+    /// so local runs share identical execution semantics (agent memory, MCP
+    /// install, workspace dir, compaction). The worker state shares this machine's
+    /// store connection and its event stream is bridged back into the normal
+    /// `handle_worker_message` path, so local and remote agents surface the same
+    /// `executions:updated` / `agent:*` events. The returned value means "the turn
+    /// was started", not "it finished".
     pub fn run_agent_local(
         self: &Arc<Self>,
         agent_id: &AgentId,
@@ -2196,26 +2144,65 @@ impl DesktopState {
         };
         let provider = self.config().llm.default_provider.clone();
         let model = self.default_model(&provider);
-        let (llm, model_name) = self.resolve_llm_provider(&provider, &model);
-        let store = self.store.lock().clone();
+        let spec = {
+            let agents = self.agents.lock();
+            agents
+                .get(agent_id)
+                .map(|a| a.spec.clone())
+                .unwrap_or_else(|| AgentSpec::new(&agent_id.0, &prompt))
+        };
+        let mcp_servers = self.resolve_mcp_servers_for_agent(&spec)?;
+
+        // Build the worker state in-process, sharing this machine's store
+        // connection and forwarding its WorkerMessages into DesktopState.
+        let worker_id = WorkerId(LOCAL_TARGET.to_string());
+        let worker_state = goblin_worker::AppState::new(worker_id.clone());
+        worker_state.set_store(self.store.lock().clone());
+        {
+            let mut cfg = worker_state.config.lock();
+            cfg.llm_provider = Some(provider.clone());
+            cfg.llm_model = Some(model.clone());
+        }
+
+        let this = Arc::clone(self);
+        let provider_factory: goblin_worker::runner::ProviderFactory = Box::new(move || {
+            Ok(this.resolve_llm_provider(&provider, &model).0)
+        });
+        let runner = goblin_worker::runner::Runner::new_with_provider_factory(
+            worker_state.clone(),
+            provider_factory,
+        );
+
+        // Bridge the worker's broadcast of WorkerMessages into DesktopState's
+        // normal handle_worker_message path so local runs emit the same surface.
+        let this = Arc::clone(self);
+        let bridge_worker_id = worker_id.clone();
+        let mut rx = worker_state.event_tx.subscribe();
+        tokio::spawn(async move {
+            while let Ok(msg) = rx.recv().await {
+                this.handle_worker_message(&bridge_worker_id, msg);
+            }
+        });
+
         let cancel = Arc::new(AtomicBool::new(false));
         let auto_approve = self.get_auto_approve();
         let web_search = self.get_web_search_setting();
-        let harness = Harness::new(store.clone())
-            .with_llm(llm)
-            .with_runner(Arc::new(SandboxedCommandRunner::default_tools()))
-            .with_cancel(Arc::clone(&cancel))
-            .with_reasoning(true)
-            .with_auto_approve(auto_approve)
-            .with_web_search(web_search);
+        let options = goblin_worker::HarnessOptions {
+            reasoning: true,
+            auto_approve,
+            web_search,
+            cancel: Some(Arc::clone(&cancel)),
+        };
+
         let trace_id = format!("desktop-{}", uuid::Uuid::new_v4());
-        let this = Arc::clone(self);
         let agent_id = agent_id.clone();
-        let prompt = prompt.to_string();
-        let provider_name = provider.clone();
         tokio::spawn(async move {
-            let stream = harness.run_turn(&trace_id, &prompt, &provider_name, &model_name);
-            drain_agent_stream(this, trace_id, agent_id, stream).await;
+            if let Err(e) = runner
+                .run_agent_opts(trace_id, agent_id, spec, mcp_servers, vec![], options)
+                .await
+            {
+                log::warn!("[local] agent run failed: {e}");
+            }
         });
         Ok(())
     }

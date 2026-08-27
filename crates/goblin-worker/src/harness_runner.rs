@@ -1,10 +1,11 @@
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use futures::StreamExt;
 use goble_core::agent::{AgentId, AgentSpec, McpServer};
 use goble_core::agent_memory::{merge_compaction, CompactionResult, COMPACTION_PROMPT};
 use goble_core::execution::{ExecutionStatus, ExecutionTrace};
-use goble_core::harness::{Harness, HarnessEvent, SandboxedCommandRunner};
+use goble_core::harness::{Harness, HarnessEvent, SandboxedCommandRunner, WebSearchConfig};
 use goble_core::llm::LlmProvider;
 use goble_core::mcp_manager::McpManager;
 use goble_core::protocol::WorkerMessage;
@@ -21,6 +22,18 @@ const COMPACT_THRESHOLD: usize = 40;
 /// How many of the most recent chat messages are injected as the transcript tail.
 const TRANSCRIPT_TAIL_MESSAGES: usize = 20;
 
+/// Tunable execution settings for a harness run. Defaults match the standalone
+/// worker's behavior; the desktop binary sets the non-default knobs (reasoning,
+/// auto-approve, web search, cancel) so its in-process local runs behave like
+/// its chat turns while still going through the same execution core.
+#[derive(Clone, Default)]
+pub struct HarnessOptions {
+    pub reasoning: bool,
+    pub auto_approve: bool,
+    pub web_search: WebSearchConfig,
+    pub cancel: Option<Arc<AtomicBool>>,
+}
+
 /// Run an agent using the full `Harness` runtime instead of the minimal `AgentRuntime`.
 pub async fn run_agent_with_harness(
     state: Arc<AppState>,
@@ -31,6 +44,7 @@ pub async fn run_agent_with_harness(
     secrets: Vec<Secret>,
     provider: Arc<dyn LlmProvider>,
     model: &str,
+    options: HarnessOptions,
 ) -> anyhow::Result<()> {
     let store = state.store()?;
     let chat_id = trace_id.clone();
@@ -87,12 +101,17 @@ pub async fn run_agent_with_harness(
     let prompt = injector::build_context(&spec.prompt, &memory, &tail);
 
     let runner = Arc::new(SandboxedCommandRunner::default_tools());
-    let harness = Harness::new(store.clone())
-        .with_reasoning(false)
+    let mut harness = Harness::new(store.clone())
+        .with_reasoning(options.reasoning)
         .with_llm(provider.clone())
         .with_runner(runner)
         .with_workspace_dir(&workspace_dir)
-        .with_mcp_manager(mcp_manager);
+        .with_mcp_manager(mcp_manager)
+        .with_auto_approve(options.auto_approve)
+        .with_web_search(options.web_search);
+    if let Some(cancel) = options.cancel {
+        harness = harness.with_cancel(cancel);
+    }
 
     let mut trace = ExecutionTrace::new(agent_id.clone());
     trace.id = trace_id.clone();
@@ -270,6 +289,7 @@ pub async fn run_agent_for_thread_reply_with_harness(
     secrets: Vec<Secret>,
     provider: Arc<dyn LlmProvider>,
     model: &str,
+    options: HarnessOptions,
 ) -> anyhow::Result<String> {
     run_agent_with_harness(
         state,
@@ -280,6 +300,7 @@ pub async fn run_agent_for_thread_reply_with_harness(
         secrets,
         provider,
         model,
+        options,
     )
     .await?;
     Ok("reply submitted".to_string())

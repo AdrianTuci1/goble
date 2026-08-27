@@ -67,7 +67,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     }
 }
 
-async fn handle_desktop_message(
+pub async fn handle_desktop_message(
     state: &Arc<AppState>,
     runner: &Runner,
     msg: DesktopMessage,

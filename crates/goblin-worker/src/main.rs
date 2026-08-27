@@ -26,6 +26,7 @@ pub mod pairing;
 pub mod runner;
 pub mod scheduler;
 pub mod snapshot_runner;
+pub mod ssh_proxy;
 pub mod state;
 pub mod task_store;
 pub mod websocket;
@@ -75,6 +76,12 @@ struct Args {
     lease_name: String,
     #[arg(long, env = "GOBLIN_SNAPSHOT_INTERVAL_SECONDS", default_value = "300")]
     snapshot_interval_seconds: u64,
+    /// Run in SSH proxy mode: read DesktopMessage JSON lines from stdin and
+    /// write WorkerMessage JSON lines to stdout. This lets a desktop client
+    /// connect by spawning the worker over an SSH session instead of exposing
+    /// a TCP port.
+    #[arg(long, env = "GOBLIN_SSH_PROXY")]
+    ssh_proxy: bool,
 }
 
 static START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -212,6 +219,12 @@ async fn main() -> anyhow::Result<()> {
     let scheduler_for_state = Arc::clone(&scheduler);
     scheduler.start_loop(Duration::from_secs(5), leader_state);
     state.set_scheduler(scheduler_for_state);
+
+    if args.ssh_proxy {
+        tracing::info!("goblin running in ssh-proxy mode on stdin/stdout");
+        ssh_proxy::run(state).await?;
+        return Ok(());
+    }
 
     let app = Router::new()
         .route("/", get(root_handler))

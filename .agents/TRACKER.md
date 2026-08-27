@@ -11,6 +11,7 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done.
 - [x] Define the `Routing` decision type and attach it to a conversation — `WorkspaceRouting{Local,Remote}` is persisted per conversation on the `chats.workspace_routing` column and restored on load (`router-local-vs-remote.md`)
 - [x] Align local + remote on a single runner core — local agent runs now go through `goblin_worker::Runner` in-process (shared store via `AppState::set_store`, event bridge `event_tx` → `handle_worker_message`, knobs via `HarnessOptions`), so local and remote share memory/MCP/workspace/compaction semantics (`router-local-vs-remote.md`)
 - [~] Map workspace default target to the router — `config.toml` gains `[workspace.default_target]` (`Local` or `Remote { worker_id }`), and `resolve_worker_for_target("any")` now consults it; per-conversation override remains via `chats.workspace_routing`. Still pending: full `Workspace` type/`kind` mapping when multi-workspace lands (`runtime-targets.md`)
+- [~] Add SSH proxy mode to `goblin-worker` so remote workers can be spawned over SSH and talk stdin/stdout instead of exposing a TCP port. Foundation done (`--ssh-proxy` flag + NDJSON protocol); still pending: desktop SSH transport that spawns and drives it (`remote-bootstrap.md`)
 - [x] Persist the routing choice across restarts (`router-local-vs-remote.md`)
 - [ ] Define the "workspace package" to ship to a remote host (`remote-bootstrap.md`)
 - [ ] Add the remote self-configuration step (read TOML → resolve providers/models) (`remote-bootstrap.md`)

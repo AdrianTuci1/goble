@@ -17,7 +17,7 @@ enum RuntimeTarget {
 | Target | Where the harness runs | Connection | Renderer |
 | --- | --- | --- | --- |
 | `Local` | this machine, in-app or local worker | none / loopback | in-process |
-| `Worker { .. }` | a remote goblin worker | WebSocket over mTLS | streamed events (remote-terminal-renderer) |
+| `Worker { .. }` | a remote goblin worker | WebSocket over mTLS or SSH stdin/stdout proxy | streamed events (remote-terminal-renderer) |
 | `SelfAsWorker` | this machine, exposed via Tailscale | Tailscale | served to a mobile client |
 
 ## Addressability
@@ -35,4 +35,4 @@ enum RuntimeTarget {
 
 - [ ] Add `Local` and `SelfAsWorker` to the runtime-target set (and remove the `local` bail).
 - [ ] Represent each target's connection params (local handle / mTLS address / tailscale addr).
-- [ ] Map a workspace `kind` → the default target, but allow per-conversation override.
+- [~] Map a workspace `kind` → the default target, but allow per-conversation override. `GobleConfig.workspace.default_target` (`Local` / `Remote { worker_id }`) is persisted and consulted by `resolve_worker_for_target("any")`; the native API exposes `get/set_workspace_default_target`. The full `RuntimeTarget` enum still needs the `Local` / `SelfAsWorker` variants.

@@ -11,6 +11,7 @@ use goble_core::mcp_registry::McpSearchResult;
 use goble_core::protocol::DesktopMessage;
 use goble_core::thread::{MessageId, Participant, ParticipantId, ThreadId, ThreadKind, UserId};
 use goble_core::worker::WorkerId;
+use goble_core::config::WorkspaceTarget;
 use goble_core::workflow::{WorkflowId, WorkflowStep};
 use goble_desktop_service::{
     AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, DesktopState, ExecutionInfo, Intent,
@@ -131,6 +132,21 @@ pub fn connect_ssh_worker(
 
 pub fn generate_worker_invite(state: &Arc<DesktopState>, worker_id: &str) -> anyhow::Result<WorkerInvite> {
     state.generate_worker_invite(worker_id)
+}
+
+// ---------------------------------------------------------------------------
+// Workspace default target
+// ---------------------------------------------------------------------------
+
+pub fn get_workspace_default_target(state: &Arc<DesktopState>) -> WorkspaceTarget {
+    state.config().workspace.default_target.clone()
+}
+
+pub fn set_workspace_default_target(
+    state: &Arc<DesktopState>,
+    target: WorkspaceTarget,
+) -> anyhow::Result<()> {
+    state.set_workspace_default_target(target)
 }
 
 // ---------------------------------------------------------------------------

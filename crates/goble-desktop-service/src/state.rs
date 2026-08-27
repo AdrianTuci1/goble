@@ -911,7 +911,7 @@ impl DesktopState {
         pairing_code: String,
     ) -> anyhow::Result<()> {
         let url = format!("ssh://{}@{}:{}", creds.user, creds.host, creds.port);
-        self.add_worker(worker_id.clone(), name, url)?;
+        self.add_worker(worker_id.clone(), name.clone(), url.clone())?;
         let state = self.clone();
         tokio::spawn(async move {
             match WorkerClient::connect_ssh(
@@ -928,6 +928,17 @@ impl DesktopState {
                     if let Some(conn) = state.workers.lock().get_mut(&worker_id) {
                         conn.paired = true;
                     }
+                    let _ = state.store.lock().insert_worker(
+                        &worker_id.to_string(),
+                        &name,
+                        Some(&url),
+                        "paired",
+                        None,
+                        &serde_json::to_string(&WorkerConfig::new(&name, &url, ""))
+                            .unwrap_or_else(|_| "{}".to_string()),
+                        &Utc::now().to_rfc3339(),
+                        &Utc::now().to_rfc3339(),
+                    );
                     state.emit("workers:updated", ());
                     state.add_log(format!("worker {worker_id} connected via SSH"));
                 }

@@ -1,6 +1,6 @@
 # 11 — Multi-tenant worker
 
-**Status:** `[~]` design / slice 1
+**Status:** `[x]` slice 1 done
 **Owns:** running a single `goblin` worker that serves multiple desktops, sharing agents but keeping per-user conversation history.
 **Depends on:** [`../02-first-run-and-routing/router-local-vs-remote.md`](../02-first-run-and-routing/router-local-vs-remote.md), [`../04-agent-runtime/README.md`](../04-agent-runtime/README.md), [`../03-workspace-model/shared-secrets-and-toml.md`](../03-workspace-model/shared-secrets-and-toml.md)
 

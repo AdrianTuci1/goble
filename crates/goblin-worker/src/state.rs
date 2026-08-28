@@ -11,7 +11,7 @@ use goble_core::agent::{AgentId, AgentSpec, McpServer};
 use goble_core::app_home::GobleHome;
 use goble_core::cluster_key::ClusterKey;
 use goble_core::execution::ExecutionTrace;
-use goble_core::identity::Identity;
+use goble_core::identity::{ClusterRole, Identity};
 use goble_core::protocol::WorkerMessage;
 use goble_core::provision::WorkerBundle;
 use goble_core::secret::Secret;
@@ -19,12 +19,21 @@ use goble_core::snapshot::SnapshotProvider;
 use goble_core::store::Store;
 use goble_core::worker::WorkerId;
 
+/// Per-client session tracked by the worker in multi-tenant mTLS mode.
+#[derive(Debug, Clone)]
+pub struct ClientSession {
+    pub user_id: String,
+    pub role: ClusterRole,
+}
+
 /// Shared application state for the Goblin worker.
 pub struct AppState {
     pub worker_id: WorkerId,
     pub pairing_hash: Mutex<Option<String>>,
     pub worker_bundle: Mutex<Option<WorkerBundle>>,
     pub desktop_identity: Mutex<Option<Identity>>,
+    /// Active mTLS client sessions keyed by certificate serial.
+    pub sessions: Mutex<std::collections::HashMap<String, ClientSession>>,
     pub agents: Mutex<std::collections::HashMap<AgentId, AgentSpec>>,
     pub mcp_servers: Mutex<std::collections::HashMap<String, McpServer>>,
     pub secrets: Mutex<std::collections::HashMap<String, Secret>>,
@@ -87,6 +96,7 @@ impl AppState {
             pairing_hash: Mutex::new(None),
             worker_bundle: Mutex::new(None),
             desktop_identity: Mutex::new(None),
+            sessions: Mutex::new(std::collections::HashMap::new()),
             agents: Mutex::new(std::collections::HashMap::new()),
             mcp_servers: Mutex::new(std::collections::HashMap::new()),
             secrets: Mutex::new(std::collections::HashMap::new()),
@@ -155,6 +165,20 @@ impl AppState {
 
     pub fn set_desktop_identity(&self, identity: Identity) {
         *self.desktop_identity.lock() = Some(identity);
+    }
+
+    /// Register an authenticated mTLS session so the worker can route events and
+    /// identify the caller for multi-tenant requests.
+    pub fn insert_session(&self, session: ClientSession) {
+        self.sessions.lock().insert(session.user_id.clone(), session);
+    }
+
+    pub fn get_session(&self, user_id: &str) -> Option<ClientSession> {
+        self.sessions.lock().get(user_id).cloned()
+    }
+
+    pub fn is_session_active(&self, user_id: &str) -> bool {
+        self.sessions.lock().contains_key(user_id)
     }
 
     pub fn requires_pairing_hash(&self) -> bool {
@@ -286,5 +310,19 @@ mod tests {
         state.store_agent(spec.clone());
         let stored = state.agents.lock().get(&id).cloned();
         assert_eq!(stored, Some(spec));
+    }
+
+    #[test]
+    fn test_state_session_tracking() {
+        let state = AppState::new(WorkerId::generate());
+        assert!(!state.is_session_active("desktop-1"));
+        state.insert_session(ClientSession {
+            user_id: "desktop-1".to_string(),
+            role: ClusterRole::Admin,
+        });
+        assert!(state.is_session_active("desktop-1"));
+        let session = state.get_session("desktop-1").unwrap();
+        assert_eq!(session.user_id, "desktop-1");
+        assert_eq!(session.role, ClusterRole::Admin);
     }
 }

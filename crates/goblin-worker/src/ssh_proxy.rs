@@ -60,7 +60,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
                         }
                         match serde_json::from_str::<DesktopMessage>(&line) {
                             Ok(msg) => {
-                                if let Err(e) = websocket::handle_desktop_message(&state, &runner, msg).await {
+                                if let Err(e) = websocket::handle_desktop_message(&state, &runner, None, msg).await {
                                     state.emit(WorkerMessage::AgentFinished {
                                         trace_id: "unknown".to_string(),
                                         status: ExecutionStatus::Failure(e.to_string()),

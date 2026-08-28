@@ -90,7 +90,12 @@ impl RoleExtension {
 /// Extract the Goble role from a PEM certificate.
 pub fn extract_role(cert_pem: &str) -> Result<ClusterRole> {
     let der = pem_to_der(cert_pem)?;
-    let (_, x509) = X509Certificate::from_der(&der)
+    extract_role_from_der(&der)
+}
+
+/// Extract the Goble role from a certificate given as raw DER bytes.
+pub fn extract_role_from_der(cert_der: &[u8]) -> Result<ClusterRole> {
+    let (_, x509) = X509Certificate::from_der(cert_der)
         .map_err(|e| anyhow::anyhow!("failed to parse certificate: {e}"))?;
     extract_role_from_cert(&x509)
 }
@@ -109,7 +114,12 @@ fn extract_role_from_cert(x509: &X509Certificate<'_>) -> Result<ClusterRole> {
 /// Extract the serial number as a lowercase hex string.
 pub fn extract_serial(cert_pem: &str) -> Result<String> {
     let der = pem_to_der(cert_pem)?;
-    let (_, x509) = X509Certificate::from_der(&der)
+    extract_serial_from_der(&der)
+}
+
+/// Extract the certificate serial number from raw DER bytes.
+pub fn extract_serial_from_der(cert_der: &[u8]) -> Result<String> {
+    let (_, x509) = X509Certificate::from_der(cert_der)
         .map_err(|e| anyhow::anyhow!("failed to parse certificate: {e}"))?;
     Ok(hex::encode(x509.serial.to_bytes_be()))
 }

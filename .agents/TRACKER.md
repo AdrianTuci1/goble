@@ -114,9 +114,9 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done.
 - [ ] Scaffold the Kotlin client against the same workspace/routing contract (`../09-mobile-deferred/README.md`)
 
 ## 11 — Multi-tenant (new)
-- [~] Design the multi-tenant worker: one `goblin` daemon serves multiple desktops via mTLS, sharing agents/workflow definitions while keeping transcripts/executions per-user (`11-multi-tenant/multi-tenant-worker.md`)
-- [ ] Slice 1: worker accepts mTLS WebSocket connections and identifies the desktop from its client certificate (`11-multi-tenant/multi-tenant-worker.md`)
-- [ ] Slice 2: per-user store for executions/traces/threads/chats (`11-multi-tenant/multi-tenant-worker.md`)
+- [x] Design the multi-tenant worker: one `goblin` daemon serves multiple desktops via mTLS, sharing agents/workflow definitions while keeping transcripts/executions per-user (`11-multi-tenant/multi-tenant-worker.md`)
+- [x] Slice 1: worker accepts mTLS WebSocket connections and identifies the desktop from its client certificate (`11-multi-tenant/multi-tenant-worker.md`)
+- [~] Slice 2: per-user store for executions/traces/threads/chats (`11-multi-tenant/multi-tenant-worker.md`)
 - [ ] Slice 3: shared workspace entities (agents/teams/workflows/mcp/secrets) remain global with ACLs/grants (`11-multi-tenant/multi-tenant-worker.md`)
 - [ ] Slice 4: route worker events back to the correct desktop session(s) (`11-multi-tenant/multi-tenant-worker.md`)
 - [ ] Slice 5: invite/grant flow for adding new users without exporting the cluster key (`11-multi-tenant/multi-tenant-worker.md`)

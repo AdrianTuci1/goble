@@ -3,6 +3,7 @@ pub mod agent_runtime;
 pub mod file_vault;
 pub mod harness_runner;
 pub mod leader;
+pub mod listener;
 pub mod llm_factory;
 pub mod mcp;
 pub mod pairing;

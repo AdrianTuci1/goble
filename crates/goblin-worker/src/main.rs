@@ -8,6 +8,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
+use tokio::net::TcpListener;
 use goble_core::cluster_key::ClusterKey;
 use goble_core::provision::WorkerBundle;
 use goble_core::snapshot::LocalSnapshotProvider;
@@ -20,6 +21,7 @@ pub mod agent_runtime;
 pub mod file_vault;
 pub mod harness_runner;
 pub mod leader;
+pub mod listener;
 pub mod llm_factory;
 pub mod mcp;
 pub mod pairing;
@@ -242,14 +244,22 @@ async fn main() -> anyhow::Result<()> {
         let bundle: WorkerBundle = serde_json::from_str(&bundle_json)?;
         let rustls_config = RustlsConfig::from_config(Arc::new(bundle.server_config()?));
         state.set_worker_bundle(bundle);
+        let listener = TcpListener::bind(&args.bind).await?;
         tracing::info!("goblin listening with mTLS on {}", args.bind);
-        axum_server::bind_rustls(args.bind.parse()?, rustls_config)
-            .serve(app.into_make_service())
-            .await?;
+        let tls_listener = listener::TlsListener::new(listener, rustls_config.get_inner());
+        axum::serve(
+            tls_listener,
+            app.into_make_service_with_connect_info::<websocket::TlsPeer>(),
+        )
+        .await?;
     } else {
-        let listener = tokio::net::TcpListener::bind(&args.bind).await?;
+        let listener = TcpListener::bind(&args.bind).await?;
         tracing::info!("goblin listening on {}", args.bind);
-        axum::serve(listener, app).await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<websocket::TlsPeer>(),
+        )
+        .await?;
     }
 
     Ok(())

@@ -2,7 +2,7 @@
 //! app's real action callbacks against a live [`DesktopState`]:
 //! no key -> banner on first send -> model-provider dialog -> save key ->
 //! workspace choice -> local. With no key the send path keeps the user's
-//! message but emits no canned assistant reply (nothing is actually running);
+//! message, appends an honest assistant reply and shows the key banner;
 //! the agent harness is a separate slice, so these tests assert the state +
 //! navigation transitions.
 
@@ -68,16 +68,19 @@ fn first_run_send_message_surfaces_key_banner() {
         assert!(s.show_llm_key_banner, "no key -> banner should surface");
         assert!(!s.show_workspace_choice);
         assert_eq!(s.workspace_routing, None);
-        assert_eq!(
-            s.chat_messages.len(),
-            1,
-            "no canned reply when no key is configured"
-        );
+        assert_eq!(s.chat_messages.len(), 2);
+        assert_eq!(s.chat_messages[0].role, goble_ui::ChatRole::User);
+        assert_eq!(s.chat_messages[1].role, goble_ui::ChatRole::Assistant);
     }
 
     let messages = desktop.list_chat_messages(&chat_id).expect("list messages");
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, "user");
+    assert_eq!(messages[1].role, "assistant");
+    assert!(
+        messages[1].content.contains("No model is configured"),
+        "assistant reply should explain the missing model"
+    );
 }
 
 #[test]
@@ -198,8 +201,9 @@ fn choosing_local_sets_routing_and_continues_conversation() {
         assert!(!s.show_workspace_choice, "choice clears after deciding");
         assert!(!s.show_llm_key_banner, "banner stays cleared");
         assert_eq!(s.current_tab, AppTab::Chat, "returns to the conversation");
-        // Only the user's message remains (no canned reply for the no-key send).
-        assert_eq!(s.chat_messages.len(), 1);
+        // The no-key send kept the user's message plus an honest assistant reply.
+        assert_eq!(s.chat_messages.len(), 2);
+        assert_eq!(s.chat_messages[1].role, goble_ui::ChatRole::Assistant);
     }
 }
 
@@ -233,7 +237,7 @@ fn workspace_routing_persists_and_reloads_per_conversation() {
         Some(chat_id.as_str())
     );
 
-    // No key yet: the first send surfaces the key banner (no canned reply).
+    // No key yet: the first send surfaces the key banner (and a helpful reply).
     (actions.on_send_message.borrow_mut())("Hi".to_string());
     assert!(state.borrow().show_llm_key_banner);
 

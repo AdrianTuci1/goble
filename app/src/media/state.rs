@@ -6,8 +6,8 @@
 //! [`MediumKind`] variants; each medium expands to the projects that carry
 //! sessions on it, and each project expands to its sessions. Sessions/projects
 //! come from the backend ([`DesktopState::list_projects`] /
-//! [`DesktopState::list_sessions`]); a small deterministic tree is used only
-//! when no backend store is available.
+//! [`DesktopState::list_sessions`]); they always come from the store, so there
+//! is no mock fallback.
 
 use goble_desktop_service::DesktopState;
 use goble_harness_types::MediumKind;
@@ -124,8 +124,8 @@ fn build_from_backend(projects: &[Project], sessions: &[Session]) -> Vec<MediaNo
         .collect()
 }
 
-/// A small deterministic tree used only when the backend store is unavailable:
-/// each medium has its default project and one session on it.
+/// A small deterministic tree used only by the [`MediaState::mock`] test
+/// fixture: each medium has its default project and one session on it.
 fn build_mock() -> Vec<MediaNode> {
     MEDIUM_META
         .iter()
@@ -186,9 +186,12 @@ pub struct MediaState {
 }
 
 impl MediaState {
-    /// Deterministic tree with `local` selected and expanded, used when no
-    /// backend store is available (dev fallback).
-    pub fn default() -> Self {
+    /// Test fixture: a deterministic tree with `local` selected and expanded.
+    ///
+    /// Not used by the runtime — the app always builds from the real store via
+    /// [`Self::from_desktop`]. Kept as an explicit fixture so tests can
+    /// construct a known tree without a backend store.
+    pub fn mock() -> Self {
         let mut state = Self {
             mediums: build_mock(),
             selected_medium: "local".to_string(),
@@ -199,11 +202,6 @@ impl MediaState {
         };
         state.append_custom_mediums();
         state
-    }
-
-    /// Alias for [`Self::default`]; used by tests that want the dev tree.
-    pub fn mock() -> Self {
-        Self::default()
     }
 
     /// Start from real backend data (sessions/projects grouped per medium),
@@ -223,18 +221,11 @@ impl MediaState {
         state
     }
 
-    /// Rebuild the tree from the backend when available, else the deterministic
-    /// fallback. A selection/expansion that no longer resolves is reset.
-    pub fn refresh(&mut self, desktop: Option<&DesktopState>) {
-        self.mediums = match desktop {
-            Some(d) => build_from_backend(&d.list_projects(), &d.list_sessions()),
-            None => build_mock(),
-        };
-        // Reload the persisted custom mediums only when a store is available;
-        // in the mock fallback keep whatever the user added this run.
-        if let Some(d) = desktop {
-            self.custom_mediums = load_custom_mediums(Some(d));
-        }
+    /// Rebuild the tree from the backend store. A selection/expansion that no
+    /// longer resolves is reset.
+    pub fn refresh(&mut self, desktop: &DesktopState) {
+        self.mediums = build_from_backend(&desktop.list_projects(), &desktop.list_sessions());
+        self.custom_mediums = load_custom_mediums(Some(desktop));
         self.append_custom_mediums();
         self.expanded.retain(|key| key_exists(&self.mediums, key));
         self.reconcile_selection();
@@ -439,6 +430,16 @@ mod tests {
     use goble_harness_types::{MediumId, ProjectId, SessionId};
     use goble_persistence::{Project, Session};
 
+    /// A real `DesktopState` over an in-memory sqlite store + temp thread store.
+    fn desktop() -> (std::sync::Arc<goble_desktop_service::DesktopState>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("create temp thread store dir");
+        let state = goble_desktop_service::DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("open in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("open thread store"),
+        );
+        (state, dir)
+    }
+
     fn project(id: &str, dir: &str) -> Project {
         Project {
             project_id: ProjectId::new(id),
@@ -458,7 +459,7 @@ mod tests {
 
     #[test]
     fn default_selects_local_and_expands_it() {
-        let state = MediaState::default();
+        let state = MediaState::mock();
         assert_eq!(state.selected_medium_id(), "local");
         assert_eq!(state.selected_project_id(), "default");
         assert_eq!(state.mediums.len(), 2, "only Local + Remote environments");
@@ -468,7 +469,7 @@ mod tests {
 
     #[test]
     fn toggle_expands_and_collapses_a_branch() {
-        let mut state = MediaState::default();
+        let mut state = MediaState::mock();
         assert!(!state.is_expanded(&medium_key("remote-xrdp")));
 
         state.toggle(&medium_key("remote-xrdp"));
@@ -552,16 +553,14 @@ mod tests {
     }
 
     #[test]
-    fn refresh_falls_back_to_mock_without_a_store() {
-        let mut state = MediaState::default();
-        state.select_session("remote-xrdp", "remote", "s-remote-xrdp");
-        assert!(state.is_expanded(&project_key("remote-xrdp", "remote")));
-        // Refreshing without a store rebuilds the deterministic tree and keeps
-        // only an expansion that still resolves.
-        state.refresh(None);
+    fn refresh_rebuilds_from_store_not_mock() {
+        let (desktop, _dir) = desktop();
+        let mut state = MediaState::from_desktop(&desktop);
+        // Refreshing always rebuilds from the store's projects + sessions; it
+        // never substitutes a deterministic mock tree.
+        state.refresh(&desktop);
         assert_eq!(state.mediums.len(), 2, "only Local + Remote environments");
-        assert!(state.is_expanded(&project_key("remote-xrdp", "remote")));
-        assert!(!state.is_expanded(&project_key("local", "default")));
+        assert_eq!(state.selected_medium_id(), "local");
     }
 
     #[test]
@@ -596,11 +595,14 @@ mod tests {
     }
 
     #[test]
-    fn refresh_keeps_persisted_custom_mediums_appended() {
-        let mut state = MediaState::mock();
-        state.add_medium("staging-vps", "Staging VPS");
-        // Refreshing without a store keeps the in-memory custom mediums.
-        state.refresh(None);
+    fn refresh_reloads_persisted_custom_mediums() {
+        let (desktop, _dir) = desktop();
+        let mut state = MediaState::from_desktop(&desktop);
+        // Persist a custom medium in the store; a refresh must re-append it.
+        desktop
+            .set_ui_mediums(r#"[["staging-vps","Staging VPS"]]"#)
+            .expect("persist custom mediums");
+        state.refresh(&desktop);
         assert!(state.mediums.iter().any(|m| m.id == "staging-vps"));
     }
 }

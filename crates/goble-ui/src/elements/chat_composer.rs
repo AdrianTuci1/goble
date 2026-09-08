@@ -8,7 +8,7 @@ use crate::elements::{
     Padding, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, SizeConstraint, Text, TextArea,
     Tooltip, TooltipPosition,
 };
-use crate::event::DispatchedEvent;
+use crate::event::{DispatchedEvent, ModifiersState};
 use crate::geometry::{rectf, vec2f, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
 
@@ -37,6 +37,10 @@ pub struct ChatComposer {
     on_slash: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    /// Cmd/Ctrl+Enter submit: start a NEW agent conversation (warp-new). The
+    /// host decides what "new conversation" means; the composer only reports
+    /// the keybinding.
+    on_cmd_enter: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_attach: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_select_model: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_select_key: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -71,6 +75,7 @@ impl ChatComposer {
             stop_visible: false,
             on_change: None,
             on_send: None,
+            on_cmd_enter: None,
             on_attach: None,
             on_select_model: None,
             on_select_key: None,
@@ -208,6 +213,12 @@ impl ChatComposer {
 
     pub fn with_on_send<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
         self.on_send = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Cmd/Ctrl+Enter submits the draft as a NEW agent conversation (warp-new).
+    pub fn with_on_cmd_enter<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_cmd_enter = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -384,14 +395,22 @@ impl ChatComposer {
         }
 
         // Send closure shared between Enter-to-submit and the (removed) send
-        // button path; keeps Enter-to-send working.
+        // button path; keeps Enter-to-send working. The submit carries the
+        // Enter key's modifiers so the host can route a plain Enter (terminal
+        // command) vs Cmd/Ctrl+Enter (a NEW agent conversation, warp-new).
         let value_for_send = self.value.clone();
         let on_send = self.on_send.clone();
-        let send = Rc::new(RefCell::new(move || {
+        let on_cmd_enter = self.on_cmd_enter.clone();
+        let send = Rc::new(RefCell::new(move |modifiers: ModifiersState| {
             let text = value_for_send.borrow().clone();
             if !text.is_empty() {
-                if let Some(cb) = on_send.as_ref() {
-                    (cb.borrow_mut())(text);
+                let agent_submit = (modifiers.command || modifiers.ctrl) && !modifiers.shift;
+                if agent_submit {
+                    if let Some(cb) = on_cmd_enter.as_ref() {
+                        (cb.borrow_mut())(text.clone());
+                    }
+                } else if let Some(cb) = on_send.as_ref() {
+                    (cb.borrow_mut())(text.clone());
                 }
                 *value_for_send.borrow_mut() = String::new();
             }
@@ -425,7 +444,7 @@ impl ChatComposer {
                     (cb.borrow_mut())(focused);
                 }
             })
-            .with_on_submit(move || (send_for_submit.borrow_mut())())
+            .with_on_submit(move |mods| (send_for_submit.borrow_mut())(mods))
             .finish();
         column = column.with_child(textarea);
 

@@ -14,12 +14,14 @@ use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken};
 
+use super::connectors::build_connectors_page;
+use super::harness;
 use super::panes;
 use super::projects::build_projects_view;
 use super::space_bar::SpaceBar;
 use super::{
-    AppTab, MediaActions, MediaSnapshot, ProjectsActions, ProjectsSnapshot, UiActions,
-    UiSnapshot,
+    AiActions, AiSnapshot, AppTab, MediaActions, MediaSnapshot, ProjectsActions,
+    ProjectsSnapshot, UiActions, UiSnapshot,
 };
 
 // The general toolbar doubles as the OS titlebar on macOS, so it is a touch
@@ -79,11 +81,17 @@ pub fn build_topbar(
     .with_on_click(move || (on_projects.borrow_mut())())
     .finish();
 
+    // Harness observability navigation: workflows, tasks/executions, timeline,
+    // costs and MCP connectors. Each button toggles its page (clicking the
+    // active page returns to chat), mirroring the projects tab affordance.
+    let harness_nav = build_harness_nav(app, state, actions, sm);
+
     let left = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(sm)
         .with_child(menu_button)
         .with_child(projects_button)
+        .with_child(harness_nav)
         .finish();
 
     let on_inbox = actions.on_inbox.clone();
@@ -155,6 +163,70 @@ pub fn build_topbar(
         .finish()
 }
 
+/// One harness navigation button: a topbar icon that is active (highlighted)
+/// when its page is open.
+fn harness_nav_button(
+    app: &AppContext,
+    icon: &'static str,
+    on_click: Rc<RefCell<dyn FnMut()>>,
+    active: bool,
+) -> Box<dyn Element> {
+    TopbarButton::new(
+        Icon::new(icon)
+            .with_size(16.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_active(active)
+    .with_on_click(move || (on_click.borrow_mut())())
+    .finish()
+}
+
+/// The harness observability nav strip: workflows, tasks/executions, timeline,
+/// costs and MCP connectors. Each button toggles its page: clicking the
+/// currently-open page returns to the chat workspace.
+fn build_harness_nav(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    sm: f32,
+) -> Box<dyn Element> {
+    Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(harness_nav_button(
+            app,
+            "workflow",
+            actions.on_workflows.clone(),
+            state.current_tab == AppTab::Workflows,
+        ))
+        .with_child(harness_nav_button(
+            app,
+            "activity",
+            actions.on_executions.clone(),
+            state.current_tab == AppTab::Executions,
+        ))
+        .with_child(harness_nav_button(
+            app,
+            "timeline",
+            actions.on_timeline.clone(),
+            state.current_tab == AppTab::Timeline,
+        ))
+        .with_child(harness_nav_button(
+            app,
+            "costs",
+            actions.on_costs.clone(),
+            state.current_tab == AppTab::Costs,
+        ))
+        .with_child(harness_nav_button(
+            app,
+            "plug",
+            actions.on_mcps.clone(),
+            state.current_tab == AppTab::Mcps,
+        ))
+        .finish()
+}
+
 /// The space tab strip: one tab per space, draggable to reorder, selectable to
 /// switch. The trailing "+" lives in the environment controls (it opens the
 /// add-space / add-medium menu) so the strip itself has no add button.
@@ -186,6 +258,8 @@ pub fn build_main(
     actions: &UiActions,
     projects: &ProjectsSnapshot,
     projects_actions: &ProjectsActions,
+    ai: &AiSnapshot,
+    ai_actions: &AiActions,
     _media: &MediaSnapshot,
     _media_actions: &MediaActions,
 ) -> Box<dyn Element> {
@@ -197,6 +271,12 @@ pub fn build_main(
         // stale tab flag survives, so we render a dead-end instead of the view.
         AppTab::Settings => build_settings_disabled(app, actions),
         AppTab::Projects => build_projects_view(app, projects, projects_actions),
+        // Harness observability pages, driven by real daemon/store data.
+        AppTab::Workflows => harness::build_workflows_page(app, state, actions),
+        AppTab::Executions => harness::build_executions_page(app, state, actions),
+        AppTab::Timeline => harness::build_timeline_page(app, state, actions),
+        AppTab::Costs => harness::build_costs_page(app, state, actions),
+        AppTab::Mcps => build_connectors_page(app, ai, ai_actions, &actions.on_settings_back),
     }
 }
 

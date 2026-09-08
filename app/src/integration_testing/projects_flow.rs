@@ -88,8 +88,9 @@ fn projects_panel_renders_per_project_list_and_status() {
 
 #[test]
 fn projects_tab_renders_through_root_view() {
+    let (desktop, _dir) = common::desktop_state();
     let app = AppContext::default();
-    let view = RootView::new(&app, None, None);
+    let view = RootView::new(&app, &desktop, None);
     view.state_rc().borrow_mut().current_tab = AppTab::Projects;
 
     let mut root: Box<dyn Element> = Box::new(view);
@@ -98,10 +99,6 @@ fn projects_tab_renders_through_root_view() {
     assert!(
         texts.iter().any(|t| t.contains("Projects")),
         "the projects tab should render its header, got {texts:?}"
-    );
-    assert!(
-        texts.iter().any(|t| t.contains("running")),
-        "mock projects panel shows a running project, got {texts:?}"
     );
 }
 

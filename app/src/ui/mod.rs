@@ -25,6 +25,7 @@ use crate::terminal::TerminalRegistry;
 pub mod chat;
 pub mod connectors;
 pub mod crons;
+pub mod harness;
 pub mod media;
 pub mod model_form;
 pub mod palette;
@@ -135,11 +136,72 @@ pub struct McpSearchEntry {
     pub source_kind: String,
 }
 
+/// A workflow shown in the harness workflows page. Real data from the embedded
+/// daemon's workflow store ([`goble_desktop_service::DesktopState`]).
+#[derive(Clone, Debug)]
+pub struct WorkflowEntry {
+    pub id: String,
+    pub name: String,
+    pub trigger: String,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+/// An execution (agent run) shown in the tasks/executions page. Real data from
+/// the daemon execution ledger ([`goble_desktop_service::DesktopState`]).
+#[derive(Clone, Debug)]
+pub struct ExecutionEntry {
+    pub id: String,
+    pub agent_id: String,
+    pub worker_id: Option<String>,
+    pub status: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub step_count: usize,
+}
+
+/// A durable task (scheduled or manual unit of work) shown in the
+/// tasks/executions page. Real data from the persistence layer.
+#[derive(Clone, Debug)]
+pub struct TaskEntry {
+    pub id: String,
+    pub session_id: String,
+    pub trigger: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+/// One chronologically ordered record in the timeline page. Derived from real
+/// execution / session / task records merged by timestamp.
+#[derive(Clone, Debug)]
+pub struct TimelineEntry {
+    pub at: String,
+    pub kind: String,
+    pub label: String,
+    pub status: Option<String>,
+}
+
+/// One cost row in the costs page. There is no cost backend yet, so these are
+/// derived from real execution/usage records when a cost metric exists, else an
+/// honest aggregate is shown instead of fabricated numbers.
+#[derive(Clone, Debug)]
+pub struct CostEntry {
+    pub id: String,
+    pub label: String,
+    pub amount: String,
+    pub note: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppTab {
     Chat,
     Settings,
     Projects,
+    Workflows,
+    Executions,
+    Timeline,
+    Costs,
+    Mcps,
 }
 
 /// Where the first-run agent should run its execution.
@@ -639,6 +701,16 @@ pub struct UiSnapshot {
     pub agent_header_menu_open: Rc<RefCell<bool>>,
     pub crons_open: bool,
     pub crons: Vec<CronEntry>,
+    /// Workflows registered with the embedded daemon (real data).
+    pub workflows: Vec<WorkflowEntry>,
+    /// Executions from the daemon execution ledger (real data).
+    pub executions: Vec<ExecutionEntry>,
+    /// Durable tasks from the persistence layer (real data).
+    pub tasks: Vec<TaskEntry>,
+    /// Chronological record derived from execution/session/task data.
+    pub timeline: Vec<TimelineEntry>,
+    /// Cost rows derived from real execution/usage records.
+    pub costs: Vec<CostEntry>,
     pub settings_page: SettingsPage,
     pub settings_profile_name: String,
     pub settings_profile_email: String,
@@ -674,7 +746,7 @@ pub struct UiSnapshot {
     /// Per-card interaction state (hover / delete menu), shared with the
     /// card elements so selections and menus persist across frames.
     pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,
-    /// Hover flag for the sidebar's "New agent" row, owned here so the row's
+    /// Hover flag for the sidebar's "New conversation" row, owned here so the row's
     /// highlight survives the per-frame element rebuild.
     pub new_agent_hover: Rc<RefCell<bool>>,
     /// Multiple "spaces": each is a pane tree rendered as a top-bar tab. The
@@ -767,6 +839,10 @@ pub struct UiActions {
     pub on_composer_change: Rc<RefCell<dyn FnMut(String)>>,
     pub on_composer_focus_change: Rc<RefCell<dyn FnMut(bool)>>,
     pub on_send_message: Rc<RefCell<dyn FnMut(String)>>,
+    /// Cmd/Ctrl+Enter in a chat composer: send the draft to the agent as a NEW
+    /// agent conversation (warp-new behavior), binding the pane to a fresh
+    /// conversation before the turn.
+    pub on_cmd_enter: Rc<RefCell<dyn FnMut(String)>>,
     /// Fire when the composer draft starts with `/` (slash command): the host
     /// opens the command palette.
     pub on_composer_slash: Rc<RefCell<dyn FnMut()>>,
@@ -804,6 +880,16 @@ pub struct UiActions {
     pub on_inbox: Rc<RefCell<dyn FnMut()>>,
     pub on_settings: Rc<RefCell<dyn FnMut()>>,
     pub on_projects: Rc<RefCell<dyn FnMut()>>,
+    /// Navigate to the harness workflows page (topbar button).
+    pub on_workflows: Rc<RefCell<dyn FnMut()>>,
+    /// Navigate to the harness tasks/executions page (topbar button).
+    pub on_executions: Rc<RefCell<dyn FnMut()>>,
+    /// Navigate to the harness timeline page (topbar button).
+    pub on_timeline: Rc<RefCell<dyn FnMut()>>,
+    /// Navigate to the harness costs page (topbar button).
+    pub on_costs: Rc<RefCell<dyn FnMut()>>,
+    /// Navigate to the MCP/connectors page (topbar button).
+    pub on_mcps: Rc<RefCell<dyn FnMut()>>,
     pub on_plugins: Rc<RefCell<dyn FnMut()>>,
     pub on_open_crons: Rc<RefCell<dyn FnMut()>>,
     pub on_close_crons: Rc<RefCell<dyn FnMut()>>,
@@ -1162,6 +1248,8 @@ pub fn build_ui(
         actions,
         projects,
         projects_actions,
+        ai,
+        ai_actions,
         media,
         media_actions,
     );

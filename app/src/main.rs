@@ -17,30 +17,23 @@ fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let _runtime_guard = runtime.enter();
 
-    // Open the real backend state. If the store cannot be opened we fall back
-    // to mock data so the UI shell stays runnable during development.
-    let (desktop, event_bus) = match DesktopState::open_default() {
-        Ok(state) => {
-            let bus = CollectingEventBus::new();
-            state.set_event_bus(Arc::new(bus.clone()));
-            // DEV scaffolding: seed demo conversations so the sidebar and chat
-            // have content to render on first run. Remove this call (and the
-            // `seed_demo_conversations` fn) once real data flows in.
-            if let Err(e) = seed_demo_conversations(&state) {
-                log::warn!("failed to seed demo conversations: {e}");
-            }
-            (Some(state), Some(bus))
-        }
-        Err(e) => {
-            log::warn!("failed to open DesktopState: {e}; running with mock data");
-            (None, None)
-        }
-    };
+    // Open the real backend state. If the store genuinely cannot be opened we
+    // surface an error instead of silently substituting mock data: the app
+    // never runs on a fabricated backend.
+    let desktop = DesktopState::open_default()?;
+    let bus = CollectingEventBus::new();
+    desktop.set_event_bus(Arc::new(bus.clone()));
+    // DEV scaffolding: seed demo conversations so the sidebar and chat
+    // have content to render on first run. Remove this call (and the
+    // `seed_demo_conversations` fn) once real data flows in.
+    if let Err(e) = seed_demo_conversations(&desktop) {
+        log::warn!("failed to seed demo conversations: {e}");
+    }
 
     let app_context = Rc::new(RefCell::new(AppContext::default()));
     let root = {
         let ctx = app_context.borrow();
-        RootView::new(&ctx, desktop, event_bus)
+        RootView::new(&ctx, &desktop, Some(bus))
     };
 
     run_with_root(Box::new(root), app_context)

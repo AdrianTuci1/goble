@@ -112,7 +112,8 @@ impl AiState {
             .collect();
     }
 
-    /// Mock data used when the backend store cannot be opened (dev fallback).
+    /// Test fixture: a populated vault + connector list. Used only by tests;
+    /// the app always builds from the real store via [`Self::from_desktop`].
     pub fn mock() -> Self {
         Self {
             connectors_open: false,

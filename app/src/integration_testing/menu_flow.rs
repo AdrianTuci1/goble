@@ -13,10 +13,14 @@
 //! `ChatComposer` directly to cover the rich-input pills, asserting the open
 //! flag flips.
 
+mod common;
+
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use goble_app::root_view::RootView;
+use goble_desktop_service::DesktopState;
 use goble_ui::elements::{
     AppContext, ChatComposer, EventContext, LayoutContext, PaintContext, PopupMenuItem,
     SizeConstraint,
@@ -29,10 +33,13 @@ use goble_ui::Element;
 const W: f32 = 1024.0;
 const H: f32 = 768.0;
 
-/// Mount the real `RootView` over mock state (shows the chat pane with the
-/// agent header 3-dots menu).
-fn build_root() -> RootView {
-    RootView::new(&AppContext::default(), None, None)
+/// Mount the real `RootView` over a live `DesktopState` (shows the chat pane
+/// with the agent header 3-dots menu). The temp dir is kept alive so the
+/// thread-store path the state owns is not removed mid-test.
+fn build_root() -> (RootView, Arc<DesktopState>, tempfile::TempDir) {
+    let (desktop, dir) = common::desktop_state();
+    let view = RootView::new(&AppContext::default(), &desktop, None);
+    (view, desktop, dir)
 }
 
 /// One layout+paint pass (the per-frame rebuild). `RootView.layout` calls
@@ -73,7 +80,7 @@ fn click(root: &mut RootView, app: &AppContext, pos: (f32, f32)) {
 
 #[test]
 fn topbar_medium_selector_opens_menu() {
-    let mut root = build_root();
+    let (mut root, _desktop, _dir) = build_root();
     let app = AppContext::default();
     let _ = render(&mut root, &app);
     let cmds = render(&mut root, &app);
@@ -88,7 +95,7 @@ fn topbar_medium_selector_opens_menu() {
 
 #[test]
 fn agent_header_3_dots_opens_menu() {
-    let mut root = build_root();
+    let (mut root, _desktop, _dir) = build_root();
     let app = AppContext::default();
     // Two render passes: first establishes origins/sizes, second is the frame
     // that actually receives the click.

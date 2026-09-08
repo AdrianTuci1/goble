@@ -79,7 +79,7 @@ fn blank_title_creates_default_agent() {
     {
         let state = state.borrow();
         assert_eq!(state.conversations.len(), 1);
-        assert_eq!(state.conversations[0].name, "New agent");
+        assert_eq!(state.conversations[0].name, "New conversation");
         assert!(state.selected_id.is_some());
     }
     assert_eq!(desktop.list_chats().len(), 1);
@@ -96,13 +96,14 @@ fn send_message_appends_and_persists() {
     (actions.on_composer_change.borrow_mut())("Salut!".to_string());
     (actions.on_send_message.borrow_mut())("Salut!".to_string());
 
-    // No key is configured, so the send path keeps the user's message (no
-    // fabricated assistant reply) and surfaces the model-key banner overlay.
+    // No key is configured, so the send path keeps the user's message, appends
+    // an honest assistant reply and surfaces the model-key banner overlay.
     {
         let state = state.borrow();
         assert_eq!(state.composer_draft, "");
-        assert_eq!(state.chat_messages.len(), 1);
+        assert_eq!(state.chat_messages.len(), 2);
         assert_eq!(state.chat_messages[0].role, ChatRole::User);
+        assert_eq!(state.chat_messages[1].role, ChatRole::Assistant);
         assert!(
             state.show_llm_key_banner,
             "no key -> banner overlay should surface"
@@ -110,8 +111,13 @@ fn send_message_appends_and_persists() {
     }
 
     let messages = desktop.list_chat_messages(&chat_id).expect("list messages");
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, "user");
+    assert_eq!(messages[1].role, "assistant");
+    assert!(
+        messages[1].content.contains("No model is configured"),
+        "assistant reply should explain the missing model"
+    );
 }
 
 #[test]

@@ -6,9 +6,50 @@ use goble_ui::elements::{
     PopupMenuPosition, RoutineItem, Spacer, Text, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
-use goble_ui::ChatView;
+use goble_ui::{
+    ChatFragment, ChatMessage, ChatRole, ChatView, TerminalData, TerminalLine, TerminalStatus,
+};
 
 use super::{PaneChatSnapshot, UiActions, UiSnapshot, WorkspaceRouting};
+
+/// If `pane_id` has a live PTY session with output, append it as an inline
+/// terminal block after the transcript so a terminal command (`!cmd`) actually
+/// shows its output (warp-new style executed-command block). The block is
+/// recomputed each frame from the session buffer, so a long-running command
+/// streams as it runs without ever growing the stored transcript.
+fn with_inline_terminal(
+    mut messages: Vec<ChatMessage>,
+    terminal: &std::rc::Rc<std::cell::RefCell<crate::terminal::TerminalRegistry>>,
+    pane_id: u64,
+) -> Vec<ChatMessage> {
+    let snapshot = {
+        let reg = terminal.borrow();
+        reg.sessions.get(&pane_id).map(|s| s.snapshot(48))
+    };
+    if let Some(snapshot) = snapshot {
+        if !snapshot.lines.is_empty() {
+            let lines: Vec<TerminalLine> = snapshot
+                .lines
+                .iter()
+                .map(|line| {
+                    let text = line.trim_end().to_string();
+                    if text.is_empty() {
+                        TerminalLine::info(" ")
+                    } else {
+                        TerminalLine::output(text)
+                    }
+                })
+                .collect();
+            let data =
+                TerminalData::new("terminal", lines).with_status(TerminalStatus::Success);
+            messages.push(ChatMessage::new(
+                ChatRole::Tool,
+                vec![ChatFragment::terminal(data)],
+            ));
+        }
+    }
+    messages
+}
 
 /// Agent chat tab: a header row with the agent identity/status/copy/restart,
 /// then the message transcript + composer (which fills the remaining space).
@@ -62,6 +103,7 @@ pub fn build_agent_chat(
     let on_select_dir = actions.on_select_dir.clone();
     let on_select_branch = actions.on_select_branch.clone();
     let on_composer_slash = actions.on_composer_slash.clone();
+    let on_cmd_enter = actions.on_cmd_enter.clone();
 
     // Model dropdown: one item per available model; the current one is marked
     // selected. Selecting an item maps the index back to a model name.
@@ -88,9 +130,12 @@ pub fn build_agent_chat(
     let on_profile_select = actions.on_settings.clone();
     let profile_menu_open = state.profile_menu_open.clone();
 
+    // Append any live terminal-command output the pane's PTY has produced, so
+    // a `!cmd` run from the chat pane shows its output inline.
+    let messages = with_inline_terminal(session.messages.clone(), &state.terminal, pane_id);
     let mut chat = ChatView::new()
         .with_header(header)
-        .with_messages(session.messages.clone())
+        .with_messages(messages)
         .with_composer_value(session.composer_draft.clone())
         // Only the active pane's composer is focused, so a background chat pane
         // never swallows keys before the active pane (e.g. a terminal) sees them.
@@ -133,7 +178,8 @@ pub fn build_agent_chat(
                 (on_profile_select.borrow_mut())();
             }
         })
-        .with_on_send(move |text| (on_send_message.borrow_mut())(text));
+        .with_on_send(move |text| (on_send_message.borrow_mut())(text))
+        .with_composer_on_cmd_enter(move |text| (on_cmd_enter.borrow_mut())(text));
 
     // A live remote-desktop handoff renders inline at the end of the
     // transcript. The frame's texture key is stable per pane so the screen

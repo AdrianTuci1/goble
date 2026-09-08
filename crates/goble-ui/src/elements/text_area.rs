@@ -5,7 +5,7 @@ use crate::elements::{
     AppContext, Container, Element, EventContext, LayoutContext, PaintContext, Point,
     SizeConstraint, Text,
 };
-use crate::event::DispatchedEvent;
+use crate::event::{DispatchedEvent, ModifiersState};
 use crate::geometry::{PointF, Vector2F};
 use crate::theme::ColorToken;
 
@@ -17,7 +17,7 @@ pub struct TextArea {
     masked: bool,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
-    on_submit: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_submit: Option<Rc<RefCell<dyn FnMut(ModifiersState) + 'static>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
     root: Option<Box<dyn Element>>,
@@ -77,8 +77,11 @@ impl TextArea {
         self
     }
 
-    /// When set, pressing Enter fires the callback instead of inserting a newline.
-    pub fn with_on_submit<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+    /// When set, pressing Enter fires the callback instead of inserting a
+    /// newline. The callback receives the modifiers of the Enter key event so
+    /// the host can tell a plain Enter (terminal command) from Cmd/Ctrl+Enter
+    /// (submit to agent).
+    pub fn with_on_submit<F: FnMut(ModifiersState) + 'static>(mut self, callback: F) -> Self {
         self.on_submit = Some(Rc::new(RefCell::new(callback)));
         self
     }
@@ -178,7 +181,7 @@ impl Element for TextArea {
                 }
                 false
             }
-            DispatchedEvent::KeyDown { key, .. } => {
+            DispatchedEvent::KeyDown { key, modifiers } => {
                 if !self.focused {
                     return false;
                 }
@@ -186,7 +189,7 @@ impl Element for TextArea {
                     self.value.pop();
                 } else if key == "Enter" {
                     if let Some(cb) = self.on_submit.as_ref() {
-                        (cb.borrow_mut())();
+                        (cb.borrow_mut())(*modifiers);
                         return true;
                     }
                     self.value.push('\n');
@@ -222,7 +225,7 @@ mod tests {
         let mut area = TextArea::new()
             .with_value("hello")
             .with_focused(true)
-            .with_on_submit(move || *submitted_clone.borrow_mut() += 1);
+            .with_on_submit(move |_mods| *submitted_clone.borrow_mut() += 1);
         area.layout(
             SizeConstraint::loose(Vector2F::new(200.0, 100.0)),
             &mut LayoutContext::default(),

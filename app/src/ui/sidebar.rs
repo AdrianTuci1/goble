@@ -42,8 +42,8 @@ pub fn build_sidebar(
         .with_on_focus_change(move |focused| (on_search_focus.borrow_mut())(focused))
         .finish();
 
-    // "New agent" row: a gray "+" box in front of the label. The whole row
-    // highlights on hover and creates a new agent on click. The hover flag
+    // "New conversation" row: a gray "+" box in front of the label. The whole
+    // row highlights on hover and creates a new conversation on click. The hover flag
     // lives in app state so the highlight survives the per-frame rebuild.
     let on_create_submit = actions.on_create_submit.clone();
     let plus_box = Container::new(
@@ -63,7 +63,7 @@ pub fn build_sidebar(
             .with_spacing(sm)
             .with_child(plus_box)
             .with_child(
-                Text::new("New agent")
+                Text::new("New conversation")
                     .with_theme_color(ColorToken::Muted, app)
                     .with_font_size(12.0)
                     .finish(),

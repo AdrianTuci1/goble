@@ -17,9 +17,155 @@ use goble_ui::{ChatMessage, ChatRole, ConversationEntry, SettingsPage};
 
 use crate::media::MediaState;
 use crate::state::{default_pane_path, routing_to_str, UiState};
+use crate::terminal::{classify_input, InputClass};
 use crate::ui::{
     AppTab, CronEntry, NavDir, Pane, PaneKind, Space, SplitDir, UiActions, WorkspaceRouting,
 };
+
+/// Honest assistant reply shown when the user submits an agent prompt with no
+/// LLM configured (no API key). Tells them how to proceed rather than silently
+/// dropping the turn.
+const NO_MODEL_REPLY: &str = "No model is configured: `settings_llm_model` and `settings_llm_api_key` \
+are both empty, so I can't run this as an agent turn. Configure a provider and model \
+in Settings, or prefix this line with `!` to run it as a terminal command instead.";
+
+/// Honest assistant reply shown when an API key is present but no provider/model
+/// is set, so the turn cannot run. Surfaces the gap instead of failing silently.
+const MODEL_MISSING_REPLY: &str = "An API key is configured, but no provider/model is set \
+(`settings_llm_model` is empty), so I can't run this as an agent turn. Pick a provider \
+and model in Settings, or prefix this line with `!` to run it as a terminal command instead.";
+
+/// Run one agent turn on `pane_id`'s own conversation (see `on_send_message`).
+///
+/// Shared by the chat composer's Enter path, the Cmd/Ctrl+Enter new-conversation
+/// path and the terminal pane's Cmd+Enter path, so all three send the prompt
+/// through the same [`crate::runtime::run_turn`] → daemon pipeline. Returns
+/// whether a turn actually started (so the caller can flip the Stop button).
+///
+/// When no runnable model is configured (no API key, or a key with an empty
+/// provider/model) the user's message is still kept in the transcript and an
+/// honest assistant reply explains the gap — instead of only surfacing the
+/// first-run key banner or silently failing the turn.
+fn send_agent_prompt(
+    state: &mut UiState,
+    desktop: Option<&Arc<DesktopState>>,
+    media: &Rc<RefCell<MediaState>>,
+    text: &str,
+    pane_id: u64,
+) -> bool {
+    let configured = !state.settings_llm_api_key.trim().is_empty();
+    let model = if state.selected_model.trim().is_empty() {
+        state.settings_llm_model.clone()
+    } else {
+        state.selected_model.clone()
+    };
+    let chat_id = state.pane_conversation_id(pane_id);
+    // The turn's working directory is the pane's own cwd (falls back to the
+    // global composer path for a pane without a session entry).
+    let path = state
+        .pane_sessions
+        .get(&pane_id)
+        .map(|s| s.path.clone())
+        .unwrap_or_else(|| state.composer_path.clone());
+    // Resolve the fallback reply up front so the store-backed and mock paths
+    // behave identically: either there is a runnable model, or we answer
+    // honestly rather than pretending a turn ran.
+    let fallback_reply = if !configured {
+        Some(NO_MODEL_REPLY)
+    } else if state.settings_llm_provider.trim().is_empty() || model.trim().is_empty() {
+        Some(MODEL_MISSING_REPLY)
+    } else {
+        None
+    };
+    let mut ran_turn = false;
+    if let (Some(desktop), Some(chat_id)) = (desktop, chat_id) {
+        if let Some(reply) = fallback_reply {
+            // No runnable model: keep the user's message and reply honestly
+            // instead of only showing the key banner (or failing silently).
+            let _ = desktop.add_chat_message(&chat_id, "user", text);
+            let _ = desktop.add_chat_message(&chat_id, "assistant", reply);
+            if !configured {
+                state.show_llm_key_banner = true;
+            }
+        } else {
+            let (medium_id, project_id, session_id) = {
+                let media_b = media.borrow();
+                let session_id = if media_b.selected_session_id().is_empty() {
+                    chat_id.clone()
+                } else {
+                    media_b.selected_session_id().to_string()
+                };
+                (
+                    media_b.selected_medium_id().to_string(),
+                    media_b.selected_project_id().to_string(),
+                    session_id,
+                )
+            };
+            if let Err(e) = crate::runtime::run_turn(
+                desktop,
+                &chat_id,
+                text,
+                &state.settings_llm_provider,
+                &model,
+                state.workspace_routing,
+                &medium_id,
+                &project_id,
+                &session_id,
+                &path,
+                Some(state.selected_harness.as_str()),
+            ) {
+                log::warn!("run_chat_turn failed: {e}");
+                let _ = desktop.add_chat_message(
+                    &chat_id,
+                    "assistant",
+                    &format!("(nu am putut porni modelul: {e})"),
+                );
+            } else {
+                if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
+                    rt.busy = true;
+                }
+                state.agent_busy = true;
+                ran_turn = true;
+            }
+        }
+        state.refresh_messages(desktop);
+    } else {
+        state.push_active_message(ChatMessage::from_markdown(ChatRole::User, text.to_string()));
+        if let Some(reply) = fallback_reply {
+            state.push_active_message(ChatMessage::from_markdown(ChatRole::Assistant, reply));
+            if !configured {
+                state.show_llm_key_banner = true;
+            }
+        }
+        state.sync_active_view();
+    }
+    if pane_id == state.active_pane_id {
+        state.set_active_pane_draft(String::new());
+    }
+    state.agent_busy = ran_turn;
+    ran_turn
+}
+
+/// Run `text` as a shell command in `pane_id`'s real PTY session.
+///
+/// Every pane (chat or terminal) is given a live [`TerminalSession`] on demand
+/// so a terminal command actually executes in a shell; the output lands in the
+/// pane's terminal buffer (rendered live for a terminal pane). The shell echoes
+/// the typed line, so no separate echo is needed.
+fn run_terminal_command(state: &mut UiState, text: &str, pane_id: u64) {
+    let cwd = state
+        .pane_sessions
+        .get(&pane_id)
+        .map(|s| s.path.clone())
+        .unwrap_or_default();
+    let mut reg = state.terminal.borrow_mut();
+    reg.ensure_session(pane_id, &cwd);
+    if let Some(session) = reg.sessions.get_mut(&pane_id) {
+        let mut line = text.trim_end().to_string();
+        line.push('\n');
+        session.write(line.as_bytes());
+    }
+}
 
 pub fn make_actions(
     state: Rc<RefCell<UiState>>,
@@ -38,6 +184,7 @@ pub fn make_actions(
     let on_composer_slash = Rc::clone(&state);
     let on_composer_focus_change = Rc::clone(&state);
     let on_send_message = Rc::clone(&state);
+    let on_cmd_enter = Rc::clone(&state);
     let on_attach = Rc::clone(&state);
     let on_voice = Rc::clone(&state);
     let on_model_select = Rc::clone(&state);
@@ -55,6 +202,11 @@ pub fn make_actions(
     let on_dismiss_queued = Rc::clone(&state);
     let on_settings = Rc::clone(&state);
     let on_projects = Rc::clone(&state);
+    let on_workflows = Rc::clone(&state);
+    let on_executions = Rc::clone(&state);
+    let on_timeline = Rc::clone(&state);
+    let on_costs = Rc::clone(&state);
+    let on_mcps = Rc::clone(&state);
     let on_open_crons = Rc::clone(&state);
     let on_close_crons = Rc::clone(&state);
     let on_toggle_right_sidebar = Rc::clone(&state);
@@ -116,6 +268,7 @@ pub fn make_actions(
     let desktop_create = desktop.clone();
     let desktop_select = desktop.clone();
     let desktop_send = desktop.clone();
+    let desktop_cmd_enter = desktop.clone();
     let desktop_stop = desktop.clone();
     let desktop_answer = desktop.clone();
     let desktop_skip = desktop.clone();
@@ -146,6 +299,7 @@ pub fn make_actions(
     let desktop_pane_drag = desktop.clone();
     let desktop_agent_delete = desktop.clone();
     let media_send = Rc::clone(&media);
+    let media_cmd_enter = Rc::clone(&media);
     let media_send_queued = Rc::clone(&media);
     let media_split_right = Rc::clone(&media);
     let media_split_down = Rc::clone(&media);
@@ -170,9 +324,9 @@ pub fn make_actions(
         on_create_submit: Rc::new(RefCell::new(move || {
             let mut state = on_create_submit.borrow_mut();
             let title = if state.new_conversation_draft.trim().is_empty() {
-                // The sidebar's "New agent" row has no text field, so a blank
-                // draft means the user clicked it directly: create a default.
-                "New agent".to_string()
+                // The sidebar's "New conversation" row has no text field, so a
+                // blank draft means the user clicked it directly: create a default.
+                "New conversation".to_string()
             } else {
                 state.new_conversation_draft.trim().to_string()
             };
@@ -232,106 +386,59 @@ pub fn make_actions(
         })),
         on_send_message: Rc::new(RefCell::new(move |text: String| {
             let mut state = on_send_message.borrow_mut();
-            let configured = !state.settings_llm_api_key.trim().is_empty();
             // The active pane owns the composer, so route the turn to its own
             // conversation (an independent session per pane).
             let pane_id = state.active_pane_id;
-            let pane_busy = state
-                .pane_runtime
-                .get(&pane_id)
-                .map(|r| r.busy)
-                .unwrap_or(false);
-            // While a turn is running, don't start a second one (that would
-            // interrupt the agent). Queue the prompt and render it as a pending
-            // block; it is sent when the current turn finishes or via "Send now".
-            if pane_busy {
-                let rt = state.pane_runtime.entry(pane_id).or_default();
-                rt.queued_prompt = Some(text.clone());
-                state.queued_prompt = Some(text);
-                state.set_active_pane_draft(String::new());
-                return;
-            }
-            let mut ran_turn = false;
-            // The model used is the composer's selected model, falling back to
-            // the configured setting when nothing is selected yet.
-            let model = if state.selected_model.trim().is_empty() {
-                state.settings_llm_model.clone()
-            } else {
-                state.selected_model.clone()
-            };
-            let chat_id = state.pane_conversation_id(pane_id);
-            if let (Some(desktop), Some(chat_id)) = (&desktop_send, chat_id) {
-                if configured {
-                    // Run the real harness turn on a background task, routed to
-                    // the conversation's chosen runtime. The harness inserts the
-                    // user message and the assistant/tool output into the store
-                    // and emits `chat:updated`, so the UI refreshes as the turn
-                    // progresses (including any tool-call output).
-                    let (medium_id, project_id, session_id) = {
-                        let media_b = media_send.borrow();
-                        let session_id = if media_b.selected_session_id().is_empty() {
-                            chat_id.clone()
-                        } else {
-                            media_b.selected_session_id().to_string()
-                        };
-                        (
-                            media_b.selected_medium_id().to_string(),
-                            media_b.selected_project_id().to_string(),
-                            session_id,
-                        )
-                    };
-                    if let Err(e) = crate::runtime::run_turn(
-                        desktop,
-                        &chat_id,
-                        &text,
-                        &state.settings_llm_provider,
-                        &model,
-                        state.workspace_routing,
-                        &medium_id,
-                        &project_id,
-                        &session_id,
-                        &state.composer_path,
-                        Some(state.selected_harness.as_str()),
-                    ) {
-                        log::warn!("run_chat_turn failed: {e}");
-                        let _ = desktop.add_chat_message(
-                            &chat_id,
-                            "assistant",
-                            &format!("(nu am putut porni modelul: {e})"),
-                        );
-                    } else {
-                        // A turn is now in flight on a background task; keep the
-                        // Stop button visible until `chat:turn_finished` (or Stop)
-                        // clears it.
-                        if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                            rt.busy = true;
-                        }
-                        state.agent_busy = true;
-                        ran_turn = true;
+            // The chat composer is a prompt line in agent mode (an active agent
+            // conversation): an input is an agent prompt unless it starts with
+            // `!`, which forces a terminal command (warp-new input model).
+            match classify_input(&text, true) {
+                Some(InputClass::TerminalCommand(cmd)) => {
+                    run_terminal_command(&mut state, &cmd, pane_id);
+                }
+                Some(InputClass::AgentPrompt(prompt)) => {
+                    let pane_busy = state
+                        .pane_runtime
+                        .get(&pane_id)
+                        .map(|r| r.busy)
+                        .unwrap_or(false);
+                    // While a turn is running, don't start a second one (that
+                    // would interrupt the agent). Queue the prompt and render it
+                    // as a pending block; sent when the turn finishes or via
+                    // "Send now".
+                    if pane_busy {
+                        let rt = state.pane_runtime.entry(pane_id).or_default();
+                        rt.queued_prompt = Some(prompt.clone());
+                        state.queued_prompt = Some(prompt);
+                        state.set_active_pane_draft(String::new());
+                        return;
                     }
-                } else {
-                    // No key configured yet: keep the user's message but do not
-                    // fabricate a canned response (nothing is actually running).
-                    // Surface the model-key banner overlay so the user configures
-                    // a provider before the agent replies.
-                    let _ = desktop.add_chat_message(&chat_id, "user", &text);
-                    state.show_llm_key_banner = true;
+                    send_agent_prompt(
+                        &mut state,
+                        desktop_send.as_ref(),
+                        &media_send,
+                        &prompt,
+                        pane_id,
+                    );
                 }
-                state.refresh_messages(desktop);
-            } else {
-                // No backend conversation bound (or no store): keep the message
-                // in the active pane's in-memory transcript.
-                state.push_active_message(ChatMessage::from_markdown(
-                    ChatRole::User,
-                    text.clone(),
-                ));
-                if !configured {
-                    state.show_llm_key_banner = true;
-                }
-                state.sync_active_view();
+                None => {}
             }
-            state.set_active_pane_draft(String::new());
-            state.agent_busy = ran_turn;
+        })),
+        // Cmd/Ctrl+Enter in a chat composer: bind the active pane to a brand-new
+        // conversation and start the turn there (warp-new always-start-new
+        // conversation behavior). The conversation turn still flows through
+        // `run_turn` → daemon like any other.
+        on_cmd_enter: Rc::new(RefCell::new(move |text: String| {
+            let mut state = on_cmd_enter.borrow_mut();
+            let pane_id = state.active_pane_id;
+            state.bind_pane_new_conversation(pane_id, desktop_cmd_enter.as_deref());
+            send_agent_prompt(
+                &mut state,
+                desktop_cmd_enter.as_ref(),
+                &media_cmd_enter,
+                &text,
+                pane_id,
+            );
         })),
         on_attach: Rc::new(RefCell::new(move || {
             on_attach.borrow_mut().push_active_message(ChatMessage::from_markdown(
@@ -568,6 +675,49 @@ pub fn make_actions(
         on_projects: Rc::new(RefCell::new(move || {
             on_projects.borrow_mut().current_tab = AppTab::Projects;
         })),
+        // Harness observability navigation. Each of these toggles its page:
+        // clicking the currently-open page returns to the chat workspace, so
+        // the user always has an obvious path back.
+        on_workflows: Rc::new(RefCell::new(move || {
+            let mut state = on_workflows.borrow_mut();
+            state.current_tab = if state.current_tab == AppTab::Workflows {
+                AppTab::Chat
+            } else {
+                AppTab::Workflows
+            };
+        })),
+        on_executions: Rc::new(RefCell::new(move || {
+            let mut state = on_executions.borrow_mut();
+            state.current_tab = if state.current_tab == AppTab::Executions {
+                AppTab::Chat
+            } else {
+                AppTab::Executions
+            };
+        })),
+        on_timeline: Rc::new(RefCell::new(move || {
+            let mut state = on_timeline.borrow_mut();
+            state.current_tab = if state.current_tab == AppTab::Timeline {
+                AppTab::Chat
+            } else {
+                AppTab::Timeline
+            };
+        })),
+        on_costs: Rc::new(RefCell::new(move || {
+            let mut state = on_costs.borrow_mut();
+            state.current_tab = if state.current_tab == AppTab::Costs {
+                AppTab::Chat
+            } else {
+                AppTab::Costs
+            };
+        })),
+        on_mcps: Rc::new(RefCell::new(move || {
+            let mut state = on_mcps.borrow_mut();
+            state.current_tab = if state.current_tab == AppTab::Mcps {
+                AppTab::Chat
+            } else {
+                AppTab::Mcps
+            };
+        })),
         on_plugins: Rc::new(RefCell::new(move || {
             log::info!("plugins pressed (coming soon)");
         })),
@@ -727,75 +877,35 @@ pub fn make_actions(
         // conversation + cwd + medium/project. This mirrors `on_send_message`
         // for the chat composer, but keyed to the terminal's pane so the turn
         // lands on the right conversation and project.
+        // Cmd/Ctrl+Enter in a terminal pane: bind the pane to a brand-new
+        // conversation and start the turn there (warp-new always-start-new
+        // conversation behavior). The conversation turn still flows through
+        // `run_turn` → daemon like any other.
         on_terminal_command: Rc::new(RefCell::new(move |pane_id: u64, text: String| {
             let mut state = on_terminal_cmd.borrow_mut();
-            let configured = !state.settings_llm_api_key.trim().is_empty();
-            let model = if state.selected_model.trim().is_empty() {
-                state.settings_llm_model.clone()
-            } else {
-                state.selected_model.clone()
-            };
-            let chat_id = state.pane_conversation_id(pane_id);
+            // The terminal pane's cwd is the working dir its shell was spawned
+            // in; after binding a new conversation the pane keeps that path so
+            // the agent turn is scoped to the same directory.
             let cwd = state
                 .pane_sessions
                 .get(&pane_id)
                 .map(|s| s.path.clone())
                 .unwrap_or_default();
-            if let (Some(desktop), Some(chat_id)) = (&desktop_term_cmd, chat_id) {
-                if configured {
-                    let (medium_id, project_id, session_id) = {
-                        let media_b = media_term_cmd.borrow();
-                        let session_id = if media_b.selected_session_id().is_empty() {
-                            chat_id.clone()
-                        } else {
-                            media_b.selected_session_id().to_string()
-                        };
-                        (
-                            media_b.selected_medium_id().to_string(),
-                            media_b.selected_project_id().to_string(),
-                            session_id,
-                        )
-                    };
-                    if let Err(e) = crate::runtime::run_turn(
-                        desktop,
-                        &chat_id,
-                        &text,
-                        &state.settings_llm_provider,
-                        &model,
-                        state.workspace_routing,
-                        &medium_id,
-                        &project_id,
-                        &session_id,
-                        &cwd,
-                        Some(state.selected_harness.as_str()),
-                    ) {
-                        log::warn!("run_chat_turn (terminal) failed: {e}");
-                        let _ = desktop.add_chat_message(
-                            &chat_id,
-                            "assistant",
-                            &format!("(nu am putut porni modelul: {e})"),
-                        );
-                    } else {
-                        if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                            rt.busy = true;
-                        }
-                        state.agent_busy = true;
-                    }
-                } else {
-                    let _ = desktop.add_chat_message(&chat_id, "user", &text);
-                    state.show_llm_key_banner = true;
+            state.bind_pane_new_conversation(pane_id, desktop_term_cmd.as_deref());
+            // Re-seat the just-bound conversation's pane path (a fresh pane
+            // session may not have had one).
+            if let Some(session) = state.pane_sessions.get_mut(&pane_id) {
+                if session.path.is_empty() {
+                    session.path = cwd.clone();
                 }
-                state.refresh_messages(desktop);
-            } else {
-                state.push_active_message(ChatMessage::from_markdown(
-                    ChatRole::User,
-                    text.clone(),
-                ));
-                if !configured {
-                    state.show_llm_key_banner = true;
-                }
-                state.sync_active_view();
             }
+            send_agent_prompt(
+                &mut state,
+                desktop_term_cmd.as_ref(),
+                &media_term_cmd,
+                &text,
+                pane_id,
+            );
         })),
         on_select_space: Rc::new(RefCell::new(move |index: usize| {
             let mut state = on_select_space.borrow_mut();
@@ -1359,16 +1469,72 @@ mod pane_independence_tests {
         let conv3 = { state.borrow().pane_sessions.get(&3).unwrap().conversation_id.clone() };
         assert_ne!(conv3, chat_id);
 
-        // No key configured: the user message is kept, routed to pane 3's own
-        // conversation, not pane 1's.
+        // No key configured: the user message + an honest assistant reply are
+        // kept, routed to pane 3's own conversation, not pane 1's.
         (actions.on_composer_change.borrow_mut())("hi".to_string());
         (actions.on_send_message.borrow_mut())("hi".to_string());
 
         let messages3 = desktop.list_chat_messages(&conv3).expect("list pane 3");
-        assert_eq!(messages3.len(), 1);
+        assert_eq!(messages3.len(), 2);
         assert_eq!(messages3[0].role, "user");
+        assert_eq!(messages3[1].role, "assistant");
         let messages1 = desktop.list_chat_messages(&chat_id).expect("list pane 1");
         assert_eq!(messages1.len(), 0, "pane 1's conversation stays untouched");
+    }
+
+    #[test]
+    fn cmd_enter_starts_a_new_conversation_for_the_chat_pane() {
+        let (desktop, _dir) = desktop_state();
+        let (state, actions, _media) = build(&desktop);
+        // A fresh pane has no conversation yet; bind pane 1 to an initial one
+        // so it has a real conversation id to start a NEW one from.
+        let initial = desktop.create_chat("Initial", None, None).expect("create chat");
+        state
+            .borrow_mut()
+            .bind_active_pane_conversation(initial.clone(), Some(&desktop));
+        let initial = state.borrow().pane_conversation_id(1).unwrap();
+
+        // No key configured: Cmd/Ctrl+Enter binds a fresh conversation (warp-new
+        // "always start a new conversation") and keeps the user message + an
+        // honest assistant reply there.
+        (actions.on_cmd_enter.borrow_mut())("hello from cmd+enter".to_string());
+
+        let new_conv = {
+            let s = state.borrow();
+            s.pane_sessions.get(&1).unwrap().conversation_id.clone()
+        };
+        assert_ne!(new_conv, initial, "Cmd+Enter binds a fresh conversation");
+        let msgs = desktop.list_chat_messages(&new_conv).expect("list new conv");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].role, "assistant");
+        // The old conversation is untouched.
+        assert_eq!(desktop.list_chat_messages(&initial).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn bang_prefix_runs_a_terminal_command_instead_of_an_agent_turn() {
+        let (desktop, _dir) = desktop_state();
+        let (state, actions, _media) = build(&desktop);
+        // Bind pane 1 to a real conversation before routing an input to it.
+        let initial = desktop.create_chat("Initial", None, None).expect("create chat");
+        state
+            .borrow_mut()
+            .bind_active_pane_conversation(initial.clone(), Some(&desktop));
+        let conv = state
+            .borrow()
+            .pane_conversation_id(state.borrow().active_pane_id)
+            .unwrap();
+
+        // `!pwd` is classified as a terminal command (agent mode + `!`), so it
+        // must NOT add an agent message to the pane's conversation.
+        (actions.on_send_message.borrow_mut())("!pwd".to_string());
+        let msgs = desktop.list_chat_messages(&conv).unwrap();
+        assert_eq!(
+            msgs.len(),
+            0,
+            "a `!`-prefixed input runs in the shell, not the agent"
+        );
     }
 
     #[test]
@@ -1495,7 +1661,7 @@ mod pane_independence_tests {
     }
 
     #[test]
-    fn terminal_command_routes_to_panes_own_conversation() {
+    fn terminal_command_starts_new_conversation_on_cmd_enter() {
         let (desktop, _dir) = desktop_state();
         let chat_id = desktop.create_chat("Initial", None, None).expect("create chat");
         let (state, actions, _media) = build(&desktop);
@@ -1511,16 +1677,56 @@ mod pane_independence_tests {
         };
         assert_ne!(term_conv, chat_id);
 
-        // No API key configured: Cmd+Enter in the terminal keeps a user message
-        // on the terminal pane's own conversation (mirrors how chat sends route
-        // to the active pane) and does not touch the chat conversation.
+        // No API key configured: Cmd+Enter in the terminal starts a brand-NEW
+        // agent conversation (warp-new behavior) and keeps a user message + an
+        // honest assistant reply on that fresh conversation; the terminal
+        // pane's previous conversation and the pre-existing chat conversation
+        // stay untouched.
         (actions.on_terminal_command.borrow_mut())(term_pane, "run me as an agent".to_string());
 
-        let term_msgs = desktop.list_chat_messages(&term_conv).expect("list terminal conv");
-        assert_eq!(term_msgs.len(), 1);
+        let new_conv = state
+            .borrow()
+            .pane_sessions
+            .get(&term_pane)
+            .unwrap()
+            .conversation_id
+            .clone();
+        assert_ne!(new_conv, term_conv, "Cmd+Enter binds a fresh conversation");
+        assert_ne!(new_conv, chat_id);
+        let term_msgs = desktop.list_chat_messages(&new_conv).expect("list terminal conv");
+        assert_eq!(term_msgs.len(), 2);
         assert_eq!(term_msgs[0].role, "user");
+        assert_eq!(term_msgs[1].role, "assistant");
+        // The terminal pane's old conversation and the chat are untouched.
+        assert_eq!(
+            desktop.list_chat_messages(&term_conv).unwrap().len(),
+            0,
+            "the terminal pane's previous conversation stays untouched"
+        );
         let chat_msgs = desktop.list_chat_messages(&chat_id).expect("list chat conv");
         assert_eq!(chat_msgs.len(), 0, "chat conversation stays untouched");
+    }
+
+    #[test]
+    fn harness_tab_navigation_toggles_a_page_and_returns_to_chat() {
+        let (desktop, _dir) = desktop_state();
+        let (state, actions, _media) = build(&desktop);
+
+        assert_eq!(state.borrow().current_tab, AppTab::Chat, "starts on chat");
+
+        // Navigate to a harness observability tab via its topbar action.
+        (actions.on_workflows.borrow_mut())();
+        assert_eq!(state.borrow().current_tab, AppTab::Workflows);
+
+        (actions.on_mcps.borrow_mut())();
+        assert_eq!(state.borrow().current_tab, AppTab::Mcps);
+
+        (actions.on_timeline.borrow_mut())();
+        assert_eq!(state.borrow().current_tab, AppTab::Timeline);
+
+        // Clicking the currently-open page again returns to the chat workspace.
+        (actions.on_timeline.borrow_mut())();
+        assert_eq!(state.borrow().current_tab, AppTab::Chat, "returns to chat");
     }
 
     #[test]

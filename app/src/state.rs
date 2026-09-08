@@ -21,8 +21,9 @@ use goble_ui::{
 
 use crate::terminal::TerminalRegistry;
 use crate::ui::{
-    AppTab, CronEntry, HarnessEntry, LlmFormField, Pane, PaneChatSnapshot, PaneKind, Space,
-    WorkspaceRouting, SIDEBAR_WIDTH,
+    AppTab, CostEntry, CronEntry, ExecutionEntry, HarnessEntry, LlmFormField, Pane,
+    PaneChatSnapshot, PaneKind, Space, TaskEntry, TimelineEntry, WorkflowEntry, WorkspaceRouting,
+    SIDEBAR_WIDTH,
 };
 
 /// The string form of a workspace routing choice as persisted on a chat.
@@ -172,6 +173,16 @@ fn time_ago(updated_at: &str) -> String {
     }
 }
 
+/// Short human label for a workflow [`Trigger`], e.g. `cron 0 12 * * *`.
+fn trigger_label(trigger: &Trigger) -> String {
+    match trigger {
+        Trigger::Manual => "manual".to_string(),
+        Trigger::Cron { expression } => format!("cron {expression}"),
+        Trigger::Http { path } => format!("http {path}"),
+        Trigger::Heartbeat { interval_seconds } => format!("heartbeat {interval_seconds}s"),
+    }
+}
+
 /// Build a terminal-style block from a stored tool-result message. The harness
 /// writes tool output as `"<call_id>\n<output>"`, so the first line becomes the
 /// block title and the remaining lines render as mono output (or error) lines.
@@ -293,6 +304,16 @@ pub struct UiState {
     pub agent_header_menu_open: Rc<RefCell<bool>>,
     pub crons_open: bool,
     pub crons: Vec<CronEntry>,
+    /// Harness workflows (real daemon workflow store).
+    pub workflows: Vec<WorkflowEntry>,
+    /// Executions from the daemon execution ledger (real data).
+    pub executions: Vec<ExecutionEntry>,
+    /// Durable tasks from the persistence layer (real data).
+    pub tasks: Vec<TaskEntry>,
+    /// Chronological records derived from execution/session/task data.
+    pub timeline: Vec<TimelineEntry>,
+    /// Cost rows derived from real execution/usage records.
+    pub costs: Vec<CostEntry>,
     pub settings_page: SettingsPage,
     pub settings_profile_name: String,
     pub settings_profile_email: String,
@@ -330,7 +351,7 @@ pub struct UiState {
     /// Per-card interaction state (hover / delete menu), owned here so it
     /// survives the per-frame element rebuild. Keyed by conversation id.
     pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,
-    /// Hover flag for the sidebar's "New agent" row, owned here so the row
+    /// Hover flag for the sidebar's "New conversation" row, owned here so the row
     /// highlight survives the per-frame element rebuild.
     pub new_agent_hover: Rc<RefCell<bool>>,
     /// Multiple "spaces" (warp-new style): each is a pane tree shown as a tab
@@ -429,6 +450,11 @@ impl UiState {
             agent_header_menu_open: Rc::new(RefCell::new(false)),
             crons_open: false,
             crons: Vec::new(),
+            workflows: Vec::new(),
+            executions: Vec::new(),
+            tasks: Vec::new(),
+            timeline: Vec::new(),
+            costs: Vec::new(),
             settings_page: SettingsPage::Profile,
             settings_profile_name: String::new(),
             settings_profile_email: String::new(),
@@ -512,6 +538,162 @@ impl UiState {
         self.refresh_agent_name(desktop);
         self.refresh_settings(desktop);
         self.auto_approve = desktop.get_auto_approve();
+        self.refresh_observability(desktop);
+    }
+
+    /// Reload the harness observability pages (workflows, executions, tasks,
+    /// timeline, costs) from the embedded daemon / store.
+    pub fn refresh_observability(&mut self, desktop: &DesktopState) {
+        self.refresh_workflows(desktop);
+        self.refresh_executions(desktop);
+        self.refresh_tasks(desktop);
+        self.refresh_timeline(desktop);
+        self.refresh_costs(desktop);
+    }
+
+    /// Workflows registered with the daemon (all of them, not just cron ones).
+    pub fn refresh_workflows(&mut self, desktop: &DesktopState) {
+        self.workflows = desktop
+            .list_workflows()
+            .into_iter()
+            .map(|wf| WorkflowEntry {
+                id: wf.id,
+                name: wf.name,
+                trigger: trigger_label(&wf.trigger),
+                enabled: wf.enabled,
+                created_at: time_ago(&wf.created_at),
+            })
+            .collect();
+    }
+
+    /// Executions from the daemon execution ledger.
+    pub fn refresh_executions(&mut self, desktop: &DesktopState) {
+        self.executions = desktop
+            .list_executions()
+            .into_iter()
+            .map(|ex| ExecutionEntry {
+                id: ex.id,
+                agent_id: ex.agent_id.unwrap_or_default(),
+                worker_id: ex.worker_id,
+                status: ex.status,
+                started_at: time_ago(&ex.started_at),
+                finished_at: ex.finished_at.as_deref().map(time_ago),
+                step_count: ex.trace.steps.len(),
+            })
+            .collect();
+    }
+
+    /// Durable tasks from the persistence layer.
+    pub fn refresh_tasks(&mut self, desktop: &DesktopState) {
+        self.tasks = desktop
+            .list_tasks()
+            .into_iter()
+            .map(|task| TaskEntry {
+                id: task.task_id,
+                session_id: task.session_id.0,
+                trigger: task.trigger,
+                status: task.status,
+                created_at: time_ago(&task.created_at),
+            })
+            .collect();
+    }
+
+    /// Merge execution + session + task records into one chronological event
+    /// stream (most recent first). Sessions fall back to `default`/`local` when
+    /// their project/medium identity is empty. Rows are sorted by the raw RFC3339
+    /// timestamp (which orders correctly for UTC), then rendered with a relative
+    /// "time ago" label.
+    pub fn refresh_timeline(&mut self, desktop: &DesktopState) {
+        // (raw_at, display_label, kind, status) so sorting stays chronological.
+        let mut entries: Vec<(String, TimelineEntry)> = Vec::new();
+        // Read raw timestamps from the desktop rather than the relativized
+        // execution entries so the sort order is truly chronological.
+        for ex in desktop.list_executions() {
+            entries.push((
+                ex.started_at.clone(),
+                TimelineEntry {
+                    at: time_ago(&ex.started_at),
+                    kind: "execution".to_string(),
+                    label: format!("Execution {} (agent {})", ex.id, ex.agent_id.unwrap_or_default()),
+                    status: Some(ex.status),
+                },
+            ));
+        }
+        for task in &self.tasks {
+            entries.push((
+                task.created_at.clone(),
+                TimelineEntry {
+                    at: time_ago(&task.created_at),
+                    kind: "task".to_string(),
+                    label: format!("Task {} ({})", task.id, task.trigger),
+                    status: Some(task.status.clone()),
+                },
+            ));
+        }
+        for session in desktop.list_sessions() {
+            let project = if session.project_id.0.is_empty() {
+                "default".to_string()
+            } else {
+                session.project_id.0.clone()
+            };
+            let medium = if session.medium_id.0.is_empty() {
+                "local".to_string()
+            } else {
+                session.medium_id.0.clone()
+            };
+            entries.push((
+                session.created_at.clone(),
+                TimelineEntry {
+                    at: time_ago(&session.created_at),
+                    kind: "session".to_string(),
+                    label: format!("Session {} ({project}/{medium})", session.session_id.0),
+                    status: None,
+                },
+            ));
+        }
+        entries.sort_by(|a, b| {
+            b.0.cmp(&a.0).then_with(|| a.1.label.cmp(&b.1.label))
+        });
+        self.timeline = entries.into_iter().map(|(_, entry)| entry).collect();
+    }
+
+    /// Cost rows derived from real execution/usage records. There is no cost
+    /// backend yet; when an execution trace carries a cost-like metric we sum
+    /// it, otherwise we surface an honest derived aggregate rather than
+    /// fabricated billing numbers.
+    pub fn refresh_costs(&mut self, desktop: &DesktopState) {
+        let mut total_cost: f64 = 0.0;
+        let mut cost_metrics = 0usize;
+        for ex in desktop.list_executions() {
+            for metric in &ex.trace.metrics {
+                let name = metric.name.to_lowercase();
+                if name.contains("cost") || name.contains("usd") || name.contains("price") {
+                    total_cost += metric.value;
+                    cost_metrics += 1;
+                }
+            }
+        }
+        self.costs.clear();
+        if cost_metrics > 0 {
+            self.costs.push(CostEntry {
+                id: "derived-cost".to_string(),
+                label: "Estimated spend".to_string(),
+                amount: format!("${:.4}", total_cost),
+                note: format!(
+                    "Summed from {cost_metrics} cost metric(s) across executions; no cost backend wired."
+                ),
+            });
+        }
+        let executions = self.executions.len();
+        let tasks = self.tasks.len();
+        if cost_metrics == 0 {
+            self.costs.push(CostEntry {
+                id: "derived-usage".to_string(),
+                label: "Recorded usage".to_string(),
+                amount: format!("{} executions · {} tasks", executions, tasks),
+                note: "No cost metric is recorded by the daemon yet; showing real usage counts instead of fabricated billing.".to_string(),
+            });
+        }
     }
 
     /// Rebuild the harness list the composer can route to. In this build the
@@ -875,7 +1057,8 @@ impl UiState {
         *self.llm_dialog_focus.borrow_mut() = None;
     }
 
-    /// Mock data used when the backend store cannot be opened (dev fallback).
+    /// Test fixture: a populated mock workspace. Used only by tests; the app
+    /// always builds from the real store via [`Self::from_desktop`].
     pub fn mock() -> Self {
         let conversations = vec![
             ConversationEntry::new("c1", "Ada", "Let's ship hot reload today", "10:42")
@@ -970,6 +1153,11 @@ impl UiState {
             agent_header_menu_open: Rc::new(RefCell::new(false)),
             crons_open: false,
             crons,
+            workflows: Vec::new(),
+            executions: Vec::new(),
+            tasks: Vec::new(),
+            timeline: Vec::new(),
+            costs: Vec::new(),
             settings_page: SettingsPage::Profile,
             settings_profile_name: "Ada".to_string(),
             settings_profile_email: "ada@example.com".to_string(),

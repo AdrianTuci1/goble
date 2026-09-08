@@ -23,7 +23,7 @@ use goble_ui::{vec2f, Element, SettingsPage};
 
 fn render(desktop: &Arc<DesktopState>) -> RenderCommandCounts {
     let app = AppContext::default();
-    let mut root: Box<dyn Element> = Box::new(RootView::new(&app, Some(Arc::clone(desktop)), None));
+    let mut root: Box<dyn Element> = Box::new(RootView::new(&app, desktop, None));
     let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
     command_counts(&commands)
 }
@@ -35,7 +35,7 @@ fn render_with_flag(
     set: impl FnOnce(&mut UiState),
 ) -> RenderCommandCounts {
     let app = AppContext::default();
-    let view = RootView::new(&app, Some(Arc::clone(desktop)), None);
+    let view = RootView::new(&app, desktop, None);
     set(&mut view.state_rc().borrow_mut());
     let mut root: Box<dyn Element> = Box::new(view);
     let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);

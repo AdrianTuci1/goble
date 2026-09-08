@@ -28,6 +28,7 @@ pub struct ChatView {
     messages: Vec<ChatMessage>,
     quick_actions: Vec<(String, Rc<RefCell<dyn FnMut() + 'static>>)>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    on_cmd_enter: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_action: Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
     empty_title: Option<String>,
     empty_subtitle: Option<String>,
@@ -90,6 +91,7 @@ impl ChatView {
             messages: Vec::new(),
             quick_actions: Vec::new(),
             on_send: None,
+            on_cmd_enter: None,
             on_action: None,
             empty_title: None,
             empty_subtitle: None,
@@ -163,6 +165,12 @@ impl ChatView {
 
     pub fn with_on_send<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
         self.on_send = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Cmd/Ctrl+Enter in the composer starts a NEW agent conversation (warp-new).
+    pub fn with_composer_on_cmd_enter<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_cmd_enter = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -718,7 +726,9 @@ impl ChatView {
         let current_value = self.composer_value.borrow().clone();
         let composer_value_for_change = self.composer_value.clone();
         let composer_value = self.composer_value.clone();
+        let composer_value_cmd = self.composer_value.clone();
         let on_send = self.on_send.clone();
+        let on_cmd_enter = self.on_cmd_enter.clone();
         let on_composer_change = self.on_composer_change.clone();
         let mut composer = ChatComposer::new()
             .with_value(current_value)
@@ -733,6 +743,12 @@ impl ChatView {
             .with_on_send(move |text| {
                 *composer_value.borrow_mut() = String::new();
                 if let Some(cb) = on_send.as_ref() {
+                    (cb.borrow_mut())(text);
+                }
+            })
+            .with_on_cmd_enter(move |text| {
+                *composer_value_cmd.borrow_mut() = String::new();
+                if let Some(cb) = on_cmd_enter.as_ref() {
                     (cb.borrow_mut())(text);
                 }
             });

@@ -40,8 +40,10 @@ impl ProjectsState {
         self.projects = group_projects(&projects, &sessions, &tasks);
     }
 
-    /// Mock data used when the backend store cannot be opened (dev fallback),
-    /// exercising a running, a scheduled and an idle project.
+    /// Test fixture: a running, a scheduled and an idle project. Used only by
+    /// tests (gated `#[cfg(test)]`); the app always builds from the real store
+    /// via [`Self::from_desktop`].
+    #[cfg(test)]
     pub fn mock() -> Self {
         Self {
             projects: vec![

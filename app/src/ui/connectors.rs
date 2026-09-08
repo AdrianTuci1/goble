@@ -24,7 +24,23 @@ pub fn build_connectors_sheet(
     if ai.install_open {
         build_install_drawer(app, ai, ai_actions)
     } else {
-        build_connectors_list(app, ai, ai_actions)
+        build_connectors_list(app, ai, ai_actions, None)
+    }
+}
+
+/// Full-page MCP connectors view used as the topbar "MCPs" tab. Reuses the
+/// installed-server list from the connectors sheet, replacing the right-close
+/// (sheet) affordance with a left "back to chat" button.
+pub fn build_connectors_page(
+    app: &AppContext,
+    ai: &AiSnapshot,
+    ai_actions: &AiActions,
+    on_back: &std::rc::Rc<std::cell::RefCell<dyn FnMut()>>,
+) -> Box<dyn Element> {
+    if ai.install_open {
+        build_install_drawer(app, ai, ai_actions)
+    } else {
+        build_connectors_list(app, ai, ai_actions, Some(on_back.clone()))
     }
 }
 
@@ -32,6 +48,7 @@ fn build_connectors_list(
     app: &AppContext,
     ai: &AiSnapshot,
     ai_actions: &AiActions,
+    on_page_back: Option<std::rc::Rc<std::cell::RefCell<dyn FnMut()>>>,
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Md);
     let sm = app.theme.spacing_px(SpacingToken::Sm);
@@ -47,20 +64,44 @@ fn build_connectors_list(
     .with_on_click(move || (on_open_vault.borrow_mut())())
     .finish();
 
+    // A full-page view shows a "back to chat" button; the sheet shows a
+    // right-close button instead. Exactly one of the two is built.
+    let back_button = on_page_back.map(|on_back| {
+        TopbarButton::new(
+            Icon::new("arrow-left")
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(28.0)
+        .with_on_click(move || (on_back.borrow_mut())())
+        .finish()
+    });
     let on_close = ai_actions.on_close_connectors.clone();
-    let close_button = TopbarButton::new(
-        Icon::new("close")
-            .with_size(16.0)
-            .with_theme_color(ColorToken::Muted, app)
+    let close_button = if back_button.is_none() {
+        Some(
+            TopbarButton::new(
+                Icon::new("close")
+                    .with_size(16.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_size(28.0)
+            .with_on_click(move || (on_close.borrow_mut())())
             .finish(),
-    )
-    .with_size(28.0)
-    .with_on_click(move || (on_close.borrow_mut())())
-    .finish();
+        )
+    } else {
+        None
+    };
 
-    let header = Flex::row()
+    let mut header = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(sm)
+        .with_child(if let Some(back) = back_button {
+            back
+        } else {
+            Spacer::new().finish()
+        })
         .with_child(
             Text::new("MCP Connectors")
                 .with_font_size(12.0)
@@ -68,9 +109,11 @@ fn build_connectors_list(
                 .finish(),
         )
         .with_child(Spacer::new().finish())
-        .with_child(vault_button)
-        .with_child(close_button)
-        .finish();
+        .with_child(vault_button);
+    if let Some(close) = close_button {
+        header = header.with_child(close);
+    }
+    let header = header.finish();
 
     let on_search = ai_actions.on_connector_search_change.clone();
     let search = SearchInput::new()

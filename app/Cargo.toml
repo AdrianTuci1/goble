@@ -72,6 +72,10 @@ name = "projects_flow"
 path = "src/integration_testing/projects_flow.rs"
 
 [[test]]
+name = "harness_pages_flow"
+path = "src/integration_testing/harness_pages_flow.rs"
+
+[[test]]
 name = "screen_flow"
 path = "src/integration_testing/screen_flow.rs"
 

@@ -6,7 +6,9 @@
 //! cwd) and coalesces the newest output from the session's reader thread into a
 //! bounded tail of lines. Keystrokes when the pane is active are forwarded to
 //! the pty — except Cmd/Ctrl+Enter, which routes the pane's current input to
-//! the agent harness instead of executing it as a shell command.
+//! the agent harness as a NEW agent conversation (warp-new) instead of
+//! executing it as a shell command. Plain Enter runs a terminal command in the
+//! pane's shell.
 
 use std::cell::RefCell;
 use std::rc::Rc;

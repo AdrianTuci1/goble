@@ -51,29 +51,16 @@ pub struct RootView {
 impl RootView {
     pub fn new(
         app: &AppContext,
-        desktop: Option<Arc<DesktopState>>,
+        desktop: &Arc<DesktopState>,
         event_bus: Option<CollectingEventBus>,
     ) -> Self {
-        let state = Rc::new(RefCell::new(match &desktop {
-            Some(d) => UiState::from_desktop(d),
-            None => UiState::mock(),
-        }));
-        let ai_state = Rc::new(RefCell::new(match &desktop {
-            Some(d) => AiState::from_desktop(d),
-            None => AiState::mock(),
-        }));
-        let projects_state = Rc::new(RefCell::new(match &desktop {
-            Some(d) => ProjectsState::from_desktop(d),
-            None => ProjectsState::mock(),
-        }));
-        let media_state = Rc::new(RefCell::new(match &desktop {
-            Some(d) => MediaState::from_desktop(d),
-            None => MediaState::default(),
-        }));
-        let screen_state = Rc::new(RefCell::new(match &desktop {
-            Some(d) => ScreenState::from_desktop(d),
-            None => ScreenState::mock(),
-        }));
+        // The app always runs on the real backend store; there is no mock
+        // fallback when a store is unavailable (see `main`).
+        let state = Rc::new(RefCell::new(UiState::from_desktop(desktop)));
+        let ai_state = Rc::new(RefCell::new(AiState::from_desktop(desktop)));
+        let projects_state = Rc::new(RefCell::new(ProjectsState::from_desktop(desktop)));
+        let media_state = Rc::new(RefCell::new(MediaState::from_desktop(desktop)));
+        let screen_state = Rc::new(RefCell::new(ScreenState::from_desktop(desktop)));
 
         let mut view = Self {
             element: Box::new(Empty::new()),
@@ -82,7 +69,7 @@ impl RootView {
             projects_state,
             media_state,
             screen_state,
-            desktop,
+            desktop: Some(desktop.clone()),
             event_bus,
             window_control: app.window_control.clone(),
             actions: None,
@@ -214,14 +201,18 @@ impl RootView {
                     }
                     state.refresh_messages(&desktop);
                 }
-                "workflows:updated" => state.refresh_crons(&desktop),
+                "workflows:updated" => {
+                    state.refresh_crons(&desktop);
+                    state.refresh_observability(&desktop);
+                }
                 "agents:updated" => state.refresh_agent_name(&desktop),
                 "vault:updated" => self.ai_state.borrow_mut().refresh_vault(&desktop),
                 "executions:updated" => {
                     self.projects_state.borrow_mut().refresh(&desktop);
                     // Sessions/projects come from the store; re-derive the tree
                     // so a new session shows up in the environment selector.
-                    self.media_state.borrow_mut().refresh(Some(&desktop));
+                    self.media_state.borrow_mut().refresh(&desktop);
+                    state.refresh_observability(&desktop);
                 }
                 // The agent handed the desktop to a remote screen: open the
                 // screen panel, refresh the source list (so the fresh remote
@@ -399,6 +390,11 @@ impl RootView {
                 agent_header_menu_open: s.agent_header_menu_open.clone(),
                 crons_open: s.crons_open,
                 crons: s.crons.clone(),
+                workflows: s.workflows.clone(),
+                executions: s.executions.clone(),
+                tasks: s.tasks.clone(),
+                timeline: s.timeline.clone(),
+                costs: s.costs.clone(),
                 settings_page: s.settings_page,
                 settings_profile_name: s.settings_profile_name.clone(),
                 settings_profile_email: s.settings_profile_email.clone(),

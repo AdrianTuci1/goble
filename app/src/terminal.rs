@@ -9,9 +9,13 @@
 //! thread, and the shell is never a cursor of the winit event loop.
 //!
 //! The harness vs. shell key distinction is captured by [`classify_key`] /
-//! [`is_agent_enter`]: plain Enter is forwarded to the pty, while
-//! Cmd/Ctrl+Enter is routed through the agent turn path (see
-//! `crate::actions`).
+//! [`is_agent_enter`]: plain Enter is forwarded to the pty (so it runs as a
+//! terminal command in the shell), while Cmd/Ctrl+Enter is routed through the
+//! agent turn path (see `crate::actions`).
+//!
+//! The warp-new *input-line* model — an input is a terminal command by default,
+//! an agent prompt in agent mode, and a `!`-prefixed command forces a shell
+//! command from agent mode — is implemented by [`classify_input`]/[`InputClass`].
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -191,10 +195,17 @@ pub enum TerminalKeyAction {
     Ignore,
 }
 
+/// True when the modifiers are the submit-to-agent keybinding (Cmd or Ctrl, no
+/// shift, not alt). This is the warp-new submit-to-local-agent binding: the
+/// input is sent to the agent instead of being run as a shell command.
+pub fn is_agent_submit(modifiers: ModifiersState) -> bool {
+    (modifiers.command || modifiers.ctrl) && !modifiers.shift
+}
+
 /// True when the event is Cmd/Ctrl+Enter (command or ctrl, no shift, not alt).
 pub fn is_agent_enter(key: &str, modifiers: ModifiersState) -> bool {
     let enter = key.eq_ignore_ascii_case("enter") || key.eq_ignore_ascii_case("return");
-    enter && (modifiers.command || modifiers.ctrl) && !modifiers.shift
+    enter && is_agent_submit(modifiers)
 }
 
 /// Classify a single key event into a terminal action.
@@ -246,6 +257,60 @@ pub fn classify_key(key: &str, modifiers: ModifiersState) -> TerminalKeyAction {
     }
 
     TerminalKeyAction::Ignore
+}
+
+// ---------------------------------------------------------------------------
+// Input-line classification (terminal command vs. agent prompt)
+// ---------------------------------------------------------------------------
+
+/// How a submitted input line should be handled.
+///
+/// This is the warp-new input model: the bottom prompt line is a terminal
+/// command by default, and only sends to the agent on the submit keybinding
+/// (Cmd/Ctrl+Enter) or in agent mode (an active agent conversation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputClass {
+    /// Run this as a shell command in the pane's PTY session.
+    TerminalCommand(String),
+    /// Send this to the agent (start/continue the pane's agent conversation).
+    AgentPrompt(String),
+}
+
+/// Classify a submitted input line.
+///
+/// A real parser for the warp-new input model, not a stub:
+///
+/// - In **terminal mode** (`agent_mode == false`) every non-empty input is a
+///   terminal command, so `ls` / `git status` run in the pane's shell.
+/// - In **agent mode** (`agent_mode == true`, i.e. the pane has an active
+///   agent conversation) an input is an agent prompt unless it begins with
+///   `!`, in which case it is a terminal command with the leading `!` stripped
+///   (so `!foo` runs `foo`).
+///
+/// An input that is empty or whitespace-only yields `None` (nothing to do).
+///
+/// The classification is deliberately mode-driven rather than keyword-driven:
+/// the only way to run a shell command from agent mode is the explicit `!`
+/// prefix, matching the warp-new terminal command parser.
+pub fn classify_input(input: &str, agent_mode: bool) -> Option<InputClass> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if agent_mode {
+        if let Some(rest) = trimmed.strip_prefix('!') {
+            let command = rest.trim();
+            if command.is_empty() {
+                None
+            } else {
+                Some(InputClass::TerminalCommand(command.to_string()))
+            }
+        } else {
+            Some(InputClass::AgentPrompt(input.to_string()))
+        }
+    } else {
+        Some(InputClass::TerminalCommand(input.to_string()))
+    }
 }
 
 /// Apply a chunk of forwarded bytes to the per-pane local input mirror.
@@ -652,6 +717,50 @@ mod tests {
             vec![0x0c],
             "Ctrl+L clears the screen"
         );
+    }
+
+    #[test]
+    fn parser_defaults_everything_to_terminal_command() {
+        // Terminal mode (no active agent conversation): even a multi-word
+        // input runs as a shell command — `ls` / `git status` are commands.
+        assert_eq!(
+            classify_input("ls", false),
+            Some(InputClass::TerminalCommand("ls".to_string()))
+        );
+        assert_eq!(
+            classify_input("git status", false),
+            Some(InputClass::TerminalCommand("git status".to_string()))
+        );
+    }
+
+    #[test]
+    fn parser_is_agent_prompt_in_agent_mode() {
+        // Agent mode (an active agent conversation): free text is a prompt.
+        assert_eq!(
+            classify_input("hello world", true),
+            Some(InputClass::AgentPrompt("hello world".to_string()))
+        );
+    }
+
+    #[test]
+    fn parser_bang_forces_terminal_command_in_agent_mode() {
+        // Agent mode + leading `!` => a terminal command with the `!` stripped.
+        assert_eq!(
+            classify_input("!foo", true),
+            Some(InputClass::TerminalCommand("foo".to_string()))
+        );
+        assert_eq!(
+            classify_input("! git status", true),
+            Some(InputClass::TerminalCommand("git status".to_string()))
+        );
+    }
+
+    #[test]
+    fn parser_rejects_blank_input() {
+        assert_eq!(classify_input("", false), None);
+        assert_eq!(classify_input("   ", true), None);
+        // A bare `!` in agent mode has no command after it.
+        assert_eq!(classify_input("!", true), None);
     }
 
     #[test]

@@ -69,6 +69,11 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("arrow-up", "arrow-up.svg"),
     icon_bytes!("info", "info.svg"),
     icon_bytes!("cloud-off", "cloud-off.svg"),
+    icon_bytes!("workflow", "workflow.svg"),
+    icon_bytes!("activity", "activity.svg"),
+    icon_bytes!("timeline", "timeline.svg"),
+    icon_bytes!("costs", "costs.svg"),
+    icon_bytes!("plug", "plug.svg"),
 ];
 
 pub struct IconAtlas {

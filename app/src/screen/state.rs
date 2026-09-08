@@ -21,8 +21,7 @@ use goble_screen_core::ScreenFrame;
 
 use crate::ui::ScreenSourceEntry;
 
-/// The fallback source id used when the mock registry has nothing else to
-/// offer, and the default selection in offline/mock mode.
+/// The source id used by the [`ScreenState::mock`] test fixture.
 const MOCK_SOURCE: &str = "local";
 
 /// A recorded screen event, timestamped in milliseconds relative to when
@@ -143,26 +142,20 @@ impl ScreenState {
             }
         }
 
-        self.sources = if sources.is_empty() {
-            vec![ScreenSourceEntry {
-                source: MOCK_SOURCE.to_string(),
-                capturable: true,
-                controllable: true,
-            }]
-        } else {
-            sources
-        };
+        self.sources = sources;
 
         if !self
             .sources
             .iter()
             .any(|s| s.source == self.selected_source)
         {
+            // No sources: the selection is cleared rather than substituting a
+            // synthetic source (the registry is seeded with the local adapter).
             self.selected_source = self
                 .sources
                 .first()
                 .map(|s| s.source.clone())
-                .unwrap_or_else(|| MOCK_SOURCE.to_string());
+                .unwrap_or_default();
         }
     }
 
@@ -191,7 +184,8 @@ impl ScreenState {
     /// the per-frame `tick` while the sheet is open and broadcasting.
     fn poll_capture(&mut self, desktop: Option<&DesktopState>) {
         let Some(desktop) = desktop else {
-            self.last_capture = Some("mock broadcast running".to_string());
+            // No backend: nothing to capture (the app always has a store), so
+            // leave the status/frame untouched rather than faking a broadcast.
             return;
         };
         let source = self.selected_source.clone();
@@ -422,8 +416,9 @@ impl ScreenState {
         self.step_replay(dt_ms, desktop);
     }
 
-    /// Mock data used when the backend store cannot be opened (dev fallback),
-    /// exposing a single local source ready to broadcast.
+    /// Test fixture: a single local source ready to broadcast. Used only by
+    /// tests; the app always builds from the real screen registry via
+    /// [`Self::from_desktop`].
     pub fn mock() -> Self {
         Self {
             open: false,
@@ -502,11 +497,12 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_without_backend_reports_mock_status() {
+    fn broadcast_without_backend_keeps_no_fake_status() {
         let mut state = ScreenState::mock();
         state.toggle_broadcast(true, None);
         assert!(state.broadcast);
-        assert_eq!(state.last_capture.as_deref(), Some("mock broadcast running"));
+        // No backend to capture from, so no fabricated status is reported.
+        assert_eq!(state.last_capture, None);
         state.toggle_broadcast(false, None);
         assert!(!state.broadcast);
         assert_eq!(state.last_capture, None);

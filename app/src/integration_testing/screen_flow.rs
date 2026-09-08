@@ -108,10 +108,9 @@ fn broadcast_and_computer_use_toggles_are_wired() {
         state.borrow().broadcast,
         "broadcast toggle should enable live capture"
     );
-    assert!(
-        state.borrow().last_capture.is_some(),
-        "starting broadcast should record a status"
-    );
+    // No backend is wired here, so broadcast flips but does not fabricate a
+    // capture status or frame.
+    assert_eq!(state.borrow().last_capture, None);
 
     (actions.on_toggle_computer_use.borrow_mut())(true);
     assert!(
@@ -149,8 +148,9 @@ fn open_close_and_select_source_actions_are_wired() {
 
 #[test]
 fn screen_sheet_renders_through_root_view() {
+    let (desktop, _dir) = common::desktop_state();
     let app = AppContext::default();
-    let view = RootView::new(&app, None, None);
+    let view = RootView::new(&app, &desktop, None);
     view.screen_state_rc().borrow_mut().open = true;
 
     let mut root: Box<dyn Element> = Box::new(view);

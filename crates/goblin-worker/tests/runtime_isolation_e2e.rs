@@ -29,6 +29,7 @@ fn find_free_port() -> u16 {
 ///    - let the MCP server prove isolation by writing a marker into each
 ///      agent's workspace.
 #[tokio::test]
+#[ignore = "E2E: requires a built `goblin` binary (set GOBLIN_BIN) and a full MCP/V8 isolate runtime; not run in the default suite"]
 async fn test_agent_runtime_isolation_and_secret_passthrough() {
     let port = find_free_port();
     let workspace = tempfile::TempDir::new().unwrap();

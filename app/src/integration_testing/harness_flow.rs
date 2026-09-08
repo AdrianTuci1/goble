@@ -10,9 +10,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_app::actions::make_actions;
+use goble_app::media::MediaState;
 use goble_app::state::UiState;
 use goble_app::ui::UiActions;
 use goble_desktop_service::DesktopState;
+use goble_ui::platform::WindowControl;
 use goble_ui::{ChatFragmentKind, ChatRole};
 
 const MOCK_REPLY: &str = "No LLM provider configured or API key missing. Add one in Settings.";
@@ -20,7 +22,13 @@ const CANNED_REPLY: &str = "Am primit mesajul tÄƒu. Rulez acum comanda pentru â€
 
 fn build(desktop: &std::sync::Arc<DesktopState>) -> (Rc<RefCell<UiState>>, UiActions) {
     let state = Rc::new(RefCell::new(UiState::from_desktop(desktop)));
-    let actions = make_actions(Rc::clone(&state), Some(std::sync::Arc::clone(desktop)));
+    let media = Rc::new(RefCell::new(MediaState::mock()));
+    let actions = make_actions(
+        Rc::clone(&state),
+        Some(std::sync::Arc::clone(desktop)),
+        Rc::clone(&media),
+        WindowControl::default(),
+    );
     (state, actions)
 }
 
@@ -36,6 +44,23 @@ fn wait_for_messages(desktop: &DesktopState, chat_id: &str, expected: usize) {
         assert!(
             std::time::Instant::now() < deadline,
             "timed out waiting for {expected} messages in {chat_id}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Poll the event bus until `event` is emitted or time out. The turn's `TraceFinished`
+/// is fanned to `chat:turn_finished` by the daemon translator, which runs on a
+/// separate task, so the event can land just after the turn handle resolves.
+fn wait_for_event(bus: &goble_desktop_service::CollectingEventBus, event: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if bus.has_event(event) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {event}"
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -57,7 +82,7 @@ fn run_chat_turn_appends_mock_reply() {
     let rt = tokio::runtime::Runtime::new().expect("build runtime");
     let _guard = rt.enter();
     let handle = desktop
-        .run_chat_turn(&chat_id, "Say hi", "mock", "")
+        .run_chat_turn(&chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None)
         .expect("run turn");
     rt.block_on(handle).expect("task completes");
 
@@ -88,14 +113,11 @@ fn run_chat_turn_emits_chat_updated() {
     let rt = tokio::runtime::Runtime::new().expect("build runtime");
     let _guard = rt.enter();
     let handle = desktop
-        .run_chat_turn(&chat_id, "Say hi", "mock", "")
+        .run_chat_turn(&chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None)
         .expect("run turn");
     rt.block_on(handle).expect("task completes");
 
-    assert!(
-        concrete.has_event("chat:updated"),
-        "the harness turn should emit chat:updated so the UI refreshes"
-    );
+    wait_for_event(&concrete, "chat:updated");
 }
 
 /// Through the app's send action: with a configured (but mock) provider, the
@@ -282,14 +304,11 @@ fn run_chat_turn_emits_turn_finished() {
     let rt = tokio::runtime::Runtime::new().expect("build runtime");
     let _guard = rt.enter();
     let handle = desktop
-        .run_chat_turn(&chat_id, "Say hi", "mock", "")
+        .run_chat_turn(&chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None)
         .expect("run turn");
     rt.block_on(handle).expect("task completes");
 
-    assert!(
-        concrete.has_event("chat:turn_finished"),
-        "the harness turn should emit chat:turn_finished when it finishes"
-    );
+    wait_for_event(&concrete, "chat:turn_finished");
 
     // The turn has completed, so its cancel entry is removed: cancelling now
     // is a no-op that reports no turn in flight.

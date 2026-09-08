@@ -258,6 +258,7 @@ mod tests {
         let runner =
             crate::runner::Runner::new_with_provider_factory(state.clone(), mock_factory());
         let scheduler = Scheduler::new(state.clone(), store, runner);
+        state.config.lock().workspace_root = tmp_state.path().join("workspaces");
         let spec = AgentSpec::new("demo", "do nothing");
         let id = spec.id.clone();
         state.store_agent(spec);

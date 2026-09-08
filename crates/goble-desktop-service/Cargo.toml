@@ -6,6 +6,14 @@ authors.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Pull the real IronRDP-backed remote desktop source (goble-screen-sdk) so a
+# harness handoff can open a live xrdp/RDP stream into the screen registry.
+# Off by default to keep a plain `cargo check --workspace` light; the native
+# GUI crates enable it for the real build.
+remote-screen = ["dep:goble-screen-sdk", "goble-screen-sdk/rdp"]
+
 [dependencies]
 anyhow = "1.0"
 base64 = "0.22"
@@ -14,6 +22,17 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 futures = "0.3"
 goble-core = { path = "../goble-core" }
+goble-daemon = { path = "../goble-daemon" }
+goble-daemon-client = { path = "../goble-daemon-client" }
+goble-daemon-protocol = { path = "../goble-daemon-protocol" }
+goble-harness-types = { path = "../goble-harness-types" }
+goble-harness-runtime = { path = "../goble-harness-runtime" }
+goble-harness-internal = { path = "../goble-harness-internal" }
+goble-replay = { path = "../goble-replay" }
+goble-persistence = { path = "../goble-persistence" }
+goble-screen-adapter = { path = "../goble-screen-adapter" }
+goble-screen-core = { path = "../goble-screen-core" }
+goble-screen-sdk = { path = "../goble-screen-sdk", optional = true }
 hex = "0.4"
 log = "0.4"
 once_cell = "1"

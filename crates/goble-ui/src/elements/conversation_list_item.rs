@@ -3,9 +3,9 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Avatar, AvatarShape, Button, ButtonVariant, Container, CrossAxisAlignment,
-    Element, EventContext, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisAlignment,
-    MainAxisSize, PaintContext, Point, SizeConstraint, Text, TopbarButton,
+    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, Element, EventContext,
+    Expanded, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext,
+    Point, SizeConstraint, Text, TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, RectF, Vector2F};
@@ -35,6 +35,9 @@ pub struct ConversationListItem {
     last_response: String,
     timestamp: String,
     selected: bool,
+    /// The work environment this conversation runs in (`"local"` / `"remote"`),
+    /// used to pick the environment SVG shown in the card.
+    workspace_routing: String,
     ui: Rc<RefCell<AgentCardUi>>,
     on_select: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_delete: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -60,6 +63,7 @@ impl ConversationListItem {
             last_response: last_response.into(),
             timestamp: timestamp.into(),
             selected,
+            workspace_routing: "local".to_string(),
             ui,
             on_select: None,
             on_delete: None,
@@ -78,6 +82,13 @@ impl ConversationListItem {
 
     pub fn with_on_delete<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_delete = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Set the conversation's work environment, which picks the SVG shown in
+    /// the card (local vs remote avatar).
+    pub fn with_workspace_routing(mut self, routing: impl Into<String>) -> Self {
+        self.workspace_routing = routing.into();
         self
     }
 
@@ -145,12 +156,24 @@ impl ConversationListItem {
             .with_child(last_row)
             .finish();
 
-        let avatar = Avatar::new(self.name.clone())
-            .with_size(28.0)
-            .with_shape(AvatarShape::Squircle)
-            .with_theme_background(ColorToken::Muted, app)
-            .with_theme_foreground(ColorToken::Text, app)
-            .finish();
+        // Environment SVG badge: the conversation's work medium (Local or
+        // Remote) is shown directly on the card, mirroring the topbar medium
+        // selector so it is obvious where the conversation runs.
+        let icon_name = if self.workspace_routing == "remote" {
+            "conversation-remote"
+        } else {
+            "conversation-local"
+        };
+        let avatar = Container::new(
+            Icon::new(icon_name)
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+        .with_corner_radius(6.0)
+        .with_padding(crate::style::EdgeInsets::new(5.0, 5.0, 5.0, 5.0))
+        .finish();
 
         let mut row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)

@@ -13,13 +13,21 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_app::actions::make_actions;
+use goble_app::media::MediaState;
 use goble_app::state::UiState;
 use goble_app::ui::{AppTab, UiActions, WorkspaceRouting};
 use goble_desktop_service::DesktopState;
+use goble_ui::platform::WindowControl;
 
 fn build(desktop: &Arc<DesktopState>) -> (Rc<RefCell<UiState>>, UiActions) {
     let state = Rc::new(RefCell::new(UiState::from_desktop(desktop)));
-    let actions = make_actions(Rc::clone(&state), Some(Arc::clone(desktop)));
+    let media = Rc::new(RefCell::new(MediaState::mock()));
+    let actions = make_actions(
+        Rc::clone(&state),
+        Some(Arc::clone(desktop)),
+        Rc::clone(&media),
+        WindowControl::default(),
+    );
     (state, actions)
 }
 
@@ -284,4 +292,48 @@ fn choosing_remote_persists_on_conversation() {
         Some("remote".to_string()),
         "remote choice should be persisted on the chat"
     );
+}
+
+#[test]
+fn returning_run_skips_onboarding_overlays_and_tip() {
+    let (desktop, _dir) = common::desktop_state();
+    desktop.set_onboarding_done().expect("mark onboarding done");
+
+    // A returning run loads with every first-run surface suppressed: the
+    // model-key banner, the workspace choice, and the getting-started tip.
+    let (state, _actions) = build(&desktop);
+    {
+        let s = state.borrow();
+        assert!(s.onboarding_done, "returning run should know onboarding is done");
+        assert!(
+            !s.show_llm_key_banner,
+            "no key banner should auto-surface on a returning run"
+        );
+        assert!(
+            !s.show_workspace_choice,
+            "no workspace choice should auto-surface on a returning run"
+        );
+        assert!(
+            !s.show_onboarding_tip,
+            "no getting-started tip should auto-surface on a returning run"
+        );
+    }
+
+    // The onboarding narrative stays suppressed even after interacting, so a
+    // returning run never re-enters the first-run flow (no dead end). A no-key
+    // send may still re-surface the *key* banner because a provider is a real
+    // requirement, but the workspace choice and tip remain hidden.
+    let (state2, actions) = build(&desktop);
+    (actions.on_send_message.borrow_mut())("Hi".to_string());
+    {
+        let s = state2.borrow();
+        assert!(
+            !s.show_workspace_choice,
+            "workspace choice should not re-appear after onboarding is done"
+        );
+        assert!(
+            !s.show_onboarding_tip,
+            "getting-started tip should not re-appear after onboarding is done"
+        );
+    }
 }

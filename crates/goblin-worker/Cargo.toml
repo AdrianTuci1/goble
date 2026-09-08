@@ -17,6 +17,13 @@ path = "src/main.rs"
 
 [dependencies]
 goble-core = { path = "../goble-core" }
+goble-daemon = { path = "../goble-daemon" }
+goble-daemon-client = { path = "../goble-daemon-client" }
+goble-daemon-protocol = { path = "../goble-daemon-protocol" }
+goble-harness-internal = { path = "../goble-harness-internal" }
+goble-harness-runtime = { path = "../goble-harness-runtime" }
+goble-harness-types = { path = "../goble-harness-types" }
+goble-workflow = { path = "../goble-workflow" }
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true

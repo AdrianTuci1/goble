@@ -1,12 +1,9 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::Stream;
-use futures::StreamExt;
-use goble_core::harness::{HarnessEvent, WebSearchConfig};
+use goble_core::harness::WebSearchConfig;
 
 use crate::event_bus::{emit_value, EventBus, NoOpEventBus};
 use anyhow::Context;
@@ -28,6 +25,8 @@ use goble_core::vault::CredentialVault;
 use goble_core::worker::{WorkerConfig, WorkerId};
 use goble_core::worker_pool::{WorkerPool, WorkerPoolStrategy, WorkerSnapshot};
 use goble_core::workflow::{Workflow, WorkflowId, WorkflowStep};
+use goble_harness_types::{ProjectId, SessionId};
+use goble_persistence::{Project, Session, Task};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -307,6 +306,11 @@ pub struct DesktopState {
     agents: Arc<Mutex<HashMap<AgentId, AgentInfo>>>,
     workflows: Arc<Mutex<HashMap<WorkflowId, WorkflowInfo>>>,
     teams: Arc<Mutex<HashMap<String, TeamInfo>>>,
+    /// Durable Project/Session/Task entities, seeded from the persistence layer
+    /// on startup so the workspace's meta-information survives a restart.
+    projects: Arc<Mutex<HashMap<ProjectId, Project>>>,
+    sessions: Arc<Mutex<HashMap<SessionId, Session>>>,
+    tasks: Arc<Mutex<HashMap<String, Task>>>,
     executions: Arc<Mutex<HashMap<String, ExecutionInfo>>>,
     vault: Arc<Mutex<CredentialVault>>,
     vault_passphrase: Mutex<Vec<u8>>,
@@ -317,51 +321,59 @@ pub struct DesktopState {
     cluster_identity: Mutex<Option<ClusterIdentity>>,
     thread_store: Arc<ThreadStore>,
     config: parking_lot::Mutex<goble_core::config::GobleConfig>,
-    chat_cancels: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    /// The daemon core (embedded): owns the harness registry and execution
+    /// ledger. DesktopState is the composition root for the embedded daemon, so
+    /// it seeds the registry and drives the daemon instead of constructing a
+    /// `goble_core::harness::Harness` directly.
+    daemon_state: Arc<goble_daemon::DaemonState>,
+    /// GUI-side facade for the daemon: run/resume/cancel/introspection plus the
+    /// event subscription the UI uses to render live state.
+    daemon: Arc<dyn goble_daemon_client::DaemonClient>,
+    /// Lazily spawned once, on the first harness turn: translates daemon wire
+    /// events into the `chat:*` events the native UI listens for. Guarded by
+    /// `translator_spawned` because `DesktopState::new` runs outside a tokio
+    /// runtime (in the integration tests), so the task is only created when a
+    /// runtime is current.
+    translator_spawned: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Screen capture+control registry, seeded with the local platform adapter
+    /// on construction so the capturer/controller are reachable. The backend is
+    /// platform-aware: macOS uses the real `screencapture` capturer, other
+    /// platforms fall back to a synthetic adapter.
+    screen: goble_screen_core::ScreenRegistry,
 }
-/// Drain a harness turn stream, nudging the UI to re-read the transcript on
-/// every event and forwarding the rich events it needs to render inline state
-/// (an ask-user question, a mission phase). Emits `chat:turn_finished` and
-/// clears the chat's cancel flag when the stream ends.
-async fn drain_harness_stream(
-    this: Arc<DesktopState>,
-    chat_id: String,
-    mut stream: Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>,
-) {
-    while let Some(event) = stream.next().await {
-        this.emit("chat:updated", serde_json::json!({ "chat_id": chat_id.clone() }));
-        match event {
-            HarnessEvent::AskUser {
-                question,
-                quick_replies,
-            } => {
-                this.emit(
-                    "chat:ask_user",
-                    serde_json::json!({
-                        "chat_id": chat_id.clone(),
-                        "question": question,
-                        "quick_replies": quick_replies,
-                    }),
-                );
-            }
-            HarnessEvent::MissionUpdated {
-                mission_id,
-                status,
-            } => {
-                this.emit(
-                    "chat:mission",
-                    serde_json::json!({
-                        "chat_id": chat_id.clone(),
-                        "mission_id": mission_id,
-                        "status": status,
-                    }),
-                );
-            }
-            _ => {}
-        }
+/// The `session_id` scoping a daemon event. Every [`DaemonEvent`] variant
+/// carries one, so the desktop turn entry points can correlate an event to the
+/// chat turn that produced it without matching each variant by hand.
+fn daemon_session_id(event: &goble_daemon_protocol::DaemonEvent) -> goble_harness_types::SessionId {
+    use goble_daemon_protocol::DaemonEvent as DE;
+    match event {
+        DE::AssistantDelta { session_id, .. }
+        | DE::ToolCallStarted { session_id, .. }
+        | DE::ToolCallFinished { session_id, .. }
+        | DE::ToolCallError { session_id, .. }
+        | DE::AskUser { session_id, .. }
+        | DE::MissionUpdated { session_id, .. }
+        | DE::Done { session_id }
+        | DE::Error { session_id, .. }
+        | DE::TraceStarted { session_id, .. }
+        | DE::TraceFinished { session_id, .. }
+        | DE::ScreenHandoff { session_id, .. } => session_id.clone(),
     }
-    this.emit("chat:turn_finished", serde_json::json!({ "chat_id": chat_id.clone() }));
-    this.chat_cancels.lock().remove(&chat_id);
+}
+
+/// Build the harness turn for a chat run, carrying the selected medium and the
+/// project it is scoped to instead of the `local`/`default` defaults.
+fn build_chat_turn(
+    harness_id: goble_harness_types::HarnessId,
+    session_id: goble_harness_types::SessionId,
+    prompt: &str,
+    medium_id: &str,
+    project_id: &str,
+) -> goble_harness_types::HarnessTurn {
+    let mut turn = goble_harness_types::HarnessTurn::new(harness_id, session_id, prompt);
+    turn.medium_id = goble_harness_types::MediumId::new(medium_id);
+    turn.project_id = goble_harness_types::ProjectId::new(project_id);
+    turn
 }
 
 /// Copy legacy state into the new `~/.goble` home the first time it appears, so
@@ -432,6 +444,36 @@ impl DesktopState {
         let state = Self::new(store, thread_store);
         state.reload_config(&home.config_path());
         let _ = state.load_from_store();
+        // Make the reversibility ledger durable: persist settled checkpoints to
+        // SQLite and seed the daemon's ledgers from anything persisted before, so
+        // rewind/fork/replay survive a restart. The daemon keeps the store alive
+        // via the checkpoint sink.
+        let checkpoint_path = home.root().join("checkpoints.sqlite");
+        match goble_persistence::CheckpointStore::open(&checkpoint_path) {
+            Ok(store) => {
+                let store = Arc::new(store);
+                for session in store.list_checkpoint_sessions().unwrap_or_default() {
+                    if let Some(cp) = store.load_checkpoint(&session).unwrap_or(None) {
+                        state.daemon_state.restore_checkpoint(&cp);
+                    }
+                }
+                state.daemon_state.set_checkpoint_sink(Some(
+                    Arc::clone(&store) as Arc<dyn goble_replay::CheckpointSink>,
+                ));
+                // Seed the durable Project/Session/Task entities alongside the
+                // checkpoints so a restart rehydrates the workspace metadata.
+                for p in store.list_projects().unwrap_or_default() {
+                    state.projects.lock().insert(p.project_id.clone(), p);
+                }
+                for s in store.list_sessions().unwrap_or_default() {
+                    state.sessions.lock().insert(s.session_id.clone(), s);
+                }
+                for t in store.list_tasks().unwrap_or_default() {
+                    state.tasks.lock().insert(t.task_id.clone(), t);
+                }
+            }
+            Err(e) => log::warn!("replay checkpoint store unavailable: {e}"),
+        }
         Ok(state)
     }
 
@@ -460,6 +502,26 @@ impl DesktopState {
     }
 
     pub fn new(store: Store, thread_store: ThreadStore) -> Arc<Self> {
+        let (tx, _) = tokio::sync::broadcast::channel(256);
+        let sink: Arc<dyn goble_daemon::DaemonEventSink> =
+            Arc::new(goble_daemon_client::BroadcastSink::new(tx.clone()));
+        let daemon_state = goble_daemon::DaemonState::new(
+            goble_harness_runtime::HarnessRegistry::new(),
+            sink,
+        );
+        let daemon: Arc<dyn goble_daemon_client::DaemonClient> =
+            Arc::new(goble_daemon_client::InProcessClient::new(daemon_state.clone(), tx));
+        // Seed the screen registry with the local adapter. On macOS this is the
+        // real `screencapture`-backed capturer; elsewhere the adapter supplies a
+        // synthetic pair, so a capturer/controller is always reachable. Only the
+        // real grab runs at capture time, so registering never needs permission.
+        let screen = goble_screen_core::ScreenRegistry::new();
+        if let Err(e) = goble_screen_adapter::LocalAdapter::connect_and_register(
+            goble_screen_adapter::LOCAL_SOURCE,
+            &screen,
+        ) {
+            log::warn!("screen adapter unavailable: {e}");
+        }
         Arc::new(Self {
             store: Arc::new(Mutex::new(store)),
             workers: Arc::new(Mutex::new(HashMap::new())),
@@ -468,6 +530,9 @@ impl DesktopState {
             agents: Arc::new(Mutex::new(HashMap::new())),
             workflows: Arc::new(Mutex::new(HashMap::new())),
             teams: Arc::new(Mutex::new(HashMap::new())),
+            projects: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            tasks: Arc::new(Mutex::new(HashMap::new())),
             executions: Arc::new(Mutex::new(HashMap::new())),
             vault: Arc::new(Mutex::new(CredentialVault::new())),
             vault_passphrase: Mutex::new(Vec::new()),
@@ -478,12 +543,102 @@ impl DesktopState {
             cluster_identity: Mutex::new(None),
             thread_store: Arc::new(thread_store),
             config: parking_lot::Mutex::new(goble_core::config::GobleConfig::default()),
-            chat_cancels: Arc::new(Mutex::new(HashMap::new())),
+            daemon_state,
+            daemon,
+            translator_spawned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            screen,
         })
     }
 
     pub fn thread_store(&self) -> Arc<ThreadStore> {
         Arc::clone(&self.thread_store)
+    }
+
+    /// The screen capture+control registry, seeded with the local adapter.
+    pub fn screen_registry(&self) -> &goble_screen_core::ScreenRegistry {
+        &self.screen
+    }
+
+    /// Open a live remote desktop (xrdp / RDP) for `config` and register it into
+    /// the screen registry under a derived source id. This is the host side of a
+    /// harness [`ScreenHandoff`](goble_daemon_protocol::DaemonEvent::ScreenHandoff):
+    /// the GUI then lists the new source and routes broadcast/computer-use input
+    /// to it through the registry, identically to the local adapter.
+    ///
+    /// Returns the registered source id. Without the `remote-screen` feature this
+    /// fails with a clear message instead of silently doing nothing.
+    pub fn open_remote_screen(
+        &self,
+        config: goble_harness_types::RemoteScreenConfig,
+    ) -> anyhow::Result<String> {
+        #[cfg(feature = "remote-screen")]
+        {
+            let source = format!("remote-xrdp:{}:{}", config.host, config.port);
+            let remote = goble_screen_sdk::RemoteConfig {
+                host: config.host,
+                port: config.port,
+                username: config.username,
+                password: config.password,
+                width: config.width,
+                height: config.height,
+            };
+            goble_screen_sdk::RdpRemoteSource::connect(&source, remote, &self.screen)?;
+            Ok(source)
+        }
+        #[cfg(not(feature = "remote-screen"))]
+        {
+            let _ = config;
+            anyhow::bail!(
+                "remote screen support is not enabled; build goble-desktop-service with the \
+                 `remote-screen` cargo feature"
+            )
+        }
+    }
+
+    /// The daemon the desktop service drives, as a [`DaemonClient`] so the GUI
+    /// (a thin client) never reaches into daemon internals.
+    pub fn daemon_client(&self) -> Arc<dyn goble_daemon_client::DaemonClient> {
+        Arc::clone(&self.daemon)
+    }
+
+    /// Rewind a settled session's transcript to keep `at` turns, dropping the
+    /// tail. Reversibility operates on the recorded transcript, so it works with
+    /// any harness the daemon drives.
+    pub fn rewind(&self, session_id: &SessionId, at: usize) -> anyhow::Result<usize> {
+        self.daemon.rewind(session_id, at)
+    }
+
+    /// Fork a fresh session from a checkpoint index, carrying the recorded prefix.
+    pub fn fork(
+        &self,
+        session_id: &SessionId,
+        at: usize,
+        new_session_id: SessionId,
+    ) -> anyhow::Result<SessionId> {
+        self.daemon.fork(session_id, at, new_session_id)
+    }
+
+    /// Re-emit a session's recorded transcript from checkpoint `at` onward.
+    pub fn replay(
+        &self,
+        session_id: &SessionId,
+        at: usize,
+    ) -> anyhow::Result<Vec<goble_daemon_protocol::DaemonEvent>> {
+        self.daemon.replay(session_id, at)
+    }
+
+    /// List a session's per-turn checkpoints.
+    pub fn checkpoints(&self, session_id: &SessionId) -> anyhow::Result<Vec<goble_daemon::Checkpoint>> {
+        self.daemon.checkpoints(session_id)
+    }
+
+    /// Register an external (BYOH) harness so the daemon can drive it alongside
+    /// the internal harness. Registrations are keyed by the harness's id;
+    /// re-registering an id replaces it. The harness is any
+    /// [`goble_harness_runtime::HarnessRuntime`], e.g. a `goble_harness_cli` CLI
+    /// adapter wrapping an external binary.
+    pub fn register_harness(&self, harness: Arc<dyn goble_harness_runtime::HarnessRuntime>) {
+        self.daemon_state.register(harness);
     }
 
     pub fn set_event_bus(&self, bus: Arc<dyn EventBus>) {
@@ -492,6 +647,85 @@ impl DesktopState {
 
     pub fn emit<T: Serialize>(&self, event: &str, payload: T) {
         emit_value(&**self.event_bus.lock(), event, payload);
+    }
+
+    /// Spawn the daemon-event -> `chat:*` translator, once.
+    ///
+    /// Subscribes synchronously *before* the turn runs so no live event is
+    /// missed, then fans the daemon wire events into the `chat:updated`,
+    /// `chat:ask_user`, `chat:mission` and `chat:turn_finished` events the
+    /// native UI listens for. Only called from the harness turn entry points,
+    /// which run inside a tokio runtime — `new()` does not, so it cannot spawn.
+    fn ensure_translator(self: &Arc<Self>) {
+        if self
+            .translator_spawned
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let mut rx = self.daemon.subscribe();
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            use goble_daemon_protocol::DaemonEvent as DE;
+            while let Ok(ev) = rx.recv().await {
+                let session_id = daemon_session_id(&ev);
+                this.emit("chat:updated", serde_json::json!({ "chat_id": session_id.0 }));
+                match ev {
+                    DE::AskUser {
+                        session_id,
+                        question,
+                        quick_replies,
+                    } => {
+                        this.emit(
+                            "chat:ask_user",
+                            serde_json::json!({
+                                "chat_id": session_id.0,
+                                "question": question,
+                                "quick_replies": quick_replies,
+                            }),
+                        );
+                    }
+                    DE::MissionUpdated {
+                        session_id,
+                        mission_id,
+                        status,
+                    } => {
+                        this.emit(
+                            "chat:mission",
+                            serde_json::json!({
+                                "chat_id": session_id.0,
+                                "mission_id": mission_id,
+                                "status": status,
+                            }),
+                        );
+                    }
+                    DE::TraceFinished { session_id, .. } => {
+                        this.emit(
+                            "chat:turn_finished",
+                            serde_json::json!({ "chat_id": session_id.0 }),
+                        );
+                    }
+                    DE::ScreenHandoff { session_id, config } => {
+                        match this.open_remote_screen(config) {
+                            Ok(source) => {
+                                this.add_log(format!("opened remote desktop {source}"));
+                                this.emit(
+                                    "screen:handoff",
+                                    serde_json::json!({
+                                        "chat_id": session_id.0,
+                                        "source": source,
+                                    }),
+                                );
+                            }
+                            Err(e) => {
+                                this.add_log(format!("screen handoff failed: {e:#}"));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
     }
 
     /// Reconnect workers that were previously paired and have a stored pairing code in the vault.
@@ -1620,6 +1854,21 @@ impl DesktopState {
         self.teams.lock().values().cloned().collect()
     }
 
+    /// The durable projects seeded from the persistence layer on startup.
+    pub fn list_projects(&self) -> Vec<Project> {
+        self.projects.lock().values().cloned().collect()
+    }
+
+    /// The durable sessions seeded from the persistence layer on startup.
+    pub fn list_sessions(&self) -> Vec<Session> {
+        self.sessions.lock().values().cloned().collect()
+    }
+
+    /// The durable tasks seeded from the persistence layer on startup.
+    pub fn list_tasks(&self) -> Vec<Task> {
+        self.tasks.lock().values().cloned().collect()
+    }
+
     pub fn set_vault_secret(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let passphrase = self.vault_passphrase.lock().clone();
         if passphrase.is_empty() {
@@ -1841,6 +2090,52 @@ impl DesktopState {
         Ok(())
     }
 
+    /// The persisted native-UI pane layout (spaces + active space/pane) as a
+    /// JSON blob, if a previous run saved one. `None` when never saved or on a
+    /// fresh install.
+    pub fn get_ui_panes(&self) -> Option<String> {
+        self.store.lock().get_setting("ui.panes").ok().flatten()
+    }
+
+    /// Persist the native-UI pane layout as a JSON blob, replacing any prior one.
+    pub fn set_ui_panes(&self, json: &str) -> anyhow::Result<()> {
+        self.store.lock().set_setting("ui.panes", json)?;
+        Ok(())
+    }
+
+    /// The user-added environment mediums (id, label) a previous run persisted,
+    /// as a JSON blob. `None` when the user has never added a custom medium.
+    pub fn get_ui_mediums(&self) -> Option<String> {
+        self.store.lock().get_setting("ui.mediums").ok().flatten()
+    }
+
+    /// Persist the user-added environment mediums as a JSON blob, replacing any
+    /// prior one. The built-in Local/Remote mediums are not persisted here; only
+    /// the custom mediums a user added via the topbar "+" menu are.
+    pub fn set_ui_mediums(&self, json: &str) -> anyhow::Result<()> {
+        self.store.lock().set_setting("ui.mediums", json)?;
+        Ok(())
+    }
+
+    /// Whether the user has completed (or dismissed) the first-run onboarding
+    /// flow. A returning run skips the onboarding overlays and the
+    /// getting-started tip when this is set.
+    pub fn onboarding_done(&self) -> bool {
+        self.store
+            .lock()
+            .get_setting("onboarding.done")
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some("1")
+    }
+
+    /// Mark the first-run onboarding complete so a returning run skips it.
+    pub fn set_onboarding_done(&self) -> anyhow::Result<()> {
+        self.store.lock().set_setting("onboarding.done", "1")?;
+        Ok(())
+    }
+
     /// Web-search backend (hosted xAI-style endpoint + API key + optional model),
     /// persisted alongside the LLM/model settings. When neither key nor URL is
     /// set, the harness falls back to DuckDuckGo for the `web_search` tool.
@@ -1971,104 +2266,134 @@ impl DesktopState {
         llm::default_model_for(provider).to_string()
     }
 
-    /// Run one conversational turn for a chat through the harness and return a
+    /// Run one conversational turn for a chat through the daemon and return a
     /// handle that completes when the turn has finished.
     ///
     /// Resolves the provider/model from the configured LLM setting (falling
     /// back to a deterministic `MockProvider` when a `mock` provider or no key
-    /// is configured), builds a real [`goble_core::harness::Harness`] over the
-    /// shared store and runs it on a background task so the caller's thread is
-    /// not blocked. The harness persists the user/assistant/tool messages into
-    /// the store itself and this task emits `chat:updated` after each event, so
-    /// the native UI re-reads the transcript — including any tool-call output —
-    /// on the following frame.
+    /// is configured). For `None`/`"internal"` it wraps a real
+    /// [`goble_core::harness::Harness`] behind the internal-harness seam,
+    /// registers it in the daemon's harness registry, and drives the daemon —
+    /// which owns the execution ledger, cancellation and event streaming. For
+    /// any other `harness_id` it resolves an already-registered BYOH harness
+    /// (registered via [`Self::register_harness`]) and runs the turn on it
+    /// unchanged. The harness persists the user/assistant/tool messages into
+    /// the store itself, and the daemon translator emits `chat:updated` after
+    /// each event so the native UI re-reads the transcript.
     pub fn run_chat_turn(
         self: &Arc<Self>,
         chat_id: &str,
         prompt: &str,
         provider: &str,
         model: &str,
+        medium_id: &str,
+        project_id: &str,
+        session_id: &str,
+        workspace_dir: Option<&str>,
+        harness_id: Option<&str>,
     ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-        let (llm, model_name) = self.resolve_llm_provider(provider, model);
-        let store = self.store.lock().clone();
-        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let auto_approve = self.get_auto_approve();
         let web_search = self.get_web_search_setting();
-        self.chat_cancels
-            .lock()
-            .insert(chat_id.to_string(), cancel.clone());
-        let harness = goble_core::harness::Harness::new(store)
-            .with_llm(llm)
-            .with_runner(Arc::new(
-                goble_core::harness::SandboxedCommandRunner::default_tools(),
-            ))
-            .with_cancel(Arc::clone(&cancel))
-            // Reasoning powers the `ask_user` / mission flow. Without it the
-            // harness never suspends to ask the user a question.
-            .with_reasoning(true)
-            .with_auto_approve(auto_approve)
-            .with_web_search(web_search);
-        let this = Arc::clone(self);
-        let chat_id = chat_id.to_string();
-        let prompt = prompt.to_string();
-        let provider = provider.to_string();
+        // Resolve the harness the turn runs on. `None`/`internal` builds and
+        // registers the native goble harness (historical behavior); any other id
+        // names an already-registered BYOH harness the daemon drives unchanged.
+        let resolved_id: goble_harness_types::HarnessId = match harness_id {
+            None | Some("internal") => {
+                let (llm, model_name) = self.resolve_llm_provider(provider, model);
+                let store = self.store.lock().clone();
+                let hid = goble_harness_types::HarnessId::new(format!("internal-{chat_id}"));
+                let mut internal = goble_harness_internal::InternalHarness::new(store)
+                    .with_llm(llm)
+                    .with_provider(provider)
+                    .with_model(&model_name)
+                    .with_reasoning(true)
+                    .with_auto_approve(auto_approve)
+                    .with_web_search(web_search)
+                    .with_runner(Arc::new(
+                        goble_core::harness::SandboxedCommandRunner::default_tools()
+                            .with_sandbox(goble_core::harness::harness_sandbox()),
+                    ))
+                    .with_id(hid.clone());
+                // Run the harness with the pane's own working directory when
+                // provided (the per-session cwd), so commands execute there.
+                if let Some(dir) = workspace_dir {
+                    internal = internal.with_workspace_dir(dir);
+                }
+                self.daemon_state.register(Arc::new(internal));
+                hid
+            }
+            Some(id) => {
+                let hid = goble_harness_types::HarnessId::new(id);
+                if !self.daemon.list_harnesses().iter().any(|h| h == &hid) {
+                    anyhow::bail!("harness {id} is not registered");
+                }
+                hid
+            }
+        };
+        self.ensure_translator();
+
+        let sid = goble_harness_types::SessionId::new(session_id);
+        self.daemon.run(build_chat_turn(
+            resolved_id,
+            sid.clone(),
+            prompt,
+            medium_id,
+            project_id,
+        ))?;
+
+        let mut rx = self.daemon.subscribe();
         let handle = tokio::spawn(async move {
-            let stream = harness.run_turn(&chat_id, &prompt, &provider, &model_name);
-            drain_harness_stream(this, chat_id, stream).await;
+            while let Ok(ev) = rx.recv().await {
+                if let goble_daemon_protocol::DaemonEvent::TraceFinished { session_id, .. } = &ev {
+                    if session_id == &sid {
+                        break;
+                    }
+                }
+            }
         });
         Ok(handle)
     }
 
-    /// Resume a chat turn that suspended waiting on a user answer. The harness
-    /// resolves the pending ask in the store and re-runs the mission, streaming
-    /// the same events as [`run_chat_turn`] so the UI keeps rendering inline.
+    /// Resume a chat turn that suspended waiting on a user answer. The daemon
+    /// finds the still-live session for the chat, invokes the same harness's
+    /// resume path (which resolves the pending ask in the store and re-runs the
+    /// mission), and streams the same events as [`run_chat_turn`] so the UI
+    /// keeps rendering inline. Provider/model are accepted for call-site
+    /// compatibility; the resumed harness already carries its resolved LLM.
     pub fn resume_chat_turn(
         self: &Arc<Self>,
         chat_id: &str,
         response: &str,
         credential: Option<(String, String)>,
-        provider: &str,
-        model: &str,
+        _provider: &str,
+        _model: &str,
     ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-        let (llm, model_name) = self.resolve_llm_provider(provider, model);
-        let store = self.store.lock().clone();
-        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let auto_approve = self.get_auto_approve();
-        let web_search = self.get_web_search_setting();
-        self.chat_cancels
-            .lock()
-            .insert(chat_id.to_string(), cancel.clone());
-        let harness = goble_core::harness::Harness::new(store)
-            .with_llm(llm)
-            .with_runner(Arc::new(
-                goble_core::harness::SandboxedCommandRunner::default_tools(),
-            ))
-            .with_cancel(Arc::clone(&cancel))
-            .with_auto_approve(auto_approve)
-            .with_web_search(web_search);
-        let this = Arc::clone(self);
-        let chat_id = chat_id.to_string();
-        let response = response.to_string();
-        let provider = provider.to_string();
+        self.ensure_translator();
+        let sid = goble_harness_types::SessionId::new(chat_id);
+        self.daemon.resume(&sid, response, credential)?;
+
+        let mut rx = self.daemon.subscribe();
         let handle = tokio::spawn(async move {
-            let stream = harness.resume_turn(&chat_id, &response, credential, &provider, &model_name);
-            drain_harness_stream(this, chat_id, stream).await;
+            while let Ok(ev) = rx.recv().await {
+                if let goble_daemon_protocol::DaemonEvent::TraceFinished { session_id, .. } = &ev {
+                    if session_id == &sid {
+                        break;
+                    }
+                }
+            }
         });
         Ok(handle)
     }
 
     /// Request cancellation of a running chat turn started by [`run_chat_turn`].
     ///
-    /// Sets the harness cancel flag so the running turn yields/terminates, and
-    /// returns whether a turn was actually in flight for this chat.
+    /// The daemon sets the session's cancel flag so the running turn
+    /// yields/terminates, and returns whether a turn was actually in flight for
+    /// this chat (i.e. the daemon still had a live session to cancel).
     pub fn cancel_chat_turn(&self, chat_id: &str) -> bool {
-        match self.chat_cancels.lock().get(chat_id) {
-            Some(flag) => {
-                flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                true
-            }
-            None => false,
-        }
+        self.daemon
+            .cancel(&goble_harness_types::SessionId::new(chat_id))
+            .is_ok()
     }
 
     pub fn run_agent(
@@ -2511,6 +2836,104 @@ mod tests {
     }
 
     #[test]
+    fn run_chat_turn_unregistered_harness_errors() {
+        // A harness id that was never registered must not silently fall back to
+        // the internal harness; run_chat_turn surfaces the missing registration.
+        let (_dir, state) = tmp_state();
+        let chat_id = state.create_chat("Demo", None, None).expect("create chat");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let err = state.run_chat_turn(
+            &chat_id,
+            "hi",
+            "mock",
+            "",
+            "local",
+            "default",
+            &chat_id,
+            None,
+            Some("nope"),
+        );
+        assert!(err.is_err(), "an unregistered harness must error, not run locally");
+    }
+
+    #[test]
+    fn run_chat_turn_runs_registered_byoh_harness() {
+        // A registered BYOH harness is resolved and driven by run_chat_turn
+        // (instead of building + registering the internal harness): its reply
+        // is streamed as an assistant delta on the daemon event bus.
+        use std::sync::Arc;
+        let (_dir, state) = tmp_state();
+        let chat_id = state.create_chat("Demo", None, None).expect("create chat");
+        state.register_harness(Arc::new(goble_harness_runtime::MockHarness::new(
+            goble_harness_types::HarnessId::new("cli-fake"),
+            "from byoh",
+        )));
+
+        let client = state.daemon_client();
+        let mut rx = client.subscribe();
+        let session_id = goble_harness_types::SessionId::new(&chat_id);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let handle = state
+            .run_chat_turn(
+                &chat_id,
+                "Say hi",
+                "mock",
+                "",
+                "local",
+                "default",
+                &chat_id,
+                None,
+                Some("cli-fake"),
+            )
+            .expect("run turn on a registered harness");
+        rt.block_on(handle).expect("turn completes");
+
+        rt.block_on(async {
+            let mut saw_reply = false;
+            while let Ok(ev) = rx.recv().await {
+                match &ev {
+                    goble_daemon_protocol::DaemonEvent::AssistantDelta { delta, .. }
+                        if delta == "from byoh" =>
+                    {
+                        saw_reply = true;
+                    }
+                    goble_daemon_protocol::DaemonEvent::TraceFinished { session_id: sid, .. }
+                        if sid == &session_id =>
+                    {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            assert!(saw_reply, "the registered harness reply must be streamed");
+        });
+    }
+
+    #[test]
+    fn chat_turn_carries_selected_medium_and_project() {
+        let turn = build_chat_turn(
+            goble_harness_types::HarnessId::new("internal-c1"),
+            goble_harness_types::SessionId::new("c1"),
+            "hi",
+            "vm",
+            "projects/vm",
+        );
+        assert_eq!(
+            turn.medium_id,
+            goble_harness_types::MediumId::new("vm"),
+            "the turn's medium must be the selected medium, not the local default"
+        );
+        assert_eq!(
+            turn.project_id,
+            goble_harness_types::ProjectId::new("projects/vm"),
+            "the turn must be scoped to the selected medium's project, not 'default'"
+        );
+    }
+
+    #[test]
     fn test_state_add_worker() {
         let (_dir, state) = tmp_state();
         let wid = WorkerId::generate();
@@ -2527,6 +2950,55 @@ mod tests {
         assert!(!workers[0].paired);
         state.remove_worker(&wid);
         assert!(state.list_workers().is_empty());
+    }
+
+    #[test]
+    fn screen_registry_has_local_capturer_and_controller() {
+        let (_dir, state) = tmp_state();
+        let reg = state.screen_registry();
+        assert!(
+            reg.capturer(goble_screen_adapter::LOCAL_SOURCE).is_some(),
+            "a local capturer must be registered on DesktopState"
+        );
+        assert!(
+            reg.controller(goble_screen_adapter::LOCAL_SOURCE).is_some(),
+            "a local controller must be registered on DesktopState"
+        );
+        assert_eq!(
+            reg.capturer_sources(),
+            vec![goble_screen_adapter::LOCAL_SOURCE.to_string()]
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "remote-screen"))]
+    fn open_remote_screen_without_feature_errors() {
+        let (_dir, state) = tmp_state();
+        let err = state
+            .open_remote_screen(goble_harness_types::RemoteScreenConfig::new("vm", "u", "p"))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("remote-screen"),
+            "the error should name the missing feature, got: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "remote-screen")]
+    fn open_remote_screen_registers_a_remote_pair() {
+        // The client connects lazily on its own thread; registering the
+        // capturer+controller is synchronous, so a dead endpoint still yields a
+        // registered (blank) source. A connection-refused endpoint fails fast.
+        let (_dir, state) = tmp_state();
+        let source = state
+            .open_remote_screen(goble_harness_types::RemoteScreenConfig::new(
+                "127.0.0.1", "u", "p",
+            ))
+            .unwrap();
+        let reg = state.screen_registry();
+        assert!(reg.capturer(&source).is_some(), "remote capturer registered");
+        assert!(reg.controller(&source).is_some(), "remote controller registered");
+        assert!(reg.capturer_sources().contains(&source));
     }
 
     #[test]

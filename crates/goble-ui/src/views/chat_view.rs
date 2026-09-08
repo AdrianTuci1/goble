@@ -1,16 +1,27 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage};
 use crate::elements::{
     AppContext, AskUserCard, AskUserUi, Axis, Border, Button, ButtonVariant, ChatComposer,
     ChatMessageBubble, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill,
-    Flex, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point, PopupMenuItem,
-    QuickActionButton, Scrollable, SizeConstraint, Switch, Text,
+    Flex, FrameView, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point,
+    PopupMenuItem, QuickActionButton, Scrollable, SizeConstraint, Switch, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
+
+/// A live remote-desktop frame rendered inline at the end of the transcript.
+#[derive(Clone)]
+struct InlineScreen {
+    source: String,
+    frame_seq: u64,
+    width: u32,
+    height: u32,
+    data: Arc<[u8]>,
+}
 
 pub struct ChatView {
     header: Option<Box<dyn Element>>,
@@ -23,7 +34,10 @@ pub struct ChatView {
     composer_value: Rc<RefCell<String>>,
     composer_focused: bool,
     composer_model_label: Option<String>,
+    composer_path: Option<String>,
     composer_stop_visible: bool,
+    composer_harness_label: Option<String>,
+    composer_branch_label: Option<String>,
     on_composer_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_composer_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     on_attach: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -37,6 +51,16 @@ pub struct ChatView {
     composer_profile_items: Vec<PopupMenuItem>,
     composer_profile_menu_open: Rc<RefCell<bool>>,
     on_select_profile_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    composer_harness_items: Vec<PopupMenuItem>,
+    composer_harness_menu_open: Rc<RefCell<bool>>,
+    on_select_harness_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    composer_dir_items: Vec<PopupMenuItem>,
+    composer_dir_menu_open: Rc<RefCell<bool>>,
+    on_select_dir_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    composer_branch_items: Vec<PopupMenuItem>,
+    composer_branch_menu_open: Rc<RefCell<bool>>,
+    on_select_branch_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    on_composer_slash: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     pending_ask: Option<AskUserUi>,
     on_answer_ask: Option<Rc<RefCell<dyn FnMut(String, Option<(String, String)>) + 'static>>>,
     on_skip_ask: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -47,6 +71,13 @@ pub struct ChatView {
     queued_prompt: Option<String>,
     on_send_queued: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_dismiss_queued: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    /// A live remote desktop stream shown inline at the end of the transcript
+    /// when the harness hands off control (the "harness takes over" moment).
+    inline_screen: Option<InlineScreen>,
+    on_close_inline_screen: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    /// A detected BYOH handoff URI rendered as a "open remote desktop" action.
+    screen_link: Option<String>,
+    on_open_screen_link: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -65,6 +96,7 @@ impl ChatView {
             composer_value: Rc::new(RefCell::new(String::new())),
             composer_focused: false,
             composer_model_label: None,
+            composer_path: None,
             composer_stop_visible: false,
             on_composer_change: None,
             on_composer_focus_change: None,
@@ -79,6 +111,18 @@ impl ChatView {
             composer_profile_items: Vec::new(),
             composer_profile_menu_open: Rc::new(RefCell::new(false)),
             on_select_profile_item: None,
+            composer_harness_label: None,
+            composer_branch_label: None,
+            composer_harness_items: Vec::new(),
+            composer_harness_menu_open: Rc::new(RefCell::new(false)),
+            on_select_harness_item: None,
+            composer_dir_items: Vec::new(),
+            composer_dir_menu_open: Rc::new(RefCell::new(false)),
+            on_select_dir_item: None,
+            composer_branch_items: Vec::new(),
+            composer_branch_menu_open: Rc::new(RefCell::new(false)),
+            on_select_branch_item: None,
+            on_composer_slash: None,
             pending_ask: None,
             on_answer_ask: None,
             on_skip_ask: None,
@@ -87,6 +131,10 @@ impl ChatView {
             queued_prompt: None,
             on_send_queued: None,
             on_dismiss_queued: None,
+            inline_screen: None,
+            on_close_inline_screen: None,
+            screen_link: None,
+            on_open_screen_link: None,
             root: None,
             size: None,
             origin: None,
@@ -159,6 +207,21 @@ impl ChatView {
         self
     }
 
+    pub fn with_composer_path(mut self, path: impl Into<String>) -> Self {
+        self.composer_path = Some(path.into());
+        self
+    }
+
+    pub fn with_composer_harness_label(mut self, label: impl Into<String>) -> Self {
+        self.composer_harness_label = Some(label.into());
+        self
+    }
+
+    pub fn with_composer_branch_label(mut self, label: impl Into<String>) -> Self {
+        self.composer_branch_label = Some(label.into());
+        self
+    }
+
     pub fn with_composer_stop_visible(mut self, visible: bool) -> Self {
         self.composer_stop_visible = visible;
         self
@@ -220,6 +283,51 @@ impl ChatView {
         self
     }
 
+    /// Set the composer's harness dropdown (items, open flag, select callback).
+    pub fn with_composer_harness_menu<F: FnMut(usize) + 'static>(
+        mut self,
+        items: Vec<PopupMenuItem>,
+        open: Rc<RefCell<bool>>,
+        callback: F,
+    ) -> Self {
+        self.composer_harness_items = items;
+        self.composer_harness_menu_open = open;
+        self.on_select_harness_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Set the composer's working-directory dropdown.
+    pub fn with_composer_dir_menu<F: FnMut(usize) + 'static>(
+        mut self,
+        items: Vec<PopupMenuItem>,
+        open: Rc<RefCell<bool>>,
+        callback: F,
+    ) -> Self {
+        self.composer_dir_items = items;
+        self.composer_dir_menu_open = open;
+        self.on_select_dir_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Set the composer's git-branch dropdown.
+    pub fn with_composer_branch_menu<F: FnMut(usize) + 'static>(
+        mut self,
+        items: Vec<PopupMenuItem>,
+        open: Rc<RefCell<bool>>,
+        callback: F,
+    ) -> Self {
+        self.composer_branch_items = items;
+        self.composer_branch_menu_open = open;
+        self.on_select_branch_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Fired when the composer draft begins with `/` (slash command).
+    pub fn with_composer_on_slash<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_composer_slash = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     /// Set the pending ask rendered inline at the end of the transcript. When
     /// `Some`, the chat renders an `AskUserCard` (warp-new model) in the
     /// message stream instead of pinning a question to the composer.
@@ -275,6 +383,44 @@ impl ChatView {
         self
     }
 
+    /// Set a live remote-desktop frame to render inline at the end of the
+    /// transcript, marking the harness's handoff of control (computer use).
+    pub fn with_inline_screen(
+        mut self,
+        source: impl Into<String>,
+        frame_seq: u64,
+        width: u32,
+        height: u32,
+        data: Arc<[u8]>,
+    ) -> Self {
+        self.inline_screen = Some(InlineScreen {
+            source: source.into(),
+            frame_seq,
+            width,
+            height,
+            data,
+        });
+        self
+    }
+
+    /// Fired when the user closes the inline remote-desktop block.
+    pub fn with_on_close_inline_screen<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_close_inline_screen = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// A detected BYOH desktop-handoff URI, rendered as an open-roremote action.
+    pub fn with_screen_link(mut self, link: Option<String>) -> Self {
+        self.screen_link = link;
+        self
+    }
+
+    /// Fired when the user clicks the detected handoff link to open the desktop.
+    pub fn with_on_open_screen_link<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_open_screen_link = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     fn build_empty_state(&self, app: &AppContext) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
         let xl = app.theme.spacing_px(SpacingToken::Xl);
@@ -321,7 +467,10 @@ impl ChatView {
             column = column.with_child(header);
         }
 
-        let message_area: Box<dyn Element> = if self.messages.is_empty() && self.pending_ask.is_none()
+        let message_area: Box<dyn Element> = if self.messages.is_empty()
+            && self.pending_ask.is_none()
+            && self.inline_screen.is_none()
+            && self.screen_link.is_none()
         {
             // Wrap in a scrollable so it fills the remaining height and pins
             // the composer to the bottom of the window (a bare container would
@@ -421,6 +570,103 @@ impl ChatView {
                 .finish();
                 message_column = message_column.with_child(queued_card);
             }
+            // A live remote-desktop handoff renders inline at the end of the
+            // transcript (the harness takes over control). It scrolls with the
+            // conversation and carries a close button to clear it.
+            if let Some(screen) = &self.inline_screen {
+                let md = app.theme.spacing_px(SpacingToken::Md);
+                let sm = app.theme.spacing_px(SpacingToken::Sm);
+                let mut header = Flex::row()
+                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        Text::new("Component desktop · harness in control")
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_size(12.0)
+                            .finish(),
+                    );
+                if let Some(cb) = self.on_close_inline_screen.clone() {
+                    let close = Button::new(
+                        Text::new("✕")
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_size(12.0)
+                            .finish(),
+                    )
+                    .with_variant(ButtonVariant::Ghost)
+                    .with_on_click(move || (cb.borrow_mut())())
+                    .finish();
+                    header = header.with_child(close);
+                }
+                let frame = FrameView::new(
+                    screen.source.clone(),
+                    screen.frame_seq,
+                    screen.width,
+                    screen.height,
+                    Arc::clone(&screen.data),
+                );
+                let block = Container::new(
+                    Flex::column()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .with_spacing(sm)
+                        .with_child(header.finish())
+                        .with_child(frame.finish())
+                        .finish(),
+                )
+                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                .with_border(Border::all(1.0).with_border_fill(
+                    Fill::Solid(app.theme.color(ColorToken::Border)),
+                ))
+                .with_padding(EdgeInsets::uniform(md))
+                .with_corner_radius(8.0)
+                .finish();
+                message_column = message_column.with_child(block);
+            }
+            // A detected BYOH handoff hyperlink (no live frame yet): show a
+            // clickable affordance so the user can take over the harness's
+            // desktop.
+            if self.inline_screen.is_none() {
+                if let Some(link) = &self.screen_link {
+                    let md = app.theme.spacing_px(SpacingToken::Md);
+                    let sm = app.theme.spacing_px(SpacingToken::Sm);
+                    let mut row = Flex::row()
+                        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_child(
+                            Text::new("Harness handed off a desktop")
+                                .with_theme_color(ColorToken::Muted, app)
+                                .with_font_size(12.0)
+                                .finish(),
+                        );
+                    if let Some(cb) = self.on_open_screen_link.clone() {
+                        let link_for_cb = link.clone();
+                        let open = Button::new(
+                            Text::new("Open remote desktop")
+                                .with_theme_color(ColorToken::Bg, app)
+                                .with_font_size(12.0)
+                                .finish(),
+                        )
+                        .with_variant(ButtonVariant::Primary)
+                        .with_on_click(move || (cb.borrow_mut())(link_for_cb.clone()))
+                        .finish();
+                        row = row.with_child(open);
+                    }
+                    let card = Container::new(
+                        Flex::column()
+                            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                            .with_spacing(sm)
+                            .with_child(row.finish())
+                            .finish(),
+                    )
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                    .with_border(Border::all(1.0).with_border_fill(
+                        Fill::Solid(app.theme.color(ColorToken::Border)),
+                    ))
+                    .with_padding(EdgeInsets::uniform(md))
+                    .with_corner_radius(8.0)
+                    .finish();
+                    message_column = message_column.with_child(card);
+                }
+            }
             Scrollable::new(message_column.finish(), Axis::Vertical).finish()
         };
         // The transcript consumes the remaining space so the composer pins to
@@ -493,6 +739,15 @@ impl ChatView {
         if let Some(label) = self.composer_model_label.clone() {
             composer = composer.with_model_label(label);
         }
+        if let Some(path) = self.composer_path.clone() {
+            composer = composer.with_path_label(path);
+        }
+        if let Some(label) = self.composer_harness_label.clone() {
+            composer = composer.with_harness_label(label);
+        }
+        if let Some(label) = self.composer_branch_label.clone() {
+            composer = composer.with_branch_label(label);
+        }
         if let Some(cb) = self.on_composer_focus_change.clone() {
             composer = composer.with_on_focus_change(move |focused| (cb.borrow_mut())(focused));
         }
@@ -524,6 +779,30 @@ impl ChatView {
                 self.composer_profile_menu_open.clone(),
                 move |idx| (cb.borrow_mut())(idx),
             );
+        }
+        if let Some(cb) = self.on_select_harness_item.clone() {
+            composer = composer.with_harness_menu(
+                self.composer_harness_items.clone(),
+                self.composer_harness_menu_open.clone(),
+                move |idx| (cb.borrow_mut())(idx),
+            );
+        }
+        if let Some(cb) = self.on_select_dir_item.clone() {
+            composer = composer.with_dir_menu(
+                self.composer_dir_items.clone(),
+                self.composer_dir_menu_open.clone(),
+                move |idx| (cb.borrow_mut())(idx),
+            );
+        }
+        if let Some(cb) = self.on_select_branch_item.clone() {
+            composer = composer.with_branch_menu(
+                self.composer_branch_items.clone(),
+                self.composer_branch_menu_open.clone(),
+                move |idx| (cb.borrow_mut())(idx),
+            );
+        }
+        if let Some(cb) = self.on_composer_slash.clone() {
+            composer = composer.with_on_slash(move || (cb.borrow_mut())());
         }
         let composer = composer.finish();
         // A separator line above the rich input separates it from the
@@ -638,5 +917,46 @@ mod tests {
         );
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
+    }
+
+    #[test]
+    fn chat_view_renders_inline_screen_as_image() {
+        use crate::test_util::{command_counts, render_element};
+
+        let app = AppContext::default();
+        let pixels = vec![0u8; 200 * 120 * 4];
+        let mut view = ChatView::new()
+            .with_inline_screen("inline-1", 1, 200, 120, Arc::from(pixels))
+            .finish();
+        let commands = render_element(&mut view, vec2f(600.0, 800.0), &app);
+        let counts = command_counts(&commands);
+        assert!(
+            counts.draw_image > 0,
+            "a live inline screen should paint the frame image"
+        );
+        assert!(
+            counts.draw_text > 0,
+            "the harness-in-control header should render text"
+        );
+    }
+
+    #[test]
+    fn chat_view_renders_screen_link_card_without_frame() {
+        use crate::test_util::{command_counts, render_element};
+
+        let app = AppContext::default();
+        let mut view = ChatView::new()
+            .with_screen_link(Some("rdp://host:3389".to_string()))
+            .finish();
+        let commands = render_element(&mut view, vec2f(600.0, 800.0), &app);
+        let counts = command_counts(&commands);
+        assert_eq!(
+            counts.draw_image, 0,
+            "no live frame is drawn when only a URI link is present"
+        );
+        assert!(
+            counts.draw_text > 0,
+            "the handoff card should render a label and action"
+        );
     }
 }

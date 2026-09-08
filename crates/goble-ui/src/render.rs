@@ -40,6 +40,21 @@ pub enum RenderCommand {
         size: f32,
         color: ColorU,
     },
+    /// Draw a rectangular region of an RGBA8 image, scaled to `rect`.
+    ///
+    /// `data` is `width * height * 4` bytes. The engine caches the texture per
+    /// `source` and only re-uploads when `frame_seq` changes, so a live screen
+    /// stream (which holds one stable pane) does not re-upload unchanged frames.
+    DrawImage {
+        rect: crate::geometry::RectF,
+        source: String,
+        width: u32,
+        height: u32,
+        /// Monotonic per-source value; a change means the pixels did too.
+        frame_seq: u64,
+        /// RGBA8 pixel data (`width * height * 4` bytes).
+        data: std::sync::Arc<[u8]>,
+    },
     ClipRect(crate::geometry::RectF),
     PopClip,
 }
@@ -190,6 +205,26 @@ impl Renderer {
             name: name.into(),
             size,
             color,
+        });
+    }
+
+    /// Draw an RGBA8 image scaled to `rect`. See [`RenderCommand::DrawImage`].
+    pub fn draw_image(
+        &mut self,
+        rect: crate::geometry::RectF,
+        source: impl Into<String>,
+        width: u32,
+        height: u32,
+        frame_seq: u64,
+        data: std::sync::Arc<[u8]>,
+    ) {
+        self.commands.push(RenderCommand::DrawImage {
+            rect,
+            source: source.into(),
+            width,
+            height,
+            frame_seq,
+            data,
         });
     }
 

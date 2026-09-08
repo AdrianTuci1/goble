@@ -1,0 +1,28 @@
+[package]
+name = "goble-sandbox"
+version = "0.1.0"
+edition = "2021"
+description = "Profile-driven process isolation: SandboxProfile model, object-safe Sandbox trait, NoopSandbox default, and RAII guards."
+
+[features]
+# Seatbelt is a real macOS hardening backend (it opts in to `unsafe` inside a
+# `target_os = "macos"` gate), so it is enabled by default to harden hardened
+# profiles on macOS. On non-macOS the module is cfg'd out, so enabling it here
+# has no effect. Landlock/seccomp remain opt-in: they are declared seams that
+# decline to harden a hardened profile. `bwrap` needs no `unsafe` (it spawns the
+# `bwrap` executable) and is always compiled on Linux.
+default = ["unix-seatbelt"]
+unix-seatbelt = []
+unix-landlock = []
+unix-seccomp = []
+# Enables the async execution path (`PreparedCommand::to_tokio_command` and
+# `SandboxGuard::run_async`), letting consumers that use a tokio runtime run a
+# prepared command asynchronously instead of blocking on `std::process`.
+tokio = ["dep:tokio"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true, optional = true }

@@ -1,0 +1,17 @@
+[package]
+name = "goble-replay"
+version = "0.1.0"
+edition = "2021"
+description = "Reversible-execution substrate: per-turn checkpoints + rewind/revert, fork, and replay."
+
+[dependencies]
+goble-harness-types = { path = "../goble-harness-types" }
+goble-harness-protocol = { path = "../goble-harness-protocol" }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

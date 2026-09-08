@@ -52,14 +52,16 @@ pub fn handle_mouse_event(
             }
         }
         DispatchedEvent::MouseUp { position, .. } => {
-            if state.pressed {
-                state.pressed = false;
-                if contains(bounds, *position) {
-                    on_click();
-                    true
-                } else {
-                    false
-                }
+            // The element tree is rebuilt every frame (see the root view's
+            // `layout`), so the `pressed` flag set by an earlier MouseDown on
+            // this instance is lost before the matching MouseUp arrives. Fire
+            // the click on any release that lands inside the bounds regardless
+            // of this instance's pressed flag, so a click still completes after
+            // a rebuild. `pressed` only drives the down-state visual.
+            state.pressed = false;
+            if contains(bounds, *position) {
+                on_click();
+                true
             } else {
                 false
             }

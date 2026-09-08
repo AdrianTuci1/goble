@@ -4,6 +4,8 @@
 
 Goble is an open-source autonomous-agent platform. This document describes the peer-to-peer (P2P) security and clustering model that replaces per-worker pairing and avoids any central cloud service.
 
+> **Scope.** This document covers the P2P security and deployment model. The reversible-execution substrate — how Goble structures agent work as a git-like, inspectable, reversible trace (the "Shepherd zone"), plus Goble's differentiators (bring-your-own-harness, voice/screen interaction, per-project observability) — lives in [substrate-architecture.md](substrate-architecture.md).
+
 Goals:
 
 - No central server is required for authentication or data storage.

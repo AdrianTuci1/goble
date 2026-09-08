@@ -1,0 +1,14 @@
+[package]
+name = "goble-harness-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Execution contract: object-safe HarnessRuntime trait + registry + mock."
+
+[dependencies]
+goble-harness-types = { path = "../goble-harness-types" }
+goble-harness-protocol = { path = "../goble-harness-protocol" }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }

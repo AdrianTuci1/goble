@@ -6,97 +6,228 @@ use std::rc::Rc;
 
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
-    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
+    AppContext, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets,
+    Element, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, PaintContext, Point,
+    SizeConstraint, Text, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
-use goble_ui::theme::ColorToken;
-use goble_ui::{ChatView, SettingsView, Topbar};
+use goble_ui::theme::{ColorToken, SpacingToken};
 
-use super::chat;
-use super::{AppTab, UiActions, UiSnapshot};
+use super::panes;
+use super::projects::build_projects_view;
+use super::space_bar::SpaceBar;
+use super::{
+    AppTab, MediaActions, MediaSnapshot, ProjectsActions, ProjectsSnapshot, UiActions,
+    UiSnapshot,
+};
 
-/// Main topbar: threads on the left, inbox + user settings on the right.
-pub fn build_topbar(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+// The general toolbar doubles as the OS titlebar on macOS, so it is a touch
+// shorter and leaves room for the traffic lights on the left.
+#[cfg(target_os = "macos")]
+const TOPBAR_HEIGHT: f32 = 36.0;
+#[cfg(not(target_os = "macos"))]
+const TOPBAR_HEIGHT: f32 = 40.0;
+#[cfg(target_os = "macos")]
+const TOPBAR_TRAFFIC_INSET: f32 = 76.0;
+#[cfg(not(target_os = "macos"))]
+const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
+
+/// Single general toolbar: menu + projects on the left, the space tab strip and
+/// the environment controls in the middle, inbox + settings on the right.
+///
+/// The whole toolbar is one row so there is a single visible general toolbar
+/// (the space strip used to be a separate row below it). The "+" in the
+/// environment controls opens a warp-new style menu to add a space in a chosen
+/// environment, or add a new environment by name.
+pub fn build_topbar(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    media: &MediaSnapshot,
+    media_actions: &MediaActions,
+) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    // `md` is only used as the vertical toolbar padding on non-macOS platforms
+    // (on macOS the toolbar doubles as the OS titlebar and drops the padding).
+    #[cfg_attr(target_os = "macos", allow(unused_variables))]
+    let md = app.theme.spacing_px(SpacingToken::Md);
+
+    // The Settings surface is disabled in this build: the tab renders inactive
+    // (flat, no click) and the app never navigates to it. See `build_main`.
+    let projects_active = state.current_tab == AppTab::Projects;
+
     let on_menu = actions.on_menu.clone();
-    let on_threads = actions.on_threads.clone();
-    let on_inbox = actions.on_inbox.clone();
-    let on_settings = actions.on_settings.clone();
-    Topbar::new(
-        state.current_tab == AppTab::Threads,
-        false,
-        state.current_tab == AppTab::Settings,
-        move || (on_menu.borrow_mut())(),
-        move || (on_threads.borrow_mut())(),
-        move || (on_inbox.borrow_mut())(),
-        move || (on_settings.borrow_mut())(),
-        app,
+    let menu_icon = if projects_active { "arrow-left" } else { "menu-01" };
+    let menu_button = TopbarButton::new(
+        Icon::new(menu_icon)
+            .with_size(16.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
     )
-    .finish()
+    .with_on_click(move || (on_menu.borrow_mut())())
+    .finish();
+
+    let on_projects = actions.on_projects.clone();
+    let projects_button = TopbarButton::new(
+        Icon::new("layers-three-01")
+            .with_size(16.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_active(projects_active)
+    .with_on_click(move || (on_projects.borrow_mut())())
+    .finish();
+
+    let left = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(menu_button)
+        .with_child(projects_button)
+        .finish();
+
+    let on_inbox = actions.on_inbox.clone();
+    let inbox_button = TopbarButton::new(
+        Icon::new("inbox-01")
+            .with_size(16.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_on_click(move || (on_inbox.borrow_mut())())
+    .finish();
+
+    let on_settings = actions.on_settings.clone();
+    let settings_button = TopbarButton::new(
+        Icon::new("settings")
+            .with_size(16.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_disabled(true)
+    .with_on_click(move || (on_settings.borrow_mut())())
+    .finish();
+
+    let right = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(inbox_button)
+        .with_child(settings_button)
+        .finish();
+
+    // Middle of the toolbar: the space tab strip + the environment controls
+    // (medium selector and the "+" add-space menu).
+    let space_bar = build_space_tabs(state, actions);
+    let medium_controls =
+        super::media::build_medium_controls(app, state, media, media_actions, actions);
+    let center = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(space_bar)
+        .with_child(medium_controls)
+        .finish();
+
+    let row = Flex::row()
+        .with_main_axis_size(goble_ui::elements::MainAxisSize::Max)
+        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(left)
+        .with_child(center)
+        .with_child(right)
+        .finish();
+
+    // On macOS the toolbar doubles as the titlebar: drop the vertical padding so
+    // the actions sit vertically centered next to the traffic lights. Elsewhere
+    // keep the padded toolbar look.
+    #[cfg(target_os = "macos")]
+    let vertical_padding = 0.0;
+    #[cfg(not(target_os = "macos"))]
+    let vertical_padding = md;
+
+    Container::new(ConstrainedBox::new(row).with_height(TOPBAR_HEIGHT).finish())
+        .with_padding(EdgeInsets::new(
+            TOPBAR_TRAFFIC_INSET,
+            vertical_padding,
+            0.0,
+            vertical_padding,
+        ))
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .finish()
 }
 
-/// Main content area: threads placeholder, terminal/chat, or settings.
-/// Navigation is driven by the topbar buttons (threads left; settings right).
-pub fn build_main(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+/// The space tab strip: one tab per space, draggable to reorder, selectable to
+/// switch. The trailing "+" lives in the environment controls (it opens the
+/// add-space / add-medium menu) so the strip itself has no add button.
+fn build_space_tabs(state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+    let on_select_space = actions.on_select_space.clone();
+    let on_space_press = actions.on_space_press.clone();
+    let on_space_hover = actions.on_space_hover.clone();
+    let on_space_reorder = actions.on_space_reorder.clone();
+    let on_space_release = actions.on_space_release.clone();
+    let names = state.spaces.iter().map(|s| s.name.clone()).collect();
+    Box::new(
+        SpaceBar::new(names, state.active_space)
+            .with_hover(state.space_hover)
+            .with_press(state.space_press)
+            .with_drag(state.space_drag)
+            .with_on_select(move |index| (on_select_space.borrow_mut())(index))
+            .with_on_space_press(move |index| (on_space_press.borrow_mut())(index))
+            .with_on_space_hover(move |hover| (on_space_hover.borrow_mut())(hover))
+            .with_on_space_reorder(move |from, to| (on_space_reorder.borrow_mut())(from, to))
+            .with_on_space_release(move || (on_space_release.borrow_mut())()),
+    )
+}
+
+/// Main content area: threads placeholder, terminal/chat, settings, or the
+/// per-project observability panel. Navigation is driven by the topbar buttons.
+pub fn build_main(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    projects: &ProjectsSnapshot,
+    projects_actions: &ProjectsActions,
+    _media: &MediaSnapshot,
+    _media_actions: &MediaActions,
+) -> Box<dyn Element> {
     match state.current_tab {
-        AppTab::Threads => ChatView::new()
-            .with_messages(state.thread_messages.clone())
-            .finish(),
-        AppTab::Chat => chat::build_agent_chat(app, state, actions),
-        AppTab::Settings => build_settings(app, state, actions),
+        // The chat/terminal area is the active space's pane tree; the medium
+        // selector lives in the topbar, so the whole main column is panes.
+        AppTab::Chat => panes::build_active_space(app, state, actions),
+        // The Settings surface is disabled in this build: reachable only if a
+        // stale tab flag survives, so we render a dead-end instead of the view.
+        AppTab::Settings => build_settings_disabled(app, actions),
+        AppTab::Projects => build_projects_view(app, projects, projects_actions),
     }
 }
 
-/// Full settings view: a Back button, a sidebar of settings pages, and the
-/// active page's form (profile, LLM, appearance, account/vault, cluster,
-/// workers, keys). Driven entirely from app-owned state + actions so navigation
-/// and control changes survive the per-frame element rebuild.
-fn build_settings(_app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    let on_navigate = actions.on_settings_navigate.clone();
+/// A dead-end panel shown if the (disabled) Settings tab is ever reached. The
+/// Settings surface is inactive in this build, so this only backs out to Chat.
+fn build_settings_disabled(app: &AppContext, actions: &UiActions) -> Box<dyn Element> {
     let on_back = actions.on_settings_back.clone();
-    let on_save_profile = actions.on_save_profile.clone();
-    let on_save_llm = actions.on_save_llm.clone();
-    let on_toggle_dark = actions.on_toggle_dark_mode.clone();
-    let on_unlock_vault = actions.on_vault_unlock.clone();
-    let on_create_cluster = actions.on_create_cluster.clone();
-    let on_unlock_cluster = actions.on_unlock_cluster.clone();
-    let on_add_worker = actions.on_add_worker.clone();
-    let on_remove_worker = actions.on_remove_worker.clone();
-    let on_add_key = actions.on_add_authorized_key.clone();
-    let on_remove_key = actions.on_remove_authorized_key.clone();
-
-    SettingsView::new(state.settings_page)
-        .with_profile(
-            state.settings_profile_name.clone(),
-            state.settings_profile_email.clone(),
+    let back = Button::new(Text::new("← Back").with_theme_color(ColorToken::Text, app).finish())
+        .with_variant(ButtonVariant::Ghost)
+        .with_on_click(move || (on_back.borrow_mut())())
+        .finish();
+    let md = app.theme.spacing_px(SpacingToken::Md);
+    let body = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(md)
+        .with_child(back)
+        .with_child(
+            Text::new("Settings")
+                .with_theme_color(ColorToken::Text, app)
+                .with_font_size(16.0)
+                .finish(),
         )
-        .with_llm(
-            state.settings_llm_provider.clone(),
-            state.settings_llm_model.clone(),
-            state.settings_llm_api_key.clone(),
-            state.settings_llm_base_url.clone(),
-            state.settings_llm_temperature.clone(),
+        .with_child(
+            Text::new("Settings is disabled in this version.")
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(12.0)
+                .finish(),
         )
-        .with_dark_mode(state.settings_dark_mode)
-        .with_vault_state(state.settings_vault_unlocked, Vec::new())
-        .with_cluster_state(
-            state.settings_cluster_name.clone(),
-            state.settings_cluster_configured,
-        )
-        .with_workers(state.settings_workers.clone())
-        .with_authorized_keys(state.settings_authorized_keys.clone())
-        .with_on_navigate(move |page| (on_navigate.borrow_mut())(page))
-        .with_on_back(move || (on_back.borrow_mut())())
-        .with_on_save_profile(move |name, email| (on_save_profile.borrow_mut())(name, email))
-        .with_on_save_llm(move |p, m, k, b, t| (on_save_llm.borrow_mut())(p, m, k, b, t))
-        .with_on_toggle_dark_mode(move |v| (on_toggle_dark.borrow_mut())(v))
-        .with_on_unlock_vault(move |pass| (on_unlock_vault.borrow_mut())(pass))
-        .with_on_create_cluster(move |name, pass| (on_create_cluster.borrow_mut())(name, pass))
-        .with_on_unlock_cluster(move |pass| (on_unlock_cluster.borrow_mut())(pass))
-        .with_on_add_worker(move |name, url| (on_add_worker.borrow_mut())(name, url))
-        .with_on_remove_worker(move |id| (on_remove_worker.borrow_mut())(id))
-        .with_on_add_authorized_key(move |n, p, f| (on_add_key.borrow_mut())(n, p, f))
-        .with_on_remove_authorized_key(move |id| (on_remove_key.borrow_mut())(id))
+        .finish();
+    Container::new(body)
+        .with_padding(goble_ui::elements::EdgeInsets::uniform(md))
         .finish()
 }
 

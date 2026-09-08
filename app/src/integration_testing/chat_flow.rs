@@ -9,12 +9,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_app::actions::make_actions;
+use goble_app::media::MediaState;
 use goble_app::state::UiState;
 use goble_app::ui::{AppTab, UiActions};
 use goble_desktop_service::DesktopState;
+use goble_ui::platform::WindowControl;
 use goble_ui::{ChatFragmentKind, ChatMessage, ChatRole};
 
 /// Concatenate the human-readable text of a message's inline fragments.
+#[allow(dead_code)]
 fn message_text(msg: &ChatMessage) -> String {
     msg.fragments
         .iter()
@@ -32,7 +35,13 @@ fn message_text(msg: &ChatMessage) -> String {
 
 fn build(desktop: &Arc<DesktopState>) -> (Rc<RefCell<UiState>>, UiActions) {
     let state = Rc::new(RefCell::new(UiState::from_desktop(desktop)));
-    let actions = make_actions(Rc::clone(&state), Some(Arc::clone(desktop)));
+    let media = Rc::new(RefCell::new(MediaState::mock()));
+    let actions = make_actions(
+        Rc::clone(&state),
+        Some(Arc::clone(desktop)),
+        Rc::clone(&media),
+        WindowControl::default(),
+    );
     (state, actions)
 }
 

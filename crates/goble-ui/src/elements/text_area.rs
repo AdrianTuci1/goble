@@ -178,7 +178,7 @@ impl Element for TextArea {
                 }
                 false
             }
-            DispatchedEvent::KeyDown { key } => {
+            DispatchedEvent::KeyDown { key, .. } => {
                 if !self.focused {
                     return false;
                 }
@@ -234,6 +234,7 @@ mod tests {
         let handled = area.dispatch_event(
             &DispatchedEvent::KeyDown {
                 key: "Enter".to_string(),
+                modifiers: Default::default(),
             },
             &mut event_ctx,
             &app,

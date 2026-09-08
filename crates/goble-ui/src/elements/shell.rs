@@ -213,10 +213,14 @@ impl ShellView {
             threads_active,
             inbox_active,
             settings_active,
+            false,
+            true,
             on_menu,
             on_threads,
             on_inbox,
             on_settings,
+            || {},
+            false,
             app,
         )
         .finish()

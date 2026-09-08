@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::process::Output;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,6 +9,9 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use chrono::Utc;
 use futures::Stream;
+use goble_sandbox::{
+    sandbox_for, PreparedCommand, Sandbox, SandboxError, SandboxGuard, SandboxProfile,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{AgentId, AgentSpec, McpManifest, Trigger};
@@ -37,10 +41,17 @@ impl CommandRunner for MockCommandRunner {
 }
 
 /// A sandboxed shell runner with an allowlist of commands and a per-command timeout.
+///
+/// The runner applies a configurable [`Sandbox`] around each command when one is
+/// set. When no sandbox is configured — or the sandbox backend cannot run on
+/// this platform — it executes the command directly, preserving the historical
+/// unconfined behavior. The `allowed_commands` allow-list is always enforced
+/// regardless of the sandbox configuration.
 pub struct SandboxedCommandRunner {
     allowed_commands: HashSet<String>,
     timeout_seconds: u64,
     working_dir: PathBuf,
+    sandbox: Option<Box<dyn Sandbox>>,
 }
 
 impl SandboxedCommandRunner {
@@ -53,6 +64,7 @@ impl SandboxedCommandRunner {
             allowed_commands: allowed.into_iter().map(Into::into).collect(),
             timeout_seconds,
             working_dir,
+            sandbox: None,
         }
     }
 
@@ -65,6 +77,89 @@ impl SandboxedCommandRunner {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         )
     }
+
+    /// Configure an isolation backend. Pass `None` (the default) to run commands
+    /// directly, exactly as when no sandbox was configured. When `Some`, commands
+    /// are run inside the sandbox; if the sandbox backend is unavailable on this
+    /// platform the runner degrades to direct execution rather than failing.
+    pub fn with_sandbox(mut self, sandbox: Option<Box<dyn Sandbox>>) -> Self {
+        self.sandbox = sandbox;
+        self
+    }
+
+    /// Run `command`, applying the configured sandbox when present.
+    ///
+    /// When no sandbox is configured — or the sandbox backend cannot run on this
+    /// platform — the command is executed directly, preserving the historical
+    /// unconfined behavior. A command rejected by the sandbox's own allow-list is
+    /// still refused rather than silently degraded.
+    async fn run_prepared(&self, command: &PreparedCommand) -> Result<Output> {
+        if let Some(sandbox) = &self.sandbox {
+            match SandboxGuard::new(&**sandbox, command.clone()) {
+                Ok(mut guard) => return guard.run_async().await,
+                Err(SandboxError::NotInAllowList { command: denied }) => {
+                    anyhow::bail!("command `{denied}` is not in the sandbox allow-list")
+                }
+                Err(SandboxError::UnsupportedLevel { .. })
+                | Err(SandboxError::BackendUnavailable { .. }) => {
+                    // The backend cannot apply this profile on this platform.
+                    // Degrade to direct execution rather than failing the run.
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        command.to_tokio_command().output().await.map_err(Into::into)
+    }
+}
+
+/// The sandbox profile recommended for the harness's command runner.
+///
+/// The harness must keep the workspace directory *writable* so `write_file`,
+/// `edit_file`, `delete_file`, `rename_file` and `git_commit` keep working, so
+/// `read_only_fs` is left `false`. When hardened under `bwrap` this binds the
+/// workspace read-write instead of `--ro-bind`ing it; everything outside the
+/// workspace stays isolated by bwrap's empty mount tree. On Linux the network is
+/// unshared (`no_network` -> `--unshare-net`) so a confined command cannot reach
+/// out, and `no_new_privs` refuses privilege escalation. At the `Hardened` level
+/// the allow-list is not enforced by the sandbox; the runner's own
+/// `allowed_commands` gate is the real command allow-list, so the profile stays
+/// gate-agnostic.
+///
+/// The composition roots (desktop service, native host, Tauri app, worker)
+/// build [`SandboxedCommandRunner::default_tools`] and opt in with
+/// `with_sandbox(harness_sandbox())`. On macOS `harness_sandbox()` returns a
+/// Seatbelt-backed sandbox that really confines the *command* it runs (via
+/// `sandbox-exec`), never the calling harness/app process. On platforms with no
+/// hardening backend it returns `None` and the runner degrades to direct
+/// execution, so dev/desktop behavior is unchanged there.
+pub fn harness_sandbox_profile() -> SandboxProfile {
+    let mut profile = SandboxProfile::hardened("harness");
+    // Keep the workspace writable so file tools and git_commit keep working.
+    profile.hardened_flags.read_only_fs = false;
+    profile
+}
+
+/// Build the sandbox for [`harness_sandbox_profile`], or `None` when no backend
+/// is available on this platform.
+///
+/// Availability is probed at construction: a hardened profile only hardens (and
+/// therefore is only usable) when a real backend can apply it — bwrap on Linux,
+/// Seatbelt (`sandbox-exec`) on macOS. When the backend cannot apply the profile
+/// (e.g. an unavailable kernel call) we return `None` rather than claim to be
+/// sandboxed. The `bwrap` executable must be installed on Linux for the returned
+/// sandbox to actually confine a command; on macOS the `sandbox-exec` launcher
+/// must be present, and confinement is applied to each spawned command — never the
+/// harness/app process — so model calls stay unconfined. Callers can pass the
+/// result straight to [`SandboxedCommandRunner::with_sandbox`].
+pub fn harness_sandbox() -> Option<Box<dyn Sandbox>> {
+    let sb = sandbox_for(harness_sandbox_profile());
+    match sb.prepare(&goble_sandbox::PreparedCommand::new("echo")) {
+        Ok(()) => Some(sb),
+        Err(SandboxError::UnsupportedLevel { .. }) | Err(SandboxError::BackendUnavailable { .. }) => {
+            None
+        }
+        Err(_) => Some(sb),
+    }
 }
 
 #[async_trait::async_trait]
@@ -73,12 +168,12 @@ impl CommandRunner for SandboxedCommandRunner {
         if !self.allowed_commands.contains(command) {
             anyhow::bail!("command `{command}` is not in the allowed list");
         }
+        let prepared = PreparedCommand::new(command)
+            .args(args.iter().cloned())
+            .cwd(self.working_dir.clone());
         let output = tokio::time::timeout(
             Duration::from_secs(self.timeout_seconds),
-            tokio::process::Command::new(command)
-                .args(args)
-                .current_dir(&self.working_dir)
-                .output(),
+            self.run_prepared(&prepared),
         )
         .await
         .context("command timed out")?
@@ -298,6 +393,11 @@ impl Harness {
     pub fn with_workspace_dir(mut self, workspace_dir: impl Into<std::path::PathBuf>) -> Self {
         self.workspace_dir = workspace_dir.into();
         self
+    }
+
+    /// The configured workspace directory.
+    pub fn workspace_dir(&self) -> &std::path::Path {
+        &self.workspace_dir
     }
 
     /// Directory holding the seeded user guide (`~/.goble/docs/user-guide`), used
@@ -886,6 +986,22 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["agent_id"]
             }),
         },
+        ToolDefinition {
+            name: "open_screen".to_string(),
+            description: "Open a remote desktop over the harness window and hand off to it. The agent calls this when it needs a real GUI; the host opens the stream in a screen pane and routes your keyboard/mouse to it. `host` is required; `port` defaults to 3389 and `width`/`height` to 1280x720.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "host": { "type": "string" },
+                    "port": { "type": "integer" },
+                    "username": { "type": "string" },
+                    "password": { "type": "string" },
+                    "width": { "type": "integer" },
+                    "height": { "type": "integer" }
+                },
+                "required": ["host"]
+            }),
+        },
     ]
 }
 
@@ -945,6 +1061,7 @@ pub(crate) async fn execute_tool_call(
         "execute_python_code" => execute_python_code(&call.arguments).await,
         "memory_write" => memory_write(store, &call.arguments),
         "memory_read" => memory_read(store, &call.arguments),
+        "open_screen" => open_screen(&call.arguments),
         "mcp_call" => mcp_call(&mcp_manager, &call.arguments),
         _ => {
             if mcp_manager.is_mcp_tool(&call.name) {
@@ -1097,6 +1214,18 @@ fn memory_write(store: &Store, args: &serde_json::Value) -> Result<String> {
 
     store.put_agent_memory(&memory)?;
     Ok(format!("memory updated for agent {agent_id}"))
+}
+
+/// Request an interactive remote desktop handoff. The agent calls this when it
+/// decides it needs a real GUI; the host that owns the screen registry opens the
+/// stream and shows it in a screen pane. This function only validates the target
+/// and acknowledges — actually opening the desktop is the host's job.
+fn open_screen(args: &serde_json::Value) -> Result<String> {
+    let host = args["host"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("open_screen requires a `host` argument"))?;
+    let port = args["port"].as_u64().unwrap_or(3389);
+    Ok(format!("handoff requested to {host}:{port}"))
 }
 
 fn memory_read(store: &Store, args: &serde_json::Value) -> Result<String> {
@@ -2134,11 +2263,38 @@ fn resolve_path(path: &str, workspace_dir: &std::path::Path) -> Result<PathBuf> 
     let canonical_base = workspace_dir
         .canonicalize()
         .unwrap_or_else(|_| workspace_dir.to_path_buf());
-    let canonical_resolved = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+    let canonical_resolved = canonicalize_loose(&resolved);
     if !canonical_resolved.starts_with(&canonical_base) {
         anyhow::bail!("path {path:?} escapes workspace directory {canonical_base:?}");
     }
     Ok(canonical_resolved)
+}
+
+/// Canonicalize the deepest existing ancestor of `path` and re-append the
+/// not-yet-existing tail. Without this, a target that is about to be created
+/// (e.g. a `write_file` destination) would keep a non-canonical prefix, so a
+/// symlinked workspace root (on macOS `/var` -> `/private/var`) would fail the
+/// `starts_with` containment check and falsely reject a path inside the
+/// workspace.
+fn canonicalize_loose(path: &std::path::Path) -> PathBuf {
+    let mut existing = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while !existing.exists() {
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                existing = parent.to_path_buf();
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+    let mut canon = existing
+        .canonicalize()
+        .unwrap_or_else(|_| existing.to_path_buf());
+    for name in tail.iter().rev() {
+        canon.push(name);
+    }
+    canon
 }
 
 #[cfg(test)]
@@ -2172,6 +2328,19 @@ mod tests {
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
         (store, chat_id, harness)
+    }
+
+    #[tokio::test]
+    async fn test_execute_open_screen_acknowledges_handoff() {
+        let (_, chat_id, harness) = harness_with_tool("open_screen", serde_json::json!({ "host": "vm.example.com" }));
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "open the remote desktop", "mock", "mock")
+            .collect()
+            .await;
+        let finished_tool = events.iter().any(
+            |e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("handoff requested to vm.example.com:3389")),
+        );
+        assert!(finished_tool);
     }
 
     #[tokio::test]
@@ -2506,6 +2675,42 @@ mod tests {
             .collect()
             .await;
         assert!(events.iter().any(|e| matches!(e, HarnessEvent::ToolCallError { message, .. } if message.contains("not in the allowed list"))));
+    }
+
+    // The runner degrades to direct, unconfined execution when no sandbox is
+    // configured: commands run exactly as they did before goble-sandbox wiring.
+    #[tokio::test]
+    async fn sandboxed_runner_without_sandbox_runs_directly() {
+        let runner = SandboxedCommandRunner::default_tools();
+        let out = runner
+            .run("echo", &["fallthrough".to_string()])
+            .await
+            .unwrap();
+        assert!(out.contains("fallthrough"));
+    }
+
+    // `with_sandbox(None)` is a no-op: the runner still executes the command
+    // directly, preserving default behavior.
+    #[tokio::test]
+    async fn sandboxed_runner_with_sandbox_none_is_noop() {
+        let runner = SandboxedCommandRunner::default_tools().with_sandbox(None);
+        let out = runner.run("echo", &["noop".to_string()]).await.unwrap();
+        assert!(out.contains("noop"));
+    }
+
+    // When a sandbox backend cannot run on this platform (here a hardened profile
+    // against the no-op backend, which rejects hardening as an unavailable
+    // backend would) the runner degrades to direct execution instead of failing.
+    #[tokio::test]
+    async fn sandboxed_runner_degrades_when_backend_unavailable() {
+        let profile = goble_sandbox::SandboxProfile::hardened("prod");
+        let sb: Box<dyn Sandbox> = Box::new(goble_sandbox::NoopSandbox::new(profile));
+        let runner = SandboxedCommandRunner::default_tools().with_sandbox(Some(sb));
+        let out = runner
+            .run("echo", &["degraded".to_string()])
+            .await
+            .unwrap();
+        assert!(out.contains("degraded"));
     }
 
     #[tokio::test]

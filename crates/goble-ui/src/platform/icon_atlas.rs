@@ -48,6 +48,8 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("send", "send.svg"),
     icon_bytes!("inbox-01", "inbox-01.svg"),
     icon_bytes!("agentmode", "agentmode.svg"),
+    icon_bytes!("conversation-local", "conversation-local.svg"),
+    icon_bytes!("conversation-remote", "conversation-remote.svg"),
     icon_bytes!("mic", "mic.svg"),
     icon_bytes!("key", "key.svg"),
     icon_bytes!("sliders", "sliders.svg"),
@@ -61,6 +63,8 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("image", "image.svg"),
     icon_bytes!("code", "code.svg"),
     icon_bytes!("link", "link.svg"),
+    icon_bytes!("folder", "folder.svg"),
+    icon_bytes!("git-branch", "git-branch.svg"),
     icon_bytes!("stop", "stop.svg"),
     icon_bytes!("arrow-up", "arrow-up.svg"),
     icon_bytes!("info", "info.svg"),
@@ -286,4 +290,43 @@ fn rasterize_icon(data: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
 
     let alpha: Vec<u8> = pixmap.pixels().iter().map(|pixel| pixel.alpha()).collect();
     Some((alpha, width, height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_pill_icons_rasterize() {
+        let mut found = 0;
+        for (name, bytes) in ICON_FILES {
+            if *name == "folder" || *name == "git-branch" {
+                let img = rasterize_icon(bytes)
+                    .unwrap_or_else(|| panic!("icon {name} should rasterize"));
+                assert!(
+                    img.0.iter().any(|&a| a > 0),
+                    "icon {name} rendered no opaque pixels"
+                );
+                found += 1;
+            }
+        }
+        assert_eq!(found, 2, "expected both new context-pill icons");
+    }
+
+    #[test]
+    fn conversation_icons_rasterize() {
+        let mut found = 0;
+        for (name, bytes) in ICON_FILES {
+            if *name == "conversation-local" || *name == "conversation-remote" {
+                let img = rasterize_icon(bytes)
+                    .unwrap_or_else(|| panic!("icon {name} should rasterize"));
+                assert!(
+                    img.0.iter().any(|&a| a > 0),
+                    "icon {name} rendered no opaque pixels"
+                );
+                found += 1;
+            }
+        }
+        assert_eq!(found, 2, "expected both environment conversation icons");
+    }
 }

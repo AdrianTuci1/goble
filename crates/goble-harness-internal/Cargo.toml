@@ -1,0 +1,16 @@
+[package]
+name = "goble-harness-internal"
+version = "0.1.0"
+edition = "2021"
+description = "BYOH seam adaptor: wraps goble_core::Harness as goble-harness-runtime::HarnessRuntime."
+
+[dependencies]
+goble-core = { path = "../goble-core" }
+goble-harness-types = { path = "../goble-harness-types" }
+goble-harness-protocol = { path = "../goble-harness-protocol" }
+goble-harness-runtime = { path = "../goble-harness-runtime" }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }

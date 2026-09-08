@@ -1,0 +1,24 @@
+[package]
+name = "goble-voice"
+version = "0.1.0"
+edition = "2021"
+description = "Model-facing voice capability: STT/TTS clients, a streaming event stream, and an object-safe provider seam."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[features]
+default = []
+# Native audio capture/playback. Off by default so the crate builds without any
+# native audio backend; the model types always compile either way. Enabling it
+# only adds pure PCM interchange helpers, not a platform backend.
+audio = []

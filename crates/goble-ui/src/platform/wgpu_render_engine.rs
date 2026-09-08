@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::color::ColorU;
 use crate::platform::icon_atlas::IconAtlas;
 use crate::platform::text_atlas::TextAtlas;
@@ -6,9 +8,10 @@ use wgpu::util::DeviceExt;
 
 const MAX_RECTS: usize = 4096;
 const MAX_TEXT_VERTICES: usize = 8192;
+const MAX_IMAGES: usize = 256;
 
 /// A run of geometry produced between two clip boundaries, drawn with one
-/// scissor rect. Geometry is accumulated across the whole frame into the three
+/// scissor rect. Geometry is accumulated across the whole frame into the four
 /// vertex buffers, then each batch is drawn as a slice of those buffers so that
 /// `queue.write_buffer` ordering stays correct (all writes happen once, before
 /// the single submit).
@@ -20,6 +23,30 @@ struct Batch {
     text_end: usize,
     icon_start: usize,
     icon_end: usize,
+    image_start: usize,
+    image_end: usize,
+}
+
+/// One image quad to draw: the start vertex into the image vertex buffer plus
+/// the bind group for its source texture. Images are drawn individually because
+/// each source has its own texture (so they cannot share one bind group).
+struct ImageDraw {
+    vertex_index: usize,
+    bind_group: wgpu::BindGroup,
+}
+
+/// A cached per-source texture for [`RenderCommand::DrawImage`]. Keyed by the
+/// command's `source`; only re-uploaded when `frame_seq` changes.
+struct ImageTexture {
+    frame_seq: u64,
+    width: u32,
+    height: u32,
+    /// Owned so the GPU texture outlives the bind group handed to the render
+    /// pass; without this the texture would be dropped (and freed) while the
+    /// cached bind group still references it.
+    #[allow(dead_code)]
+    texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
 }
 
 #[repr(C)]
@@ -98,6 +125,11 @@ pub struct WgpuRenderEngine {
     text_vertex_buffer: wgpu::Buffer,
     icon_atlas: IconAtlas,
     icon_vertex_buffer: wgpu::Buffer,
+    image_pipeline: wgpu::RenderPipeline,
+    image_index_buffer: wgpu::Buffer,
+    image_vertex_buffer: wgpu::Buffer,
+    image_bind_group_layout: wgpu::BindGroupLayout,
+    image_textures: HashMap<String, ImageTexture>,
 }
 
 impl WgpuRenderEngine {
@@ -366,6 +398,82 @@ impl WgpuRenderEngine {
             mapped_at_creation: false,
         });
 
+        // Image pipeline: a textured quad rendered from an RGBA8 source. The
+        // bind group layout mirrors the text layout (uniform + texture +
+        // sampler), but the image fragment shader samples the full RGBA and
+        // does not multiply by an alpha coverage channel.
+        let image_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("goble-ui image shader"),
+            source: wgpu::ShaderSource::Wgsl(IMAGE_SHADER.into()),
+        });
+
+        let image_bind_group_layout = text_bind_group_layout.clone();
+
+        let image_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("goble-ui image pipeline layout"),
+            bind_group_layouts: &[&image_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let image_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("goble-ui image pipeline"),
+            layout: Some(&image_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &image_shader,
+                entry_point: Some("vs_image"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<TextVertex>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 0,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 8,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 16,
+                            shader_location: 2,
+                            format: wgpu::VertexFormat::Float32x4,
+                        },
+                    ],
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &image_shader,
+                entry_point: Some("fs_image"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let image_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("goble-ui image index buffer"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let image_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("goble-ui image vertex buffer"),
+            size: (std::mem::size_of::<TextVertex>() * MAX_IMAGES * 4) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             rect_pipeline,
             rect_bind_group,
@@ -379,6 +487,11 @@ impl WgpuRenderEngine {
             text_vertex_buffer,
             icon_atlas,
             icon_vertex_buffer,
+            image_pipeline,
+            image_index_buffer,
+            image_vertex_buffer,
+            image_bind_group_layout,
+            image_textures: HashMap::new(),
         }
     }
 
@@ -404,11 +517,14 @@ impl WgpuRenderEngine {
         let mut rect_instances: Vec<RectInstance> = Vec::new();
         let mut text_vertices: Vec<TextVertex> = Vec::new();
         let mut icon_vertices: Vec<TextVertex> = Vec::new();
+        let mut image_vertices: Vec<TextVertex> = Vec::new();
+        let mut image_draws: Vec<ImageDraw> = Vec::new();
         let mut batches: Vec<Batch> = Vec::new();
         let mut clip_stack: Vec<crate::geometry::RectF> = Vec::new();
         let mut prev_rect = 0usize;
         let mut prev_text = 0usize;
         let mut prev_icon = 0usize;
+        let mut prev_image = 0usize;
 
         // Record a batch for the geometry accumulated since the previous clip
         // boundary, drawing it with the scissor currently active.
@@ -422,10 +538,13 @@ impl WgpuRenderEngine {
                     text_end: text_vertices.len(),
                     icon_start: prev_icon,
                     icon_end: icon_vertices.len(),
+                    image_start: prev_image,
+                    image_end: image_draws.len(),
                 });
                 prev_rect = rect_instances.len();
                 prev_text = text_vertices.len();
                 prev_icon = icon_vertices.len();
+                prev_image = image_draws.len();
             }};
         }
 
@@ -561,6 +680,60 @@ impl WgpuRenderEngine {
                         ]);
                     }
                 }
+                RenderCommand::DrawImage {
+                    rect,
+                    source,
+                    width,
+                    height,
+                    frame_seq,
+                    data,
+                } => {
+                    if *width == 0 || *height == 0 {
+                        continue;
+                    }
+                    let scaled = rect.scale(scale, scale);
+                    let left = scaled.origin.x;
+                    let top = scaled.origin.y;
+                    let right = left + scaled.size.width;
+                    let bottom = top + scaled.size.height;
+                    let white = [1.0, 1.0, 1.0, 1.0];
+                    let vertex_index = image_vertices.len();
+                    image_vertices.extend_from_slice(&[
+                        TextVertex {
+                            position: [left, top],
+                            uv: [0.0, 0.0],
+                            color: white,
+                        },
+                        TextVertex {
+                            position: [right, top],
+                            uv: [1.0, 0.0],
+                            color: white,
+                        },
+                        TextVertex {
+                            position: [left, bottom],
+                            uv: [0.0, 1.0],
+                            color: white,
+                        },
+                        TextVertex {
+                            position: [right, bottom],
+                            uv: [1.0, 1.0],
+                            color: white,
+                        },
+                    ]);
+                    let bind_group = self.ensure_image_texture(
+                        device,
+                        queue,
+                        source,
+                        *width,
+                        *height,
+                        *frame_seq,
+                        std::sync::Arc::clone(data),
+                    );
+                    image_draws.push(ImageDraw {
+                        vertex_index,
+                        bind_group,
+                    });
+                }
                 RenderCommand::ClipRect(rect) => {
                     record_batch!();
                     clip_stack.push(*rect);
@@ -595,6 +768,14 @@ impl WgpuRenderEngine {
                 &self.icon_vertex_buffer,
                 0,
                 bytemuck::cast_slice(&icon_vertices[..icon_total]),
+            );
+        }
+        let image_vertex_total = image_vertices.len().min(MAX_IMAGES * 4);
+        if image_vertex_total > 0 {
+            queue.write_buffer(
+                &self.image_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&image_vertices[..image_vertex_total]),
             );
         }
 
@@ -677,10 +858,132 @@ impl WgpuRenderEngine {
                     pass.set_scissor_rect(batch.scissor.0, batch.scissor.1, batch.scissor.2, batch.scissor.3);
                     pass.draw_indexed(0..index_count as u32, 0, 0..1);
                 }
+
+                // Images are drawn one quad at a time because every source has
+                // its own texture (and thus its own bind group). The vertex
+                // index is an absolute offset into the image vertex buffer.
+                let image_start = batch.image_start.min(image_draws.len());
+                let image_end = batch.image_end.min(image_draws.len()).max(image_start);
+                if image_end > image_start {
+                    let bytes = std::mem::size_of::<TextVertex>();
+                    pass.set_pipeline(&self.image_pipeline);
+                    pass.set_index_buffer(self.image_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    for draw in &image_draws[image_start..image_end] {
+                        let v = draw.vertex_index;
+                        if v + 4 > image_vertex_total {
+                            continue;
+                        }
+                        pass.set_bind_group(0, &draw.bind_group, &[]);
+                        pass.set_vertex_buffer(
+                            0,
+                            self.image_vertex_buffer
+                                .slice(((v * bytes) as u64)..(((v + 4) * bytes) as u64)),
+                        );
+                        pass.set_scissor_rect(
+                            batch.scissor.0,
+                            batch.scissor.1,
+                            batch.scissor.2,
+                            batch.scissor.3,
+                        );
+                        pass.draw_indexed(0..6, 0, 0..1);
+                    }
+                }
             }
         }
 
         queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Return (creating or updating on demand) the bind group for `source`'s
+    /// texture. A new texture is created when the source's dimensions change;
+    /// the pixels are re-uploaded only when `frame_seq` differs from what is
+    /// cached, so an unchanged live frame costs one bind-group lookup.
+    fn ensure_image_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: &str,
+        width: u32,
+        height: u32,
+        frame_seq: u64,
+        data: std::sync::Arc<[u8]>,
+    ) -> wgpu::BindGroup {
+        if let Some(entry) = self.image_textures.get(source) {
+            if entry.frame_seq == frame_seq && entry.width == width && entry.height == height {
+                return entry.bind_group.clone();
+            }
+        }
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(&format!("goble-ui image: {source}")),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some((width.max(1) * 4).min(usize::MAX as u32)),
+                rows_per_image: Some(height.max(1)),
+            },
+            wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+        );
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("goble-ui image sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(&format!("goble-ui image bind group: {source}")),
+            layout: &self.image_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        self.image_textures.insert(
+            source.to_string(),
+            ImageTexture {
+                frame_seq,
+                width,
+                height,
+                texture,
+                bind_group: bind_group.clone(),
+            },
+        );
+        bind_group
     }
 }
 
@@ -854,5 +1157,42 @@ fn vs_text(
 fn fs_text(in: VertexOutput) -> @location(0) vec4<f32> {
     let alpha = textureSample(atlas_texture, atlas_sampler, in.uv).r;
     return vec4<f32>(in.color.rgb, in.color.a * alpha);
+}
+"#;
+
+const IMAGE_SHADER: &str = r#"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> viewport: vec2<f32>;
+
+@group(0) @binding(1)
+var image_texture: texture_2d<f32>;
+
+@group(0) @binding(2)
+var image_sampler: sampler;
+
+@vertex
+fn vs_image(
+    @location(0) position: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) color: vec4<f32>,
+) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = vec4<f32>(
+        position / viewport * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0),
+        0.0,
+        1.0
+    );
+    out.uv = uv;
+    return out;
+}
+
+@fragment
+fn fs_image(in: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(image_texture, image_sampler, in.uv);
 }
 "#;

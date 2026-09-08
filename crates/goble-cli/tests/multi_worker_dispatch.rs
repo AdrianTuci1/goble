@@ -9,13 +9,14 @@ use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::test]
 async fn test_multi_worker_round_robin_dispatch() {
+    std::env::set_var("LLM_PROVIDER", "mock");
     let worker_a_id = WorkerId::generate();
     let worker_b_id = WorkerId::generate();
     let state_a = goblin_worker::state::AppState::new(worker_a_id.clone());
     let state_b = goblin_worker::state::AppState::new(worker_b_id.clone());
 
-    let addr_a = spawn_worker(state_a.clone()).await;
-    let addr_b = spawn_worker(state_b.clone()).await;
+    let (addr_a, _tmp_a) = spawn_worker(state_a.clone()).await;
+    let (addr_b, _tmp_b) = spawn_worker(state_b.clone()).await;
 
     let url_a = format!("ws://{}/ws", addr_a);
     let url_b = format!("ws://{}/ws", addr_b);
@@ -95,7 +96,13 @@ async fn test_multi_worker_round_robin_dispatch() {
     assert!(finished_b, "worker b should finish");
 }
 
-async fn spawn_worker(state: Arc<goblin_worker::state::AppState>) -> std::net::SocketAddr {
+async fn spawn_worker(
+    state: Arc<goblin_worker::state::AppState>,
+) -> (std::net::SocketAddr, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().unwrap();
+    state.set_store_path(tmp.path().join("worker.db")).unwrap();
+    state.config.lock().workspace_root = tmp.path().join("workspaces");
+
     let app = axum::Router::new()
         .route(
             "/ws",
@@ -110,5 +117,5 @@ async fn spawn_worker(state: Arc<goblin_worker::state::AppState>) -> std::net::S
         axum::serve(listener, app).await.unwrap();
     });
 
-    addr
+    (addr, tmp)
 }

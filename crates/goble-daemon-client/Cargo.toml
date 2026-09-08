@@ -1,0 +1,21 @@
+[package]
+name = "goble-daemon-client"
+version = "0.1.0"
+edition = "2021"
+description = "GUI-side daemon client facade: in-process and remote (WebSocket behind 'remote') DaemonClient."
+
+[dependencies]
+goble-daemon = { path = "../goble-daemon" }
+goble-daemon-protocol = { path = "../goble-daemon-protocol" }
+goble-harness-types = { path = "../goble-harness-types" }
+goble-workflow = { path = "../goble-workflow" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+goble-harness-runtime = { path = "../goble-harness-runtime" }
+
+[features]
+default = []
+remote = []

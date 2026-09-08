@@ -198,6 +198,55 @@ mod tests {
     }
 
     #[test]
+    fn button_click_fires_when_rebuilt_between_down_and_up() {
+        // The element tree is rebuilt every frame (root_view::layout calls
+        // rebuild()), so the Button that receives the MouseUp is a *fresh*
+        // instance whose `state.pressed` was never set by the matching
+        // MouseDown. A release that lands inside the bounds must still fire.
+        let app = AppContext::default();
+
+        // First instance consumes the MouseDown and sets its local press state.
+        let mut down_button =
+            Button::new(Empty::new().with_size(vec2f(80.0, 32.0)).finish());
+        down_button.layout(
+            SizeConstraint::loose(vec2f(200.0, 200.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        down_button.paint(vec2f(40.0, 40.0), &mut PaintContext::default(), &app);
+
+        let mut event_ctx = EventContext::default();
+        let down = DispatchedEvent::MouseDown {
+            position: vec2f(50.0, 50.0),
+            button: 0,
+        };
+        assert!(down_button.dispatch_event(&down, &mut event_ctx, &app));
+
+        // A fresh Button (as the next frame builds) handles the MouseUp.
+        let clicked = Rc::new(RefCell::new(false));
+        let clicked_clone = clicked.clone();
+        let mut up_button =
+            Button::new(Empty::new().with_size(vec2f(80.0, 32.0)).finish())
+                .with_on_click(move || *clicked_clone.borrow_mut() = true);
+        up_button.layout(
+            SizeConstraint::loose(vec2f(200.0, 200.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        up_button.paint(vec2f(40.0, 40.0), &mut PaintContext::default(), &app);
+
+        let up = DispatchedEvent::MouseUp {
+            position: vec2f(50.0, 50.0),
+            button: 0,
+        };
+        assert!(up_button.dispatch_event(&up, &mut event_ctx, &app));
+        assert!(
+            *clicked.borrow(),
+            "a MouseUp inside a freshly rebuilt button must fire its click"
+        );
+    }
+
+    #[test]
     fn disabled_button_ignores_events() {
         let clicked = Rc::new(RefCell::new(false));
         let clicked_clone = clicked.clone();

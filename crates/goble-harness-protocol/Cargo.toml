@@ -1,0 +1,11 @@
+[package]
+name = "goble-harness-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Wire types for the harness boundary (bring-your-own-harness seam)."
+
+[dependencies]
+goble-harness-types = { path = "../goble-harness-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

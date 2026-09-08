@@ -183,7 +183,7 @@ impl Element for SearchInput {
                 }
                 false
             }
-            DispatchedEvent::KeyDown { key } => {
+            DispatchedEvent::KeyDown { key, .. } => {
                 if !self.focused {
                     return false;
                 }
@@ -234,6 +234,7 @@ mod tests {
         assert!(input.dispatch_event(
             &DispatchedEvent::KeyDown {
                 key: "h".to_string(),
+                modifiers: Default::default(),
             },
             &mut event_ctx,
             &app,

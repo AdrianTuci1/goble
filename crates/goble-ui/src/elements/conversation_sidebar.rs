@@ -14,13 +14,32 @@ use crate::theme::{ColorToken, SpacingToken};
 
 pub const CONVERSATION_SIDEBAR_WIDTH: f32 = 260.0;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ConversationEntry {
     pub id: String,
     pub name: String,
     pub last_response: String,
     pub timestamp: String,
     pub status: ConversationStatus,
+    pub folder: String,
+    /// The work environment this conversation runs in: `"local"` or `"remote"`.
+    /// The sidebar groups conversations by this value so the Local / Remote
+    /// environment selector filters which conversations are shown.
+    pub workspace_routing: String,
+}
+
+impl Default for ConversationEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            last_response: String::new(),
+            timestamp: String::new(),
+            status: ConversationStatus::Default,
+            folder: "General".to_string(),
+            workspace_routing: "local".to_string(),
+        }
+    }
 }
 
 impl ConversationEntry {
@@ -36,11 +55,23 @@ impl ConversationEntry {
             last_response: last_response.into(),
             timestamp: timestamp.into(),
             status: ConversationStatus::Default,
+            folder: "General".to_string(),
+            workspace_routing: "local".to_string(),
         }
     }
 
     pub fn with_status(mut self, status: ConversationStatus) -> Self {
         self.status = status;
+        self
+    }
+
+    pub fn with_folder(mut self, folder: impl Into<String>) -> Self {
+        self.folder = folder.into();
+        self
+    }
+
+    pub fn with_workspace_routing(mut self, routing: impl Into<String>) -> Self {
+        self.workspace_routing = routing.into();
         self
     }
 }
@@ -414,5 +445,21 @@ mod tests {
         );
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
+    }
+
+    #[test]
+    fn conversation_entry_defaults_to_local_routing() {
+        let default = ConversationEntry::default();
+        assert_eq!(default.workspace_routing, "local");
+        let created = ConversationEntry::new("c1", "Ada", "Hello!", "10:00");
+        assert_eq!(created.workspace_routing, "local");
+    }
+
+    #[test]
+    fn conversation_entry_sets_workspace_routing() {
+        let remote = ConversationEntry::new("c1", "Ada", "Hello!", "10:00")
+            .with_workspace_routing("remote");
+        assert_eq!(remote.workspace_routing, "remote");
+        assert_eq!(remote.id, "c1");
     }
 }

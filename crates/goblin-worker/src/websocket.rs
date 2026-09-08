@@ -4,11 +4,14 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
+use goble_daemon::DaemonPort;
 use goble_core::protocol::{DesktopMessage, ScheduledTaskSummary, WorkerMessage};
 use goble_core::worker::WorkerStatus;
+use goble_harness_types::SessionId;
+use goble_workflow::{WorkflowHostRequest, WorkflowRun};
 
 use crate::runner::Runner;
-use crate::state::AppState;
+use crate::state::{map_daemon_event, AppState};
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -73,6 +76,19 @@ async fn handle_desktop_message(
     msg: DesktopMessage,
 ) -> anyhow::Result<()> {
     match msg {
+        // Daemon transcript reversibility + workflow host requests are handled
+        // by the shared (and independently testable) `handle_daemon_desktop_message`.
+        msg @ (DesktopMessage::Rewind { .. }
+        | DesktopMessage::Fork { .. }
+        | DesktopMessage::Replay { .. }
+        | DesktopMessage::Checkpoints { .. }
+        | DesktopMessage::Select { .. }
+        | DesktopMessage::Apply { .. }
+        | DesktopMessage::Release { .. }
+        | DesktopMessage::Discard { .. }
+        | DesktopMessage::RunWorkflow { .. }) => {
+            handle_daemon_desktop_message(state, &msg)?;
+        }
         DesktopMessage::PairRequest {
             worker_id,
             pairing_code_hash,
@@ -252,6 +268,122 @@ async fn handle_desktop_message(
         }
     }
     Ok(())
+}
+
+/// Handle the daemon reversibility and workflow [`DesktopMessage`]s.
+///
+/// These drive the embedded daemon's harness-agnostic transcript reversibility
+/// (rewind/fork/replay/checkpoints/settle) and its workflow host, mapping each to
+/// the corresponding [`DaemonPort`] method and forwarding the resulting
+/// [`DaemonEvent`]s / results onto the worker's [`WorkerMessage`] event channel.
+///
+/// Returns `Ok(true)` when `msg` was one of these daemon messages (and was
+/// handled), `Ok(false)` when it is not. Kept independent of the [`Runner`] so it
+/// can be unit/integration tested without driving a full agent turn.
+pub fn handle_daemon_desktop_message(
+    state: &Arc<AppState>,
+    msg: &DesktopMessage,
+) -> anyhow::Result<bool> {
+    use DesktopMessage as DM;
+    match msg {
+        DM::Rewind { session_id, at } => {
+            let sid = SessionId::new(session_id.clone());
+            let removed = state.daemon_state().rewind(&sid, *at)?;
+            state.emit(WorkerMessage::RewindResult {
+                session_id: sid.0,
+                removed,
+            });
+            Ok(true)
+        }
+        DM::Fork {
+            session_id,
+            at,
+            new_session_id,
+        } => {
+            let sid = SessionId::new(session_id.clone());
+            let new_sid = state
+                .daemon_state()
+                .fork(&sid, *at, SessionId::new(new_session_id.clone()))?;
+            state.emit(WorkerMessage::ForkResult {
+                session_id: sid.0,
+                new_session_id: new_sid.0,
+            });
+            Ok(true)
+        }
+        DM::Replay { session_id, at } => {
+            let sid = SessionId::new(session_id.clone());
+            let events = state.daemon_state().replay(&sid, *at)?;
+            for event in events {
+                if let Some(msg) = map_daemon_event(event) {
+                    state.emit(msg);
+                }
+            }
+            state.emit(WorkerMessage::ReplayResult {
+                session_id: sid.0,
+                at: *at,
+            });
+            Ok(true)
+        }
+        DM::Checkpoints { session_id } => {
+            let sid = SessionId::new(session_id.clone());
+            let checkpoints = state
+                .daemon_state()
+                .checkpoints(&sid)?
+                .into_iter()
+                .map(|c| serde_json::to_value(c).unwrap_or_default())
+                .collect();
+            state.emit(WorkerMessage::CheckpointsResult {
+                session_id: sid.0,
+                checkpoints,
+            });
+            Ok(true)
+        }
+        DM::Select { session_id, at } => {
+            let sid = SessionId::new(session_id.clone());
+            state.daemon_state().select(&sid, *at)?;
+            state.emit(WorkerMessage::SelectResult {
+                session_id: sid.0,
+                at: *at,
+            });
+            Ok(true)
+        }
+        DM::Apply { session_id, at } => {
+            let sid = SessionId::new(session_id.clone());
+            let removed = state.daemon_state().apply(&sid, *at)?;
+            state.emit(WorkerMessage::ApplyResult {
+                session_id: sid.0,
+                removed,
+            });
+            Ok(true)
+        }
+        DM::Release { session_id, at } => {
+            let sid = SessionId::new(session_id.clone());
+            let released = state.daemon_state().release(&sid, *at)?;
+            state.emit(WorkerMessage::ReleaseResult {
+                session_id: sid.0,
+                released,
+            });
+            Ok(true)
+        }
+        DM::Discard { session_id, at } => {
+            let sid = SessionId::new(session_id.clone());
+            let removed = state.daemon_state().discard(&sid, *at)?;
+            state.emit(WorkerMessage::DiscardResult {
+                session_id: sid.0,
+                removed,
+            });
+            Ok(true)
+        }
+        DM::RunWorkflow { request } => {
+            let req: WorkflowHostRequest = serde_json::from_value(request.clone())?;
+            let run: WorkflowRun = state.daemon_state().run_workflow(req)?;
+            state.emit(WorkerMessage::WorkflowRun {
+                run: serde_json::to_value(&run)?,
+            });
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 fn query_store_entities(

@@ -1,0 +1,12 @@
+[package]
+name = "goble-workflow"
+version = "0.1.0"
+edition = "2021"
+description = "Scripted workflow engine model for the daemon: Workflow, journaled WorkflowHostRequest, a deterministic run engine, and a MockStep for tests."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }

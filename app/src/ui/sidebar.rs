@@ -4,21 +4,27 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    AgentCardUi, AppContext, Axis, Container, ConversationListItem, CrossAxisAlignment, Divider,
-    EdgeInsets, Element, Fill, Flex, HoverButton, Icon, Label, LabelSize, MainAxisSize, Scrollable,
-    SearchInput, Spacer, Text, TopbarButton,
+    AgentCardUi, AppContext, Axis, Container, ConversationEntry, ConversationListItem,
+    CrossAxisAlignment, Divider, EdgeInsets, Element, Fill, Flex, HoverButton, Icon, Label,
+    LabelSize, MainAxisSize, Scrollable, SearchInput, Spacer, Text, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 
-use super::{AiActions, UiActions, UiSnapshot};
+use super::{AiActions, ScreenActions, UiActions, UiSnapshot};
 
-/// Left sidebar: search box on top, then "new conversation", then the list of
-/// conversation cards. Divider lines separate the three sections.
+/// Left sidebar: search box, then "new conversation", then the list of
+/// conversation cards grouped into folders. Divider lines separate the sections.
+///
+/// The environment (medium) selector lives in the topbar now, so the sidebar
+/// only needs the currently selected medium's routing to filter which
+/// conversation folder set is shown.
 pub fn build_sidebar(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
     ai_actions: &AiActions,
+    screen_actions: &ScreenActions,
+    selected_medium: &str,
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Md);
     let sm = app.theme.spacing_px(SpacingToken::Sm);
@@ -75,32 +81,94 @@ pub fn build_sidebar(
         .with_theme_color(ColorToken::Muted, app)
         .finish();
 
+    // Show only the conversations that belong to the selected environment
+    // (Local / Remote). Each conversation carries its `workspace_routing`
+    // (`"local"` / `"remote"`); the selected medium maps to one of those via
+    // [`crate::media::medium_routing`]. Conversations without an explicit
+    // routing default to `local`.
+    let routing = crate::media::medium_routing(selected_medium);
+    let visible: Vec<&ConversationEntry> = state
+        .conversations
+        .iter()
+        .filter(|entry| entry.workspace_routing == routing)
+        .collect();
+
+    // Group conversations into folders (preserving insertion order), each with
+    // a small section header, then the items indented under it.
+    let mut ordered: Vec<(String, Vec<&ConversationEntry>)> = Vec::new();
+    for entry in &visible {
+        if let Some((_, items)) = ordered.iter_mut().find(|(folder, _)| folder == &entry.folder) {
+            items.push(entry);
+        } else {
+            ordered.push((entry.folder.clone(), vec![entry]));
+        }
+    }
+
     let mut list = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(2.0);
-    for entry in &state.conversations {
-        let click_id = entry.id.clone();
-        let delete_id = entry.id.clone();
-        let selected = state.selected_id.as_deref() == Some(entry.id.as_str());
-        let on_select = actions.on_select_conversation.clone();
-        let on_delete = actions.on_agent_delete.clone();
-        let ui = state
-            .agent_cards
-            .get(&entry.id)
-            .cloned()
-            .unwrap_or_else(|| Rc::new(RefCell::new(AgentCardUi::default())));
-        let item = ConversationListItem::new(
-            entry.id.clone(),
-            entry.name.clone(),
-            entry.last_response.clone(),
-            entry.timestamp.clone(),
-            ui,
-            selected,
-        )
-        .with_on_click(move || (on_select.borrow_mut())(click_id.clone()))
-        .with_on_delete(move || (on_delete.borrow_mut())(delete_id.clone()))
-        .finish();
-        list = list.with_child(item);
+    if visible.is_empty() {
+        let empty_label = if state.conversations.is_empty() {
+            "No conversations yet. Create one to begin."
+        } else {
+            "No conversations for this environment."
+        };
+        list = list.with_child(
+            Container::new(
+                Text::new(empty_label)
+                    .with_font_size(11.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::new(xs, xs, xs, xs))
+            .finish(),
+        );
+    }
+    for (folder, entries) in ordered {
+        let folder_header = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(sm)
+            .with_child(
+                Text::new(folder.clone())
+                    .with_font_size(11.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_child(Spacer::new().finish())
+            .with_child(
+                Text::new(entries.len().to_string())
+                    .with_font_size(10.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .finish();
+        list = list.with_child(folder_header);
+        for entry in entries {
+            let click_id = entry.id.clone();
+            let delete_id = entry.id.clone();
+            let selected = state.selected_id.as_deref() == Some(entry.id.as_str());
+            let on_select = actions.on_select_conversation.clone();
+            let on_delete = actions.on_agent_delete.clone();
+            let ui = state
+                .agent_cards
+                .get(&entry.id)
+                .cloned()
+                .unwrap_or_else(|| Rc::new(RefCell::new(AgentCardUi::default())));
+            let item = ConversationListItem::new(
+                entry.id.clone(),
+                entry.name.clone(),
+                entry.last_response.clone(),
+                entry.timestamp.clone(),
+                ui,
+                selected,
+            )
+            .with_workspace_routing(entry.workspace_routing.clone())
+            .with_on_click(move || (on_select.borrow_mut())(click_id.clone()))
+            .with_on_delete(move || (on_delete.borrow_mut())(delete_id.clone()))
+            .finish();
+            list = list.with_child(item);
+        }
     }
 
     // Plugins footer -> opens the MCP connectors panel.
@@ -113,6 +181,18 @@ pub fn build_sidebar(
     )
     .with_size(28.0)
     .with_on_click(move || (on_plugins.borrow_mut())())
+    .finish();
+
+    // Screen footer -> opens the screen (broadcast + computer-use) sheet.
+    let on_open_screen = screen_actions.on_open.clone();
+    let screen_button = TopbarButton::new(
+        Icon::new("monitor")
+            .with_size(16.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(28.0)
+    .with_on_click(move || (on_open_screen.borrow_mut())())
     .finish();
 
     let footer = Flex::row()
@@ -129,6 +209,20 @@ pub fn build_sidebar(
         .with_child(plugins_button)
         .finish();
 
+    let screen_footer = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(
+            Label::new("Screen")
+                .with_size(LabelSize::Xs)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_child(Spacer::new().finish())
+        .with_child(screen_button)
+        .finish();
+
     let mut column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -141,6 +235,7 @@ pub fn build_sidebar(
     column = column.with_child(Scrollable::new(list.finish(), Axis::Vertical).finish());
     column = column.with_child(Divider::horizontal().finish());
     column = column.with_child(footer);
+    column = column.with_child(screen_footer);
 
     Container::new(column.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))

@@ -11,7 +11,7 @@ pub mod mac;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
-pub use window::run_with_root;
+pub use window::{run_with_root, WindowControl};
 
 pub mod current {
     cfg_if::cfg_if! {

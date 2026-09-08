@@ -10,6 +10,36 @@ use winit::application::ApplicationHandler;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
+/// A handle the UI uses to request window-level changes (e.g. toggling
+/// fullscreen). The winit event loop owns the real [`Window`] and installs a
+/// handler here once the window is created; the app layer can safely call
+/// [`WindowControl::set_fullscreen`] before/after that (no-ops until a handler
+/// is installed, so it can be built without a live window).
+///
+/// This is how the app crate (which constructs the element tree) reaches the
+/// platform window: `AppContext` carries a `WindowControl` clone.
+#[derive(Clone, Default)]
+pub struct WindowControl {
+    inner: Rc<RefCell<Option<Box<dyn FnMut(bool)>>>>,
+}
+
+impl WindowControl {
+    /// Request the window to enter (`true`) or leave (`false`) fullscreen.
+    /// No-op until the event loop has created the window and installed a
+    /// handler via [`WindowControl::install`].
+    pub fn set_fullscreen(&self, fullscreen: bool) {
+        if let Some(handler) = self.inner.borrow_mut().as_mut() {
+            handler(fullscreen);
+        }
+    }
+
+    /// Install a handler that applies fullscreen state to a real window. Called
+    /// by the platform event loop once the window exists.
+    pub fn install<F: FnMut(bool) + 'static>(&self, handler: F) {
+        *self.inner.borrow_mut() = Some(Box::new(handler));
+    }
+}
+
 pub fn run_with_root(
     root: Box<dyn Element>,
     app_context: Rc<RefCell<AppContext>>,
@@ -22,6 +52,7 @@ pub fn run_with_root(
         app_context,
         cursor_position: vec2f(0.0, 0.0),
         cursor_inside: false,
+        modifiers: winit::event::Modifiers::default(),
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -34,6 +65,7 @@ struct App {
     app_context: Rc<RefCell<AppContext>>,
     cursor_position: Vector2F,
     cursor_inside: bool,
+    modifiers: winit::event::Modifiers,
 }
 
 impl ApplicationHandler for App {
@@ -59,6 +91,24 @@ impl ApplicationHandler for App {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         let surface_state = pollster::block_on(SurfaceState::new(Arc::clone(&window))).unwrap();
+        // Expose a fullscreen control to the UI: the app layer requests the real
+        // window to enter/leave borderless fullscreen through
+        // `AppContext::window_control`. The handler is installed now, when the
+        // window first exists.
+        let window_control = self
+            .app_context
+            .borrow()
+            .window_control
+            .clone();
+        let fullscreen_window = Arc::clone(&window);
+        window_control.install(move |fullscreen: bool| {
+            if fullscreen {
+                fullscreen_window
+                    .set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+            } else {
+                fullscreen_window.set_fullscreen(None);
+            }
+        });
         self.window = Some(window);
         self.surface_state = Some(surface_state);
     }
@@ -80,6 +130,9 @@ impl ApplicationHandler for App {
         match event {
             winit::event::WindowEvent::CloseRequested => {
                 event_loop.exit();
+            }
+            winit::event::WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers;
             }
             winit::event::WindowEvent::Resized(new_size) => {
                 if let Some(surface_state) = self.surface_state.as_mut() {
@@ -191,9 +244,14 @@ impl ApplicationHandler for App {
             }
             winit::event::WindowEvent::KeyboardInput { event, .. } => {
                 if let Some(key) = logical_key_string(&event.logical_key) {
+                    let modifiers = map_modifiers(&self.modifiers);
                     let event = match event.state {
-                        winit::event::ElementState::Pressed => DispatchedEvent::KeyDown { key },
-                        winit::event::ElementState::Released => DispatchedEvent::KeyUp { key },
+                        winit::event::ElementState::Pressed => {
+                            DispatchedEvent::KeyDown { key, modifiers }
+                        }
+                        winit::event::ElementState::Released => {
+                            DispatchedEvent::KeyUp { key, modifiers }
+                        }
                     };
                     let mut event_ctx = crate::elements::EventContext::default();
                     let app_context = self.app_context.borrow().clone();
@@ -212,6 +270,16 @@ impl ApplicationHandler for App {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
+    }
+}
+
+/// Map winit modifier bits onto the UI [`ModifiersState`].
+fn map_modifiers(modifiers: &winit::event::Modifiers) -> crate::event::ModifiersState {
+    crate::event::ModifiersState {
+        alt: modifiers.state().alt_key(),
+        ctrl: modifiers.state().control_key(),
+        command: modifiers.state().super_key(),
+        shift: modifiers.state().shift_key(),
     }
 }
 

@@ -9,7 +9,13 @@
 
 pub mod actions;
 pub mod ai;
+pub mod daemon;
+pub mod features;
+pub mod media;
+pub mod projects;
 pub mod root_view;
 pub mod runtime;
+pub mod screen;
 pub mod state;
+pub mod terminal;
 pub mod ui;

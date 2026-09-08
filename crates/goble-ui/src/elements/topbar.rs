@@ -29,10 +29,13 @@ const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
 
     /// A premium application topbar matching the Tauri/Warp layout.
     ///
-    /// Left side: menu toggle, threads button. Right side: inbox/agents
-    /// button, settings button. The window's native titlebar (with working
-    /// traffic lights) is provided by the OS, so this bar only hosts the
-    /// toolbar actions and spans the full window width.
+    /// Left side: menu toggle, (optionally) a threads button, projects button.
+    /// Right side: inbox/agents button, settings button. The window's native
+    /// titlebar (with working traffic lights) is provided by the OS, so this
+    /// bar only hosts the toolbar actions and spans the full window width.
+    ///
+    /// Pass `show_threads = false` to drop the threads entry point (the app
+    /// surface no longer has threads); other consumers keep it by passing true.
     pub struct Topbar {
         root: Box<dyn Element>,
         size: Option<Vector2F>,
@@ -45,10 +48,14 @@ const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
             threads_active: bool,
             inbox_active: bool,
             settings_active: bool,
+            projects_active: bool,
+            show_threads: bool,
             on_menu: impl FnMut() + 'static,
             on_threads: impl FnMut() + 'static,
             on_inbox: impl FnMut() + 'static,
             on_settings: impl FnMut() + 'static,
+            on_projects: impl FnMut() + 'static,
+            settings_disabled: bool,
             app: &AppContext,
         ) -> Self {
             // `spacing` is only used for the vertical toolbar padding, which is
@@ -57,7 +64,8 @@ const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
             let spacing = app.theme.spacing_px(SpacingToken::Md);
             let sm = app.theme.spacing_px(SpacingToken::Sm);
 
-            let menu_icon = if threads_active || inbox_active || settings_active {
+            let menu_icon = if threads_active || inbox_active || settings_active || projects_active
+            {
                 "arrow-left"
             } else {
                 "menu-01"
@@ -81,12 +89,24 @@ const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
             .with_on_click(on_threads)
             .finish();
 
-            let left = Flex::row()
+            let projects_button = TopbarButton::new(
+                Icon::new("layers-three-01")
+                    .with_size(16.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_active(projects_active)
+            .with_on_click(on_projects)
+            .finish();
+
+            let mut left = Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_spacing(sm)
-                .with_child(menu_button)
-                .with_child(threads_button)
-                .finish();
+                .with_child(menu_button);
+            if show_threads {
+                left = left.with_child(threads_button);
+            }
+            let left = left.with_child(projects_button).finish();
 
             let inbox_button = TopbarButton::new(
                 Icon::new("inbox-01")
@@ -105,6 +125,7 @@ const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
                     .finish(),
             )
             .with_active(settings_active)
+            .with_disabled(settings_disabled)
             .with_on_click(on_settings)
             .finish();
 
@@ -189,6 +210,7 @@ pub struct TopbarButton {
     child: Box<dyn Element>,
     state: InteractiveState,
     active: bool,
+    disabled: bool,
     button_size: f32,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     size: Option<Vector2F>,
@@ -201,6 +223,7 @@ impl TopbarButton {
             child,
             state: InteractiveState::default(),
             active: false,
+            disabled: false,
             button_size: BUTTON_SIZE,
             on_click: None,
             size: None,
@@ -218,12 +241,23 @@ impl TopbarButton {
         self
     }
 
+    /// Mark the button inactive: it renders with no hover/active background and
+    /// ignores mouse events (used for surfaces that are disabled in this build).
+    pub fn with_disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
     pub fn with_on_click<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_click = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
     fn paint_background(&self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        if self.disabled {
+            // Disabled buttons are deliberately flat: no hover, no active fill.
+            return;
+        }
         let rect = rectf(origin.x, origin.y, self.button_size, self.button_size);
         let bg = if self.active {
             app.theme.color(ColorToken::Selected)
@@ -280,6 +314,9 @@ impl Element for TopbarButton {
         ctx: &mut EventContext,
         _app: &AppContext,
     ) -> bool {
+        if self.disabled {
+            return false;
+        }
         let bounds = match self.bounds() {
             Some(b) => b,
             None => return false,
@@ -334,7 +371,8 @@ mod tests {
     #[test]
     fn topbar_layouts_non_zero() {
         let app = AppContext::default();
-        let mut topbar = Topbar::new(false, false, false, || {}, || {}, || {}, || {}, &app);
+        let mut topbar =
+            Topbar::new(false, false, false, false, true, || {}, || {}, || {}, || {}, || {}, false, &app);
         let size = topbar.layout(
             SizeConstraint::loose(vec2f(1024.0, 768.0)),
             &mut LayoutContext::default(),
@@ -376,5 +414,54 @@ mod tests {
         assert!(button.dispatch_event(&down, &mut event_ctx, &app));
         assert!(button.dispatch_event(&up, &mut event_ctx, &app));
         assert!(*clicked.borrow());
+    }
+
+    #[test]
+    fn disabled_button_ignores_clicks_and_hover() {
+        let clicked = Rc::new(RefCell::new(false));
+        let clicked_clone = clicked.clone();
+        let app = AppContext::default();
+        let mut button = TopbarButton::new(
+            Icon::new("settings")
+                .with_theme_color(ColorToken::Muted, &app)
+                .finish(),
+        )
+        .with_disabled(true)
+        .with_on_click(move || *clicked_clone.borrow_mut() = true);
+
+        button.layout(
+            SizeConstraint::loose(vec2f(200.0, 200.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+
+        let mut paint_ctx = PaintContext::default();
+        paint_ctx.cursor_position = vec2f(10.0, 10.0);
+        paint_ctx.cursor_inside = true;
+        button.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let hover_color = app.theme.color(ColorToken::Hover);
+        assert!(
+            !paint_ctx
+                .renderer
+                .take()
+                .unwrap()
+                .commands()
+                .iter()
+                .any(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == hover_color)),
+            "a disabled button must not paint a hover background"
+        );
+
+        let mut event_ctx = EventContext::default();
+        let down = DispatchedEvent::MouseDown {
+            position: vec2f(10.0, 10.0),
+            button: 0,
+        };
+        let up = DispatchedEvent::MouseUp {
+            position: vec2f(10.0, 10.0),
+            button: 0,
+        };
+        assert!(!button.dispatch_event(&down, &mut event_ctx, &app));
+        assert!(!button.dispatch_event(&up, &mut event_ctx, &app));
+        assert!(!*clicked.borrow(), "a disabled button must not fire its callback");
     }
 }

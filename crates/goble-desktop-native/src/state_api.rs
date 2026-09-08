@@ -631,7 +631,7 @@ pub struct RunHarnessRequest {
 pub fn run_harness(state: &Arc<DesktopState>, req: RunHarnessRequest) -> anyhow::Result<()> {
     use futures::StreamExt;
     use goble_core::harness::HarnessEvent;
-    use goble_core::harness::SandboxedCommandRunner;
+    use goble_core::harness::{harness_sandbox, SandboxedCommandRunner};
 
     let (llm, model_name) = state.resolve_llm_provider(&req.provider, &req.model);
     let provider_name = if req.provider.is_empty() {
@@ -647,7 +647,9 @@ pub fn run_harness(state: &Arc<DesktopState>, req: RunHarnessRequest) -> anyhow:
         .insert(req.chat_id.clone(), cancel.clone());
     let harness = Harness::new(state.store_clone())
         .with_llm(llm)
-        .with_runner(Arc::new(SandboxedCommandRunner::default_tools()))
+        .with_runner(Arc::new(
+            SandboxedCommandRunner::default_tools().with_sandbox(harness_sandbox()),
+        ))
         .with_deploy_sender(move |worker_id, msg| deploy_state.send_to_worker(worker_id, msg))
         .with_cancel(cancel.clone());
     let chat_id_for_cleanup = req.chat_id.clone();

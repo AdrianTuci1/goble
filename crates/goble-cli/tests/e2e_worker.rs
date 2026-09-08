@@ -81,6 +81,7 @@ async fn spawn_worker(
 ) -> (std::net::SocketAddr, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
     state.set_store_path(tmp.path().join("worker.db")).unwrap();
+    state.config.lock().workspace_root = tmp.path().join("workspaces");
 
     let app = axum::Router::new()
         .route(

@@ -131,12 +131,20 @@ fn icon_atlas_name(name: &str) -> &'static str {
         "terminal-input" => "terminal-input",
         "prompt" => "prompt",
         "image" | "photo" => "image",
+        "folder" | "dir" | "directory" | "working-dir" => "folder",
+        "git-branch" | "branch" => "git-branch",
         "code" | "code-block" => "code",
         "link" | "url" => "link",
         "stop" | "stop-generation" => "stop",
         "arrow-up" | "send-up" => "arrow-up",
         "inbox" | "inbox-01" | "mail" => "inbox-01",
         "computer" | "monitor" | "agentmode" => "agentmode",
+        "conversation-local" | "agent-local" | "avatar-local" | "local-agent" => {
+            "conversation-local"
+        }
+        "conversation-remote" | "agent-remote" | "avatar-remote" | "remote-agent" => {
+            "conversation-remote"
+        }
         "info" => "info",
         "local-only" | "cloud-off" | "not-synced" => "cloud-off",
         _ => {

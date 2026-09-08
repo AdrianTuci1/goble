@@ -1,6 +1,8 @@
 use crate::elements::{
-    AppContext, Container, Element, LayoutContext, PaintContext, Point, SizeConstraint,
+    AppContext, Container, Element, EventContext, LayoutContext, PaintContext, Point,
+    SizeConstraint,
 };
+use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 use crate::style::EdgeInsets;
 
@@ -48,6 +50,18 @@ impl Element for Padding {
 
     fn origin(&self) -> Option<Point> {
         self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        // Without this override the trait default returns false, so a `Padding`
+        // wrapper (the rich-input composer's root, amongst others) would swallow
+        // every pointer/keyboard event before its child could handle it.
+        self.root.dispatch_event(event, ctx, app)
     }
 }
 

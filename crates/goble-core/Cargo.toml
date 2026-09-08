@@ -41,6 +41,7 @@ rusqlite.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 dirs = "6"
+goble-sandbox = { path = "../goble-sandbox", features = ["tokio"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

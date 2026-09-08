@@ -1,0 +1,46 @@
+//! Linux Landlock backend.
+
+use crate::{allowed, PreparedCommand, Sandbox, SandboxError, SandboxProfile};
+
+/// The Linux Landlock backend. Declares the isolation seam; hardening a hardened
+/// profile is left to a build that opts in to `unsafe` syscalls.
+pub struct LandlockSandbox {
+    profile: SandboxProfile,
+}
+
+impl LandlockSandbox {
+    pub fn new(profile: SandboxProfile) -> Self {
+        Self { profile }
+    }
+}
+
+impl Sandbox for LandlockSandbox {
+    fn name(&self) -> &'static str {
+        "landlock"
+    }
+
+    fn profile(&self) -> &SandboxProfile {
+        &self.profile
+    }
+
+    fn prepare(&self, command: &PreparedCommand) -> Result<(), SandboxError> {
+        if self.profile.level == crate::SandboxLevel::Hardened {
+            return Err(SandboxError::BackendUnavailable {
+                backend: self.name(),
+                reason: "landlock hardening requires `unsafe` syscalls, which the workspace denies"
+                    .to_string(),
+            });
+        }
+        if allowed(&self.profile, command) {
+            Ok(())
+        } else {
+            Err(SandboxError::NotInAllowList {
+                command: command.basename().to_string(),
+            })
+        }
+    }
+
+    fn teardown(&self) -> Result<(), SandboxError> {
+        Ok(())
+    }
+}

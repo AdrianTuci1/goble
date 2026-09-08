@@ -15,6 +15,7 @@ pub use conversation_sidebar::{
 };
 pub use dialog::{Dialog, DIALOG_DEFAULT_WIDTH};
 pub mod markdown;
+pub use frame_view::{FrameSize, FrameView};
 pub use chat_message_bubble::ChatMessageBubble;
 pub use checkbox::Checkbox;
 pub use chip::Chip;
@@ -52,6 +53,7 @@ pub use shell::{ActiveView, SettingsTab, ShellState, ShellView, SidebarMode};
 pub use sidebar::Sidebar;
 pub use sidebar_item::SidebarItem;
 pub use spacer::Spacer;
+pub use split::SplitNode;
 pub use stack::Stack;
 pub use switch::Switch;
 pub use tab_bar::{Tab, TabBar};
@@ -165,6 +167,10 @@ pub struct EventContext;
 #[derive(Default, Clone)]
 pub struct AppContext {
     pub theme: crate::theme::Theme,
+    /// A handle the UI uses to request window-level changes (e.g. toggling
+    /// fullscreen). The platform event loop installs a real handler once the
+    /// window exists; calls before that are no-ops.
+    pub window_control: crate::platform::window::WindowControl,
 }
 
 /// A point in element-space, including a z-index for stacking.
@@ -522,6 +528,7 @@ pub mod dropdown_menu;
 pub mod empty;
 pub mod expanded;
 pub mod flex;
+pub mod frame_view;
 pub mod group_chat_message;
 pub mod group_chat_message_group;
 pub use group_chat_message::GroupChatMessage;
@@ -549,6 +556,7 @@ pub mod shell;
 pub mod sidebar;
 pub mod sidebar_item;
 pub mod spacer;
+pub mod split;
 pub mod stack;
 pub mod switch;
 pub mod tab_bar;

@@ -65,6 +65,49 @@ pub enum DesktopMessage {
         query: Option<String>,
     },
     TriggerSnapshot,
+    // --- daemon reversibility (rewind/fork/replay/checkpoints/settle) ---
+    // These drive the embedded daemon's harness-agnostic transcript
+    // reversibility and are surfaced on the worker's WebSocket so the headless
+    // worker is reversible. `session_id` names the daemon session/transcript;
+    // `new_session_id` names the fork target.
+    Rewind {
+        session_id: String,
+        at: usize,
+    },
+    Fork {
+        session_id: String,
+        at: usize,
+        new_session_id: String,
+    },
+    Replay {
+        session_id: String,
+        at: usize,
+    },
+    Checkpoints {
+        session_id: String,
+    },
+    Select {
+        session_id: String,
+        at: usize,
+    },
+    Apply {
+        session_id: String,
+        at: usize,
+    },
+    Release {
+        session_id: String,
+        at: usize,
+    },
+    Discard {
+        session_id: String,
+        at: usize,
+    },
+    // --- daemon workflow execution ---
+    // `request` is a `goble_workflow::WorkflowHostRequest` serialized as JSON, so
+    // this protocol crate stays decoupled from the workflow engine crate.
+    RunWorkflow {
+        request: serde_json::Value,
+    },
     Ping,
 }
 
@@ -165,6 +208,46 @@ pub enum WorkerMessage {
     EntityList {
         entity_type: String,
         items: Vec<serde_json::Value>,
+    },
+    // --- daemon reversibility / workflow results ---
+    RewindResult {
+        session_id: String,
+        removed: usize,
+    },
+    ForkResult {
+        session_id: String,
+        new_session_id: String,
+    },
+    // Replay forwards the session's transcript as the mirror `AssistantDelta` /
+    // `ToolCall*` / `Done` variants on the live stream, then acks with the index
+    // the replay started from.
+    ReplayResult {
+        session_id: String,
+        at: usize,
+    },
+    CheckpointsResult {
+        session_id: String,
+        checkpoints: Vec<serde_json::Value>,
+    },
+    SelectResult {
+        session_id: String,
+        at: usize,
+    },
+    ApplyResult {
+        session_id: String,
+        removed: usize,
+    },
+    ReleaseResult {
+        session_id: String,
+        released: bool,
+    },
+    DiscardResult {
+        session_id: String,
+        removed: usize,
+    },
+    // `run` is a `goble_workflow::WorkflowRun` serialized as JSON.
+    WorkflowRun {
+        run: serde_json::Value,
     },
 }
 

@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::interactive::{handle_mouse_event, InteractiveState};
+use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Fill, Flex, Icon,
     LayoutContext, PaintContext, Point, SizeConstraint, Text,
@@ -199,13 +199,27 @@ impl Element for PopupMenu {
 
         self.panel_origin = Vector2F::zero();
         if let Some(panel) = self.panel.as_mut() {
+            // Keep the panel within the horizontal space actually available so
+            // it re-anchors under its trigger and is never clipped/cut off when
+            // the window or composer is resized (narrower than the max width).
+            let available_width = if constraint.max.x.is_finite() {
+                constraint.max.x
+            } else {
+                POPUP_MAX_WIDTH
+            };
             let panel_size = panel.layout(
-                SizeConstraint::loose(vec2f(POPUP_MAX_WIDTH, 400.0)),
+                SizeConstraint::loose(vec2f(available_width.min(POPUP_MAX_WIDTH), 400.0)),
                 ctx,
                 app,
             );
             self.panel_size = Some(panel_size);
-            let x = (trigger_size.x - panel_size.x).max(0.0);
+            // Default: right-align a panel narrower than its trigger so it sits
+            // under the trigger, otherwise align to the trigger's leading edge.
+            let mut x = (trigger_size.x - panel_size.x).max(0.0);
+            // Clamp so the whole panel stays within the available width (no
+            // spill past the composer/window edge on a narrow or resized layout).
+            let max_x = (constraint.max.x - panel_size.x).max(0.0);
+            x = x.min(max_x);
             let y = match self.position {
                 PopupMenuPosition::Below => trigger_size.y + POPUP_GAP,
                 PopupMenuPosition::Above => -(panel_size.y + POPUP_GAP),
@@ -252,6 +266,16 @@ impl Element for PopupMenu {
                         .unwrap_or(false);
                 }
             }
+            // A press that lands on the trigger itself should toggle the menu
+            // closed, not be swallowed by the "outside the panel" close below
+            // (which would otherwise let the release re-open it).
+            if let Some(position) = event_position(event) {
+                if contains(bounds, position) {
+                    let cb = open_toggle_closure(self.open.clone());
+                    let mut toggle = move || (cb.borrow_mut())();
+                    return handle_mouse_event(&mut self.state, event, bounds, ctx, &mut toggle);
+                }
+            }
             // Clicking outside the panel (but somewhere in the window) closes it.
             if matches!(event, DispatchedEvent::MouseDown { .. }) {
                 *self.open.borrow_mut() = false;
@@ -262,6 +286,16 @@ impl Element for PopupMenu {
         let cb = open_toggle_closure(self.open.clone());
         let mut toggle = move || (cb.borrow_mut())();
         handle_mouse_event(&mut self.state, event, bounds, ctx, &mut toggle)
+    }
+}
+
+/// The pointer position carried by a mouse event, if any.
+fn event_position(event: &DispatchedEvent) -> Option<Vector2F> {
+    match event {
+        DispatchedEvent::MouseDown { position, .. }
+        | DispatchedEvent::MouseUp { position, .. }
+        | DispatchedEvent::MouseMove { position } => Some(*position),
+        _ => None,
     }
 }
 
@@ -484,5 +518,47 @@ mod tests {
         click(&mut menu, 10.0, -64.0, &app);
         assert!(!menu.is_open());
         assert_eq!(*selected.borrow(), Some(0));
+    }
+
+    #[test]
+    fn panel_reanchors_and_stays_within_available_width_on_resize() {
+        let items = vec![
+            PopupMenuItem::new("A long label that wraps"),
+            PopupMenuItem::new("Another long item"),
+        ];
+        let open = Rc::new(RefCell::new(true));
+        let mut menu = PopupMenu::new(trigger(), items).with_open(open);
+        let app = AppContext::default();
+
+        // Narrow layout: the panel must not overflow the available width.
+        menu.layout(
+            SizeConstraint::loose(vec2f(120.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let narrow_size = menu.panel_size.expect("panel built");
+        assert!(
+            narrow_size.x <= 120.0,
+            "panel width {} exceeds available width",
+            narrow_size.x
+        );
+        assert!(menu.panel_origin.x >= 0.0);
+        assert!(
+            menu.panel_origin.x + narrow_size.x <= 120.0,
+            "panel overflows available width on narrow layout"
+        );
+
+        // Widened layout: the panel re-anchors under the trigger and fits.
+        menu.layout(
+            SizeConstraint::loose(vec2f(360.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let wide_size = menu.panel_size.expect("panel built");
+        assert!(wide_size.x <= POPUP_MAX_WIDTH);
+        assert!(
+            menu.panel_origin.x + wide_size.x <= 360.0,
+            "panel overflows available width after resize"
+        );
     }
 }

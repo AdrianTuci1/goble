@@ -3,9 +3,10 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Border, Chip, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex, Icon,
-    LayoutContext, MainAxisAlignment, PaintContext, Padding, Point, PopupMenu, PopupMenuItem,
-    PopupMenuPosition, SizeConstraint, Text, TextArea, Tooltip, TooltipPosition,
+    AppContext, Chip, Clipped, Container, CrossAxisAlignment, EdgeInsets, Element,
+    Expanded, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext,
+    Padding, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, SizeConstraint, Text, TextArea,
+    Tooltip, TooltipPosition,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, Vector2F};
@@ -16,8 +17,24 @@ pub struct ChatComposer {
     placeholder: String,
     attachments: Vec<String>,
     model_label: Option<String>,
+    path_label: Option<String>,
     focused: bool,
     stop_visible: bool,
+    /// warp-new style context pills: the agent harness, the working directory
+    /// and the git branch, each with its own dropdown selector. The working
+    /// directory reuses `path_label` (set via `with_path_label`) as its label.
+    harness_label: Option<String>,
+    harness_menu_items: Vec<PopupMenuItem>,
+    harness_menu_open: Rc<RefCell<bool>>,
+    on_select_harness_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    dir_menu_items: Vec<PopupMenuItem>,
+    dir_menu_open: Rc<RefCell<bool>>,
+    on_select_dir_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    branch_label: Option<String>,
+    branch_menu_items: Vec<PopupMenuItem>,
+    branch_menu_open: Rc<RefCell<bool>>,
+    on_select_branch_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    on_slash: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_attach: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -49,6 +66,7 @@ impl ChatComposer {
             placeholder: String::from("Ask anything..."),
             attachments: Vec::new(),
             model_label: None,
+            path_label: None,
             focused: false,
             stop_visible: false,
             on_change: None,
@@ -70,6 +88,18 @@ impl ChatComposer {
             profile_menu_items: Vec::new(),
             profile_menu_open: Rc::new(RefCell::new(false)),
             on_select_profile_item: None,
+            harness_label: None,
+            harness_menu_items: Vec::new(),
+            harness_menu_open: Rc::new(RefCell::new(false)),
+            on_select_harness_item: None,
+            dir_menu_items: Vec::new(),
+            dir_menu_open: Rc::new(RefCell::new(false)),
+            on_select_dir_item: None,
+            branch_label: None,
+            branch_menu_items: Vec::new(),
+            branch_menu_open: Rc::new(RefCell::new(false)),
+            on_select_branch_item: None,
+            on_slash: None,
             root: None,
             size: None,
             origin: None,
@@ -93,6 +123,71 @@ impl ChatComposer {
 
     pub fn with_model_label(mut self, label: impl Into<String>) -> Self {
         self.model_label = Some(label.into());
+        self
+    }
+
+    pub fn with_path_label(mut self, path: impl Into<String>) -> Self {
+        self.path_label = Some(path.into());
+        self
+    }
+
+    /// Label for the warp-new "harness" context pill (the agent/harness the
+    /// current turn runs on). Shown as the left-most pill in the footer.
+    pub fn with_harness_label(mut self, label: impl Into<String>) -> Self {
+        self.harness_label = Some(label.into());
+        self
+    }
+
+    /// Set the harness dropdown: items, the app-owned `open` flag, and a
+    /// select callback (same contract as `with_model_menu`).
+    pub fn with_harness_menu<F: FnMut(usize) + 'static>(
+        mut self,
+        items: Vec<PopupMenuItem>,
+        open: Rc<RefCell<bool>>,
+        callback: F,
+    ) -> Self {
+        self.harness_menu_items = items;
+        self.harness_menu_open = open;
+        self.on_select_harness_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Set the working-directory dropdown (items, open flag, select callback).
+    pub fn with_dir_menu<F: FnMut(usize) + 'static>(
+        mut self,
+        items: Vec<PopupMenuItem>,
+        open: Rc<RefCell<bool>>,
+        callback: F,
+    ) -> Self {
+        self.dir_menu_items = items;
+        self.dir_menu_open = open;
+        self.on_select_dir_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Label for the git-branch context pill.
+    pub fn with_branch_label(mut self, label: impl Into<String>) -> Self {
+        self.branch_label = Some(label.into());
+        self
+    }
+
+    /// Set the git-branch dropdown (items, open flag, select callback).
+    pub fn with_branch_menu<F: FnMut(usize) + 'static>(
+        mut self,
+        items: Vec<PopupMenuItem>,
+        open: Rc<RefCell<bool>>,
+        callback: F,
+    ) -> Self {
+        self.branch_menu_items = items;
+        self.branch_menu_open = open;
+        self.on_select_branch_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Fired when the user begins typing a slash command (the draft starts
+    /// with `/`), so the host can open the command palette (grok-build style).
+    pub fn with_on_slash<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_slash = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -210,6 +305,62 @@ impl ChatComposer {
         &self.attachments
     }
 
+    /// Build a warp-new context pill (icon + label + chevron) for the harness
+    /// and branch selectors. Content-sized; when `items` is non-empty it is
+    /// wrapped in the shared [`PopupMenu`] so the app-owned `open` flag survives
+    /// the per-frame rebuild, otherwise it renders as a plain pill.
+    fn context_pill(
+        &self,
+        app: &AppContext,
+        icon: &'static str,
+        label: &str,
+        items: &[PopupMenuItem],
+        open: Rc<RefCell<bool>>,
+        on_select: &Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+        tooltip: &str,
+    ) -> Box<dyn Element> {
+        let child = || {
+            Flex::row()
+                .with_spacing(6.0)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(
+                    Icon::new(icon)
+                        .with_size(14.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_child(
+                    Text::new(label.to_string())
+                        .with_theme_color(ColorToken::Muted, app)
+                        .with_font_size(12.0)
+                        .with_max_lines(1)
+                        .finish(),
+                )
+                .with_child(
+                    Icon::new("chevron-down")
+                        .with_size(14.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .finish()
+        };
+        let trigger = Tooltip::new(ComposerButton::new(child()).with_height(28.0).finish(), tooltip)
+            .with_position(TooltipPosition::Above)
+            .finish();
+        if !items.is_empty() {
+            let mut menu = PopupMenu::new(trigger, items.to_vec())
+                .with_open(open)
+                .with_position(PopupMenuPosition::Above);
+            if let Some(cb) = on_select.as_ref() {
+                let cb = cb.clone();
+                menu = menu.with_on_select(move |idx| (cb.borrow_mut())(idx));
+            }
+            menu.finish()
+        } else {
+            trigger
+        }
+    }
+
     fn rebuild(&mut self, app: &AppContext) {
         let sm = app.theme.spacing_px(SpacingToken::Sm);
         let md = app.theme.spacing_px(SpacingToken::Md);
@@ -251,6 +402,7 @@ impl ChatComposer {
         let value = self.value.clone();
         let on_change = self.on_change.clone();
         let on_focus_change = self.on_focus_change.clone();
+        let on_slash = self.on_slash.clone();
         let send_for_submit = send.clone();
         let textarea = TextArea::new()
             .with_value(self.value.borrow().clone())
@@ -259,6 +411,11 @@ impl ChatComposer {
             .with_focused(self.focused)
             .with_on_change(move |text| {
                 *value.borrow_mut() = text.clone();
+                if text.trim_start().starts_with('/') {
+                    if let Some(cb) = on_slash.as_ref() {
+                        (cb.borrow_mut())();
+                    }
+                }
                 if let Some(cb) = on_change.as_ref() {
                     (cb.borrow_mut())(text);
                 }
@@ -273,12 +430,95 @@ impl ChatComposer {
         column = column.with_child(textarea);
 
         // Footer: attach (+) on the left; model, profile (and stop while
-        // streaming) on the right. No send button.
+        // streaming) on the right. No send button. The footer is bounded to the
+        // composer width so the left group can flex and the path label clips.
         let mut footer = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
             .with_cross_axis_alignment(CrossAxisAlignment::Center);
 
-        let mut left_group = Flex::row().with_spacing(sm);
+        let mut left_group = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(sm);
+        // Harness context pill (the agent/harness the turn runs on).
+        if let Some(label) = self.harness_label.clone() {
+            left_group = left_group.with_child(self.context_pill(
+                app,
+                "computer",
+                &label,
+                &self.harness_menu_items,
+                self.harness_menu_open.clone(),
+                &self.on_select_harness_item,
+                "Select environment",
+            ));
+        }
+        // Working-directory pill: fills the remaining left-group width so a
+        // long path ellipsizes instead of overflowing the composer.
+        if let Some(path) = self.path_label.clone() {
+            let dir_child = || {
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_spacing(6.0)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        Icon::new("folder")
+                            .with_size(14.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
+                    .with_child(
+                        Expanded::new(
+                            Clipped::new(
+                                Text::new(path.clone())
+                                    .with_theme_color(ColorToken::Muted, app)
+                                    .with_font_size(11.0)
+                                    .with_max_lines(1)
+                                    .finish(),
+                            )
+                            .finish(),
+                        )
+                        .finish(),
+                    )
+                    .with_child(
+                        Icon::new("chevron-down")
+                            .with_size(14.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
+                    .finish()
+            };
+            let trigger = Tooltip::new(
+                ComposerButton::new(dir_child()).with_height(28.0).finish(),
+                "Select working directory",
+            )
+            .with_position(TooltipPosition::Above)
+            .finish();
+            let dir = if !self.dir_menu_items.is_empty() {
+                let mut menu = PopupMenu::new(trigger, self.dir_menu_items.clone())
+                    .with_open(self.dir_menu_open.clone())
+                    .with_position(PopupMenuPosition::Above);
+                if let Some(cb) = self.on_select_dir_item.clone() {
+                    menu = menu.with_on_select(move |idx| (cb.borrow_mut())(idx));
+                }
+                menu.finish()
+            } else {
+                trigger
+            };
+            left_group = left_group.with_child(Expanded::new(dir).finish());
+        }
+        // Git-branch context pill.
+        if let Some(label) = self.branch_label.clone() {
+            left_group = left_group.with_child(self.context_pill(
+                app,
+                "git-branch",
+                &label,
+                &self.branch_menu_items,
+                self.branch_menu_open.clone(),
+                &self.on_select_branch_item,
+                "Select branch",
+            ));
+        }
         if let Some(cb) = self.on_attach.clone() {
             let attach = ComposerButton::new(
                 Icon::new("plus")
@@ -295,7 +535,7 @@ impl ChatComposer {
                     .finish(),
             );
         }
-        footer = footer.with_child(left_group.finish());
+        footer = footer.with_child(Expanded::new(left_group.finish()).finish());
 
         let mut right_group = Flex::row().with_spacing(sm);
         if let Some(label) = self.model_label.clone() {
@@ -401,14 +641,10 @@ impl ChatComposer {
         footer = footer.with_child(right_group.finish());
         column = column.with_child(footer.finish());
 
-        // A floating card (warp-new v2 input) on the raised `surface_2` input
-        // surface, a 1px `Border` (outline) and radius 8, with side + bottom
-        // gutters so it no longer runs flush to the window edges.
+        // The composer card keeps only its gutters/padding; the raised
+        // background and 1px border are dropped so the rich input has no gray
+        // inset box behind the textarea and pills.
         let card = Container::new(column.finish())
-            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-            .with_border(
-                Border::all(1.0).with_border_fill(Fill::Solid(app.theme.color(ColorToken::Border))),
-            )
             .with_padding(EdgeInsets::new(md, md, md, sm))
             .with_corner_radius(8.0)
             .finish();
@@ -523,13 +759,12 @@ impl Element for ComposerButton {
         let rect = rectf(origin.x, origin.y, size.x, size.y);
         let hovered = ctx.hovered(rect);
         if let Some(renderer) = ctx.renderer.as_mut() {
-            // warp-new `AgentInputButton`: a `surface_1` pill that brightens to
-            // `surface_2` on hover, with a 1px `neutral_3` border.
-            renderer.fill_rounded_rect(rect, app.theme.color(ColorToken::Surface), 6.0);
+            // Rich-input pills are flat: no filled box or 1px border by default,
+            // so they do not look inset inside the composer. Only a rounded
+            // hover overlay is drawn so the trigger still gives feedback.
             if hovered {
                 renderer.fill_rounded_rect(rect, app.theme.color(ColorToken::Hover), 6.0);
             }
-            renderer.stroke_rect(rect, app.theme.color(ColorToken::Border), 1.0, 6.0);
         }
         let child_size = self.child.size().unwrap_or(Vector2F::zero());
         let offset = vec2f(
@@ -647,10 +882,116 @@ mod tests {
         }
 
         // Each pill draws a surface + a 1px border.
+        // Rich-input pills are flat (no gray inset box), so no borders are drawn.
         let strokes = commands
             .iter()
             .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
             .count();
-        assert!(strokes >= 3, "expected 3+ button borders, got {strokes}");
+        assert_eq!(strokes, 0, "expected flat pills without border boxes, got {strokes}");
+    }
+
+    #[test]
+    fn composer_renders_harness_dir_branch_pills() {
+        use crate::elements::PaintContext;
+        use crate::render::{RenderCommand, Renderer};
+
+        let app = AppContext::default();
+        let mut composer = ChatComposer::new()
+            .with_harness_label("grok build")
+            .with_path_label("/work/project")
+            .with_branch_label("main")
+            .with_harness_menu(
+                vec![PopupMenuItem::new("grok build")],
+                Rc::new(RefCell::new(false)),
+                |_| {},
+            )
+            .with_dir_menu(
+                vec![PopupMenuItem::new("/work/project")],
+                Rc::new(RefCell::new(false)),
+                |_| {},
+            )
+            .with_branch_menu(
+                vec![PopupMenuItem::new("main")],
+                Rc::new(RefCell::new(false)),
+                |_| {},
+            );
+
+        let size = composer.layout(
+            SizeConstraint::loose(vec2f(600.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert!(size.x > 0.0);
+        assert!(size.y > 0.0);
+
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx
+            .renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default();
+
+        let icons: Vec<String> = commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        // `computer` renders the agentmode glyph; folder + git-branch are the
+        // new atlas entries.
+        for expected in ["agentmode", "folder", "git-branch"] {
+            assert!(icons.iter().any(|n| n == expected), "missing icon {expected}");
+        }
+
+        // Rich-input pills are flat (no gray inset box), so no borders are drawn.
+        let strokes = commands
+            .iter()
+            .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
+            .count();
+        assert_eq!(strokes, 0, "expected flat pills without border boxes, got {strokes}");
+    }
+
+    #[test]
+    fn composer_context_menu_opens_and_paints_panel() {
+        use crate::elements::PaintContext;
+        use crate::render::{RenderCommand, Renderer};
+
+        let app = AppContext::default();
+        let open = Rc::new(RefCell::new(true));
+        let mut composer = ChatComposer::new()
+            .with_harness_label("grok build")
+            .with_harness_menu(
+                vec![
+                    PopupMenuItem::new("grok build"),
+                    PopupMenuItem::new("claude"),
+                ],
+                open,
+                |_| {},
+            );
+
+        let size = composer.layout(
+            SizeConstraint::loose(vec2f(600.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert!(size.x > 0.0);
+
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx
+            .renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default();
+
+        // An opened context selector draws its dropdown panel (a bordered
+        // surface), confirming the rich-input pills actually open.
+        let strokes = commands
+            .iter()
+            .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
+            .count();
+        assert!(strokes >= 1, "opened context menu should paint its panel border");
     }
 }

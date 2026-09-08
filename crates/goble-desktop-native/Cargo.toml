@@ -35,7 +35,7 @@ futures.workspace = true
 once_cell.workspace = true
 serde_json.workspace = true
 goble-core = { path = "../goble-core" }
-goble-desktop-service = { path = "../goble-desktop-service" }
+goble-desktop-service = { path = "../goble-desktop-service", features = ["remote-screen"] }
 goble-ui = { path = "../goble-ui" }
 log.workspace = true
 rustls.workspace = true

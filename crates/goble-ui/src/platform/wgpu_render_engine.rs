@@ -6,8 +6,18 @@ use crate::platform::text_atlas::TextAtlas;
 use crate::render::{RenderCommand, Renderer};
 use wgpu::util::DeviceExt;
 
-const MAX_RECTS: usize = 4096;
-const MAX_TEXT_VERTICES: usize = 8192;
+// Per-frame geometry budgets. These size the vertex and instance buffers, and
+// anything past them is dropped, so they have to hold the largest frame the app
+// can produce. A terminal pane is the reason they are this large: it paints one
+// quad per cell, and a full-screen TUI on a big display is tens of thousands of
+// cells. A run-length-encoded background keeps the rect count far below the
+// text count.
+const MAX_RECTS: usize = 16384;
+/// Four vertices per text quad, so this is 32768 glyphs per frame.
+const MAX_TEXT_VERTICES: usize = 131_072;
+/// Icons are one quad each and far fewer than glyphs; they get their own
+/// budget so the text budget does not allocate a buffer they cannot fill.
+const MAX_ICON_VERTICES: usize = 16_384;
 const MAX_IMAGES: usize = 256;
 
 /// A run of geometry produced between two clip boundaries or two primitive
@@ -424,7 +434,7 @@ impl WgpuRenderEngine {
 
         let icon_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("goble-ui icon vertex buffer"),
-            size: (std::mem::size_of::<TextVertex>() * MAX_TEXT_VERTICES) as u64,
+            size: (std::mem::size_of::<TextVertex>() * MAX_ICON_VERTICES) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -440,11 +450,12 @@ impl WgpuRenderEngine {
 
         let image_bind_group_layout = text_bind_group_layout.clone();
 
-        let image_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("goble-ui image pipeline layout"),
-            bind_group_layouts: &[&image_bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let image_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("goble-ui image pipeline layout"),
+                bind_group_layouts: &[&image_bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         let image_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("goble-ui image pipeline"),
@@ -540,7 +551,8 @@ impl WgpuRenderEngine {
         renderer: &Renderer,
         scale: f32,
     ) {
-        self.text_atlas.prepare(device, queue, renderer.commands(), scale);
+        self.text_atlas
+            .prepare(device, queue, renderer.commands(), scale);
 
         let viewport = [viewport_size.0 as f32, viewport_size.1 as f32];
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&viewport));
@@ -790,6 +802,12 @@ impl WgpuRenderEngine {
         record_batch!();
 
         let rect_total = rect_instances.len().min(MAX_RECTS);
+        if rect_instances.len() > MAX_RECTS {
+            log::warn!(
+                "frame drew {} rects, the budget is {MAX_RECTS}; the rest were dropped",
+                rect_instances.len()
+            );
+        }
         if rect_total > 0 {
             queue.write_buffer(
                 &self.rect_instance_buffer,
@@ -798,6 +816,12 @@ impl WgpuRenderEngine {
             );
         }
         let text_total = text_vertices.len().min(MAX_TEXT_VERTICES);
+        if text_vertices.len() > MAX_TEXT_VERTICES {
+            log::warn!(
+                "frame drew {} text vertices, the budget is {MAX_TEXT_VERTICES}; the rest were dropped",
+                text_vertices.len()
+            );
+        }
         if text_total > 0 {
             queue.write_buffer(
                 &self.text_vertex_buffer,
@@ -805,7 +829,7 @@ impl WgpuRenderEngine {
                 bytemuck::cast_slice(&text_vertices[..text_total]),
             );
         }
-        let icon_total = icon_vertices.len().min(MAX_TEXT_VERTICES);
+        let icon_total = icon_vertices.len().min(MAX_ICON_VERTICES);
         if icon_total > 0 {
             queue.write_buffer(
                 &self.icon_vertex_buffer,
@@ -856,13 +880,21 @@ impl WgpuRenderEngine {
                     let bytes = std::mem::size_of::<RectInstance>();
                     pass.set_pipeline(&self.rect_pipeline);
                     pass.set_bind_group(0, &self.rect_bind_group, &[]);
-                    pass.set_index_buffer(self.rect_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    pass.set_index_buffer(
+                        self.rect_index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint16,
+                    );
                     pass.set_vertex_buffer(
                         0,
                         self.rect_instance_buffer
                             .slice(((rect_start * bytes) as u64)..((rect_end * bytes) as u64)),
                     );
-                    pass.set_scissor_rect(batch.scissor.0, batch.scissor.1, batch.scissor.2, batch.scissor.3);
+                    pass.set_scissor_rect(
+                        batch.scissor.0,
+                        batch.scissor.1,
+                        batch.scissor.2,
+                        batch.scissor.3,
+                    );
                     pass.draw_indexed(0..6, 0, 0..count as u32);
                 }
 
@@ -874,13 +906,21 @@ impl WgpuRenderEngine {
                     let bytes = std::mem::size_of::<TextVertex>();
                     pass.set_pipeline(&self.text_pipeline);
                     pass.set_bind_group(0, &self.text_bind_group, &[]);
-                    pass.set_index_buffer(self.text_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    pass.set_index_buffer(
+                        self.text_index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint16,
+                    );
                     pass.set_vertex_buffer(
                         0,
                         self.text_vertex_buffer
                             .slice(((text_start * bytes) as u64)..((text_end * bytes) as u64)),
                     );
-                    pass.set_scissor_rect(batch.scissor.0, batch.scissor.1, batch.scissor.2, batch.scissor.3);
+                    pass.set_scissor_rect(
+                        batch.scissor.0,
+                        batch.scissor.1,
+                        batch.scissor.2,
+                        batch.scissor.3,
+                    );
                     pass.draw_indexed(0..index_count as u32, 0, 0..1);
                 }
 
@@ -892,13 +932,21 @@ impl WgpuRenderEngine {
                     let bytes = std::mem::size_of::<TextVertex>();
                     pass.set_pipeline(&self.text_pipeline);
                     pass.set_bind_group(0, self.icon_atlas.bind_group(), &[]);
-                    pass.set_index_buffer(self.text_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    pass.set_index_buffer(
+                        self.text_index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint16,
+                    );
                     pass.set_vertex_buffer(
                         0,
                         self.icon_vertex_buffer
                             .slice(((icon_start * bytes) as u64)..((icon_end * bytes) as u64)),
                     );
-                    pass.set_scissor_rect(batch.scissor.0, batch.scissor.1, batch.scissor.2, batch.scissor.3);
+                    pass.set_scissor_rect(
+                        batch.scissor.0,
+                        batch.scissor.1,
+                        batch.scissor.2,
+                        batch.scissor.3,
+                    );
                     pass.draw_indexed(0..index_count as u32, 0, 0..1);
                 }
 
@@ -910,7 +958,10 @@ impl WgpuRenderEngine {
                 if image_end > image_start {
                     let bytes = std::mem::size_of::<TextVertex>();
                     pass.set_pipeline(&self.image_pipeline);
-                    pass.set_index_buffer(self.image_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    pass.set_index_buffer(
+                        self.image_index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint16,
+                    );
                     for draw in &image_draws[image_start..image_end] {
                         let v = draw.vertex_index;
                         if v + 4 > image_vertex_total {
@@ -1256,10 +1307,7 @@ mod tests {
                 count += 1;
                 current = Some(kind);
             }
-            if matches!(
-                command,
-                RenderCommand::ClipRect(_) | RenderCommand::PopClip
-            ) {
+            if matches!(command, RenderCommand::ClipRect(_) | RenderCommand::PopClip) {
                 count += 1;
             }
         }

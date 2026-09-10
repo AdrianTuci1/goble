@@ -27,7 +27,7 @@
 
 | Date | Item | Verification (what passed) |
 | --- | --- | --- |
-| *(yyyy-mm-dd)* | *(id + doc)* | *(command / test result)* |
+| 2026-09-10 | **Agent TUI A1 — block kinds + view visibility** ([`06-renderer/agent-tui.md`](06-renderer/agent-tui.md)) | `cargo test -p goble-terminal` → 110 passed, 0 failed (the 4 new tests: `a_conversation_block_sits_between_shell_blocks`, `a_conversation_block_never_takes_pty_bytes`, `each_view_sees_only_its_own_blocks`, `associating_a_block_hides_it_from_the_terminal_when_asked`) plus the 27-fixture conformance test; `cargo clippy -p goble-terminal --all-targets --no-deps -- -D warnings` clean; `cargo test --workspace` → 1126 passed, 0 failed |
 
 ## Rule: no `[x]` without proof
 

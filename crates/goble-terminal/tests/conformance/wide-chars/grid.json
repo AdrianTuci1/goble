@@ -1,0 +1,10 @@
+{
+  "rows": ["日本", ""],
+  "cursor": { "line": 0, "column": 4, "visible": true, "shape": "block", "wrap_pending": false },
+  "cells": [
+    { "row": 0, "column": 0, "wide": true },
+    { "row": 0, "column": 1, "wide_spacer": true },
+    { "row": 0, "column": 2, "wide": true },
+    { "row": 0, "column": 3, "wide_spacer": true }
+  ]
+}

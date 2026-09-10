@@ -1,0 +1,10 @@
+{
+  "rows": ["RBGC", ""],
+  "cursor": { "line": 0, "column": 4, "visible": true, "shape": "block", "wrap_pending": false },
+  "cells": [
+    { "row": 0, "column": 0, "fg": "red" },
+    { "row": 0, "column": 1, "fg": "bright_red" },
+    { "row": 0, "column": 2, "bg": "green" },
+    { "row": 0, "column": 3, "bg": "bright_blue" }
+  ]
+}

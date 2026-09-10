@@ -394,6 +394,34 @@ pub fn measure_text_family(
     crate::geometry::vec2f(width, height)
 }
 
+/// The advance width of one character in the bundled monospace font.
+///
+/// A cell grid has to know its column pitch before it can place anything, and
+/// the pitch is a property of the font rather than of the string being drawn,
+/// so it is read from the font's own metrics and cached instead of being
+/// measured per frame. Terminals otherwise fall back to a hand-tuned ratio,
+/// which drifts from the real glyphs and makes a right-hand border wander.
+pub fn mono_advance(font_size: f32, weight: FontWeight) -> f32 {
+    static CACHE: OnceLock<std::sync::Mutex<HashMap<(u32, u32), f32>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let key = (font_size.to_bits(), weight as u32);
+    if let Ok(cache) = cache.lock() {
+        if let Some(advance) = cache.get(&key) {
+            return *advance;
+        }
+    }
+
+    let Some(font_set) = font_set() else {
+        return font_size * 0.6;
+    };
+    let font = font_set.select(weight, FontFamily::Mono);
+    let advance = font.metrics('M', font_size).advance_width;
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(key, advance);
+    }
+    advance
+}
+
 fn estimate_text_size(
     text: &str,
     font_size: f32,
@@ -513,7 +541,10 @@ fn rasterize_text(
         line_height,
         ..Default::default()
     });
-    layout.append(fonts, &fontdue::layout::TextStyle::new(text, font_size as f32, 0));
+    layout.append(
+        fonts,
+        &fontdue::layout::TextStyle::new(text, font_size as f32, 0),
+    );
 
     let glyphs = layout.glyphs();
     // The quad spans the block's line box, so the drawn ink lands exactly where
@@ -631,7 +662,9 @@ mod tests {
     #[test]
     fn semibold_uses_static_distinct_font() {
         let set = font_set().expect("bundled fonts must load");
-        let regular = set.select(FontWeight::Regular, FontFamily::System).file_hash();
+        let regular = set
+            .select(FontWeight::Regular, FontFamily::System)
+            .file_hash();
         let semibold = set
             .select(FontWeight::SemiBold, FontFamily::System)
             .file_hash();
@@ -647,14 +680,21 @@ mod tests {
     #[test]
     fn raster_quad_agrees_with_measure_for_single_line() {
         let text = "Hello, world!";
-        let (entry, atlas, width, height) = rasterize_text(text, 13, FontWeight::Regular, false, 400.0, 1.2)
-            .expect("single line must rasterize");
+        let (entry, atlas, width, height) =
+            rasterize_text(text, 13, FontWeight::Regular, false, 400.0, 1.2)
+                .expect("single line must rasterize");
 
         // The quad the renderer draws (origin `offset`, size `size`) must match the
         // box `measure_text_family` produced for the element, otherwise text is
         // clipped or shifted.
-        let measured =
-            measure_text_family(text, 13.0, 1.2, 400.0, FontWeight::Regular, FontFamily::System);
+        let measured = measure_text_family(
+            text,
+            13.0,
+            1.2,
+            400.0,
+            FontWeight::Regular,
+            FontFamily::System,
+        );
         assert!(
             (entry.size[0] - measured.x).abs() <= 2.0,
             "quad width {} vs measured {}",

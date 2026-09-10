@@ -58,13 +58,11 @@ impl Sandbox for SeatbeltSandbox {
                 command: command.basename().to_string(),
             });
         }
-        if self.profile.level == SandboxLevel::Hardened {
-            if !Self::launcher_available() {
-                return Err(SandboxError::BackendUnavailable {
-                    backend: self.name(),
-                    reason: format!("{SANDBOX_EXEC} is not installed; cannot apply a seatbelt profile"),
-                });
-            }
+        if self.profile.level == SandboxLevel::Hardened && !Self::launcher_available() {
+            return Err(SandboxError::BackendUnavailable {
+                backend: self.name(),
+                reason: format!("{SANDBOX_EXEC} is not installed; cannot apply a seatbelt profile"),
+            });
         }
         Ok(())
     }
@@ -157,26 +155,28 @@ impl SbRule {
 /// allowed when the profile lifts the restriction.
 pub(crate) fn rules_for(profile: &SandboxProfile, workspace: &Path) -> Vec<SbRule> {
     let flags = profile.hardened_flags;
-    let mut rules = Vec::new();
+    let mut rules = vec![
+        // The command must be able to launch and manage its children, and the
+        // process needs a few syscalls to bootstrap.
+        SbRule::allow("process*"),
+        SbRule::allow("file-read-metadata"),
+        SbRule::allow("sysctl-read"),
+        SbRule::allow("mach-lookup"),
+        SbRule::allow("ipc-posix-shm"),
+        // Reads: the workspace and toolchain must be readable so the confined
+        // command can execute and inspect its inputs.
+        SbRule::allow("file-read*"),
+        SbRule::allow_on("file-read*", workspace),
+        // Writes are confined to the workspace. The broad deny below is what
+        // makes the path-scoped allow that may follow it meaningful, so the
+        // order matters and is asserted by the tests.
+        SbRule::deny("file-write*"),
+    ];
 
-    // The command must be able to launch and manage its children, and the
-    // process needs a few syscalls to bootstrap.
-    rules.push(SbRule::allow("process*"));
-    rules.push(SbRule::allow("file-read-metadata"));
-    rules.push(SbRule::allow("sysctl-read"));
-    rules.push(SbRule::allow("mach-lookup"));
-    rules.push(SbRule::allow("ipc-posix-shm"));
-
-    // Reads: the workspace and toolchain must be readable so the confined
-    // command can execute and inspect its inputs.
-    rules.push(SbRule::allow("file-read*"));
-    rules.push(SbRule::allow_on("file-read*", workspace));
-
-    // Writes are confined to the workspace. When the profile keeps the workspace
-    // writable (`read_only_fs` false, as the harness does so the file/git tools
-    // keep working) a path-scoped allow overrides the broad deny; otherwise the
-    // workspace is read-only and every write is denied.
-    rules.push(SbRule::deny("file-write*"));
+    // When the profile keeps the workspace writable (`read_only_fs` false, as
+    // the harness does so the file/git tools keep working) a path-scoped allow
+    // overrides the broad deny; otherwise the workspace is read-only and every
+    // write is denied.
     if !flags.read_only_fs {
         rules.push(SbRule::allow_on("file-write*", workspace));
     }

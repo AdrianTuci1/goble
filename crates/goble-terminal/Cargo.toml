@@ -11,3 +11,10 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+
+# Integration tests link against the crate's dev-dependencies, not its normal
+# ones, so the conformance runner's JSON parsing needs its own entry here even
+# though the library already depends on both.
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

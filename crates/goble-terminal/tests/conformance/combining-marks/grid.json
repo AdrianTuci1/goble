@@ -1,0 +1,7 @@
+{
+  "rows": ["e\u0301", ""],
+  "cursor": { "line": 0, "column": 1, "visible": true, "shape": "block", "wrap_pending": false },
+  "cells": [
+    { "row": 0, "column": 0, "zerowidth": "\u0301" }
+  ]
+}

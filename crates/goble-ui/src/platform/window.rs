@@ -136,16 +136,11 @@ impl ApplicationHandler for App {
         // window to enter/leave borderless fullscreen through
         // `AppContext::window_control`. The handler is installed now, when the
         // window first exists.
-        let window_control = self
-            .app_context
-            .borrow()
-            .window_control
-            .clone();
+        let window_control = self.app_context.borrow().window_control.clone();
         let fullscreen_window = Arc::clone(&window);
         window_control.install(move |fullscreen: bool| {
             if fullscreen {
-                fullscreen_window
-                    .set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                fullscreen_window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
             } else {
                 fullscreen_window.set_fullscreen(None);
             }
@@ -239,6 +234,17 @@ impl ApplicationHandler for App {
             winit::event::WindowEvent::CursorLeft { .. } => {
                 self.cursor_inside = false;
             }
+            // A terminal tells the program it hosts whether the user is looking
+            // at it (mode 1004), so the focus has to reach the element tree.
+            winit::event::WindowEvent::Focused(gained) => {
+                let event = DispatchedEvent::Focus { gained };
+                let mut event_ctx = crate::elements::EventContext::default();
+                let app_context = self.app_context.borrow().clone();
+                let _ = self
+                    .root
+                    .dispatch_event(&event, &mut event_ctx, &app_context);
+                drop(app_context);
+            }
             winit::event::WindowEvent::MouseInput { state, button, .. } => {
                 let button_id = match button {
                     winit::event::MouseButton::Left => 0,
@@ -309,8 +315,8 @@ impl ApplicationHandler for App {
                     // tree so a focused composer cannot swallow the keys. This is
                     // the app-level zoom; on macOS it is also reachable via the
                     // native menubar's View → Zoom items (see `mac/menus.rs`).
-                    let cmd = self.modifiers.state().super_key()
-                        || self.modifiers.state().control_key();
+                    let cmd =
+                        self.modifiers.state().super_key() || self.modifiers.state().control_key();
                     if event.state == winit::event::ElementState::Pressed && cmd {
                         let mut applied = false;
                         {
@@ -390,6 +396,46 @@ fn logical_key_string(key: &winit::keyboard::Key) -> Option<String> {
                 winit::keyboard::NamedKey::ArrowUp => "ArrowUp",
                 winit::keyboard::NamedKey::ArrowDown => "ArrowDown",
                 winit::keyboard::NamedKey::Space => " ",
+                winit::keyboard::NamedKey::Home => "Home",
+                winit::keyboard::NamedKey::End => "End",
+                winit::keyboard::NamedKey::PageUp => "PageUp",
+                winit::keyboard::NamedKey::PageDown => "PageDown",
+                winit::keyboard::NamedKey::Insert => "Insert",
+                winit::keyboard::NamedKey::F1 => "F1",
+                winit::keyboard::NamedKey::F2 => "F2",
+                winit::keyboard::NamedKey::F3 => "F3",
+                winit::keyboard::NamedKey::F4 => "F4",
+                winit::keyboard::NamedKey::F5 => "F5",
+                winit::keyboard::NamedKey::F6 => "F6",
+                winit::keyboard::NamedKey::F7 => "F7",
+                winit::keyboard::NamedKey::F8 => "F8",
+                winit::keyboard::NamedKey::F9 => "F9",
+                winit::keyboard::NamedKey::F10 => "F10",
+                winit::keyboard::NamedKey::F11 => "F11",
+                winit::keyboard::NamedKey::F12 => "F12",
+                winit::keyboard::NamedKey::F13 => "F13",
+                winit::keyboard::NamedKey::F14 => "F14",
+                winit::keyboard::NamedKey::F15 => "F15",
+                winit::keyboard::NamedKey::F16 => "F16",
+                winit::keyboard::NamedKey::F17 => "F17",
+                winit::keyboard::NamedKey::F18 => "F18",
+                winit::keyboard::NamedKey::F19 => "F19",
+                winit::keyboard::NamedKey::F20 => "F20",
+                winit::keyboard::NamedKey::F21 => "F21",
+                winit::keyboard::NamedKey::F22 => "F22",
+                winit::keyboard::NamedKey::F23 => "F23",
+                winit::keyboard::NamedKey::F24 => "F24",
+                winit::keyboard::NamedKey::F25 => "F25",
+                winit::keyboard::NamedKey::F26 => "F26",
+                winit::keyboard::NamedKey::F27 => "F27",
+                winit::keyboard::NamedKey::F28 => "F28",
+                winit::keyboard::NamedKey::F29 => "F29",
+                winit::keyboard::NamedKey::F30 => "F30",
+                winit::keyboard::NamedKey::F31 => "F31",
+                winit::keyboard::NamedKey::F32 => "F32",
+                winit::keyboard::NamedKey::F33 => "F33",
+                winit::keyboard::NamedKey::F34 => "F34",
+                winit::keyboard::NamedKey::F35 => "F35",
                 _ => return None,
             };
             Some(s.to_string())

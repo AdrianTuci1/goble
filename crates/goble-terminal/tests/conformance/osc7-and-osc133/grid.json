@@ -1,0 +1,9 @@
+{
+  "rows": ["hi", ""],
+  "cursor": { "line": 0, "column": 2, "visible": true, "shape": "block", "wrap_pending": false },
+  "history_size": 0,
+  "cells": [
+    { "row": 0, "column": 0, "fg": "default" },
+    { "row": 0, "column": 1, "fg": "default" }
+  ]
+}

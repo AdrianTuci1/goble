@@ -21,6 +21,7 @@
 //! viewports, so output taller than the window is kept rather than scrolled
 //! away. The block list lays those rows out; it is not itself the scrollback.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -78,6 +79,100 @@ impl BlockState {
     }
 }
 
+/// What a block holds.
+///
+/// A shell block is a command and the output it produced; the block list draws
+/// it from its own two screens. An agent-view block holds no output at all: it
+/// marks where a conversation happened, names the conversation, and carries the
+/// label the renderer draws on the card. The conversation itself is rendered by
+/// the app, not by the emulator, so nothing is ever fed to this block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockKind {
+    Shell,
+    AgentView {
+        conversation_id: String,
+        /// What the card says when the conversation itself is not loaded (a
+        /// restored list, a conversation that lives on another machine).
+        label: String,
+    },
+}
+
+impl BlockKind {
+    pub fn is_shell(&self) -> bool {
+        matches!(self, BlockKind::Shell)
+    }
+}
+
+/// Which views a block belongs to.
+///
+/// The terminal and each agent view are filters over one list, not separate
+/// histories: entering a conversation hides the terminal's blocks and shows the
+/// ones associated with it. A block can belong to both — a command typed inside
+/// a conversation is a terminal block that the conversation also shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockVisibility {
+    terminal: bool,
+    conversations: BTreeSet<String>,
+}
+
+impl Default for BlockVisibility {
+    /// A block starts as shell output: the terminal shows it.
+    fn default() -> Self {
+        Self::terminal()
+    }
+}
+
+impl BlockVisibility {
+    /// Visible in the terminal view only; this is what a shell block starts as.
+    pub fn terminal() -> Self {
+        Self {
+            terminal: true,
+            conversations: BTreeSet::new(),
+        }
+    }
+
+    /// Belongs to one conversation's agent view and not to the terminal view.
+    pub fn agent(conversation_id: impl Into<String>) -> Self {
+        let mut conversations = BTreeSet::new();
+        conversations.insert(conversation_id.into());
+        Self {
+            terminal: false,
+            conversations,
+        }
+    }
+
+    pub fn is_in_terminal(&self) -> bool {
+        self.terminal
+    }
+
+    pub fn conversations(&self) -> impl Iterator<Item = &str> {
+        self.conversations.iter().map(String::as_str)
+    }
+
+    pub fn is_in_conversation(&self, conversation_id: &str) -> bool {
+        self.conversations.contains(conversation_id)
+    }
+
+    pub fn is_visible_in(&self, view: &BlockView) -> bool {
+        match view {
+            BlockView::Terminal => self.terminal,
+            BlockView::Agent { conversation_id } => self.is_in_conversation(conversation_id),
+        }
+    }
+
+    fn associate(&mut self, conversation_id: &str) -> bool {
+        self.conversations.insert(conversation_id.to_string())
+    }
+}
+
+/// One of the views over a block list. Picking a view is the whole of "which
+/// history am I looking at".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockView {
+    Terminal,
+    Agent { conversation_id: String },
+}
+
 /// What the shell told us about where a command was run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlockMetadata {
@@ -90,11 +185,13 @@ pub struct BlockMetadata {
     pub node_version: Option<String>,
 }
 
-/// One command and its output.
+/// One command and its output, or one conversation.
 #[derive(Debug)]
 pub struct Block {
     id: BlockId,
     index: usize,
+    kind: BlockKind,
+    visibility: BlockVisibility,
     state: BlockState,
     /// The prompt and the typed command.
     command: Screen,
@@ -115,6 +212,8 @@ impl Block {
         Self {
             id,
             index,
+            kind: BlockKind::Shell,
+            visibility: BlockVisibility::terminal(),
             state,
             command: Screen::new(size, ScreenConfig::block()),
             output: Screen::new(size, ScreenConfig::block()),
@@ -128,12 +227,60 @@ impl Block {
         }
     }
 
+    /// A block standing for a conversation. It owns no screens: the app renders
+    /// the conversation, and this block is what reserves its place in the list
+    /// and what the terminal shows once the agent view is left.
+    fn agent_view(
+        id: BlockId,
+        index: usize,
+        size: ScreenSize,
+        conversation_id: String,
+        label: String,
+    ) -> Self {
+        Self {
+            kind: BlockKind::AgentView {
+                conversation_id,
+                label,
+            },
+            // Visible in the terminal so the card can be clicked to come back.
+            // `visible_blocks` hides it again while its own agent view is open.
+            visibility: BlockVisibility::terminal(),
+            ..Self::new(id, index, size, BlockState::Static)
+        }
+    }
+
     pub fn id(&self) -> BlockId {
         self.id
     }
 
     pub fn index(&self) -> usize {
         self.index
+    }
+
+    pub fn kind(&self) -> &BlockKind {
+        &self.kind
+    }
+
+    pub fn visibility(&self) -> &BlockVisibility {
+        &self.visibility
+    }
+
+    /// The conversation this block stands for, if it is an agent-view block.
+    pub fn conversation_id(&self) -> Option<&str> {
+        match &self.kind {
+            BlockKind::Shell => None,
+            BlockKind::AgentView {
+                conversation_id, ..
+            } => Some(conversation_id),
+        }
+    }
+
+    /// What the card says, if this block is an agent-view block.
+    pub fn label(&self) -> Option<&str> {
+        match &self.kind {
+            BlockKind::Shell => None,
+            BlockKind::AgentView { label, .. } => Some(label),
+        }
     }
 
     pub fn state(&self) -> BlockState {
@@ -196,6 +343,13 @@ impl Block {
 
     /// Route PTY bytes to the screen that currently owns them.
     pub fn feed(&mut self, bytes: &[u8]) {
+        // A conversation block renders from the app's own conversation model, so
+        // anything the PTY writes has no screen to land on. It is never the
+        // active block; counting the bytes keeps that visible if it ever is.
+        if !self.kind.is_shell() {
+            self.dropped_bytes += bytes.len();
+            return;
+        }
         match self.state {
             // Before a command runs the shell is drawing the prompt and echoing
             // what is typed, so those bytes are the command line.
@@ -585,10 +739,82 @@ impl BlockList {
         self.active = self.blocks.len() - 1;
     }
 
+    /// Append a block standing for a conversation, without disturbing the
+    /// active shell block: the card takes its place in the history at the point
+    /// the conversation happened, and output keeps going to the block below it.
+    pub fn push_agent_view_block(
+        &mut self,
+        conversation_id: impl Into<String>,
+        label: impl Into<String>,
+    ) -> BlockId {
+        let id = BlockId(self.next_id);
+        self.next_id += 1;
+        let block = Block::agent_view(
+            id,
+            self.blocks.len(),
+            self.size,
+            conversation_id.into(),
+            label.into(),
+        );
+        self.blocks.push(block);
+        id
+    }
+
+    /// Make a block visible inside a conversation's agent view as well. Returns
+    /// false when the block is unknown.
+    pub fn associate_with_conversation(&mut self, id: BlockId, conversation_id: &str) -> bool {
+        let Some(block) = self.blocks.iter_mut().find(|block| block.id == id) else {
+            return false;
+        };
+        block.visibility.associate(conversation_id)
+    }
+
+    /// Replace a block's visibility wholesale. Returns false when the block is
+    /// unknown.
+    pub fn set_visibility(&mut self, id: BlockId, visibility: BlockVisibility) -> bool {
+        let Some(block) = self.blocks.iter_mut().find(|block| block.id == id) else {
+            return false;
+        };
+        block.visibility = visibility;
+        true
+    }
+
+    /// The blocks a view draws, oldest first.
+    ///
+    /// This is the whole of the terminal/agent split: a conversation's own card
+    /// is hidden while that conversation is open, because the view already is
+    /// the conversation.
+    pub fn visible_blocks(&self, view: &BlockView) -> Vec<&Block> {
+        self.blocks
+            .iter()
+            .filter(|block| {
+                if let BlockView::Agent { conversation_id } = view {
+                    if block.conversation_id() == Some(conversation_id.as_str()) {
+                        return false;
+                    }
+                }
+                block.visibility.is_visible_in(view)
+            })
+            .collect()
+    }
+
     /// Every visible row, oldest block first.
     pub fn lines(&self) -> Vec<BlockLine> {
         self.blocks
             .iter()
+            .flat_map(|block| {
+                block.lines().into_iter().map(move |line| BlockLine {
+                    block: block.id,
+                    line,
+                })
+            })
+            .collect()
+    }
+
+    /// Every row a view draws, oldest block first.
+    pub fn visible_lines(&self, view: &BlockView) -> Vec<BlockLine> {
+        self.visible_blocks(view)
+            .into_iter()
             .flat_map(|block| {
                 block.lines().into_iter().map(move |line| BlockLine {
                     block: block.id,
@@ -942,6 +1168,123 @@ mod tests {
         list.feed(b"still alive");
         assert!(!list.is_empty());
         assert_eq!(list.active_index(), list.len() - 1);
+    }
+
+    fn ids(blocks: Vec<&Block>) -> Vec<BlockId> {
+        blocks.iter().map(|block| block.id()).collect()
+    }
+
+    #[test]
+    fn a_conversation_block_sits_between_shell_blocks() {
+        let mut list = booted();
+        list.apply(preexec("echo before"));
+        list.feed(b"before\r\n");
+        list.apply(finished(0));
+        let shell = list.active_block().id();
+
+        let card = list.push_agent_view_block("conv-1", "Fix the build");
+
+        // The card does not steal the active block: the shell keeps the screen.
+        assert_eq!(list.active_block().id(), shell);
+        let block = list.get(card).expect("the card");
+        assert_eq!(block.conversation_id(), Some("conv-1"));
+        assert_eq!(block.label(), Some("Fix the build"));
+        assert!(!block.kind().is_shell());
+        assert_eq!(block.text(), "", "a conversation block holds no output");
+
+        // The next command lands after the card, so the card keeps its place in
+        // the history.
+        list.apply(preexec("echo after"));
+        list.feed(b"after\r\n");
+        list.apply(finished(0));
+        let after = list.active_block().id();
+        let order: Vec<BlockId> = ids(list.blocks().iter().collect());
+        let at = |id: BlockId| order.iter().position(|candidate| *candidate == id).unwrap();
+        assert!(at(shell) < at(card));
+        assert!(at(card) < at(after));
+        assert_eq!(list.get(card).unwrap().text(), "");
+    }
+
+    #[test]
+    fn a_conversation_block_never_takes_pty_bytes() {
+        let mut list = booted();
+        let card = list.push_agent_view_block("conv-1", "Fix the build");
+        // Even mid-command, bytes belong to the shell block.
+        list.apply(preexec("sleep 5"));
+        list.feed(b"partial output");
+        assert_eq!(list.get(card).unwrap().text(), "");
+        assert_eq!(list.get(card).unwrap().dropped_bytes(), 0);
+        assert_eq!(list.active_block().output().text(), "partial output");
+    }
+
+    #[test]
+    fn each_view_sees_only_its_own_blocks() {
+        let mut list = booted();
+        list.apply(preexec("echo shell"));
+        list.feed(b"shell\r\n");
+        list.apply(finished(0));
+        let shell = list.blocks()[1].id();
+
+        let card = list.push_agent_view_block("conv-1", "Fix the build");
+
+        let conversation = BlockView::Agent {
+            conversation_id: "conv-1".into(),
+        };
+        // Nothing is in the conversation yet, and its own card is hidden while
+        // it is open — the view is the conversation.
+        assert!(list.visible_blocks(&conversation).is_empty());
+        assert!(list.visible_lines(&conversation).is_empty());
+        assert!(ids(list.visible_blocks(&BlockView::Terminal)).contains(&card));
+
+        // A command run inside the conversation shows in both views.
+        assert!(list.associate_with_conversation(shell, "conv-1"));
+        assert_eq!(ids(list.visible_blocks(&conversation)), vec![shell]);
+        assert!(ids(list.visible_blocks(&BlockView::Terminal)).contains(&shell));
+        let lines = list.visible_lines(&conversation);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].line.text(), "shell");
+        assert_eq!(lines[0].block, shell);
+
+        // Another conversation has nothing of its own, and still sees its card
+        // in the terminal.
+        let other = BlockView::Agent {
+            conversation_id: "conv-2".into(),
+        };
+        assert!(list.visible_blocks(&other).is_empty());
+        assert!(ids(list.visible_blocks(&BlockView::Terminal)).contains(&card));
+        assert_eq!(list.visible_lines(&BlockView::Terminal)[0], list.lines()[0]);
+    }
+
+    #[test]
+    fn associating_a_block_hides_it_from_the_terminal_when_asked() {
+        let mut list = booted();
+        list.apply(preexec("echo one"));
+        let id = list.active_block().id();
+
+        assert!(list.associate_with_conversation(id, "conv-1"));
+        let view = BlockView::Agent {
+            conversation_id: "conv-1".into(),
+        };
+        assert!(list.visible_blocks(&view).iter().any(|b| b.id() == id));
+        assert!(
+            list.visible_blocks(&BlockView::Terminal)
+                .iter()
+                .any(|b| b.id() == id),
+            "a command run in the conversation is still terminal output"
+        );
+
+        assert!(list.set_visibility(id, BlockVisibility::agent("conv-1")));
+        assert!(!list
+            .visible_blocks(&BlockView::Terminal)
+            .iter()
+            .any(|b| b.id() == id));
+        assert!(
+            list.visible_blocks(&view).iter().any(|b| b.id() == id),
+            "hidden from the terminal, kept in the conversation"
+        );
+
+        assert!(!list.associate_with_conversation(BlockId(999), "conv-1"));
+        assert!(!list.set_visibility(BlockId(999), BlockVisibility::terminal()));
     }
 
     #[test]

@@ -1,0 +1,8 @@
+{
+  "rows": ["one", "", "    two", "", ""],
+  "cursor": { "line": 2, "column": 7, "visible": true, "shape": "block", "wrap_pending": false },
+  "cells": [
+    { "row": 0, "column": 2, "fg": "default" },
+    { "row": 2, "column": 4, "fg": "default" }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "rows": ["a\t      b\t      c", "Z\t  q"],
+  "cursor": { "line": 1, "column": 5, "visible": true, "shape": "block", "wrap_pending": false },
+  "cells": [
+    { "row": 0, "column": 0, "fg": "default" },
+    { "row": 0, "column": 8, "fg": "default" },
+    { "row": 0, "column": 16, "fg": "default" },
+    { "row": 1, "column": 0, "fg": "default" },
+    { "row": 1, "column": 4, "fg": "default" }
+  ]
+}

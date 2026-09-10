@@ -3,11 +3,15 @@
 //! This module owns the only blocking I/O in the terminal feature. Each pane
 //! gets a [`TerminalSession`] that spawns a shell in the pane's working
 //! directory and reads its output on a dedicated background thread. The reader
-//! appends bytes into an [`Arc<Mutex<TerminalBuffer>>`]; the UI thread locks the
-//! buffer briefly each frame to coalesce the new output into a scrolling line
-//! buffer and paint it. Blocking reads therefore never touch the UI/window
-//! thread, and the shell is never a cursor of the winit event loop.
+//! interprets that output into the pane's [`Emulator`](crate::emulator::Emulator)
+//! — a real VT screen, not a line buffer — behind an `Arc<Mutex<..>>`; the UI
+//! thread takes the lock for the few microseconds it needs to clone the visible
+//! rows, the cursor and the input mode. Blocking reads therefore never touch the
+//! UI/window thread, and the shell is never a cursor of the winit event loop.
 //!
+//! Keys are encoded for the program that is running (cursor-key style,
+//! bracketed paste, mouse reporting), which is why [`classify_key`] needs the
+//! session's [`TermMode`](goble_terminal::TermMode) and not just the keystroke.
 //! The harness vs. shell key distinction is captured by [`classify_key`] /
 //! [`is_agent_enter`]: plain Enter is forwarded to the pty (so it runs as a
 //! terminal command in the shell), while Cmd/Ctrl+Enter is routed through the
@@ -24,10 +28,13 @@ use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
+use goble_terminal::{
+    encode_mouse, CursorState, HookEvent, Key, KeyEncoder, Modifiers, MouseAction, OscEvent,
+    Palette, ScreenLine, TermMode,
+};
 use goble_ui::event::ModifiersState;
 
-/// Maximum number of completed lines kept in a pane's terminal buffer.
-const MAX_LINES: usize = 2000;
+use crate::emulator::Emulator;
 
 // ---------------------------------------------------------------------------
 // TUI agent detection + terminal surface mode
@@ -142,153 +149,11 @@ pub enum TerminalMode {
     Agent(TuiAgent),
 }
 
-// ---------------------------------------------------------------------------
-// Output line buffer + ANSI handling
-// ---------------------------------------------------------------------------
-
-/// ANSI escape / control-sequence parse state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AnsiState {
-    Plain,
-    /// Saw `ESC`; waiting for the introducer byte.
-    Esc,
-    /// Saw `ESC [`; a CSI sequence until a final byte (`0x40..=0x7e`).
-    Csi,
-    /// Saw `ESC ]`; an OSC sequence until BEL or `ESC \`.
-    Osc,
-    /// Saw `ESC ] ... ESC`; waiting for the terminating `\`.
-    OscEsc,
-}
-
-/// A bounded, ANSI-aware terminal output buffer.
-///
-/// Real terminal emulation (cursor addressing, alternate screen, etc.) is out
-/// of scope; this is "ANSI-aware enough": CSI/OSC escape sequences are stripped
-/// so prompts and shell output read cleanly, lines are split on `\n`, and a
-/// lone `\r` (without a following `\n`) starts an in-place overwrite of the
-/// current line (so progress bars / redraws replace rather than append).
-#[derive(Debug)]
-pub struct TerminalBuffer {
-    lines: VecDeque<String>,
-    current: String,
-    state: AnsiState,
-    /// Set when the previous byte was `\r` (so a following `\n` is CRLF).
-    pending_cr: bool,
-    max_lines: usize,
-}
-
-impl TerminalBuffer {
-    pub fn new(max_lines: usize) -> Self {
-        Self {
-            lines: VecDeque::new(),
-            current: String::new(),
-            state: AnsiState::Plain,
-            pending_cr: false,
-            max_lines,
-        }
-    }
-
-    pub fn append_bytes(&mut self, data: &[u8]) {
-        let s = String::from_utf8_lossy(data);
-        for c in s.chars() {
-            self.push_char(c);
-        }
-    }
-
-    fn push_char(&mut self, c: char) {
-        match self.state {
-            AnsiState::Plain => match c {
-                '\u{1b}' => self.state = AnsiState::Esc,
-                '\n' => {
-                    let mut line = std::mem::take(&mut self.current);
-                    while line.ends_with('\r') {
-                        line.pop();
-                    }
-                    self.lines.push_back(line);
-                    if self.lines.len() > self.max_lines {
-                        self.lines.pop_front();
-                    }
-                    self.pending_cr = false;
-                }
-                '\r' => {
-                    // A `\r` immediately followed by `\n` is CRLF (a line
-                    // terminator). Otherwise it is a carriage-return overwrite
-                    // and we clear the current line for the replacement text.
-                    self.pending_cr = true;
-                }
-                '\u{8}' | '\u{7f}' => {
-                    self.current.pop();
-                    self.pending_cr = false;
-                }
-                _ => {
-                    // A pending CR followed by a real character means "overwrite
-                    // this line from the start".
-                    if self.pending_cr {
-                        self.current.clear();
-                        self.pending_cr = false;
-                    }
-                    self.current.push(c);
-                }
-            },
-            AnsiState::Esc => {
-                self.state = match c {
-                    '[' => AnsiState::Csi,
-                    ']' => AnsiState::Osc,
-                    // ESC ( B / ESC ) 0 charset selection, etc.: drop the pair.
-                    _ => AnsiState::Plain,
-                };
-            }
-            AnsiState::Csi => {
-                if ('@'..='~').contains(&c) {
-                    self.state = AnsiState::Plain;
-                }
-            }
-            AnsiState::Osc => {
-                if c == '\u{7}' {
-                    self.state = AnsiState::Plain;
-                } else if c == '\u{1b}' {
-                    self.state = AnsiState::OscEsc;
-                }
-            }
-            AnsiState::OscEsc => {
-                self.state = if c == '\\' {
-                    AnsiState::Plain
-                } else {
-                    AnsiState::Osc
-                };
-            }
-        }
-    }
-
-    /// The last `max` completed lines plus the in-progress line. The in-progress
-    /// line is appended as the final entry so callers render the newest output
-    /// (the prompt + partial line) at the bottom of the scrollback.
-    pub fn tail(&self, max: usize) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .lines
-            .iter()
-            .rev()
-            .take(max.saturating_sub(1))
-            .cloned()
-            .collect();
-        out.reverse();
-        out.push(self.current.clone());
-        out
-    }
-
-    pub fn completed_lines(&self) -> usize {
-        self.lines.len()
-    }
-
-    pub fn current(&self) -> &str {
-        &self.current
-    }
-}
-
-/// A cloneable snapshot of the terminal's visible output.
+/// A cloneable snapshot of a session's visible output, for surfaces that show
+/// terminal text without a cell grid (the chat transcript's inline block).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalSnapshot {
-    /// The newest lines (last element is the in-progress / prompt line).
+    /// The newest visible lines, bottom row last, with trailing blanks dropped.
     pub lines: Vec<String>,
 }
 
@@ -323,53 +188,81 @@ pub fn is_agent_enter(key: &str, modifiers: ModifiersState) -> bool {
 
 /// Classify a single key event into a terminal action.
 ///
+/// The bytes for the running program are produced by the emulator crate's key
+/// encoder, which knows the modes the program negotiated (application cursor
+/// keys, bracketed paste, focus reporting). What is decided here is the policy
+/// around it: Cmd/Ctrl+Enter becomes an agent turn instead of a keystroke, and
+/// Command+anything is an OS shortcut rather than input to the pty.
+///
 /// The local input buffer mirror (what `Cmd+Enter` routes to the harness) is
-/// maintained by the caller from the `Forward` bytes; `RouteToAgent` consumes
-/// it without touching the pty.
-pub fn classify_key(key: &str, modifiers: ModifiersState) -> TerminalKeyAction {
+/// maintained by the caller from the forwarded keys; `RouteToAgent` consumes it
+/// without touching the pty.
+pub fn classify_key(key: &str, modifiers: ModifiersState, mode: TermMode) -> TerminalKeyAction {
     // Cmd/Ctrl+Enter must NOT reach the shell: it is an agent turn instead.
     if is_agent_enter(key, modifiers) {
         return TerminalKeyAction::RouteToAgent;
     }
 
-    if key.eq_ignore_ascii_case("enter") || key.eq_ignore_ascii_case("return") {
-        return TerminalKeyAction::Forward(vec![b'\n']);
-    }
-    if key == "Backspace" {
-        return TerminalKeyAction::Forward(vec![b'\x7f']);
-    }
-    if key == "Tab" {
-        return TerminalKeyAction::Forward(vec![b'\t']);
+    // Command is the platform modifier: every other combination with it belongs
+    // to a menu item or the system, never to a program in the pane.
+    if modifiers.command {
+        return TerminalKeyAction::Ignore;
     }
 
-    // Ctrl+<letter> sends the ASCII control code (e.g. Ctrl+C interrupts the
-    // running program, Ctrl+L clears the screen). Command+letter is left alone
-    // (it is an OS shortcut, not a shell keystroke).
-    if modifiers.ctrl && !modifiers.command && !modifiers.alt && key.chars().count() == 1 {
-        if let Some(c) = key.chars().next() {
-            if c.is_ascii_lowercase() {
-                let code = c as u8 - b'a' + 1;
-                if (1..=26).contains(&code) {
-                    return TerminalKeyAction::Forward(vec![code]);
-                }
-            }
-        }
+    let modifiers = terminal_modifiers(modifiers);
+    if let Some(named) = named_key(key) {
+        return TerminalKeyAction::Forward(KeyEncoder::encode(named, modifiers, mode));
     }
 
-    // Printable character (a single char from the OS key event). Multi-byte
-    // characters arrive as one `key` string, so treat any all-printable string
-    // as typed input (this also covers a single paste chunk).
-    let mut chars = key.chars();
-    if let Some(first) = chars.next() {
-        let printable = chars.all(|c| !c.is_control())
-            && !first.is_control()
-            && first != '\u{1b}';
-        if printable {
-            return TerminalKeyAction::Forward(key.as_bytes().to_vec());
+    // Text: a printable character, a chunk from an input method, or a paste
+    // that arrived as one string. Control characters never travel this way.
+    if !key.is_empty() && key.chars().all(|c| !c.is_control()) {
+        let mut out = Vec::with_capacity(key.len());
+        for c in key.chars() {
+            KeyEncoder::encode_into(&mut out, Key::Char(c), modifiers, mode);
         }
+        return TerminalKeyAction::Forward(out);
     }
 
     TerminalKeyAction::Ignore
+}
+
+/// The emulator's encoding of the modifiers attached to a key event.
+pub fn terminal_modifiers(modifiers: ModifiersState) -> Modifiers {
+    Modifiers::new(modifiers.shift, modifiers.alt, modifiers.ctrl)
+}
+
+/// The keys that are not plain text, in the string form the platform layer
+/// delivers. `None` means the key is text (or is not a key we encode).
+fn named_key(key: &str) -> Option<Key> {
+    let named = match key {
+        "Enter" | "Return" => Key::Enter,
+        "Escape" => Key::Escape,
+        "Backspace" => Key::Backspace,
+        "Tab" => Key::Tab,
+        "Delete" => Key::Delete,
+        "Insert" => Key::Insert,
+        "Home" => Key::Home,
+        "End" => Key::End,
+        "PageUp" => Key::PageUp,
+        "PageDown" => Key::PageDown,
+        "ArrowUp" => Key::Up,
+        "ArrowDown" => Key::Down,
+        "ArrowLeft" => Key::Left,
+        "ArrowRight" => Key::Right,
+        _ => return key.strip_prefix('F')?.parse().ok().map(Key::Function),
+    };
+    Some(named)
+}
+
+/// The report for a pointer event, in the form the program negotiated: `None`
+/// when it is not listening for that kind of report.
+///
+/// Modifiers are not carried: the platform layer does not put them on mouse
+/// events, so a report cannot claim a modifier that was not observed.
+pub fn mouse_report(action: MouseAction, cell: (usize, usize), mode: TermMode) -> Option<Vec<u8>> {
+    let (row, column) = cell;
+    encode_mouse(action, column, row, Modifiers::NONE, mode)
 }
 
 // ---------------------------------------------------------------------------
@@ -426,20 +319,31 @@ pub fn classify_input(input: &str, agent_mode: bool) -> Option<InputClass> {
     }
 }
 
-/// Apply a chunk of forwarded bytes to the per-pane local input mirror.
+/// Apply a forwarded keystroke to the per-pane local input mirror.
 ///
-/// This is the input that `Cmd+Enter` routes to the harness; it mirrors exactly
-/// what was forwarded to the shell so the agent sees the command line as typed.
-pub fn update_input_mirror(mirror: &mut String, bytes: &[u8]) {
-    let s = String::from_utf8_lossy(bytes);
-    for c in s.chars() {
-        match c {
-            '\n' | '\r' => mirror.clear(),
-            '\u{8}' | '\u{7f}' => {
-                mirror.pop();
-            }
-            _ => mirror.push(c),
-        }
+/// This is the input that `Cmd+Enter` routes to the harness; it mirrors what
+/// the user typed at the shell so the agent sees the command line as typed.
+/// Only plain typing is mirrored: an escape sequence, an arrow key or a Ctrl
+/// combination changes the shell's line in ways this mirror cannot follow, and
+/// guessing would put text in the agent's mouth that the user never typed.
+pub fn update_input_mirror(mirror: &mut String, key: &str, modifiers: ModifiersState) {
+    if key == "Backspace" && !modifiers.command && !modifiers.ctrl && !modifiers.alt {
+        mirror.pop();
+        return;
+    }
+    if key.eq_ignore_ascii_case("enter") || key.eq_ignore_ascii_case("return") {
+        mirror.clear();
+        return;
+    }
+    if modifiers.command || modifiers.ctrl || modifiers.alt {
+        return;
+    }
+    // A named key is not text, however printable its name is.
+    if named_key(key).is_some() {
+        return;
+    }
+    if !key.is_empty() && key.chars().all(|c| !c.is_control()) {
+        mirror.push_str(key);
     }
 }
 
@@ -466,21 +370,59 @@ pub fn resolve_cwd(cwd: &str) -> PathBuf {
 
 /// One PTY-backed shell session for a terminal pane.
 ///
-/// The reader thread owns the blocking read end and pushes bytes into the
-/// shared [`TerminalBuffer`]; the UI thread only ever takes a short-lived lock
-/// to coalesce frames. Writing input goes straight to the pty master.
+/// The reader thread owns the blocking read end and interprets bytes into the
+/// shared [`Emulator`]; the UI thread only ever takes a short-lived lock to
+/// clone what it paints. Writing input goes straight to the pty master.
 pub struct TerminalSession {
-    output: Arc<Mutex<TerminalBuffer>>,
+    state: Arc<Mutex<Emulator>>,
     writer: Option<Box<dyn Write + Send>>,
     /// Kept so the pty stays open for the lifetime of the session.
     _master: Option<Box<dyn portable_pty::MasterPty + Send>>,
     child: Option<Box<dyn portable_pty::Child + Send>>,
+    /// The grid size the screen and the pty were last told about.
+    size: (u16, u16),
+    /// Font metrics, for the reports that are measured in pixels. The pane owns
+    /// the font and hands them over as it lays out.
+    cell: (u16, u16),
+    palette: Palette,
+    title: Option<String>,
+    /// Set when the program rang the bell; the pane takes it and plays it.
+    bell: bool,
+    /// Shell-integration events, bounded: the pane reads them, and a pane that
+    /// never does must not grow the heap.
+    hooks: VecDeque<HookEvent>,
+    osc: VecDeque<OscEvent>,
+    /// The last working directory the shell reported (`OSC 7`).
+    cwd: Option<String>,
+}
+
+/// How many shell-integration events a session holds before dropping the
+/// oldest. The pane consumes them every frame; this is only a bound.
+const EVENT_BACKLOG: usize = 256;
+
+/// Everything the pane needs to paint one frame of a session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TerminalViewState {
+    /// The visible rows, top row first.
+    pub rows: Vec<ScreenLine>,
+    pub cursor: CursorState,
+    /// How the program wants keys and pointer reports encoded.
+    pub mode: TermMode,
+    pub alt_screen: bool,
+    /// Lines scrolled back from the bottom; 0 is the live screen.
+    pub display_offset: usize,
+    pub scrollback: usize,
+    pub title: Option<String>,
+    /// Whether any cell holds something. A session that has not drawn yet gets
+    /// the pane's own hint line instead of a black rectangle.
+    pub has_content: bool,
 }
 
 impl std::fmt::Debug for TerminalSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TerminalSession")
             .field("alive", &self.child.is_some())
+            .field("size", &self.size)
             .finish_non_exhaustive()
     }
 }
@@ -488,27 +430,41 @@ impl std::fmt::Debug for TerminalSession {
 impl TerminalSession {
     /// A session that failed to launch; renders the error rather than panicking.
     pub fn failed(message: String) -> Self {
-        let output = Arc::new(Mutex::new(TerminalBuffer::new(MAX_LINES)));
-        if let Ok(mut buf) = output.lock() {
-            buf.append_bytes(format!("(terminal error: {message})\n").as_bytes());
-        }
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(format!("(terminal error: {message})\r\n").as_bytes());
+        Self::with_emulator(emulator)
+    }
+
+    /// A session around a screen with no pty behind it: how a failed launch and
+    /// a test both build one.
+    fn with_emulator(emulator: Emulator) -> Self {
         Self {
-            output,
+            state: Arc::new(Mutex::new(emulator)),
             writer: None,
             _master: None,
             child: None,
+            size: (24, 80),
+            cell: (0, 0),
+            palette: Palette::xterm(),
+            title: None,
+            bell: false,
+            hooks: VecDeque::new(),
+            osc: VecDeque::new(),
+            cwd: None,
         }
     }
 
     /// Spawn `$SHELL` (or `/bin/zsh`) in `cwd` and start a background reader.
     pub fn spawn(cwd: &str) -> Result<Self, String> {
-        let output = Arc::new(Mutex::new(TerminalBuffer::new(MAX_LINES)));
+        let columns = 80;
+        let screen_lines = 24;
+        let state = Arc::new(Mutex::new(Emulator::new(columns, screen_lines)));
 
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
-                rows: 24,
-                cols: 96,
+                rows: screen_lines as u16,
+                cols: columns as u16,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -517,31 +473,22 @@ impl TerminalSession {
         let mut cmd = CommandBuilder::new(default_shell());
         cmd.cwd(resolve_cwd(cwd));
 
-        let mut child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| e.to_string())?;
+        let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         drop(pair.slave);
 
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| {
-                let _ = child.kill();
-                e.to_string()
-            })?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| {
-                let _ = child.kill();
-                e.to_string()
-            })?;
+        let mut reader = pair.master.try_clone_reader().map_err(|e| {
+            let _ = child.kill();
+            e.to_string()
+        })?;
+        let writer = pair.master.take_writer().map_err(|e| {
+            let _ = child.kill();
+            e.to_string()
+        })?;
 
-        let out = Arc::clone(&output);
-        // Detached reader: it owns the blocking read end and pushes bytes into
-        // the shared buffer until EOF (the child is killed on `drop`). We never
-        // join it so the UI thread is never blocked.
+        let out = Arc::clone(&state);
+        // Detached reader: it owns the blocking read end and interprets bytes
+        // into the shared screen until EOF (the child is killed on `drop`). We
+        // never join it so the UI thread is never blocked.
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
@@ -549,7 +496,7 @@ impl TerminalSession {
                     Ok(0) => break,
                     Ok(n) => {
                         if let Ok(mut o) = out.lock() {
-                            o.append_bytes(&buf[..n]);
+                            o.feed(&buf[..n]);
                         }
                     }
                     Err(_) => break,
@@ -558,10 +505,18 @@ impl TerminalSession {
         });
 
         Ok(Self {
-            output,
+            state,
             writer: Some(writer),
             _master: Some(pair.master),
             child: Some(child),
+            size: (screen_lines as u16, columns as u16),
+            cell: (0, 0),
+            palette: Palette::xterm(),
+            title: None,
+            bell: false,
+            hooks: VecDeque::new(),
+            osc: VecDeque::new(),
+            cwd: None,
         })
     }
 
@@ -573,28 +528,188 @@ impl TerminalSession {
         }
     }
 
-    /// Coalesce the newest output into a snapshot for painting.
-    pub fn snapshot(&self, max_lines: usize) -> TerminalSnapshot {
-        let buf = self.output.lock().map(|g| g.tail(max_lines)).unwrap_or_default();
-        TerminalSnapshot { lines: buf }
+    /// Take everything the screen produced since the last call and answer the
+    /// questions it is waiting on.
+    ///
+    /// Called once per frame by the UI thread, which is where the font metrics
+    /// the answers need are known. A program that asks the terminal a question
+    /// (its colours, the text area size) waits for the reply, so this has to run
+    /// even when nothing is being painted — the pane calls it every frame.
+    pub fn pump(&mut self) {
+        let (events, replies, hooks, osc) = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            let events = state.pump(&self.palette, self.cell);
+            let replies = state.take_replies();
+            (
+                events,
+                replies,
+                state.take_hook_events(),
+                state.take_osc_events(),
+            )
+        };
+
+        for event in events {
+            match event {
+                goble_terminal::ScreenEvent::Title(title) => self.title = Some(title),
+                goble_terminal::ScreenEvent::ResetTitle => self.title = None,
+                goble_terminal::ScreenEvent::Bell => self.bell = true,
+                _ => {}
+            }
+        }
+
+        for event in hooks {
+            if self.hooks.len() == EVENT_BACKLOG {
+                self.hooks.pop_front();
+            }
+            self.hooks.push_back(event);
+        }
+        for event in osc {
+            if let OscEvent::WorkingDirectory(path) = &event {
+                self.cwd = Some(path.clone());
+            }
+            if self.osc.len() == EVENT_BACKLOG {
+                self.osc.pop_front();
+            }
+            self.osc.push_back(event);
+        }
+
+        if !replies.is_empty() {
+            self.write(&replies);
+        }
     }
 
-    /// Force a fixed-size reshape of the pty (best effort).
-    pub fn set_size(&mut self, rows: u16, cols: u16) {
+    /// This session's grid size, in cells.
+    pub fn size(&self) -> (u16, u16) {
+        self.size
+    }
+
+    /// Reshape the screen and the pty, and remember the font metrics the
+    /// pixel-sized reports need.
+    pub fn set_size(&mut self, rows: u16, cols: u16, cell_width: u16, cell_height: u16) {
+        self.cell = (cell_width, cell_height);
+        if (rows, cols) == self.size || rows == 0 || cols == 0 {
+            return;
+        }
+        self.size = (rows, cols);
+
+        if let Ok(mut state) = self.state.lock() {
+            state.resize(cols as usize, rows as usize);
+        }
         if let Some(master) = self._master.as_mut() {
             let _ = master.resize(PtySize {
                 rows,
                 cols,
-                pixel_width: 0,
-                pixel_height: 0,
+                pixel_width: cols.saturating_mul(cell_width),
+                pixel_height: rows.saturating_mul(cell_height),
             });
         }
+    }
+
+    /// The palette the pane paints with, which is also what colour queries are
+    /// answered from.
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.palette = palette;
+    }
+
+    /// How the running program wants keys and pointer reports encoded.
+    pub fn input_mode(&self) -> TermMode {
+        self.state
+            .lock()
+            .map(|state| state.input_mode())
+            .unwrap_or(TermMode::NONE)
+    }
+
+    /// Clone what the next frame paints: the rows, the cursor and the modes.
+    pub fn view(&self) -> TerminalViewState {
+        let Ok(state) = self.state.lock() else {
+            return TerminalViewState::empty();
+        };
+        let rows = state.rows();
+        let has_content = rows.iter().any(|row| !row.is_blank());
+        TerminalViewState {
+            rows,
+            cursor: state.cursor(),
+            mode: state.input_mode(),
+            alt_screen: state.is_alt_screen(),
+            display_offset: state.display_offset(),
+            scrollback: state.history_size(),
+            title: self.title.clone(),
+            has_content,
+        }
+    }
+
+    /// Scroll the display through the scrollback (`0` is the live bottom).
+    pub fn scroll(&mut self, lines: i32) {
+        if let Ok(mut state) = self.state.lock() {
+            state.scroll(lines);
+        }
+    }
+
+    /// Coalesce the newest output into a snapshot for painting.
+    ///
+    /// The last element is the bottom visible row, as a line buffer's would be;
+    /// trailing blank rows are dropped so an idle shell contributes no block.
+    pub fn snapshot(&self, max_lines: usize) -> TerminalSnapshot {
+        let Ok(state) = self.state.lock() else {
+            return TerminalSnapshot { lines: Vec::new() };
+        };
+        let mut lines: Vec<String> = state.rows().iter().map(|line| line.text()).collect();
+        while lines.last().is_some_and(|line| line.is_empty()) {
+            lines.pop();
+        }
+        if lines.len() > max_lines {
+            lines.drain(..lines.len() - max_lines);
+        }
+        TerminalSnapshot { lines }
+    }
+
+    /// The shell-integration hooks seen so far, oldest first.
+    pub fn hooks(&mut self) -> Vec<HookEvent> {
+        self.hooks.drain(..).collect()
+    }
+
+    /// The observed `OSC` events seen so far, oldest first.
+    pub fn osc_events(&mut self) -> Vec<OscEvent> {
+        self.osc.drain(..).collect()
+    }
+
+    /// Take the bell, if the program rang it.
+    pub fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.bell)
+    }
+
+    /// The working directory the shell last reported, if it reports one.
+    pub fn reported_cwd(&self) -> Option<&str> {
+        self.cwd.as_deref()
     }
 
     /// The listener thread has finished (child exited) — used to cheaply detect
     /// when the shell is closed so the pane can render a hint.
     pub fn is_alive(&self) -> bool {
         self.child.is_some()
+    }
+}
+
+impl TerminalViewState {
+    /// The state of a session whose lock could not be taken: nothing to paint.
+    pub fn empty() -> Self {
+        Self {
+            rows: Vec::new(),
+            cursor: CursorState {
+                line: 0,
+                column: 0,
+                visible: false,
+                shape: goble_terminal::CursorShape::Block,
+            },
+            mode: TermMode::NONE,
+            alt_screen: false,
+            display_offset: 0,
+            scrollback: 0,
+            title: None,
+            has_content: false,
+        }
     }
 }
 
@@ -685,7 +800,9 @@ impl TerminalRegistry {
         }
         if let Some(session) = self.sessions.get_mut(&pane_id) {
             let mut bytes = command.as_bytes().to_vec();
-            bytes.push(b'\n');
+            // Enter, as the terminal sees it: a carriage return. A program in
+            // raw mode does not read a line feed as "run this".
+            bytes.push(b'\r');
             session.write(&bytes);
         }
         let agent = TuiAgent::detect(command).unwrap_or(TuiAgent::Other);
@@ -697,74 +814,91 @@ impl TerminalRegistry {
 mod tests {
     use super::*;
 
-    #[test]
-    fn buffer_splits_lines() {
-        let mut buf = TerminalBuffer::new(10);
-        buf.append_bytes(b"hello\nworld\n");
-        let lines = buf.tail(10);
-        // Last element is the (empty) in-progress line.
-        assert_eq!(lines, vec!["hello".to_string(), "world".to_string(), String::new()]);
+    /// A session whose screen the test drives directly, with no pty behind it.
+    fn detached() -> TerminalSession {
+        TerminalSession::with_emulator(Emulator::new(80, 24))
     }
 
     #[test]
-    fn buffer_strips_csi_escape_sequences() {
-        let mut buf = TerminalBuffer::new(10);
-        buf.append_bytes(b"\x1b[31mred\x1b[0m\n");
-        let lines = buf.tail(10);
-        assert_eq!(lines[0], "red");
+    fn a_snapshot_drops_the_blank_rows_below_the_prompt() {
+        let session = detached();
+        assert!(
+            session.snapshot(48).lines.is_empty(),
+            "an idle screen contributes no block"
+        );
     }
 
     #[test]
-    fn buffer_strips_osc_escape_sequences() {
-        let mut buf = TerminalBuffer::new(10);
-        buf.append_bytes(b"\x1b]0;title\x07text\n");
-        let lines = buf.tail(10);
-        assert_eq!(lines[0], "text");
-    }
-
-    #[test]
-    fn buffer_handles_crlf_as_newline() {
-        let mut buf = TerminalBuffer::new(10);
-        buf.append_bytes(b"foo\r\nbar\n");
-        let lines = buf.tail(10);
-        assert_eq!(lines[0], "foo");
-        assert_eq!(lines[1], "bar");
-    }
-
-    #[test]
-    fn buffer_overwrites_on_lone_carriage_return() {
-        let mut buf = TerminalBuffer::new(10);
-        buf.append_bytes(b"10%\r20%\r30%\n");
-        let lines = buf.tail(10);
-        assert_eq!(lines[0], "30%");
-    }
-
-    #[test]
-    fn buffer_backspace_pops_current_line() {
-        let mut buf = TerminalBuffer::new(10);
-        buf.append_bytes(b"ab\x7f\n");
-        let lines = buf.tail(10);
-        assert_eq!(lines[0], "a");
-    }
-
-    #[test]
-    fn buffer_caps_line_count() {
-        let mut buf = TerminalBuffer::new(3);
-        for i in 0..5 {
-            buf.append_bytes(format!("line{i}\n").as_bytes());
+    fn a_snapshot_keeps_the_newest_lines_up_to_the_limit() {
+        let session = detached();
+        {
+            let mut state = session.state.lock().unwrap();
+            state.feed(b"one\r\ntwo\r\nthree\r\nfour");
         }
-        let lines = buf.tail(10);
-        assert_eq!(lines.len(), 4, "3 completed + 1 in-progress");
-        assert_eq!(lines[0], "line2");
-        assert_eq!(lines[2], "line4");
+        let lines = session.snapshot(3).lines;
+        assert_eq!(lines, vec!["two", "three", "four"]);
+    }
+
+    #[test]
+    fn a_snapshot_keeps_blank_rows_that_separate_content() {
+        let session = detached();
+        {
+            let mut state = session.state.lock().unwrap();
+            state.feed(b"top\r\n\r\nbottom");
+        }
+        assert_eq!(session.snapshot(48).lines, vec!["top", "", "bottom"]);
+    }
+
+    #[test]
+    fn a_view_reports_the_cursor_and_the_modes() {
+        let session = detached();
+        assert!(!session.view().has_content);
+        {
+            let mut state = session.state.lock().unwrap();
+            state.feed(b"\x1b[3;4Hhi\x1b[?25h\x1b[?1h");
+        }
+        let view = session.view();
+        assert!(view.has_content);
+        assert_eq!((view.cursor.line, view.cursor.column), (2, 5));
+        assert!(view.cursor.visible);
+        assert!(view.mode.app_cursor);
+    }
+
+    #[test]
+    fn resizing_a_session_resizes_its_screen_and_remembers_the_metrics() {
+        let mut session = detached();
+        session.set_size(30, 100, 8, 16);
+        assert_eq!(session.size(), (30, 100));
+        assert_eq!(session.view().rows.len(), 30);
+        assert!(session.view().rows.iter().all(|row| row.cells.len() == 100));
+    }
+
+    #[test]
+    fn resizing_to_the_same_size_keeps_the_screen() {
+        let mut session = detached();
+        session.set_size(30, 100, 8, 16);
+        {
+            let mut state = session.state.lock().unwrap();
+            state.feed(b"kept");
+        }
+        session.set_size(30, 100, 8, 16);
+        assert_eq!(session.snapshot(48).lines, vec!["kept"]);
+    }
+
+    #[test]
+    fn a_failed_session_renders_its_error_instead_of_panicking() {
+        let session = TerminalSession::failed("no pty".to_string());
+        let lines = session.snapshot(48).lines;
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("no pty"), "{lines:?}");
     }
 
     #[test]
     fn enter_is_forwarded_plain_and_routed_on_cmd_or_ctrl() {
         use ModifiersState;
         assert_eq!(
-            classify_key("Enter", ModifiersState::none()),
-            TerminalKeyAction::Forward(vec![b'\n'])
+            classify_key("Enter", ModifiersState::none(), TermMode::NONE),
+            TerminalKeyAction::Forward(b"\r".to_vec())
         );
         assert_eq!(
             classify_key(
@@ -772,7 +906,8 @@ mod tests {
                 ModifiersState {
                     command: true,
                     ..Default::default()
-                }
+                },
+                TermMode::NONE
             ),
             TerminalKeyAction::RouteToAgent
         );
@@ -782,21 +917,22 @@ mod tests {
                 ModifiersState {
                     ctrl: true,
                     ..Default::default()
-                }
+                },
+                TermMode::NONE
             ),
             TerminalKeyAction::RouteToAgent
         );
-        // Shift+Enter stays a shell newline.
+        // Shift+Enter is still a newline for the shell.
         assert_eq!(
             classify_key(
                 "Enter",
                 ModifiersState {
-                    command: true,
                     shift: true,
                     ..Default::default()
-                }
+                },
+                TermMode::NONE
             ),
-            TerminalKeyAction::Forward(vec![b'\n'])
+            TerminalKeyAction::Forward(b"\r".to_vec())
         );
     }
 
@@ -830,19 +966,59 @@ mod tests {
         assert!(!is_agent_enter("a", ModifiersState::default()));
     }
 
+    /// Command belongs to the platform: everything bound to it except the
+    /// submit-to-agent key must reach neither the shell nor a menu.
+    #[test]
+    fn command_combinations_other_than_enter_are_not_shell_input() {
+        use ModifiersState;
+        let command_c = ModifiersState {
+            command: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_key("c", command_c, TermMode::NONE),
+            TerminalKeyAction::Ignore
+        );
+        assert_eq!(
+            classify_key("Backspace", command_c, TermMode::NONE),
+            TerminalKeyAction::Ignore
+        );
+        // Ctrl+C by contrast is a keystroke: it interrupts the program.
+        assert_eq!(
+            classify_key(
+                "c",
+                ModifiersState {
+                    ctrl: true,
+                    ..Default::default()
+                },
+                TermMode::NONE
+            ),
+            TerminalKeyAction::Forward(vec![0x03])
+        );
+    }
+
     #[test]
     fn printable_keys_are_forwarded_as_bytes() {
         assert_eq!(
-            classify_key("a", ModifiersState::none()).unwrap_forward(),
+            classify_key("a", ModifiersState::none(), TermMode::NONE).unwrap_forward(),
             b"a".to_vec()
         );
         assert_eq!(
-            classify_key("A", ModifiersState::none()).unwrap_forward(),
+            classify_key("A", ModifiersState::none(), TermMode::NONE).unwrap_forward(),
             b"A".to_vec()
         );
         assert_eq!(
-            classify_key("Backspace", ModifiersState::none()).unwrap_forward(),
-            vec![b'\x7f']
+            classify_key("Backspace", ModifiersState::none(), TermMode::NONE).unwrap_forward(),
+            vec![0x7f]
+        );
+        assert_eq!(
+            classify_key(" ", ModifiersState::none(), TermMode::NONE).unwrap_forward(),
+            b" ".to_vec()
+        );
+        // A multi-character key arrives from an input method or a paste.
+        assert_eq!(
+            classify_key("日本", ModifiersState::none(), TermMode::NONE).unwrap_forward(),
+            "日本".as_bytes().to_vec()
         );
     }
 
@@ -855,7 +1031,8 @@ mod tests {
                 ModifiersState {
                     ctrl: true,
                     ..Default::default()
-                }
+                },
+                TermMode::NONE
             )
             .unwrap_forward(),
             vec![0x03],
@@ -867,11 +1044,118 @@ mod tests {
                 ModifiersState {
                     ctrl: true,
                     ..Default::default()
-                }
+                },
+                TermMode::NONE
             )
             .unwrap_forward(),
             vec![0x0c],
             "Ctrl+L clears the screen"
+        );
+    }
+
+    #[test]
+    fn alt_prefixes_a_character_with_escape() {
+        assert_eq!(
+            classify_key(
+                "x",
+                ModifiersState {
+                    alt: true,
+                    ..Default::default()
+                },
+                TermMode::NONE
+            )
+            .unwrap_forward(),
+            b"\x1bx".to_vec()
+        );
+    }
+
+    /// The named keys are encoded for the program, not dropped: a shell reads
+    /// arrows, Home/End, the paging keys and the function keys.
+    #[test]
+    fn named_keys_are_encoded_for_the_program() {
+        let key =
+            |key: &str| classify_key(key, ModifiersState::none(), TermMode::NONE).unwrap_forward();
+        assert_eq!(key("ArrowUp"), b"\x1b[A".to_vec());
+        assert_eq!(key("ArrowLeft"), b"\x1b[D".to_vec());
+        assert_eq!(key("Home"), b"\x1b[H".to_vec());
+        assert_eq!(key("End"), b"\x1b[F".to_vec());
+        assert_eq!(key("Delete"), b"\x1b[3~".to_vec());
+        assert_eq!(key("PageUp"), b"\x1b[5~".to_vec());
+        assert_eq!(key("PageDown"), b"\x1b[6~".to_vec());
+        assert_eq!(key("Insert"), b"\x1b[2~".to_vec());
+        assert_eq!(key("F1"), b"\x1bOP".to_vec());
+        assert_eq!(key("Tab"), b"\t".to_vec());
+        assert_eq!(key("Escape"), b"\x1b".to_vec());
+    }
+
+    /// An application that took the cursor keys over gets the `SS3` form, which
+    /// is the whole reason the mode is negotiated.
+    #[test]
+    fn application_cursor_mode_changes_the_arrow_encoding() {
+        let app_cursor = TermMode {
+            app_cursor: true,
+            ..TermMode::NONE
+        };
+        assert_eq!(
+            classify_key("ArrowUp", ModifiersState::none(), app_cursor).unwrap_forward(),
+            b"\x1bOA".to_vec()
+        );
+        // With a modifier the parameterised form is used either way.
+        assert_eq!(
+            classify_key(
+                "ArrowUp",
+                ModifiersState {
+                    shift: true,
+                    ..Default::default()
+                },
+                app_cursor
+            )
+            .unwrap_forward(),
+            b"\x1b[1;2A".to_vec()
+        );
+    }
+
+    #[test]
+    fn pointer_reports_follow_the_negotiated_mode() {
+        use goble_terminal::MouseButton;
+        use MouseAction;
+        // No mouse mode: the application is not listening.
+        assert!(mouse_report(
+            MouseAction::Press(MouseButton::Left),
+            (0, 0),
+            TermMode::NONE
+        )
+        .is_none());
+
+        let clicking = TermMode {
+            mouse_click: true,
+            sgr_mouse: true,
+            ..TermMode::NONE
+        };
+        assert_eq!(
+            mouse_report(MouseAction::Press(MouseButton::Left), (4, 7), clicking).unwrap(),
+            b"\x1b[<0;8;5M".to_vec(),
+            "SGR reports one-based column then line"
+        );
+        assert_eq!(
+            mouse_report(MouseAction::Release(MouseButton::Left), (4, 7), clicking).unwrap(),
+            b"\x1b[<0;8;5m".to_vec()
+        );
+        // Motion is only reported when the application asked for it.
+        assert!(mouse_report(MouseAction::Move, (1, 1), clicking).is_none());
+        let dragging = TermMode {
+            mouse_drag: true,
+            sgr_mouse: true,
+            ..TermMode::NONE
+        };
+        assert_eq!(
+            mouse_report(MouseAction::Drag(MouseButton::Left), (1, 1), dragging).unwrap(),
+            b"\x1b[<32;2;2M".to_vec()
+        );
+        // A wheel is a press with no button, and needs no motion mode.
+        assert_eq!(
+            mouse_report(MouseAction::WheelUp, (0, 0), clicking).unwrap(),
+            b"\x1b[<64;1;1M".to_vec()
         );
     }
 
@@ -922,12 +1206,39 @@ mod tests {
     #[test]
     fn input_mirror_tracks_appends_backspace_and_clear() {
         let mut mirror = String::new();
-        update_input_mirror(&mut mirror, b"ls");
+        update_input_mirror(&mut mirror, "l", ModifiersState::none());
+        update_input_mirror(&mut mirror, "s", ModifiersState::none());
         assert_eq!(mirror, "ls");
-        update_input_mirror(&mut mirror, &[b'\x7f']);
+        update_input_mirror(&mut mirror, "Backspace", ModifiersState::none());
         assert_eq!(mirror, "l");
-        update_input_mirror(&mut mirror, b"\n");
+        update_input_mirror(&mut mirror, "Enter", ModifiersState::none());
         assert_eq!(mirror, "");
+    }
+
+    /// Only typing is mirrored: a key that changes the shell's line in a way
+    /// this mirror cannot follow must not invent text for the agent.
+    #[test]
+    fn the_input_mirror_ignores_keys_it_cannot_follow() {
+        let mut mirror = "ls".to_string();
+        update_input_mirror(&mut mirror, "ArrowUp", ModifiersState::none());
+        update_input_mirror(&mut mirror, "Escape", ModifiersState::none());
+        update_input_mirror(&mut mirror, "Home", ModifiersState::none());
+        update_input_mirror(&mut mirror, "PageUp", ModifiersState::none());
+        assert_eq!(mirror, "ls");
+        // Ctrl+C is a keystroke, but not a character: the shell's line is not
+        // what the mirror holds any more.
+        update_input_mirror(
+            &mut mirror,
+            "c",
+            ModifiersState {
+                ctrl: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(mirror, "ls");
+        // A paste arrives as text and is mirrored whole.
+        update_input_mirror(&mut mirror, "hi", ModifiersState::none());
+        assert_eq!(mirror, "lshi");
     }
 
     #[test]
@@ -954,7 +1265,10 @@ mod tests {
         assert_eq!(TuiAgent::detect("sudo codex"), Some(TuiAgent::Codex));
         assert_eq!(TuiAgent::detect("npx codex"), Some(TuiAgent::Codex));
         assert_eq!(TuiAgent::detect("env FOO=1 codex"), Some(TuiAgent::Codex));
-        assert_eq!(TuiAgent::detect("/usr/local/bin/claude"), Some(TuiAgent::Claude));
+        assert_eq!(
+            TuiAgent::detect("/usr/local/bin/claude"),
+            Some(TuiAgent::Claude)
+        );
         assert_eq!(TuiAgent::detect("bunx gemini"), Some(TuiAgent::Gemini));
     }
 

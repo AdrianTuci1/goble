@@ -496,7 +496,7 @@ mod tests {
 
         assert_eq!(StreamingSttEvent::final_text("x").text(), Some("x"));
         assert!(StreamingSttEvent::final_text("x").is_final());
-        assert!(StreamingSttEvent::partial("x").is_final() == false);
+        assert!(!StreamingSttEvent::partial("x").is_final());
         assert_eq!(StreamingSttEvent::error("e").text(), None);
         assert!(StreamingSttEvent::error("e").is_error());
     }

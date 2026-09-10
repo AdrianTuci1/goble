@@ -1,0 +1,8 @@
+{
+  "rows": ["ab  cd", ""],
+  "cursor": { "line": 0, "column": 2, "visible": true, "shape": "block", "wrap_pending": false },
+  "cells": [
+    { "row": 0, "column": 0, "fg": "default" },
+    { "row": 0, "column": 5, "fg": "default", "bg": "default" }
+  ]
+}

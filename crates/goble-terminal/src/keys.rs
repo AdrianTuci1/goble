@@ -41,11 +41,46 @@ impl Modifiers {
     }
 }
 
-/// The parts of the terminal mode that change key encoding.
+/// The parts of the terminal mode the input layer reads. Everything here is
+/// set by the application with a `CSI ? … h / l` and changes what we may send
+/// back: how a key is encoded, whether focus changes are reported, and whether
+/// the mouse is reported at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct TermMode {
-    /// DECCKM: cursor keys send `SS3` instead of `CSI`.
+    /// DECCKM (mode 1): cursor keys send `SS3` instead of `CSI`.
     pub app_cursor: bool,
+    /// Mode 2004: pasted text travels wrapped, so the line editor can tell it
+    /// from typing.
+    pub bracketed_paste: bool,
+    /// Mode 1004: report focus in/out.
+    pub focus_reporting: bool,
+    /// Mode 1000: report button presses and releases.
+    pub mouse_click: bool,
+    /// Mode 1002: report motion while a button is held.
+    pub mouse_drag: bool,
+    /// Mode 1003: report all motion.
+    pub mouse_motion: bool,
+    /// Mode 1006: report the mouse in the SGR form.
+    pub sgr_mouse: bool,
+}
+
+impl TermMode {
+    /// Every bit clear: the default of a shell that has asked for nothing.
+    pub const NONE: Self = Self {
+        app_cursor: false,
+        bracketed_paste: false,
+        focus_reporting: false,
+        mouse_click: false,
+        mouse_drag: false,
+        mouse_motion: false,
+        sgr_mouse: false,
+    };
+
+    /// Whether any mouse reporting mode is on. Buttons and the wheel are
+    /// reported whenever one is; motion depends on which one.
+    pub const fn mouse_reported(self) -> bool {
+        self.mouse_click || self.mouse_drag || self.mouse_motion
+    }
 }
 
 /// A logical key press.
@@ -134,6 +169,48 @@ impl KeyEncoder {
             Key::Insert => tilde_key(out, 2, modifiers),
             Key::Delete => tilde_key(out, 3, modifiers),
             Key::Function(n) => function_key(out, n, modifiers),
+        }
+    }
+
+    /// The report for a focus change, or `None` when the application has not
+    /// asked for one (mode 1004 is off).
+    ///
+    /// Focus is not a key, but it travels the same way: bytes to the PTY, in
+    /// the encoding the application negotiated. An application that never
+    /// enabled reporting must not receive these.
+    pub fn focus(gained: bool, mode: TermMode) -> Option<Vec<u8>> {
+        if !mode.focus_reporting {
+            return None;
+        }
+        Some(if gained {
+            b"\x1b[I".to_vec()
+        } else {
+            b"\x1b[O".to_vec()
+        })
+    }
+
+    /// Encode pasted text.
+    ///
+    /// A paste is not typing: the line editor must not see each newline as a
+    /// submit, so with bracketed paste on (mode 2004) the text is wrapped in
+    /// `CSI 200~`/`CSI 201~` and every newline is sent as a carriage return.
+    /// Without the mode the text goes as-is, which is what a plain shell with
+    /// no readline integration expects.
+    pub fn paste(text: &str, mode: TermMode) -> Vec<u8> {
+        if mode.bracketed_paste {
+            // The application parses the blob itself, so the text goes through
+            // verbatim — minus any escape bytes, since a pasted `ESC [ 201 ~`
+            // would otherwise close the bracket early.
+            let text: String = text.replace('\x1b', "");
+            let mut out = Vec::with_capacity(text.len() + 12);
+            out.extend_from_slice(b"\x1b[200~");
+            out.extend_from_slice(text.as_bytes());
+            out.extend_from_slice(b"\x1b[201~");
+            out
+        } else {
+            // Plain input to the shell's line editor: a newline has to arrive
+            // as the carriage return that pressing Enter sends.
+            text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
         }
     }
 }
@@ -268,8 +345,11 @@ impl fmt::Display for Key {
 mod tests {
     use super::*;
 
-    const BASE: TermMode = TermMode { app_cursor: false };
-    const APP: TermMode = TermMode { app_cursor: true };
+    const BASE: TermMode = TermMode::NONE;
+    const APP: TermMode = TermMode {
+        app_cursor: true,
+        ..TermMode::NONE
+    };
 
     fn enc(key: Key, m: Modifiers) -> Vec<u8> {
         KeyEncoder::encode(key, m, BASE)
@@ -400,5 +480,74 @@ mod tests {
         assert_eq!(Modifiers::new(true, false, true).xterm(), 6);
         assert_eq!(Modifiers::new(false, true, true).xterm(), 7);
         assert_eq!(Modifiers::new(true, true, true).xterm(), 8);
+    }
+
+    #[test]
+    fn focus_is_only_reported_when_the_application_asked() {
+        let reporting = TermMode {
+            focus_reporting: true,
+            ..TermMode::NONE
+        };
+        assert_eq!(KeyEncoder::focus(true, reporting), Some(b"\x1b[I".to_vec()));
+        assert_eq!(
+            KeyEncoder::focus(false, reporting),
+            Some(b"\x1b[O".to_vec())
+        );
+        assert_eq!(KeyEncoder::focus(true, TermMode::NONE), None);
+        assert_eq!(KeyEncoder::focus(false, TermMode::NONE), None);
+    }
+
+    #[test]
+    fn paste_without_bracketed_mode_sends_returns() {
+        assert_eq!(KeyEncoder::paste("ls\n", TermMode::NONE), b"ls\r");
+        assert_eq!(
+            KeyEncoder::paste("one\r\ntwo\nthree", TermMode::NONE),
+            b"one\rtwo\rthree"
+        );
+    }
+
+    #[test]
+    fn paste_wraps_and_stays_verbatim_when_bracketed() {
+        let mode = TermMode {
+            bracketed_paste: true,
+            ..TermMode::NONE
+        };
+        assert_eq!(
+            KeyEncoder::paste("one\ntwo\r\nthree", mode),
+            b"\x1b[200~one\ntwo\r\nthree\x1b[201~"
+        );
+    }
+
+    #[test]
+    fn bracketed_paste_cannot_be_closed_by_the_pasted_text() {
+        let mode = TermMode {
+            bracketed_paste: true,
+            ..TermMode::NONE
+        };
+        assert_eq!(
+            KeyEncoder::paste("a\x1b[201~b", mode),
+            b"\x1b[200~a[201~b\x1b[201~"
+        );
+    }
+
+    #[test]
+    fn any_mouse_mode_enables_mouse_reporting() {
+        assert!(!TermMode::NONE.mouse_reported());
+        for mode in [
+            TermMode {
+                mouse_click: true,
+                ..TermMode::NONE
+            },
+            TermMode {
+                mouse_drag: true,
+                ..TermMode::NONE
+            },
+            TermMode {
+                mouse_motion: true,
+                ..TermMode::NONE
+            },
+        ] {
+            assert!(mode.mouse_reported());
+        }
     }
 }

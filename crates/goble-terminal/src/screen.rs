@@ -22,7 +22,7 @@ use alacritty_terminal::term::{
     point_to_viewport, Config, Osc52, Term, TermMode as AlacrittyTermMode,
 };
 use alacritty_terminal::vte::ansi::{
-    Color as AlacrittyColor, CursorShape, NamedColor, Processor, Rgb,
+    Color as AlacrittyColor, CursorShape as AlacrittyCursorShape, NamedColor, Processor, Rgb,
 };
 
 /// Terminal size in cells.
@@ -195,6 +195,18 @@ impl ScreenLine {
             .iter()
             .all(|c| c.ch == ' ' && c.zerowidth.is_empty())
     }
+}
+
+/// The shape the application asked the cursor to take (`DECSCUSR`, `OSC 50`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorShape {
+    #[default]
+    Block,
+    /// A block drawn as an outline, which is what `DECSCUSR 0` asks for.
+    HollowBlock,
+    Beam,
+    Underline,
+    Hidden,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -488,11 +500,29 @@ impl Screen {
         *self.term.mode()
     }
 
-    /// The subset of the terminal mode that changes key encoding.
-    pub fn key_mode(&self) -> crate::keys::TermMode {
+    /// The parts of the terminal mode the input layer reads: how a key is
+    /// encoded, whether focus changes are reported, and whether the mouse is
+    /// reported at all. See [`crate::keys::TermMode`].
+    pub fn input_mode(&self) -> crate::keys::TermMode {
+        let mode = self.mode();
         crate::keys::TermMode {
-            app_cursor: self.mode().contains(AlacrittyTermMode::APP_CURSOR),
+            app_cursor: mode.contains(AlacrittyTermMode::APP_CURSOR),
+            bracketed_paste: mode.contains(AlacrittyTermMode::BRACKETED_PASTE),
+            focus_reporting: mode.contains(AlacrittyTermMode::FOCUS_IN_OUT),
+            mouse_click: mode.contains(AlacrittyTermMode::MOUSE_REPORT_CLICK),
+            mouse_drag: mode.contains(AlacrittyTermMode::MOUSE_DRAG),
+            mouse_motion: mode.contains(AlacrittyTermMode::MOUSE_MOTION),
+            sgr_mouse: mode.contains(AlacrittyTermMode::SGR_MOUSE),
         }
+    }
+
+    /// The deferred-wrap flag: the last column was written, so the next
+    /// character starts a new row instead of overwriting the cell.
+    ///
+    /// This is not visible in the grid — the cursor still sits in the last
+    /// column — which is exactly why the conformance harness asserts it.
+    pub fn wrap_pending(&self) -> bool {
+        self.term.grid().cursor.input_needs_wrap
     }
 
     pub fn is_alt_screen(&self) -> bool {
@@ -534,8 +564,8 @@ impl Screen {
         CursorState {
             line,
             column,
-            visible: content.cursor.shape != CursorShape::Hidden,
-            shape: content.cursor.shape,
+            visible: content.cursor.shape != AlacrittyCursorShape::Hidden,
+            shape: map_cursor_shape(content.cursor.shape),
         }
     }
 
@@ -666,6 +696,16 @@ fn map_color(color: AlacrittyColor) -> ScreenColor {
         AlacrittyColor::Named(named) => ScreenColor::Named(named),
         AlacrittyColor::Indexed(index) => ScreenColor::Indexed(index),
         AlacrittyColor::Spec(Rgb { r, g, b }) => ScreenColor::Rgb(r, g, b),
+    }
+}
+
+fn map_cursor_shape(shape: AlacrittyCursorShape) -> CursorShape {
+    match shape {
+        AlacrittyCursorShape::Block => CursorShape::Block,
+        AlacrittyCursorShape::HollowBlock => CursorShape::HollowBlock,
+        AlacrittyCursorShape::Beam => CursorShape::Beam,
+        AlacrittyCursorShape::Underline => CursorShape::Underline,
+        AlacrittyCursorShape::Hidden => CursorShape::Hidden,
     }
 }
 
@@ -802,9 +842,85 @@ mod tests {
     #[test]
     fn application_cursor_mode_is_reported_for_key_encoding() {
         let mut s = screen(10, 2, 0);
-        assert!(!s.key_mode().app_cursor);
+        assert!(!s.input_mode().app_cursor);
         s.feed(b"\x1b[?1h");
-        assert!(s.key_mode().app_cursor);
+        assert!(s.input_mode().app_cursor);
+    }
+
+    #[test]
+    fn mouse_and_focus_modes_are_reported_for_input() {
+        let mut s = screen(10, 2, 0);
+        assert!(!s.input_mode().mouse_reported());
+
+        s.feed(b"\x1b[?1000h\x1b[?1006h");
+        let mode = s.input_mode();
+        assert!(mode.mouse_click && mode.sgr_mouse);
+        assert!(!mode.mouse_drag && !mode.mouse_motion);
+
+        s.feed(b"\x1b[?1000l\x1b[?1002h");
+        let mode = s.input_mode();
+        assert!(!mode.mouse_click && mode.mouse_drag && mode.sgr_mouse);
+
+        s.feed(b"\x1b[?1004h");
+        assert!(s.input_mode().focus_reporting);
+        s.feed(b"\x1b[?1004l");
+        assert!(!s.input_mode().focus_reporting);
+    }
+
+    #[test]
+    fn the_deferred_wrap_flag_is_visible() {
+        let mut s = screen(4, 2, 0);
+        s.feed(b"abcd");
+        assert!(s.wrap_pending(), "the last column was written");
+        // A cursor move cancels it, which is what keeps a right-hand border
+        // lined up in a full-screen application.
+        s.feed(b"\x1b[1;1H");
+        assert!(!s.wrap_pending());
+    }
+
+    #[test]
+    fn a_mode_query_is_answered_from_the_grid_state() {
+        let mut s = screen(10, 2, 0);
+        s.feed(b"\x1b[?1006h");
+        s.drain_events();
+        s.feed(b"\x1b[?1006$p");
+        let replies: Vec<String> = s
+            .drain_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                ScreenEvent::PtyWrite(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replies, vec!["\x1b[?1006;1$y"], "set, so state 1");
+
+        s.feed(b"\x1b[?1006l\x1b[?1006$p");
+        let replies: Vec<String> = s
+            .drain_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                ScreenEvent::PtyWrite(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replies, vec!["\x1b[?1006;2$y"], "reset, so state 2");
+    }
+
+    #[test]
+    fn an_unimplemented_mode_query_reports_not_recognised() {
+        let mut s = screen(10, 2, 0);
+        // 89 is a DEC private mode we do not implement; 0 means "not
+        // recognised", which is how an application learns to stop asking.
+        s.feed(b"\x1b[?89$p");
+        let replies: Vec<String> = s
+            .drain_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                ScreenEvent::PtyWrite(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replies, vec!["\x1b[?89;0$y"]);
     }
 
     #[test]
@@ -949,10 +1065,10 @@ mod tests {
     fn reset_blanks_the_grid_and_restores_modes() {
         let mut s = screen(20, 3, 0);
         s.feed(b"\x1b[?1h\x1b[31mred text");
-        assert!(s.key_mode().app_cursor);
+        assert!(s.input_mode().app_cursor);
         s.reset();
         assert_eq!(s.text(), "");
-        assert!(!s.key_mode().app_cursor);
+        assert!(!s.input_mode().app_cursor);
         assert_eq!(s.cursor().line, 0);
         assert_eq!(s.cursor().column, 0);
     }

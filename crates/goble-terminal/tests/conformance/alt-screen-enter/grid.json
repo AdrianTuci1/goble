@@ -1,0 +1,9 @@
+{
+  "rows": ["altscreen", "", ""],
+  "cursor": { "line": 0, "column": 9, "visible": true, "shape": "block", "wrap_pending": false },
+  "alt_screen": true,
+  "history_size": 0,
+  "cells": [
+    { "row": 0, "column": 0, "fg": "default" }
+  ]
+}

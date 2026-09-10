@@ -1,11 +1,15 @@
 //! Terminal core for goble.
 //!
-//! Four layers, each independently testable:
+//! Layers, each independently testable:
 //!
 //! * [`keys`] — host → PTY encoding (key + modifiers + terminal mode → bytes).
+//! * [`mouse`] — host → PTY mouse reports, gated by the negotiated mode.
 //! * [`hooks`] — the shell-integration hook channel: a byte tap that lifts our
 //!   own `DCS` envelope out of the PTY stream and leaves every other byte
 //!   untouched for the VT parser.
+//! * [`osc`] — an observer for the `OSC` numbers the parser discards: the
+//!   working directory (`7`) and the prompt markers (`133`).
+//! * [`palette`] — resolving a cell's colour to RGB.
 //! * [`screen`] — a VT screen (grid, cursor, modes, alt screen) over the
 //!   vendored `alacritty_terminal` crate.
 //! * [`blocks`] — the command-block model, which owns one pair of screens per
@@ -20,6 +24,9 @@
 pub mod blocks;
 pub mod hooks;
 pub mod keys;
+pub mod mouse;
+pub mod osc;
+pub mod palette;
 pub mod screen;
 
 pub use blocks::{
@@ -27,7 +34,10 @@ pub use blocks::{
 };
 pub use hooks::{HookEvent, HookTap};
 pub use keys::{Key, KeyEncoder, Modifiers, TermMode};
+pub use mouse::{encode_mouse, MouseAction, MouseButton};
+pub use osc::{OscEvent, OscTap, PromptMarker};
+pub use palette::Palette;
 pub use screen::{
-    CellAttrs, CursorState, Screen, ScreenCell, ScreenColor, ScreenConfig, ScreenEvent,
-    ScreenEvents, ScreenLine, ScreenQuery, ScreenSize, Underline,
+    CellAttrs, CursorShape, CursorState, Screen, ScreenCell, ScreenColor, ScreenConfig,
+    ScreenEvent, ScreenEvents, ScreenLine, ScreenQuery, ScreenSize, Underline,
 };

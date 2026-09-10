@@ -21,6 +21,10 @@ derivative = "2.2"
 fontdue = "0.9"
 goble-core = { path = "../goble-core" }
 goble-desktop-service = { path = "../goble-desktop-service" }
+# The terminal grid element renders the emulator's cell snapshots, and needs its
+# palette to resolve a cell colour. Keeping the snapshot types here avoids a
+# parallel cell model that would have to be kept in step with the emulator.
+goble-terminal = { path = "../goble-terminal" }
 derive_more = { version = "0.99", features = ["deref", "deref_mut", "from", "into"] }
 euclid = "0.22"
 fontdb = "0.21"

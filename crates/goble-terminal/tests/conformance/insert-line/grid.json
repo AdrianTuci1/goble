@@ -1,0 +1,7 @@
+{
+  "rows": ["111111", "", "222222"],
+  "cursor": { "line": 1, "column": 0, "visible": true, "shape": "block", "wrap_pending": false },
+  "cells": [
+    { "row": 1, "column": 0, "fg": "default", "bg": "default" }
+  ]
+}

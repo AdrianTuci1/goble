@@ -40,6 +40,7 @@ The **look and interaction** come from `~/Projects/warp-new` (a sibling Rust pro
 - [`renderer-architecture.md`](renderer-architecture.md) — the layered architecture and how state/actions/events flow.
 - [`terminal-emulator.md`](terminal-emulator.md) — the VT emulator: a functional map of everything a terminal must do, the phased build order, the hard parts, and the verification harness, checked against the warp-new reference. **Read before writing terminal code.**
 - [`terminal-blocks.md`](terminal-blocks.md) — the block terminal above the emulator: shell integration, block lifecycle, per-block grids, prompt hiding, and clear semantics. This is the shape of the product terminal.
+- [`agent-tui.md`](agent-tui.md) — the harness surface: why the conversation is a block in the terminal's own list rather than a process in the PTY, the two views over that list, tool-call status, and the propose/approve composer.
 - [`form-components.md`](form-components.md) — overlay/backdrop form widgets, incl. the API-endpoint connector form.
 - [`remote-terminal-renderer.md`](remote-terminal-renderer.md) — taking over a remote host's terminal so our renderer shows remote output; includes the verified SSH-versus-mTLS transport decision.
 - `ui-spec/` — the migrated UI design specs (design tokens, shell layout, chat view, sidebar, topbar, testing checklist) that were previously flat at `.agents/` root: see [`ui-spec/00-readme.md`](ui-spec/00-readme.md).

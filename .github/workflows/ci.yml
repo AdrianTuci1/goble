@@ -1,0 +1,62 @@
+name: CI
+
+# The release workflow is manual and only runs at release time, so the emulator
+# conformance suite needs its own gate. Scoped to the paths it can be affected
+# by, plus a manual trigger.
+on:
+  push:
+    paths:
+      - 'crates/goble-terminal/**'
+      - 'vendor/alacritty_terminal/**'
+      - 'scripts/fetch-alacritty-terminal.sh'
+      - '.config/nextest.toml'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    paths:
+      - 'crates/goble-terminal/**'
+      - 'vendor/alacritty_terminal/**'
+      - 'scripts/fetch-alacritty-terminal.sh'
+      - '.config/nextest.toml'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  terminal-conformance:
+    name: terminal / conformance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # vendor/alacritty_terminal is a path dependency of goble-terminal, and a
+      # missing path dependency fails every cargo command in this workspace, not
+      # just the terminal's. Restore it before anything builds; the script pins
+      # the archive by SHA-256.
+      - name: Restore the vendored terminal emulator
+        if: ${{ !hashFiles('vendor/alacritty_terminal/Cargo.toml') }}
+        shell: bash
+        run: ./scripts/fetch-alacritty-terminal.sh --install
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # The nextest-recommended install action; it caches its own download and
+      # resolves the matching prebuilt binary, so there is no `cargo install`
+      # compile in the job.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Run the terminal emulator conformance suite
+        run: cargo nextest run -p goble-terminal --profile ci

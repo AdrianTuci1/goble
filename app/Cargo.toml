@@ -18,6 +18,9 @@ goble-harness-types = { path = "../crates/goble-harness-types" }
 goble-harness-cli = { path = "../crates/goble-harness-cli" }
 goble-persistence = { path = "../crates/goble-persistence" }
 goble-screen-core = { path = "../crates/goble-screen-core" }
+# The VT terminal core (screen, key/mouse encoding, hooks, palette) that the
+# terminal pane drives; see `src/emulator.rs` and `src/terminal.rs`.
+goble-terminal = { path = "../crates/goble-terminal" }
 # Crash reporting, and the update check. Both are best effort: neither may stop
 # the app from starting.
 goble-telemetry = { path = "../crates/goble-telemetry" }

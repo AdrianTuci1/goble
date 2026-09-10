@@ -1,0 +1,13 @@
+{
+  "rows": ["BDIURHS", ""],
+  "cursor": { "line": 0, "column": 7, "visible": true, "shape": "block", "wrap_pending": false },
+  "cells": [
+    { "row": 0, "column": 0, "bold": true },
+    { "row": 0, "column": 1, "dim": true },
+    { "row": 0, "column": 2, "italic": true },
+    { "row": 0, "column": 3, "underline": "single" },
+    { "row": 0, "column": 4, "inverse": true },
+    { "row": 0, "column": 5, "hidden": true },
+    { "row": 0, "column": 6, "strikeout": true }
+  ]
+}

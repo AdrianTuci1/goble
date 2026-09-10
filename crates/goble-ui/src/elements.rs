@@ -6,7 +6,9 @@ pub use button::{Button, ButtonVariant};
 pub use caption::Caption;
 pub use caret::{caret_beam, CARET_HEIGHT};
 pub use chat_composer::ChatComposer;
-pub use chat_content::{ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, ToolCall};
+pub use chat_content::{
+    ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, ToolCall,
+};
 pub use chat_header::ChatHeader;
 pub use chat_layout::{ChatLayout, CHAT_RIGHT_SIDEBAR_WIDTH};
 pub use chat_sidebar::{ChatSidebar, RoutineItem, CHAT_SIDEBAR_WIDTH};
@@ -16,23 +18,23 @@ pub use conversation_sidebar::{
 };
 pub use dialog::{Dialog, DIALOG_DEFAULT_WIDTH};
 pub mod markdown;
-pub use frame_view::{FrameSize, FrameView};
 pub use chat_message_bubble::ChatMessageBubble;
 pub use checkbox::Checkbox;
 pub use chip::Chip;
 pub use clipped::Clipped;
-pub use composer_button::ComposerButton;
-pub use context_pill::{ContextPill, PillTraySide, CONTEXT_PILL_HEIGHT};
 pub use code::Code;
+pub use composer_button::ComposerButton;
 pub use connector_card::ConnectorCard;
 pub use constrained_box::ConstrainedBox;
 pub use container::Container;
+pub use context_pill::{ContextPill, PillTraySide, CONTEXT_PILL_HEIGHT};
 pub use divider::Divider;
 pub use drawer::{Drawer, DrawerAnchor};
 pub use dropdown_menu::{DropdownItem, DropdownMenu};
 pub use empty::Empty;
 pub use expanded::Expanded;
 pub use flex::Flex;
+pub use frame_view::{FrameSize, FrameView};
 pub use header::Header;
 pub use hover_button::HoverButton;
 pub use icon::{Icon, IconName};
@@ -64,6 +66,7 @@ pub use terminal_block::{
     filter_option_labels, TerminalBlock, TerminalData, TerminalFilter, TerminalLine,
     TerminalLineKind, TerminalStatus,
 };
+pub use terminal_grid::{TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT};
 pub use text::Text;
 pub use text_area::TextArea;
 pub use text_input::TextInput;
@@ -150,8 +153,7 @@ impl PaintContext {
     /// True when the given bounds contain the current pointer. Used at paint
     /// time for hover overlays; returns false when the pointer is outside.
     pub fn hovered(&self, bounds: RectF) -> bool {
-        self.cursor_inside
-            && crate::elements::interactive::contains(bounds, self.cursor_position)
+        self.cursor_inside && crate::elements::interactive::contains(bounds, self.cursor_position)
     }
 }
 
@@ -536,12 +538,12 @@ pub mod chat_sidebar;
 pub mod checkbox;
 pub mod chip;
 pub mod clipped;
-pub mod composer_button;
-pub mod context_pill;
 pub mod code;
+pub mod composer_button;
 pub mod connector_card;
 pub mod constrained_box;
 pub mod container;
+pub mod context_pill;
 pub mod conversation_list_item;
 pub mod conversation_sidebar;
 pub mod dialog;
@@ -584,6 +586,7 @@ pub mod stack;
 pub mod switch;
 pub mod tab_bar;
 pub mod terminal_block;
+pub mod terminal_grid;
 pub mod text;
 pub mod text_area;
 pub mod text_input;

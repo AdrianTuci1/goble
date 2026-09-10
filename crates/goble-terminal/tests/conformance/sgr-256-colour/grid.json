@@ -1,0 +1,8 @@
+{
+  "rows": ["XY", ""],
+  "cursor": { "line": 0, "column": 2, "visible": true, "shape": "block", "wrap_pending": false },
+  "cells": [
+    { "row": 0, "column": 0, "fg": "index:208" },
+    { "row": 0, "column": 1, "bg": "index:17" }
+  ]
+}

@@ -6,12 +6,15 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use goble_desktop_service::{CollectingEventBus, DesktopState};
 use goble_ui::elements::{Empty, PopupMenuItem};
 use goble_ui::event::DispatchedEvent;
 use goble_ui::platform::WindowControl;
+use goble_ui::color::ColorU;
+use goble_ui::theme::Theme;
 use goble_ui::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint, Vector2F,
 };
@@ -41,6 +44,14 @@ pub struct RootView {
     /// Cloned from `AppContext`, so the handler installed by the platform event
     /// loop (once the window exists) is visible to the actions built each frame.
     window_control: WindowControl,
+    /// The whole-app zoom shared with `AppContext.ui_zoom`. Kept here so the
+    /// settings "font size" action can drive the same value the keyboard and
+    /// menubar zoom use.
+    ui_zoom: Rc<RefCell<f32>>,
+    /// The shared `AppContext` so the live theme (from the color wheel) can be
+    /// written back each frame. `None` in tests/render harnesses, which skip
+    /// theme application.
+    app_context: Option<Rc<RefCell<AppContext>>>,
     /// The callbacks built on the last rebuild; kept here so the root can
     /// dispatch global keyboard shortcuts (split/space) before the tree does.
     actions: Option<UiActions>,
@@ -72,12 +83,21 @@ impl RootView {
             desktop: Some(desktop.clone()),
             event_bus,
             window_control: app.window_control.clone(),
+            ui_zoom: app.ui_zoom.clone(),
+            app_context: None,
             actions: None,
             size: None,
             origin: None,
         };
         view.rebuild(app);
         view
+    }
+
+    /// Provide the shared `AppContext` so the live theme can be applied each
+    /// frame. Called by `main`; skipped by test/render harnesses.
+    pub fn with_app_context(mut self, app_context: Rc<RefCell<AppContext>>) -> Self {
+        self.app_context = Some(app_context);
+        self
     }
 
     /// Expose the backing UI state so integration render tests can drive
@@ -262,6 +282,13 @@ impl RootView {
         self.screen_state
             .borrow_mut()
             .tick(self.desktop.as_deref());
+        // Ensure every pane has a per-pane agent-header 3-dots menu flag before
+        // the snapshot is built, so the tray open state is independent per pane.
+        self.state.borrow_mut().ensure_agent_menu_flags();
+        // Give every rendered pane its own rich-input controls entry before the
+        // snapshot is built, so two pty/agent panes never share the composer's
+        // buttons.
+        self.state.borrow_mut().ensure_pane_controls();
         // Derive the composer context pills (harness = the selected harness,
         // working dir = the selected session's path, branch = git branch) from
         // the environment tree + the active pane's cwd. The harness pill lists
@@ -363,6 +390,41 @@ impl RootView {
                     }
                 }
             }
+            // Fan the composer pills out per pane: the harness (medium) choice
+            // is a window-level environment, but each pane keeps its own
+            // working directory, branch and dropdown open flags.
+            let composer_context: HashMap<u64, ComposerContext> = {
+                let media = self.media_state.borrow();
+                let media_dir = media.selected_session_path();
+                pane_chat
+                    .keys()
+                    .map(|&pid| {
+                        let mut ctx = composer_context.clone();
+                        let controls = s.pane_controls(pid);
+                        ctx.harness_menu_open = controls.harness_menu_open.clone();
+                        ctx.dir_menu_open = controls.dir_menu_open.clone();
+                        ctx.branch_menu_open = controls.branch_menu_open.clone();
+                        if media_dir.is_empty() {
+                            if let Some(pane) = pane_chat.get(&pid) {
+                                if !pane.composer_path.is_empty() {
+                                    ctx.dir_label = pane.composer_path.clone();
+                                }
+                            }
+                        }
+                        ctx.branch_label = controls.branch.clone();
+                        if ctx.branch_label.is_empty() {
+                            ctx.branch_ids = Vec::new();
+                            ctx.branch_items = Vec::new();
+                        } else {
+                            ctx.branch_ids = vec![ctx.branch_label.clone()];
+                            ctx.branch_items = vec![PopupMenuItem::new(ctx.branch_label.clone())
+                                .with_icon("git-branch")
+                                .selected()];
+                        }
+                        (pid, ctx)
+                    })
+                    .collect()
+            };
             UiSnapshot {
                 current_tab: s.current_tab,
                 conversations: s.conversations.clone(),
@@ -387,7 +449,9 @@ impl RootView {
                 auto_approve: s.auto_approve,
                 right_sidebar_open: s.right_sidebar_open,
                 fullscreen: s.fullscreen,
-                agent_header_menu_open: s.agent_header_menu_open.clone(),
+                agent_header_menus: s.agent_header_menus.clone(),
+                terminal_filters: s.terminal_filters.clone(),
+                terminal_global_filters: s.terminal_global_filters.clone(),
                 crons_open: s.crons_open,
                 crons: s.crons.clone(),
                 workflows: s.workflows.clone(),
@@ -409,6 +473,15 @@ impl RootView {
                 settings_cluster_configured: s.settings_cluster_configured,
                 settings_authorized_keys: s.settings_authorized_keys.clone(),
                 settings_vault_unlocked: s.settings_vault_unlocked,
+                settings_overlay_open: s.settings_overlay_open,
+                settings_category: s.settings_category,
+                settings_invert_scroll: s.settings_invert_scroll,
+                settings_scroll_speed: s.settings_scroll_speed,
+                settings_font_size: s.settings_font_size,
+                theme_primary: s.theme_primary.clone(),
+                theme_secondary: s.theme_secondary.clone(),
+                theme_accent: s.theme_accent.clone(),
+                theme_color_drag: s.theme_color_drag.clone(),
                 show_llm_key_banner: s.show_llm_key_banner,
                 show_workspace_choice: s.show_workspace_choice,
                 workspace_routing: s.workspace_routing,
@@ -430,9 +503,17 @@ impl RootView {
                 composer_context,
                 pane_hover: s.pane_hover.clone(),
                 pane_chat,
+                pane_controls: s.pane_controls.clone(),
                 terminal: s.terminal.clone(),
                 sidebar_width: s.sidebar_width,
                 sidebar_dragging: s.sidebar_dragging,
+                sidebar_visible: s.sidebar_visible,
+                conversations_expanded: s.conversations_expanded,
+                sidebar_scroll: s.sidebar_scroll.clone(),
+                settings_scroll: s.settings_scroll.clone(),
+                space_rename_editing: s.space_rename_editing,
+                space_rename_draft: s.space_rename_draft.clone(),
+                space_rename_focused: s.space_rename_focused,
                 agent_cards: s.agent_cards.clone(),
                 new_agent_hover: s.new_agent_hover.clone(),
                 command_palette_open: s.command_palette_open,
@@ -444,6 +525,7 @@ impl RootView {
                 add_medium_dialog_open: s.add_medium_dialog_open,
                 add_medium_draft: s.add_medium_draft.clone(),
                 add_medium_focused: s.add_medium_focused,
+                terminal_run_agent_menu_open: s.terminal_run_agent_menu_open.clone(),
             }
         };
         let actions = make_actions(
@@ -451,6 +533,7 @@ impl RootView {
             self.desktop.clone(),
             Rc::clone(&self.media_state),
             self.window_control.clone(),
+            self.ui_zoom.clone(),
         );
         let ai_snapshot = {
             let s = self.ai_state.borrow();
@@ -538,7 +621,44 @@ impl RootView {
             &screen_snapshot,
             &screen_actions,
         );
+        // Register the app commands the native menubar (macOS) dispatches into.
+        // The closures are rebuilt each frame, so the menu always triggers the
+        // current actions. `window_control` is the same shared handle the mac
+        // native menu holds (installation happens in goble-ui window.rs).
+        {
+            let mut commands: HashMap<String, Rc<RefCell<dyn FnMut()>>> = HashMap::new();
+            commands.insert("new_space".into(), actions.on_add_space.clone());
+            commands.insert("split_right".into(), actions.on_split_right.clone());
+            commands.insert("split_down".into(), actions.on_split_down.clone());
+            commands.insert("new_terminal".into(), actions.on_new_terminal.clone());
+            commands.insert("close_pane".into(), actions.on_close_pane.clone());
+            commands.insert("toggle_fullscreen".into(), actions.on_toggle_fullscreen.clone());
+            commands.insert("clear_transcript".into(), actions.on_clear_transcript.clone());
+            commands.insert("toggle_right_sidebar".into(), actions.on_toggle_right_sidebar.clone());
+            commands.insert("open_settings".into(), actions.on_settings.clone());
+            commands.insert("copy".into(), actions.on_copy.clone());
+            *self.window_control.commands.borrow_mut() = commands;
+        }
         self.actions = Some(actions);
+    }
+
+    /// Write the live theme into the shared `AppContext` so every element
+    /// re-renders with the current base theme + custom color-wheel overrides.
+    fn apply_theme(&mut self) {
+        let Some(app_context) = self.app_context.clone() else {
+            return;
+        };
+        let s = self.state.borrow();
+        let mut theme = if s.settings_dark_mode {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
+        let primary = s.theme_primary.as_deref().and_then(ColorU::from_hex);
+        let secondary = s.theme_secondary.as_deref().and_then(ColorU::from_hex);
+        let accent = s.theme_accent.as_deref().and_then(ColorU::from_hex);
+        theme = theme.with_overrides(primary, secondary, accent);
+        app_context.borrow_mut().theme = theme;
     }
 }
 
@@ -549,6 +669,9 @@ impl Element for RootView {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
+        // Apply the live theme (base dark/light + custom primary/secondary/
+        // accent from the color wheel) before the tree is rebuilt this frame.
+        self.apply_theme();
         self.rebuild(app);
         let size = self.element.layout(constraint, ctx, app);
         self.size = Some(size);

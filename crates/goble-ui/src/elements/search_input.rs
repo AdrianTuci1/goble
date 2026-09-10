@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    AppContext, Container, EdgeInsets, Element, EventContext, Fill, Icon, LayoutContext,
-    MainAxisSize, PaintContext, Point, SizeConstraint, Text,
+    caret_beam, AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Fill,
+    Icon, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{PointF, Vector2F};
@@ -102,12 +102,16 @@ impl SearchInput {
             .finish();
         // Fill the available width so the box has equal margins on both sides
         // when placed in a stretched column (e.g. the sidebar).
-        let row = crate::elements::Flex::row()
+        let mut row = crate::elements::Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(gap)
             .with_child(icon)
-            .with_child(text)
-            .finish();
+            .with_child(text);
+        if self.focused {
+            row = row.with_child(caret_beam(app));
+        }
+        let row = row.finish();
         let mut container = Container::new(row)
             .with_padding(EdgeInsets::uniform(padding))
             .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))

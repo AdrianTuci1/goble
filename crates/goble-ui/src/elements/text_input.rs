@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    AppContext, Container, EdgeInsets, Element, EventContext, Fill, LayoutContext, PaintContext,
-    Point, SizeConstraint, Text,
+    caret_beam, AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Fill,
+    Flex, LayoutContext, PaintContext, Point, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{PointF, Vector2F};
@@ -88,7 +88,14 @@ impl TextInput {
             .with_theme_color(color, app)
             .with_max_lines(1)
             .finish();
-        let mut container = Container::new(text)
+        // A focused field shows the insertion beam right after the text (and at
+        // the left edge while the value is still empty).
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        row = row.with_child(text);
+        if self.focused {
+            row = row.with_child(caret_beam(app));
+        }
+        let mut container = Container::new(row.finish())
             .with_padding(EdgeInsets::uniform(padding))
             .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
         if self.focused {

@@ -41,6 +41,7 @@ fn build(desktop: &Arc<DesktopState>) -> (Rc<RefCell<UiState>>, UiActions) {
         Some(Arc::clone(desktop)),
         Rc::clone(&media),
         WindowControl::default(),
+        Rc::new(RefCell::new(1.0)),
     );
     (state, actions)
 }
@@ -148,4 +149,48 @@ fn select_tab_switches_views() {
 
     (actions.on_select_tab.borrow_mut())(AppTab::Settings);
     assert_eq!(state.borrow().current_tab, AppTab::Settings);
+}
+
+#[test]
+fn repeated_new_conversation_reuses_the_empty_one() {
+    let (desktop, _dir) = common::desktop_state();
+    let (state, actions) = build(&desktop);
+
+    // The sidebar "New conversation" row: clicking it repeatedly must not pile
+    // up empty conversations while the active pane is already on a fresh one.
+    (actions.on_create_submit.borrow_mut())();
+    (actions.on_create_submit.borrow_mut())();
+    (actions.on_create_submit.borrow_mut())();
+
+    assert_eq!(state.borrow().conversations.len(), 1);
+    assert_eq!(desktop.list_chats().len(), 1);
+}
+
+#[test]
+fn new_conversation_after_a_message_creates_a_fresh_one() {
+    let (desktop, _dir) = common::desktop_state();
+    let (state, actions) = build(&desktop);
+
+    (actions.on_create_submit.borrow_mut())();
+    let first = state.borrow().selected_id.clone().expect("first conversation");
+    desktop
+        .add_chat_message(&first, "user", "salut")
+        .expect("add a message");
+
+    // The pane's conversation now has content, so a new click opens a new one.
+    (actions.on_create_submit.borrow_mut())();
+    assert_eq!(desktop.list_chats().len(), 2);
+    assert_ne!(state.borrow().selected_id.as_deref(), Some(first.as_str()));
+}
+
+#[test]
+fn sidebar_toggle_flips_visibility() {
+    let (desktop, _dir) = common::desktop_state();
+    let (state, actions) = build(&desktop);
+
+    assert!(state.borrow().sidebar_visible);
+    (actions.on_toggle_sidebar.borrow_mut())();
+    assert!(!state.borrow().sidebar_visible);
+    (actions.on_toggle_sidebar.borrow_mut())();
+    assert!(state.borrow().sidebar_visible);
 }

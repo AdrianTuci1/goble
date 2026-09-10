@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -21,6 +22,10 @@ use winit::window::{Window, WindowId};
 #[derive(Clone, Default)]
 pub struct WindowControl {
     inner: Rc<RefCell<Option<Box<dyn FnMut(bool)>>>>,
+    /// Registered app commands (name -> callback). Rebuilt by the app layer each
+    /// frame (the closures are fresh per frame); the native menu bar and the
+    /// command palette dispatch into this table by name.
+    pub commands: Rc<RefCell<HashMap<String, Rc<RefCell<dyn FnMut()>>>>>,
 }
 
 impl WindowControl {
@@ -38,6 +43,42 @@ impl WindowControl {
     pub fn install<F: FnMut(bool) + 'static>(&self, handler: F) {
         *self.inner.borrow_mut() = Some(Box::new(handler));
     }
+
+    /// Invoke a registered command by name (e.g. a menu item or the command
+    /// palette). No-op if no callback is registered for that name.
+    pub fn run_command(&self, name: &str) {
+        if let Some(cb) = self.commands.borrow().get(name) {
+            (cb.borrow_mut())();
+        }
+    }
+}
+
+/// Whole-app zoom clamps, so a runaway Cmd+Plus never collapses the UI.
+pub const ZOOM_MIN: f32 = 0.5;
+pub const ZOOM_MAX: f32 = 2.0;
+pub const ZOOM_STEP: f32 = 0.1;
+
+/// Clamp a zoom value into `[ZOOM_MIN, ZOOM_MAX]`.
+pub fn clamp_zoom(zoom: f32) -> f32 {
+    zoom.clamp(ZOOM_MIN, ZOOM_MAX)
+}
+
+/// Apply the whole-app zoom to the device-pixel-ratio: the render scale used to
+/// lay out (in logical points) and paint. At `zoom > 1` the logical viewport
+/// shrinks while the paint scale grows, so everything (fonts included) appears
+/// larger.
+pub fn render_scale_for(scale: f64, zoom: f32) -> f64 {
+    scale * clamp_zoom(zoom) as f64
+}
+
+/// The logical size corresponding to `px` physical pixels at `scale`/`zoom`.
+pub fn logical_dim(px: u32, scale: f64, zoom: f32) -> f32 {
+    px as f32 / render_scale_for(scale, zoom) as f32
+}
+
+/// Adjust a zoom value by `delta` (steps), clamped. Returns the new value.
+fn adjust_zoom(current: f32, delta: f32) -> f32 {
+    clamp_zoom(current + delta)
 }
 
 pub fn run_with_root(
@@ -109,6 +150,18 @@ impl ApplicationHandler for App {
                 fullscreen_window.set_fullscreen(None);
             }
         });
+
+        // macOS: install the native application menu bar (`NSMenu`), following
+        // warp-new. The menu dispatches into the app command registry via
+        // `WindowControl::run_command`, and adjusts the whole-app zoom.
+        #[cfg(target_os = "macos")]
+        {
+            let ui_zoom = self.app_context.borrow().ui_zoom.clone();
+            unsafe {
+                crate::platform::mac::menus::install_main_menu(window_control, ui_zoom);
+            }
+        }
+
         self.window = Some(window);
         self.surface_state = Some(surface_state);
     }
@@ -152,11 +205,15 @@ impl ApplicationHandler for App {
                 // Layout in logical points; the render pass scales by the device
                 // pixel ratio so 1 point == `scale` physical pixels. On HiDPI
                 // displays `inner_size()`/surface config are physical pixels,
-                // which would otherwise shrink every element on screen.
+                // which would otherwise shrink every element on screen. The
+                // whole-app zoom factor scales both axes so everything (fonts
+                // included) appears larger uniformly.
                 let scale = window.scale_factor();
+                let zoom = *self.app_context.borrow().ui_zoom.borrow();
+                let render_scale = render_scale_for(scale, zoom);
                 let constraint = SizeConstraint::loose(vec2f(
-                    width as f32 / scale as f32,
-                    height as f32 / scale as f32,
+                    logical_dim(width, scale, zoom),
+                    logical_dim(height, scale, zoom),
                 ));
                 let mut layout_ctx = LayoutContext::default();
                 let app_context = self.app_context.borrow().clone();
@@ -171,7 +228,7 @@ impl ApplicationHandler for App {
                     renderer = paint_ctx.renderer.take().unwrap();
                 }
                 if let Some(surface_state) = self.surface_state.as_mut() {
-                    if let Err(e) = surface_state.render(&renderer, scale) {
+                    if let Err(e) = surface_state.render(&renderer, render_scale) {
                         log::error!("render error: {e}");
                     }
                 }
@@ -209,9 +266,11 @@ impl ApplicationHandler for App {
             }
             winit::event::WindowEvent::CursorMoved { position, .. } => {
                 // Cursor events arrive in physical pixels; convert to logical
-                // so hit-testing against the logical-layout tree stays aligned.
-                let scale = window.scale_factor();
-                let logical = position.to_logical::<f64>(scale);
+                // (using the same zoomed render scale as layout) so hit-testing
+                // against the logical-layout tree stays aligned.
+                let zoom = *self.app_context.borrow().ui_zoom.borrow();
+                let render_scale = render_scale_for(window.scale_factor(), zoom);
+                let logical = position.to_logical::<f64>(render_scale);
                 let pos = vec2f(logical.x as f32, logical.y as f32);
                 self.cursor_position = pos;
                 self.cursor_inside = true;
@@ -224,12 +283,14 @@ impl ApplicationHandler for App {
                 drop(app_context);
             }
             winit::event::WindowEvent::MouseWheel { delta, .. } => {
-                let scale = window.scale_factor();
+                let zoom = *self.app_context.borrow().ui_zoom.borrow();
+                let render_scale = render_scale_for(window.scale_factor(), zoom);
                 let delta = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => vec2f(x * 20.0, y * 20.0),
-                    // Pixel deltas are physical; divide by scale for logical px.
+                    // Pixel deltas are physical; divide by the zoomed scale for
+                    // logical px (so the scroll amount matches the layout).
                     winit::event::MouseScrollDelta::PixelDelta(p) => {
-                        let logical = p.to_logical::<f64>(scale);
+                        let logical = p.to_logical::<f64>(render_scale);
                         vec2f(logical.x as f32, logical.y as f32)
                     }
                 };
@@ -244,6 +305,33 @@ impl ApplicationHandler for App {
             }
             winit::event::WindowEvent::KeyboardInput { event, .. } => {
                 if let Some(key) = logical_key_string(&event.logical_key) {
+                    // Whole-app zoom (Cmd/Ctrl+Plus/Minus/0). Handled before the
+                    // tree so a focused composer cannot swallow the keys. This is
+                    // the app-level zoom; on macOS it is also reachable via the
+                    // native menubar's View → Zoom items (see `mac/menus.rs`).
+                    let cmd = self.modifiers.state().super_key()
+                        || self.modifiers.state().control_key();
+                    if event.state == winit::event::ElementState::Pressed && cmd {
+                        let mut applied = false;
+                        {
+                            let ui_zoom = self.app_context.borrow().ui_zoom.clone();
+                            let mut zoom = ui_zoom.borrow_mut();
+                            if key == "+" || key == "=" {
+                                *zoom = adjust_zoom(*zoom, ZOOM_STEP);
+                                applied = true;
+                            } else if key == "-" || key == "_" {
+                                *zoom = adjust_zoom(*zoom, -ZOOM_STEP);
+                                applied = true;
+                            } else if key == "0" {
+                                *zoom = 1.0;
+                                applied = true;
+                            }
+                        }
+                        if applied {
+                            window.request_redraw();
+                            return;
+                        }
+                    }
                     let modifiers = map_modifiers(&self.modifiers);
                     let event = match event.state {
                         winit::event::ElementState::Pressed => {
@@ -385,5 +473,57 @@ impl SurfaceState {
         );
         output.present();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoom_respects_min_and_max_clamp() {
+        assert_eq!(clamp_zoom(0.1), ZOOM_MIN);
+        assert_eq!(clamp_zoom(2.4), ZOOM_MAX);
+        assert_eq!(clamp_zoom(1.0), 1.0);
+    }
+
+    #[test]
+    fn render_scale_scales_by_zoom() {
+        assert_eq!(render_scale_for(2.0, 1.0), 2.0);
+        assert!((render_scale_for(2.0, 2.0) - 4.0).abs() < 1e-6);
+        assert!((render_scale_for(2.0, 0.5) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn logical_dim_shrinks_as_zoom_grows() {
+        let base = logical_dim(1280, 2.0, 1.0);
+        let zoomed = logical_dim(1280, 2.0, 2.0);
+        assert!(zoomed < base);
+        assert!((zoomed - base / 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn run_command_invokes_registered_callback() {
+        let wc = WindowControl::default();
+        let calls = Rc::new(RefCell::new(0i32));
+        let calls2 = Rc::clone(&calls);
+        wc.commands.borrow_mut().insert(
+            "ping".to_string(),
+            Rc::new(RefCell::new(move || {
+                *calls2.borrow_mut() += 1;
+            })),
+        );
+        wc.run_command("ping");
+        wc.run_command("ping");
+        assert_eq!(*calls.borrow(), 2);
+        // Unknown commands are a no-op.
+        wc.run_command("missing");
+        assert_eq!(*calls.borrow(), 2);
+    }
+
+    #[test]
+    fn app_context_default_zoom_is_one() {
+        let app = crate::elements::AppContext::default();
+        assert_eq!(*app.ui_zoom.borrow(), 1.0);
     }
 }

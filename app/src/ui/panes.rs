@@ -10,15 +10,18 @@ use std::rc::Rc;
 
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
-    AppContext, Axis, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Expanded,
-    Fill, Flex, HoverButton, Icon, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint,
-    Spacer, SplitNode, Text, Tooltip, TooltipPosition, TopbarButton,
+    AppContext, Axis, Container, ContextPill, CrossAxisAlignment, EdgeInsets, Element,
+    EventContext, Expanded, Fill, Flex, HoverButton, Icon, LayoutContext, MainAxisSize,
+    PaintContext, PillTraySide, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, SizeConstraint,
+    Spacer, SplitNode, Text, Tooltip, TooltipPosition, TopbarButton, CONTEXT_PILL_HEIGHT,
 };
+use crate::terminal::TuiAgent;
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::chat;
+use super::shell::TOPBAR_HEIGHT;
 use super::terminal;
 use super::{Pane, PaneKind, SplitDir, UiActions, UiSnapshot};
 
@@ -183,7 +186,14 @@ fn build_leaf(
                 .get(&id)
                 .map(|c| c.composer_path.clone())
                 .unwrap_or_default();
-            terminal::build_terminal(app, state, actions, id, cwd, active)
+            // Harness mode is per pane: Cmd+Enter at the rich input activates it
+            // and Esc returns this pane to the plain shell.
+            let harness_mode = state
+                .pane_controls
+                .get(&id)
+                .map(|c| c.harness_mode)
+                .unwrap_or(false);
+            terminal::build_terminal(app, state, actions, id, cwd, active, harness_mode)
         }
     };
     // Clicking anywhere in the pane body focuses the pane (mouse-driven pane
@@ -233,6 +243,21 @@ fn build_pane_header(
         PaneKind::Terminal => "Terminal",
     };
 
+    // A plain pty carries its tray buttons in the topbar (the working directory
+    // and the git branch), while the agent keeps its own pills at the bottom of
+    // the pane. The agent additionally offers the model switcher there; the pty
+    // deliberately does not.
+    let pills = build_context_pills(app, state, actions, id);
+    let has_pills = !pills.is_empty();
+    // The header is padded out to the shared topbar height around its tallest
+    // child, so the bar stays exactly `TOPBAR_HEIGHT` with or without pills.
+    let content_height = if has_pills {
+        CONTEXT_PILL_HEIGHT
+    } else {
+        20.0
+    };
+    let v_pad = ((TOPBAR_HEIGHT - content_height).max(0.0)) / 2.0;
+
     let on_close = actions.on_close_pane.clone();
     let close = TopbarButton::new(
         Icon::new("x")
@@ -244,7 +269,7 @@ fn build_pane_header(
     .with_on_click(move || (on_close.borrow_mut())())
     .finish();
 
-    let row = Flex::row()
+    let mut row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(sm)
@@ -253,10 +278,28 @@ fn build_pane_header(
                 .with_font_size(11.0)
                 .with_theme_color(ColorToken::Muted, app)
                 .finish(),
-        )
-        .with_child(Spacer::new().finish())
-        .with_child(close)
-        .finish();
+        );
+    for pill in pills {
+        row = row.with_child(pill);
+    }
+    row = row.with_child(Spacer::new().finish());
+
+    // A terminal pane is the unified surface for shell *and* a real TUI agent:
+    // offer a compact "Run agent" menu to launch codex/claude/... native-first.
+    if matches!(kind, PaneKind::Terminal) {
+        // While the harness owns this pane's input, spell out the way back to
+        // the plain shell at the top of the pane.
+        let harness_mode = state
+            .pane_controls
+            .get(&id)
+            .map(|c| c.harness_mode)
+            .unwrap_or(false);
+        if harness_mode {
+            row = row.with_child(build_esc_hint(app));
+        }
+        row = row.with_child(build_run_agent(app, state, actions, id));
+    }
+    let row = row.with_child(close).finish();
 
     let hover = state
         .pane_hover
@@ -265,7 +308,7 @@ fn build_pane_header(
         .unwrap_or_else(|| Rc::new(RefCell::new(false)));
     let on_activate = actions.on_pane_activate.clone();
     let header = HoverButton::new(row, hover)
-        .with_padding(EdgeInsets::new(xs, sm, xs, sm))
+        .with_padding(EdgeInsets::new(xs, v_pad, xs, v_pad))
         .with_on_click(move || (on_activate.borrow_mut())(id))
         .finish();
 
@@ -280,6 +323,128 @@ fn build_pane_header(
     )
     .with_position(TooltipPosition::Above)
     .finish()
+}
+
+/// The pty's topbar tray buttons: the working directory and, when the pane's
+/// checkout has one, the git branch. Both are the same [`ContextPill`] the
+/// agent's composer footer uses, with their trays opening downwards.
+fn build_context_pills(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    id: u64,
+) -> Vec<Box<dyn Element>> {
+    let Some(context) = state.composer_context.get(&id) else {
+        return Vec::new();
+    };
+    let mut pills: Vec<Box<dyn Element>> = Vec::new();
+    if !context.dir_label.is_empty() {
+        let dir_ids = context.dir_ids.clone();
+        let on_select_dir = actions.on_select_dir.clone();
+        let mut pill = ContextPill::new("folder", context.dir_label.clone())
+            .with_tooltip("Select working directory")
+            .with_tray_side(PillTraySide::Below)
+            .with_max_label_width(240.0);
+        if !context.dir_items.is_empty() {
+            pill = pill.with_menu(
+                context.dir_items.clone(),
+                context.dir_menu_open.clone(),
+                move |idx| {
+                    if let Some(session_id) = dir_ids.get(idx) {
+                        (on_select_dir.borrow_mut())(id, session_id.clone());
+                    }
+                },
+            );
+        }
+        pills.push(pill.finish(app));
+    }
+    if !context.branch_label.is_empty() {
+        let branch_ids = context.branch_ids.clone();
+        let on_select_branch = actions.on_select_branch.clone();
+        let mut pill = ContextPill::new("git-branch", context.branch_label.clone())
+            .with_tooltip("Select branch")
+            .with_tray_side(PillTraySide::Below)
+            .with_max_label_width(160.0);
+        if !context.branch_items.is_empty() {
+            pill = pill.with_menu(
+                context.branch_items.clone(),
+                context.branch_menu_open.clone(),
+                move |idx| {
+                    if let Some(branch) = branch_ids.get(idx) {
+                        (on_select_branch.borrow_mut())(id, branch.clone());
+                    }
+                },
+            );
+        }
+        pills.push(pill.finish(app));
+    }
+    pills
+}
+
+/// While the harness is active on a pane, its topbar shows `esc for terminal`
+/// so the way back to the plain pty is always visible.
+fn build_esc_hint(app: &AppContext) -> Box<dyn Element> {
+    let xs = app.theme.spacing_px(SpacingToken::Xs);
+    let keycap = Container::new(
+        Text::new("esc")
+            .with_font_size(10.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::new(xs, 1.0, xs, 1.0))
+    .with_border(app.theme.color(ColorToken::Border).into())
+    .with_corner_radius(4.0)
+    .finish();
+    Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0)
+        .with_child(keycap)
+        .with_child(
+            Text::new("for terminal")
+                .with_font_size(11.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .finish()
+}
+
+/// A compact "Run agent" control for a terminal pane header: a button that opens
+/// a menu of real TUI agents. Choosing one launches it into the pane's PTY and
+/// switches the pane to native-first agent mode.
+fn build_run_agent(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    id: u64,
+) -> Box<dyn Element> {
+    let menu_open = state.terminal_run_agent_menu_open.clone();
+    let on_launch = actions.on_launch_tui_agent.clone();
+    let launcher_id = id;
+
+    let trigger = TopbarButton::new(
+        Icon::new("cpu")
+            .with_size(12.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(20.0)
+    .finish();
+
+    let items: Vec<PopupMenuItem> = TuiAgent::ALL
+        .iter()
+        .map(|a| PopupMenuItem::new(a.label()).with_icon("terminal"))
+        .collect();
+
+    Box::new(
+        PopupMenu::new(trigger, items)
+            .with_open(menu_open)
+            .with_position(PopupMenuPosition::Below)
+            .with_on_select(move |index| {
+                if let Some(agent) = TuiAgent::ALL.get(index) {
+                    (on_launch.borrow_mut())(launcher_id, agent.command().to_string());
+                }
+            }),
+    )
 }
 
 

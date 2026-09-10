@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    AppContext, Container, Element, EventContext, LayoutContext, PaintContext, Point,
-    SizeConstraint, Text,
+    caret_beam, AppContext, Container, CrossAxisAlignment, Element, EventContext, Flex,
+    LayoutContext, PaintContext, Point, SizeConstraint, Text,
 };
 use crate::event::{DispatchedEvent, ModifiersState};
 use crate::geometry::{PointF, Vector2F};
@@ -115,8 +115,15 @@ impl TextArea {
         };
         let text = Text::new(display).with_theme_color(color, app).finish();
         // Transparent: no background/border or internal padding so the textarea
-        // reads as part of the surrounding rich-input bar.
-        self.root = Some(Container::new(text).finish());
+        // reads as part of the surrounding rich-input bar. A focused area shows
+        // the insertion beam after the text; the rich input is single-line in
+        // practice (Enter submits), so the beam sits at the text's end.
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        row = row.with_child(text);
+        if self.focused {
+            row = row.with_child(caret_beam(app));
+        }
+        self.root = Some(Container::new(row.finish()).finish());
     }
 }
 

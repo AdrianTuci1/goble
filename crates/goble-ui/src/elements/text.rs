@@ -140,7 +140,12 @@ impl Element for Text {
                     self.text.clone(),
                     self.font_size,
                     self.color,
-                    size.x,
+                    // The measured width is the ceil of the glyph extents, which
+                    // can sit a fraction below the sum of the advances. Drawing
+                    // at exactly that width would wrap the last word of a text
+                    // sized to its own content (e.g. a one-line chip label), so
+                    // allow a point of slack.
+                    size.x + 1.0,
                     self.line_height,
                     self.weight,
                     self.font_family,

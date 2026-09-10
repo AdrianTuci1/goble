@@ -1,13 +1,15 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::elements::chat_content::{ChatAction, ChatMessage};
+use crate::elements::chat_content::{ChatAction, ChatFragmentKind, ChatMessage};
 use crate::elements::{
-    AppContext, AskUserCard, AskUserUi, Axis, Border, Button, ButtonVariant, ChatComposer,
-    ChatMessageBubble, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill,
-    Flex, FrameView, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point,
-    PopupMenuItem, QuickActionButton, Scrollable, SizeConstraint, Switch, Text,
+    filter_option_labels, AppContext, AskUserCard, AskUserUi, Axis, Border, Button, ButtonVariant,
+    ChatComposer, ChatMessageBubble, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
+    Expanded, Fill, Flex, FrameView, Icon, LayoutContext, MainAxisAlignment, MainAxisSize,
+    PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, QuickActionButton,
+    Scrollable, SizeConstraint, Switch, TerminalFilter, Text, TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -25,11 +27,22 @@ struct InlineScreen {
 
 pub struct ChatView {
     header: Option<Box<dyn Element>>,
+    /// An inline notice rendered at the top of the transcript (inside the chat
+    /// area rather than as a floating dialog), e.g. the "no API key" error.
+    notice: Option<Box<dyn Element>>,
     messages: Vec<ChatMessage>,
     quick_actions: Vec<(String, Rc<RefCell<dyn FnMut() + 'static>>)>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_cmd_enter: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_action: Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
+    /// App-owned per-block filter state, keyed by a terminal block's content
+    /// key; shared down to each `ChatMessageBubble` so the filter tray's open
+    /// flag + selection persist across the per-frame rebuild.
+    terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
+    /// The whole-transcript filter, applied to every terminal block (filtered
+    /// via a bar above the transcript). App-owned so it survives the rebuild.
+    global_terminal_filter: Option<TerminalFilter>,
+    on_copy_terminal: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     empty_title: Option<String>,
     empty_subtitle: Option<String>,
     composer_value: Rc<RefCell<String>>,
@@ -88,11 +101,15 @@ impl ChatView {
     pub fn new() -> Self {
         Self {
             header: None,
+            notice: None,
             messages: Vec::new(),
             quick_actions: Vec::new(),
             on_send: None,
             on_cmd_enter: None,
             on_action: None,
+            terminal_filters: Rc::new(RefCell::new(HashMap::new())),
+            global_terminal_filter: None,
+            on_copy_terminal: None,
             empty_title: None,
             empty_subtitle: None,
             composer_value: Rc::new(RefCell::new(String::new())),
@@ -148,6 +165,12 @@ impl ChatView {
         self
     }
 
+    /// Render `notice` at the top of the transcript, inside the chat area.
+    pub fn with_notice(mut self, notice: Option<Box<dyn Element>>) -> Self {
+        self.notice = notice;
+        self
+    }
+
     pub fn with_messages(mut self, messages: Vec<ChatMessage>) -> Self {
         self.messages = messages;
         self
@@ -176,6 +199,33 @@ impl ChatView {
 
     pub fn with_on_action<F: FnMut(ChatAction) + 'static>(mut self, callback: F) -> Self {
         self.on_action = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Set the app-owned per-block terminal filter map (shared with app state so
+    /// the tray open flag + selection persist across the per-frame rebuild).
+    pub fn with_terminal_filters(
+        mut self,
+        terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
+    ) -> Self {
+        self.terminal_filters = terminal_filters;
+        self
+    }
+
+    /// Set the whole-transcript filter (app-owned), applied to every terminal
+    /// block in this conversation.
+    pub fn with_global_terminal_filter(mut self, filter: Option<TerminalFilter>) -> Self {
+        self.global_terminal_filter = filter;
+        self
+    }
+
+    /// Set the handler for a terminal block's copy button (receives the block
+    /// text); `None` hides no-op copy (the button is hidden if not provided).
+    pub fn with_on_copy_terminal(
+        mut self,
+        on_copy: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    ) -> Self {
+        self.on_copy_terminal = on_copy;
         self
     }
 
@@ -463,6 +513,66 @@ impl ChatView {
             .finish()
     }
 
+    /// Whether the transcript contains at least one terminal output block (so
+    /// the whole-transcript filter is worth showing).
+    fn has_terminal_blocks(&self) -> bool {
+        self.messages.iter().any(|m| {
+            m.fragments
+                .iter()
+                .any(|f| matches!(f.kind, ChatFragmentKind::Terminal(_)))
+        })
+    }
+
+    /// The whole-transcript filter bar (filter button + tray). Returns `None`
+    /// when no global filter is wired up.
+    fn build_global_filter_bar(&self, app: &AppContext) -> Option<Box<dyn Element>> {
+        let filter = self.global_terminal_filter.clone()?;
+        let selected = *filter.selected.borrow();
+        let muted = ColorToken::Muted;
+        let items = filter_option_labels()
+            .iter()
+            .enumerate()
+            .map(|(i, label)| {
+                let mut item = PopupMenuItem::new(*label);
+                if i == selected {
+                    item = item.selected();
+                }
+                item
+            })
+            .collect::<Vec<_>>();
+        let trigger = TopbarButton::new(
+            Icon::new("sliders")
+                .with_size(14.0)
+                .with_theme_color(muted, app)
+                .finish(),
+        )
+        .with_size(24.0)
+        .with_active(selected != 0)
+        .finish();
+        let filter_for_select = filter.clone();
+        let menu = PopupMenu::new(trigger, items)
+            .with_open(filter.open.clone())
+            .with_position(PopupMenuPosition::Below)
+            .with_on_select(move |idx| *filter_for_select.selected.borrow_mut() = idx)
+            .finish();
+        let row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(8.0)
+            .with_child(
+                Text::new("Filter terminal output")
+                    .with_theme_color(muted, app)
+                    .with_font_size(12.0)
+                    .finish(),
+            )
+            .with_child(menu)
+            .finish();
+        Some(
+            Container::new(row)
+                .with_padding(EdgeInsets::new(0.0, 0.0, 4.0, 0.0))
+                .finish(),
+        )
+    }
+
     fn rebuild(&mut self, app: &AppContext) {
         let spacing = app.theme.spacing_px(SpacingToken::Md);
 
@@ -479,6 +589,7 @@ impl ChatView {
             && self.pending_ask.is_none()
             && self.inline_screen.is_none()
             && self.screen_link.is_none()
+            && self.notice.is_none()
         {
             // Wrap in a scrollable so it fills the remaining height and pins
             // the composer to the bottom of the window (a bare container would
@@ -488,11 +599,19 @@ impl ChatView {
             let mut message_column = Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_spacing(spacing);
+            // An inline notice (e.g. "No API key configured") leads the
+            // transcript instead of floating over the app as a dialog.
+            if let Some(notice) = self.notice.take() {
+                message_column = message_column.with_child(notice);
+            }
             for message in &self.messages {
                 let on_action = self.on_action.clone();
                 let fragments = message.fragments.clone();
                 let bubble = ChatMessageBubble::new(message.role, fragments)
                     .with_tool_calls(message.tool_calls.clone())
+                    .with_terminal_filters(self.terminal_filters.clone())
+                    .with_global_terminal_filter(self.global_terminal_filter.clone())
+                    .with_on_copy_terminal(self.on_copy_terminal.clone())
                     .with_on_action(move |action| {
                         if let Some(cb) = on_action.as_ref() {
                             (cb.borrow_mut())(action);
@@ -675,7 +794,22 @@ impl ChatView {
                     message_column = message_column.with_child(card);
                 }
             }
-            Scrollable::new(message_column.finish(), Axis::Vertical).finish()
+            // The transcript scrolls; the whole-transcript filter bar stays
+            // pinned above it when terminal blocks are present.
+            let transcript = Scrollable::new(message_column.finish(), Axis::Vertical).finish();
+            if self.has_terminal_blocks() {
+                if let Some(bar) = self.build_global_filter_bar(app) {
+                    Flex::column()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .with_child(bar)
+                        .with_child(Expanded::new(transcript).finish())
+                        .finish()
+                } else {
+                    transcript
+                }
+            } else {
+                transcript
+            }
         };
         // The transcript consumes the remaining space so the composer pins to
         // the bottom of the chat view.
@@ -822,7 +956,10 @@ impl ChatView {
         }
         let composer = composer.finish();
         // A separator line above the rich input separates it from the
-        // transcript. The composer still pins flush to the bottom of the view.
+        // transcript. The composer is a content-sized child (not flex-grown),
+        // so it pins to the bottom: its textarea grows with the draft (capped)
+        // and the footer pills sit just below it, leaving the message
+        // transcript most of the height.
         column = column.with_child(Divider::horizontal().finish());
         column = column.with_child(composer);
 

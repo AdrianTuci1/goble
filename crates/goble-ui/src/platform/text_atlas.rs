@@ -254,11 +254,22 @@ impl TextAtlas {
         height: u32,
         data: &[u8],
     ) {
-        for row in 0..height {
+        // A single text run can be wider (or taller) than the atlas's usable
+        // space when the caller passes an unbounded max_width (e.g. terminal
+        // lines). The placement check above only wraps to a new row and does
+        // not shrink such a run, so clamp the copy extent to the atlas bounds
+        // here — writing past ATLAS_SIZE makes wgpu validate the copy as
+        // overrunning the destination texture and panic.
+        let write_width = (ATLAS_SIZE.saturating_sub(x)).min(width);
+        let write_height = (ATLAS_SIZE.saturating_sub(y)).min(height);
+        if write_width == 0 || write_height == 0 {
+            return;
+        }
+        for row in 0..write_height {
             let src_offset = (row * width) as usize;
             let dst_offset = ((y + row) * ATLAS_SIZE + x) as usize;
-            self.texture_data[dst_offset..dst_offset + width as usize]
-                .copy_from_slice(&data[src_offset..src_offset + width as usize]);
+            self.texture_data[dst_offset..dst_offset + write_width as usize]
+                .copy_from_slice(&data[src_offset..src_offset + write_width as usize]);
         }
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -271,11 +282,11 @@ impl TextAtlas {
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(width),
-                rows_per_image: Some(height),
+                rows_per_image: Some(write_height),
             },
             wgpu::Extent3d {
-                width,
-                height,
+                width: write_width,
+                height: write_height,
                 depth_or_array_layers: 1,
             },
         );

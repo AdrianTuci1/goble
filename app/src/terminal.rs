@@ -30,6 +30,119 @@ use goble_ui::event::ModifiersState;
 const MAX_LINES: usize = 2000;
 
 // ---------------------------------------------------------------------------
+// TUI agent detection + terminal surface mode
+// ---------------------------------------------------------------------------
+
+/// A real command-line agent that runs inside the pane's PTY (codex, claude,
+/// gemini, opencode, ...). When a pane is in [`TerminalMode::Agent`], goble
+/// hands input to the agent's *native* line editor (native-first) instead of
+/// routing it to the headless harness, so the user keeps the agent's full TUI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TuiAgent {
+    Codex,
+    Claude,
+    Gemini,
+    OpenCode,
+    Cursor,
+    Aider,
+    /// An unrecognised binary launched explicitly (via the launch button); the
+    /// pane still goes native-first so the requested agent owns the line.
+    Other,
+}
+
+impl TuiAgent {
+    /// The canonical command used to launch this agent.
+    pub fn command(self) -> &'static str {
+        match self {
+            TuiAgent::Codex => "codex",
+            TuiAgent::Claude => "claude",
+            TuiAgent::Gemini => "gemini",
+            TuiAgent::OpenCode => "opencode",
+            TuiAgent::Cursor => "cursor-agent",
+            TuiAgent::Aider => "aider",
+            TuiAgent::Other => "codex",
+        }
+    }
+
+    /// Short label for the terminal pane's mode badge / launch menu.
+    pub fn label(self) -> &'static str {
+        match self {
+            TuiAgent::Codex => "codex",
+            TuiAgent::Claude => "claude",
+            TuiAgent::Gemini => "gemini",
+            TuiAgent::OpenCode => "opencode",
+            TuiAgent::Cursor => "cursor-agent",
+            TuiAgent::Aider => "aider",
+            TuiAgent::Other => "agent",
+        }
+    }
+
+    /// Detect a TUI agent from the first command token, skipping wrapper tokens
+    /// (`sudo`, `command`, `exec`, `npx`, `bunx`, `env VAR=...`). This mirrors
+    /// warp-new's per-agent `command_prefix` model so `codex` / `claude` etc.
+    /// launch an agent surface and take over the pty.
+    pub fn detect(command: &str) -> Option<TuiAgent> {
+        let first = first_command_token(command)?;
+        match first {
+            "codex" => Some(TuiAgent::Codex),
+            "claude" => Some(TuiAgent::Claude),
+            "gemini" => Some(TuiAgent::Gemini),
+            "opencode" => Some(TuiAgent::OpenCode),
+            "cursor-agent" | "cursor" => Some(TuiAgent::Cursor),
+            "aider" => Some(TuiAgent::Aider),
+            _ => None,
+        }
+    }
+
+    /// All known agents, for building a launch menu.
+    pub const ALL: [TuiAgent; 6] = [
+        TuiAgent::Codex,
+        TuiAgent::Claude,
+        TuiAgent::Gemini,
+        TuiAgent::OpenCode,
+        TuiAgent::Cursor,
+        TuiAgent::Aider,
+    ];
+}
+
+/// The first whitespace-delimited token of a command line, with a bounded set
+/// of "wrapper" tokens skipped and trailing path components stripped.
+fn first_command_token(command: &str) -> Option<&str> {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i];
+        match tok {
+            // Wrappers: skip and look one token further.
+            "sudo" | "command" | "exec" | "npx" | "bunx" | "env" => {
+                i += 1;
+                continue;
+            }
+            // `env FOO=1 codex`: skip the assignment, find the binary.
+            _ if tok.contains('=') => {
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        return Some(tok.rsplit('/').next().unwrap_or(tok));
+    }
+    None
+}
+
+/// The surface mode of a terminal pane.
+///
+/// [`TerminalMode::Shell`] is a plain shell. [`TerminalMode::Agent`] means a
+/// real TUI agent is running inside the pty (launched by typing its command or
+/// via the launch control), so goble keeps its native input and shows a badge.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TerminalMode {
+    #[default]
+    Shell,
+    Agent(TuiAgent),
+}
+
+// ---------------------------------------------------------------------------
 // Output line buffer + ANSI handling
 // ---------------------------------------------------------------------------
 
@@ -503,6 +616,9 @@ impl Drop for TerminalSession {
 pub struct TerminalRegistry {
     pub sessions: HashMap<u64, TerminalSession>,
     pub input: HashMap<u64, String>,
+    /// Per-pane surface mode (shell vs. a TUI agent). Owned here so it survives
+    /// the per-frame element rebuild and is dropped with the pane.
+    pub modes: HashMap<u64, TerminalMode>,
 }
 
 impl TerminalRegistry {
@@ -521,11 +637,12 @@ impl TerminalRegistry {
         }
     }
 
-    /// Remove a pane's session + input mirror (dropping the session kills the
-    /// shell). Called when a pane closes.
+    /// Remove a pane's session + input mirror + mode (dropping the session kills
+    /// the shell). Called when a pane closes.
     pub fn drop_pane(&mut self, pane_id: u64) {
         self.sessions.remove(&pane_id);
         self.input.remove(&pane_id);
+        self.modes.remove(&pane_id);
     }
 
     pub fn input(&self, pane_id: u64) -> String {
@@ -534,6 +651,45 @@ impl TerminalRegistry {
 
     pub fn set_input(&mut self, pane_id: u64, value: String) {
         self.input.insert(pane_id, value);
+    }
+
+    pub fn mode(&self, pane_id: u64) -> TerminalMode {
+        self.modes.get(&pane_id).cloned().unwrap_or_default()
+    }
+
+    pub fn set_mode(&mut self, pane_id: u64, mode: TerminalMode) {
+        self.modes.insert(pane_id, mode);
+    }
+
+    /// If the pane's current input line names a known TUI agent, switch the pane
+    /// to agent mode (native-first) and return the detected agent. Called right
+    /// before the submitted enter is forwarded to the shell.
+    pub fn update_mode_from_input(&mut self, pane_id: u64) -> Option<TuiAgent> {
+        let input = self.input(pane_id);
+        if let Some(agent) = TuiAgent::detect(&input) {
+            self.modes.insert(pane_id, TerminalMode::Agent(agent));
+            Some(agent)
+        } else {
+            None
+        }
+    }
+
+    /// Launch a TUI agent inside a pane's PTY: write `command + '\n'` so the
+    /// agent takes over the terminal, then switch the pane to agent mode so goble
+    /// keeps its native input. Unknown commands still become agent mode because
+    /// the user explicitly asked to launch it.
+    pub fn launch_agent(&mut self, pane_id: u64, command: &str) {
+        let command = command.trim();
+        if command.is_empty() {
+            return;
+        }
+        if let Some(session) = self.sessions.get_mut(&pane_id) {
+            let mut bytes = command.as_bytes().to_vec();
+            bytes.push(b'\n');
+            session.write(&bytes);
+        }
+        let agent = TuiAgent::detect(command).unwrap_or(TuiAgent::Other);
+        self.modes.insert(pane_id, TerminalMode::Agent(agent));
     }
 }
 
@@ -780,6 +936,72 @@ mod tests {
         assert!(cwd.is_absolute());
         let cwd2 = resolve_cwd("");
         assert!(cwd2.is_absolute());
+    }
+
+    #[test]
+    fn detects_known_tui_agents_by_first_token() {
+        assert_eq!(TuiAgent::detect("codex"), Some(TuiAgent::Codex));
+        assert_eq!(TuiAgent::detect("claude"), Some(TuiAgent::Claude));
+        assert_eq!(TuiAgent::detect("gemini --model x"), Some(TuiAgent::Gemini));
+        assert_eq!(TuiAgent::detect("opencode"), Some(TuiAgent::OpenCode));
+        assert_eq!(TuiAgent::detect("cursor-agent"), Some(TuiAgent::Cursor));
+        assert_eq!(TuiAgent::detect("cursor"), Some(TuiAgent::Cursor));
+        assert_eq!(TuiAgent::detect("aider"), Some(TuiAgent::Aider));
+    }
+
+    #[test]
+    fn detection_skips_wrappers_and_paths() {
+        assert_eq!(TuiAgent::detect("sudo codex"), Some(TuiAgent::Codex));
+        assert_eq!(TuiAgent::detect("npx codex"), Some(TuiAgent::Codex));
+        assert_eq!(TuiAgent::detect("env FOO=1 codex"), Some(TuiAgent::Codex));
+        assert_eq!(TuiAgent::detect("/usr/local/bin/claude"), Some(TuiAgent::Claude));
+        assert_eq!(TuiAgent::detect("bunx gemini"), Some(TuiAgent::Gemini));
+    }
+
+    #[test]
+    fn detection_rejects_shell_commands() {
+        assert_eq!(TuiAgent::detect("ls"), None);
+        assert_eq!(TuiAgent::detect("git status"), None);
+        assert_eq!(TuiAgent::detect("cd /tmp"), None);
+        assert_eq!(TuiAgent::detect(""), None);
+    }
+
+    #[test]
+    fn registry_mode_defaults_to_shell() {
+        let mut reg = TerminalRegistry::default();
+        assert_eq!(reg.mode(1), TerminalMode::Shell);
+        reg.set_mode(1, TerminalMode::Agent(TuiAgent::Codex));
+        assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Codex));
+        reg.drop_pane(1);
+        assert_eq!(reg.mode(1), TerminalMode::Shell);
+    }
+
+    #[test]
+    fn update_mode_from_input_detects_and_settles() {
+        let mut reg = TerminalRegistry::default();
+        reg.set_input(1, "claude".to_string());
+        let agent = reg.update_mode_from_input(1);
+        assert_eq!(agent, Some(TuiAgent::Claude));
+        assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Claude));
+
+        reg.set_input(1, "ls".to_string());
+        assert_eq!(reg.update_mode_from_input(1), None);
+        // A non-agent input never *downgrades* an already-agent pane; only a
+        // detected agent switches the mode, so it stays agent-native here.
+        assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Claude));
+    }
+
+    #[test]
+    fn launch_agent_sets_agent_mode_even_for_unknown_commands() {
+        let mut reg = TerminalRegistry::default();
+        // No session spawned in a unit test, but mode is still set.
+        reg.launch_agent(1, "codex");
+        assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Codex));
+        reg.launch_agent(2, "some-custom-agent");
+        assert_eq!(reg.mode(2), TerminalMode::Agent(TuiAgent::Other));
+        // Blank is a no-op.
+        reg.launch_agent(3, "  ");
+        assert_eq!(reg.mode(3), TerminalMode::Shell);
     }
 
     impl TerminalKeyAction {

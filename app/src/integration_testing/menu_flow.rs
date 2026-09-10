@@ -66,6 +66,20 @@ fn icon_center(cmds: &[RenderCommand], name: &str) -> Option<(f32, f32)> {
     })
 }
 
+/// Center of the top-most `name` icon drawn (smallest y), so a glyph that also
+/// appears lower in the window (the composer pills reuse `chevron-down`) still
+/// resolves to the toolbar control.
+fn topmost_icon_center(cmds: &[RenderCommand], name: &str) -> Option<(f32, f32)> {
+    cmds.iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawIcon { origin, name: n, size, .. } if n == name => {
+                Some((origin.x + size / 2.0, origin.y + size / 2.0))
+            }
+            _ => None,
+        })
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+}
+
 /// Dispatch a full press+release at `pos`. Between the two, we re-render so the
 /// tree is rebuilt (matching the real about_to_wait redraw between down and up).
 fn click(root: &mut RootView, app: &AppContext, pos: (f32, f32)) {
@@ -79,18 +93,19 @@ fn click(root: &mut RootView, app: &AppContext, pos: (f32, f32)) {
 }
 
 #[test]
-fn topbar_medium_selector_opens_menu() {
+fn topbar_environment_menu_opens() {
     let (mut root, _desktop, _dir) = build_root();
     let app = AppContext::default();
     let _ = render(&mut root, &app);
     let cmds = render(&mut root, &app);
-    // The topbar's compact medium selector uses the "computer" glyph; it is the
-    // top-most one (the composer harness pill uses the same glyph lower down).
-    let pos = icon_center(&cmds, "agentmode").expect("topbar medium selector icon");
+    // The new topbar's "+ ▾" control opens the environment menu from its
+    // chevron: the top-most chevron in the window (the toolbar paints last now,
+    // and the composer pills use the same glyph lower down).
+    let pos = topmost_icon_center(&cmds, "chevron-down").expect("topbar environment menu trigger");
     click(&mut root, &app, pos);
 
     let open = root.state_rc().borrow().env_selector_open.clone();
-    assert!(*open.borrow(), "topbar medium selector should open its menu");
+    assert!(*open.borrow(), "the environment trigger should open its menu");
 }
 
 #[test]
@@ -101,10 +116,17 @@ fn agent_header_3_dots_opens_menu() {
     // that actually receives the click.
     let _ = render(&mut root, &app);
     let cmds = render(&mut root, &app);
-    let pos = icon_center(&cmds, "dots-horizontal").expect("agent 3-dots icon");
+    let pos = topmost_icon_center(&cmds, "dots-horizontal").expect("agent 3-dots icon");
     click(&mut root, &app, pos);
 
-    let open = root.state_rc().borrow().agent_header_menu_open.clone();
+    let state_rc = root.state_rc();
+    let open = {
+        let s = state_rc.borrow();
+        s.agent_header_menus
+            .get(&s.active_pane_id)
+            .cloned()
+            .expect("an app-owned agent-header menu flag for the active pane")
+    };
     assert!(*open.borrow(), "3-dots menu should open after clicking it");
 }
 

@@ -12,17 +12,26 @@ use std::sync::Arc;
 
 use goble_harness_types::MediumKind;
 use goble_ui::elements::{
-    AgentCardUi, AppContext, ChatMessage as UiChatMessage, Container, ConversationEntry,
-    CrossAxisAlignment, Divider, Element, Expanded, Fill, Flex, MainAxisSize, PopupMenuItem,
+    AgentCardUi, AppContext, ChatMessage as UiChatMessage, Container,
+    ConversationEntry, CrossAxisAlignment, Divider, Element, Empty, Expanded, Fill, Flex,
+    MainAxisSize, PopupMenuItem,
+    TerminalFilter,
 };
 use goble_ui::theme::ColorToken;
 use goble_ui::{
-    vec2f, Dialog, SettingsPage, Sheet, Stack, DIALOG_DEFAULT_WIDTH, SHEET_DEFAULT_WIDTH,
+    vec2f, Dialog, ScrollState, SettingsPage, Sheet, Stack, DIALOG_DEFAULT_WIDTH,
+    SHEET_DEFAULT_WIDTH,
 };
 
+/// Width of the Settings overlay sheet (wider than `SHEET_DEFAULT_WIDTH` so the
+/// category nav and the content pane both fit).
+const SETTINGS_OVERLAY_WIDTH: f32 = 560.0;
+
+use crate::state::PaneControls;
 use crate::terminal::TerminalRegistry;
 
 pub mod chat;
+pub mod color_picker;
 pub mod connectors;
 pub mod crons;
 pub mod harness;
@@ -33,6 +42,7 @@ pub mod panes;
 use palette::PaletteCommand;
 pub mod projects;
 pub mod screen;
+pub mod settings;
 pub mod shell;
 pub mod sidebar;
 pub mod space_bar;
@@ -202,6 +212,61 @@ pub enum AppTab {
     Timeline,
     Costs,
     Mcps,
+}
+
+/// Settings overlay categories, mirroring the grok-build settings pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsCategory {
+    Appearance,
+    Mouse,
+    EditorInput,
+    AgentApproval,
+    Models,
+    Advanced,
+}
+
+impl SettingsCategory {
+    pub const ALL: &'static [SettingsCategory] = &[
+        SettingsCategory::Appearance,
+        SettingsCategory::Mouse,
+        SettingsCategory::EditorInput,
+        SettingsCategory::AgentApproval,
+        SettingsCategory::Models,
+        SettingsCategory::Advanced,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsCategory::Appearance => "Appearance",
+            SettingsCategory::Mouse => "Mouse",
+            SettingsCategory::EditorInput => "Editor & Input",
+            SettingsCategory::AgentApproval => "Agent & Approval",
+            SettingsCategory::Models => "Models",
+            SettingsCategory::Advanced => "Advanced",
+        }
+    }
+}
+
+#[cfg(test)]
+mod settings_category_tests {
+    use super::*;
+
+    #[test]
+    fn categories_match_grok_build_labels() {
+        assert_eq!(SettingsCategory::ALL.len(), 6);
+        let labels: Vec<&str> = SettingsCategory::ALL.iter().map(|c| c.label()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Appearance",
+                "Mouse",
+                "Editor & Input",
+                "Agent & Approval",
+                "Models",
+                "Advanced",
+            ]
+        );
+    }
 }
 
 /// Where the first-run agent should run its execution.
@@ -698,7 +763,13 @@ pub struct UiSnapshot {
     /// checked state of the agent header menu's fullscreen item.
     pub fullscreen: bool,
     /// App-owned open flag for the agent header's 3-dots menu.
-    pub agent_header_menu_open: Rc<RefCell<bool>>,
+    pub agent_header_menus: HashMap<u64, Rc<RefCell<bool>>>,
+    /// Per-terminal-block filter state (open flag + selected filter), keyed by
+    /// content; shared with app state so the filter tray persists.
+    pub terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
+    /// Whole-transcript terminal filters (open flag + selected filter) keyed by
+    /// pane id, so each pty/agent pane keeps its own filter bar.
+    pub terminal_global_filters: HashMap<u64, TerminalFilter>,
     pub crons_open: bool,
     pub crons: Vec<CronEntry>,
     /// Workflows registered with the embedded daemon (real data).
@@ -725,6 +796,15 @@ pub struct UiSnapshot {
     pub settings_cluster_configured: bool,
     pub settings_authorized_keys: Vec<(String, String, String)>,
     pub settings_vault_unlocked: bool,
+    pub settings_overlay_open: bool,
+    pub settings_category: SettingsCategory,
+    pub settings_invert_scroll: bool,
+    pub settings_scroll_speed: i32,
+    pub settings_font_size: f32,
+    pub theme_primary: Option<String>,
+    pub theme_secondary: Option<String>,
+    pub theme_accent: Option<String>,
+    pub theme_color_drag: Rc<RefCell<Option<color_picker::ColorPickerDrag>>>,
     /// First-run: whether the "configure a model key" banner is shown in chat.
     pub show_llm_key_banner: bool,
     /// First-run: whether the "local or remote workspace?" choice is shown.
@@ -743,6 +823,21 @@ pub struct UiSnapshot {
     pub llm_dialog_focus: Rc<RefCell<Option<LlmFormField>>>,
     pub sidebar_width: f32,
     pub sidebar_dragging: bool,
+    /// Whether the left conversation sidebar is shown.
+    pub sidebar_visible: bool,
+    /// Whether the sidebar lists every conversation (false shows a few cards
+    /// plus a "View all" button).
+    pub conversations_expanded: bool,
+    /// Scroll offset of the sidebar's conversation list.
+    pub sidebar_scroll: Rc<RefCell<ScrollState>>,
+    /// Scroll offset of the settings overlay's content pane.
+    pub settings_scroll: Rc<RefCell<ScrollState>>,
+    /// Whether the topbar workspace frame is in inline-rename mode.
+    pub space_rename_editing: bool,
+    /// The in-progress space name while renaming.
+    pub space_rename_draft: String,
+    /// Whether the rename field holds focus.
+    pub space_rename_focused: bool,
     /// Per-card interaction state (hover / delete menu), shared with the
     /// card elements so selections and menus persist across frames.
     pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,
@@ -765,14 +860,19 @@ pub struct UiSnapshot {
     pub dragging_pane_id: Option<u64>,
     /// The current working path shown in the composer.
     pub composer_path: String,
-    /// Warp-new composer context pills (harness / working dir / git branch).
-    pub composer_context: ComposerContext,
+    /// Warp-new composer context pills (harness / working dir / git branch),
+    /// built per pane id: two pty/agent panes in one workspace each get their
+    /// own pills and their own open flags.
+    pub composer_context: HashMap<u64, ComposerContext>,
     /// Per-pane hover flags (keyed by pane id) so pane-header hover survives
     /// the per-frame element rebuild.
     pub pane_hover: HashMap<u64, Rc<RefCell<bool>>>,
     /// Per-pane chat data (transcript + draft + path) keyed by pane id, so each
     /// chat pane renders its own independent session.
     pub pane_chat: HashMap<u64, PaneChatSnapshot>,
+    /// Per-pane rich-input controls (auto-approve, model, branch, harness mode,
+    /// dropdown open flags), keyed by pane id.
+    pub pane_controls: HashMap<u64, PaneControls>,
     /// Live terminal sessions + input mirrors, shared with the terminal pane
     /// elements so they can spawn/read/write a PTY without blocking the UI
     /// thread. Cloned by `Rc` each frame (never the sessions themselves).
@@ -797,6 +897,9 @@ pub struct UiSnapshot {
     pub add_medium_draft: String,
     /// Whether the add-medium dialog's text field is focused.
     pub add_medium_focused: bool,
+    /// App-owned open flag for the terminal pane's "Run agent" menu, so the
+    /// popup survives the per-frame element rebuild.
+    pub terminal_run_agent_menu_open: Rc<RefCell<bool>>,
 }
 
 /// Plain snapshot of the AI domain state (vault + MCP connectors) used to
@@ -849,15 +952,18 @@ pub struct UiActions {
     pub on_attach: Rc<RefCell<dyn FnMut()>>,
     pub on_voice: Rc<RefCell<dyn FnMut()>>,
     pub on_select_model: Rc<RefCell<dyn FnMut()>>,
-    /// Select a specific model from the composer dropdown by display name.
-    pub on_model_select: Rc<RefCell<dyn FnMut(String)>>,
+    /// Select a specific model from one pane's composer dropdown, by display
+    /// name. The pane id keeps the choice local to that pane.
+    pub on_model_select: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Select the composer harness (environment medium) by medium id.
-    pub on_select_harness: Rc<RefCell<dyn FnMut(String)>>,
-    /// Select the composer working directory (session) by session id.
-    pub on_select_dir: Rc<RefCell<dyn FnMut(String)>>,
-    /// Select the composer git branch by branch name.
-    pub on_select_branch: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_select_harness: Rc<RefCell<dyn FnMut(u64, String)>>,
+    /// Select a pane's composer working directory (session) by session id.
+    pub on_select_dir: Rc<RefCell<dyn FnMut(u64, String)>>,
+    /// Select a pane's composer git branch by branch name.
+    pub on_select_branch: Rc<RefCell<dyn FnMut(u64, String)>>,
     pub on_copy: Rc<RefCell<dyn FnMut()>>,
+    /// Copy a terminal block's text to the clipboard (receives the block text).
+    pub on_copy_terminal: Rc<RefCell<dyn FnMut(String)>>,
     pub on_restart: Rc<RefCell<dyn FnMut()>>,
     /// Rename the current agent/conversation (agent-header 3-dots menu).
     pub on_rename_agent: Rc<RefCell<dyn FnMut()>>,
@@ -870,8 +976,11 @@ pub struct UiActions {
     pub on_answer_ask: Rc<RefCell<dyn FnMut(String, Option<(String, String)>)>>,
     /// Skip the inline ask-user card.
     pub on_skip_ask: Rc<RefCell<dyn FnMut()>>,
-    /// Toggle the auto-approve (autonomy) switch above the composer.
-    pub on_toggle_auto_approve: Rc<RefCell<dyn FnMut(bool)>>,
+    /// Toggle one pane's auto-approve (autonomy) switch above its composer.
+    pub on_toggle_auto_approve: Rc<RefCell<dyn FnMut(u64, bool)>>,
+    /// Turn one pane's harness mode on/off at the rich input (Warp-new style:
+    /// Cmd+Enter activates the harness, Esc returns to the plain pty).
+    pub on_set_pane_harness_mode: Rc<RefCell<dyn FnMut(u64, bool)>>,
     /// Send a queued prompt now (interrupting the in-flight turn).
     pub on_send_queued: Rc<RefCell<dyn FnMut()>>,
     /// Dismiss a queued prompt.
@@ -879,6 +988,34 @@ pub struct UiActions {
     pub on_menu: Rc<RefCell<dyn FnMut()>>,
     pub on_inbox: Rc<RefCell<dyn FnMut()>>,
     pub on_settings: Rc<RefCell<dyn FnMut()>>,
+    /// Toggle the left conversation sidebar (topbar sidebar button).
+    pub on_toggle_sidebar: Rc<RefCell<dyn FnMut()>>,
+    /// Toggle the sidebar conversation list between "a few cards" and the full,
+    /// scrollable list.
+    pub on_toggle_conversations_expanded: Rc<RefCell<dyn FnMut()>>,
+    /// Click on a topbar workspace chip: selects that space, and a double-click
+    /// enters inline rename for its name.
+    pub on_workspace_click: Rc<RefCell<dyn FnMut(usize)>>,
+    /// Update the inline space-rename draft.
+    pub on_space_rename_change: Rc<RefCell<dyn FnMut(String)>>,
+    /// Track focus of the inline space-rename field (blur commits).
+    pub on_space_rename_focus: Rc<RefCell<dyn FnMut(bool)>>,
+    /// Commit the inline space rename.
+    pub on_space_rename_commit: Rc<RefCell<dyn FnMut()>>,
+    /// Cancel the inline space rename without changing the name.
+    pub on_space_rename_cancel: Rc<RefCell<dyn FnMut()>>,
+    /// Settings: close the Settings overlay.
+    pub on_settings_close: Rc<RefCell<dyn FnMut()>>,
+    /// Settings: switch the active settings category.
+    pub on_settings_category: Rc<RefCell<dyn FnMut(SettingsCategory)>>,
+    /// Settings: toggle mouse scroll-direction inversion.
+    pub on_toggle_invert_scroll: Rc<RefCell<dyn FnMut(bool)>>,
+    /// Settings: set mouse scroll speed (1..=100).
+    pub on_set_scroll_speed: Rc<RefCell<dyn FnMut(i32)>>,
+    /// Settings: set editor font-size zoom factor.
+    pub on_set_font_size: Rc<RefCell<dyn FnMut(f32)>>,
+    /// Models: reload the model list from the global config file.
+    pub on_reload_model_config: Rc<RefCell<dyn FnMut()>>,
     pub on_projects: Rc<RefCell<dyn FnMut()>>,
     /// Navigate to the harness workflows page (topbar button).
     pub on_workflows: Rc<RefCell<dyn FnMut()>>,
@@ -917,10 +1054,18 @@ pub struct UiActions {
     /// Route a terminal pane's current input to the agent turn path (Cmd+Enter),
     /// using that pane's own conversation + cwd + medium/project scope.
     pub on_terminal_command: Rc<RefCell<dyn FnMut(u64, String)>>,
+    /// Launch a real TUI agent (codex/claude/...) inside a pane's PTY, switching
+    /// that pane to native-first agent mode. Callable from any surface; the
+    /// pane must already be (or become) a terminal pane.
+    pub on_launch_tui_agent: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Switch the active space by index.
     pub on_select_space: Rc<RefCell<dyn FnMut(usize)>>,
     /// Add a new space (single chat pane) and make it active.
     pub on_add_space: Rc<RefCell<dyn FnMut()>>,
+    /// Close the space (tab) at `index`. The last remaining space is never
+    /// removed: it resets to a fresh empty chat pane, so closing a tab never
+    /// exits the program.
+    pub on_close_space: Rc<RefCell<dyn FnMut(usize)>>,
     /// Add a new space whose default environment medium is `medium_id`, making
     /// it active and setting the new thread's workspace routing to that medium.
     pub on_add_space_with_medium: Rc<RefCell<dyn FnMut(String)>>,
@@ -958,6 +1103,12 @@ pub struct UiActions {
     pub on_settings_navigate: Rc<RefCell<dyn FnMut(SettingsPage)>>,
     /// Settings: toggle dark mode.
     pub on_toggle_dark_mode: Rc<RefCell<dyn FnMut(bool)>>,
+    /// Settings: set the custom theme primary color (as `#rrggbb`).
+    pub on_set_theme_primary: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings: set the custom theme secondary color (as `#rrggbb`).
+    pub on_set_theme_secondary: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings: set the custom theme accent color (as `#rrggbb`).
+    pub on_set_theme_accent: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: save the profile (name, email).
     pub on_save_profile: Rc<RefCell<dyn FnMut(String, String)>>,
     /// Settings: save the LLM config (provider, model, api_key, base_url, temperature).
@@ -1253,19 +1404,36 @@ pub fn build_ui(
         media,
         media_actions,
     );
-    let on_drag_start = actions.on_sidebar_drag_start.clone();
-    let on_drag_move = actions.on_sidebar_drag_move.clone();
-    let on_drag_end = actions.on_sidebar_drag_end.clone();
-    let body = shell::SidebarLayout::new(sidebar, main, state.sidebar_width)
-        .with_dragging(state.sidebar_dragging)
-        .with_on_drag_start(move |x| (on_drag_start.borrow_mut())(x))
-        .with_on_drag_move(move |x| (on_drag_move.borrow_mut())(x))
-        .with_on_drag_end(move || (on_drag_end.borrow_mut())());
+    // With the sidebar retracted the main area (and its resizable divider) is
+    // gone, so the chat/terminal column fills the whole window.
+    let body: Box<dyn Element> = if state.sidebar_visible {
+        let on_drag_start = actions.on_sidebar_drag_start.clone();
+        let on_drag_move = actions.on_sidebar_drag_move.clone();
+        let on_drag_end = actions.on_sidebar_drag_end.clone();
+        shell::SidebarLayout::new(sidebar, main, state.sidebar_width)
+            .with_dragging(state.sidebar_dragging)
+            .with_on_drag_start(move |x| (on_drag_start.borrow_mut())(x))
+            .with_on_drag_move(move |x| (on_drag_move.borrow_mut())(x))
+            .with_on_drag_end(move || (on_drag_end.borrow_mut())())
+            .finish()
+    } else {
+        drop(sidebar);
+        main
+    };
 
     let mut shell_col = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-    shell_col = shell_col.with_child(topbar);
+    // The toolbar is layered *above* the shell body (see the stack below) so the
+    // trays it opens — the "+ ▾" environment menu above all — paint over the
+    // sidebar and the pane surface instead of being covered by them. This
+    // placeholder reserves the toolbar's height in the body column so the
+    // content still starts below it.
+    shell_col = shell_col.with_child(
+        Empty::new()
+            .with_size(vec2f(0.0, shell::TOPBAR_HEIGHT))
+            .finish(),
+    );
     // Separator below the topbar, like the sidebar separators. The topbar is
     // a fixed height and is not resizable, so this is purely a visual rule.
     shell_col = shell_col.with_child(Divider::horizontal().finish());
@@ -1278,7 +1446,7 @@ pub fn build_ui(
     // The body must consume only the *remaining* height below the topbar, so
     // wrap it in `Expanded`; otherwise the chat composer would be pushed past
     // the bottom edge of the window.
-    shell_col = shell_col.with_child(Expanded::new(body.finish()).finish());
+    shell_col = shell_col.with_child(Expanded::new(body).finish());
 
     let on_close_crons = actions.on_close_crons.clone();
     let crons_sheet = Sheet::new(crons::build_crons_drawer(app, state, actions))
@@ -1308,30 +1476,47 @@ pub fn build_ui(
         .with_on_close(move || (on_close_screen.borrow_mut())())
         .finish();
 
+    // The agent panel (routines + scheduled tasks) floats over the workspace
+    // as a right-anchored sheet, with an explicit X close button plus the
+    // standard backdrop-click-to-close. `right_sidebar_open` is its open flag.
+    let on_close_chat_panel = actions.on_toggle_right_sidebar.clone();
+    let chat_panel_sheet = Sheet::new(chat::build_chat_panel_overlay(app, state, actions))
+        .with_expanded(state.right_sidebar_open)
+        .with_width(SHEET_DEFAULT_WIDTH)
+        .with_on_close(move || (on_close_chat_panel.borrow_mut())())
+        .finish();
+
+    // Settings opens centered over the whole window with a dimmed backdrop
+    // (not a right-anchored sheet), so it reads as a settings menu rather than
+    // a side panel. It is closed via the X, the navbar, or the backdrop click.
+    let on_close_settings = actions.on_settings_close.clone();
+    let settings_dialog = Dialog::new(settings::build_settings_overlay(app, state, actions))
+        .with_open(state.settings_overlay_open)
+        .with_width(SETTINGS_OVERLAY_WIDTH)
+        .with_on_close(move || (on_close_settings.borrow_mut())())
+        .finish();
+
     let mut stack = Stack::new().with_children(vec![
         shell_col.finish(),
+        // The toolbar paints after the body so the popups/trays anchored in it
+        // (the "+ ▾" environment menu) sit above the sidebar and the pane
+        // surface, and it is dispatched first within the shell for the same
+        // reason. Sheets and dialogs below stay above the toolbar.
+        topbar,
         crons_sheet,
         connectors_sheet,
         vault_sheet,
         screen_sheet,
+        chat_panel_sheet,
+        settings_dialog,
     ]);
 
-    // First-run onboarding overlays: the model-key banner, then (once a key is
-    // set) the local/remote workspace choice. Both are centered modal dialogs
-    // with an `on_close` so a returning/dismissive user is never left at a dead
-    // end: dismissing marks the flow complete (see the actions).
-    let on_dismiss_key = actions.on_dismiss_llm_key_banner.clone();
+    // First-run onboarding overlays: the local/remote workspace choice. The
+    // missing-API-key error is no longer a dialog — it renders inline at the
+    // top of the chat area (see `ChatView::with_notice`), so it stays next to
+    // the conversation it blocks.
     let on_dismiss_workspace = actions.on_dismiss_workspace_choice.clone();
-    if state.show_llm_key_banner {
-        stack = stack.with_overlay(
-            Dialog::new(chat::build_llm_key_banner(app, actions))
-                .with_open(true)
-                .with_width(DIALOG_DEFAULT_WIDTH)
-                .with_on_close(move || (on_dismiss_key.borrow_mut())())
-                .finish(),
-            vec2f(0.0, 0.0),
-        );
-    } else if state.show_workspace_choice {
+    if state.show_workspace_choice && !state.show_llm_key_banner {
         stack = stack.with_overlay(
             Dialog::new(chat::build_workspace_choice(app, actions))
                 .with_open(true)
@@ -1411,6 +1596,19 @@ pub fn build_ui(
         run(&ai_actions.on_open_connectors).with_label("Open connectors", ""),
     );
     command_list.push(run(&ai_actions.on_open_vault).with_label("Open vault", ""));
+    // Model selection entries: typing `/model` or the model name filters the
+    // palette down to these, so the slash path lists the config.toml models.
+    // A palette pick applies to the active pane's own composer controls.
+    let palette_pane_id = state.active_pane_id;
+    for name in &state.models {
+        let act = actions.on_model_select.clone();
+        let close = close_palette.clone();
+        let name = name.clone();
+        command_list.push(PaletteCommand::new(format!("Model: {name}"), "", move || {
+            (act.borrow_mut())(palette_pane_id, name.clone());
+            (close.borrow_mut())();
+        }));
+    }
 
     stack = stack.with_overlay(
         palette::build_command_palette(

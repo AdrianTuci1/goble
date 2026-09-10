@@ -2231,13 +2231,38 @@ impl DesktopState {
             })
     }
 
-    /// Model ids offered in the composer's model dropdown for a provider. The
-    /// configured model (if any) is promoted to the front so the dropdown always
-    /// offers what is currently set; the base catalog comes from
-    /// [`goble_core::llm::provider_models`].
+    /// Enabled model ids declared for `provider` in the global config
+    /// (`~/.goble/config.toml` `[llm.models]`), in declaration order.
+    pub fn config_models(&self, provider: &str) -> Vec<String> {
+        self.config()
+            .llm
+            .models
+            .iter()
+            .filter(|m| m.provider == provider && m.enabled)
+            .map(|m| m.id.clone())
+            .collect()
+    }
+
+    /// The globally configured default model id, if any.
+    pub fn config_default_model(&self) -> Option<String> {
+        let default = self.config().llm.default_model.clone();
+        if default.is_empty() {
+            None
+        } else {
+            Some(default)
+        }
+    }
+
+    /// Model ids offered in the composer's model dropdown for a provider. Models
+    /// declared in the global config `[llm.models]` take precedence; otherwise
+    /// the base catalog comes from [`goble_core::llm::provider_models`]. The
+    /// configured model (if any) is promoted to the front.
     pub fn available_models(&self, provider: &str) -> Vec<String> {
         let provider = if provider.is_empty() { "openai" } else { provider };
-        let mut models = llm::provider_models(provider);
+        let mut models = self.config_models(provider);
+        if models.is_empty() {
+            models = llm::provider_models(provider);
+        }
         if let Some(s) = self.get_llm_setting(provider) {
             if !s.model.is_empty() {
                 if let Some(pos) = models.iter().position(|m| m == &s.model) {
@@ -2254,10 +2279,13 @@ impl DesktopState {
         models
     }
 
-    /// The model to select by default for a provider: the configured model when
-    /// present, otherwise the provider's default id.
+    /// The model to select by default for a provider: the global config default
+    /// when set, otherwise the configured model, otherwise the provider default.
     pub fn default_model(&self, provider: &str) -> String {
         let provider = if provider.is_empty() { "openai" } else { provider };
+        if let Some(default) = self.config_default_model() {
+            return default;
+        }
         if let Some(s) = self.get_llm_setting(provider) {
             if !s.model.is_empty() {
                 return s.model;

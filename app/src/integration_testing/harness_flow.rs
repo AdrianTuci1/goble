@@ -28,6 +28,7 @@ fn build(desktop: &std::sync::Arc<DesktopState>) -> (Rc<RefCell<UiState>>, UiAct
         Some(std::sync::Arc::clone(desktop)),
         Rc::clone(&media),
         WindowControl::default(),
+        Rc::new(RefCell::new(1.0)),
     );
     (state, actions)
 }
@@ -191,10 +192,14 @@ fn model_dropdown_populates_and_selects() {
     }
 
     // Picking another item updates the composer selection and closes the menu.
+    let active_pane = state.borrow().active_pane_id;
     {
-        *state.borrow_mut().model_menu_open.borrow_mut() = true;
+        let mut s = state.borrow_mut();
+        let flag = s.pane_controls_mut(active_pane).model_menu_open.clone();
+        *flag.borrow_mut() = true;
+        *s.model_menu_open.borrow_mut() = true;
     }
-    (actions.on_model_select.borrow_mut())("gpt-4o".to_string());
+    (actions.on_model_select.borrow_mut())(active_pane, "gpt-4o".to_string());
     {
         let s = state.borrow();
         assert_eq!(s.selected_model, "gpt-4o");
@@ -202,6 +207,9 @@ fn model_dropdown_populates_and_selects() {
             !*s.model_menu_open.borrow(),
             "menu should close after selecting"
         );
+        // The choice is recorded on the pane's own controls, not only globally.
+        assert_eq!(s.pane_controls(active_pane).model, "gpt-4o");
+        assert!(!*s.pane_controls(active_pane).model_menu_open.borrow());
     }
 
     // The selection survives a refresh (not overwritten back to the default).

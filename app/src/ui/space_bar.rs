@@ -13,8 +13,8 @@ use std::rc::Rc;
 
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
-    AppContext, Container, EdgeInsets, Element, EventContext, Fill, LayoutContext, PaintContext,
-    Point, SizeConstraint, Text,
+    AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Fill, Flex, Icon,
+    LayoutContext, PaintContext, Point, SizeConstraint, Text,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -35,10 +35,14 @@ pub struct SpaceBar {
     on_space_reorder: Option<Rc<RefCell<dyn FnMut(usize, usize)>>>,
     on_space_release: Option<Rc<RefCell<dyn FnMut()>>>,
     on_add_space: Option<Rc<RefCell<dyn FnMut()>>>,
+    /// Close a tab by index (reads the trailing "x" on each tab).
+    on_close_space: Option<Rc<RefCell<dyn FnMut(usize)>>>,
     /// Per-tab root elements, in row order.
     tab_roots: Vec<Box<dyn Element>>,
     /// Per-tab bounds, relative to the SpaceBar origin. Filled during `layout`.
     tab_rects: Vec<RectF>,
+    /// Per-tab close "x" bounds, relative to the SpaceBar origin.
+    close_rects: Vec<RectF>,
     /// The trailing "+" add-space button's element and bounds (relative to the
     /// SpaceBar origin). `None` when no add callback is set.
     add_root: Option<Box<dyn Element>>,
@@ -61,8 +65,10 @@ impl SpaceBar {
             on_space_reorder: None,
             on_space_release: None,
             on_add_space: None,
+            on_close_space: None,
             tab_roots: Vec::new(),
             tab_rects: Vec::new(),
+            close_rects: Vec::new(),
             add_root: None,
             add_rect: None,
             size: None,
@@ -113,6 +119,14 @@ impl SpaceBar {
     /// Show a trailing "+" button that adds a new space (calls `callback`).
     pub fn with_on_add_space<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_add_space = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Show a trailing "x" on each tab that closes that space (calls `callback`
+    /// with the tab index). Clicking the x only closes; it never selects/opens
+    /// the tab and never starts a drag.
+    pub fn with_on_close_space<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
+        self.on_close_space = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -191,6 +205,7 @@ impl Element for SpaceBar {
     ) -> Vector2F {
         self.tab_roots.clear();
         self.tab_rects.clear();
+        self.close_rects.clear();
         self.add_root = None;
         self.add_rect = None;
 
@@ -204,14 +219,33 @@ impl Element for SpaceBar {
                 ColorToken::Muted
             };
             let bg = self.tab_bg(i);
-            let label = Text::new(name).with_theme_color(color, app).finish();
-            let mut tab: Box<dyn Element> = Container::new(label)
-                .with_padding(EdgeInsets::new(pad, pad * 0.5, pad, pad * 0.5))
+            let mut inner = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(4.0)
+                .with_child(Text::new(name).with_theme_color(color, app).finish());
+            if self.on_close_space.is_some() {
+                inner = inner.with_child(
+                    Icon::new("x")
+                        .with_size(11.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                );
+            }
+            let mut tab: Box<dyn Element> = Container::new(Box::new(inner))
+                .with_padding(EdgeInsets::new(pad, pad * 0.5, pad * 0.4, pad * 0.5))
                 .with_background(Fill::Solid(app.theme.color(bg)))
                 .finish();
             let size = tab.layout(constraint, ctx, app);
             self.tab_rects.push(rectf(x, 0.0, size.x, size.y));
             self.tab_roots.push(tab);
+            // The trailing "x" occupies the last ~18px of the tab.
+            let close_w = if self.on_close_space.is_some() { 18.0 } else { 0.0 };
+            self.close_rects.push(rectf(
+                x + size.x - close_w,
+                0.0,
+                close_w,
+                size.y,
+            ));
             x += size.x + TAB_SPACING;
             row_height = row_height.max(size.y);
         }
@@ -282,6 +316,13 @@ impl Element for SpaceBar {
                         return true;
                     }
                 }
+                // A press on a tab's trailing "x" only closes (on release); it
+                // must not start a tab press/drag or swallow into the tab body.
+                for r in &self.close_rects {
+                    if r.width() > 0.0 && contains(self.absolute_rect(*r), *position) {
+                        return true;
+                    }
+                }
                 // Only a press that actually lands on a tab consumes the event.
                 // `tab_index_at` returns the *nearest* tab for any x, so without
                 // a bounds check the SpaceBar would swallow every MouseDown in
@@ -345,6 +386,16 @@ impl Element for SpaceBar {
                         (cb.borrow_mut())();
                     }
                     return true;
+                }
+                // Release on a tab's trailing "x" closes that space, and must
+                // win over selecting the tab (a fresh down on the x set no press).
+                for (i, r) in self.close_rects.iter().enumerate() {
+                    if r.width() > 0.0 && contains(self.absolute_rect(*r), *position) {
+                        if let Some(cb) = &self.on_close_space {
+                            (cb.borrow_mut())(i);
+                        }
+                        return true;
+                    }
                 }
                 if let Some(press_i) = self.press {
                     if let Some(r) = self.tab_rects.get(press_i) {
@@ -517,5 +568,82 @@ mod tests {
             &app,
         );
         assert_eq!(*selected.borrow(), Some(0), "clicking a tab selects it");
+    }
+
+    #[test]
+    fn clicking_the_close_x_closes_that_space() {
+        let app = app();
+        let mut bar = SpaceBar::new(vec!["A".to_string(), "B".to_string()], 0);
+        let closed = Rc::new(RefCell::new(None));
+        let on_close = closed.clone();
+        bar.on_close_space = Some(Rc::new(RefCell::new(move |i| {
+            *on_close.borrow_mut() = Some(i);
+        })));
+        bar.layout(
+            SizeConstraint::loose(vec2f(400.0, 40.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let close_rect = bar.close_rects[1];
+        let mut ctx = EventContext::default();
+        bar.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: vec2f(close_rect.center().x, 10.0),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert_eq!(
+            *closed.borrow(),
+            Some(1),
+            "releasing on the x closes that space"
+        );
+    }
+
+    #[test]
+    fn pressing_the_close_x_does_not_select_the_tab() {
+        let app = app();
+        let mut bar = SpaceBar::new(vec!["A".to_string(), "B".to_string()], 0);
+        let closed = Rc::new(RefCell::new(None));
+        let on_close = closed.clone();
+        let selected = Rc::new(RefCell::new(false));
+        let on_select = selected.clone();
+        bar.on_close_space = Some(Rc::new(RefCell::new(move |i| {
+            *on_close.borrow_mut() = Some(i);
+        })));
+        bar.on_select = Some(Rc::new(RefCell::new(move |_| {
+            *on_select.borrow_mut() = true;
+        })));
+        bar.layout(
+            SizeConstraint::loose(vec2f(400.0, 40.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let close_rect = bar.close_rects[0];
+        let mut ctx = EventContext::default();
+        // A mouse-down on the x must not begin a tab press (so release only closes).
+        assert!(
+            bar.dispatch_event(
+                &DispatchedEvent::MouseDown {
+                    position: vec2f(close_rect.center().x, 10.0),
+                    button: 0,
+                },
+                &mut ctx,
+                &app,
+            ),
+            "the x swallows mouse-down so the tab is not pressed"
+        );
+        assert_eq!(bar.press, None, "a press on the x never selects the tab");
+        bar.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: vec2f(close_rect.center().x, 10.0),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert_eq!(*closed.borrow(), Some(0), "release on the x closes it");
+        assert!(!*selected.borrow(), "closing via the x does not select the tab");
     }
 }

@@ -4,6 +4,7 @@ pub use ask_user::{AskUserCard, AskUserUi};
 pub use avatar::{Avatar, AvatarShape};
 pub use button::{Button, ButtonVariant};
 pub use caption::Caption;
+pub use caret::{caret_beam, CARET_HEIGHT};
 pub use chat_composer::ChatComposer;
 pub use chat_content::{ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, ToolCall};
 pub use chat_header::ChatHeader;
@@ -20,6 +21,8 @@ pub use chat_message_bubble::ChatMessageBubble;
 pub use checkbox::Checkbox;
 pub use chip::Chip;
 pub use clipped::Clipped;
+pub use composer_button::ComposerButton;
+pub use context_pill::{ContextPill, PillTraySide, CONTEXT_PILL_HEIGHT};
 pub use code::Code;
 pub use connector_card::ConnectorCard;
 pub use constrained_box::ConstrainedBox;
@@ -45,7 +48,7 @@ pub use quick_action_button::QuickActionButton;
 pub use rect::Rect;
 pub use right_panel::RightPanel;
 pub use running_indicator::RunningIndicator;
-pub use scrollable::Scrollable;
+pub use scrollable::{ScrollState, Scrollable};
 pub use search_input::SearchInput;
 pub use select::{Select, SelectOption};
 pub use sheet::{Sheet, SHEET_DEFAULT_WIDTH};
@@ -58,7 +61,8 @@ pub use stack::Stack;
 pub use switch::Switch;
 pub use tab_bar::{Tab, TabBar};
 pub use terminal_block::{
-    TerminalBlock, TerminalData, TerminalLine, TerminalLineKind, TerminalStatus,
+    filter_option_labels, TerminalBlock, TerminalData, TerminalFilter, TerminalLine,
+    TerminalLineKind, TerminalStatus,
 };
 pub use text::Text;
 pub use text_area::TextArea;
@@ -71,6 +75,8 @@ pub use tooltip::{Tooltip, TooltipPosition};
 pub use topbar::{Topbar, TopbarButton};
 
 use std::any::Any;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::color::ColorU;
 use crate::event::DispatchedEvent;
@@ -164,13 +170,27 @@ impl Default for PaintContext {
 pub struct EventContext;
 
 /// Generic application context.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct AppContext {
     pub theme: crate::theme::Theme,
     /// A handle the UI uses to request window-level changes (e.g. toggling
     /// fullscreen). The platform event loop installs a real handler once the
     /// window exists; calls before that are no-ops.
     pub window_control: crate::platform::window::WindowControl,
+    /// Whole-app zoom factor (1.0 = 100%). Shared (`Rc`) so the platform event
+    /// loop can adjust it on Cmd+Plus/Minus/0 while each frame reads the value
+    /// for the layout constraint and render scale. Clamped to `0.5..=2.0`.
+    pub ui_zoom: Rc<RefCell<f32>>,
+}
+
+impl Default for AppContext {
+    fn default() -> Self {
+        Self {
+            theme: crate::theme::Theme::default(),
+            window_control: crate::platform::window::WindowControl::default(),
+            ui_zoom: Rc::new(RefCell::new(1.0)),
+        }
+    }
 }
 
 /// A point in element-space, including a z-index for stacking.
@@ -506,6 +526,7 @@ pub mod ask_user;
 pub mod avatar;
 pub mod button;
 pub mod caption;
+pub mod caret;
 pub mod chat_composer;
 pub mod chat_content;
 pub mod chat_header;
@@ -515,6 +536,8 @@ pub mod chat_sidebar;
 pub mod checkbox;
 pub mod chip;
 pub mod clipped;
+pub mod composer_button;
+pub mod context_pill;
 pub mod code;
 pub mod connector_card;
 pub mod constrained_box;

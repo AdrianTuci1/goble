@@ -12,7 +12,7 @@ pub mod views;
 
 pub use platform::current as platform_current;
 
-pub use color::ColorU;
+pub use color::{hsv_to_rgb, rgb_to_hsv, ColorU};
 pub use elements::{
     AgentCard, Align, Alignment, AppContext, AskUserCard, AskUserUi, Avatar, AvatarShape, Axis,
     Border, Button, ButtonVariant, Caption, ChatAction, ChatComposer, ChatFragment,
@@ -26,9 +26,11 @@ pub use elements::{
     Header as UiHeader,
     Icon, IconButton, IconName, Label, LabelSize, LayoutContext, MainAxisAlignment, MainAxisSize,
     Margin, Modal, Padding, Page, PaintContext, Point, QuickActionButton, Rect, RightPanel,
-    RunningIndicator, Scrollable, SearchInput, Select, SelectOption, SelectableElement, Sidebar,
+    RunningIndicator, ScrollState, Scrollable, SearchInput, Select, SelectOption,
+    SelectableElement, Sidebar,
     SidebarItem, SizeConstraint, Sheet, Spacer, SplitNode, Stack, Switch, Tab, TabBar, TerminalBlock,
-    TerminalData, TerminalLine, TerminalLineKind, TerminalStatus, Text, TextArea, TextInput,
+    TerminalData, TerminalFilter, TerminalLine, TerminalLineKind, TerminalStatus, Text, TextArea,
+    TextInput,
     ToolCall,
     ThreadListItem, ToggleButton, Toolbar, Topbar, TopbarButton, Vector2FExt,
     CHAT_RIGHT_SIDEBAR_WIDTH, CONVERSATION_SIDEBAR_WIDTH, DIALOG_DEFAULT_WIDTH, SHEET_DEFAULT_WIDTH,

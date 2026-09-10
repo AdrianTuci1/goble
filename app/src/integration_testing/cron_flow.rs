@@ -41,6 +41,7 @@ fn build(desktop: &Arc<DesktopState>) -> (Rc<RefCell<UiState>>, UiActions) {
         Some(Arc::clone(desktop)),
         Rc::clone(&media),
         WindowControl::default(),
+        Rc::new(RefCell::new(1.0)),
     );
     (state, actions)
 }

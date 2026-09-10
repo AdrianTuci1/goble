@@ -8,7 +8,7 @@ use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     AppContext, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets,
     Element, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, PaintContext, Point,
-    SizeConstraint, Text, TopbarButton,
+    PopupMenu, PopupMenuItem, SizeConstraint, Text, TextInput, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -18,30 +18,41 @@ use super::connectors::build_connectors_page;
 use super::harness;
 use super::panes;
 use super::projects::build_projects_view;
-use super::space_bar::SpaceBar;
 use super::{
     AiActions, AiSnapshot, AppTab, MediaActions, MediaSnapshot, ProjectsActions,
     ProjectsSnapshot, UiActions, UiSnapshot,
 };
 
 // The general toolbar doubles as the OS titlebar on macOS, so it is a touch
-// shorter and leaves room for the traffic lights on the left.
+// shorter and leaves room for the traffic lights on the left. Shared with the
+// pane headers (terminal/agent) so the general toolbar and the per-pane topbar
+// render at the same height.
 #[cfg(target_os = "macos")]
-const TOPBAR_HEIGHT: f32 = 36.0;
+pub const TOPBAR_HEIGHT: f32 = 36.0;
 #[cfg(not(target_os = "macos"))]
-const TOPBAR_HEIGHT: f32 = 40.0;
+pub const TOPBAR_HEIGHT: f32 = 40.0;
+
+/// Height of the toolbar's tallest control (`TopbarButton`'s default size). The
+/// toolbar pads itself out to exactly [`TOPBAR_HEIGHT`] around it, so it lines
+/// up with the per-pane headers instead of hugging its controls.
+const TOPBAR_CONTROL_HEIGHT: f32 = 32.0;
 #[cfg(target_os = "macos")]
 const TOPBAR_TRAFFIC_INSET: f32 = 76.0;
 #[cfg(not(target_os = "macos"))]
 const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
 
-/// Single general toolbar: menu + projects on the left, the space tab strip and
-/// the environment controls in the middle, inbox + settings on the right.
+/// Single general toolbar, reduced to the essentials: a sidebar toggle, the
+/// workspace chips (one per space, the active one editable inline), a "+ ▾"
+/// control that opens a new workspace / picks the environment it runs in, and
+/// the Settings icon pinned to the far right.
 ///
-/// The whole toolbar is one row so there is a single visible general toolbar
-/// (the space strip used to be a separate row below it). The "+" in the
-/// environment controls opens a warp-new style menu to add a space in a chosen
-/// environment, or add a new environment by name.
+/// The chips sit flush next to the toggle with only a couple of points of space
+/// between them (the Warp workspace row), so a new workspace shows up *next to*
+/// the current one instead of replacing it.
+///
+/// The "+" opens a new workspace in the active environment; the "▾" lists the
+/// environments (the VMs the user added appear by name) and a trailing
+/// "New environment…" entry, so the pick decides where new workspaces run.
 pub fn build_topbar(
     app: &AppContext,
     state: &UiSnapshot,
@@ -50,60 +61,33 @@ pub fn build_topbar(
     media_actions: &MediaActions,
 ) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
-    // `md` is only used as the vertical toolbar padding on non-macOS platforms
-    // (on macOS the toolbar doubles as the OS titlebar and drops the padding).
-    #[cfg_attr(target_os = "macos", allow(unused_variables))]
-    let md = app.theme.spacing_px(SpacingToken::Md);
 
-    // The Settings surface is disabled in this build: the tab renders inactive
-    // (flat, no click) and the app never navigates to it. See `build_main`.
-    let projects_active = state.current_tab == AppTab::Projects;
-
-    let on_menu = actions.on_menu.clone();
-    let menu_icon = if projects_active { "arrow-left" } else { "menu-01" };
-    let menu_button = TopbarButton::new(
-        Icon::new(menu_icon)
+    // Sidebar toggle (retract/expand the left conversation list).
+    let on_toggle_sidebar = actions.on_toggle_sidebar.clone();
+    let sidebar_button = TopbarButton::new(
+        Icon::new("menu-01")
             .with_size(16.0)
             .with_theme_color(ColorToken::Muted, app)
             .finish(),
     )
-    .with_on_click(move || (on_menu.borrow_mut())())
+    .with_on_click(move || (on_toggle_sidebar.borrow_mut())())
     .finish();
 
-    let on_projects = actions.on_projects.clone();
-    let projects_button = TopbarButton::new(
-        Icon::new("layers-three-01")
-            .with_size(16.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_active(projects_active)
-    .with_on_click(move || (on_projects.borrow_mut())())
-    .finish();
+    // One chip per workspace, active one first-class (double-click renames it).
+    let workspaces = build_workspace_strip(app, state, actions);
 
-    // Harness observability navigation: workflows, tasks/executions, timeline,
-    // costs and MCP connectors. Each button toggles its page (clicking the
-    // active page returns to chat), mirroring the projects tab affordance.
-    let harness_nav = build_harness_nav(app, state, actions, sm);
+    // "+ ▾": open a new workspace, or pick the environment it runs in.
+    let add_workspace = build_add_workspace_control(app, state, media, media_actions, actions);
 
     let left = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(sm)
-        .with_child(menu_button)
-        .with_child(projects_button)
-        .with_child(harness_nav)
+        .with_spacing(sm * 0.5)
+        .with_child(sidebar_button)
+        .with_child(workspaces)
+        .with_child(add_workspace)
         .finish();
 
-    let on_inbox = actions.on_inbox.clone();
-    let inbox_button = TopbarButton::new(
-        Icon::new("inbox-01")
-            .with_size(16.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_on_click(move || (on_inbox.borrow_mut())())
-    .finish();
-
+    // Settings stays reachable as an icon pinned to the far right.
     let on_settings = actions.on_settings.clone();
     let settings_button = TopbarButton::new(
         Icon::new("settings")
@@ -111,28 +95,8 @@ pub fn build_topbar(
             .with_theme_color(ColorToken::Muted, app)
             .finish(),
     )
-    .with_disabled(true)
     .with_on_click(move || (on_settings.borrow_mut())())
     .finish();
-
-    let right = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(sm)
-        .with_child(inbox_button)
-        .with_child(settings_button)
-        .finish();
-
-    // Middle of the toolbar: the space tab strip + the environment controls
-    // (medium selector and the "+" add-space menu).
-    let space_bar = build_space_tabs(state, actions);
-    let medium_controls =
-        super::media::build_medium_controls(app, state, media, media_actions, actions);
-    let center = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(sm)
-        .with_child(space_bar)
-        .with_child(medium_controls)
-        .finish();
 
     let row = Flex::row()
         .with_main_axis_size(goble_ui::elements::MainAxisSize::Max)
@@ -140,19 +104,15 @@ pub fn build_topbar(
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(sm)
         .with_child(left)
-        .with_child(center)
-        .with_child(right)
+        .with_child(settings_button)
         .finish();
 
-    // On macOS the toolbar doubles as the titlebar: drop the vertical padding so
-    // the actions sit vertically centered next to the traffic lights. Elsewhere
-    // keep the padded toolbar look.
-    #[cfg(target_os = "macos")]
-    let vertical_padding = 0.0;
-    #[cfg(not(target_os = "macos"))]
-    let vertical_padding = md;
+    // Pad the bar out to exactly `TOPBAR_HEIGHT` around its tallest control so
+    // it is as tall as a pane header (the body reserves the same height below
+    // it), and keep the macOS traffic lights vertically centered inside it.
+    let vertical_padding = ((TOPBAR_HEIGHT - TOPBAR_CONTROL_HEIGHT) / 2.0).max(0.0);
 
-    Container::new(ConstrainedBox::new(row).with_height(TOPBAR_HEIGHT).finish())
+    Container::new(row)
         .with_padding(EdgeInsets::new(
             TOPBAR_TRAFFIC_INSET,
             vertical_padding,
@@ -163,91 +123,298 @@ pub fn build_topbar(
         .finish()
 }
 
-/// One harness navigation button: a topbar icon that is active (highlighted)
-/// when its page is open.
-fn harness_nav_button(
-    app: &AppContext,
-    icon: &'static str,
-    on_click: Rc<RefCell<dyn FnMut()>>,
-    active: bool,
-) -> Box<dyn Element> {
-    TopbarButton::new(
-        Icon::new(icon)
-            .with_size(16.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_active(active)
-    .with_on_click(move || (on_click.borrow_mut())())
-    .finish()
-}
-
-/// The harness observability nav strip: workflows, tasks/executions, timeline,
-/// costs and MCP connectors. Each button toggles its page: clicking the
-/// currently-open page returns to the chat workspace.
-fn build_harness_nav(
+/// The workspace row: one chip per space, in order, laid out flush with no
+/// leading indent (Warp-style). The active chip is highlighted and, while
+/// renaming, swaps for the inline name field.
+fn build_workspace_strip(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
-    sm: f32,
 ) -> Box<dyn Element> {
-    Flex::row()
+    let mut row = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(sm)
-        .with_child(harness_nav_button(
-            app,
-            "workflow",
-            actions.on_workflows.clone(),
-            state.current_tab == AppTab::Workflows,
-        ))
-        .with_child(harness_nav_button(
-            app,
-            "activity",
-            actions.on_executions.clone(),
-            state.current_tab == AppTab::Executions,
-        ))
-        .with_child(harness_nav_button(
-            app,
-            "timeline",
-            actions.on_timeline.clone(),
-            state.current_tab == AppTab::Timeline,
-        ))
-        .with_child(harness_nav_button(
-            app,
-            "costs",
-            actions.on_costs.clone(),
-            state.current_tab == AppTab::Costs,
-        ))
-        .with_child(harness_nav_button(
-            app,
-            "plug",
-            actions.on_mcps.clone(),
-            state.current_tab == AppTab::Mcps,
-        ))
+        .with_spacing(2.0);
+    for (index, space) in state.spaces.iter().enumerate() {
+        let active = index == state.active_space;
+        if active && state.space_rename_editing {
+            row = row.with_child(build_rename_field(app, state, actions));
+        } else {
+            row = row.with_child(build_workspace_chip(
+                app,
+                actions,
+                index,
+                &space.name,
+                active,
+            ));
+        }
+    }
+    row.finish()
+}
+
+/// One clickable workspace chip: the name plus an "x" that closes that
+/// workspace. A single click selects the space; a second click within the
+/// double-click window starts the inline rename.
+fn build_workspace_chip(
+    app: &AppContext,
+    actions: &UiActions,
+    index: usize,
+    name: &str,
+    active: bool,
+) -> Box<dyn Element> {
+    let color = if active {
+        ColorToken::Text
+    } else {
+        ColorToken::Muted
+    };
+    let label = Text::new(name)
+        .with_theme_color(color, app)
+        .with_font_size(12.0)
+        .finish();
+    let on_click = actions.on_workspace_click.clone();
+    let on_close = actions.on_close_space.clone();
+    Box::new(WorkspaceChip::new(
+        label,
+        index,
+        active,
+        Rc::new(RefCell::new(move |i: usize| (on_click.borrow_mut())(i))),
+        TopbarButton::new(
+            Icon::new("x")
+                .with_size(10.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(16.0)
+        .with_on_click(move || (on_close.borrow_mut())(index))
+        .finish(),
+    ))
+}
+
+/// The inline rename field shown in place of the active workspace chip.
+fn build_rename_field(_app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+    let on_change = actions.on_space_rename_change.clone();
+    let on_focus = actions.on_space_rename_focus.clone();
+    let on_submit = actions.on_space_rename_commit.clone();
+    let input = TextInput::new()
+        .with_value(state.space_rename_draft.clone())
+        .with_placeholder("Workspace name")
+        .with_focused(state.space_rename_focused)
+        .with_on_change(move |v| (on_change.borrow_mut())(v))
+        .with_on_focus_change(move |f: bool| (on_focus.borrow_mut())(f))
+        .with_on_submit(move || (on_submit.borrow_mut())())
+        .finish();
+    ConstrainedBox::new(input)
+        .with_width(160.0)
+        .with_height(22.0)
         .finish()
 }
 
-/// The space tab strip: one tab per space, draggable to reorder, selectable to
-/// switch. The trailing "+" lives in the environment controls (it opens the
-/// add-space / add-medium menu) so the strip itself has no add button.
-fn build_space_tabs(state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    let on_select_space = actions.on_select_space.clone();
-    let on_space_press = actions.on_space_press.clone();
-    let on_space_hover = actions.on_space_hover.clone();
-    let on_space_reorder = actions.on_space_reorder.clone();
-    let on_space_release = actions.on_space_release.clone();
-    let names = state.spaces.iter().map(|s| s.name.clone()).collect();
-    Box::new(
-        SpaceBar::new(names, state.active_space)
-            .with_hover(state.space_hover)
-            .with_press(state.space_press)
-            .with_drag(state.space_drag)
-            .with_on_select(move |index| (on_select_space.borrow_mut())(index))
-            .with_on_space_press(move |index| (on_space_press.borrow_mut())(index))
-            .with_on_space_hover(move |hover| (on_space_hover.borrow_mut())(hover))
-            .with_on_space_reorder(move |from, to| (on_space_reorder.borrow_mut())(from, to))
-            .with_on_space_release(move || (on_space_release.borrow_mut())()),
+/// A flat workspace chip: no idle background, a hover fill, and (when active) a
+/// raised fill with a border and the themed text color. Tight padding keeps the
+/// row flush, like Warp's workspace row. The trailing "x" closes the workspace;
+/// it is hit-tested before the chip body so it never doubles as a select click.
+struct WorkspaceChip {
+    child: Box<dyn Element>,
+    close: Box<dyn Element>,
+    index: usize,
+    active: bool,
+    on_click: Rc<RefCell<dyn FnMut(usize)>>,
+    state: goble_ui::elements::interactive::InteractiveState,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl WorkspaceChip {
+    fn new(
+        child: Box<dyn Element>,
+        index: usize,
+        active: bool,
+        on_click: Rc<RefCell<dyn FnMut(usize)>>,
+        close: Box<dyn Element>,
+    ) -> Self {
+        Self {
+            child,
+            close,
+            index,
+            active,
+            on_click,
+            state: Default::default(),
+            size: None,
+            origin: None,
+        }
+    }
+
+    fn h_pad() -> f32 {
+        7.0
+    }
+
+    fn v_pad() -> f32 {
+        3.0
+    }
+
+    /// Gap between the workspace name and its close "x".
+    fn close_gap() -> f32 {
+        4.0
+    }
+}
+
+impl Element for WorkspaceChip {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let inner = SizeConstraint::new(
+            Vector2F::zero(),
+            vec2f(
+                (constraint.max.x - Self::h_pad() * 2.0).max(0.0),
+                (constraint.max.y - Self::v_pad() * 2.0).max(0.0),
+            ),
+        );
+        let child_size = self.child.layout(inner, ctx, app);
+        let close_size = self.close.layout(inner, ctx, app);
+        let size = vec2f(
+            child_size.x + Self::close_gap() + close_size.x + Self::h_pad() * 2.0,
+            child_size.y.max(close_size.y) + Self::v_pad() * 2.0,
+        );
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let size = self.size.unwrap_or(Vector2F::zero());
+        let rect = rectf(origin.x, origin.y, size.x, size.y);
+        let radius = app.theme.radius_px();
+        let hovered = ctx.hovered(rect);
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            if self.active {
+                renderer.fill_rounded_rect(rect, app.theme.color(ColorToken::SurfaceRaised), radius);
+                renderer.stroke_rect(rect, app.theme.color(ColorToken::Border), 1.0, radius);
+            } else if hovered {
+                renderer.fill_rounded_rect(rect, app.theme.color(ColorToken::Hover), radius);
+            }
+        }
+        let child_size = self.child.size().unwrap_or(Vector2F::zero());
+        let close_size = self.close.size().unwrap_or(Vector2F::zero());
+        let inner_height = size.y - Self::v_pad() * 2.0;
+        self.child.paint(
+            vec2f(
+                origin.x + Self::h_pad(),
+                origin.y + Self::v_pad() + (inner_height - child_size.y).max(0.0) / 2.0,
+            ),
+            ctx,
+            app,
+        );
+        self.close.paint(
+            vec2f(
+                origin.x + Self::h_pad() + child_size.x + Self::close_gap(),
+                origin.y + Self::v_pad() + (inner_height - close_size.y).max(0.0) / 2.0,
+            ),
+            ctx,
+            app,
+        );
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        // The close "x" gets the event first: it only consumes clicks inside its
+        // own bounds, so clicking the name still selects the workspace.
+        if self.close.dispatch_event(event, ctx, app) {
+            return true;
+        }
+        let bounds = match self.bounds() {
+            Some(b) => b,
+            None => return false,
+        };
+        let cb = self.on_click.clone();
+        let index = self.index;
+        let mut on_click = move || (cb.borrow_mut())(index);
+        goble_ui::elements::interactive::handle_mouse_event(
+            &mut self.state,
+            event,
+            bounds,
+            ctx,
+            &mut on_click,
+        )
+    }
+}
+
+/// The "+ ▾" control: "+" opens a new workspace in the active environment, and
+/// "▾" opens the environment menu (the environments, plus "New environment…").
+fn build_add_workspace_control(
+    app: &AppContext,
+    state: &UiSnapshot,
+    media: &MediaSnapshot,
+    media_actions: &MediaActions,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+
+    let on_add_space = actions.on_add_space.clone();
+    let plus = TopbarButton::new(
+        Icon::new("plus")
+            .with_size(14.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
     )
+    .with_size(24.0)
+    .with_on_click(move || (on_add_space.borrow_mut())())
+    .finish();
+
+    let trigger = TopbarButton::new(
+        Icon::new("chevron-down")
+            .with_size(12.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(20.0)
+    .finish();
+
+    let mut items = Vec::new();
+    let mut ids = Vec::new();
+    for m in &media.mediums {
+        let mut item = PopupMenuItem::new(m.label.clone()).with_icon("computer");
+        if m.id == media.selected_medium {
+            item = item.selected();
+        }
+        items.push(item);
+        ids.push(m.id.clone());
+    }
+    // The trailing "New environment…" entry; its index is `ids.len()`.
+    items.push(PopupMenuItem::new("New environment…").with_icon("plus"));
+
+    let on_select_medium = media_actions.on_select_medium.clone();
+    let on_open_add_medium = actions.on_open_add_medium.clone();
+    let menu = PopupMenu::new(trigger, items)
+        .with_open(state.env_selector_open.clone())
+        .with_on_select(move |index| {
+            if index < ids.len() {
+                (on_select_medium.borrow_mut())(ids[index].clone());
+            } else {
+                (on_open_add_medium.borrow_mut())();
+            }
+        })
+        .finish();
+
+    Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm * 0.25)
+        .with_child(plus)
+        .with_child(menu)
+        .finish()
 }
 
 /// Main content area: threads placeholder, terminal/chat, settings, or the

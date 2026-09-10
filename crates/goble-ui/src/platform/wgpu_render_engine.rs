@@ -10,11 +10,11 @@ const MAX_RECTS: usize = 4096;
 const MAX_TEXT_VERTICES: usize = 8192;
 const MAX_IMAGES: usize = 256;
 
-/// A run of geometry produced between two clip boundaries, drawn with one
-/// scissor rect. Geometry is accumulated across the whole frame into the four
-/// vertex buffers, then each batch is drawn as a slice of those buffers so that
-/// `queue.write_buffer` ordering stays correct (all writes happen once, before
-/// the single submit).
+/// A run of geometry produced between two clip boundaries or two primitive
+/// kinds, drawn with one scissor rect. Geometry is accumulated across the whole
+/// frame into the four vertex buffers, then each batch is drawn as a slice of
+/// those buffers so that `queue.write_buffer` ordering stays correct (all writes
+/// happen once, before the single submit).
 struct Batch {
     scissor: (u32, u32, u32, u32),
     rect_start: usize,
@@ -25,6 +25,37 @@ struct Batch {
     icon_end: usize,
     image_start: usize,
     image_end: usize,
+}
+
+/// The vertex buffer a render command contributes its geometry to. A batch
+/// draws one kind after another (rects, then text, then icons, then images), so
+/// a command whose kind differs from the previous one has to close the batch;
+/// otherwise a panel could not cover a label painted before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Primitive {
+    Rect,
+    Text,
+    Icon,
+    Image,
+}
+
+/// Returns the primitive that `command` starts a new batch with, or `None` when
+/// it continues the current batch (same kind) or only changes the clip stack.
+fn starts_new_batch(current: Option<Primitive>, command: &RenderCommand) -> Option<Primitive> {
+    let kind = match command {
+        RenderCommand::FillRect { .. }
+        | RenderCommand::FillRectFadeRight { .. }
+        | RenderCommand::StrokeRect { .. } => Primitive::Rect,
+        RenderCommand::DrawText { .. } => Primitive::Text,
+        RenderCommand::DrawIcon { .. } => Primitive::Icon,
+        RenderCommand::DrawImage { .. } => Primitive::Image,
+        RenderCommand::ClipRect(_) | RenderCommand::PopClip => return None,
+    };
+    if current == Some(kind) {
+        None
+    } else {
+        Some(kind)
+    }
 }
 
 /// One image quad to draw: the start vertex into the image vertex buffer plus
@@ -548,7 +579,19 @@ impl WgpuRenderEngine {
             }};
         }
 
+        // A batch draws its rects, then its text, then its icons and images, so
+        // geometry of different kinds must not share one batch: a panel painted
+        // after a label has to cover it (a tray over the surface below it).
+        // Close the batch whenever the incoming command changes kind, which
+        // makes the batches — and therefore the draw calls — follow the command
+        // order exactly.
+        let mut current: Option<Primitive> = None;
+
         for command in renderer.commands() {
+            if let Some(kind) = starts_new_batch(current, command) {
+                record_batch!();
+                current = Some(kind);
+            }
             match command {
                 RenderCommand::FillRect {
                     rect,
@@ -1196,3 +1239,73 @@ fn fs_image(in: VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(image_texture, image_sampler, in.uv);
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::color::ColorU;
+    use crate::geometry::{rectf, vec2f};
+
+    /// Mirrors the batching loop in [`Renderer`]'s engine: one batch per
+    /// primitive-kind change plus one per clip boundary.
+    fn batch_count(commands: &[RenderCommand]) -> usize {
+        let mut count = 0;
+        let mut current = None;
+        for command in commands {
+            if let Some(kind) = starts_new_batch(current, command) {
+                count += 1;
+                current = Some(kind);
+            }
+            if matches!(
+                command,
+                RenderCommand::ClipRect(_) | RenderCommand::PopClip
+            ) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// A batch draws all of its rects before any of its text/icons, so a panel
+    /// painted after a label must start a new batch or the label would draw
+    /// over it (a tray could never cover the surface below it).
+    #[test]
+    fn a_panel_painted_after_a_label_starts_a_new_batch() {
+        let white = ColorU::new(255, 255, 255, 255);
+        let mut renderer = Renderer::new();
+        renderer.draw_icon(vec2f(0.0, 0.0), "plus", 12.0, white);
+        renderer.fill_rect(rectf(0.0, 0.0, 10.0, 10.0), white);
+        assert_eq!(
+            batch_count(renderer.commands()),
+            2,
+            "the rect must not share a batch with the icon painted before it"
+        );
+    }
+
+    /// Commands of the same kind keep accumulating into one batch.
+    #[test]
+    fn consecutive_same_kind_commands_share_a_batch() {
+        let white = ColorU::new(255, 255, 255, 255);
+        let mut renderer = Renderer::new();
+        renderer.fill_rect(rectf(0.0, 0.0, 10.0, 10.0), white);
+        renderer.fill_rect(rectf(0.0, 12.0, 10.0, 10.0), white);
+        assert_eq!(batch_count(renderer.commands()), 1);
+    }
+
+    /// A clip boundary always closes a batch, and the kind flow continues after
+    /// it without an extra switch.
+    #[test]
+    fn a_clip_boundary_closes_a_batch_and_keeps_the_kind() {
+        let white = ColorU::new(255, 255, 255, 255);
+        let mut renderer = Renderer::new();
+        renderer.fill_rect(rectf(0.0, 0.0, 10.0, 10.0), white);
+        renderer.clip_rect(rectf(0.0, 0.0, 5.0, 5.0));
+        renderer.fill_rect(rectf(0.0, 0.0, 5.0, 5.0), white);
+        renderer.pop_clip();
+        assert_eq!(
+            batch_count(renderer.commands()),
+            3,
+            "rect, clipped rect, then the batch closed by the pop"
+        );
+    }
+}

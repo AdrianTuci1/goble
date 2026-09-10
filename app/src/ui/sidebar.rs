@@ -4,13 +4,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    AgentCardUi, AppContext, Axis, Container, ConversationEntry, ConversationListItem,
-    CrossAxisAlignment, Divider, EdgeInsets, Element, Fill, Flex, HoverButton, Icon, Label,
-    LabelSize, MainAxisSize, Scrollable, SearchInput, Spacer, Text, TopbarButton,
+    AgentCardUi, AppContext, Axis, Button, ButtonVariant, Container, ConversationEntry,
+    ConversationListItem, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill, Flex,
+    HoverButton, Icon, Label, LabelSize, MainAxisSize, Scrollable, SearchInput, Spacer, Text,
+    TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::{AiActions, ScreenActions, UiActions, UiSnapshot};
+
+/// How many conversation cards the collapsed sidebar shows before the
+/// "View all" button.
+const COLLAPSED_CONVERSATIONS: usize = 4;
 
 /// Left sidebar: search box, then "new conversation", then the list of
 /// conversation cards grouped into folders. Divider lines separate the sections.
@@ -93,10 +98,18 @@ pub fn build_sidebar(
         .filter(|entry| entry.workspace_routing == routing)
         .collect();
 
+    // Collapsed, the list is a short digest: a few cards plus a "View all"
+    // button. Expanding it shows every conversation in a scrollable region.
+    let shown: Vec<&ConversationEntry> = if state.conversations_expanded {
+        visible.clone()
+    } else {
+        visible.iter().take(COLLAPSED_CONVERSATIONS).copied().collect()
+    };
+
     // Group conversations into folders (preserving insertion order), each with
     // a small section header, then the items indented under it.
     let mut ordered: Vec<(String, Vec<&ConversationEntry>)> = Vec::new();
-    for entry in &visible {
+    for entry in &shown {
         if let Some((_, items)) = ordered.iter_mut().find(|(folder, _)| folder == &entry.folder) {
             items.push(entry);
         } else {
@@ -171,6 +184,23 @@ pub fn build_sidebar(
         }
     }
 
+    // "View all" (collapsed, when there is more to see) / "Show less"
+    // (expanded) — the switch that turns the list into a scrollable one.
+    if shown.len() < visible.len() || state.conversations_expanded {
+        let on_toggle = actions.on_toggle_conversations_expanded.clone();
+        let label = if state.conversations_expanded {
+            "Show less".to_string()
+        } else {
+            format!("View all ({})", visible.len())
+        };
+        list = list.with_child(
+            Button::new(Text::new(label).with_font_size(11.0).finish())
+                .with_variant(ButtonVariant::Ghost)
+                .with_on_click(move || (on_toggle.borrow_mut())())
+                .finish(),
+        );
+    }
+
     // Plugins footer -> opens the MCP connectors panel.
     let on_plugins = ai_actions.on_open_connectors.clone();
     let plugins_button = TopbarButton::new(
@@ -232,7 +262,17 @@ pub fn build_sidebar(
     column = column.with_child(header);
     column = column.with_child(Divider::horizontal().finish());
     column = column.with_child(section_label);
-    column = column.with_child(Scrollable::new(list.finish(), Axis::Vertical).finish());
+    // The list is the only flexible row: it takes the space left above the
+    // footer and scrolls inside it (its offset lives in app state, so it
+    // survives the per-frame rebuild).
+    column = column.with_child(
+        Expanded::new(
+            Scrollable::new(list.finish(), Axis::Vertical)
+                .with_state(state.sidebar_scroll.clone())
+                .finish(),
+        )
+        .finish(),
+    );
     column = column.with_child(Divider::horizontal().finish());
     column = column.with_child(footer);
     column = column.with_child(screen_footer);

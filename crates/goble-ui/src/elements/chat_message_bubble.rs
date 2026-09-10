@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::elements::chat_content::{
@@ -8,7 +9,7 @@ use crate::elements::chat_content::{
 use crate::elements::{
     resolve_inline_span, Border, Chip, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets,
     Element, Fill, Flex, Icon, InlineText, LayoutContext, MainAxisAlignment, PaintContext, Point,
-    SizeConstraint, TerminalBlock, Text, TextSpan,
+    SizeConstraint, TerminalBlock, TerminalFilter, Text, TextSpan,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -97,6 +98,12 @@ pub struct ChatMessageBubble {
     fragments: Vec<ChatFragment>,
     tool_calls: Vec<ToolCall>,
     on_action: Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
+    /// App-owned per-block filter state, keyed by a terminal block's content
+    /// key; shared so the tray's open flag + selection persist across frames.
+    terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
+    /// The whole-transcript filter, applied to every terminal block.
+    global_terminal_filter: Option<TerminalFilter>,
+    on_copy_terminal: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -109,6 +116,9 @@ impl ChatMessageBubble {
             fragments,
             tool_calls: Vec::new(),
             on_action: None,
+            terminal_filters: Rc::new(RefCell::new(HashMap::new())),
+            global_terminal_filter: None,
+            on_copy_terminal: None,
             root: None,
             size: None,
             origin: None,
@@ -122,6 +132,24 @@ impl ChatMessageBubble {
 
     pub fn with_on_action<F: FnMut(ChatAction) + 'static>(mut self, callback: F) -> Self {
         self.on_action = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_terminal_filters(
+        mut self,
+        terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
+    ) -> Self {
+        self.terminal_filters = terminal_filters;
+        self
+    }
+
+    pub fn with_global_terminal_filter(mut self, filter: Option<TerminalFilter>) -> Self {
+        self.global_terminal_filter = filter;
+        self
+    }
+
+    pub fn with_on_copy_terminal(mut self, on_copy: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>) -> Self {
+        self.on_copy_terminal = on_copy;
         self
     }
 
@@ -262,10 +290,29 @@ impl ChatMessageBubble {
                     column = column.with_child(chip);
                 }
                 ChatBlock::Terminal(data) => {
+                    // Per-block filter state lives in the app-owned shared map
+                    // (keyed by the block's content) so the tray stays open and
+                    // the selected filter survives the per-frame rebuild. Ensure
+                    // the entry on first render, then read it out.
+                    let filter = self
+                        .terminal_filters
+                        .borrow_mut()
+                        .entry(data.filter_key())
+                        .or_insert_with(TerminalFilter::default)
+                        .clone();
+                    let on_copy = self.on_copy_terminal.clone();
+                    let global_filter = self.global_terminal_filter.clone();
                     let block = TerminalBlock::new()
                         .with_title(data.title.clone())
                         .with_status(data.status.unwrap_or_default())
                         .with_lines(data.lines.clone())
+                        .with_filter(filter)
+                        .with_global_filter(global_filter)
+                        .with_on_copy(move |text| {
+                            if let Some(cb) = on_copy.as_ref() {
+                                (cb.borrow_mut())(text);
+                            }
+                        })
                         .finish();
                     column = column.with_child(block);
                 }
@@ -393,17 +440,34 @@ mod tests {
             .map(|r| r.commands().to_vec())
             .unwrap_or_default();
         // The invocation card draws a "cpu" icon (atlas name "prompt"); the
-        // tool-result block draws a "terminal" header icon.
+        // tool-result block draws a "terminal" header (copy control + title +
+        // output) — there is no leading terminal icon, so we check its copy
+        // control and its header/body text instead.
         let tool_icons = commands
             .iter()
             .filter(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name == "prompt"))
             .count();
-        let terminal_icons = commands
+        let copy_icons = commands
             .iter()
-            .filter(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name == "terminal"))
+            .filter(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name == "copy"))
             .count();
         assert!(tool_icons >= 1, "expected a tool invocation card icon");
-        assert!(terminal_icons >= 1, "expected a tool-result block icon");
+        assert!(copy_icons >= 1, "expected a terminal block copy control");
+        let text: Vec<&String> = commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawText { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            text.iter().any(|t| t.as_str() == "call_1"),
+            "expected the block title to be drawn, got {text:?}"
+        );
+        assert!(
+            text.iter().any(|t| t.as_str() == "file.txt"),
+            "expected the block output to be drawn, got {text:?}"
+        );
     }
 
     #[test]

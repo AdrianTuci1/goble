@@ -16,14 +16,15 @@ use goble_core::agent::Trigger;
 use goble_desktop_service::DesktopState;
 use goble_ui::{
     AgentCardUi, AskUserUi, ChatFragment, ChatMessage, ChatRole, ConversationEntry,
-    ConversationStatus, SettingsPage, TerminalData, TerminalLine, TerminalStatus, ToolCall,
+    ConversationStatus, ScrollState, SettingsPage, TerminalData, TerminalFilter, TerminalLine,
+    TerminalStatus, ToolCall,
 };
 
 use crate::terminal::TerminalRegistry;
 use crate::ui::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, HarnessEntry, LlmFormField, Pane,
-    PaneChatSnapshot, PaneKind, Space, TaskEntry, TimelineEntry, WorkflowEntry, WorkspaceRouting,
-    SIDEBAR_WIDTH,
+    PaneChatSnapshot, PaneKind, SettingsCategory, Space, TaskEntry, TimelineEntry, WorkflowEntry,
+    WorkspaceRouting, SIDEBAR_WIDTH,
 };
 
 /// The string form of a workspace routing choice as persisted on a chat.
@@ -251,6 +252,54 @@ pub struct PaneRuntime {
     pub screen_link: Option<String>,
 }
 
+/// The rich-input controls of one pane.
+///
+/// The workspace is only a container: everything the composer shows for one
+/// pty/agent session (auto-approve, model, git branch, harness mode and the
+/// dropdown open flags) lives here, keyed by pane id, so two pty/agent windows
+/// in the same workspace keep independent controls instead of sharing the
+/// window-global ones.
+#[derive(Clone, Debug)]
+pub struct PaneControls {
+    /// Whether this pane auto-approves `ask_user` questions.
+    pub auto_approve: bool,
+    /// This pane's model (shown as the composer's model label).
+    pub model: String,
+    /// This pane's git branch pill value.
+    pub branch: String,
+    /// Whether the harness is active for this pane: the rich input routes
+    /// turns to the agent instead of the plain shell. Toggled at the rich
+    /// input with Cmd+Enter; Esc returns the pane to the plain pty.
+    pub harness_mode: bool,
+    pub model_menu_open: Rc<RefCell<bool>>,
+    pub profile_menu_open: Rc<RefCell<bool>>,
+    pub harness_menu_open: Rc<RefCell<bool>>,
+    pub dir_menu_open: Rc<RefCell<bool>>,
+    pub branch_menu_open: Rc<RefCell<bool>>,
+}
+
+impl PaneControls {
+    pub fn new(model: String, auto_approve: bool, branch: String) -> Self {
+        Self {
+            auto_approve,
+            model,
+            branch,
+            harness_mode: false,
+            model_menu_open: Rc::new(RefCell::new(false)),
+            profile_menu_open: Rc::new(RefCell::new(false)),
+            harness_menu_open: Rc::new(RefCell::new(false)),
+            dir_menu_open: Rc::new(RefCell::new(false)),
+            branch_menu_open: Rc::new(RefCell::new(false)),
+        }
+    }
+}
+
+impl Default for PaneControls {
+    fn default() -> Self {
+        Self::new(String::new(), false, String::new())
+    }
+}
+
 #[derive(Clone)]
 pub struct UiState {
     pub current_tab: AppTab,
@@ -299,9 +348,17 @@ pub struct UiState {
     /// Whether the agent/window is currently fullscreen (borderless). Lives in
     /// app state so it survives the per-frame element rebuild.
     pub fullscreen: bool,
-    /// App-owned open flag for the agent header's 3-dots menu, so its open/closed
-    /// state survives the per-frame element rebuild.
-    pub agent_header_menu_open: Rc<RefCell<bool>>,
+    /// App-owned open flags for each pane's agent-header 3-dots menu, keyed by
+    /// pane id. Per-pane (rather than a single shared flag) so opening the tray
+    /// in one split pane does not open it in the other panes sharing the view.
+    pub agent_header_menus: HashMap<u64, Rc<RefCell<bool>>>,
+    /// Per-terminal-block filter state (open flag + selected filter), keyed by
+    /// the block's content key. Shared with the UI so the filter tray's open
+    /// state + selection survive the per-frame element rebuild.
+    pub terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
+    /// Whole-transcript terminal filter (open flag + selected filter) per pane,
+    /// so the filter bar of one pty/agent pane does not open in its sibling.
+    pub terminal_global_filters: HashMap<u64, TerminalFilter>,
     pub crons_open: bool,
     pub crons: Vec<CronEntry>,
     /// Harness workflows (real daemon workflow store).
@@ -328,6 +385,24 @@ pub struct UiState {
     pub settings_cluster_configured: bool,
     pub settings_authorized_keys: Vec<(String, String, String)>,
     pub settings_vault_unlocked: bool,
+    /// Whether the Settings overlay panel is open (replaces the old Settings tab).
+    pub settings_overlay_open: bool,
+    /// Active settings category in the overlay.
+    pub settings_category: SettingsCategory,
+    /// Mouse: invert the wheel/scroll direction.
+    pub settings_invert_scroll: bool,
+    /// Mouse: scroll speed multiplier (1..=100, default 50).
+    pub settings_scroll_speed: i32,
+    /// Editor: font size as a whole-app zoom factor (mirrors `ui_zoom`).
+    pub settings_font_size: f32,
+    /// Custom theme color overrides as `#rrggbb` hex, set via the color wheel
+    /// pickers in Settings→Appearance. `None` uses the built-in theme color.
+    pub theme_primary: Option<String>,
+    pub theme_secondary: Option<String>,
+    pub theme_accent: Option<String>,
+    /// Active color-wheel drag (which picker + region), owned here so the
+    /// per-frame element rebuild keeps the drag alive.
+    pub theme_color_drag: Rc<RefCell<Option<crate::ui::color_picker::ColorPickerDrag>>>,
     /// First-run: whether the "configure a model key" banner is shown in chat.
     pub show_llm_key_banner: bool,
     /// First-run: whether the "local or remote workspace?" choice is shown.
@@ -348,6 +423,24 @@ pub struct UiState {
     pub sidebar_dragging: bool,
     pub sidebar_drag_origin_x: f32,
     pub sidebar_drag_start_width: f32,
+    /// Whether the left conversation sidebar is shown. Toggled by the topbar's
+    /// sidebar button; the main area fills the window when it is hidden.
+    pub sidebar_visible: bool,
+    /// Whether the sidebar's conversation list shows every conversation. While
+    /// false only a few cards are drawn, followed by a "View all" button.
+    pub conversations_expanded: bool,
+    /// Scroll offset of the sidebar's conversation list (owned here so it
+    /// survives the per-frame element rebuild).
+    pub sidebar_scroll: Rc<RefCell<ScrollState>>,
+    /// Scroll offset of the settings overlay's content pane.
+    pub settings_scroll: Rc<RefCell<ScrollState>>,
+    /// Whether the topbar workspace frame is in inline-rename mode (entered by
+    /// double-clicking the active space's name).
+    pub space_rename_editing: bool,
+    /// The in-progress space name while renaming.
+    pub space_rename_draft: String,
+    /// Whether the rename field holds focus.
+    pub space_rename_focused: bool,
     /// Per-card interaction state (hover / delete menu), owned here so it
     /// survives the per-frame element rebuild. Keyed by conversation id.
     pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,
@@ -381,6 +474,10 @@ pub struct UiState {
     pub pane_sessions: HashMap<u64, PaneSession>,
     /// Runtime per-pane transcript/ask/queued/busy state (not persisted).
     pub pane_runtime: HashMap<u64, PaneRuntime>,
+    /// Per-pane rich-input controls (auto-approve, model, branch, harness mode,
+    /// dropdown open flags), keyed by pane id so two pty/agent panes in the
+    /// same workspace never share them.
+    pub pane_controls: HashMap<u64, PaneControls>,
     /// Live per-pane terminal sessions (PTY child + output buffer) and the local
     /// input mirrors used to route `Cmd+Enter` to the agent. Not persisted; a
     /// terminal pane is re-spawned in its cwd on next render.
@@ -407,6 +504,8 @@ pub struct UiState {
     pub add_medium_draft: String,
     /// Whether the add-medium dialog's text field is focused.
     pub add_medium_focused: bool,
+    /// App-owned open flag for the terminal pane's "Run agent" menu.
+    pub terminal_run_agent_menu_open: Rc<RefCell<bool>>,
     /// Whether the user has completed (or dismissed) the first-run flow. Kept
     /// in the backend store so a returning run skips the onboarding overlays
     /// and the getting-started tip.
@@ -447,7 +546,9 @@ impl UiState {
             auto_approve: false,
             right_sidebar_open: false,
             fullscreen: false,
-            agent_header_menu_open: Rc::new(RefCell::new(false)),
+            agent_header_menus: HashMap::new(),
+            terminal_filters: Rc::new(RefCell::new(HashMap::new())),
+            terminal_global_filters: HashMap::new(),
             crons_open: false,
             crons: Vec::new(),
             workflows: Vec::new(),
@@ -469,6 +570,15 @@ impl UiState {
             settings_cluster_configured: false,
             settings_authorized_keys: Vec::new(),
             settings_vault_unlocked: false,
+            settings_overlay_open: false,
+            settings_category: SettingsCategory::Appearance,
+            settings_invert_scroll: false,
+            settings_scroll_speed: 50,
+            settings_font_size: 1.0,
+            theme_primary: None,
+            theme_secondary: None,
+            theme_accent: None,
+            theme_color_drag: Rc::new(RefCell::new(None)),
             show_llm_key_banner: false,
             show_workspace_choice: false,
             workspace_routing: None,
@@ -483,6 +593,13 @@ impl UiState {
             sidebar_dragging: false,
             sidebar_drag_origin_x: 0.0,
             sidebar_drag_start_width: SIDEBAR_WIDTH,
+            sidebar_visible: true,
+            conversations_expanded: false,
+            sidebar_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            settings_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            space_rename_editing: false,
+            space_rename_draft: String::new(),
+            space_rename_focused: false,
             agent_cards: HashMap::new(),
             new_agent_hover: Rc::new(RefCell::new(false)),
             spaces: default_spaces(),
@@ -501,6 +618,7 @@ impl UiState {
                 path: current_dir_display(),
             })]),
             pane_runtime: HashMap::new(),
+            pane_controls: HashMap::new(),
             terminal: Rc::new(RefCell::new(TerminalRegistry::default())),
             command_palette_open: false,
             command_palette_query: String::new(),
@@ -511,6 +629,7 @@ impl UiState {
             add_medium_dialog_open: false,
             add_medium_draft: String::new(),
             add_medium_focused: false,
+            terminal_run_agent_menu_open: Rc::new(RefCell::new(false)),
             onboarding_done: false,
         };
         state.refresh_from_desktop(desktop);
@@ -791,6 +910,17 @@ impl UiState {
             })
     }
 
+    /// Whether `pane_id` owns a conversation of its own (rather than lazily
+    /// following the sidebar selection, as the initial pane does). A pane with
+    /// no conversation of its own — a freshly opened PTY workspace — gets one
+    /// created on its first agent turn.
+    pub fn pane_owns_conversation(&self, pane_id: u64) -> bool {
+        self.pane_sessions
+            .get(&pane_id)
+            .map(|s| !s.conversation_id.is_empty())
+            .unwrap_or(false)
+    }
+
     /// Refresh one pane's runtime state (transcript + suspended ask) from the
     /// store conversation `conv`.
     fn refresh_pane(&mut self, pane_id: u64, conv: &str, desktop: &DesktopState) {
@@ -989,6 +1119,104 @@ impl UiState {
         out
     }
 
+    /// This pane's rich-input controls, creating the entry (seeded from the
+    /// window globals) on first use.
+    pub fn pane_controls_mut(&mut self, pane_id: u64) -> &mut PaneControls {
+        let model = self.selected_model.clone();
+        let auto_approve = self.auto_approve;
+        let branch = self.composer_branch.clone();
+        self.pane_controls
+            .entry(pane_id)
+            .or_insert_with(|| PaneControls::new(model, auto_approve, branch))
+    }
+
+    /// A copy of this pane's rich-input controls. A pane that has no entry yet
+    /// reads the window globals, so the first frame shows sane values.
+    pub fn pane_controls(&self, pane_id: u64) -> PaneControls {
+        self.pane_controls.get(&pane_id).cloned().unwrap_or_else(|| {
+            PaneControls::new(
+                self.selected_model.clone(),
+                self.auto_approve,
+                self.composer_branch.clone(),
+            )
+        })
+    }
+
+    /// Ensure every rendered leaf pane has a controls entry, so the composer
+    /// always reads a stable per-pane value rather than the window globals.
+    pub fn ensure_pane_controls(&mut self) {
+        let mut ids = Vec::new();
+        for space in &self.spaces {
+            collect_leaf_pane_ids(&space.root, &mut ids);
+        }
+        ids.extend(self.pane_sessions.keys().copied());
+        ids.push(self.active_pane_id);
+        for id in ids {
+            self.pane_controls_mut(id);
+            // The whole-transcript filter bar is per pane too (its open flag and
+            // selection live in app state so they survive the rebuild).
+            self.terminal_global_filters
+                .entry(id)
+                .or_insert_with(TerminalFilter::default);
+        }
+    }
+
+    /// Set one pane's working directory and branch pill without touching the
+    /// window globals unless it is the active pane.
+    pub fn set_pane_path(&mut self, pane_id: u64, path: String) {
+        let branch = current_branch(&path);
+        match self.pane_sessions.get_mut(&pane_id) {
+            Some(session) => session.path = path.clone(),
+            None => {
+                self.pane_sessions.insert(
+                    pane_id,
+                    PaneSession {
+                        conversation_id: String::new(),
+                        draft: String::new(),
+                        path: path.clone(),
+                    },
+                );
+            }
+        }
+        {
+            let controls = self.pane_controls_mut(pane_id);
+            controls.branch = branch.clone();
+            let flag = controls.dir_menu_open.clone();
+            *flag.borrow_mut() = false;
+        }
+        if pane_id == self.active_pane_id {
+            self.composer_path = path;
+            self.composer_branch = branch;
+        }
+    }
+
+    /// Get (creating if needed) the app-owned open flag for `pane_id`'s
+    /// agent-header 3-dots menu. Keyed per pane so opening the tray in one
+    /// split pane does not open it in the others sharing the view.
+    pub fn agent_menu_open(&mut self, pane_id: u64) -> Rc<RefCell<bool>> {
+        self.agent_header_menus
+            .entry(pane_id)
+            .or_insert_with(|| Rc::new(RefCell::new(false)))
+            .clone()
+    }
+
+    /// Ensure a per-pane agent-header menu flag exists for every rendered leaf
+    /// pane (walking the space tree), plus any session key and the active pane,
+    /// so the UI can always read a stable app-owned flag and the tray's
+    /// open/closed state persists across the per-frame rebuild. Called before
+    /// the snapshot is built.
+    pub fn ensure_agent_menu_flags(&mut self) {
+        let mut ids = Vec::new();
+        for space in &self.spaces {
+            collect_leaf_pane_ids(&space.root, &mut ids);
+        }
+        ids.extend(self.pane_sessions.keys().copied());
+        ids.push(self.active_pane_id);
+        for id in ids {
+            self.agent_menu_open(id);
+        }
+    }
+
     pub fn refresh_crons(&mut self, desktop: &DesktopState) {
         self.crons = desktop
             .list_workflows()
@@ -1011,6 +1239,12 @@ impl UiState {
 
     /// Reload settings data (workers, cluster, vault, LLM) from the backend.
     pub fn refresh_settings(&mut self, desktop: &DesktopState) {
+        // Theme is persisted in `~/.goble/config.toml`.
+        let theme = desktop.config().theme;
+        self.settings_dark_mode = theme.dark;
+        self.theme_primary = theme.primary;
+        self.theme_secondary = theme.secondary;
+        self.theme_accent = Some(theme.accent);
         self.settings_workers = desktop
             .list_workers()
             .into_iter()
@@ -1150,7 +1384,9 @@ impl UiState {
             auto_approve: false,
             right_sidebar_open: false,
             fullscreen: false,
-            agent_header_menu_open: Rc::new(RefCell::new(false)),
+            agent_header_menus: HashMap::new(),
+            terminal_filters: Rc::new(RefCell::new(HashMap::new())),
+            terminal_global_filters: HashMap::new(),
             crons_open: false,
             crons,
             workflows: Vec::new(),
@@ -1172,6 +1408,15 @@ impl UiState {
             settings_cluster_configured: false,
             settings_authorized_keys: Vec::new(),
             settings_vault_unlocked: false,
+            settings_overlay_open: false,
+            settings_category: SettingsCategory::Appearance,
+            settings_invert_scroll: false,
+            settings_scroll_speed: 50,
+            settings_font_size: 1.0,
+            theme_primary: None,
+            theme_secondary: None,
+            theme_accent: None,
+            theme_color_drag: Rc::new(RefCell::new(None)),
             show_llm_key_banner: false,
             show_workspace_choice: false,
             workspace_routing: None,
@@ -1186,6 +1431,13 @@ impl UiState {
             sidebar_dragging: false,
             sidebar_drag_origin_x: 0.0,
             sidebar_drag_start_width: SIDEBAR_WIDTH,
+            sidebar_visible: true,
+            conversations_expanded: false,
+            sidebar_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            settings_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            space_rename_editing: false,
+            space_rename_draft: String::new(),
+            space_rename_focused: false,
             agent_cards: HashMap::new(),
             new_agent_hover: Rc::new(RefCell::new(false)),
             spaces: default_spaces(),
@@ -1214,6 +1466,7 @@ impl UiState {
                     screen_link: None,
                 },
             )]),
+            pane_controls: HashMap::new(),
             terminal: Rc::new(RefCell::new(TerminalRegistry::default())),
             command_palette_open: false,
             command_palette_query: String::new(),
@@ -1224,6 +1477,7 @@ impl UiState {
             add_medium_dialog_open: false,
             add_medium_draft: String::new(),
             add_medium_focused: false,
+            terminal_run_agent_menu_open: Rc::new(RefCell::new(false)),
             onboarding_done: false,
         }
     }
@@ -1273,6 +1527,8 @@ impl UiState {
                 .entry(id)
                 .or_insert_with(|| Rc::new(RefCell::new(false)));
         }
+        // Seed the per-pane rich-input controls for the restored tree as well.
+        self.ensure_pane_controls();
     }
 
     /// Persist the pane layout (spaces + active space/pane) so it survives an
@@ -1288,6 +1544,21 @@ impl UiState {
             if let Err(e) = desktop.set_ui_panes(&json) {
                 log::warn!("failed to persist pane state: {e}");
             }
+        }
+    }
+
+    /// Rename the active space, persisting the pane layout. A blank name is
+    /// ignored so the frame can never be left unnamed.
+    pub fn rename_active_space(&mut self, name: String, desktop: Option<&DesktopState>) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        if let Some(space) = self.spaces.get_mut(self.active_space) {
+            space.name = name.to_string();
+        }
+        if let Some(desktop) = desktop {
+            self.save_panes(desktop);
         }
     }
 
@@ -1594,6 +1865,52 @@ mod pane_session_tests {
         // Distinct draft/path per pane => independent sessions.
         assert_eq!(snap.get(&1).unwrap().composer_draft, "d1");
         assert_eq!(snap.get(&2).unwrap().composer_draft, "d2");
+    }
+
+    #[test]
+    fn pane_controls_are_isolated_per_pane() {
+        let mut state = UiState::mock();
+        state.active_pane_id = 1;
+        state.selected_model = "global-model".into();
+        {
+            let c1 = state.pane_controls_mut(1);
+            c1.model = "m1".into();
+            c1.auto_approve = true;
+            c1.harness_mode = true;
+            let flag = c1.model_menu_open.clone();
+            *flag.borrow_mut() = true;
+        }
+        {
+            let c2 = state.pane_controls_mut(2);
+            c2.model = "m2".into();
+        }
+        // Two pty/agent panes in one workspace never share the composer state.
+        assert_eq!(state.pane_controls(1).model, "m1");
+        assert_eq!(state.pane_controls(2).model, "m2");
+        assert!(state.pane_controls(1).auto_approve);
+        assert!(!state.pane_controls(2).auto_approve);
+        assert!(state.pane_controls(1).harness_mode);
+        assert!(!state.pane_controls(2).harness_mode);
+        let menu_1 = state.pane_controls(1).model_menu_open;
+        let menu_2 = state.pane_controls(2).model_menu_open;
+        assert!(*menu_1.borrow(), "pane 1's model menu is open");
+        assert!(!*menu_2.borrow(), "pane 2's model menu stays closed");
+        // A pane with no entry yet reads the window globals.
+        assert_eq!(state.pane_controls(99).model, "global-model");
+        // Every rendered pane gets an entry when the snapshot is prepared.
+        state.spaces = vec![Space::new(
+            "A",
+            Pane::Split {
+                id: 10,
+                dir: crate::ui::SplitDir::Vertical,
+                ratio: 0.5,
+                first: Box::new(Pane::Leaf { id: 1, kind: PaneKind::Terminal }),
+                second: Box::new(Pane::Leaf { id: 2, kind: PaneKind::Terminal }),
+            },
+        )];
+        state.ensure_pane_controls();
+        assert!(state.pane_controls.contains_key(&1));
+        assert!(state.pane_controls.contains_key(&2));
     }
 }
 

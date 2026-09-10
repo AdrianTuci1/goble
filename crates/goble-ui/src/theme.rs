@@ -8,6 +8,15 @@ pub struct Theme {
     pub name: &'static str,
     pub colors: ColorScheme,
     pub accent: AccentColor,
+    /// Optional override for the main foreground (text) color. When set, the
+    /// `Text` token resolves to this instead of `colors.text`.
+    pub primary: Option<ColorU>,
+    /// Optional override for the secondary foreground (muted) color. When set,
+    /// the `Muted` token resolves to this instead of `colors.muted`.
+    pub secondary: Option<ColorU>,
+    /// Optional override for the accent/brand color. When set, the `Accent`
+    /// token resolves to this instead of `accent.color()`.
+    pub custom_accent: Option<ColorU>,
     pub font: FontFamily,
     pub density: Density,
     pub radius: Radius,
@@ -34,6 +43,9 @@ impl Theme {
                 badge: ColorU::hex(0xe01e5a),
             },
             accent: AccentColor::Blue,
+            primary: None,
+            secondary: None,
+            custom_accent: None,
             font: FontFamily::System,
             density: Density::Default,
             radius: Radius::Default,
@@ -60,6 +72,9 @@ impl Theme {
                 badge: ColorU::hex(0xe01e5a),
             },
             accent: AccentColor::Blue,
+            primary: None,
+            secondary: None,
+            custom_accent: None,
             font: FontFamily::System,
             density: Density::Default,
             radius: Radius::Default,
@@ -86,11 +101,28 @@ impl Theme {
                 badge: ColorU::hex(0xe01e5a),
             },
             accent: AccentColor::Blue,
+            primary: None,
+            secondary: None,
+            custom_accent: None,
             font: FontFamily::System,
             density: Density::Default,
             radius: Radius::Default,
             spacing: Spacing::default(),
         }
+    }
+
+    /// Return a copy with the custom primary/secondary/accent overrides applied
+    /// (`None` keeps the theme's built-in color).
+    pub fn with_overrides(
+        mut self,
+        primary: Option<ColorU>,
+        secondary: Option<ColorU>,
+        accent: Option<ColorU>,
+    ) -> Self {
+        self.primary = primary;
+        self.secondary = secondary;
+        self.custom_accent = accent;
+        self
     }
 
     /// Resolve the accent color to a concrete [`ColorU`].
@@ -105,11 +137,11 @@ impl Theme {
             ColorToken::Surface => self.colors.surface,
             ColorToken::SurfaceRaised => self.colors.surface_raised,
             ColorToken::Border => self.colors.border,
-            ColorToken::Text => self.colors.text,
-            ColorToken::Muted => self.colors.muted,
+            ColorToken::Text => self.primary.unwrap_or(self.colors.text),
+            ColorToken::Muted => self.secondary.unwrap_or(self.colors.muted),
             ColorToken::Hover => self.colors.hover,
             ColorToken::Selected => self.colors.selected,
-            ColorToken::Accent => self.accent_color(),
+            ColorToken::Accent => self.custom_accent.unwrap_or_else(|| self.accent.color()),
             ColorToken::Success => self.colors.success,
             ColorToken::Warning => self.colors.warning,
             ColorToken::Error => self.colors.error,

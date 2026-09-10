@@ -1,15 +1,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Chip, Clipped, Container, CrossAxisAlignment, EdgeInsets, Element,
-    Expanded, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext,
-    Padding, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, SizeConstraint, Text, TextArea,
-    Tooltip, TooltipPosition,
+    AppContext, Chip, Clipped, ComposerButton, ConstrainedBox, Container, ContextPill,
+    CrossAxisAlignment, EdgeInsets, Element, Expanded, Flex, Icon, LayoutContext,
+    MainAxisAlignment, MainAxisSize, PaintContext, Padding, PillTraySide, Point, PopupMenu,
+    PopupMenuItem, PopupMenuPosition, SizeConstraint, Text, TextArea, Tooltip, TooltipPosition,
 };
 use crate::event::{DispatchedEvent, ModifiersState};
-use crate::geometry::{rectf, vec2f, Vector2F};
+use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
 
 pub struct ChatComposer {
@@ -320,6 +319,8 @@ impl ChatComposer {
     /// and branch selectors. Content-sized; when `items` is non-empty it is
     /// wrapped in the shared [`PopupMenu`] so the app-owned `open` flag survives
     /// the per-frame rebuild, otherwise it renders as a plain pill.
+    /// The agent's footer pills are the shared [`ContextPill`] (a terminal pane
+    /// shows the same pill in its topbar), so the two surfaces stay identical.
     fn context_pill(
         &self,
         app: &AppContext,
@@ -330,54 +331,30 @@ impl ChatComposer {
         on_select: &Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
         tooltip: &str,
     ) -> Box<dyn Element> {
-        let child = || {
-            Flex::row()
-                .with_spacing(6.0)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_child(
-                    Icon::new(icon)
-                        .with_size(14.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
-                .with_child(
-                    Text::new(label.to_string())
-                        .with_theme_color(ColorToken::Muted, app)
-                        .with_font_size(12.0)
-                        .with_max_lines(1)
-                        .finish(),
-                )
-                .with_child(
-                    Icon::new("chevron-down")
-                        .with_size(14.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
-                .finish()
-        };
-        let trigger = Tooltip::new(ComposerButton::new(child()).with_height(28.0).finish(), tooltip)
-            .with_position(TooltipPosition::Above)
-            .finish();
+        let mut pill = ContextPill::new(icon, label.to_string())
+            .with_tooltip(tooltip)
+            .with_tray_side(PillTraySide::Above);
         if !items.is_empty() {
-            let mut menu = PopupMenu::new(trigger, items.to_vec())
-                .with_open(open)
-                .with_position(PopupMenuPosition::Above);
-            if let Some(cb) = on_select.as_ref() {
-                let cb = cb.clone();
-                menu = menu.with_on_select(move |idx| (cb.borrow_mut())(idx));
-            }
-            menu.finish()
-        } else {
-            trigger
+            let cb = on_select
+                .clone()
+                .unwrap_or_else(|| Rc::new(RefCell::new(|_: usize| {})));
+            pill = pill.with_menu(items.to_vec(), open, move |idx| (cb.borrow_mut())(idx));
         }
+        pill.finish(app)
     }
 
+    /// Rebuild the rich-input tree. The composer hugs its content: the textarea
+    /// grows with the draft up to a cap, and the footer pills sit just below it,
+    /// so the rich input never fills the whole pane. This keeps the message
+    /// transcript visible and lets the user see the terminal/agent surface
+    /// instead of a tall input box.
     fn rebuild(&mut self, app: &AppContext) {
         let sm = app.theme.spacing_px(SpacingToken::Sm);
         let md = app.theme.spacing_px(SpacingToken::Md);
 
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Min)
             .with_spacing(sm);
 
         if !self.attachments.is_empty() {
@@ -426,7 +403,7 @@ impl ChatComposer {
         let textarea = TextArea::new()
             .with_value(self.value.borrow().clone())
             .with_placeholder(self.placeholder.clone())
-            .with_min_height(80.0)
+            .with_min_height(48.0)
             .with_focused(self.focused)
             .with_on_change(move |text| {
                 *value.borrow_mut() = text.clone();
@@ -446,7 +423,14 @@ impl ChatComposer {
             })
             .with_on_submit(move |mods| (send_for_submit.borrow_mut())(mods))
             .finish();
-        column = column.with_child(textarea);
+        // Cap the textarea so the rich input hugs its content (a few lines of
+        // draft + the footer pills) instead of expanding to fill the pane.
+        column = column.with_child(
+            ConstrainedBox::new(textarea)
+                .with_min_height(48.0)
+                .with_max_height(160.0)
+                .finish(),
+        );
 
         // Footer: attach (+) on the left; model, profile (and stop while
         // streaming) on the right. No send button. The footer is bounded to the
@@ -713,111 +697,6 @@ impl Element for ChatComposer {
             .as_mut()
             .map(|root| root.dispatch_event(event, ctx, app))
             .unwrap_or(false)
-    }
-}
-
-/// A refined, low-emphasis pill button used in the composer footer.
-///
-/// Mirrors the warp-new button style: transparent by default, a subtle rounded
-/// hover overlay, and a fixed height with auto width for icon+label content.
-struct ComposerButton {
-    child: Box<dyn Element>,
-    state: InteractiveState,
-    height: f32,
-    on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
-    size: Option<Vector2F>,
-    origin: Option<Point>,
-}
-
-impl ComposerButton {
-    fn new(child: Box<dyn Element>) -> Self {
-        Self {
-            child,
-            state: InteractiveState::default(),
-            height: 28.0,
-            on_click: None,
-            size: None,
-            origin: None,
-        }
-    }
-
-    fn with_height(mut self, height: f32) -> Self {
-        self.height = height;
-        self
-    }
-
-    fn with_on_click<F: FnMut() + 'static>(mut self, callback: F) -> Self {
-        self.on_click = Some(Rc::new(RefCell::new(callback)));
-        self
-    }
-}
-
-impl Element for ComposerButton {
-    fn layout(
-        &mut self,
-        constraint: SizeConstraint,
-        ctx: &mut LayoutContext,
-        app: &AppContext,
-    ) -> Vector2F {
-        let h_pad = 10.0;
-        let inner_max = vec2f(
-            (constraint.max.x - h_pad * 2.0).max(0.0),
-            (self.height - 4.0).max(0.0),
-        );
-        let child_size = self
-            .child
-            .layout(SizeConstraint::new(vec2f(0.0, 0.0), inner_max), ctx, app);
-        let size = vec2f(child_size.x + h_pad * 2.0, self.height);
-        self.size = Some(size);
-        size
-    }
-
-    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
-        self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        let size = self.size.unwrap_or(Vector2F::zero());
-        let rect = rectf(origin.x, origin.y, size.x, size.y);
-        let hovered = ctx.hovered(rect);
-        if let Some(renderer) = ctx.renderer.as_mut() {
-            // Rich-input pills are flat: no filled box or 1px border by default,
-            // so they do not look inset inside the composer. Only a rounded
-            // hover overlay is drawn so the trigger still gives feedback.
-            if hovered {
-                renderer.fill_rounded_rect(rect, app.theme.color(ColorToken::Hover), 6.0);
-            }
-        }
-        let child_size = self.child.size().unwrap_or(Vector2F::zero());
-        let offset = vec2f(
-            (size.x - child_size.x).max(0.0) / 2.0,
-            (size.y - child_size.y).max(0.0) / 2.0,
-        );
-        self.child.paint(origin + offset, ctx, app);
-    }
-
-    fn size(&self) -> Option<Vector2F> {
-        self.size
-    }
-
-    fn origin(&self) -> Option<Point> {
-        self.origin
-    }
-
-    fn dispatch_event(
-        &mut self,
-        event: &DispatchedEvent,
-        ctx: &mut crate::elements::EventContext,
-        _app: &AppContext,
-    ) -> bool {
-        let bounds = match self.bounds() {
-            Some(b) => b,
-            None => return false,
-        };
-        let cb = self.on_click.clone();
-        let mut on_click = move || {
-            if let Some(cb) = cb.as_ref() {
-                (cb.borrow_mut())();
-            }
-        };
-        handle_mouse_event(&mut self.state, event, bounds, ctx, &mut on_click)
     }
 }
 

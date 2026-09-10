@@ -1,20 +1,23 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 
 /// Internal SQLite store for agents, chats, teams, execution traces, MCP registry cache and settings.
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    path: Option<PathBuf>,
 }
 
 impl Store {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let conn = Connection::open(path).context("failed to open sqlite store")?;
+        let conn = Connection::open(path.as_ref()).context("failed to open sqlite store")?;
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
+            path: Some(path.as_ref().to_path_buf()),
         };
         store.migrate()?;
         Ok(store)
@@ -24,9 +27,15 @@ impl Store {
         let conn = Connection::open_in_memory().context("failed to open in-memory sqlite store")?;
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
+            path: None,
         };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// Path to the underlying SQLite database, if any.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     fn migrate(&self) -> Result<()> {
@@ -77,6 +86,7 @@ impl Store {
                 model TEXT,
                 agent_id TEXT,
                 worker_id TEXT,
+                workspace_routing TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             ) STRICT;
@@ -136,6 +146,15 @@ impl Store {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             ) STRICT;
+
+            CREATE TABLE IF NOT EXISTS access_grants (
+                id TEXT PRIMARY KEY,
+                principal_id TEXT NOT NULL,
+                grant TEXT NOT NULL,
+                scope TEXT,
+                created_at TEXT NOT NULL
+            ) STRICT;
+            CREATE INDEX IF NOT EXISTS idx_access_grants_principal ON access_grants(principal_id);
 
             CREATE TABLE IF NOT EXISTS workflows (
                 id TEXT PRIMARY KEY,
@@ -201,6 +220,27 @@ impl Store {
                 model TEXT NOT NULL,
                 temperature REAL
             ) STRICT;
+            CREATE TABLE IF NOT EXISTS credentials (
+                name TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                category TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT NOT NULL
+            ) STRICT;
+
+            CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp DESC);
+
+            CREATE TABLE IF NOT EXISTS agent_memory (
+                agent_id TEXT PRIMARY KEY,
+                version INTEGER NOT NULL,
+                memory TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            ) STRICT;
 
             CREATE TABLE IF NOT EXISTS device_identities (
                 id TEXT PRIMARY KEY,
@@ -229,6 +269,22 @@ impl Store {
             "#,
         )
         .context("failed to run migrations")?;
+
+        // `CREATE TABLE IF NOT EXISTS` does not add a column to a table that
+        // already exists, so add `workspace_routing` to pre-existing `chats`
+        // tables (created before the column existed).
+        let has_routing: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'workspace_routing'",
+                [],
+                |r| r.get(0),
+            )
+            .context("failed to check for chats.workspace_routing")?;
+        if !has_routing {
+            conn.execute("ALTER TABLE chats ADD COLUMN workspace_routing TEXT", [])
+                .context("failed to add chats.workspace_routing")?;
+        }
+
         Ok(())
     }
 
@@ -433,19 +489,143 @@ impl Store {
         Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
     }
 
-    pub fn set_cluster_identity(&self, snapshot: &crate::cluster_key::ClusterIdentitySnapshot) -> Result<()> {
-        let value = serde_json::to_string(snapshot).context("failed to serialize cluster identity")?;
+    /// Upsert a named credential (API key, token, secret). The value is stored
+    /// in plaintext, consistent with `llm_settings` and `settings`; the harness
+    /// exposes only the *name* to the model and substitutes the value at
+    /// execution time so it never appears in the transcript.
+    pub fn set_credential(&self, name: &str, value: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO credentials (name, value) VALUES (?1, ?2)
+             ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+            params![name, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_credential(&self, name: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT value FROM credentials WHERE name = ?1")?;
+        let mut rows = stmt.query(params![name])?;
+        Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
+    }
+
+    pub fn list_credential_names(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT name FROM credentials ORDER BY name")?;
+        let mut rows = stmt.query([])?;
+        let mut names = Vec::new();
+        while let Some(row) = rows.next()? {
+            names.push(row.get::<_, String>(0)?);
+        }
+        Ok(names)
+    }
+
+    /// Store the encrypted cluster wallet (IdentityWallet) under a dedicated
+    /// settings key so it does not collide with the legacy ClusterIdentitySnapshot.
+    pub fn set_cluster_wallet(
+        &self,
+        wallet: &crate::encrypted_wallet::EncryptedWallet,
+    ) -> Result<()> {
+        let value = serde_json::to_string(wallet).context("failed to serialize cluster wallet")?;
+        self.set_setting("cluster_wallet", &value)
+    }
+
+    pub fn get_cluster_wallet(&self) -> Result<Option<crate::encrypted_wallet::EncryptedWallet>> {
+        match self.get_setting("cluster_wallet")? {
+            Some(value) => {
+                let wallet =
+                    serde_json::from_str(&value).context("failed to deserialize cluster wallet")?;
+                Ok(Some(wallet))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_cluster_identity(
+        &self,
+        snapshot: &crate::cluster_key::ClusterIdentitySnapshot,
+    ) -> Result<()> {
+        let value =
+            serde_json::to_string(snapshot).context("failed to serialize cluster identity")?;
         self.set_setting("cluster_identity", &value)
     }
 
-    pub fn get_cluster_identity(&self) -> Result<Option<crate::cluster_key::ClusterIdentitySnapshot>> {
+    pub fn get_cluster_identity(
+        &self,
+    ) -> Result<Option<crate::cluster_key::ClusterIdentitySnapshot>> {
         match self.get_setting("cluster_identity")? {
             Some(value) => {
-                let snapshot = serde_json::from_str(&value).context("failed to deserialize cluster identity")?;
+                let snapshot = serde_json::from_str(&value)
+                    .context("failed to deserialize cluster identity")?;
                 Ok(Some(snapshot))
             }
             None => Ok(None),
         }
+    }
+
+    pub fn append_audit_log(&self, entry: &crate::audit::AuditEntry) -> Result<()> {
+        let details =
+            serde_json::to_string(&entry.details).context("failed to serialize audit details")?;
+        self.conn.lock().execute(
+            "INSERT INTO audit_log (id, timestamp, category, actor, action, details)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO NOTHING",
+            params![
+                entry.id,
+                entry.timestamp,
+                format!("{:?}", entry.category).to_lowercase(),
+                entry.actor,
+                entry.action,
+                details,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_audit_logs(&self, limit: Option<usize>) -> Result<Vec<crate::audit::AuditEntry>> {
+        let conn = self.conn.lock();
+        let sql = "SELECT id, timestamp, category, actor, action, details FROM audit_log ORDER BY timestamp DESC";
+        let mut stmt = conn.prepare(sql)?;
+        let rows: Vec<(String, String, String, String, String, String)> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let rows = if let Some(n) = limit {
+            rows.into_iter().take(n).collect::<Vec<_>>()
+        } else {
+            rows
+        };
+        rows.into_iter()
+            .map(|(id, timestamp, category, actor, action, details_json)| {
+                let category = match category.as_str() {
+                    "identity" => crate::audit::AuditCategory::Identity,
+                    "vault" => crate::audit::AuditCategory::Vault,
+                    "worker" => crate::audit::AuditCategory::Worker,
+                    "agent" => crate::audit::AuditCategory::Agent,
+                    "cluster" => crate::audit::AuditCategory::Cluster,
+                    "credentials" => crate::audit::AuditCategory::Settings,
+                    "settings" => crate::audit::AuditCategory::Settings,
+                    _ => crate::audit::AuditCategory::Settings,
+                };
+                let details = serde_json::from_str(&details_json).unwrap_or_default();
+                Ok(crate::audit::AuditEntry {
+                    id,
+                    timestamp,
+                    category,
+                    actor,
+                    action,
+                    details,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
     }
 
     pub fn insert_agent(
@@ -499,11 +679,59 @@ impl Store {
         }
     }
 
+    pub fn update_agent(&self, id: &str, name: &str, spec: &str, updated_at: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE agents SET name = ?2, spec = ?3, updated_at = ?4 WHERE id = ?1",
+            params![id, name, spec, updated_at],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_agent(&self, id: &str) -> Result<()> {
         self.conn
             .lock()
             .execute("DELETE FROM agents WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    pub fn get_agent_memory(&self, agent_id: &str) -> Result<Option<crate::agent_memory::AgentMemory>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT memory FROM agent_memory WHERE agent_id = ?1")?;
+        let mut rows = stmt.query(params![agent_id])?;
+        if let Some(row) = rows.next()? {
+            let json: String = row.get(0)?;
+            let memory =
+                serde_json::from_str(&json).context("failed to deserialize agent memory")?;
+            Ok(Some(memory))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn put_agent_memory(&self, memory: &crate::agent_memory::AgentMemory) -> Result<()> {
+        let json =
+            serde_json::to_string(memory).context("failed to serialize agent memory")?;
+        self.conn.lock().execute(
+            "INSERT INTO agent_memory (agent_id, version, memory, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(agent_id) DO UPDATE SET version=excluded.version, memory=excluded.memory,
+                                                 updated_at=excluded.updated_at",
+            params![memory.agent_id, memory.version, json, memory.updated_at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_agent_memories(&self) -> Result<Vec<crate::agent_memory::AgentMemory>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT memory FROM agent_memory ORDER BY updated_at DESC")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let json = row?;
+            out.push(
+                serde_json::from_str(&json).context("failed to deserialize agent memory")?,
+            );
+        }
+        Ok(out)
     }
 
     pub fn delete_worker(&self, id: &str) -> Result<()> {
@@ -532,6 +760,23 @@ impl Store {
             params![id, name, host, status, public_key, config, created_at, updated_at],
         )?;
         Ok(())
+    }
+
+    pub fn get_worker(&self, id: &str) -> Result<Option<(String, Option<String>, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT name, host, pairing_status, config FROM workers WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            )))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn list_workers(
@@ -610,6 +855,27 @@ impl Store {
         }
     }
 
+    /// Persist the workspace routing (`local` / `remote`) for a chat.
+    pub fn set_chat_workspace_routing(&self, id: &str, routing: Option<&str>) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chats SET workspace_routing = ?1 WHERE id = ?2",
+            params![routing, id],
+        )?;
+        Ok(())
+    }
+
+    /// Read the workspace routing for a chat, if it has been chosen.
+    pub fn get_chat_workspace_routing(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT workspace_routing FROM chats WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(row.get::<_, Option<String>>(0)?)
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn list_chats(
         &self,
     ) -> Result<
@@ -673,6 +939,28 @@ impl Store {
             ))
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Append `delta` to an existing chat message's content. Used by the harness
+    /// to stream assistant deltas into a single message row so the renderer can
+    /// show the reply progressively.
+    pub fn append_chat_message_content(&self, message_id: &str, delta: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chat_messages SET content = content || ?1 WHERE id = ?2",
+            params![delta, message_id],
+        )?;
+        Ok(())
+    }
+
+    /// Attach tool-call JSON to an existing chat message. Used by the harness to
+    /// record the tool-call metadata on the streamed assistant message once the
+    /// current turn's stream finishes.
+    pub fn set_chat_message_tool_calls(&self, message_id: &str, tool_calls: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chat_messages SET tool_calls = ?1 WHERE id = ?2",
+            params![tool_calls, message_id],
+        )?;
+        Ok(())
     }
 
     pub fn insert_mcp_server(
@@ -793,6 +1081,48 @@ impl Store {
             .lock()
             .execute("DELETE FROM principals WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// Grant `grant` (e.g. "run", "read") over `scope` (e.g. "workspace",
+    /// "mcp:search") to a principal. Grants record what every principal with
+    /// access to this workspace may do.
+    pub fn grant_access(&self, principal_id: &str, grant: &str, scope: &str) -> Result<()> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.lock().execute(
+            "INSERT INTO access_grants (id, principal_id, grant, scope, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, principal_id, grant, scope, now],
+        )?;
+        Ok(())
+    }
+
+    /// List the grants for a principal as `(grant, scope, created_at)`.
+    pub fn list_access(&self, principal_id: &str) -> Result<Vec<(String, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT grant, scope, created_at FROM access_grants WHERE principal_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let mut rows = stmt.query(params![principal_id])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                row.get::<_, String>(2)?,
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Remove a matching grant (by principal + grant + scope). Returns whether a
+    /// row was deleted.
+    pub fn revoke_access(&self, principal_id: &str, grant: &str, scope: &str) -> Result<bool> {
+        let removed = self.conn.lock().execute(
+            "DELETE FROM access_grants WHERE principal_id = ?1 AND grant = ?2 AND (scope = ?3 OR scope IS NULL)",
+            params![principal_id, grant, scope],
+        )?;
+        Ok(removed > 0)
     }
 
     pub fn insert_mcp_account(
@@ -1087,7 +1417,18 @@ impl Store {
 
     pub fn list_missions(
         &self,
-    ) -> Result<Vec<(String, String, String, String, Option<String>, Option<String>, String, String)>> {
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        )>,
+    > {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, chat_id, goal, status, plan, workflow_id, created_at, updated_at FROM missions ORDER BY updated_at DESC")?;
         let rows = stmt.query_map([], |r| {
@@ -1105,7 +1446,21 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub fn get_mission(&self, id: &str) -> Result<Option<(String, String, String, String, Option<String>, Option<String>, String, String)>> {
+    pub fn get_mission(
+        &self,
+        id: &str,
+    ) -> Result<
+        Option<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        )>,
+    > {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, chat_id, goal, status, plan, workflow_id, created_at, updated_at FROM missions WHERE id = ?1")?;
         let mut rows = stmt.query(params![id])?;
@@ -1231,15 +1586,174 @@ impl Store {
         )?;
         Ok(())
     }
+
+    pub fn export_snapshot_payload(&self) -> Result<crate::snapshot::SnapshotPayload> {
+        let mut tables = std::collections::HashMap::new();
+        for table in SNAPSHOT_TABLES {
+            tables.insert(table.to_string(), self.dump_table(table)?);
+        }
+        Ok(crate::snapshot::SnapshotPayload {
+            version: crate::snapshot::SNAPSHOT_VERSION,
+            tables,
+        })
+    }
+
+    pub fn import_snapshot_payload(&self, payload: crate::snapshot::SnapshotPayload) -> Result<()> {
+        if payload.version != crate::snapshot::SNAPSHOT_VERSION {
+            anyhow::bail!("unsupported snapshot payload version {}", payload.version);
+        }
+        let conn = self.conn.lock();
+        conn.execute("BEGIN IMMEDIATE", [])?;
+        let result: Result<()> = (|| {
+            for table in SNAPSHOT_TABLES {
+                conn.execute(&format!("DELETE FROM {}", table), [])
+                    .with_context(|| format!("failed to clear table {}", table))?;
+                if let Some(rows) = payload.tables.get(*table) {
+                    self.restore_table(&conn, table, rows)?;
+                }
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => conn.execute("COMMIT", [])?,
+            Err(e) => {
+                conn.execute("ROLLBACK", [])?;
+                return Err(e);
+            }
+        };
+        Ok(())
+    }
+
+    fn dump_table(&self, table: &str) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(&format!("SELECT * FROM {}", table))
+            .with_context(|| format!("failed to dump table {}", table))?;
+        let column_count = stmt.column_count();
+        let mut column_names = Vec::with_capacity(column_count);
+        for idx in 0..column_count {
+            column_names.push(stmt.column_name(idx)?.to_string());
+        }
+        let mut rows = Vec::new();
+        let mut cursor = stmt.query([])?;
+        while let Some(row) = cursor.next()? {
+            let mut obj = serde_json::Map::new();
+            for (idx, name) in column_names.iter().enumerate() {
+                let value = match row.get_ref(idx)? {
+                    rusqlite::types::ValueRef::Null => serde_json::Value::Null,
+                    rusqlite::types::ValueRef::Integer(i) => {
+                        serde_json::Value::Number(serde_json::Number::from(i))
+                    }
+                    rusqlite::types::ValueRef::Real(f) => serde_json::Number::from_f64(f)
+                        .map_or(serde_json::Value::Null, serde_json::Value::Number),
+                    rusqlite::types::ValueRef::Text(s) => serde_json::Value::String(
+                        std::str::from_utf8(s).unwrap_or_default().to_string(),
+                    ),
+                    rusqlite::types::ValueRef::Blob(b) => serde_json::Value::String(
+                        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b),
+                    ),
+                };
+                obj.insert(name.clone(), value);
+            }
+            rows.push(obj);
+        }
+        Ok(rows)
+    }
+
+    fn restore_table(
+        &self,
+        conn: &rusqlite::Connection,
+        table: &str,
+        rows: &[serde_json::Map<String, serde_json::Value>],
+    ) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let columns: Vec<&str> = rows[0].keys().map(|k| k.as_str()).collect();
+        let placeholders = (1..=columns.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            table,
+            columns.join(", "),
+            placeholders
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .with_context(|| format!("failed to prepare insert for table {}", table))?;
+        for row in rows {
+            let mut params: Vec<rusqlite::types::Value> = Vec::new();
+            for col in &columns {
+                params.push(json_to_sqlite_value(
+                    row.get(*col).unwrap_or(&serde_json::Value::Null),
+                ));
+            }
+            stmt.execute(rusqlite::params_from_iter(params.iter()))?;
+        }
+        Ok(())
+    }
 }
 
 impl Clone for Store {
     fn clone(&self) -> Self {
         Self {
             conn: Arc::clone(&self.conn),
+            path: self.path.clone(),
         }
     }
 }
+
+fn json_to_sqlite_value(v: &serde_json::Value) -> rusqlite::types::Value {
+    match v {
+        serde_json::Value::Null => rusqlite::types::Value::Null,
+        serde_json::Value::Bool(b) => rusqlite::types::Value::Integer(*b as i64),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                rusqlite::types::Value::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                rusqlite::types::Value::Real(f)
+            } else {
+                rusqlite::types::Value::Null
+            }
+        }
+        serde_json::Value::String(s) => {
+            if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s) {
+                if base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes) == *s {
+                    return rusqlite::types::Value::Blob(bytes);
+                }
+            }
+            rusqlite::types::Value::Text(s.clone())
+        }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            rusqlite::types::Value::Text(serde_json::to_string(v).unwrap_or_default())
+        }
+    }
+}
+
+const SNAPSHOT_TABLES: &[&str] = &[
+    "settings",
+    "agents",
+    "workers",
+    "teams",
+    "team_members",
+    "chats",
+    "chat_messages",
+    "mcp_servers",
+    "mcp_accounts",
+    "principals",
+    "access_grants",
+    "vault_secrets",
+    "workflows",
+    "executions",
+    "llm_settings",
+    "credentials",
+    "missions",
+    "reasoning_steps",
+    "pending_asks",
+    "agent_memory",
+];
 
 #[cfg(test)]
 mod tests {
@@ -1258,6 +1772,74 @@ mod tests {
             store.get_setting("theme").unwrap(),
             Some("light".to_string())
         );
+    }
+
+    #[test]
+    fn test_chat_workspace_routing_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_chat("c1", "Demo", None, None, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(store.get_chat_workspace_routing("c1").unwrap(), None);
+
+        store.set_chat_workspace_routing("c1", Some("local")).unwrap();
+        assert_eq!(
+            store.get_chat_workspace_routing("c1").unwrap(),
+            Some("local".to_string())
+        );
+
+        store.set_chat_workspace_routing("c1", Some("remote")).unwrap();
+        assert_eq!(
+            store.get_chat_workspace_routing("c1").unwrap(),
+            Some("remote".to_string())
+        );
+
+        // Clearing the choice is allowed (falls back to the default).
+        store.set_chat_workspace_routing("c1", None).unwrap();
+        assert_eq!(store.get_chat_workspace_routing("c1").unwrap(), None);
+
+        // Unknown chats have no routing.
+        assert_eq!(store.get_chat_workspace_routing("missing").unwrap(), None);
+    }
+
+    #[test]
+    fn test_credentials_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_credential("github_token").unwrap(), None);
+        store.set_credential("github_token", "ghs_secret").unwrap();
+        assert_eq!(
+            store.get_credential("github_token").unwrap(),
+            Some("ghs_secret".to_string())
+        );
+        assert_eq!(store.list_credential_names().unwrap(), vec!["github_token"]);
+        // Upsert updates in place; the name set is unchanged.
+        store.set_credential("github_token", "rotated").unwrap();
+        assert_eq!(store.get_credential("github_token").unwrap(), Some("rotated".to_string()));
+        assert_eq!(
+            store.list_credential_names().unwrap(),
+            vec!["github_token"]
+        );
+    }
+
+    #[test]
+    fn test_access_grants_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_principal("p1", "user", "Ada", "2024-01-01T00:00:00Z")
+            .unwrap();
+        assert!(store.list_access("p1").unwrap().is_empty());
+
+        store.grant_access("p1", "run", "workspace").unwrap();
+        store.grant_access("p1", "read", "mcp:search").unwrap();
+        let grants = store.list_access("p1").unwrap();
+        assert_eq!(grants.len(), 2);
+        assert!(grants.iter().any(|(g, s, _)| g == "run" && s == "workspace"));
+
+        assert!(store.revoke_access("p1", "run", "workspace").unwrap());
+        assert!(!store.revoke_access("p1", "run", "workspace").unwrap());
+        let grants = store.list_access("p1").unwrap();
+        assert_eq!(grants.len(), 1);
+        assert!(grants.iter().all(|(g, _, _)| g != "run"));
     }
 
     #[test]
@@ -1346,6 +1928,49 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_memory_crud_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.get_agent_memory("a1").unwrap().is_none());
+
+        let mut memory = crate::agent_memory::AgentMemory::new("a1", "ship v1");
+        memory.add_goal("implement memory");
+        memory.record_decision("use sqlite", "simple");
+        store.put_agent_memory(&memory).unwrap();
+
+        let loaded = store.get_agent_memory("a1").unwrap().unwrap();
+        assert_eq!(loaded.brief, "ship v1");
+        assert_eq!(loaded.goals.len(), 1);
+        assert_eq!(loaded.decisions.len(), 1);
+        assert_eq!(loaded.version, memory.version);
+
+        // Upsert updates in place.
+        let mut updated = loaded.clone();
+        updated.add_fact("new fact");
+        store.put_agent_memory(&updated).unwrap();
+        let reloaded = store.get_agent_memory("a1").unwrap().unwrap();
+        assert_eq!(reloaded.facts.len(), 1);
+        assert_eq!(store.list_agent_memories().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_agent_memory_in_snapshot() {
+        let store = Store::open_in_memory().unwrap();
+        let mut memory = crate::agent_memory::AgentMemory::new("a1", "brief");
+        memory.add_goal("goal");
+        store.put_agent_memory(&memory).unwrap();
+
+        let payload = store.export_snapshot_payload().unwrap();
+        assert!(payload.tables.contains_key("agent_memory"));
+        assert_eq!(payload.tables["agent_memory"].len(), 1);
+
+        let store2 = Store::open_in_memory().unwrap();
+        store2.import_snapshot_payload(payload).unwrap();
+        let loaded = store2.get_agent_memory("a1").unwrap().unwrap();
+        assert_eq!(loaded.brief, "brief");
+        assert_eq!(loaded.goals.len(), 1);
+    }
+
+    #[test]
     fn test_team_crud() {
         let store = Store::open_in_memory().unwrap();
         store
@@ -1415,24 +2040,112 @@ mod tests {
     }
 
     #[test]
-    fn test_persistent_store() {
+    fn test_audit_log_roundtrip() {
+        use crate::audit::{AuditCategory, AuditEntry};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path().join("store.db")).unwrap();
+        let entry = AuditEntry::new(
+            "audit-1",
+            "2026-08-14T00:00:00Z",
+            AuditCategory::Identity,
+            "device-1",
+            "cluster_created",
+        )
+        .with_detail("cluster_name", "prod");
+        store.append_audit_log(&entry).unwrap();
+        let loaded = store.list_audit_logs(Some(10)).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].action, "cluster_created");
+        assert_eq!(loaded[0].details.get("cluster_name").unwrap(), "prod");
+    }
+
+    #[test]
+    fn test_snapshot_export_import_roundtrip() {
+        use crate::snapshot::Snapshot;
+        use crate::worker::WorkerId;
+
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("store.db");
-        {
-            let store = Store::open(&path).unwrap();
-            store.set_setting("x", "y").unwrap();
-            store
-                .insert_agent(
-                    "a1",
-                    "agent",
-                    "{}",
-                    "2024-01-01T00:00:00Z",
-                    "2024-01-01T00:00:00Z",
-                )
-                .unwrap();
-        }
-        let store = Store::open(&path).unwrap();
-        assert_eq!(store.get_setting("x").unwrap(), Some("y".to_string()));
-        assert_eq!(store.list_agents().unwrap().len(), 1);
+        let store1 = Store::open(&path).unwrap();
+        store1.set_setting("hello", "world").unwrap();
+        store1
+            .insert_agent(
+                "a1",
+                "agent",
+                "{}",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:00Z",
+            )
+            .unwrap();
+
+        let key = crate::cluster_key::ClusterKey::generate();
+        let worker_id = WorkerId::generate();
+        let snapshot = Snapshot::from_store(&store1, &worker_id, &key).unwrap();
+
+        let path2 = tmp.path().join("store2.db");
+        let store2 = Store::open(&path2).unwrap();
+        snapshot.restore_into_store(&store2, &key).unwrap();
+
+        assert_eq!(
+            store2.get_setting("hello").unwrap(),
+            Some("world".to_string())
+        );
+        assert_eq!(store2.list_agents().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_identity_wallet_roundtrip_in_snapshot() {
+        use crate::cluster_key::ClusterKey;
+        use crate::encrypted_wallet::IdentityWallet;
+        use crate::snapshot::Snapshot;
+        use crate::worker::WorkerId;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store1 = Store::open(tmp.path().join("store1.db")).unwrap();
+        let identity = IdentityWallet::new(
+            ClusterKey::generate().to_base64(),
+            "test-cluster",
+            "ca-cert-pem",
+            "ca-key-pem",
+        );
+        let sealed = identity.seal(b"passphrase").unwrap();
+        store1.set_cluster_wallet(&sealed).unwrap();
+
+        let key = ClusterKey::generate();
+        let worker_id = WorkerId::generate();
+        let snapshot = Snapshot::from_store(&store1, &worker_id, &key).unwrap();
+
+        let store2 = Store::open(tmp.path().join("store2.db")).unwrap();
+        snapshot.restore_into_store(&store2, &key).unwrap();
+
+        let loaded = store2
+            .get_cluster_wallet()
+            .unwrap()
+            .expect("wallet missing");
+        let opened = IdentityWallet::open(&loaded, b"passphrase").unwrap();
+        assert_eq!(opened, identity);
+    }
+
+    #[test]
+    fn update_agent_changes_name_and_spec() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("store.db")).unwrap();
+        let id = "agent-1";
+        store
+            .insert_agent(
+                id,
+                "Old",
+                "{}",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:00Z",
+            )
+            .unwrap();
+        let spec = r#"{"prompt":"hello"}"#;
+        store
+            .update_agent(id, "New", spec, "2024-02-01T00:00:00Z")
+            .unwrap();
+        let agent = store.get_agent(id).unwrap().unwrap();
+        assert_eq!(agent.1, "New");
+        assert_eq!(agent.2, spec);
     }
 }

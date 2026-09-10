@@ -99,3 +99,59 @@ fn test_setup_worker_cli_parsing() {
         "--local-test",
     ]);
 }
+
+/// Ensures the device restore subcommand parses correctly.
+#[test]
+fn test_device_restore_subcommand_parsing() {
+    use clap::Parser;
+    use goble_cli::Args;
+    let _ = Args::parse_from([
+        "goble-cli",
+        "device",
+        "restore",
+        "--from-snapshot",
+        "/tmp/snapshots",
+        "--cluster-key",
+        "c3Vkd2f8sX7f8J8f8J8f8J8f8J8f8J8f8J8f8J8=",
+        "--passphrase",
+        "secret",
+        "--device-id",
+        "phone-device",
+        "--device-name",
+        "Phone",
+    ]);
+}
+
+/// Ensures the cluster helm-install subcommand parses correctly.
+#[test]
+fn test_cluster_helm_install_subcommand_parsing() {
+    use clap::Parser;
+    use goble_cli::Args;
+    let _ = Args::parse_from([
+        "goble-cli",
+        "cluster",
+        "helm-install",
+        "--name",
+        "goble-cluster",
+        "--namespace",
+        "goble",
+        "--replicas",
+        "3",
+        "--passphrase",
+        "secret",
+        "--provider",
+        "r2",
+        "--endpoint",
+        "https://example.r2.cloudflarestorage.com",
+        "--bucket",
+        "my-goble-snapshots",
+        "--access-key-id",
+        "abc",
+        "--secret-access-key",
+        "xyz",
+        "--region",
+        "auto",
+        "--interval-seconds",
+        "3600",
+    ]);
+}

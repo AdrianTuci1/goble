@@ -8,7 +8,7 @@ use crate::worker::WorkerId;
 pub enum DesktopMessage {
     PairRequest {
         worker_id: WorkerId,
-        pairing_code_hash: String,
+        pairing_code_hash: Option<String>,
     },
     RunAgent {
         trace_id: String,
@@ -49,10 +49,69 @@ pub enum DesktopMessage {
         trace_id: String,
         team_id: String,
     },
+    RunAgentForThreadReply {
+        trace_id: String,
+        thread_id: String,
+        agent_id: AgentId,
+        prompt: String,
+        spec: AgentSpec,
+        mcp_servers: Vec<McpServer>,
+    },
+    GetTrace {
+        trace_id: String,
+    },
+    QueryEntities {
+        entity_type: String,
+        query: Option<String>,
+    },
+    TriggerSnapshot,
+    // --- daemon reversibility (rewind/fork/replay/checkpoints/settle) ---
+    // These drive the embedded daemon's harness-agnostic transcript
+    // reversibility and are surfaced on the worker's WebSocket so the headless
+    // worker is reversible. `session_id` names the daemon session/transcript;
+    // `new_session_id` names the fork target.
+    Rewind {
+        session_id: String,
+        at: usize,
+    },
+    Fork {
+        session_id: String,
+        at: usize,
+        new_session_id: String,
+    },
+    Replay {
+        session_id: String,
+        at: usize,
+    },
+    Checkpoints {
+        session_id: String,
+    },
+    Select {
+        session_id: String,
+        at: usize,
+    },
+    Apply {
+        session_id: String,
+        at: usize,
+    },
+    Release {
+        session_id: String,
+        at: usize,
+    },
+    Discard {
+        session_id: String,
+        at: usize,
+    },
+    // --- daemon workflow execution ---
+    // `request` is a `goble_workflow::WorkflowHostRequest` serialized as JSON, so
+    // this protocol crate stays decoupled from the workflow engine crate.
+    RunWorkflow {
+        request: serde_json::Value,
+    },
     Ping,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkerMessage {
     Paired,
@@ -86,8 +145,109 @@ pub enum WorkerMessage {
     ScheduledTasks {
         tasks: Vec<ScheduledTaskSummary>,
     },
+    // Live snapshot of scheduled routines pushed from the worker scheduler.
+    RoutinesUpdated {
+        routines: Vec<RoutineInfo>,
+    },
     TaskCancelled {
         task_id: String,
+    },
+    ThreadAgentReply {
+        trace_id: String,
+        thread_id: String,
+        content: String,
+    },
+    AgentStateUpdate {
+        trace_id: String,
+        state: crate::agent_runtime::RuntimeState,
+    },
+    AgentToolResult {
+        trace_id: String,
+        step_id: String,
+        name: String,
+        result: String,
+    },
+    // Streaming harness events from worker to desktop.
+    AssistantDelta {
+        trace_id: String,
+        delta: String,
+    },
+    ToolCallStarted {
+        trace_id: String,
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolCallFinished {
+        trace_id: String,
+        id: String,
+        result: String,
+    },
+    ToolCallError {
+        trace_id: String,
+        id: String,
+        message: String,
+    },
+    AskUser {
+        trace_id: String,
+        question: String,
+        quick_replies: Vec<String>,
+    },
+    MissionUpdated {
+        trace_id: String,
+        mission_id: String,
+        status: String,
+    },
+    Done {
+        trace_id: String,
+    },
+    Trace {
+        trace_id: String,
+        trace: Option<crate::execution::ExecutionTrace>,
+    },
+    EntityList {
+        entity_type: String,
+        items: Vec<serde_json::Value>,
+    },
+    // --- daemon reversibility / workflow results ---
+    RewindResult {
+        session_id: String,
+        removed: usize,
+    },
+    ForkResult {
+        session_id: String,
+        new_session_id: String,
+    },
+    // Replay forwards the session's transcript as the mirror `AssistantDelta` /
+    // `ToolCall*` / `Done` variants on the live stream, then acks with the index
+    // the replay started from.
+    ReplayResult {
+        session_id: String,
+        at: usize,
+    },
+    CheckpointsResult {
+        session_id: String,
+        checkpoints: Vec<serde_json::Value>,
+    },
+    SelectResult {
+        session_id: String,
+        at: usize,
+    },
+    ApplyResult {
+        session_id: String,
+        removed: usize,
+    },
+    ReleaseResult {
+        session_id: String,
+        released: bool,
+    },
+    DiscardResult {
+        session_id: String,
+        removed: usize,
+    },
+    // `run` is a `goble_workflow::WorkflowRun` serialized as JSON.
+    WorkflowRun {
+        run: serde_json::Value,
     },
 }
 
@@ -97,6 +257,25 @@ pub struct ScheduledTaskSummary {
     pub agent_id: crate::agent::AgentId,
     pub trigger: crate::agent::Trigger,
     pub enabled: bool,
+}
+
+/// A scheduled routine plus its last execution state, shown in the UI panel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutineInfo {
+    pub id: String,
+    pub agent_id: crate::agent::AgentId,
+    pub trigger: crate::agent::Trigger,
+    pub enabled: bool,
+    pub last_run_at: Option<String>,
+    pub last_status: Option<String>,
+}
+
+/// A single line from the remote host stream, shown in the routines panel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteLogLine {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,7 +306,7 @@ impl Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{AgentSpec, McpServer, Trigger};
+    use crate::agent::{AgentId, AgentSpec};
 
     #[test]
     fn test_roundtrip_desktop_message() {

@@ -24,6 +24,12 @@ pub struct WorkerConfig {
     pub port: u16,
     pub username: String,
     pub pairing_code: String,
+    /// Optional worker certificate bundle for mTLS.
+    pub worker_bundle: Option<crate::provision::WorkerBundle>,
+    /// Optional desktop identity certificate for mTLS.
+    pub desktop_identity: Option<crate::identity::Identity>,
+    /// Runtime tags used for group selection (e.g. "gpu", "prod").
+    pub tags: Vec<String>,
 }
 
 impl WorkerConfig {
@@ -39,12 +45,49 @@ impl WorkerConfig {
             port: 7878,
             username: username.into(),
             pairing_code: String::new(),
+            worker_bundle: None,
+            desktop_identity: None,
+            tags: Vec::new(),
         }
+    }
+
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = tags;
+        self
     }
 
     pub fn with_pairing_code(mut self, code: impl Into<String>) -> Self {
         self.pairing_code = code.into();
         self
+    }
+
+    pub fn with_worker_bundle(mut self, bundle: crate::provision::WorkerBundle) -> Self {
+        self.worker_bundle = Some(bundle);
+        self
+    }
+
+    pub fn with_desktop_identity(mut self, identity: crate::identity::Identity) -> Self {
+        self.desktop_identity = Some(identity);
+        self
+    }
+
+    pub fn with_worker_id(mut self, worker_id: WorkerId) -> Self {
+        self.id = worker_id;
+        self
+    }
+
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
+    }
+
+    /// Return the WebSocket URL for this worker, preferring wss when an mTLS bundle is present.
+    pub fn websocket_url(&self) -> String {
+        if self.worker_bundle.is_some() {
+            format!("wss://{}:{}/ws", self.host, self.port)
+        } else {
+            format!("ws://{}:{}/ws", self.host, self.port)
+        }
     }
 }
 

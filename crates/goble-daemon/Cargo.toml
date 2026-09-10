@@ -1,0 +1,19 @@
+[package]
+name = "goble-daemon"
+version = "0.1.0"
+edition = "2021"
+description = "Framework-agnostic daemon core: harness registry, DaemonPort, DaemonState, event sink."
+
+[dependencies]
+goble-harness-types = { path = "../goble-harness-types" }
+goble-harness-protocol = { path = "../goble-harness-protocol" }
+goble-harness-runtime = { path = "../goble-harness-runtime" }
+goble-daemon-protocol = { path = "../goble-daemon-protocol" }
+goble-replay = { path = "../goble-replay" }
+goble-workflow = { path = "../goble-workflow" }
+futures = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

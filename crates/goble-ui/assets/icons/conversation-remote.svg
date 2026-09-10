@@ -1,0 +1,9 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- A globe: the agent runs on a remote worker, somewhere out there. The
+       meridians + latitude mark a world rather than a single device. -->
+  <circle cx="12" cy="12" r="8.5" stroke="#888" stroke-width="2"/>
+  <ellipse cx="12" cy="12" rx="4" ry="8.5" stroke="#888" stroke-width="1.6"/>
+  <path d="M4 12h16" stroke="#888" stroke-width="1.6"/>
+  <path d="M12 3.5c2.4 2.2 3.6 5.2 3.6 8.5s-1.2 6.3-3.6 8.5" stroke="#888" stroke-width="1.6"/>
+  <path d="M12 3.5C9.6 5.7 8.4 8.7 8.4 12s1.2 6.3 3.6 8.5" stroke="#888" stroke-width="1.6"/>
+</svg>

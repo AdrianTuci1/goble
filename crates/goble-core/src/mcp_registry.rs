@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -222,11 +223,16 @@ impl McpRegistry {
 /// This is intentionally lightweight and does not require authentication.
 async fn web_search_mcp_packages(query: &str) -> anyhow::Result<Vec<McpSearchResult>> {
     let mut results = Vec::new();
+    // Best-effort external search must never hang the agent, so give every
+    // request a hard timeout; on failure we return the builtin results only.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?;
     let npm_url = format!(
         "https://registry.npmjs.org/-/v1/search?text={}+mcp&size=10",
         urlencoding::encode(query)
     );
-    let resp = reqwest::get(&npm_url).await?;
+    let resp = client.get(&npm_url).send().await?;
     if resp.status().is_success() {
         let body = resp.json::<serde_json::Value>().await?;
         if let Some(objects) = body.get("objects").and_then(|v| v.as_array()) {
@@ -267,7 +273,6 @@ async fn web_search_mcp_packages(query: &str) -> anyhow::Result<Vec<McpSearchRes
         "https://api.github.com/search/repositories?q={}+mcp&per_page=5",
         urlencoding::encode(query)
     );
-    let client = reqwest::Client::new();
     let resp = client
         .get(&github_url)
         .header("Accept", "application/vnd.github+json")

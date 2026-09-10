@@ -1,0 +1,10 @@
+[package]
+name = "goble-screen-adapter"
+version = "0.1.0"
+edition = "2021"
+description = "Real local screen capture+control adapter: macOS `screencapture` + synthetic fallback for other platforms."
+
+[dependencies]
+anyhow = { workspace = true }
+goble-screen-core = { path = "../goble-screen-core" }
+image = { workspace = true }

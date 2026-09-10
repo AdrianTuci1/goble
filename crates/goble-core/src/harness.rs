@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::process::Output;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,12 +9,13 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use chrono::Utc;
 use futures::Stream;
+use goble_sandbox::{
+    sandbox_for, PreparedCommand, Sandbox, SandboxError, SandboxGuard, SandboxProfile,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{AgentId, AgentSpec, McpManifest, Trigger};
-use crate::llm::{
-    CompletionResponse, LlmProvider, LlmToolCall, ToolDefinition,
-};
+use crate::llm::{CompletionResponse, LlmProvider, LlmToolCall, ToolDefinition};
 use crate::mcp_manager::McpManager;
 use crate::protocol::DesktopMessage;
 use crate::secret::Secret;
@@ -39,10 +41,17 @@ impl CommandRunner for MockCommandRunner {
 }
 
 /// A sandboxed shell runner with an allowlist of commands and a per-command timeout.
+///
+/// The runner applies a configurable [`Sandbox`] around each command when one is
+/// set. When no sandbox is configured — or the sandbox backend cannot run on
+/// this platform — it executes the command directly, preserving the historical
+/// unconfined behavior. The `allowed_commands` allow-list is always enforced
+/// regardless of the sandbox configuration.
 pub struct SandboxedCommandRunner {
     allowed_commands: HashSet<String>,
     timeout_seconds: u64,
     working_dir: PathBuf,
+    sandbox: Option<Box<dyn Sandbox>>,
 }
 
 impl SandboxedCommandRunner {
@@ -55,6 +64,7 @@ impl SandboxedCommandRunner {
             allowed_commands: allowed.into_iter().map(Into::into).collect(),
             timeout_seconds,
             working_dir,
+            sandbox: None,
         }
     }
 
@@ -67,6 +77,89 @@ impl SandboxedCommandRunner {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         )
     }
+
+    /// Configure an isolation backend. Pass `None` (the default) to run commands
+    /// directly, exactly as when no sandbox was configured. When `Some`, commands
+    /// are run inside the sandbox; if the sandbox backend is unavailable on this
+    /// platform the runner degrades to direct execution rather than failing.
+    pub fn with_sandbox(mut self, sandbox: Option<Box<dyn Sandbox>>) -> Self {
+        self.sandbox = sandbox;
+        self
+    }
+
+    /// Run `command`, applying the configured sandbox when present.
+    ///
+    /// When no sandbox is configured — or the sandbox backend cannot run on this
+    /// platform — the command is executed directly, preserving the historical
+    /// unconfined behavior. A command rejected by the sandbox's own allow-list is
+    /// still refused rather than silently degraded.
+    async fn run_prepared(&self, command: &PreparedCommand) -> Result<Output> {
+        if let Some(sandbox) = &self.sandbox {
+            match SandboxGuard::new(&**sandbox, command.clone()) {
+                Ok(mut guard) => return guard.run_async().await,
+                Err(SandboxError::NotInAllowList { command: denied }) => {
+                    anyhow::bail!("command `{denied}` is not in the sandbox allow-list")
+                }
+                Err(SandboxError::UnsupportedLevel { .. })
+                | Err(SandboxError::BackendUnavailable { .. }) => {
+                    // The backend cannot apply this profile on this platform.
+                    // Degrade to direct execution rather than failing the run.
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        command.to_tokio_command().output().await.map_err(Into::into)
+    }
+}
+
+/// The sandbox profile recommended for the harness's command runner.
+///
+/// The harness must keep the workspace directory *writable* so `write_file`,
+/// `edit_file`, `delete_file`, `rename_file` and `git_commit` keep working, so
+/// `read_only_fs` is left `false`. When hardened under `bwrap` this binds the
+/// workspace read-write instead of `--ro-bind`ing it; everything outside the
+/// workspace stays isolated by bwrap's empty mount tree. On Linux the network is
+/// unshared (`no_network` -> `--unshare-net`) so a confined command cannot reach
+/// out, and `no_new_privs` refuses privilege escalation. At the `Hardened` level
+/// the allow-list is not enforced by the sandbox; the runner's own
+/// `allowed_commands` gate is the real command allow-list, so the profile stays
+/// gate-agnostic.
+///
+/// The composition roots (desktop service, native host, Tauri app, worker)
+/// build [`SandboxedCommandRunner::default_tools`] and opt in with
+/// `with_sandbox(harness_sandbox())`. On macOS `harness_sandbox()` returns a
+/// Seatbelt-backed sandbox that really confines the *command* it runs (via
+/// `sandbox-exec`), never the calling harness/app process. On platforms with no
+/// hardening backend it returns `None` and the runner degrades to direct
+/// execution, so dev/desktop behavior is unchanged there.
+pub fn harness_sandbox_profile() -> SandboxProfile {
+    let mut profile = SandboxProfile::hardened("harness");
+    // Keep the workspace writable so file tools and git_commit keep working.
+    profile.hardened_flags.read_only_fs = false;
+    profile
+}
+
+/// Build the sandbox for [`harness_sandbox_profile`], or `None` when no backend
+/// is available on this platform.
+///
+/// Availability is probed at construction: a hardened profile only hardens (and
+/// therefore is only usable) when a real backend can apply it — bwrap on Linux,
+/// Seatbelt (`sandbox-exec`) on macOS. When the backend cannot apply the profile
+/// (e.g. an unavailable kernel call) we return `None` rather than claim to be
+/// sandboxed. The `bwrap` executable must be installed on Linux for the returned
+/// sandbox to actually confine a command; on macOS the `sandbox-exec` launcher
+/// must be present, and confinement is applied to each spawned command — never the
+/// harness/app process — so model calls stay unconfined. Callers can pass the
+/// result straight to [`SandboxedCommandRunner::with_sandbox`].
+pub fn harness_sandbox() -> Option<Box<dyn Sandbox>> {
+    let sb = sandbox_for(harness_sandbox_profile());
+    match sb.prepare(&goble_sandbox::PreparedCommand::new("echo")) {
+        Ok(()) => Some(sb),
+        Err(SandboxError::UnsupportedLevel { .. }) | Err(SandboxError::BackendUnavailable { .. }) => {
+            None
+        }
+        Err(_) => Some(sb),
+    }
 }
 
 #[async_trait::async_trait]
@@ -75,12 +168,12 @@ impl CommandRunner for SandboxedCommandRunner {
         if !self.allowed_commands.contains(command) {
             anyhow::bail!("command `{command}` is not in the allowed list");
         }
+        let prepared = PreparedCommand::new(command)
+            .args(args.iter().cloned())
+            .cwd(self.working_dir.clone());
         let output = tokio::time::timeout(
             Duration::from_secs(self.timeout_seconds),
-            tokio::process::Command::new(command)
-                .args(args)
-                .current_dir(&self.working_dir)
-                .output(),
+            self.run_prepared(&prepared),
         )
         .await
         .context("command timed out")?
@@ -220,6 +313,17 @@ impl std::str::FromStr for ThinkingMode {
     }
 }
 
+/// Web-search backend configuration, resolved by the caller (e.g. from the
+/// model/LLM settings) and passed into the harness. When `api_key` and
+/// `base_url` are both set, `web_search` uses the hosted backend; otherwise it
+/// falls back to scraping DuckDuckGo. An empty config means DuckDuckGo always.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchConfig {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
+
 pub struct Harness {
     store: Store,
     runner: Arc<dyn CommandRunner>,
@@ -228,7 +332,10 @@ pub struct Harness {
     mcp_manager: McpManager,
     cancel: Arc<AtomicBool>,
     workspace_dir: PathBuf,
+    docs_dir: PathBuf,
     reasoning_enabled: bool,
+    auto_approve: bool,
+    web_search: WebSearchConfig,
 }
 
 impl Harness {
@@ -247,12 +354,24 @@ impl Harness {
             mcp_manager: McpManager::new(),
             cancel: Arc::new(AtomicBool::new(false)),
             workspace_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            docs_dir: crate::app_home::GobleHome::locate()
+                .map(|h| h.docs_user_guide_dir())
+                .unwrap_or_else(|_| PathBuf::from(".goble/docs/user-guide")),
             reasoning_enabled: false,
+            auto_approve: false,
+            web_search: WebSearchConfig::default(),
         }
     }
 
     pub fn with_reasoning(mut self, enabled: bool) -> Self {
         self.reasoning_enabled = enabled;
+        self
+    }
+
+    /// When set, the agent does not suspend to ask the user a question: an
+    /// `ask_user` tool call is auto-skipped and the mission continues.
+    pub fn with_auto_approve(mut self, auto_approve: bool) -> Self {
+        self.auto_approve = auto_approve;
         self
     }
 
@@ -276,6 +395,18 @@ impl Harness {
         self
     }
 
+    /// The configured workspace directory.
+    pub fn workspace_dir(&self) -> &std::path::Path {
+        &self.workspace_dir
+    }
+
+    /// Directory holding the seeded user guide (`~/.goble/docs/user-guide`), used
+    /// by the `user_guide` tool. Defaults to the workspace home's docs dir.
+    pub fn with_docs_dir(mut self, docs_dir: impl Into<std::path::PathBuf>) -> Self {
+        self.docs_dir = docs_dir.into();
+        self
+    }
+
     pub fn with_deploy_sender<F>(mut self, sender: F) -> Self
     where
         F: Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync + 'static,
@@ -286,6 +417,13 @@ impl Harness {
 
     pub fn with_mcp_manager(mut self, manager: McpManager) -> Self {
         self.mcp_manager = manager;
+        self
+    }
+
+    /// Configure the web-search backend. When `api_key` + `base_url` are set the
+    /// hosted backend is used; otherwise `web_search` falls back to DuckDuckGo.
+    pub fn with_web_search(mut self, config: WebSearchConfig) -> Self {
+        self.web_search = config;
         self
     }
 
@@ -325,11 +463,14 @@ impl Harness {
             self.mcp_manager.clone(),
             self.cancel.clone(),
             self.workspace_dir.clone(),
+            self.docs_dir.clone(),
             chat_id.to_string(),
             prompt.to_string(),
             provider.to_string(),
             model.to_string(),
             self.reasoning_enabled,
+            self.auto_approve,
+            self.web_search.clone(),
         )
     }
 
@@ -338,6 +479,7 @@ impl Harness {
         &self,
         chat_id: &str,
         response: &str,
+        credential: Option<(String, String)>,
         provider: &str,
         model: &str,
     ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
@@ -349,18 +491,24 @@ impl Harness {
             self.mcp_manager.clone(),
             self.cancel.clone(),
             self.workspace_dir.clone(),
+            self.docs_dir.clone(),
             chat_id.to_string(),
             response.to_string(),
+            credential,
             provider.to_string(),
             model.to_string(),
+            self.auto_approve,
+            self.web_search.clone(),
         )
     }
 }
 
 pub(crate) const HARNESS_SYSTEM_PROMPT: &str = r#"You are an assistant that controls a local Goble agent environment.
 You can create/update agents, workflows and teams, run shell commands, read/write files, search the store, deploy agents/workflows to workers, schedule workflows, and check execution status.
+Use memory_write to record goals, decisions, constraints and progress into an agent's persistent memory; use memory_read to review what an agent already knows. Memory survives conversation summarization.
 Only call a tool when the user explicitly asks for an action you can perform with a tool.
 If no tool is needed, reply conversationally.
+There is a user guide for this product at ~/.goble/docs/user-guide. For questions about how to set up or use Goble (credentials, workspaces, principals, remote/self-as-worker access, reaching this machine from the mobile app via Tailscale), call the user_guide tool to look up the relevant topic before answering.
 When reading or writing files, paths must be inside the workspace directory unless the user explicitly provides an absolute path."#;
 
 pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
@@ -454,7 +602,7 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "run_command".to_string(),
-            description: "Run an allowed shell command with a timeout.".to_string(),
+            description: "Run an allowed shell command with a timeout. To use a stored credential without exposing it, write {{{{credential:<name>}}}} anywhere in the command or args; the harness substitutes the stored value at execution time and it never appears in this tool's arguments or result.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -462,6 +610,32 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
                     "args": { "type": "array", "items": { "type": "string" } }
                 },
                 "required": ["command"]
+            }),
+        },
+        ToolDefinition {
+            name: "credentials".to_string(),
+            description: "List the names of stored credentials (API keys, tokens). Values are never returned; to use a credential inside run_command, reference it as {{{{credential:<name>}}}}.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "principals".to_string(),
+            description: "List every principal with access to this workspace, their kind/name and the grants (grant:scope) each holds.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "user_guide".to_string(),
+            description: "Look up a topic in the Goble user guide at ~/.goble/docs/user-guide. Call with no topic to list the available topics, or with a topic name to read that guide entry in full. Use this to answer questions about how to set up or use Goble: workspaces, credentials, principals, agents, tools, sandbox, remote access (exposing a machine via Tailscale / self-as-worker) and mobile access.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "topic": { "type": "string" }
+                }
             }),
         },
         ToolDefinition {
@@ -727,11 +901,14 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "web_search".to_string(),
-            description: "Search the web using DuckDuckGo HTML. Returns up to 10 results with title, snippet and URL.".to_string(),
+            description: "Search the web and return results with title, snippet and URL. Uses the configured hosted search backend when its API key is set, otherwise DuckDuckGo. `advanced` runs a deeper search: when using DuckDuckGo it follows pagination to gather more distinct results (defaulting to up to 30); when a hosted backend is configured it requests the advanced model.".
+                to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string" }
+                    "query": { "type": "string", "description": "Search query" },
+                    "max_results": { "type": "integer", "minimum": 1, "maximum": 30, "description": "Max results (default 10, 30 for advanced)" },
+                    "advanced": { "type": "boolean", "description": "Deep/advanced search" }
                 },
                 "required": ["query"]
             }),
@@ -783,6 +960,48 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["path", "old_text", "new_text"]
             }),
         },
+        ToolDefinition {
+            name: "memory_write".to_string(),
+            description: "Write to an agent's persistent memory (brief, facts, goals, constraints, decisions, milestones, open questions). Memory survives conversation summarization."
+                .to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": { "type": "string" },
+                    "section": { "type": "string", "enum": ["brief", "fact", "goal", "complete_goal", "constraint", "decision", "milestone", "complete_milestone", "open_question"] },
+                    "content": { "type": "string" },
+                    "rationale": { "type": "string" }
+                },
+                "required": ["agent_id", "section", "content"]
+            }),
+        },
+        ToolDefinition {
+            name: "memory_read".to_string(),
+            description: "Read an agent's full persistent memory block.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": { "type": "string" }
+                },
+                "required": ["agent_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "open_screen".to_string(),
+            description: "Open a remote desktop over the harness window and hand off to it. The agent calls this when it needs a real GUI; the host opens the stream in a screen pane and routes your keyboard/mouse to it. `host` is required; `port` defaults to 3389 and `width`/`height` to 1280x720.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "host": { "type": "string" },
+                    "port": { "type": "integer" },
+                    "username": { "type": "string" },
+                    "password": { "type": "string" },
+                    "width": { "type": "integer" },
+                    "height": { "type": "integer" }
+                },
+                "required": ["host"]
+            }),
+        },
     ]
 }
 
@@ -797,7 +1016,9 @@ pub(crate) async fn execute_tool_call(
     deploy_sender: Option<&(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync)>,
     mcp_manager: &McpManager,
     workspace_dir: &std::path::Path,
+    docs_dir: &std::path::Path,
     call: &LlmToolCall,
+    web_search_config: &WebSearchConfig,
 ) -> Result<String> {
     match call.name.as_str() {
         "create_agent" => create_agent(store, &call.arguments),
@@ -806,7 +1027,10 @@ pub(crate) async fn execute_tool_call(
         "update_workflow" => update_workflow(store, &call.arguments),
         "create_team" => create_team(store, &call.arguments),
         "update_team" => update_team(store, &call.arguments),
-        "run_command" => run_command(runner, &call.arguments).await,
+        "run_command" => run_command(store, runner, &call.arguments).await,
+        "credentials" => list_credentials(store),
+        "principals" => list_principals(store),
+        "user_guide" => user_guide(&call.arguments, docs_dir),
         "list_entities" => list_entities(store, &call.arguments),
         "search_store" => search_store(store, &call.arguments),
         "deploy_agent" => deploy_agent(store, deploy_sender, &call.arguments),
@@ -832,9 +1056,12 @@ pub(crate) async fn execute_tool_call(
         "read_file" => read_file(&call.arguments, workspace_dir),
         "write_file" => write_file(&call.arguments, workspace_dir),
         "edit_file" => edit_file(&call.arguments, workspace_dir),
-        "web_search" => web_search(&call.arguments).await,
+        "web_search" => web_search(&call.arguments, web_search_config).await,
         "read_url" => read_url(&call.arguments).await,
         "execute_python_code" => execute_python_code(&call.arguments).await,
+        "memory_write" => memory_write(store, &call.arguments),
+        "memory_read" => memory_read(store, &call.arguments),
+        "open_screen" => open_screen(&call.arguments),
         "mcp_call" => mcp_call(&mcp_manager, &call.arguments),
         _ => {
             if mcp_manager.is_mcp_tool(&call.name) {
@@ -927,6 +1154,93 @@ fn update_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
         &spec.updated_at,
     )?;
     Ok(format!("agent {id} updated"))
+}
+
+fn memory_write(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let agent_id = args["agent_id"].as_str().context("agent_id is required")?;
+    let section = args["section"].as_str().context("section is required")?;
+    let content = args["content"].as_str().context("content is required")?;
+    let rationale = args["rationale"].as_str().unwrap_or_default();
+
+    let mut memory = match store.get_agent_memory(agent_id)? {
+        Some(memory) => memory,
+        None => {
+            let memory = crate::agent_memory::AgentMemory::new(agent_id.to_string(), "");
+            store.put_agent_memory(&memory)?;
+            memory
+        }
+    };
+
+    match section {
+        "brief" => memory.update_brief(content),
+        "fact" => memory.add_fact(content),
+        "goal" => {
+            memory.add_goal(content);
+        }
+        "complete_goal" => {
+            if let Some(goal) = memory
+                .goals
+                .iter_mut()
+                .find(|g| memory_text_matches(&g.text, content))
+            {
+                goal.done = true;
+                memory.bump_version();
+            } else {
+                anyhow::bail!("goal not found: {content}");
+            }
+        }
+        "constraint" => memory.add_constraint(content),
+        "decision" => {
+            memory.record_decision(content, rationale);
+        }
+        "milestone" => {
+            memory.add_milestone(content);
+        }
+        "complete_milestone" => {
+            if let Some(m) = memory
+                .progress
+                .iter_mut()
+                .find(|m| memory_text_matches(&m.text, content))
+            {
+                m.done = true;
+                memory.bump_version();
+            } else {
+                anyhow::bail!("milestone not found: {content}");
+            }
+        }
+        "open_question" => memory.add_open_question(content),
+        other => anyhow::bail!("unknown memory section: {other}"),
+    }
+
+    store.put_agent_memory(&memory)?;
+    Ok(format!("memory updated for agent {agent_id}"))
+}
+
+/// Request an interactive remote desktop handoff. The agent calls this when it
+/// decides it needs a real GUI; the host that owns the screen registry opens the
+/// stream and shows it in a screen pane. This function only validates the target
+/// and acknowledges — actually opening the desktop is the host's job.
+fn open_screen(args: &serde_json::Value) -> Result<String> {
+    let host = args["host"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("open_screen requires a `host` argument"))?;
+    let port = args["port"].as_u64().unwrap_or(3389);
+    Ok(format!("handoff requested to {host}:{port}"))
+}
+
+fn memory_read(store: &Store, args: &serde_json::Value) -> Result<String> {
+    let agent_id = args["agent_id"].as_str().context("agent_id is required")?;
+    match store.get_agent_memory(agent_id)? {
+        Some(memory) => Ok(memory.render_block()),
+        None => Ok(format!("no memory for agent {agent_id}")),
+    }
+}
+
+/// Fuzzy equality used by the memory tools to locate goals/milestones.
+fn memory_text_matches(a: &str, b: &str) -> bool {
+    let a = a.trim().to_lowercase();
+    let b = b.trim().to_lowercase();
+    a == b || a.contains(&b) || b.contains(&a)
 }
 
 fn create_workflow(store: &Store, args: &serde_json::Value) -> Result<String> {
@@ -1041,8 +1355,12 @@ fn update_team(store: &Store, args: &serde_json::Value) -> Result<String> {
     create_team(store, args)
 }
 
-async fn run_command(runner: &dyn CommandRunner, args: &serde_json::Value) -> Result<String> {
-    let command = args["command"].as_str().unwrap_or_default();
+async fn run_command(
+    store: &Store,
+    runner: &dyn CommandRunner,
+    args: &serde_json::Value,
+) -> Result<String> {
+    let command = expand_credential_refs(store, args["command"].as_str().unwrap_or_default())?;
     let cmd_args: Vec<String> = args["args"]
         .as_array()
         .map(|arr| {
@@ -1051,7 +1369,170 @@ async fn run_command(runner: &dyn CommandRunner, args: &serde_json::Value) -> Re
                 .collect()
         })
         .unwrap_or_default();
-    runner.run(command, &cmd_args).await
+    let cmd_args = cmd_args
+        .iter()
+        .map(|a| expand_credential_refs(store, a))
+        .collect::<Result<Vec<_>>>()?;
+    runner.run(&command, &cmd_args).await
+}
+
+/// Substitute `{{credential:<name>}}` placeholders with the stored secret value
+/// at execution time. Only the placeholder (a name) is ever exposed to the
+/// model; the value is resolved here and passed to the process argv, so it never
+/// appears in the transcript or a tool result.
+fn expand_credential_refs(store: &Store, s: &str) -> Result<String> {
+    const OPEN: &str = "{{credential:";
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    loop {
+        match rest.find(OPEN) {
+            None => {
+                out.push_str(rest);
+                break;
+            }
+            Some(pos) => {
+                out.push_str(&rest[..pos]);
+                let tail = &rest[pos + OPEN.len()..];
+                match tail.find("}}") {
+                    None => {
+                        out.push_str(OPEN);
+                        out.push_str(tail);
+                        break;
+                    }
+                    Some(end) => {
+                        let name = tail[..end].trim();
+                        match store.get_credential(name)? {
+                            Some(value) => out.push_str(&value),
+                            None => anyhow::bail!(
+                                "unknown credential `{name}`; use the `credentials` tool to list stored credentials"
+                            ),
+                        }
+                        rest = &tail[end + 2..];
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn list_credentials(store: &Store) -> Result<String> {
+    let names = store.list_credential_names()?;
+    if names.is_empty() {
+        return Ok("no credentials stored".to_string());
+    }
+    Ok(format!("stored credentials: {}", names.join(", ")))
+}
+
+fn list_principals(store: &Store) -> Result<String> {
+    let principals = store.list_principals()?;
+    if principals.is_empty() {
+        return Ok("no principals".to_string());
+    }
+    let mut lines = Vec::new();
+    for (id, kind, name, _created) in principals {
+        let grants = store.list_access(&id)?;
+        let grants_s = if grants.is_empty() {
+            "no grants".to_string()
+        } else {
+            grants
+                .iter()
+                .map(|(g, s, _)| {
+                    if s.is_empty() {
+                        g.clone()
+                    } else {
+                        format!("{g}:{s}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        lines.push(format!("principal {id} ({kind}, {name}) grants=[{grants_s}]"));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// `user_guide` tool handler. With no `topic`, lists the seeded guide topics; with
+/// a `topic` (filename, `NN-topic`, or bare `topic` name), returns that entry in
+/// full. Resolution is against the `.md` files already present in `docs_dir`, so it
+/// never reads a path outside the guide directory.
+fn user_guide(args: &serde_json::Value, docs_dir: &std::path::Path) -> Result<String> {
+    let topic = args["topic"].as_str().map(str::to_string).unwrap_or_default();
+
+    if !docs_dir.is_dir() {
+        return Ok(concat!(
+            "The user guide is not available yet (no user-guide directory). ",
+            "It is seeded into ~/.goble/docs/user-guide on first launch."
+        )
+        .to_string());
+    }
+
+    let mut names: Vec<String> = std::fs::read_dir(docs_dir)
+        .map_err(|e| anyhow::anyhow!("read user guide dir: {e}"))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".md"))
+        .collect();
+    names.sort();
+
+    if topic.trim().is_empty() {
+        let mut out = String::from("User guide topics:\n");
+        for name in &names {
+            out.push_str(&format!("- {} — {}\n", user_guide_topic(name), user_guide_title(&docs_dir.join(name))));
+        }
+        return Ok(out);
+    }
+
+    let want = topic.trim();
+    let target = names
+        .iter()
+        .find(|name| {
+            name.as_str() == want
+                || user_guide_topic(name).eq_ignore_ascii_case(want)
+                || name
+                    .strip_suffix(".md")
+                    .is_some_and(|s| s.eq_ignore_ascii_case(want))
+        });
+
+    match target {
+        Some(name) => std::fs::read_to_string(docs_dir.join(name))
+            .map_err(|e| anyhow::anyhow!("read user guide doc {name}: {e}")),
+        None => {
+            let mut out = format!("No user guide topic ‘{want}’.\nAvailable topics:\n");
+            for name in &names {
+                out.push_str(&format!("- {}\n", user_guide_topic(name)));
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// `06-remote-access.md` → `remote-access`. Only strips the `NN-` prefix when the
+/// file is numbered (two leading digits + a dash).
+fn user_guide_topic(name: &str) -> &str {
+    let bare = name.strip_suffix(".md").unwrap_or(name);
+    let bytes = bare.as_bytes();
+    if bare.len() >= 3
+        && bare.as_bytes().get(2) == Some(&b'-')
+        && bytes[0].is_ascii_digit()
+        && bytes[1].is_ascii_digit()
+    {
+        &bare[3..]
+    } else {
+        bare
+    }
+}
+
+/// First `# Heading` line of a guide doc, if any.
+fn user_guide_title(path: &std::path::Path) -> String {
+    let s = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    s.lines()
+        .find(|l| l.starts_with("# "))
+        .map(|l| l.trim_start_matches("# ").trim().to_string())
+        .unwrap_or_default()
 }
 
 fn list_entities(store: &Store, args: &serde_json::Value) -> Result<String> {
@@ -1448,7 +1929,8 @@ async fn install_mcp_server(
     let manifest = args["manifest"]
         .as_str()
         .and_then(|m| serde_json::from_str::<McpManifest>(m).ok());
-    let secret_ids: Vec<Secret> = serde_json::from_str(&args["secret_ids"].as_str().unwrap_or("[]")).unwrap_or_default();
+    let secret_ids: Vec<Secret> =
+        serde_json::from_str(&args["secret_ids"].as_str().unwrap_or("[]")).unwrap_or_default();
     mcp_manager
         .install_mcp_server(store, id, name, source, source_value, &secret_ids, manifest)
         .await
@@ -1479,8 +1961,8 @@ async fn update_mcp_server(
     let manifest = args["manifest"]
         .as_str()
         .and_then(|m| serde_json::from_str::<McpManifest>(m).ok());
-    let secret_ids: Vec<Secret> = serde_json::from_str(
-        args["secret_ids"].as_str().unwrap_or("[]")).unwrap_or_default();
+    let secret_ids: Vec<Secret> =
+        serde_json::from_str(args["secret_ids"].as_str().unwrap_or("[]")).unwrap_or_default();
     mcp_manager
         .update_mcp_server(store, id, name, source_value, Some(&secret_ids), manifest)
         .await
@@ -1509,50 +1991,148 @@ fn run_agent(store: &Store, args: &serde_json::Value) -> Result<String> {
     ))
 }
 
-async fn web_search(args: &serde_json::Value) -> Result<String> {
+async fn web_search(args: &serde_json::Value, config: &WebSearchConfig) -> Result<String> {
     let query = args["query"].as_str().context("query is required")?;
-    let encoded = urlencoding::encode(query);
-    let url = format!("https://html.duckduckgo.com/html/?q={}", encoded);
+    let advanced = args["advanced"].as_bool().unwrap_or(false);
+    let caller_max = args["max_results"].as_u64().unwrap_or(0) as usize;
+    // A deeper search defaults to more results; callers can still cap it.
+    let default = if advanced { 30 } else { 10 };
+    let max_results = if caller_max > 0 {
+        caller_max.clamp(1, 30)
+    } else {
+        default.clamp(1, 30)
+    };
+    // Hosted backend (e.g. xAI) when configured; otherwise DuckDuckGo. The
+    // `advanced` flag drives a deeper, paged DDG search when no backend is set.
+    if !config.api_key.is_empty() && !config.base_url.is_empty() {
+        return hosted_web_search(&config.base_url, &config.api_key, query, max_results, advanced).await;
+    }
+    ddg_web_search(query, max_results, advanced).await
+}
+
+async fn hosted_web_search(
+    endpoint: &str,
+    api_key: &str,
+    query: &str,
+    max_results: usize,
+    advanced: bool,
+) -> Result<String> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(20))
         .build()?;
     let resp = client
-        .get(&url)
-        .header("User-Agent", "Mozilla/5.0 (compatible; Goble/1.0)")
+        .post(endpoint)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({ "query": query, "max_results": max_results, "advanced": advanced }))
         .send()
         .await
-        .context("web_search request failed")?
+        .context("hosted web_search request failed")?
         .text()
         .await
-        .context("web_search failed to read body")?;
-    let mut results = Vec::new();
-    for result_html in resp.split(r#"class="result""#).skip(1) {
-        let title = regex_lite::Regex::new(r#"class="result__a"[^>]*>(.*?)</a>"#)
-            .ok()
-            .and_then(|re| re.captures(result_html))
-            .and_then(|c| c.get(1))
-            .map(|m| html_unescape(m.as_str()))
-            .unwrap_or_default();
-        let snippet = regex_lite::Regex::new(r#"class="result__snippet"[^>]*>(.*?)</a>"#)
-            .ok()
-            .and_then(|re| re.captures(result_html))
-            .and_then(|c| c.get(1))
-            .map(|m| html_unescape(m.as_str()))
-            .unwrap_or_default();
-        let href = regex_lite::Regex::new(r#"class="result__a"[^>]*href="([^"]+)""#)
-            .ok()
-            .and_then(|re| re.captures(result_html))
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
+        .context("hosted web_search failed to read body")?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&resp).context("hosted web_search returned invalid JSON")?;
+    let empty: Vec<serde_json::Value> = Vec::new();
+    let results = parsed
+        .get("results")
+        .and_then(|r| r.as_array())
+        .unwrap_or(&empty);
+    let mut out = Vec::new();
+    for result in results.iter().take(max_results) {
+        let title = result.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let url = result.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        let snippet = result.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
         if title.is_empty() && snippet.is_empty() {
             continue;
         }
-        results.push(format!(
-            "TITLE: {}\nURL: {}\nSNIPPET: {}\n",
-            title, href, snippet
-        ));
-        if results.len() >= 10 {
+        out.push(format!("TITLE: {}\nURL: {}\nSNIPPET: {}\n", title, url, snippet));
+    }
+    Ok(format!("{} results\n{}", out.len(), out.join("\n")))
+}
+
+/// Decode a DuckDuckGo redirect `//duckduckgo.com/l/?uddg=<encoded>&rut=...` to
+/// the real destination URL, falling back to the original href when it is not a
+/// DDG redirect.
+fn decode_ddg_url(href: &str) -> String {
+    let idx = href.find("uddg=").map(|i| i + 5).unwrap_or(usize::MAX);
+    if idx < href.len() {
+        let rest = &href[idx..];
+        let encoded = rest.split('&').next().unwrap_or(rest);
+        if let Ok(decoded) = urlencoding::decode(encoded) {
+            let decoded = decoded.into_owned();
+            if decoded.starts_with("http://") || decoded.starts_with("https://") {
+                return decoded;
+            }
+        }
+    }
+    href.to_string()
+}
+
+async fn ddg_web_search(query: &str, max_results: usize, advanced: bool) -> Result<String> {
+    let encoded = urlencoding::encode(query);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let base_url = format!("https://html.duckduckgo.com/html/?q={}", encoded);
+    let mut results: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut offset: Option<usize> = None;
+    // `advanced` runs a deeper, best-effort paged scan to gather more distinct
+    // results than the handful a single page returns; duplicates are dropped.
+    let max_pages = if advanced { 3 } else { 1 };
+    for _ in 0..max_pages {
+        let url = match offset {
+            Some(s) => format!("{base_url}&s={s}"),
+            None => base_url.clone(),
+        };
+        let resp = client
+            .get(&url)
+            .header("User-Agent", "Mozilla/5.0 (compatible; Goble/1.0)")
+            .send()
+            .await
+            .context("web_search request failed")?
+            .text()
+            .await
+            .context("web_search failed to read body")?;
+        offset = regex_lite::Regex::new(r#"name="s" value="(\d+)""#)
+            .ok()
+            .and_then(|re| re.captures(&resp))
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse::<usize>().ok())
+            .filter(|&s| s > 0);
+        for result_html in resp.split(r#"class="result""#).skip(1) {
+            let title = regex_lite::Regex::new(r#"class="result__a"[^>]*>(.*?)</a>"#)
+                .ok()
+                .and_then(|re| re.captures(result_html))
+                .and_then(|c| c.get(1))
+                .map(|m| html_unescape(m.as_str()))
+                .unwrap_or_default();
+            let snippet = regex_lite::Regex::new(r#"class="result__snippet"[^>]*>(.*?)</a>"#)
+                .ok()
+                .and_then(|re| re.captures(result_html))
+                .and_then(|c| c.get(1))
+                .map(|m| html_unescape(m.as_str()))
+                .unwrap_or_default();
+            let href = regex_lite::Regex::new(r#"class="result__a"[^>]*href="([^"]+)""#)
+                .ok()
+                .and_then(|re| re.captures(result_html))
+                .and_then(|c| c.get(1))
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            let url = decode_ddg_url(&href);
+            if title.is_empty() && snippet.is_empty() {
+                continue;
+            }
+            if !seen.insert(url.clone()) {
+                continue;
+            }
+            results.push(format!("TITLE: {}\nURL: {}\nSNIPPET: {}\n", title, url, snippet));
+            if results.len() >= max_results {
+                break;
+            }
+        }
+        if results.len() >= max_results || !advanced {
             break;
         }
     }
@@ -1683,11 +2263,38 @@ fn resolve_path(path: &str, workspace_dir: &std::path::Path) -> Result<PathBuf> 
     let canonical_base = workspace_dir
         .canonicalize()
         .unwrap_or_else(|_| workspace_dir.to_path_buf());
-    let canonical_resolved = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+    let canonical_resolved = canonicalize_loose(&resolved);
     if !canonical_resolved.starts_with(&canonical_base) {
         anyhow::bail!("path {path:?} escapes workspace directory {canonical_base:?}");
     }
     Ok(canonical_resolved)
+}
+
+/// Canonicalize the deepest existing ancestor of `path` and re-append the
+/// not-yet-existing tail. Without this, a target that is about to be created
+/// (e.g. a `write_file` destination) would keep a non-canonical prefix, so a
+/// symlinked workspace root (on macOS `/var` -> `/private/var`) would fail the
+/// `starts_with` containment check and falsely reject a path inside the
+/// workspace.
+fn canonicalize_loose(path: &std::path::Path) -> PathBuf {
+    let mut existing = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while !existing.exists() {
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                existing = parent.to_path_buf();
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+    let mut canon = existing
+        .canonicalize()
+        .unwrap_or_else(|_| existing.to_path_buf());
+    for name in tail.iter().rev() {
+        canon.push(name);
+    }
+    canon
 }
 
 #[cfg(test)]
@@ -1721,6 +2328,19 @@ mod tests {
         ));
         let harness = Harness::new(store.clone()).with_llm(llm);
         (store, chat_id, harness)
+    }
+
+    #[tokio::test]
+    async fn test_execute_open_screen_acknowledges_handoff() {
+        let (_, chat_id, harness) = harness_with_tool("open_screen", serde_json::json!({ "host": "vm.example.com" }));
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "open the remote desktop", "mock", "mock")
+            .collect()
+            .await;
+        let finished_tool = events.iter().any(
+            |e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("handoff requested to vm.example.com:3389")),
+        );
+        assert!(finished_tool);
     }
 
     #[tokio::test]
@@ -2055,6 +2675,42 @@ mod tests {
             .collect()
             .await;
         assert!(events.iter().any(|e| matches!(e, HarnessEvent::ToolCallError { message, .. } if message.contains("not in the allowed list"))));
+    }
+
+    // The runner degrades to direct, unconfined execution when no sandbox is
+    // configured: commands run exactly as they did before goble-sandbox wiring.
+    #[tokio::test]
+    async fn sandboxed_runner_without_sandbox_runs_directly() {
+        let runner = SandboxedCommandRunner::default_tools();
+        let out = runner
+            .run("echo", &["fallthrough".to_string()])
+            .await
+            .unwrap();
+        assert!(out.contains("fallthrough"));
+    }
+
+    // `with_sandbox(None)` is a no-op: the runner still executes the command
+    // directly, preserving default behavior.
+    #[tokio::test]
+    async fn sandboxed_runner_with_sandbox_none_is_noop() {
+        let runner = SandboxedCommandRunner::default_tools().with_sandbox(None);
+        let out = runner.run("echo", &["noop".to_string()]).await.unwrap();
+        assert!(out.contains("noop"));
+    }
+
+    // When a sandbox backend cannot run on this platform (here a hardened profile
+    // against the no-op backend, which rejects hardening as an unavailable
+    // backend would) the runner degrades to direct execution instead of failing.
+    #[tokio::test]
+    async fn sandboxed_runner_degrades_when_backend_unavailable() {
+        let profile = goble_sandbox::SandboxProfile::hardened("prod");
+        let sb: Box<dyn Sandbox> = Box::new(goble_sandbox::NoopSandbox::new(profile));
+        let runner = SandboxedCommandRunner::default_tools().with_sandbox(Some(sb));
+        let out = runner
+            .run("echo", &["degraded".to_string()])
+            .await
+            .unwrap();
+        assert!(out.contains("degraded"));
     }
 
     #[tokio::test]
@@ -2414,5 +3070,157 @@ mod tests {
             .collect();
         assert!(finished.iter().any(|r| r.contains("echo")));
         assert!(finished.iter().any(|r| r.contains("hello from harness")));
+    }
+
+    #[test]
+    fn test_web_search_tool_schema() {
+        let store = Store::open_in_memory().unwrap();
+        let harness = Harness::new(store);
+        let tool = harness
+            .list_tools()
+            .into_iter()
+            .find(|t| t.name == "web_search")
+            .expect("web_search tool should exist");
+        let props = tool
+            .parameters
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("web_search schema should have properties");
+        assert!(props.contains_key("query"));
+        assert!(props.contains_key("max_results"), "web_search should expose max_results");
+        assert!(props.contains_key("advanced"), "web_search should expose advanced");
+        assert_eq!(props["max_results"]["maximum"], 30);
+        let required = tool
+            .parameters
+            .get("required")
+            .and_then(|r| r.as_array())
+            .expect("web_search schema should list required");
+        assert!(required.iter().any(|v| v == "query"));
+    }
+
+    #[test]
+    fn test_decode_ddg_url() {
+        assert_eq!(
+            decode_ddg_url("//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fcyanheads%2Ffilesystem-mcp-server&rut=abc"),
+            "https://github.com/cyanheads/filesystem-mcp-server"
+        );
+        assert_eq!(
+            decode_ddg_url("https://example.com/page"),
+            "https://example.com/page"
+        );
+        // Non-http decoded values are not trusted; the original href is kept.
+        assert_eq!(
+            decode_ddg_url("//duckduckgo.com/l/?uddg=not-a-url"),
+            "//duckduckgo.com/l/?uddg=not-a-url"
+        );
+    }
+
+    #[test]
+    fn test_credential_expansion_and_listing() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(list_credentials(&store).unwrap(), "no credentials stored");
+
+        store.set_credential("github_token", "ghs_secret").unwrap();
+        assert_eq!(list_credentials(&store).unwrap(), "stored credentials: github_token");
+
+        // Placeholder is substituted server-side; the value only flows into the
+        // process argv, never into a returned tool result or the transcript.
+        let cmd = r#"curl -H "Authorization: Bearer {{credential:github_token}}" url"#;
+        assert_eq!(
+            expand_credential_refs(&store, cmd).unwrap(),
+            r#"curl -H "Authorization: Bearer ghs_secret" url"#
+        );
+        assert_eq!(
+            expand_credential_refs(&store, "echo {{credential:github_token}} {{credential:github_token}}")
+                .unwrap(),
+            "echo ghs_secret ghs_secret"
+        );
+        // A command with no credential reference passes through untouched.
+        assert_eq!(
+            expand_credential_refs(&store, "git status").unwrap(),
+            "git status"
+        );
+        // An unknown credential is an error, never a silently-expanded secret.
+        assert!(expand_credential_refs(&store, "{{credential:nope}}").is_err());
+
+        // The `credentials` tool is advertised to the model and only lists names.
+        let harness = Harness::new(store);
+        assert!(harness.list_tools().iter().any(|t| t.name == "credentials"));
+    }
+
+    #[test]
+    fn test_principals_lists_grants() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_principal("p1", "user", "Ada", "2024-01-01T00:00:00Z")
+            .unwrap();
+        assert!(list_principals(&store).unwrap().contains("no grants"));
+
+        store.grant_access("p1", "run", "workspace").unwrap();
+        let listing = list_principals(&store).unwrap();
+        assert!(listing.contains("principal p1 (user, Ada)"));
+        assert!(listing.contains("run:workspace"));
+
+        let harness = Harness::new(store);
+        assert!(harness.list_tools().iter().any(|t| t.name == "principals"));
+    }
+
+    #[test]
+    fn test_user_guide_lists_topics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(dir.join("06-remote-access.md"), "# Remote Access\nBody\n").unwrap();
+        std::fs::write(dir.join("07-mobile-access.md"), "# Mobile Access\nBody\n").unwrap();
+
+        let out = user_guide(&serde_json::json!({}), &dir).unwrap();
+        assert!(out.contains("remote-access"));
+        assert!(out.contains("Mobile Access"));
+    }
+
+    #[test]
+    fn test_user_guide_reads_topic_by_bare_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(
+            dir.join("06-remote-access.md"),
+            "# Remote Access\n\nYou can expose this machine via Tailscale.\n",
+        )
+        .unwrap();
+
+        let out = user_guide(&serde_json::json!({"topic": "remote-access"}), &dir).unwrap();
+        assert!(out.contains("Tailscale"));
+    }
+
+    #[test]
+    fn test_user_guide_reads_topic_by_filename() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(dir.join("04-credentials.md"), "# Credentials\n\nSecrets stay hidden.\n").unwrap();
+
+        let out = user_guide(&serde_json::json!({"topic": "04-credentials.md"}), &dir).unwrap();
+        assert!(out.contains("Secrets stay hidden"));
+    }
+
+    #[test]
+    fn test_user_guide_unknown_topic_lists_available() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(dir.join("09-tools.md"), "# Tools\n").unwrap();
+
+        let out = user_guide(&serde_json::json!({"topic": "nope"}), &dir).unwrap();
+        assert!(out.contains("No user guide topic"));
+        assert!(out.contains("tools"));
+    }
+
+    #[test]
+    fn test_user_guide_missing_dir_is_helpful() {
+        let out = user_guide(&serde_json::json!({}), std::path::Path::new("/no/such/dir")).unwrap();
+        assert!(out.contains("not available yet"));
+    }
+
+    #[test]
+    fn test_system_prompt_mentions_user_guide() {
+        assert!(HARNESS_SYSTEM_PROMPT.contains("user_guide"));
+        assert!(harness_tool_definitions().iter().any(|t| t.name == "user_guide"));
     }
 }

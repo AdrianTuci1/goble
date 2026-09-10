@@ -18,11 +18,26 @@ mod tests {
     }
 
     #[test]
-    fn test_worker_config() {
-        let w = WorkerConfig::new("vps", "1.2.3.4", "root").with_pairing_code("123456");
-        assert_eq!(w.host, "1.2.3.4");
-        assert_eq!(w.pairing_code, "123456");
-        assert_eq!(w.port, 7878);
+    fn test_worker_config_mtls_url() {
+        let bundle = crate::provision::WorkerBundle {
+            worker_id: "w-1".to_string(),
+            cert_pem: "CERT".to_string(),
+            key_pem: "KEY".to_string(),
+            ca_cert_pem: "CA".to_string(),
+            cluster_name: "goble".to_string(),
+        };
+        let cfg = WorkerConfig::new("vps", "1.2.3.4", "root")
+            .with_pairing_code("123456")
+            .with_worker_bundle(bundle);
+        assert_eq!(cfg.websocket_url(), "wss://1.2.3.4:7878/ws");
+        assert!(cfg.worker_bundle.is_some());
+    }
+
+    #[test]
+    fn test_worker_config_plain_url() {
+        let cfg = WorkerConfig::new("vps", "1.2.3.4", "root").with_pairing_code("123456");
+        assert_eq!(cfg.websocket_url(), "ws://1.2.3.4:7878/ws");
+        assert!(cfg.worker_bundle.is_none());
     }
 
     #[test]

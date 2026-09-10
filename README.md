@@ -1,50 +1,51 @@
-# Goble
+# Goble — Reversible execution substrate
 
-Goble is a desktop app that turns your chat into an autonomous agent control center. It is built with **Tauri** (Rust + React) and pairs with **Goblin** workers running on your own VPS.
+Goble is a **runtime substrate** for agentic work, in the
+[Shepherd](https://github.com/shepherd-agents/shepherd) zone: it turns an agent's execution into a
+**reversible, Git-like trace** that meta-agents can observe, fork, replay, and revert. We are not
+building "yet another agent" — we build a runtime + interaction layer onto which you attach your
+**own harness** (*bring-your-own-harness*): ours, Claude Code, Codex, or any agent CLI.
 
-Everything is configurable from chat: pick a model, describe what you need, and Goble handles the rest — agents, workers, cluster identity, and credentials are resolved in the background.
+The three moats (differentiators against competitors):
 
-## Quick setup
+1. **Reversibility** — execution is a Git-like trace: observe, fork, replay, revert.
+2. **Interaction** — live voice (STT→TTS) and screen (broadcast + computer-use).
+3. **Per-project observability** — for each directory you see what's running and what isn't.
 
-1. **Start the desktop app**
-   ```bash
-   cd crates/goble-desktop
-   npm install
-   npm run tauri dev
-   ```
+Dogfooding criterion: if the founder uses it daily on his own projects, it's valid.
 
-2. **Configure a model from the chat or Settings → LLM**
-   Paste your API key (OpenAI, Anthropic, OpenRouter, etc.) and pick a model. The key is stored in the local encrypted vault.
+---
 
-3. **Connect a worker**
-   Say something like *“connect a worker on my VPS at 1.2.3.4”* or go to **Settings → Workers** and click **Install / upgrade worker**. Provide SSH credentials, and Goble will:
-   - Download the latest Goblin release
-   - Generate a cluster identity and mTLS CA
-   - Install PEM keys on the VPS
-   - Pair the worker automatically in the background
+## What Goble is
 
-4. **Start working**
-   Create agents by describing them in plain language, run coding harnesses, schedule complex tasks, and watch executions in real time.
+| | |
+|---|---|
+| **It is not** | "yet another agent" / a proprietary harness |
+| **It is** | a runtime + interaction layer for agentic work, with pluggable harnesses |
+| **Structure** | follows Shepherd: workspace → task (signature = permission surface) → run (durable, inspectable trace) → effect/changeset → scope → grant → trace (fork/replay/revert) → settlement |
+| **Goble's pluses** | BYOH/harness-agnostic, voice + screen, per-project observability, normal remote deploy, medium selector |
 
-## What you can do
+The positioning difference from Shepherd: Shepherd is coupled to a specific agent; Goble presents
+reversibility **for any harness**, via the transport seam (`goble-harness-protocol`) and the
+harness's reversibility contract (`snapshot`/`restore`, opt-in).
 
-- **Natural-language agents** — describe an agent and Goble creates it. Example: *“Create a coding agent that reviews PRs, runs cargo test, and posts a summary.”*
-- **Coding harness** — run multi-step coding tasks: edit files, run commands, use git, run tests, deploy.
-- **Workflows & teams** — chain agents into workflows, assign them to teams, and schedule them by cron, HTTP, or heartbeat.
-- **MCP connectors** — attach external tool servers (search, shell, APIs). Credentials are selected from the encrypted vault.
-- **Observability** — live logs, execution traces, and worker status.
-- **Cluster identity** — one cluster key derives mTLS CA, device identity, and encrypted backups. The worker discovers the desktop cluster automatically and pairs itself.
+### Domain concepts
 
-## Project layout
+| Primitive | Meaning |
+|---|---|
+| **Medium** | which daemon listens — Local / VM / RemoteXrdp / Browser / Container (toggling between media) |
+| **Project** | a directory: the unit of observability and isolation |
+| **Session** | a worktree / working session inside a project |
+| **Task** | a harness invocation with grants (`ReadOnly`/`ReadWrite`) and a trigger (manual/cron/http/heartbeat) |
 
-```
-crates/goble-core/     shared types, protocol, crypto, LLM abstraction, MCP registry, store
-crates/goble-desktop/    Tauri desktop app + React UI
-crates/goblin-worker/    headless worker that runs on your VPS
-crates/goble-cli/        utility CLI for worker operations
-```
+"Agent" is no longer a first-class entity — a harness configured with scheduled tasks suffices;
+per-project observability makes agents redundant.
 
-## Development
+---
+
+## Quickstart
+
+The repo is a single Cargo workspace. Build + tests:
 
 ```bash
 # Format and check the whole workspace
@@ -53,14 +54,99 @@ cargo check --workspace --all-targets
 
 # Run tests
 cargo test --workspace
+```
 
-# Frontend only
-cd crates/goble-desktop
-npm test
-npm run build
+**Run the native UI** (the product shell, `app/` = `goble-app`, on `goble-ui` wgpu/winit):
 
-# Build a release bundle
-npm run tauri build
+```bash
+./scripts/dev-ui.sh
+```
+
+`dev-ui.sh` builds and runs `goble-app`; with `cargo-watch` installed it rebuilds and restarts the app
+on any change in `app/` or `crates/`. There's no live hot-reload — editing any `app` or `crates`
+source requires a normal rebuild.
+
+### Attach a harness
+
+Any harness becomes a `HarnessRuntime` (object-safe) and is registered in `HarnessRegistry`:
+
+- **internal** — `goble-harness-internal` wraps `goble_core::Harness`.
+- **CLI / BYOH** — `goble-harness-cli` drives an external subprocess speaking `goble-harness-protocol`.
+- **remote** — over the headless/remote `goble-daemon-client`.
+
+If the harness is reversible (`HarnessCapabilities.reversible` + `snapshot`/`restore`), the daemon
+captures the snapshot on settle and restores it on `rewind`; otherwise it falls back to
+transcript-only. So reversibility works with **any** harness.
+
+---
+
+## Architecture (short)
+
+```
+GUI (app/, thick-app on goble-ui)
+      │ thin client
+      ▼
+DaemonClient (goble-daemon-client)   ── in-process or over mTLS WebSocket
+      │
+      ▼
+DaemonPort (goble-daemon)            ← reusable, framework-agnostic core
+      │ transport seam
+      ▼
+goble-harness-protocol (BYOH seam) → HarnessRuntime (internal | cli subprocess | remote)
+```
+
+- **Types rule**: `types ← protocol ← runtime`.
+- **Two composition roots, one core**: daemon **embedded** (in-process, in the GUI binary — where the
+  local voice and screen actually run) and daemon **headless/remote** (`goblin-worker` on a VPS, over
+  mTLS WS). The GUI doesn't know where the daemon runs; the "medium" is which daemon listens.
+- **Reversibility + persistence**: `goble-replay` (per-turn ledger) + `goble-persistence`
+  (`CheckpointStore`, SQLite) — the reversible history survives a restart.
+
+Architecture docs:
+
+| Doc | What it covers |
+|---|---|
+| [`docs/substrate-architecture.md`](docs/substrate-architecture.md) | reversible execution substrate (Shepherd structure + Goble's pluses) |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | P2P security/deploy: identity, mTLS, roles |
+| [`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md) | workspace file structure |
+
+---
+
+## Project layout
+
+```
+app/                       GUIPRODUCT shell (goble-app, native wgpu/winit) → thin client over daemon
+crates/
+  goble-harness-*          BYOH seam: types ← protocol ← runtime (+ internal/cli/foreign)
+  goble-daemon-*           core + seam: goble-daemon, goble-daemon-protocol, goble-daemon-client
+  goble-replay             reversibility substrate (ledger + fork/replay/revert)
+  goble-persistence        durable store (SQLite) for checkpoints
+  goble-voice              voice: STT (StreamingSttEvent) + TTS, `audio` feature
+  goble-sandbox            profile-driven isolation (Seatbelt/Landlock/seccomp/bwrap)
+  goble-workflow           scripted engine + journaled WorkflowHostRequest
+  goble-screen-core        screen abstractions: capture + control (broadcast / computer-use)
+  goble-core               existing core (store, identity, protocol, mcp, provision, worker…)
+  goblin-worker            headless/remote daemon (composition root on a VPS)
+  goble-cli                CLI utility for worker operations
+  goble-ui                 wgpu/winit widget library (WarpUI-like)
+deploy/                    goblin Dockerfile + goblin-cluster Helm chart
+scripts/                   dev-ui.sh, install-goblin.sh, release.sh
+```
+
+> `crates/goble-desktop` (Tauri/React/Rust) is **legacy** — `exclude`d from the workspace, being
+> migrated; the product shell is `app/`.
+
+---
+
+## Development
+
+```bash
+# Build + tests
+cargo check --workspace --all-targets
+cargo test --workspace
+
+# Native UI
+./scripts/dev-ui.sh
 ```
 
 ## License

@@ -1,0 +1,16 @@
+[package]
+name = "goble-daemon-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Wire types for the GUI<->daemon boundary: DaemonRequest / DaemonEvent / DaemonMessage."
+
+[dependencies]
+goble-harness-types = { path = "../goble-harness-types" }
+goble-workflow = { path = "../goble-workflow" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[features]
+default = []

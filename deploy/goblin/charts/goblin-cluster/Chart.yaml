@@ -1,0 +1,6 @@
+apiVersion: v2
+name: goblin-cluster
+description: Goble worker cluster StatefulSet with mTLS and snapshot disaster recovery
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

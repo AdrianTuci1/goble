@@ -1,0 +1,309 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::elements::{
+    caret_beam, AppContext, Container, CrossAxisAlignment, Element, EventContext, Flex,
+    LayoutContext, PaintContext, Point, SizeConstraint, Text,
+};
+use crate::event::{DispatchedEvent, ModifiersState};
+use crate::geometry::{PointF, Vector2F};
+use crate::theme::ColorToken;
+
+pub struct TextArea {
+    value: String,
+    placeholder: String,
+    focused: bool,
+    min_height: f32,
+    masked: bool,
+    on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
+    on_submit: Option<Rc<RefCell<dyn FnMut(ModifiersState) + 'static>>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+    root: Option<Box<dyn Element>>,
+}
+
+impl TextArea {
+    pub fn new() -> Self {
+        Self {
+            value: String::new(),
+            placeholder: String::new(),
+            focused: false,
+            min_height: 80.0,
+            masked: false,
+            on_change: None,
+            on_focus_change: None,
+            on_submit: None,
+            size: None,
+            origin: None,
+            root: None,
+        }
+    }
+
+    pub fn with_value(mut self, value: impl Into<String>) -> Self {
+        self.value = value.into();
+        self
+    }
+
+    pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    pub fn with_min_height(mut self, height: f32) -> Self {
+        self.min_height = height;
+        self
+    }
+
+    /// Render the typed value as a masked (bullet) string while keeping the real
+    /// value intact — used for credential/secret fields.
+    pub fn with_masked(mut self, masked: bool) -> Self {
+        self.masked = masked;
+        self
+    }
+
+    pub fn with_on_change<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_change = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    pub fn with_on_focus_change<F: FnMut(bool) + 'static>(mut self, callback: F) -> Self {
+        self.on_focus_change = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// When set, pressing Enter fires the callback instead of inserting a
+    /// newline. The callback receives the modifiers of the Enter key event so
+    /// the host can tell a plain Enter (terminal command) from Cmd/Ctrl+Enter
+    /// (submit to agent).
+    pub fn with_on_submit<F: FnMut(ModifiersState) + 'static>(mut self, callback: F) -> Self {
+        self.on_submit = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    fn set_focused(&mut self, focused: bool) {
+        if self.focused == focused {
+            return;
+        }
+        self.focused = focused;
+        if let Some(cb) = self.on_focus_change.as_ref() {
+            (cb.borrow_mut())(focused);
+        }
+    }
+
+    fn rebuild(&mut self, app: &AppContext) {
+        let display = if self.masked && !self.value.is_empty() {
+            "•".repeat(self.value.chars().count())
+        } else if self.value.is_empty() && !self.placeholder.is_empty() {
+            self.placeholder.clone()
+        } else {
+            self.value.clone()
+        };
+        let color = if self.value.is_empty() {
+            ColorToken::Muted
+        } else {
+            ColorToken::Text
+        };
+        let text = Text::new(display).with_theme_color(color, app).finish();
+        // Transparent: no background/border or internal padding so the textarea
+        // reads as part of the surrounding rich-input bar. A focused area shows
+        // the insertion beam after the text; the rich input is single-line in
+        // practice (Enter submits), so the beam sits at the text's end.
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        row = row.with_child(text);
+        if self.focused {
+            row = row.with_child(caret_beam(app));
+        }
+        self.root = Some(Container::new(row.finish()).finish());
+    }
+}
+
+impl Default for TextArea {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Element for TextArea {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        // Rebuild every layout so externally-driven value/focus changes render.
+        self.rebuild(app);
+        let mut inner_constraint = constraint;
+        inner_constraint.min.y = inner_constraint.min.y.max(self.min_height);
+        let mut size = self
+            .root
+            .as_mut()
+            .unwrap()
+            .layout(inner_constraint, ctx, app);
+        // The root is transparent, so keep the reported/hit area at least the
+        // requested minimum: the whole composer bar row stays clickable even
+        // when the displayed text is empty.
+        size.x = size.x.max(inner_constraint.min.x);
+        size.y = size.y.max(inner_constraint.min.y);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.root.as_mut().unwrap().paint(origin, ctx, app);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        _ctx: &mut EventContext,
+        _app: &AppContext,
+    ) -> bool {
+        match event {
+            DispatchedEvent::MouseDown { position, .. } => {
+                if let Some(bounds) = self.bounds() {
+                    if bounds.contains(PointF::new(position.x, position.y)) {
+                        self.set_focused(true);
+                        return true;
+                    }
+                    self.set_focused(false);
+                }
+                false
+            }
+            DispatchedEvent::KeyDown { key, modifiers } => {
+                if !self.focused {
+                    return false;
+                }
+                if key == "Backspace" {
+                    self.value.pop();
+                } else if key == "Enter" {
+                    if let Some(cb) = self.on_submit.as_ref() {
+                        (cb.borrow_mut())(*modifiers);
+                        return true;
+                    }
+                    self.value.push('\n');
+                } else if key.len() == 1 {
+                    self.value.push_str(key);
+                } else {
+                    return false;
+                }
+                if let Some(cb) = self.on_change.as_ref() {
+                    (cb.borrow_mut())(self.value.clone());
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::vec2f;
+
+    fn app() -> AppContext {
+        AppContext::default()
+    }
+
+    #[test]
+    fn enter_fires_submit_instead_of_newline() {
+        let app = app();
+        let submitted = Rc::new(RefCell::new(0));
+        let submitted_clone = submitted.clone();
+        let mut area = TextArea::new()
+            .with_value("hello")
+            .with_focused(true)
+            .with_on_submit(move |_mods| *submitted_clone.borrow_mut() += 1);
+        area.layout(
+            SizeConstraint::loose(Vector2F::new(200.0, 100.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        area.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+
+        let mut event_ctx = EventContext::default();
+        let handled = area.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Enter".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut event_ctx,
+            &app,
+        );
+        assert!(handled, "Enter should be handled when focused");
+        assert_eq!(*submitted.borrow(), 1, "submit callback should fire");
+        assert_eq!(
+            area.value(),
+            "hello",
+            "Enter should not insert a newline when submitting"
+        );
+    }
+
+    #[test]
+    fn mouse_down_fires_focus_change() {
+        let app = app();
+        let focus_changes = Rc::new(RefCell::new(Vec::new()));
+        let changes_clone = focus_changes.clone();
+        // The textarea is transparent, so the clickable area is the text
+        // extent; a placeholder gives it a real hit box at (10, 10).
+        let mut area = TextArea::new()
+            .with_placeholder("Type a message")
+            .with_on_focus_change(move |focused| {
+                changes_clone.borrow_mut().push(focused);
+            });
+        area.layout(
+            SizeConstraint::loose(Vector2F::new(200.0, 100.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        area.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+
+        let mut event_ctx = EventContext::default();
+        area.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(10.0, 10.0),
+                button: 0,
+            },
+            &mut event_ctx,
+            &app,
+        );
+        assert_eq!(
+            *focus_changes.borrow(),
+            vec![true],
+            "clicking inside should report gaining focus"
+        );
+
+        area.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(500.0, 500.0),
+                button: 0,
+            },
+            &mut event_ctx,
+            &app,
+        );
+        assert_eq!(
+            *focus_changes.borrow(),
+            vec![true, false],
+            "clicking outside should report losing focus"
+        );
+    }
+}

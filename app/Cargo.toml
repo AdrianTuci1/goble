@@ -1,0 +1,84 @@
+[package]
+name = "goble-app"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Composes the remote WebSocket daemon-client codec. The daemon seam (local
+# embedded) is always available; this feature readies the remote transport.
+daemon = ["goble-daemon-client/remote"]
+
+[dependencies]
+goble-ui = { path = "../crates/goble-ui" }
+goble-core = { path = "../crates/goble-core" }
+goble-desktop-service = { path = "../crates/goble-desktop-service" }
+goble-daemon-client = { path = "../crates/goble-daemon-client" }
+goble-daemon-protocol = { path = "../crates/goble-daemon-protocol" }
+goble-harness-types = { path = "../crates/goble-harness-types" }
+goble-harness-cli = { path = "../crates/goble-harness-cli" }
+goble-persistence = { path = "../crates/goble-persistence" }
+goble-screen-core = { path = "../crates/goble-screen-core" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+wgpu = { version = "25.0", default-features = false, features = ["wgsl", "metal", "dx12", "vulkan", "gles"] }
+winit = { version = "0.30", features = ["rwh_06"] }
+tokio = { version = "1.43", features = ["rt-multi-thread"] }
+# PTY-backed terminal pane. The terminal reads its child on a background
+# thread and coalesces output into the render buffer (never blocking the UI
+# thread); see `src/terminal.rs`.
+portable-pty = "0.9"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+anyhow = "1.0"
+pollster = "0.4"
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+# Integration tests spin up an in-memory sqlite store + a temp thread-store dir.
+tempfile = "3"
+
+[[test]]
+name = "chat_flow"
+path = "src/integration_testing/chat_flow.rs"
+
+[[test]]
+name = "cron_flow"
+path = "src/integration_testing/cron_flow.rs"
+
+[[test]]
+name = "vault_flow"
+path = "src/integration_testing/vault_flow.rs"
+
+[[test]]
+name = "connector_flow"
+path = "src/integration_testing/connector_flow.rs"
+
+[[test]]
+name = "ui_render"
+path = "src/integration_testing/ui_render.rs"
+
+[[test]]
+name = "first_run_flow"
+path = "src/integration_testing/first_run_flow.rs"
+
+[[test]]
+name = "harness_flow"
+path = "src/integration_testing/harness_flow.rs"
+
+[[test]]
+name = "projects_flow"
+path = "src/integration_testing/projects_flow.rs"
+
+[[test]]
+name = "harness_pages_flow"
+path = "src/integration_testing/harness_pages_flow.rs"
+
+[[test]]
+name = "screen_flow"
+path = "src/integration_testing/screen_flow.rs"
+
+[[test]]
+name = "menu_flow"
+path = "src/integration_testing/menu_flow.rs"

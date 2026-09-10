@@ -2,6 +2,7 @@ use goble_core::llm::{CompletionRequest, LlmProvider, Message, Role, ToolDefinit
 use serde_json::json;
 
 #[tokio::test]
+#[ignore = "requires live DeepSeek API key"]
 async fn test_deepseek_streaming_hello() {
     let api_key = std::fs::read_to_string("/tmp/.goble_deepseek_key")
         .expect("deepseek key file")
@@ -38,6 +39,7 @@ async fn test_deepseek_streaming_hello() {
 }
 
 #[tokio::test]
+#[ignore = "requires live DeepSeek API key"]
 async fn test_deepseek_tool_call() {
     let api_key = std::fs::read_to_string("/tmp/.goble_deepseek_key")
         .expect("deepseek key file")
@@ -82,6 +84,7 @@ async fn test_provider_factory_deepseek() {
 }
 
 #[tokio::test]
+#[ignore = "requires live DeepSeek API key"]
 async fn test_deepseek_with_conversation_history() {
     let api_key = std::fs::read_to_string("/tmp/.goble_deepseek_key")
         .expect("deepseek key file")

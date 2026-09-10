@@ -1,0 +1,22 @@
+[package]
+name = "goble-screen-core"
+version = "0.1.0"
+edition = "2021"
+description = "Screen capture+control transport abstractions: a frame type, object-safe capturer/controller seams, a registry, and test mocks."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[features]
+default = []
+# Real platform backends (X11, macOS, Windows) are gated behind this feature and
+# are not compiled by default, so the crate builds everywhere with the in-crate
+# mocks. Linking a native backend is future work.
+platform = []

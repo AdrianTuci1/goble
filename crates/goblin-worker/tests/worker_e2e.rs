@@ -11,6 +11,7 @@ fn find_free_port() -> u16 {
 }
 
 #[tokio::test]
+#[ignore = "E2E: requires a built `goblin` binary (set GOBLIN_BIN); not run in the default suite"]
 async fn test_worker_health_and_websocket_run_agent() {
     let port = find_free_port();
     let workspace = tempfile::TempDir::new().unwrap();
@@ -30,6 +31,7 @@ async fn test_worker_health_and_websocket_run_agent() {
             &workspace.path().join("vault.json").to_string_lossy(),
         ])
         .env("RUST_LOG", "info")
+        .env("LLM_PROVIDER", "mock")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

@@ -55,7 +55,8 @@ impl ClusterKey {
         let salt = Salt::new(HKDF_SHA256, b"goble-cluster-key");
         let prk = salt.extract(&self.0);
         let mut okm = [0u8; 32];
-        let _ = prk.expand(&[b"backup"], ring::hkdf::HKDF_SHA256)
+        let _ = prk
+            .expand(&[b"backup"], ring::hkdf::HKDF_SHA256)
             .expect("32 bytes is within HKDF limit")
             .fill(&mut okm);
         okm
@@ -66,7 +67,8 @@ impl ClusterKey {
         let salt = Salt::new(HKDF_SHA256, b"goble-cluster-key");
         let prk = salt.extract(&self.0);
         let mut okm = [0u8; 32];
-        let _ = prk.expand(&[b"vault"], ring::hkdf::HKDF_SHA256)
+        let _ = prk
+            .expand(&[b"vault"], ring::hkdf::HKDF_SHA256)
             .expect("32 bytes is within HKDF limit")
             .fill(&mut okm);
         okm
@@ -77,7 +79,11 @@ impl ClusterKey {
         use ring::signature::{Ed25519KeyPair, KeyPair};
         let signing_key = Ed25519KeyPair::from_seed_unchecked(&self.0)
             .expect("32 bytes seed is a valid Ed25519 seed");
-        let public_key: &[u8; 32] = signing_key.public_key().as_ref().try_into().expect("Ed25519 public key is 32 bytes");
+        let public_key: &[u8; 32] = signing_key
+            .public_key()
+            .as_ref()
+            .try_into()
+            .expect("Ed25519 public key is 32 bytes");
         let pkcs8 = build_ed25519_pkcs8_v2(&self.0, public_key);
         let pkcs8_der = rustls::pki_types::PrivatePkcs8KeyDer::from(pkcs8);
         rcgen::KeyPair::from_pkcs8_der_and_sign_algo(&pkcs8_der, &rcgen::PKCS_ED25519)
@@ -186,12 +192,21 @@ pub struct ClusterIdentity {
 
 impl ClusterIdentity {
     /// Create a new cluster and issue a device certificate for this device.
-    pub fn generate(cluster_name: impl Into<String>, device_id: &str, role: ClusterRole) -> Result<Self> {
+    pub fn generate(
+        cluster_name: impl Into<String>,
+        device_id: &str,
+        role: ClusterRole,
+    ) -> Result<Self> {
         let cluster_name = cluster_name.into();
         let key = ClusterKey::generate();
         let ca = key.to_ca(&cluster_name)?;
         let device = ca.sign_device(device_id, role, 365)?;
-        Ok(Self { cluster_name, key, ca, device })
+        Ok(Self {
+            cluster_name,
+            key,
+            ca,
+            device,
+        })
     }
 
     /// Restore a cluster from an exported key and issue a device certificate.
@@ -205,7 +220,12 @@ impl ClusterIdentity {
         let cluster_name = cluster_name.into();
         let ca = cluster_key.to_ca(&cluster_name)?;
         let device = ca.sign_device(device_id, role, 365)?;
-        Ok(Self { cluster_name, key: cluster_key, ca, device })
+        Ok(Self {
+            cluster_name,
+            key: cluster_key,
+            ca,
+            device,
+        })
     }
 
     /// Restore a cluster from an encrypted backup and issue a device certificate.
@@ -218,7 +238,12 @@ impl ClusterIdentity {
         let ca = backup.restore_ca(&cluster_key)?;
         let cluster_name = "restored-cluster".to_string();
         let device = ca.sign_device(device_id, role, 365)?;
-        Ok(Self { cluster_name, key: cluster_key, ca, device })
+        Ok(Self {
+            cluster_name,
+            key: cluster_key,
+            ca,
+            device,
+        })
     }
 
     /// Serialize the identity to a storable snapshot.
@@ -255,7 +280,6 @@ impl ClusterIdentity {
         ClusterBackup::from_ca(&self.key, &self.ca)
     }
 }
-
 
 /// Build a PKCS#8 v2 Ed25519 document from a seed and public key using the
 /// fixed DER template from ring. This is deterministic and serializable by rcgen.
@@ -310,19 +334,26 @@ mod tests {
     fn test_backup_restore_roundtrip() {
         let key = ClusterKey::generate();
         let ca = key.to_ca("cluster-a").unwrap();
-        let device = ca.sign_device("desktop-1", ClusterRole::Admin, 365).unwrap();
+        let device = ca
+            .sign_device("desktop-1", ClusterRole::Admin, 365)
+            .unwrap();
         ca.revoke(device.serial()).unwrap();
 
         let backup = ClusterBackup::from_ca(&key, &ca).unwrap();
         let restored_ca = backup.restore_ca(&key).unwrap();
         assert_eq!(restored_ca.identity.cert_pem, ca.identity.cert_pem);
         assert_eq!(restored_ca.identity.key_pem, ca.identity.key_pem);
-        assert!(restored_ca.store.read().unwrap().is_revoked(device.serial()));
+        assert!(restored_ca
+            .store
+            .read()
+            .unwrap()
+            .is_revoked(device.serial()));
     }
 
     #[test]
     fn test_cluster_identity_from_key_restored() {
-        let cluster = ClusterIdentity::generate("cluster-a", "desktop-1", ClusterRole::Admin).unwrap();
+        let cluster =
+            ClusterIdentity::generate("cluster-a", "desktop-1", ClusterRole::Admin).unwrap();
         let restored = ClusterIdentity::from_key(
             cluster.key.clone(),
             "cluster-a",

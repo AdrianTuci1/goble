@@ -17,17 +17,21 @@ impl FileVault {
         }
     }
 
-    pub fn load(&mut self) -> anyhow::Result<()> {
+    pub fn set_path(&mut self, path: PathBuf) {
+        self.path = path;
+    }
+
+    pub fn load(&mut self, passphrase: &[u8]) -> anyhow::Result<()> {
         if !self.path.exists() {
             return Ok(());
         }
         let bytes = std::fs::read(&self.path)?;
-        self.vault = CredentialVault::from_bytes(&bytes)?;
+        self.vault = CredentialVault::from_bytes_passphrase(&bytes, passphrase)?;
         Ok(())
     }
 
-    pub fn save(&self) -> anyhow::Result<()> {
-        let bytes = self.vault.to_bytes()?;
+    pub fn save(&self, passphrase: &[u8]) -> anyhow::Result<()> {
+        let bytes = self.vault.to_bytes_passphrase(passphrase)?;
         std::fs::create_dir_all(self.path.parent().unwrap_or(std::path::Path::new(".")))?;
         std::fs::write(&self.path, bytes)?;
         Ok(())
@@ -40,20 +44,20 @@ impl FileVault {
         passphrase: &[u8],
     ) -> anyhow::Result<()> {
         self.vault.set(key, value, passphrase)?;
-        self.save()
+        self.save(passphrase)
     }
 
-    pub fn get(&self, key: &str, passphrase: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
-        self.vault.get(key, passphrase)
-    }
-
-    pub fn remove(&mut self, key: &str) -> anyhow::Result<()> {
+    pub fn remove(&mut self, key: &str, passphrase: &[u8]) -> anyhow::Result<()> {
         self.vault.remove(key)?;
-        self.save()
+        self.save(passphrase)
     }
 
     pub fn keys(&self) -> Vec<String> {
         self.vault.keys()
+    }
+
+    pub fn get(&self, key: &str, passphrase: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
+        self.vault.get(key, passphrase)
     }
 }
 
@@ -71,7 +75,7 @@ mod tests {
         drop(vault);
 
         let mut loaded = FileVault::new(path);
-        loaded.load().unwrap();
+        loaded.load(b"p").unwrap();
         assert_eq!(loaded.keys(), vec!["x"]);
         assert_eq!(loaded.get("x", b"p").unwrap().unwrap(), b"y");
     }

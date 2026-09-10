@@ -187,6 +187,108 @@ impl CommandRunner for SandboxedCommandRunner {
     }
 }
 
+/// A pane's own shell, as the harness reaches it.
+///
+/// For an agent + terminal pane the agent's shell tool runs in the pane's own
+/// session instead of the sandbox (`agent-terminal-bridge.md` §5). That is a
+/// deliberate change of security posture: the command runs in the user's own
+/// shell, with the user's environment and credentials, rather than under
+/// [`SandboxedCommandRunner`]'s allow-list and 60 s timeout. The gates are the
+/// choice of pane and the per-command approval, not the sandbox.
+///
+/// The implementation is the app's terminal pane: it writes the line to the
+/// pty, holds the claim and hands back the block's output. The harness sees
+/// only this trait, so it never depends on the pane's threading.
+#[async_trait::async_trait]
+pub trait PaneSession: Send + Sync {
+    /// Run one command line in the pane's shell and return what it printed.
+    ///
+    /// `Err` when the pane could not run it or the command failed, so the tool
+    /// call fails rather than hangs. The line is already composed (see
+    /// [`shell_line`]); a command that is still running after a bounded wait is
+    /// a failure, not a hang.
+    async fn run_in_pane(&self, line: &str) -> Result<String>;
+}
+
+/// The shell tool's route for one agent turn: the pane's session when the pane
+/// has a terminal, the sandbox when it does not.
+///
+/// This is the switch that makes agent + terminal mode real. It is installed as
+/// the harness's one [`CommandRunner`], so every command tool (`run_command`
+/// and the `git_*` tools) takes the same route; a pane with no terminal keeps
+/// [`SandboxedCommandRunner`] exactly as before.
+pub struct RoutedCommandRunner {
+    /// The pane's own shell; `None` for a pane with no terminal.
+    pane: Option<Arc<dyn PaneSession>>,
+    sandbox: Arc<dyn CommandRunner>,
+}
+
+impl RoutedCommandRunner {
+    /// Route to the sandbox until a pane session is attached.
+    pub fn new(sandbox: Arc<dyn CommandRunner>) -> Self {
+        Self {
+            pane: None,
+            sandbox,
+        }
+    }
+
+    /// Route through `pane` when the turn's pane has a terminal.
+    pub fn with_pane_session(mut self, pane: Option<Arc<dyn PaneSession>>) -> Self {
+        self.pane = pane;
+        self
+    }
+
+    /// Whether commands run in a pane's session rather than the sandbox.
+    pub fn runs_in_pane(&self) -> bool {
+        self.pane.is_some()
+    }
+}
+
+#[async_trait::async_trait]
+impl CommandRunner for RoutedCommandRunner {
+    async fn run(&self, command: &str, args: &[String]) -> Result<String> {
+        match &self.pane {
+            Some(pane) => {
+                let line =
+                    shell_line(command, args).context("the agent asked for an empty command")?;
+                pane.run_in_pane(&line).await
+            }
+            None => self.sandbox.run(command, args).await,
+        }
+    }
+}
+
+/// Compose the command line the pane's shell will run, or `None` for an empty
+/// command.
+///
+/// The sandbox takes an argv; a shell takes one line. An argument containing a
+/// character the shell would interpret is single-quoted, so it reaches the
+/// command as the one word the model asked for.
+fn shell_line(command: &str, args: &[String]) -> Option<String> {
+    let command = command.trim();
+    if command.is_empty() {
+        return None;
+    }
+    let mut line = command.to_string();
+    for arg in args {
+        line.push(' ');
+        line.push_str(&quote_arg(arg));
+    }
+    Some(line)
+}
+
+/// Single-quote `arg` when the shell would otherwise change it.
+fn quote_arg(arg: &str) -> String {
+    let needs_quoting = arg.is_empty()
+        || arg
+            .chars()
+            .any(|c| c.is_whitespace() || "'\"\\$`;&|<>()*?[]{}!~#".contains(c));
+    if !needs_quoting {
+        return arg.to_string();
+    }
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolSchema {
     pub name: String,
@@ -194,12 +296,44 @@ pub struct ToolSchema {
     pub parameters: serde_json::Value,
 }
 
+/// The lifecycle state of a [`ChatToolCall`], persisted alongside it so a
+/// re-read from the store can render a terminal state without the live wire.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallStatus {
+    /// Planned by the model; execution has not started.
+    #[default]
+    Pending,
+    Running,
+    Finished,
+    Error,
+}
+
+/// One tool call recorded on a chat message's `tool_calls` column. `status` and
+/// `result` are written on start and updated on finish/error. Rows persisted by
+/// older builds carry only `id`/`name`/`arguments`, so the new fields default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatToolCall {
     pub id: String,
     pub name: String,
     pub arguments: serde_json::Value,
+    #[serde(default)]
+    pub status: ToolCallStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+}
+
+impl ChatToolCall {
+    /// A planned call, before it has started running.
+    pub fn planned(call: &LlmToolCall) -> Self {
+        Self {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            status: ToolCallStatus::Pending,
+            result: None,
+        }
+    }
 }
 
 /// An event emitted by the harness while processing a user turn.
@@ -236,12 +370,32 @@ pub enum HarnessEvent {
         question: String,
         quick_replies: Vec<String>,
     },
+    /// A command tool is waiting on the user's approval before it runs. The
+    /// candidates are the proposed command lines and `cwd` is where they would
+    /// run; resume with a [`CommandDecision`] to run one or refuse it.
+    CommandProposed {
+        id: String,
+        candidates: Vec<String>,
+        cwd: String,
+    },
     MissionUpdated {
         mission_id: String,
         status: String,
     },
     Done,
     Error(String),
+}
+
+/// The user's decision on a command the harness proposed (A6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+pub enum CommandDecision {
+    /// Run the chosen candidate text verbatim.
+    Approve(String),
+    /// Run the user's edited text instead.
+    Edit(String),
+    /// Refuse to run the command; the tool call becomes a `ToolCallError`.
+    Reject(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -499,6 +653,22 @@ impl Harness {
             model.to_string(),
             self.auto_approve,
             self.web_search.clone(),
+        )
+    }
+
+    /// Resume a turn that suspended on a proposed command, executing the user's
+    /// decision (A6): approve runs the chosen text, edit runs the edited text,
+    /// and reject fails the tool call instead of running anything.
+    pub fn resume_command(
+        &self,
+        chat_id: &str,
+        decision: CommandDecision,
+    ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
+        crate::reasoning::resume_command_turn(
+            self.store.clone(),
+            Arc::clone(&self.runner),
+            chat_id.to_string(),
+            decision,
         )
     }
 }
@@ -1005,6 +1175,50 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+/// How an invocation of a tool is presented in the transcript. The shape is a
+/// property of the tool's own [`ToolDefinition`]: it is declared here, beside
+/// the definitions the harness dispatches on, so a renderer can ask a
+/// definition how it presents instead of matching on a tool name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolPresentation {
+    /// The command line, then its output.
+    Command,
+    /// A file path.
+    Path,
+    /// A file edit: diff rows.
+    Diff,
+    /// A search: the query and its sources.
+    Search,
+    /// A sub-agent: its own input and output rows.
+    SubAgent,
+    /// No specialised shape: the tool's arguments and its result.
+    #[default]
+    Generic,
+}
+
+/// The presentation a tool definition declares.
+pub fn tool_presentation(definition: &ToolDefinition) -> ToolPresentation {
+    match definition.name.as_str() {
+        "run_command" => ToolPresentation::Command,
+        "read_file" | "write_file" | "delete_file" => ToolPresentation::Path,
+        "edit_file" => ToolPresentation::Diff,
+        "web_search" | "search_store" | "search_mcp_servers" => ToolPresentation::Search,
+        "create_agent" | "run_agent" => ToolPresentation::SubAgent,
+        _ => ToolPresentation::Generic,
+    }
+}
+
+/// The presentation of a tool call, resolved from the definition the harness
+/// dispatches on. A tool the harness does not define (an MCP tool, say) has no
+/// declared shape and presents generically.
+pub fn tool_presentation_for(name: &str) -> ToolPresentation {
+    harness_tool_definitions()
+        .iter()
+        .find(|definition| definition.name == name)
+        .map(tool_presentation)
+        .unwrap_or_default()
+}
+
 pub(crate) fn arc_to_sender_ref(
     arc: &Arc<dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync>,
 ) -> &(dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync) {
@@ -1353,6 +1567,42 @@ fn create_team(store: &Store, args: &serde_json::Value) -> Result<String> {
 
 fn update_team(store: &Store, args: &serde_json::Value) -> Result<String> {
     create_team(store, args)
+}
+
+/// The tool whose free-form command line is proposed for approval before it runs
+/// (A6). The `git_*` tools are not gated: they take structured arguments, not a
+/// command the user can edit.
+pub(crate) const COMMAND_TOOL: &str = "run_command";
+
+/// The command lines a `run_command` call proposes to the user.
+///
+/// The line is rendered as the pane's shell would run it, but any
+/// `{{credential:<name>}}` placeholder is left unexpanded so a secret is never
+/// shown in a proposal.
+pub(crate) fn command_candidates(call: &LlmToolCall) -> Vec<String> {
+    let command = call.arguments["command"].as_str().unwrap_or_default();
+    let args: Vec<String> = call.arguments["args"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    shell_line(command, &args).into_iter().collect()
+}
+
+/// Run one approved command line verbatim through the harness's runner.
+///
+/// The approved text is the shell line the user saw; credential placeholders are
+/// expanded here, at execution time, so they still never reach the transcript.
+pub(crate) async fn run_approved_command(
+    store: &Store,
+    runner: &dyn CommandRunner,
+    line: &str,
+) -> Result<String> {
+    let line = expand_credential_refs(store, line)?;
+    runner.run(&line, &[]).await
 }
 
 async fn run_command(
@@ -2375,12 +2625,151 @@ mod tests {
                 "args": ["hi"]
             }),
         );
+        // The immediate path is the auto-approved one; approval suspension is
+        // covered by the harness approval tests.
+        let harness = harness.with_auto_approve(true);
         let events: Vec<_> = harness
             .run_turn(&chat_id, "run echo hi", "mock", "mock")
             .collect()
             .await;
         let finished = events.iter().any(|e| matches!(e, HarnessEvent::ToolCallFinished { result, .. } if result.contains("mock ran")));
         assert!(finished);
+    }
+
+    /// A pane session double: records the line it was asked to run and answers
+    /// with canned output, the way the pane does once the shell's
+    /// `CommandFinished` has produced the block's tool result.
+    struct FakePaneSession {
+        output: String,
+        lines: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PaneSession for FakePaneSession {
+        async fn run_in_pane(&self, line: &str) -> Result<String> {
+            self.lines.lock().unwrap().push(line.to_string());
+            Ok(self.output.clone())
+        }
+    }
+
+    /// One `run_command` tool call, driven through a real turn.
+    async fn run_command_result(
+        runner: Arc<dyn CommandRunner>,
+        command: &str,
+        args: serde_json::Value,
+    ) -> std::result::Result<String, String> {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let llm = Arc::new(MockProvider::new(
+            "mock",
+            CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![LlmToolCall {
+                    id: "tc-pane".to_string(),
+                    name: "run_command".to_string(),
+                    arguments: serde_json::json!({ "command": command, "args": args }),
+                }],
+            },
+        ));
+        // These tests exercise the runner's routing, not the approval gate.
+        let harness = Harness::new(store)
+            .with_llm(llm)
+            .with_runner(runner)
+            .with_auto_approve(true);
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "run it", "mock", "mock")
+            .collect()
+            .await;
+        for event in &events {
+            match event {
+                HarnessEvent::ToolCallFinished { result, .. } => return Ok(result.clone()),
+                HarnessEvent::ToolCallError { message, .. } => return Err(message.clone()),
+                _ => {}
+            }
+        }
+        panic!("the turn produced no tool outcome: {events:?}");
+    }
+
+    /// The agent's shell tool runs in the pane's session and returns the pane's
+    /// output — the whole point of agent + terminal mode.
+    #[tokio::test]
+    async fn a_pane_session_runs_the_agents_command_and_returns_its_output() {
+        let pane = Arc::new(FakePaneSession {
+            output: "total 0\nfile.txt".to_string(),
+            lines: std::sync::Mutex::new(Vec::new()),
+        });
+        let runner = Arc::new(
+            RoutedCommandRunner::new(Arc::new(SandboxedCommandRunner::default_tools()))
+                .with_pane_session(Some(pane.clone())),
+        );
+        assert!(runner.runs_in_pane());
+
+        let result = run_command_result(runner, "ls", serde_json::json!(["-la"]))
+            .await
+            .expect("the pane's command succeeds");
+        assert_eq!(result, "total 0\nfile.txt");
+        assert_eq!(
+            pane.lines.lock().unwrap().as_slice(),
+            ["ls -la"],
+            "the pane ran the composed command line"
+        );
+    }
+
+    /// The pane path is not gated by the sandbox's allow-list: a command the
+    /// sandbox refuses runs in the user's own shell. That is the deliberate
+    /// change of security posture this item makes, stated here as a test.
+    #[tokio::test]
+    async fn a_pane_session_is_not_gated_by_the_sandbox_allow_list() {
+        let pane = Arc::new(FakePaneSession {
+            output: "ran in the pane".to_string(),
+            lines: std::sync::Mutex::new(Vec::new()),
+        });
+        let runner = Arc::new(
+            RoutedCommandRunner::new(Arc::new(SandboxedCommandRunner::default_tools()))
+                .with_pane_session(Some(pane)),
+        );
+        let result = run_command_result(runner, "rm", serde_json::json!(["-rf", "/tmp/nothing"]))
+            .await
+            .expect("the pane's shell is not allow-listed");
+        assert_eq!(result, "ran in the pane");
+    }
+
+    /// With no pane session the sandbox is still the runner, enforcements and
+    /// all: `rm` stays refused, exactly as before this item.
+    #[tokio::test]
+    async fn the_sandbox_runs_the_tool_when_the_pane_has_no_session() {
+        let runner = Arc::new(RoutedCommandRunner::new(Arc::new(
+            SandboxedCommandRunner::default_tools(),
+        )));
+        assert!(!runner.runs_in_pane());
+
+        let err = run_command_result(runner, "rm", serde_json::json!(["-rf", "/"]))
+            .await
+            .expect_err("the sandbox still refuses an unknown command");
+        assert!(
+            err.contains("not in the allowed list"),
+            "the sandbox's allow-list is still enforced: {err}"
+        );
+    }
+
+    /// The pane takes one line, so an argv is composed into one and an argument
+    /// the shell would interpret is quoted.
+    #[test]
+    fn a_pane_line_composes_the_argv_and_quotes_what_the_shell_would_change() {
+        assert_eq!(shell_line("ls", &[]).as_deref(), Some("ls"));
+        assert_eq!(
+            shell_line("git", &["status".to_string()]).as_deref(),
+            Some("git status")
+        );
+        assert_eq!(
+            shell_line("echo", &["a b".to_string()]).as_deref(),
+            Some("echo 'a b'")
+        );
+        assert_eq!(
+            shell_line("echo", &["it's".to_string()]).as_deref(),
+            Some("echo 'it'\\''s'")
+        );
+        assert_eq!(shell_line("   ", &[]), None);
     }
 
     #[tokio::test]
@@ -2669,7 +3058,12 @@ mod tests {
             },
         ));
         let runner = Arc::new(SandboxedCommandRunner::default_tools());
-        let harness = Harness::new(store).with_llm(llm).with_runner(runner);
+        // Auto-approved so the allow-list refusal is what the test observes,
+        // rather than the approval suspension that now precedes every command.
+        let harness = Harness::new(store)
+            .with_llm(llm)
+            .with_runner(runner)
+            .with_auto_approve(true);
         let events: Vec<_> = harness
             .run_turn(&chat_id, "dangerous", "mock", "mock")
             .collect()
@@ -3222,5 +3616,41 @@ mod tests {
     fn test_system_prompt_mentions_user_guide() {
         assert!(HARNESS_SYSTEM_PROMPT.contains("user_guide"));
         assert!(harness_tool_definitions().iter().any(|t| t.name == "user_guide"));
+    }
+
+    /// Every tool shape is declared by a definition the harness dispatches on,
+    /// and an undefined tool (an MCP tool) presents generically.
+    #[test]
+    fn tool_presentation_is_read_from_the_definition() {
+        assert_eq!(
+            tool_presentation_for("run_command"),
+            ToolPresentation::Command
+        );
+        assert_eq!(tool_presentation_for("read_file"), ToolPresentation::Path);
+        assert_eq!(tool_presentation_for("edit_file"), ToolPresentation::Diff);
+        assert_eq!(
+            tool_presentation_for("web_search"),
+            ToolPresentation::Search
+        );
+        assert_eq!(
+            tool_presentation_for("create_agent"),
+            ToolPresentation::SubAgent
+        );
+        assert_eq!(
+            tool_presentation_for("credentials"),
+            ToolPresentation::Generic
+        );
+        assert_eq!(
+            tool_presentation_for("mcp__srv__tool"),
+            ToolPresentation::Generic
+        );
+
+        // The shape is a property of the definition, not of the lookup: asking
+        // the definition itself gives the same answer.
+        let definition = harness_tool_definitions()
+            .into_iter()
+            .find(|definition| definition.name == "edit_file")
+            .expect("edit_file is defined");
+        assert_eq!(tool_presentation(&definition), ToolPresentation::Diff);
     }
 }

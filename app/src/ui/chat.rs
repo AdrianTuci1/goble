@@ -9,9 +9,7 @@ use goble_ui::elements::{
     PopupMenuPosition, RoutineItem, Spacer, Text, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
-use goble_ui::{
-    ChatFragment, ChatMessage, ChatRole, ChatView, TerminalData, TerminalLine, TerminalStatus,
-};
+use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView};
 
 use crate::state::PaneControls;
 
@@ -31,31 +29,19 @@ fn with_inline_terminal(
     terminal: &std::rc::Rc<std::cell::RefCell<crate::terminal::TerminalRegistry>>,
     pane_id: u64,
 ) -> Vec<ChatMessage> {
-    let snapshot = {
+    // The pane's own executed-command block: the transcript draws it with the
+    // same terminal block the pane does, so one command is one block.
+    let block = {
         let reg = terminal.borrow();
-        reg.sessions.get(&pane_id).map(|s| s.snapshot(48))
+        reg.sessions
+            .get(&pane_id)
+            .and_then(crate::ui::terminal::executed_command_block)
     };
-    if let Some(snapshot) = snapshot {
-        if !snapshot.lines.is_empty() {
-            let lines: Vec<TerminalLine> = snapshot
-                .lines
-                .iter()
-                .map(|line| {
-                    let text = line.trim_end().to_string();
-                    if text.is_empty() {
-                        TerminalLine::info(" ")
-                    } else {
-                        TerminalLine::output(text)
-                    }
-                })
-                .collect();
-            let data =
-                TerminalData::new("terminal", lines).with_status(TerminalStatus::Success);
-            messages.push(ChatMessage::new(
-                ChatRole::Tool,
-                vec![ChatFragment::terminal(data)],
-            ));
-        }
+    if let Some(data) = block {
+        messages.push(ChatMessage::new(
+            ChatRole::Tool,
+            vec![ChatFragment::terminal(data)],
+        ));
     }
     messages
 }
@@ -90,6 +76,7 @@ pub fn build_agent_chat(
             agent_busy: state.agent_busy,
             inline_screen: None,
             screen_link: None,
+            scroll: Rc::new(RefCell::new(goble_ui::ScrollState::following())),
         });
 
     // The rich-input controls belong to this pane, not to the workspace: two
@@ -159,10 +146,16 @@ pub fn build_agent_chat(
                 .then(|| build_agent_error(app, actions)),
         )
         .with_messages(messages)
+        // The transcript scrolls and follows the stream; the state is
+        // app-owned per pane so a chosen scrollback position is held.
+        .with_scroll_state(session.scroll.clone())
         // Per-block terminal filter state is app-owned (shared) so the filter
         // tray's open flag + selection survive the per-frame rebuild; the copy
         // handler copies a terminal block's text to the clipboard.
         .with_terminal_filters(state.terminal_filters.clone())
+        // The app-owned reasoning expand map: a thinking row the user opened
+        // survives the per-frame rebuild.
+        .with_reasoning_expanded(state.reasoning_expanded.clone())
         // This pane's own filter bar state (seeded per pane before the
         // snapshot), so opening it in one pane leaves the siblings alone.
         .with_global_terminal_filter(state.terminal_global_filters.get(&pane_id).cloned())
@@ -563,4 +556,122 @@ fn build_agent_header(
     .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
     .with_padding(EdgeInsets::new(0.0, v_pad, 0.0, v_pad))
     .finish()
+}
+
+#[cfg(test)]
+mod transcript_scroll_tests {
+    use super::*;
+    use crate::state::UiState;
+    use goble_ui::elements::{LayoutContext, SizeConstraint};
+    use goble_ui::geometry::vec2f;
+    use goble_ui::ScrollState;
+
+    /// A transcript long enough to overflow the pane it is laid out in.
+    fn transcript(count: usize) -> Vec<ChatMessage> {
+        (0..count)
+            .map(|i| {
+                ChatMessage::new(
+                    ChatRole::Assistant,
+                    vec![ChatFragment::text(format!("streamed line {i}"))],
+                )
+            })
+            .collect()
+    }
+
+    /// The transcript scroll state the app hands pane 1.
+    fn pane_scroll(state: &UiState) -> Rc<RefCell<ScrollState>> {
+        state
+            .pane_chat_snapshot()
+            .get(&1)
+            .expect("pane 1 has chat data")
+            .scroll
+            .clone()
+    }
+
+    /// Lay the pane out at a fixed size, as the app does for every frame.
+    fn layout_pane(view: &mut ChatView, app: &AppContext) {
+        let _ = view.layout(
+            SizeConstraint::loose(vec2f(600.0, 480.0)),
+            &mut LayoutContext::default(),
+            app,
+        );
+    }
+
+    #[test]
+    fn a_new_transcript_opens_pinned_to_the_latest_message() {
+        let app = AppContext::default();
+        let mut state = UiState::mock();
+        state.ensure_pane_controls();
+        let scroll = pane_scroll(&state);
+        let mut view = ChatView::new()
+            .with_messages(transcript(60))
+            .with_scroll_state(scroll.clone());
+        layout_pane(&mut view, &app);
+        assert!(
+            scroll.borrow().max_offset() > 0.0,
+            "60 messages overflow the pane"
+        );
+        assert_eq!(
+            scroll.borrow().offset(),
+            scroll.borrow().max_offset(),
+            "the transcript opens at the end of the stream"
+        );
+    }
+
+    #[test]
+    fn new_content_does_not_move_a_scrollback_position_the_user_chose() {
+        let app = AppContext::default();
+        let mut state = UiState::mock();
+        state.ensure_pane_controls();
+        let scroll = pane_scroll(&state);
+        let mut view = ChatView::new()
+            .with_messages(transcript(60))
+            .with_scroll_state(scroll.clone());
+        layout_pane(&mut view, &app);
+
+        // The user scrolls up to read earlier output.
+        scroll.borrow_mut().scroll_by(-120.0);
+        let held = scroll.borrow().offset();
+        assert!(
+            held < scroll.borrow().max_offset(),
+            "the user left the end of the transcript"
+        );
+
+        // The agent streams on and the pane is rebuilt for the next frame.
+        let mut view = ChatView::new()
+            .with_messages(transcript(90))
+            .with_scroll_state(scroll.clone());
+        layout_pane(&mut view, &app);
+        assert_eq!(
+            scroll.borrow().offset(),
+            held,
+            "streaming must not move a scrollback position the user chose"
+        );
+    }
+
+    #[test]
+    fn returning_to_the_bottom_resumes_following_the_stream() {
+        let app = AppContext::default();
+        let mut state = UiState::mock();
+        state.ensure_pane_controls();
+        let scroll = pane_scroll(&state);
+        let mut view = ChatView::new()
+            .with_messages(transcript(60))
+            .with_scroll_state(scroll.clone());
+        layout_pane(&mut view, &app);
+        scroll.borrow_mut().scroll_by(-120.0);
+
+        // The user scrolls back to the bottom, so the stream is followed again.
+        scroll.borrow_mut().scroll_by(10_000.0);
+        assert!(scroll.borrow().is_pinned(), "back at the end re-pins");
+        let mut view = ChatView::new()
+            .with_messages(transcript(90))
+            .with_scroll_state(scroll.clone());
+        layout_pane(&mut view, &app);
+        assert_eq!(
+            scroll.borrow().offset(),
+            scroll.borrow().max_offset(),
+            "following resumed for the new content"
+        );
+    }
 }

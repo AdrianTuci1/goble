@@ -2,14 +2,37 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    AppContext, Chip, Clipped, ComposerButton, ConstrainedBox, Container, ContextPill,
-    CrossAxisAlignment, EdgeInsets, Element, Expanded, Flex, Icon, LayoutContext,
-    MainAxisAlignment, MainAxisSize, PaintContext, Padding, PillTraySide, Point, PopupMenu,
-    PopupMenuItem, PopupMenuPosition, SizeConstraint, Text, TextArea, Tooltip, TooltipPosition,
+    AppContext, Border, Button, ButtonVariant, Chip, Clipped, ComposerButton, ConstrainedBox,
+    Container, ContextPill, CrossAxisAlignment, EdgeInsets, Element, Expanded, Fill, Flex, Icon,
+    LayoutContext, MainAxisAlignment, MainAxisSize, Padding, PaintContext, PillTraySide, Point,
+    PopupMenu, PopupMenuItem, PopupMenuPosition, SizeConstraint, Text, TextArea, Tooltip,
+    TooltipPosition,
 };
 use crate::event::{DispatchedEvent, ModifiersState};
 use crate::geometry::Vector2F;
-use crate::theme::{ColorToken, SpacingToken};
+use crate::theme::{ColorToken, FontFamily, SpacingToken};
+use goble_core::harness::CommandDecision;
+
+/// The renderable state of a command the harness proposed and is waiting on
+/// (A6's `CommandProposed`): the call it suspended, the candidate command lines
+/// and the directory they would run in. Candidate generation is a model call
+/// and stays in the harness; the composer only renders what it is handed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandProposalUi {
+    pub id: String,
+    pub candidates: Vec<String>,
+    pub cwd: String,
+}
+
+impl CommandProposalUi {
+    pub fn new(id: impl Into<String>, candidates: Vec<String>, cwd: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            candidates,
+            cwd: cwd.into(),
+        }
+    }
+}
 
 pub struct ChatComposer {
     value: Rc<RefCell<String>>,
@@ -33,6 +56,14 @@ pub struct ChatComposer {
     branch_menu_items: Vec<PopupMenuItem>,
     branch_menu_open: Rc<RefCell<bool>>,
     on_select_branch_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    /// The command the harness is waiting on an approval for (A6). While set,
+    /// the composer shows the proposal card and the editor holds the selected
+    /// candidate so it can be run as-is or edited in place.
+    proposal: Option<CommandProposalUi>,
+    /// Which candidate is selected. App-owned, like the footer menus' `open`
+    /// flags, because the composer element is rebuilt every frame.
+    proposal_selected: Rc<RefCell<usize>>,
+    on_decision: Option<Rc<RefCell<dyn FnMut(String, CommandDecision) + 'static>>>,
     on_slash: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
@@ -103,6 +134,9 @@ impl ChatComposer {
             branch_menu_items: Vec::new(),
             branch_menu_open: Rc::new(RefCell::new(false)),
             on_select_branch_item: None,
+            proposal: None,
+            proposal_selected: Rc::new(RefCell::new(0)),
+            on_decision: None,
             on_slash: None,
             root: None,
             size: None,
@@ -303,6 +337,42 @@ impl ChatComposer {
         self
     }
 
+    /// Show the command the harness proposed and is waiting on (A6). The card
+    /// renders the candidate list above the editor, and an empty draft is
+    /// seeded from the selected candidate, so Enter always runs what the editor
+    /// shows whether it was cycled or edited.
+    pub fn with_proposal(mut self, proposal: CommandProposalUi) -> Self {
+        self.proposal = Some(proposal);
+        self
+    }
+
+    /// Set the app-owned selection index. Like the footer menus' `open` flags
+    /// this state must live outside the element, which is rebuilt every frame.
+    pub fn with_proposal_selection(mut self, selected: Rc<RefCell<usize>>) -> Self {
+        self.proposal_selected = selected;
+        self
+    }
+
+    /// Report the user's decision on a proposal as `(proposal id, decision)`,
+    /// in the harness's own [`CommandDecision`] form so the host can resume the
+    /// suspended turn with it verbatim.
+    pub fn with_on_decision<F: FnMut(String, CommandDecision) + 'static>(
+        mut self,
+        callback: F,
+    ) -> Self {
+        self.on_decision = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    pub fn proposal(&self) -> Option<&CommandProposalUi> {
+        self.proposal.as_ref()
+    }
+
+    /// The candidate Enter would approve, as the proposal currently stands.
+    pub fn selected_candidate(&self) -> Option<String> {
+        self.proposal_handles()?.selected_candidate()
+    }
+
     pub fn value(&self) -> String {
         self.value.borrow().clone()
     }
@@ -343,6 +413,223 @@ impl ChatComposer {
         pill.finish(app)
     }
 
+    /// Proposal-mode keys, taken before the editor sees them: the candidates
+    /// cycle and Enter/Esc decide. Typing is left to the textarea, so only these
+    /// keys are consumed and only while the composer is focused with a proposal
+    /// on screen.
+    fn handle_proposal_key(&mut self, event: &DispatchedEvent) -> bool {
+        if !self.focused || self.proposal.is_none() {
+            return false;
+        }
+        let DispatchedEvent::KeyDown { key, .. } = event else {
+            return false;
+        };
+        match key.as_str() {
+            "ArrowUp" => self.cycle_candidate(-1),
+            "ArrowDown" => self.cycle_candidate(1),
+            "Escape" => self.reject_decision(),
+            "Enter" => self.submit_decision(),
+            _ => false,
+        }
+    }
+
+    fn cycle_candidate(&mut self, step: isize) -> bool {
+        match self.proposal_handles() {
+            Some(handles) => {
+                handles.cycle(step);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn submit_decision(&mut self) -> bool {
+        self.proposal_handles()
+            .map(|h| h.approve())
+            .unwrap_or(false)
+    }
+
+    fn reject_decision(&mut self) -> bool {
+        self.proposal_handles().map(|h| h.reject()).unwrap_or(false)
+    }
+
+    /// The shared handles a proposal gesture acts on, or `None` in ordinary
+    /// composer mode. Both the keyboard path and the card's row/button
+    /// closures go through this, so a click and a key produce the same payload.
+    fn proposal_handles(&self) -> Option<ProposalHandles> {
+        let proposal = self.proposal.as_ref()?;
+        Some(ProposalHandles {
+            id: proposal.id.clone(),
+            candidates: proposal.candidates.clone(),
+            selected: self.proposal_selected.clone(),
+            value: self.value.clone(),
+            on_change: self.on_change.clone(),
+            on_decision: self.on_decision.clone(),
+        })
+    }
+
+    /// The proposal card: the candidate lines with the selected one marked, the
+    /// directory they would run in, and the approve/reject actions plus the
+    /// keyboard affordances.
+    fn proposal_card(&self, app: &AppContext) -> Option<Box<dyn Element>> {
+        let proposal = self.proposal.as_ref()?;
+        let handles = self.proposal_handles()?;
+        let sm = app.theme.spacing_px(SpacingToken::Sm);
+        let md = app.theme.spacing_px(SpacingToken::Md);
+        let selected = handles.selected_index();
+
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(sm);
+
+        let title = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(6.0)
+            .with_child(
+                Icon::new("terminal")
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Warning, app)
+                    .finish(),
+            )
+            .with_child(
+                Text::new("Agent proposes a command")
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_font_size(12.0)
+                    .finish(),
+            )
+            .finish();
+        let cwd = Clipped::new(
+            Text::new(proposal.cwd.clone())
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(11.0)
+                .with_max_lines(1)
+                .finish(),
+        )
+        .finish();
+        column = column.with_child(
+            Flex::row()
+                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(sm)
+                .with_child(title)
+                .with_child(cwd)
+                .finish(),
+        );
+
+        for (index, candidate) in proposal.candidates.iter().enumerate() {
+            let is_selected = index == selected;
+            let mut row = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(6.0);
+            if is_selected {
+                row = row.with_child(
+                    Text::new("▸")
+                        .with_theme_color(ColorToken::Accent, app)
+                        .with_font_size(11.0)
+                        .finish(),
+                );
+            }
+            row = row
+                .with_child(
+                    Text::new(format!("{}.", index + 1))
+                        .with_theme_color(ColorToken::Muted, app)
+                        .with_font_size(11.0)
+                        .finish(),
+                )
+                .with_child(
+                    Expanded::new(
+                        Clipped::new(
+                            Text::new(candidate.clone())
+                                .with_theme_color(
+                                    if is_selected {
+                                        ColorToken::Accent
+                                    } else {
+                                        ColorToken::Text
+                                    },
+                                    app,
+                                )
+                                .with_font_size(12.0)
+                                .with_font_family(FontFamily::Mono)
+                                .with_max_lines(1)
+                                .finish(),
+                        )
+                        .finish(),
+                    )
+                    .finish(),
+                );
+            let handles_for_click = handles.clone();
+            column = column.with_child(
+                ComposerButton::new(row.finish())
+                    .with_height(24.0)
+                    .with_on_click(move || handles_for_click.select(index))
+                    .finish(),
+            );
+        }
+
+        let hint = Expanded::new(
+            Clipped::new(
+                Text::new("↑/↓ switch · Enter run · Esc reject")
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_font_size(10.0)
+                    .with_max_lines(1)
+                    .finish(),
+            )
+            .finish(),
+        )
+        .finish();
+        let approve_handles = handles.clone();
+        let approve = Button::new(
+            Text::new("Approve")
+                .with_theme_color(ColorToken::Bg, app)
+                .with_font_size(12.0)
+                .finish(),
+        )
+        .with_variant(ButtonVariant::Primary)
+        .with_on_click(move || {
+            approve_handles.approve();
+        })
+        .finish();
+        let reject_handles = handles.clone();
+        let reject = Button::new(
+            Text::new("Reject")
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(12.0)
+                .finish(),
+        )
+        .with_variant(ButtonVariant::Ghost)
+        .with_on_click(move || {
+            reject_handles.reject();
+        })
+        .finish();
+        column = column.with_child(
+            Flex::row()
+                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(sm)
+                .with_child(hint)
+                .with_child(
+                    Flex::row()
+                        .with_spacing(sm)
+                        .with_child(reject)
+                        .with_child(approve)
+                        .finish(),
+                )
+                .finish(),
+        );
+
+        Some(
+            Container::new(column.finish())
+                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+                .with_border(
+                    Border::all(1.0)
+                        .with_border_fill(Fill::Solid(app.theme.color(ColorToken::Border))),
+                )
+                .with_padding(EdgeInsets::uniform(md))
+                .with_corner_radius(8.0)
+                .finish(),
+        )
+    }
+
     /// Rebuild the rich-input tree. The composer hugs its content: the textarea
     /// grows with the draft up to a cap, and the footer pills sit just below it,
     /// so the rich input never fills the whole pane. This keeps the message
@@ -369,6 +656,20 @@ impl ChatComposer {
                 attachment_row = attachment_row.with_child(chip);
             }
             column = column.with_child(attachment_row.finish());
+        }
+
+        // Command-proposal mode (A6). The editor below the card is the in-place
+        // edit surface, so an empty draft is seeded with the selected candidate;
+        // a draft the user typed or cycled to is left alone.
+        if let Some(handles) = self.proposal_handles() {
+            if self.value.borrow().trim().is_empty() {
+                if let Some(seed) = handles.selected_candidate() {
+                    *self.value.borrow_mut() = seed;
+                }
+            }
+        }
+        if let Some(card) = self.proposal_card(app) {
+            column = column.with_child(card);
         }
 
         // Send closure shared between Enter-to-submit and the (removed) send
@@ -693,10 +994,92 @@ impl Element for ChatComposer {
         ctx: &mut crate::elements::EventContext,
         app: &AppContext,
     ) -> bool {
+        if self.handle_proposal_key(event) {
+            return true;
+        }
         self.root
             .as_mut()
             .map(|root| root.dispatch_event(event, ctx, app))
             .unwrap_or(false)
+    }
+}
+
+/// The state a proposal gesture acts on, cloned into the card's row and button
+/// closures: the selected candidate, the composer's draft (the editor below the
+/// card, which is where a candidate is edited in place) and the callbacks the
+/// change and the decision are reported through. The shared `Rc`s are why a
+/// selection made in one frame is still the selection in the next.
+#[derive(Clone)]
+struct ProposalHandles {
+    id: String,
+    candidates: Vec<String>,
+    selected: Rc<RefCell<usize>>,
+    value: Rc<RefCell<String>>,
+    on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    on_decision: Option<Rc<RefCell<dyn FnMut(String, CommandDecision) + 'static>>>,
+}
+
+impl ProposalHandles {
+    fn selected_index(&self) -> usize {
+        match self.candidates.len() {
+            0 => 0,
+            len => *self.selected.borrow() % len,
+        }
+    }
+
+    fn selected_candidate(&self) -> Option<String> {
+        self.candidates.get(self.selected_index()).cloned()
+    }
+
+    /// Select a candidate and load it into the draft, so the editor shows the
+    /// line Enter would run while still allowing it to be edited in place. The
+    /// new draft is reported as a change so the host's own draft stays in step.
+    fn select(&self, index: usize) {
+        let len = self.candidates.len();
+        if len == 0 {
+            return;
+        }
+        let index = index % len;
+        *self.selected.borrow_mut() = index;
+        let text = self.candidates[index].clone();
+        *self.value.borrow_mut() = text.clone();
+        if let Some(cb) = self.on_change.as_ref() {
+            (cb.borrow_mut())(text);
+        }
+    }
+
+    fn cycle(&self, step: isize) {
+        let len = self.candidates.len();
+        if len == 0 {
+            return;
+        }
+        let next = (*self.selected.borrow() as isize + step).rem_euclid(len as isize) as usize;
+        self.select(next);
+    }
+
+    /// Approve the selection: an untouched candidate is run verbatim, while a
+    /// draft that was edited is submitted as the edit. Returns false when the
+    /// host wired no decision handler, so the key is not swallowed.
+    fn approve(&self) -> bool {
+        let Some(cb) = self.on_decision.clone() else {
+            return false;
+        };
+        let text = self.value.borrow().trim().to_string();
+        let decision = match self.selected_candidate() {
+            Some(candidate) if candidate.trim() == text => CommandDecision::Approve(candidate),
+            _ => CommandDecision::Edit(text),
+        };
+        (cb.borrow_mut())(self.id.clone(), decision);
+        true
+    }
+
+    /// Reject the proposal; the harness turns it into a failed tool call.
+    fn reject(&self) -> bool {
+        let Some(cb) = self.on_decision.clone() else {
+            return false;
+        };
+        (cb.borrow_mut())(self.id.clone(), CommandDecision::Reject(String::new()));
+        true
     }
 }
 
@@ -891,5 +1274,259 @@ mod tests {
             .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
             .count();
         assert!(strokes >= 1, "opened context menu should paint its panel border");
+    }
+
+    fn drawn_texts(commands: &[crate::render::RenderCommand]) -> Vec<String> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                crate::render::RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn text_color(
+        commands: &[crate::render::RenderCommand],
+        text: &str,
+    ) -> Vec<crate::color::ColorU> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                crate::render::RenderCommand::DrawText {
+                    text: drawn, color, ..
+                } if drawn == text => Some(*color),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Lay the composer out and paint it, returning the draw commands.
+    fn paint_composer(
+        app: &AppContext,
+        composer: &mut ChatComposer,
+    ) -> Vec<crate::render::RenderCommand> {
+        composer.layout(
+            SizeConstraint::loose(vec2f(600.0, 500.0)),
+            &mut LayoutContext::default(),
+            app,
+        );
+        let mut paint_ctx = crate::elements::PaintContext::new(crate::render::Renderer::new());
+        composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
+        paint_ctx
+            .renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Dispatch a key the way the window does.
+    fn press(composer: &mut ChatComposer, app: &AppContext, name: &str) -> bool {
+        composer.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: name.to_string(),
+                modifiers: ModifiersState::none(),
+            },
+            &mut crate::elements::EventContext::default(),
+            app,
+        )
+    }
+
+    fn proposal(candidates: &[&str]) -> CommandProposalUi {
+        CommandProposalUi::new(
+            "call-1",
+            candidates.iter().map(|c| c.to_string()).collect(),
+            "/work/project",
+        )
+    }
+
+    type DecisionLog = Rc<RefCell<Vec<(String, CommandDecision)>>>;
+
+    fn decision_log() -> DecisionLog {
+        Rc::new(RefCell::new(Vec::new()))
+    }
+
+    fn record_into(log: DecisionLog) -> impl FnMut(String, CommandDecision) + 'static {
+        move |id, decision| log.borrow_mut().push((id, decision))
+    }
+
+    #[test]
+    fn proposal_card_shows_the_candidates_and_selects_the_first() {
+        let app = AppContext::default();
+        let decisions = decision_log();
+        let mut composer = ChatComposer::new()
+            .with_focused(true)
+            .with_proposal(proposal(&["git status", "git diff --stat"]))
+            .with_on_decision(record_into(decisions.clone()));
+        let commands = paint_composer(&app, &mut composer);
+
+        let texts = drawn_texts(&commands);
+        for expected in [
+            "Agent proposes a command",
+            "git status",
+            "git diff --stat",
+            "/work/project",
+            "Approve",
+            "Reject",
+        ] {
+            assert!(texts.iter().any(|t| t == expected), "missing {expected:?}");
+        }
+        // The card is a bordered raised surface, like the transcript's blocks.
+        let strokes = commands
+            .iter()
+            .filter(|c| matches!(c, crate::render::RenderCommand::StrokeRect { .. }))
+            .count();
+        assert!(strokes >= 1, "proposal card should draw its border");
+
+        // The first candidate is selected: its row is the accent one and the
+        // editor was seeded with it, so Enter has something to run.
+        assert_eq!(composer.selected_candidate().as_deref(), Some("git status"));
+        assert_eq!(composer.value(), "git status");
+        let accent = app.theme.color(ColorToken::Accent);
+        assert!(
+            text_color(&commands, "git status").contains(&accent),
+            "the selected candidate should be the accent row"
+        );
+        let unselected = text_color(&commands, "git diff --stat");
+        assert!(!unselected.contains(&accent));
+    }
+
+    #[test]
+    fn arrow_keys_cycle_the_candidates_and_follow_the_draft() {
+        let app = AppContext::default();
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let for_cb = changes.clone();
+        let mut composer = ChatComposer::new()
+            .with_focused(true)
+            .with_proposal(proposal(&["git status", "git diff --stat"]))
+            .with_on_change(move |text| for_cb.borrow_mut().push(text));
+        paint_composer(&app, &mut composer);
+
+        assert!(press(&mut composer, &app, "ArrowDown"));
+        assert_eq!(
+            composer.selected_candidate().as_deref(),
+            Some("git diff --stat")
+        );
+        assert_eq!(composer.value(), "git diff --stat");
+        // The cycle is a draft change too, so the host's own draft (which is
+        // what the editor is rebuilt from) does not undo the selection.
+        assert_eq!(*changes.borrow(), vec!["git diff --stat".to_string()]);
+
+        // Wraps past the end back to the first, and the other way from the top.
+        assert!(press(&mut composer, &app, "ArrowDown"));
+        assert_eq!(composer.value(), "git status");
+        assert!(press(&mut composer, &app, "ArrowUp"));
+        assert_eq!(composer.value(), "git diff --stat");
+    }
+
+    #[test]
+    fn a_host_owned_selection_survives_the_rebuild() {
+        let app = AppContext::default();
+        let selection = Rc::new(RefCell::new(1));
+        let mut composer = ChatComposer::new()
+            .with_focused(true)
+            .with_proposal(proposal(&["git status", "git diff --stat"]))
+            .with_proposal_selection(selection.clone());
+        paint_composer(&app, &mut composer);
+
+        assert_eq!(composer.value(), "git diff --stat");
+        assert_eq!(
+            composer.selected_candidate().as_deref(),
+            Some("git diff --stat")
+        );
+
+        assert!(press(&mut composer, &app, "ArrowUp"));
+        assert_eq!(*selection.borrow(), 0);
+        assert_eq!(composer.value(), "git status");
+    }
+
+    #[test]
+    fn editing_a_candidate_submits_the_edit() {
+        let app = AppContext::default();
+        let decisions = decision_log();
+        let mut composer = ChatComposer::new()
+            .with_focused(true)
+            .with_proposal(proposal(&["git status"]))
+            .with_on_decision(record_into(decisions.clone()));
+        paint_composer(&app, &mut composer);
+
+        // Type into the editor below the card — the in-place edit.
+        for ch in " --short".chars() {
+            assert!(press(&mut composer, &app, &ch.to_string()));
+        }
+        assert_eq!(composer.value(), "git status --short");
+
+        assert!(press(&mut composer, &app, "Enter"));
+        assert_eq!(
+            *decisions.borrow(),
+            vec![(
+                "call-1".to_string(),
+                CommandDecision::Edit("git status --short".to_string())
+            )]
+        );
+    }
+
+    #[test]
+    fn enter_approves_the_selected_candidate() {
+        let app = AppContext::default();
+        let decisions = decision_log();
+        let mut composer = ChatComposer::new()
+            .with_focused(true)
+            .with_proposal(proposal(&["git status", "git diff --stat"]))
+            .with_on_decision(record_into(decisions.clone()));
+        paint_composer(&app, &mut composer);
+
+        assert!(press(&mut composer, &app, "ArrowDown"));
+        assert!(press(&mut composer, &app, "Enter"));
+        assert_eq!(
+            *decisions.borrow(),
+            vec![(
+                "call-1".to_string(),
+                CommandDecision::Approve("git diff --stat".to_string())
+            )]
+        );
+    }
+
+    #[test]
+    fn escape_rejects_the_proposal() {
+        let app = AppContext::default();
+        let decisions = decision_log();
+        let mut composer = ChatComposer::new()
+            .with_focused(true)
+            .with_proposal(proposal(&["git status"]))
+            .with_on_decision(record_into(decisions.clone()));
+        paint_composer(&app, &mut composer);
+
+        assert!(press(&mut composer, &app, "Escape"));
+        assert_eq!(
+            *decisions.borrow(),
+            vec![("call-1".to_string(), CommandDecision::Reject(String::new()))]
+        );
+    }
+
+    #[test]
+    fn proposal_keys_are_only_taken_with_focus_and_a_proposal() {
+        let app = AppContext::default();
+        let decisions = decision_log();
+        let first_log = decisions.clone();
+        let second_log = decisions.clone();
+
+        // No proposal: the keys belong to the ordinary editor.
+        let mut plain = ChatComposer::new()
+            .with_focused(true)
+            .with_on_decision(record_into(first_log))
+            .with_value("a draft");
+        paint_composer(&app, &mut plain);
+        assert!(!press(&mut plain, &app, "ArrowDown"));
+        assert!(!press(&mut plain, &app, "Escape"));
+
+        // A proposal on an unfocused composer does not swallow keys either.
+        let mut blurred = ChatComposer::new()
+            .with_proposal(proposal(&["git status"]))
+            .with_on_decision(record_into(second_log));
+        paint_composer(&app, &mut blurred);
+        assert!(!press(&mut blurred, &app, "ArrowDown"));
+        assert!(!press(&mut blurred, &app, "Enter"));
+        assert!(decisions.borrow().is_empty());
     }
 }

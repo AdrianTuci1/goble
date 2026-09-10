@@ -17,6 +17,11 @@
 //! out of it. The block that follows is created by `CommandFinished` itself, the
 //! same way the shell's own `PROMPT_COMMAND` runs before the next prompt.
 //!
+//! A block the agent claimed ([`BlockOwner::Agent`]) is also a tool result: the
+//! moment it reaches a terminal state — its `CommandFinished`, or the `Precmd`
+//! that promotes a still-running command to `Background` — the list hands its
+//! output and exit code back as a [`ToolResult`].
+//!
 //! A block draws its screens' whole grids (`Screen::content_lines`), not their
 //! viewports, so output taller than the window is kept rather than scrolled
 //! away. The block list lays those rows out; it is not itself the scrollback.
@@ -37,6 +42,23 @@ impl fmt::Display for BlockId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "b{}", self.0)
     }
+}
+
+/// Who a block's command was run for.
+///
+/// The block is the same either way; the owner is what lets a conversation show
+/// the commands it ran and leave the user's own out of it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum BlockOwner {
+    /// Typed by the user, or output with no command behind it.
+    #[default]
+    User,
+    /// Run by the agent as part of a turn. `call_id` is the harness's tool-call
+    /// id, so the block and its tool result are the same object.
+    Agent {
+        conversation_id: String,
+        call_id: String,
+    },
 }
 
 /// Where a block is in its lifecycle.
@@ -192,6 +214,7 @@ pub struct Block {
     index: usize,
     kind: BlockKind,
     visibility: BlockVisibility,
+    owner: BlockOwner,
     state: BlockState,
     /// The prompt and the typed command.
     command: Screen,
@@ -214,6 +237,7 @@ impl Block {
             index,
             kind: BlockKind::Shell,
             visibility: BlockVisibility::terminal(),
+            owner: BlockOwner::User,
             state,
             command: Screen::new(size, ScreenConfig::block()),
             output: Screen::new(size, ScreenConfig::block()),
@@ -263,6 +287,15 @@ impl Block {
 
     pub fn visibility(&self) -> &BlockVisibility {
         &self.visibility
+    }
+
+    /// Who ran this block's command.
+    pub fn owner(&self) -> &BlockOwner {
+        &self.owner
+    }
+
+    fn set_owner(&mut self, owner: BlockOwner) {
+        self.owner = owner;
     }
 
     /// The conversation this block stands for, if it is an agent-view block.
@@ -451,6 +484,20 @@ impl Block {
         self.lines().len()
     }
 
+    /// What the command printed, as text.
+    ///
+    /// This is the output screen's whole content, not only the rows visible in
+    /// it, so a result handed to the agent keeps output that scrolled past the
+    /// screen. It is deliberately not [`Block::text`], which also carries the
+    /// command line the shell echoed.
+    pub fn output_text(&self) -> String {
+        self.output_lines()
+            .iter()
+            .map(ScreenLine::text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     pub fn text(&self) -> String {
         let mut lines: Vec<String> = self.lines().iter().map(ScreenLine::text).collect();
         while lines.last().is_some_and(|line| line.is_empty()) {
@@ -489,7 +536,65 @@ pub struct SessionInfo {
     pub honor_ps1: bool,
 }
 
-/// Something the block list did, for the renderer to react to.
+/// How a claimed command ended.
+///
+/// A block the agent owns reaches a terminal state in exactly one of two ways:
+/// the shell reports its exit code, or the shell moves on while it still runs.
+/// The tool result carries which one happened, so the caller never has to wait
+/// for a `CommandFinished` that is not coming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOutcome {
+    /// The command finished and the shell reported this exit code. A non-zero
+    /// code is a failed command; `130` is one interrupted with Ctrl-C.
+    Finished { exit_code: i32 },
+    /// The shell drew its next prompt while the command still ran, so no exit
+    /// code is coming. The result carries the output that had arrived; it is
+    /// not a hang, and it is not a failure.
+    StillRunning,
+}
+
+/// A claimed block's result: what the command printed and how it ended.
+///
+/// This is the tool result for the call that claimed the block — the same block
+/// the agent view renders, read as output text plus an exit code rather than as
+/// a second copy of the text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolResult {
+    /// The block the result came from.
+    pub block: BlockId,
+    /// The conversation that asked for the command.
+    pub conversation_id: String,
+    /// The harness tool call this block is the result of.
+    pub call_id: String,
+    /// The command line the shell ran.
+    pub command: String,
+    /// Everything the command printed.
+    pub output: String,
+    pub outcome: ToolOutcome,
+}
+
+impl ToolResult {
+    /// The command's exit code, when it has one.
+    pub fn exit_code(&self) -> Option<i32> {
+        match self.outcome {
+            ToolOutcome::Finished { exit_code } => Some(exit_code),
+            ToolOutcome::StillRunning => None,
+        }
+    }
+
+    /// The command finished with a non-zero exit code. A command that is still
+    /// running has not failed.
+    pub fn is_failure(&self) -> bool {
+        self.exit_code().is_some_and(|code| code != 0)
+    }
+
+    /// No exit code is coming: the shell moved on while the command ran.
+    pub fn is_still_running(&self) -> bool {
+        self.outcome == ToolOutcome::StillRunning
+    }
+}
+
+/// Something the block list did, for the caller to react to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockEvent {
     SessionInitialized {
@@ -516,6 +621,18 @@ pub enum BlockEvent {
     Cleared {
         removed: usize,
     },
+    /// A claimed block reached a terminal state: its output and exit code are
+    /// the tool result for the call that asked for the command.
+    ToolResult(ToolResult),
+}
+
+/// A command the app asked for, waiting for its `Preexec` to say which block it
+/// runs in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingClaim {
+    /// The block the command is expected to run in.
+    pub block: BlockId,
+    pub owner: BlockOwner,
 }
 
 /// The blocks of one session, oldest first, with exactly one of them active.
@@ -531,6 +648,8 @@ pub struct BlockList {
     input_cursor: Option<usize>,
     /// Blocks that begin a fresh screen after a `clear`.
     gaps: Vec<BlockId>,
+    /// A command the app claimed, resolved or refused by the next `Preexec`.
+    pending_claim: Option<PendingClaim>,
 }
 
 impl BlockList {
@@ -548,6 +667,7 @@ impl BlockList {
             input_buffer: String::new(),
             input_cursor: None,
             gaps: Vec::new(),
+            pending_claim: None,
         }
     }
 
@@ -606,6 +726,27 @@ impl BlockList {
     /// Bytes the shell wrote after their block had already finished.
     pub fn dropped_bytes(&self) -> usize {
         self.blocks.iter().map(Block::dropped_bytes).sum()
+    }
+
+    /// The claim waiting for its `Preexec`, if any.
+    pub fn pending_claim(&self) -> Option<&PendingClaim> {
+        self.pending_claim.as_ref()
+    }
+
+    /// Claim the next `Preexec` for a command the agent asked for.
+    ///
+    /// The claim is aimed at `id`, the block the command is expected to run in:
+    /// the active block, still waiting for a command. A claim aimed at any other
+    /// block — a finished one, a conversation card, an id that does not exist —
+    /// is refused rather than attached to a block it does not own. A later
+    /// `Preexec` that lands on another block refuses the claim too.
+    pub fn claim_next_pre_exec(&mut self, id: BlockId, owner: BlockOwner) -> bool {
+        let active = self.active_block();
+        if active.id() != id || active.state() != BlockState::BeforeExecution {
+            return false;
+        }
+        self.pending_claim = Some(PendingClaim { block: id, owner });
+        true
     }
 
     pub fn size(&self) -> ScreenSize {
@@ -677,25 +818,45 @@ impl BlockList {
             self.session.cwd = value.pwd.clone();
         }
 
+        let mut events = Vec::new();
         // A prompt while a command is still running means the shell moved on:
         // the command keeps its own block, and this is a new one.
         if matches!(self.active_block().state(), BlockState::Executing) {
+            let promoted = self.active;
             self.active_block_mut().promote_to_background();
+            // No `CommandFinished` is coming for the promoted block, so its tool
+            // result is produced here — the output that arrived, and the fact
+            // that it is still running — instead of leaving the tool call to
+            // wait for a hook it will never see.
+            if let Some(result) = self.tool_result(promoted, ToolOutcome::StillRunning) {
+                events.push(BlockEvent::ToolResult(result));
+            }
             self.push_block();
         }
 
         let active = self.active_block_mut();
         active.set_metadata(&value);
-        vec![BlockEvent::MetadataUpdated { id: active.id() }]
+        events.push(BlockEvent::MetadataUpdated { id: active.id() });
+        events
     }
 
     fn on_preexec(&mut self, value: PreexecValue) -> Vec<BlockEvent> {
+        // A claim only attaches to the block it was aimed at. It is consumed
+        // either way, so a `Preexec` that lands on another block refuses the
+        // claim and that command stays the user's.
+        let claim = self.pending_claim.take();
         let active = self.active_block_mut();
+        if let Some(claim) = claim {
+            if claim.block == active.id() {
+                active.set_owner(claim.owner);
+            }
+        }
         active.preexec(value.command.unwrap_or_default());
         vec![BlockEvent::BlockStarted { id: active.id() }]
     }
 
     fn on_command_finished(&mut self, exit_code: i32) -> Vec<BlockEvent> {
+        let finished = self.active;
         let active = self.active_block_mut();
         active.finish(exit_code);
         let event = BlockEvent::BlockFinished {
@@ -703,10 +864,36 @@ impl BlockList {
             exit_code,
             failed: active.has_failed(),
         };
+        // A block the agent claimed is that tool call's result: its output and
+        // exit code go back to the caller, not only to the renderer.
+        let result = self.tool_result(finished, ToolOutcome::Finished { exit_code });
         // The shell's `PROMPT_COMMAND` has already run, so the next block starts
         // here rather than at the next prompt.
         self.push_block();
-        vec![event]
+        let mut events = vec![event];
+        events.extend(result.map(BlockEvent::ToolResult));
+        events
+    }
+
+    /// The tool result for a block the agent owns, or `None` when the block is
+    /// the user's (there is no tool call to answer).
+    fn tool_result(&self, index: usize, outcome: ToolOutcome) -> Option<ToolResult> {
+        let block = &self.blocks[index];
+        let BlockOwner::Agent {
+            conversation_id,
+            call_id,
+        } = block.owner()
+        else {
+            return None;
+        };
+        Some(ToolResult {
+            block: block.id(),
+            conversation_id: conversation_id.clone(),
+            call_id: call_id.clone(),
+            command: block.command_text().to_string(),
+            output: block.output_text(),
+            outcome,
+        })
     }
 
     fn on_clear(&mut self) -> Vec<BlockEvent> {
@@ -884,6 +1071,13 @@ mod tests {
         })
     }
 
+    fn agent_owner() -> BlockOwner {
+        BlockOwner::Agent {
+            conversation_id: "conv-1".into(),
+            call_id: "call-1".into(),
+        }
+    }
+
     /// A list that has bootstrapped and drawn its first prompt.
     fn booted() -> BlockList {
         let mut list = BlockList::new(size());
@@ -966,6 +1160,206 @@ mod tests {
         list.apply(finished(1));
         assert!(list.blocks()[1].has_failed());
         assert_eq!(list.blocks()[1].exit_code(), Some(1));
+    }
+
+    #[test]
+    fn a_claimed_preexec_takes_the_owner() {
+        let mut list = booted();
+        let id = list.active_block().id();
+        assert!(list.claim_next_pre_exec(id, agent_owner()));
+        assert_eq!(list.pending_claim().map(|claim| claim.block), Some(id));
+
+        list.apply(preexec("ls"));
+        assert_eq!(list.active_block().owner(), &agent_owner());
+        assert!(list.pending_claim().is_none(), "the claim was consumed");
+
+        // The next unclaimed command on the next block is the user's again.
+        list.apply(finished(0));
+        list.apply(preexec("pwd"));
+        assert_eq!(list.active_block().owner(), &BlockOwner::User);
+    }
+
+    #[test]
+    fn an_unclaimed_preexec_belongs_to_the_user() {
+        let mut list = booted();
+        list.apply(preexec("ls"));
+        assert_eq!(list.active_block().owner(), &BlockOwner::User);
+    }
+
+    #[test]
+    fn a_claim_aimed_at_the_wrong_block_is_refused() {
+        let mut list = booted();
+        // Run one command so there is an earlier, no-longer-active block.
+        list.apply(preexec("echo one"));
+        list.apply(finished(0));
+        let earlier = list.blocks()[1].id();
+        let active = list.active_block().id();
+        assert_ne!(earlier, active);
+
+        assert!(
+            !list.claim_next_pre_exec(earlier, agent_owner()),
+            "a finished block cannot be claimed"
+        );
+        assert!(
+            !list.claim_next_pre_exec(BlockId(999), agent_owner()),
+            "an unknown block cannot be claimed"
+        );
+        assert!(list.pending_claim().is_none(), "nothing was accepted");
+
+        // The refusal left the command that runs here as the user's.
+        list.apply(preexec("pwd"));
+        assert_eq!(list.get(active).unwrap().owner(), &BlockOwner::User);
+    }
+
+    #[test]
+    fn a_claim_that_lands_on_another_block_is_refused() {
+        let mut list = booted();
+        let claimed = list.active_block().id();
+        assert!(list.claim_next_pre_exec(claimed, agent_owner()));
+
+        // The shell moved on before the claimed command ran, so the `Preexec`
+        // that arrives belongs to a different block and the claim is refused.
+        list.apply(finished(0));
+        let other = list.active_block().id();
+        assert_ne!(other, claimed);
+        list.apply(preexec("pwd"));
+        assert_eq!(list.get(other).unwrap().owner(), &BlockOwner::User);
+        assert_eq!(list.get(claimed).unwrap().owner(), &BlockOwner::User);
+        assert!(list.pending_claim().is_none());
+    }
+
+    /// Claim the active block and start its command, as P2's protocol does.
+    fn claimed_command(list: &mut BlockList, command: &str) -> BlockId {
+        let id = list.active_block().id();
+        assert!(list.claim_next_pre_exec(id, agent_owner()));
+        list.apply(preexec(command));
+        id
+    }
+
+    fn tool_result_of(events: &[BlockEvent]) -> &ToolResult {
+        events
+            .iter()
+            .find_map(|event| match event {
+                BlockEvent::ToolResult(result) => Some(result),
+                _ => None,
+            })
+            .expect("a tool result for the claimed block")
+    }
+
+    #[test]
+    fn a_claimed_command_hands_back_its_output_and_exit_code() {
+        let mut list = booted();
+        let id = claimed_command(&mut list, "ls -la");
+        list.feed(b"file.txt\r\n");
+        let events = list.apply(finished(0));
+
+        // The renderer's event is still there; the result rides alongside it.
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BlockEvent::BlockFinished { id: block, exit_code: 0, .. } if *block == id
+        )));
+        let result = tool_result_of(&events);
+        assert_eq!(result.block, id);
+        assert_eq!(result.conversation_id, "conv-1");
+        assert_eq!(result.call_id, "call-1");
+        assert_eq!(result.command, "ls -la");
+        assert_eq!(result.output, "file.txt");
+        assert_eq!(result.outcome, ToolOutcome::Finished { exit_code: 0 });
+        assert_eq!(result.exit_code(), Some(0));
+        assert!(!result.is_failure());
+        assert!(!result.is_still_running());
+    }
+
+    #[test]
+    fn a_claimed_command_that_fails_hands_back_its_exit_code() {
+        let mut list = booted();
+        claimed_command(&mut list, "false");
+        list.feed(b"boom\r\n");
+        let events = list.apply(finished(2));
+
+        let result = tool_result_of(&events);
+        assert_eq!(result.output, "boom");
+        assert_eq!(result.exit_code(), Some(2));
+        assert!(result.is_failure());
+    }
+
+    #[test]
+    fn a_claimed_command_with_no_output_hands_back_an_empty_result() {
+        let mut list = booted();
+        claimed_command(&mut list, "true");
+        let events = list.apply(finished(0));
+
+        let result = tool_result_of(&events);
+        assert_eq!(result.output, "");
+        assert_eq!(result.outcome, ToolOutcome::Finished { exit_code: 0 });
+        assert!(!result.is_failure());
+    }
+
+    #[test]
+    fn an_interrupted_claimed_command_fails_instead_of_hanging() {
+        let mut list = booted();
+        claimed_command(&mut list, "sleep 100");
+        list.feed(b"partial\r\n");
+        // Ctrl-C: the shell still reports the command, with exit code 130.
+        let events = list.apply(finished(130));
+
+        let result = tool_result_of(&events);
+        assert_eq!(result.output, "partial");
+        assert_eq!(result.exit_code(), Some(130));
+        assert!(result.is_failure());
+        assert!(!result.is_still_running());
+    }
+
+    #[test]
+    fn a_promoted_claimed_command_hands_back_a_still_running_result() {
+        let mut list = booted();
+        let id = claimed_command(&mut list, "sleep 100 &");
+        list.feed(b"starting\r\n");
+
+        // A prompt while the claimed command still runs: no exit code is coming,
+        // so the result is handed back now rather than after a hook that never
+        // arrives.
+        let events = list.apply(precmd("/work"));
+        let result = tool_result_of(&events);
+        assert_eq!(result.block, id);
+        assert_eq!(result.command, "sleep 100 &");
+        assert_eq!(result.output, "starting");
+        assert_eq!(result.outcome, ToolOutcome::StillRunning);
+        assert!(result.is_still_running());
+        assert_eq!(result.exit_code(), None, "no exit code is coming");
+        assert!(!result.is_failure());
+
+        // The promoted block is terminal: the finish that belongs to the next
+        // block does not produce a second, stale result for the same call.
+        let events = list.apply(finished(0));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, BlockEvent::ToolResult(_))));
+    }
+
+    #[test]
+    fn a_users_command_produces_no_tool_result() {
+        let mut list = booted();
+        list.apply(preexec("ls"));
+        list.feed(b"file.txt\r\n");
+        let events = list.apply(finished(0));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, BlockEvent::ToolResult(_))));
+    }
+
+    #[test]
+    fn a_tool_result_carries_output_that_scrolled_past_the_screen() {
+        let mut list = booted();
+        claimed_command(&mut list, "seq 1 10");
+        let output: String = (1..=10).map(|line| format!("{line}\r\n")).collect();
+        list.feed(output.as_bytes());
+        let events = list.apply(finished(0));
+
+        // Ten rows in a six-line screen: the result is the whole output, not
+        // only the rows still visible.
+        let result = tool_result_of(&events);
+        assert_eq!(result.output, "1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
     }
 
     #[test]

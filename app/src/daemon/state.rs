@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use goble_core::harness::PaneSession;
 use goble_daemon_client::DaemonClient;
 use goble_desktop_service::DesktopState;
 use goble_harness_types::{HarnessId, HarnessTurn, MediumId, ProjectId, SessionId};
@@ -49,13 +50,29 @@ impl Route {
 pub struct DaemonModel {
     desktop: Arc<DesktopState>,
     remote: Option<Arc<dyn DaemonClient>>,
+    /// The pane's own shell, when the turn's pane has a terminal. Passed to the
+    /// desktop service so the harness's shell tool runs in that session instead
+    /// of the sandbox; `None` keeps the sandboxed runner.
+    pane_session: Option<Arc<dyn PaneSession>>,
 }
 
 impl DaemonModel {
     /// Wrap the desktop service (the composition root of the embedded daemon).
     /// The remote client is `None` until [`Self::with_remote`] supplies one.
     pub fn new(desktop: Arc<DesktopState>) -> Self {
-        Self { desktop, remote: None }
+        Self {
+            desktop,
+            remote: None,
+            pane_session: None,
+        }
+    }
+
+    /// Attach the pane's own shell for a turn running in an agent + terminal
+    /// pane, so the agent's commands run in it (visibly, with the user's own
+    /// environment) instead of the sandbox.
+    pub fn with_pane_session(mut self, pane: Option<Arc<dyn PaneSession>>) -> Self {
+        self.pane_session = pane;
+        self
     }
 
     /// Attach a remote daemon client for `remote`-routed conversations.
@@ -94,7 +111,7 @@ impl DaemonModel {
         harness_id: Option<&str>,
     ) -> Result<tokio::task::JoinHandle<()>> {
         match Route::resolve(routing) {
-            Route::Local => self.desktop.run_chat_turn(
+            Route::Local => self.desktop.run_chat_turn_with_pane_session(
                 chat_id,
                 prompt,
                 provider,
@@ -104,6 +121,7 @@ impl DaemonModel {
                 session_id,
                 workspace_dir,
                 harness_id,
+                self.pane_session.clone(),
             ),
             Route::Remote => {
                 let client = self.remote.as_ref().ok_or_else(|| {

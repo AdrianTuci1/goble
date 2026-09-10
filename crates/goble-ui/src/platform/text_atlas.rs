@@ -52,6 +52,7 @@ struct TextKey {
     font_size: u32,
     weight: FontWeight,
     mono: bool,
+    italic: bool,
     max_width: u32,
     /// Line-height multiplier (e.g. 1.2) encoded ×100 so the key stays hashable.
     line_height: u32,
@@ -181,6 +182,7 @@ impl TextAtlas {
                     font_size,
                     font_weight,
                     font_family,
+                    font_italic,
                     max_width,
                     line_height,
                     ..
@@ -191,6 +193,7 @@ impl TextAtlas {
                         font_size: (*font_size * scale).round() as u32,
                         weight: *font_weight,
                         mono: *font_family == FontFamily::Mono,
+                        italic: *font_italic,
                         max_width: (*max_width * scale).round() as u32,
                         line_height: (*line_height * 100.0).round() as u32,
                     })
@@ -209,6 +212,7 @@ impl TextAtlas {
                 key.font_size,
                 key.weight,
                 key.mono,
+                key.italic,
                 key.max_width as f32,
                 key.line_height as f32 / 100.0,
             ) {
@@ -305,6 +309,7 @@ impl TextAtlas {
             font_size,
             weight,
             FontFamily::System,
+            false,
             max_width,
             line_height,
         )
@@ -316,6 +321,7 @@ impl TextAtlas {
         font_size: f32,
         weight: FontWeight,
         family: FontFamily,
+        italic: bool,
         max_width: f32,
         line_height: f32,
     ) -> Option<&AtlasEntry> {
@@ -324,6 +330,7 @@ impl TextAtlas {
             font_size: font_size.round() as u32,
             weight,
             mono: family == FontFamily::Mono,
+            italic,
             max_width: max_width.round() as u32,
             line_height: (line_height * 100.0).round() as u32,
         };
@@ -350,10 +357,12 @@ pub fn measure_text(
         max_width,
         weight,
         FontFamily::System,
+        false,
     )
 }
 
-/// Like [`measure_text`] but using an explicit font family (e.g. mono for terminals).
+/// Like [`measure_text`] but using an explicit font family (e.g. mono for
+/// terminals) and an oblique/italic face.
 pub fn measure_text_family(
     text: &str,
     font_size: f32,
@@ -361,11 +370,12 @@ pub fn measure_text_family(
     max_width: f32,
     weight: FontWeight,
     family: FontFamily,
+    italic: bool,
 ) -> crate::geometry::Vector2F {
     let Some(font_set) = font_set() else {
         return estimate_text_size(text, font_size, line_height, max_width);
     };
-    let font = font_set.select(weight, family);
+    let font = font_set.select(weight, family, italic);
     let fonts = &[font.clone()];
     let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
     layout.reset(&fontdue::layout::LayoutSettings {
@@ -414,7 +424,7 @@ pub fn mono_advance(font_size: f32, weight: FontWeight) -> f32 {
     let Some(font_set) = font_set() else {
         return font_size * 0.6;
     };
-    let font = font_set.select(weight, FontFamily::Mono);
+    let font = font_set.select(weight, FontFamily::Mono, false);
     let advance = font.metrics('M', font_size).advance_width;
     if let Ok(mut cache) = cache.lock() {
         cache.insert(key, advance);
@@ -450,22 +460,34 @@ struct FontSet {
     medium: fontdue::Font,
     semibold: fontdue::Font,
     bold: fontdue::Font,
+    italic: fontdue::Font,
+    bold_italic: fontdue::Font,
     mono: fontdue::Font,
     mono_bold: fontdue::Font,
+    mono_italic: fontdue::Font,
+    mono_bold_italic: fontdue::Font,
 }
 
 impl FontSet {
-    fn select(&self, weight: FontWeight, family: FontFamily) -> &fontdue::Font {
-        match family {
-            FontFamily::Mono => match weight {
+    fn select(&self, weight: FontWeight, family: FontFamily, italic: bool) -> &fontdue::Font {
+        match (family, italic) {
+            (FontFamily::Mono, false) => match weight {
                 FontWeight::Bold | FontWeight::SemiBold => &self.mono_bold,
                 FontWeight::Regular | FontWeight::Medium => &self.mono,
             },
-            FontFamily::System | FontFamily::Serif => match weight {
+            (FontFamily::Mono, true) => match weight {
+                FontWeight::Bold | FontWeight::SemiBold => &self.mono_bold_italic,
+                FontWeight::Regular | FontWeight::Medium => &self.mono_italic,
+            },
+            (FontFamily::System | FontFamily::Serif, false) => match weight {
                 FontWeight::Regular => &self.regular,
                 FontWeight::Medium => &self.medium,
                 FontWeight::SemiBold => &self.semibold,
                 FontWeight::Bold => &self.bold,
+            },
+            (FontFamily::System | FontFamily::Serif, true) => match weight {
+                FontWeight::Bold | FontWeight::SemiBold => &self.bold_italic,
+                FontWeight::Regular | FontWeight::Medium => &self.italic,
             },
         }
     }
@@ -475,41 +497,69 @@ fn font_set() -> Option<&'static FontSet> {
     static FONTS: OnceLock<Option<FontSet>> = OnceLock::new();
     FONTS
         .get_or_init(|| {
-            let regular = load_bundled_font(FontWeight::Regular, FontFamily::System)?;
-            let medium = load_bundled_font(FontWeight::Medium, FontFamily::System)
+            let regular = load_bundled_font(FontWeight::Regular, FontFamily::System, false)?;
+            let medium = load_bundled_font(FontWeight::Medium, FontFamily::System, false)
                 .unwrap_or_else(|| regular.clone());
-            let bold = load_bundled_font(FontWeight::Bold, FontFamily::System)
+            let bold = load_bundled_font(FontWeight::Bold, FontFamily::System, false)
                 .unwrap_or_else(|| regular.clone());
-            let semibold = load_bundled_font(FontWeight::SemiBold, FontFamily::System)
+            let semibold = load_bundled_font(FontWeight::SemiBold, FontFamily::System, false)
                 .unwrap_or_else(|| bold.clone());
-            let mono = load_bundled_font(FontWeight::Regular, FontFamily::Mono)
+            let italic = load_bundled_font(FontWeight::Regular, FontFamily::System, true)
                 .unwrap_or_else(|| regular.clone());
-            let mono_bold = load_bundled_font(FontWeight::Bold, FontFamily::Mono)
+            let bold_italic = load_bundled_font(FontWeight::Bold, FontFamily::System, true)
+                .unwrap_or_else(|| bold.clone());
+            let mono = load_bundled_font(FontWeight::Regular, FontFamily::Mono, false)
+                .unwrap_or_else(|| regular.clone());
+            let mono_bold = load_bundled_font(FontWeight::Bold, FontFamily::Mono, false)
                 .unwrap_or_else(|| mono.clone());
+            let mono_italic = load_bundled_font(FontWeight::Regular, FontFamily::Mono, true)
+                .unwrap_or_else(|| mono.clone());
+            let mono_bold_italic = load_bundled_font(FontWeight::Bold, FontFamily::Mono, true)
+                .unwrap_or_else(|| mono_bold.clone());
             Some(FontSet {
                 regular,
                 medium,
                 semibold,
                 bold,
+                italic,
+                bold_italic,
                 mono,
                 mono_bold,
+                mono_italic,
+                mono_bold_italic,
             })
         })
         .as_ref()
 }
 
-fn load_bundled_font(weight: FontWeight, family: FontFamily) -> Option<fontdue::Font> {
-    let bytes: &[u8] = match (family, weight) {
-        (FontFamily::Mono, FontWeight::Bold | FontWeight::SemiBold) => {
+fn load_bundled_font(
+    weight: FontWeight,
+    family: FontFamily,
+    italic: bool,
+) -> Option<fontdue::Font> {
+    let bytes: &[u8] = match (family, italic, weight) {
+        (FontFamily::Mono, false, FontWeight::Bold | FontWeight::SemiBold) => {
             include_bytes!("../../assets/fonts/hack/Hack-Bold.ttf")
         }
-        (FontFamily::Mono, _) => include_bytes!("../../assets/fonts/hack/Hack-Regular.ttf"),
-        (_, FontWeight::Regular) => include_bytes!("../../assets/fonts/roboto/Roboto-Regular.ttf"),
-        (_, FontWeight::Medium) => include_bytes!("../../assets/fonts/roboto/Roboto-Medium.ttf"),
-        (_, FontWeight::Bold) => include_bytes!("../../assets/fonts/roboto/Roboto-Bold.ttf"),
-        (_, FontWeight::SemiBold) => {
+        (FontFamily::Mono, false, _) => include_bytes!("../../assets/fonts/hack/Hack-Regular.ttf"),
+        (FontFamily::Mono, true, FontWeight::Bold | FontWeight::SemiBold) => {
+            include_bytes!("../../assets/fonts/hack/Hack-BoldItalic.ttf")
+        }
+        (FontFamily::Mono, true, _) => include_bytes!("../../assets/fonts/hack/Hack-Italic.ttf"),
+        (_, false, FontWeight::Regular) => {
+            include_bytes!("../../assets/fonts/roboto/Roboto-Regular.ttf")
+        }
+        (_, false, FontWeight::Medium) => {
+            include_bytes!("../../assets/fonts/roboto/Roboto-Medium.ttf")
+        }
+        (_, false, FontWeight::Bold) => include_bytes!("../../assets/fonts/roboto/Roboto-Bold.ttf"),
+        (_, false, FontWeight::SemiBold) => {
             include_bytes!("../../assets/fonts/roboto/RobotoFlex-Semibold.ttf")
         }
+        (_, true, FontWeight::Bold | FontWeight::SemiBold) => {
+            include_bytes!("../../assets/fonts/roboto/Roboto-BoldItalic.ttf")
+        }
+        (_, true, _) => include_bytes!("../../assets/fonts/roboto/Roboto-Italic.ttf"),
     };
     fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
 }
@@ -519,6 +569,7 @@ fn rasterize_text(
     font_size: u32,
     weight: FontWeight,
     mono: bool,
+    italic: bool,
     max_width: f32,
     line_height: f32,
 ) -> Option<(AtlasEntry, Vec<u8>, u32, u32)> {
@@ -528,7 +579,7 @@ fn rasterize_text(
     } else {
         FontFamily::System
     };
-    let font = font_set.select(weight, family);
+    let font = font_set.select(weight, family, italic);
     let fonts = &[font.clone()];
     let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
     layout.reset(&fontdue::layout::LayoutSettings {
@@ -640,6 +691,7 @@ mod tests {
             40.0,
             FontWeight::Regular,
             FontFamily::System,
+            false,
         );
         let tall = measure_text_family(
             "one two three four five",
@@ -648,6 +700,7 @@ mod tests {
             40.0,
             FontWeight::Regular,
             FontFamily::System,
+            false,
         );
         assert!(
             short.y > 0.0,
@@ -663,25 +716,42 @@ mod tests {
     fn semibold_uses_static_distinct_font() {
         let set = font_set().expect("bundled fonts must load");
         let regular = set
-            .select(FontWeight::Regular, FontFamily::System)
+            .select(FontWeight::Regular, FontFamily::System, false)
             .file_hash();
         let semibold = set
-            .select(FontWeight::SemiBold, FontFamily::System)
+            .select(FontWeight::SemiBold, FontFamily::System, false)
             .file_hash();
-        let bold = set.select(FontWeight::Bold, FontFamily::System).file_hash();
+        let bold = set
+            .select(FontWeight::Bold, FontFamily::System, false)
+            .file_hash();
+        let italic = set
+            .select(FontWeight::Regular, FontFamily::System, true)
+            .file_hash();
+        let bold_italic = set
+            .select(FontWeight::Bold, FontFamily::System, true)
+            .file_hash();
         assert_ne!(
             semibold, bold,
             "SemiBold must not resolve to the Bold font file"
         );
         assert_ne!(semibold, regular, "SemiBold must differ from Regular");
         assert_ne!(bold, regular, "Bold must differ from Regular");
+        assert_ne!(
+            italic, regular,
+            "Italic must resolve to an oblique font file"
+        );
+        assert_ne!(
+            bold_italic, bold,
+            "BoldItalic must resolve to an oblique font file"
+        );
+        assert_ne!(bold_italic, italic, "BoldItalic must differ from Italic");
     }
 
     #[test]
     fn raster_quad_agrees_with_measure_for_single_line() {
         let text = "Hello, world!";
         let (entry, atlas, width, height) =
-            rasterize_text(text, 13, FontWeight::Regular, false, 400.0, 1.2)
+            rasterize_text(text, 13, FontWeight::Regular, false, false, 400.0, 1.2)
                 .expect("single line must rasterize");
 
         // The quad the renderer draws (origin `offset`, size `size`) must match the
@@ -694,6 +764,7 @@ mod tests {
             400.0,
             FontWeight::Regular,
             FontFamily::System,
+            false,
         );
         assert!(
             (entry.size[0] - measured.x).abs() <= 2.0,
@@ -731,10 +802,29 @@ mod tests {
     }
 
     #[test]
+    fn italic_rasterizes_a_distinct_face() {
+        let regular = rasterize_text("Hello", 13, FontWeight::Regular, false, false, 400.0, 1.2)
+            .expect("regular must rasterize");
+        let italic = rasterize_text("Hello", 13, FontWeight::Regular, false, true, 400.0, 1.2)
+            .expect("italic must rasterize");
+        let mono_italic = rasterize_text("Hello", 13, FontWeight::Regular, true, true, 400.0, 1.2)
+            .expect("mono italic must rasterize");
+        assert!(
+            italic.1.iter().any(|&p| p > 0),
+            "italic raster must contain non-zero coverage"
+        );
+        assert_ne!(
+            regular.1, italic.1,
+            "italic must rasterize the oblique face, not the regular one"
+        );
+        assert!(mono_italic.1.iter().any(|&p| p > 0));
+    }
+
+    #[test]
     fn raster_quad_agrees_with_measure_for_wrapped_block() {
         let text = "line one\nline two\nline three";
         let (entry, atlas, _w, _h) =
-            rasterize_text(text, 13, FontWeight::Regular, false, 400.0, 1.5)
+            rasterize_text(text, 13, FontWeight::Regular, false, false, 400.0, 1.5)
                 .expect("multi-line must rasterize");
         let measured = measure_text_family(
             text,
@@ -743,6 +833,7 @@ mod tests {
             400.0,
             FontWeight::Regular,
             FontFamily::System,
+            false,
         );
         assert!(
             (entry.size[1] - measured.y).abs() <= 2.0,

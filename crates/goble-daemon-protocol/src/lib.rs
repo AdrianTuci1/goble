@@ -123,6 +123,28 @@ pub enum DaemonEvent {
         mission_id: String,
         status: String,
     },
+    /// The model began a reasoning (thinking) step, identified by `step`, in the
+    /// current thinking `mode`. The GUI renders the thinking as its own rows.
+    ReasoningStarted {
+        session_id: SessionId,
+        step: usize,
+        mode: String,
+    },
+    /// A chunk of the current reasoning step's text; deltas stream in order
+    /// between the step's `ReasoningStarted` and `ReasoningDone`.
+    ReasoningDelta {
+        session_id: SessionId,
+        delta: String,
+    },
+    /// The reasoning step finished: `content` is the step's full text and
+    /// `decision` the tool-call decision it settled on.
+    ReasoningDone {
+        session_id: SessionId,
+        step: usize,
+        mode: String,
+        content: String,
+        decision: String,
+    },
     Done {
         session_id: SessionId,
     },
@@ -375,6 +397,22 @@ mod tests {
                 session_id: SessionId::new("s1"),
                 mission_id: "m1".into(),
                 status: "running".into(),
+            },
+            DaemonEvent::ReasoningStarted {
+                session_id: SessionId::new("s1"),
+                step: 0,
+                mode: "contemplating".into(),
+            },
+            DaemonEvent::ReasoningDelta {
+                session_id: SessionId::new("s1"),
+                delta: "weighing options".into(),
+            },
+            DaemonEvent::ReasoningDone {
+                session_id: SessionId::new("s1"),
+                step: 0,
+                mode: "contemplating".into(),
+                content: "weighing options".into(),
+                decision: "\"execute\"".into(),
             },
             DaemonEvent::Done {
                 session_id: SessionId::new("s1"),

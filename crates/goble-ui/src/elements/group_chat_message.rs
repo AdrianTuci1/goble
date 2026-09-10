@@ -2,11 +2,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::chat_content::{
-    ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole,
+    ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, ListItem,
 };
 use crate::elements::{
-    AppContext, Avatar, Chip, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, Fill,
-    Flex, LayoutContext, PaintContext, Point, SizeConstraint, Spacer, Text,
+    AppContext, Avatar, Chip, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty,
+    Fill, Flex, LayoutContext, PaintContext, Point, SizeConstraint, Spacer, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -176,18 +176,22 @@ impl GroupChatMessage {
                     column = flush_inline(&mut inline_buffer, column);
                     column = column.with_child(self.render_heading(app, *level, text.clone()));
                 }
-                ChatFragmentKind::List { items, ordered } => {
+                ChatFragmentKind::List { items, start } => {
                     column = flush_inline(&mut inline_buffer, column);
-                    column = column.with_child(self.render_list(app, items.clone(), *ordered));
+                    column = column.with_child(self.render_list(app, items, *start));
                 }
-                ChatFragmentKind::BlockQuote(text) => {
+                ChatFragmentKind::BlockQuote(content) => {
                     column = flush_inline(&mut inline_buffer, column);
-                    column = column.with_child(self.render_block_quote(
-                        app,
-                        text.clone(),
-                        spacing,
-                        radius,
-                    ));
+                    column =
+                        column.with_child(self.render_block_quote(app, content, spacing, radius));
+                }
+                ChatFragmentKind::Table { header, rows } => {
+                    column = flush_inline(&mut inline_buffer, column);
+                    column = column.with_child(self.render_table(app, header, rows, spacing));
+                }
+                ChatFragmentKind::Rule => {
+                    column = flush_inline(&mut inline_buffer, column);
+                    column = column.with_child(Divider::horizontal().finish());
                 }
                 _ => {
                     inline_buffer.push(self.render_inline_fragment(app, fragment, radius));
@@ -237,6 +241,21 @@ impl GroupChatMessage {
                 let url = url.clone();
                 Chip::new(
                     Text::new(label.clone())
+                        .with_theme_color(ColorToken::Accent, app)
+                        .finish(),
+                )
+                .with_on_click(move || {
+                    if let Some(cb) = on_action.as_ref() {
+                        (cb.borrow_mut())(ChatAction::OpenUrl(url.clone()));
+                    }
+                })
+                .finish()
+            }
+            ChatFragmentKind::Image { alt, url } => {
+                let on_action = self.on_action.clone();
+                let url = url.clone();
+                Chip::new(
+                    Text::new(alt.clone())
                         .with_theme_color(ColorToken::Accent, app)
                         .finish(),
                 )
@@ -311,18 +330,26 @@ impl GroupChatMessage {
             .finish()
     }
 
-    fn render_list(&self, app: &AppContext, items: Vec<String>, ordered: bool) -> Box<dyn Element> {
+    fn render_list(
+        &self,
+        app: &AppContext,
+        items: &[ListItem],
+        start: Option<u64>,
+    ) -> Box<dyn Element> {
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(2.0);
         for (i, item) in items.iter().enumerate() {
-            let prefix = if ordered {
-                format!("{}. ", i + 1)
-            } else {
-                "• ".to_string()
+            let prefix = match start {
+                Some(first) => format!("{}. ", first + i as u64),
+                None => match item.checked {
+                    Some(true) => "☑ ".to_string(),
+                    Some(false) => "☐ ".to_string(),
+                    None => "• ".to_string(),
+                },
             };
             column = column.with_child(
-                Text::new(format!("{}{}", prefix, item))
+                Text::new(format!("{}{}", prefix, fragment_plain_text(&item.content)))
                     .with_theme_color(ColorToken::Text, app)
                     .finish(),
             );
@@ -333,25 +360,110 @@ impl GroupChatMessage {
     fn render_block_quote(
         &self,
         app: &AppContext,
-        text: String,
+        content: &[ChatFragment],
         padding: f32,
         radius: f32,
     ) -> Box<dyn Element> {
-        Container::new(
-            Text::new(text)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
-        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-        .with_padding(EdgeInsets::new(
-            padding / 4.0,
-            padding / 2.0,
-            padding / 4.0,
-            padding / 2.0,
-        ))
-        .with_corner_radius(radius)
-        .finish()
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(padding / 4.0);
+        let mut paragraph: Vec<ChatFragment> = Vec::new();
+        let mut paragraphs: Vec<Vec<ChatFragment>> = Vec::new();
+        for fragment in content {
+            if matches!(fragment.kind, ChatFragmentKind::LineBreak) {
+                if !paragraph.is_empty() {
+                    paragraphs.push(std::mem::take(&mut paragraph));
+                }
+            } else {
+                paragraph.push(fragment.clone());
+            }
+        }
+        if !paragraph.is_empty() {
+            paragraphs.push(paragraph);
+        }
+        for paragraph in &paragraphs {
+            column = column.with_child(
+                Text::new(fragment_plain_text(paragraph))
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            );
+        }
+        Container::new(column.finish())
+            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+            .with_padding(EdgeInsets::new(
+                padding / 4.0,
+                padding / 2.0,
+                padding / 4.0,
+                padding / 2.0,
+            ))
+            .with_corner_radius(radius)
+            .finish()
     }
+
+    fn render_table(
+        &self,
+        app: &AppContext,
+        header: &[String],
+        rows: &[Vec<String>],
+        spacing: f32,
+    ) -> Box<dyn Element> {
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(spacing / 4.0);
+        column = column.with_child(self.render_table_row(app, header, spacing));
+        column = column.with_child(Divider::horizontal().finish());
+        for row in rows {
+            column = column.with_child(self.render_table_row(app, row, spacing));
+        }
+        column.finish()
+    }
+
+    fn render_table_row(
+        &self,
+        app: &AppContext,
+        cells: &[String],
+        spacing: f32,
+    ) -> Box<dyn Element> {
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_spacing(spacing);
+        for cell in cells {
+            row = row.with_child(
+                Text::new(cell.clone())
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_font_size(12.0)
+                    .finish(),
+            );
+        }
+        row.finish()
+    }
+}
+
+/// Concatenate the human-readable text of a nested fragment run, recursing into
+/// blockquotes and lists so their content is not lost.
+fn fragment_plain_text(fragments: &[ChatFragment]) -> String {
+    let mut out = String::new();
+    for fragment in fragments {
+        match &fragment.kind {
+            ChatFragmentKind::Text(t)
+            | ChatFragmentKind::Bold(t)
+            | ChatFragmentKind::Italic(t)
+            | ChatFragmentKind::BoldItalic(t)
+            | ChatFragmentKind::Code(t) => out.push_str(t),
+            ChatFragmentKind::Link { label, .. } => out.push_str(label),
+            ChatFragmentKind::Image { alt, .. } => out.push_str(alt),
+            ChatFragmentKind::BlockQuote(inner) => out.push_str(&fragment_plain_text(inner)),
+            ChatFragmentKind::List { items, .. } => {
+                for item in items {
+                    out.push_str(&fragment_plain_text(&item.content));
+                    out.push(' ');
+                }
+            }
+            ChatFragmentKind::LineBreak => out.push(' '),
+            _ => {}
+        }
+    }
+    out.trim().to_string()
 }
 
 fn role_label(role: ChatRole) -> &'static str {

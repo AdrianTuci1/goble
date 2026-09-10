@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use goble_core::harness::WebSearchConfig;
+use goble_core::harness::{ToolCallStatus, WebSearchConfig};
 
 use crate::event_bus::{emit_value, EventBus, NoOpEventBus};
 use anyhow::Context;
@@ -100,6 +100,56 @@ pub struct ChatMessage {
     /// assistant message that invoked tools. `None` for user/tool-result rows.
     pub tool_calls: Option<String>,
     pub created_at: String,
+}
+
+/// One live tool-call transition, emitted as `chat:tool` so the app can render
+/// a running call before the turn ends. Mirrors the daemon's
+/// `ToolCallStarted`/`ToolCallFinished`/`ToolCallError` events in the shape the
+/// renderer consumes, and is what the per-chat in-flight map holds while the
+/// call runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCallEvent {
+    pub chat_id: String,
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+    pub status: ToolCallStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+}
+
+/// One live reasoning (thinking) transition, emitted as `chat:reasoning` so the
+/// app can build the model's thinking rows as they stream. Mirrors the daemon's
+/// `ReasoningStarted`/`ReasoningDelta`/`ReasoningDone` events.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReasoningEvent {
+    pub chat_id: String,
+    /// The step this transition belongs to. `started`/`done` carry the step's
+    /// own index; a delta does not (it applies to the step already open).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<usize>,
+    /// The thinking mode, known on `started`/`done`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mode: String,
+    /// New text in this transition (empty for `started`/`done`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub delta: String,
+    /// The step's full text, carried on `done`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// The tool-call decision the step settled on, carried on `done`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
+    pub phase: ReasoningPhase,
+}
+
+/// Which reasoning transition a [`ReasoningEvent`] carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningPhase {
+    Started,
+    Delta,
+    Done,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +385,11 @@ pub struct DesktopState {
     /// runtime (in the integration tests), so the task is only created when a
     /// runtime is current.
     translator_spawned: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Per-chat tool calls that are still running, keyed by chat id then call id.
+    /// Updated from the daemon's tool lifecycle events; `chat:tool` carries the
+    /// same record to the app, which overlays it on the persisted rows so a
+    /// running call is visible before the turn ends.
+    tool_in_flight: Arc<Mutex<HashMap<String, HashMap<String, ToolCallEvent>>>>,
     /// Screen capture+control registry, seeded with the local platform adapter
     /// on construction so the capturer/controller are reachable. The backend is
     /// platform-aware: macOS uses the real `screencapture` capturer, other
@@ -353,6 +408,9 @@ fn daemon_session_id(event: &goble_daemon_protocol::DaemonEvent) -> goble_harnes
         | DE::ToolCallError { session_id, .. }
         | DE::AskUser { session_id, .. }
         | DE::MissionUpdated { session_id, .. }
+        | DE::ReasoningStarted { session_id, .. }
+        | DE::ReasoningDelta { session_id, .. }
+        | DE::ReasoningDone { session_id, .. }
         | DE::Done { session_id }
         | DE::Error { session_id, .. }
         | DE::TraceStarted { session_id, .. }
@@ -546,6 +604,7 @@ impl DesktopState {
             daemon_state,
             daemon,
             translator_spawned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            tool_in_flight: Arc::new(Mutex::new(HashMap::new())),
             screen,
         })
     }
@@ -653,9 +712,10 @@ impl DesktopState {
     ///
     /// Subscribes synchronously *before* the turn runs so no live event is
     /// missed, then fans the daemon wire events into the `chat:updated`,
-    /// `chat:ask_user`, `chat:mission` and `chat:turn_finished` events the
-    /// native UI listens for. Only called from the harness turn entry points,
-    /// which run inside a tokio runtime — `new()` does not, so it cannot spawn.
+    /// `chat:ask_user`, `chat:mission`, `chat:tool` and `chat:turn_finished`
+    /// events the native UI listens for. Only called from the harness turn
+    /// entry points, which run inside a tokio runtime — `new()` does not, so it
+    /// cannot spawn.
     fn ensure_translator(self: &Arc<Self>) {
         if self
             .translator_spawned
@@ -666,66 +726,224 @@ impl DesktopState {
         let mut rx = self.daemon.subscribe();
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            use goble_daemon_protocol::DaemonEvent as DE;
             while let Ok(ev) = rx.recv().await {
-                let session_id = daemon_session_id(&ev);
-                this.emit("chat:updated", serde_json::json!({ "chat_id": session_id.0 }));
-                match ev {
-                    DE::AskUser {
-                        session_id,
-                        question,
-                        quick_replies,
-                    } => {
-                        this.emit(
-                            "chat:ask_user",
-                            serde_json::json!({
-                                "chat_id": session_id.0,
-                                "question": question,
-                                "quick_replies": quick_replies,
-                            }),
-                        );
-                    }
-                    DE::MissionUpdated {
-                        session_id,
-                        mission_id,
-                        status,
-                    } => {
-                        this.emit(
-                            "chat:mission",
-                            serde_json::json!({
-                                "chat_id": session_id.0,
-                                "mission_id": mission_id,
-                                "status": status,
-                            }),
-                        );
-                    }
-                    DE::TraceFinished { session_id, .. } => {
-                        this.emit(
-                            "chat:turn_finished",
-                            serde_json::json!({ "chat_id": session_id.0 }),
-                        );
-                    }
-                    DE::ScreenHandoff { session_id, config } => {
-                        match this.open_remote_screen(config) {
-                            Ok(source) => {
-                                this.add_log(format!("opened remote desktop {source}"));
-                                this.emit(
-                                    "screen:handoff",
-                                    serde_json::json!({
-                                        "chat_id": session_id.0,
-                                        "source": source,
-                                    }),
-                                );
-                            }
-                            Err(e) => {
-                                this.add_log(format!("screen handoff failed: {e:#}"));
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+                this.translate_daemon_event(ev);
             }
         });
+    }
+
+    /// Translate one daemon event into the `chat:*` events the native UI reacts
+    /// to, updating the per-chat in-flight tool-call map for tool lifecycle
+    /// events. Kept separate from the subscriber loop so it can be driven
+    /// directly in tests, where no runtime task is spawnable.
+    fn translate_daemon_event(&self, ev: goble_daemon_protocol::DaemonEvent) {
+        use goble_daemon_protocol::DaemonEvent as DE;
+        let session_id = daemon_session_id(&ev);
+        self.emit("chat:updated", serde_json::json!({ "chat_id": session_id.0 }));
+        match ev {
+            DE::AskUser {
+                session_id,
+                question,
+                quick_replies,
+            } => {
+                self.emit(
+                    "chat:ask_user",
+                    serde_json::json!({
+                        "chat_id": session_id.0,
+                        "question": question,
+                        "quick_replies": quick_replies,
+                    }),
+                );
+            }
+            DE::MissionUpdated {
+                session_id,
+                mission_id,
+                status,
+            } => {
+                self.emit(
+                    "chat:mission",
+                    serde_json::json!({
+                        "chat_id": session_id.0,
+                        "mission_id": mission_id,
+                        "status": status,
+                    }),
+                );
+            }
+            DE::ToolCallStarted {
+                session_id,
+                id,
+                name,
+                arguments,
+            } => {
+                self.record_tool_call(
+                    &session_id.0,
+                    &id,
+                    Some(name),
+                    Some(arguments),
+                    ToolCallStatus::Running,
+                    None,
+                );
+            }
+            DE::ToolCallFinished {
+                session_id,
+                id,
+                result,
+            } => {
+                self.record_tool_call(
+                    &session_id.0,
+                    &id,
+                    None,
+                    None,
+                    ToolCallStatus::Finished,
+                    Some(result),
+                );
+            }
+            DE::ToolCallError {
+                session_id,
+                id,
+                message,
+            } => {
+                self.record_tool_call(
+                    &session_id.0,
+                    &id,
+                    None,
+                    None,
+                    ToolCallStatus::Error,
+                    Some(message),
+                );
+            }
+            DE::ReasoningStarted {
+                session_id,
+                step,
+                mode,
+            } => {
+                self.emit(
+                    "chat:reasoning",
+                    ReasoningEvent {
+                        chat_id: session_id.0,
+                        step: Some(step),
+                        mode,
+                        delta: String::new(),
+                        content: None,
+                        decision: None,
+                        phase: ReasoningPhase::Started,
+                    },
+                );
+            }
+            DE::ReasoningDelta { session_id, delta } => {
+                self.emit(
+                    "chat:reasoning",
+                    ReasoningEvent {
+                        chat_id: session_id.0,
+                        step: None,
+                        mode: String::new(),
+                        delta,
+                        content: None,
+                        decision: None,
+                        phase: ReasoningPhase::Delta,
+                    },
+                );
+            }
+            DE::ReasoningDone {
+                session_id,
+                step,
+                mode,
+                content,
+                decision,
+            } => {
+                self.emit(
+                    "chat:reasoning",
+                    ReasoningEvent {
+                        chat_id: session_id.0,
+                        step: Some(step),
+                        mode,
+                        delta: String::new(),
+                        content: Some(content),
+                        decision: Some(decision),
+                        phase: ReasoningPhase::Done,
+                    },
+                );
+            }
+            DE::TraceFinished { session_id, .. } => {
+                self.emit(
+                    "chat:turn_finished",
+                    serde_json::json!({ "chat_id": session_id.0 }),
+                );
+            }
+            DE::ScreenHandoff { session_id, config } => {
+                match self.open_remote_screen(config) {
+                    Ok(source) => {
+                        self.add_log(format!("opened remote desktop {source}"));
+                        self.emit(
+                            "screen:handoff",
+                            serde_json::json!({
+                                "chat_id": session_id.0,
+                                "source": source,
+                            }),
+                        );
+                    }
+                    Err(e) => {
+                        self.add_log(format!("screen handoff failed: {e:#}"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Apply one tool-call transition to the per-chat in-flight map and emit the
+    /// structured `chat:tool` event. `Started` inserts the running call;
+    /// `Finished`/`Error` remove it, since the persisted row now carries the
+    /// terminal state. A finished/errored wire event carries no name or
+    /// arguments, so they are read back from the entry being cleared.
+    fn record_tool_call(
+        &self,
+        chat_id: &str,
+        id: &str,
+        name: Option<String>,
+        arguments: Option<serde_json::Value>,
+        status: ToolCallStatus,
+        result: Option<String>,
+    ) {
+        let event = {
+            let mut in_flight = self.tool_in_flight.lock();
+            let calls = in_flight.entry(chat_id.to_string()).or_default();
+            let (name, arguments) = match (name, arguments) {
+                (Some(name), Some(arguments)) => (name, arguments),
+                _ => calls
+                    .get(id)
+                    .map(|call| (call.name.clone(), call.arguments.clone()))
+                    .unwrap_or((String::new(), serde_json::Value::Null)),
+            };
+            let event = ToolCallEvent {
+                chat_id: chat_id.to_string(),
+                id: id.to_string(),
+                name,
+                arguments,
+                status,
+                result,
+            };
+            if status == ToolCallStatus::Running {
+                calls.insert(id.to_string(), event.clone());
+            } else {
+                calls.remove(id);
+            }
+            if calls.is_empty() {
+                in_flight.remove(chat_id);
+            }
+            event
+        };
+        self.emit("chat:tool", &event);
+    }
+
+    /// The tool calls still running for `chat_id`. The app overlays these on the
+    /// persisted rows, so a running call is visible before the turn ends.
+    pub fn in_flight_tool_calls(&self, chat_id: &str) -> Vec<ToolCallEvent> {
+        self.tool_in_flight
+            .lock()
+            .get(chat_id)
+            .map(|calls| calls.values().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Reconnect workers that were previously paired and have a stored pairing code in the vault.
@@ -2320,6 +2538,43 @@ impl DesktopState {
         workspace_dir: Option<&str>,
         harness_id: Option<&str>,
     ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+        self.run_chat_turn_with_pane_session(
+            chat_id,
+            prompt,
+            provider,
+            model,
+            medium_id,
+            project_id,
+            session_id,
+            workspace_dir,
+            harness_id,
+            None,
+        )
+    }
+
+    /// [`Self::run_chat_turn`] with the pane's own shell attached.
+    ///
+    /// When the app passes a `pane_session` — an agent + terminal pane's own
+    /// session — the agent's shell tool runs there, in the user's own shell with
+    /// the user's environment and credentials, instead of in the sandbox. That
+    /// is a deliberate change of security posture (`agent-terminal-bridge.md`
+    /// §5); a pane with no terminal passes `None` and keeps
+    /// [`goble_core::harness::SandboxedCommandRunner`], so the sandbox path
+    /// stays reachable.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_chat_turn_with_pane_session(
+        self: &Arc<Self>,
+        chat_id: &str,
+        prompt: &str,
+        provider: &str,
+        model: &str,
+        medium_id: &str,
+        project_id: &str,
+        session_id: &str,
+        workspace_dir: Option<&str>,
+        harness_id: Option<&str>,
+        pane_session: Option<Arc<dyn goble_core::harness::PaneSession>>,
+    ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
         let auto_approve = self.get_auto_approve();
         let web_search = self.get_web_search_setting();
         // Resolve the harness the turn runs on. `None`/`internal` builds and
@@ -2330,6 +2585,14 @@ impl DesktopState {
                 let (llm, model_name) = self.resolve_llm_provider(provider, model);
                 let store = self.store.lock().clone();
                 let hid = goble_harness_types::HarnessId::new(format!("internal-{chat_id}"));
+                let sandbox = Arc::new(
+                    goble_core::harness::SandboxedCommandRunner::default_tools()
+                        .with_sandbox(goble_core::harness::harness_sandbox()),
+                );
+                let runner = Arc::new(
+                    goble_core::harness::RoutedCommandRunner::new(sandbox)
+                        .with_pane_session(pane_session),
+                );
                 let mut internal = goble_harness_internal::InternalHarness::new(store)
                     .with_llm(llm)
                     .with_provider(provider)
@@ -2337,10 +2600,7 @@ impl DesktopState {
                     .with_reasoning(true)
                     .with_auto_approve(auto_approve)
                     .with_web_search(web_search)
-                    .with_runner(Arc::new(
-                        goble_core::harness::SandboxedCommandRunner::default_tools()
-                            .with_sandbox(goble_core::harness::harness_sandbox()),
-                    ))
+                    .with_runner(runner)
                     .with_id(hid.clone());
                 // Run the harness with the pane's own working directory when
                 // provided (the per-session cwd), so commands execute there.
@@ -2938,6 +3198,113 @@ mod tests {
             }
             assert!(saw_reply, "the registered harness reply must be streamed");
         });
+    }
+
+    #[test]
+    fn tool_events_fill_and_clear_the_in_flight_map() {
+        // A started call is held in the per-chat in-flight map and cleared on
+        // finish/error, with the structured `chat:tool` event emitted for each
+        // transition so the app can overlay it without a store re-read.
+        let (_dir, state) = tmp_state();
+        let bus = Arc::new(crate::event_bus::CollectingEventBus::new());
+        state.set_event_bus(bus.clone());
+        let sid = goble_harness_types::SessionId::new("chat-1");
+
+        state.translate_daemon_event(goble_daemon_protocol::DaemonEvent::ToolCallStarted {
+            session_id: sid.clone(),
+            id: "t1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "src/lib.rs"}),
+        });
+        state.translate_daemon_event(goble_daemon_protocol::DaemonEvent::ToolCallStarted {
+            session_id: sid.clone(),
+            id: "t2".into(),
+            name: "run_command".into(),
+            arguments: serde_json::json!({"command": "ls"}),
+        });
+
+        let in_flight = state.in_flight_tool_calls("chat-1");
+        assert_eq!(in_flight.len(), 2, "each started call gains an entry");
+        assert!(in_flight
+            .iter()
+            .all(|c| c.status == ToolCallStatus::Running));
+        assert!(
+            bus.has_event("chat:tool"),
+            "the app gets a structured chat:tool event"
+        );
+
+        state.translate_daemon_event(goble_daemon_protocol::DaemonEvent::ToolCallFinished {
+            session_id: sid.clone(),
+            id: "t1".into(),
+            result: "ok".into(),
+        });
+        let in_flight = state.in_flight_tool_calls("chat-1");
+        assert_eq!(in_flight.len(), 1, "a finished call clears its entry");
+        assert_eq!(in_flight[0].id, "t2");
+
+        state.translate_daemon_event(goble_daemon_protocol::DaemonEvent::ToolCallError {
+            session_id: sid.clone(),
+            id: "t2".into(),
+            message: "boom".into(),
+        });
+        assert!(
+            state.in_flight_tool_calls("chat-1").is_empty(),
+            "an errored call clears its entry too"
+        );
+
+        let tool_events: Vec<_> = bus
+            .events()
+            .into_iter()
+            .filter(|(name, _)| name == "chat:tool")
+            .map(|(_, payload)| payload)
+            .collect();
+        assert_eq!(tool_events.len(), 4, "one chat:tool per transition");
+        assert_eq!(tool_events[1]["id"], "t2");
+        assert_eq!(tool_events[2]["result"], "ok");
+        assert_eq!(tool_events[3]["status"], "error");
+    }
+
+    #[test]
+    fn reasoning_events_are_emitted_as_chat_reasoning() {
+        // Every reasoning transition reaches the app as a structured
+        // `chat:reasoning` event carrying the phase, the mode and the text.
+        let (_dir, state) = tmp_state();
+        let bus = Arc::new(crate::event_bus::CollectingEventBus::new());
+        state.set_event_bus(bus.clone());
+        let sid = goble_harness_types::SessionId::new("chat-1");
+
+        state.translate_daemon_event(goble_daemon_protocol::DaemonEvent::ReasoningStarted {
+            session_id: sid.clone(),
+            step: 0,
+            mode: "contemplating".into(),
+        });
+        state.translate_daemon_event(goble_daemon_protocol::DaemonEvent::ReasoningDelta {
+            session_id: sid.clone(),
+            delta: "weighing options".into(),
+        });
+        state.translate_daemon_event(goble_daemon_protocol::DaemonEvent::ReasoningDone {
+            session_id: sid.clone(),
+            step: 0,
+            mode: "contemplating".into(),
+            content: "weighing options".into(),
+            decision: "\"execute\"".into(),
+        });
+
+        let events: Vec<_> = bus
+            .events()
+            .into_iter()
+            .filter(|(name, _)| name == "chat:reasoning")
+            .map(|(_, payload)| payload)
+            .collect();
+        assert_eq!(events.len(), 3, "one chat:reasoning per transition");
+        assert_eq!(events[0]["phase"], "started");
+        assert_eq!(events[0]["step"], 0);
+        assert_eq!(events[0]["mode"], "contemplating");
+        assert_eq!(events[1]["phase"], "delta");
+        assert_eq!(events[1]["delta"], "weighing options");
+        assert_eq!(events[2]["phase"], "done");
+        assert_eq!(events[2]["content"], "weighing options");
+        assert_eq!(events[2]["chat_id"], "chat-1");
     }
 
     #[test]

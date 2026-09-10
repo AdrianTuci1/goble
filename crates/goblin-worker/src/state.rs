@@ -385,7 +385,10 @@ pub(crate) fn map_daemon_event(event: DaemonEvent) -> Option<WorkerMessage> {
         DE::Done { .. }
         | DE::TraceStarted { .. }
         | DE::TraceFinished { .. }
-        | DE::ScreenHandoff { .. } => None,
+        | DE::ScreenHandoff { .. }
+        | DE::ReasoningStarted { .. }
+        | DE::ReasoningDelta { .. }
+        | DE::ReasoningDone { .. } => None,
     }
 }
 

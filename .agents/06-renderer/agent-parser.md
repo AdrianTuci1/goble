@@ -32,12 +32,12 @@ The stages are sound. What is wrong is what the first two keep and what the thir
 | **Raw HTML** | shown **verbatim as text** — neither rendered nor stripped | `markdown.rs:147-157` |
 | Blockquote and list item contents | collapsed to one `String`, so a nested paragraph, a nested quote or inline emphasis inside them loses its structure | `markdown.rs:99-105`, `:85-98` |
 | Ordered list numbering | restarts at 1 regardless of the source's start number | `chat_message_bubble.rs:247` |
-| **Code blocks** | rendered with `Text::new`, which is the **system** font — a code block is not monospaced | `chat_message_bubble.rs:216-239` |
+| **Code blocks** | **done (Q4)** — rendered through `Code` in the mono family, preserving indentation, not word-wrapped; the fence's language label is drawn in mono | `chat_message_bubble.rs`, `code.rs` |
 
 Two structural notes worth keeping in view:
 
 - **Links break paragraphs.** `group_fragments_into_blocks` deliberately refuses to fold a `Link` into the inline flow (`chat_content.rs:306-308`), so a link in the middle of a sentence becomes a standalone chip on its own line. That was a defensible shortcut when links were the only interactive span; it is the wrong shape once the paragraph model matters.
-- **There is no syntax highlighting anywhere, and no dependency for it.** `crates/goble-ui/Cargo.toml` has `pulldown-cmark` and nothing else in this area. `crates/goble-ui/src/elements/code.rs` looks like the place for it but is dead code: it hardcodes the system family (`text.rs:11-19`) and its `paint` draws nothing (`code.rs:83-85`). Nothing constructs it.
+- **There is no syntax highlighting anywhere, and no dependency for it.** `crates/goble-ui/Cargo.toml` has `pulldown-cmark` and nothing else in this area. `Code` (`crates/goble-ui/src/elements/code.rs`) is no longer dead code: `ChatMessageBubble` constructs it for a fenced block, and it draws the body in the mono family, unwrapped, with the fence's language label above it. It is still **plain** mono — a token colourer would be a new dependency, which this item deliberately does not add.
 
 ## 3. Two renderings in one transcript
 
@@ -80,11 +80,15 @@ Rules the parser needs to hold:
 - **Parse once per change, not once per frame.** The transcript should be parsed when a row changes, and the result cached on the message; a frame with no new delta should re-parse nothing.
 - **Keep the tail cheap.** While a turn streams, only the last message changes; re-parsing the rest is wasted work.
 
-## 6. The transcript does not scroll
+## 6. The transcript scrolls and follows the stream
 
-This is not a formatting problem but it blocks every other one, so it belongs in the same plan: the transcript is built as `Scrollable::new(message_column, Axis::Vertical)` with **no `with_state(...)`** (`crates/goble-ui/src/views/chat_view.rs:799`; nothing in the file calls `with_state`). Per the element's own contract (`crates/goble-ui/src/elements/scrollable.rs:158-163` — *"Plain layout wrapper: no viewport to clip to or scroll"*) that means no viewport, no clipping, no wheel handling and no offset — the transcript is laid out at unbounded height and painted from the top, so a conversation taller than the pane simply overflows.
+**Done (Q1).** The transcript is built as `Scrollable::new(message_column, Axis::Vertical).with_state(self.scroll.clone())` (`crates/goble-ui/src/views/chat_view.rs`), so it now has a viewport, is clipped to it, handles the wheel and carries an offset. The state is app-owned per pane (`UiState::pane_chat_scroll`, keyed by pane id, surfaced through `PaneChatSnapshot::scroll`) because the tree is rebuilt every frame; a pane's scrollback position and its follow-the-stream flag therefore survive the rebuild.
 
-The machinery exists and is unused: `ScrollState::scroll_by` clamps to content (`scrollable.rs:37-39`) and `set_metrics` re-clamps as content grows (`:46-51`) — but nothing auto-pins to the bottom, so even with a state attached there would be no follow the stream. `RunningIndicator` (`crates/goble-ui/src/elements/running_indicator.rs`) is in the same position: it exists and is referenced only by its own test.
+`ScrollState::following()` (`crates/goble-ui/src/elements/scrollable.rs`) is the opt-in tailing mode: `set_metrics` moves the offset to the new end as content grows, `scroll_by` suspends following once the user leaves the end and resumes it when they come back, and `reset` returns to the top unpinned. A plain `ScrollState::default()` (the sidebar, the settings pane) never moves on its own, so this does not change their behaviour.
+
+One layout bug had to be fixed for this to work at all: `Flex` with `CrossAxisAlignment::Stretch` returned `constraint.max` on the cross axis even when that was unbounded, so every message bubble (a stretch row) reported infinite height and the scroll content measured as infinite — an offset pinned to that "end" would have painted the transcript entirely off-screen. `Flex` now sizes to its content when the cross axis is unbounded (`crates/goble-ui/src/elements/flex.rs`).
+
+`RunningIndicator` (`crates/goble-ui/src/elements/running_indicator.rs`) is still referenced only by its own test.
 
 ## 7. Build order
 
@@ -102,7 +106,7 @@ Each row is one turn of work.
 | Q8 | **Terminal segment as a block.** A command the agent runs renders through the same terminal block element as terminal mode, from the block the bridge produced | `chat_message_bubble.rs`, `agent-terminal-bridge.md` P1/P3 | element test: the same block renders identically in the transcript and in the terminal pane |
 | Q9 | **Diff rendering.** Diff rows with line gutters and add/remove colouring — inline, no box | new element in `crates/goble-ui/src/elements/` | element tests on hunks and line counts |
 | Q10 | **Parse once per change.** Cache fragments per message and re-parse only what changed, off the layout path | `app/src/state.rs` | app test with a scripted multi-message stream: unchanged messages are not re-parsed |
-| Q11 | **Reasoning surface.** Render the model's thinking — **blocked**: the wire adapter drops every `Reasoning*` event (`crates/goble-harness-internal/src/lib.rs:265-268`) and `goble-daemon-protocol` has no such variant | wire, then `goble-ui` | unblocked only after the adapter change |
+| Q11 | **Reasoning surface (done).** The model's thinking reaches the app and renders: the wire carries `ReasoningStarted`/`ReasoningDelta`/`ReasoningDone` on both `HarnessServerEvent` and `DaemonEvent`, `map_event` in `crates/goble-harness-internal` passes them through, `goble-desktop-service` emits `chat:reasoning`, and the app overlays each step as its own transcript row, recessed in `Muted` and collapsed to a clickable header until expanded | wire (`goble-harness-protocol`, `goble-harness-internal`, `goble-daemon-protocol`, `goble-daemon`, `goble-desktop-service`), then `app` + `goble-ui` | `cargo test -p goble-harness-internal` (adapter carries the events), `cargo test -p goble-app` (the live event reaches the transcript and paints recessed/collapsed/expandable) |
 
 Q1 is first because nothing else can be judged on a transcript that cannot scroll. Q2–Q4 are the text-formatting half. Q5–Q9 are the agent-activity half: status, the inline row that replaces the card, the per-tool presenter, the terminal block for a command segment, and the diff. Q5 depends on [`agent-tui.md`](agent-tui.md) A3 landing the live events; Q8 depends on the bridge's P1/P3 producing the block. Q10 is the performance floor that keeps the rest affordable once transcripts are long.
 
@@ -117,5 +121,5 @@ Q1 is first because nothing else can be judged on a transcript that cannot scrol
 
 - Parser and element items (Q2–Q4, Q7, Q9): `cargo test -p goble-ui`, with the test named in the row.
 - App items (Q1, Q5, Q6, Q8, Q10): `cargo test -p goble-app`.
-- Q11 is verified only after the wire change; until then the item stays `[ ]` with the reason recorded.
+- Q11 is verified by `cargo test -p goble-harness-internal` (the adapter carries `Reasoning*` instead of dropping it) and `cargo test -p goble-app` (the `chat:reasoning` event reaches the transcript and paints a recessed, collapsed row that expands on click).
 - No step here builds or runs the `goble-app` binary. Anything that needs a window to judge — line wrapping in a real pane, the feel of following a stream — is recorded as unverified rather than claimed.

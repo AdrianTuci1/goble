@@ -8,6 +8,10 @@ use crate::elements::{
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, Vector2F};
 
+/// How close to the end of the content counts as "at the end" when deciding
+/// whether a following region keeps following.
+const END_EPSILON: f32 = 0.5;
+
 /// Scroll offset plus the layout metrics needed to clamp it.
 ///
 /// The tree is rebuilt every frame, so the offset cannot live on the element:
@@ -19,9 +23,26 @@ pub struct ScrollState {
     offset: f32,
     content: f32,
     viewport: f32,
+    /// Whether this region tails its content at all. Only
+    /// [`ScrollState::following`] turns it on, so a plain scroller (the sidebar,
+    /// the settings pane) never moves on its own.
+    follow: bool,
+    /// Whether the region is currently at the end of its content.
+    pinned: bool,
 }
 
 impl ScrollState {
+    /// A state that opens at the end of its content and follows the content as
+    /// it grows — a transcript tailing a stream. Scrolling away from the end
+    /// suspends following; scrolling back to the end resumes it.
+    pub fn following() -> Self {
+        Self {
+            follow: true,
+            pinned: true,
+            ..Self::default()
+        }
+    }
+
     /// Current offset in points along the scroll axis.
     pub fn offset(&self) -> f32 {
         self.offset
@@ -32,23 +53,42 @@ impl ScrollState {
         (self.content - self.viewport).max(0.0)
     }
 
-    /// Scroll by `delta` points (positive scrolls the content up/left), clamped
-    /// to the content extent.
-    pub fn scroll_by(&mut self, delta: f32) {
-        self.offset = (self.offset + delta).clamp(0.0, self.max_offset());
+    /// Whether the region is currently pinned to the end of its content (a
+    /// transcript in follow-the-stream mode).
+    pub fn is_pinned(&self) -> bool {
+        self.pinned
     }
 
-    /// Return to the top/left of the content.
+    /// Scroll by `delta` points (positive scrolls the content up/left), clamped
+    /// to the content extent. On a following region, leaving the end suspends
+    /// following and reaching the end resumes it.
+    pub fn scroll_by(&mut self, delta: f32) {
+        let max = self.max_offset();
+        self.offset = (self.offset + delta).clamp(0.0, max);
+        if self.follow {
+            self.pinned = self.offset >= max - END_EPSILON;
+        }
+    }
+
+    /// Return to the top/left of the content (a following region stops
+    /// following, since the user asked for the start).
     pub fn reset(&mut self) {
         self.offset = 0.0;
+        self.pinned = false;
     }
 
-    /// Record what the last layout measured and re-clamp the offset.
+    /// Record what the last layout measured and re-clamp the offset. A pinned
+    /// region moves to the new end, so content that grows while the user is at
+    /// the bottom is followed instead of pushing the bottom off screen.
     fn set_metrics(&mut self, content: f32, viewport: f32) {
         self.content = content;
         self.viewport = viewport;
-        let max = self.max_offset();
-        self.offset = self.offset.clamp(0.0, max);
+        if self.pinned {
+            self.offset = self.max_offset();
+        } else {
+            let max = self.max_offset();
+            self.offset = self.offset.clamp(0.0, max);
+        }
     }
 }
 
@@ -306,6 +346,95 @@ mod tests {
             state.borrow().offset(),
             0.0,
             "content now fits, so the offset resets"
+        );
+    }
+
+    /// Lay out a fresh 100pt-tall region holding `content_height` of content,
+    /// as the per-frame rebuild does, and record the metrics on `state`.
+    fn layout_region(app: &AppContext, state: &Rc<RefCell<ScrollState>>, content_height: f32) {
+        let mut scrollable = Scrollable::new(
+            Empty::new()
+                .with_size(vec2f(100.0, content_height))
+                .finish(),
+            Axis::Vertical,
+        )
+        .with_state(Rc::clone(state));
+        scrollable.layout(
+            SizeConstraint::loose(vec2f(300.0, 100.0)),
+            &mut LayoutContext::default(),
+            app,
+        );
+    }
+
+    #[test]
+    fn a_following_region_opens_at_the_end_of_its_content() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::following()));
+        layout_region(&app, &state, 400.0);
+        assert_eq!(state.borrow().offset(), 300.0, "400 of content in 100");
+        assert!(state.borrow().is_pinned());
+    }
+
+    #[test]
+    fn new_content_keeps_a_following_region_at_the_end() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::following()));
+        layout_region(&app, &state, 400.0);
+        layout_region(&app, &state, 900.0);
+        assert_eq!(
+            state.borrow().offset(),
+            800.0,
+            "content that arrives while pinned is followed"
+        );
+    }
+
+    #[test]
+    fn scrolling_up_holds_the_position_against_new_content() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::following()));
+        layout_region(&app, &state, 400.0);
+        state.borrow_mut().scroll_by(-200.0);
+        assert_eq!(state.borrow().offset(), 100.0);
+        assert!(!state.borrow().is_pinned(), "the user left the end");
+
+        layout_region(&app, &state, 900.0);
+        assert_eq!(
+            state.borrow().offset(),
+            100.0,
+            "a scrollback position the user chose is held"
+        );
+    }
+
+    #[test]
+    fn scrolling_back_to_the_end_resumes_following() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::following()));
+        layout_region(&app, &state, 400.0);
+        state.borrow_mut().scroll_by(-200.0);
+        state.borrow_mut().scroll_by(10_000.0);
+        assert!(state.borrow().is_pinned(), "back at the end re-pins");
+
+        layout_region(&app, &state, 900.0);
+        assert_eq!(state.borrow().offset(), 800.0, "following resumed");
+    }
+
+    #[test]
+    fn a_plain_state_never_follows_growing_content() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::default()));
+        layout_region(&app, &state, 400.0);
+        assert_eq!(
+            state.borrow().offset(),
+            0.0,
+            "a plain region opens at the top"
+        );
+        state.borrow_mut().scroll_by(10_000.0);
+        assert!(!state.borrow().is_pinned(), "a plain region never pins");
+        layout_region(&app, &state, 900.0);
+        assert_eq!(
+            state.borrow().offset(),
+            300.0,
+            "growth does not move a plain region"
         );
     }
 

@@ -23,6 +23,18 @@
 
 pub mod blocks;
 pub mod hooks;
+/// The shell-integration scripts that emit the hook channel. The pane's PTY
+/// spawn writes the matching one out and points the shell at it (bash
+/// `--rcfile`, zsh `ZDOTDIR`).
+pub mod integration {
+    /// Shell integration for bash.
+    pub const BASH: &str = include_str!("../assets/shell/bash.sh");
+    /// Shell integration for zsh.
+    pub const ZSH: &str = include_str!("../assets/shell/zsh.sh");
+    /// The `.zshenv` shim written alongside [`ZSH`]. zsh reads `.zshenv` from
+    /// `$ZDOTDIR` alone, so the redirect has to restore the user's own file.
+    pub const ZSH_ENV: &str = include_str!("../assets/shell/zsh_env.sh");
+}
 pub mod keys;
 pub mod mouse;
 pub mod osc;
@@ -30,7 +42,8 @@ pub mod palette;
 pub mod screen;
 
 pub use blocks::{
-    Block, BlockEvent, BlockId, BlockLine, BlockList, BlockMetadata, BlockState, SessionInfo,
+    Block, BlockEvent, BlockId, BlockLine, BlockList, BlockMetadata, BlockOwner, BlockState,
+    PendingClaim, SessionInfo, ToolOutcome, ToolResult,
 };
 pub use hooks::{HookEvent, HookTap};
 pub use keys::{Key, KeyEncoder, Modifiers, TermMode};

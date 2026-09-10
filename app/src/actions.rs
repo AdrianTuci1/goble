@@ -121,6 +121,10 @@ fn send_agent_prompt(
                     session_id,
                 )
             };
+            // The pane's own shell when it has a terminal: the agent's commands
+            // then run in it, visibly, instead of the sandbox. A pane with no
+            // terminal passes `None` and keeps the sandboxed runner.
+            let pane_session = state.pane_session(pane_id, &chat_id);
             if let Err(e) = crate::runtime::run_turn(
                 desktop,
                 &chat_id,
@@ -133,6 +137,7 @@ fn send_agent_prompt(
                 &session_id,
                 &path,
                 Some(state.selected_harness.as_str()),
+                pane_session,
             ) {
                 log::warn!("run_chat_turn failed: {e}");
                 let _ = desktop.add_chat_message(
@@ -233,6 +238,7 @@ pub fn make_actions(
     let on_skip_ask = Rc::clone(&state);
     let on_toggle_auto_approve = Rc::clone(&state);
     let on_set_harness_mode = Rc::clone(&state);
+    let on_open_agent_view = Rc::clone(&state);
     let on_send_queued = Rc::clone(&state);
     let on_dismiss_queued = Rc::clone(&state);
     let on_settings = Rc::clone(&state);
@@ -319,6 +325,7 @@ pub fn make_actions(
     let desktop_answer = desktop.clone();
     let desktop_skip = desktop.clone();
     let desktop_auto = desktop.clone();
+    let desktop_set_harness = desktop.clone();
     let desktop_send_queued = desktop.clone();
     let desktop_cron_create = desktop.clone();
     let desktop_cron_delete = desktop.clone();
@@ -728,12 +735,39 @@ pub fn make_actions(
         // Cmd+Enter at a terminal pane's rich input activates the harness for
         // that pane; Esc turns it back off (plain pty). Per pane, so one pane
         // can run the harness while its sibling stays a plain shell.
+        //
+        // Activating the harness is entering that pane's agent view: the pane
+        // needs a conversation of its own to show, so one is bound on the first
+        // entry, its card is pushed into the block list (the way back at the
+        // terminal) and the pane's filter points at the conversation. Esc is
+        // the reverse: the pane's filter returns to the terminal, and the card
+        // stays in the list.
         on_set_pane_harness_mode: Rc::new(RefCell::new(move |pane_id: u64, on: bool| {
-            on_set_harness_mode
-                .borrow_mut()
-                .pane_controls_mut(pane_id)
-                .harness_mode = on;
+            let mut state = on_set_harness_mode.borrow_mut();
+            state.pane_controls_mut(pane_id).harness_mode = on;
+            if on {
+                if !state.pane_owns_conversation(pane_id) {
+                    state.bind_pane_new_conversation(pane_id, desktop_set_harness.as_deref());
+                }
+                if let Some(conversation_id) = state.pane_conversation_id(pane_id) {
+                    let label = state.conversation_name(&conversation_id);
+                    state.enter_agent_view(pane_id, &conversation_id, &label);
+                }
+            } else {
+                state.leave_agent_view(pane_id);
+            }
         })),
+        // A click on the card a conversation left behind in the terminal enters
+        // that conversation's agent view; the harness input comes with it, the
+        // same way Cmd+Enter does.
+        on_open_agent_view: Rc::new(RefCell::new(
+            move |pane_id: u64, conversation_id: String| {
+                let mut state = on_open_agent_view.borrow_mut();
+                state.pane_controls_mut(pane_id).harness_mode = true;
+                let label = state.conversation_name(&conversation_id);
+                state.enter_agent_view(pane_id, &conversation_id, &label);
+            },
+        )),
         on_send_queued: Rc::new(RefCell::new(move || {
             let mut state = on_send_queued.borrow_mut();
             let pane_id = state.active_pane_id;
@@ -769,6 +803,7 @@ pub fn make_actions(
                         session_id,
                     )
                 };
+                let pane_session = state.pane_session(pane_id, &chat_id);
                 if let Err(e) = crate::runtime::run_turn(
                     desktop,
                     &chat_id,
@@ -781,6 +816,7 @@ pub fn make_actions(
                     &session_id,
                     &state.composer_path,
                     Some(state.selected_harness.as_str()),
+                    pane_session,
                 ) {
                     log::warn!("run_chat_turn (queued) failed: {e}");
                 } else {

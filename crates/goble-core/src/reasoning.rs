@@ -8,8 +8,9 @@ use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::harness::{
-    arc_to_sender_ref, execute_tool_call, harness_tool_definitions, HarnessEvent, ThinkingMode,
-    WebSearchConfig, HARNESS_SYSTEM_PROMPT,
+    arc_to_sender_ref, command_candidates, execute_tool_call, harness_tool_definitions,
+    run_approved_command, ChatToolCall, CommandDecision, HarnessEvent, ThinkingMode,
+    ToolCallStatus, WebSearchConfig, COMMAND_TOOL, HARNESS_SYSTEM_PROMPT,
 };
 use crate::llm::{
     CompletionRequest, CompletionStreamEvent, LlmProvider, LlmToolCall, Message, Role,
@@ -266,6 +267,17 @@ fn persist_reasoning_step(store: &Store, mission_id: &str, step: &ReasoningStep)
         &now,
     )?;
     Ok(())
+}
+
+/// Rewrite the assistant row's `tool_calls` column with the current records, so
+/// a call's status/result is readable from the store while the turn still runs.
+fn persist_tool_call_records(
+    store: &Store,
+    message_id: &str,
+    records: &[ChatToolCall],
+) -> Result<()> {
+    let json = serde_json::to_string(records)?;
+    store.set_chat_message_tool_calls(message_id, &json)
 }
 
 fn parse_reasoning_tool_calls(
@@ -586,34 +598,6 @@ pub fn run_mission_turn(
                 }
             }
 
-            // Attach tool-call metadata to the streamed message, or create the
-            // tool-call-only assistant message, so the next iteration's history
-            // carries the calls.
-            if !tool_calls.is_empty() {
-                let tool_calls_json = serde_json::to_string(&tool_calls).unwrap_or_default();
-                match &assistant_msg_id {
-                    Some(id) => {
-                        if let Err(e) = store.set_chat_message_tool_calls(id, &tool_calls_json) {
-                            yield HarnessEvent::Error(e.to_string());
-                            return;
-                        }
-                    }
-                    None => {
-                        if let Err(e) = store.insert_chat_message(
-                            &uuid::Uuid::new_v4().to_string(),
-                            &chat_id,
-                            "assistant",
-                            "",
-                            Some(&tool_calls_json),
-                            &Utc::now().to_rfc3339(),
-                        ) {
-                            yield HarnessEvent::Error(e.to_string());
-                            return;
-                        }
-                    }
-                }
-            }
-
             if tool_calls.is_empty() {
                 break;
             }
@@ -624,16 +608,91 @@ pub fn run_mission_turn(
                 prev_tool_calls = tool_calls.clone();
             }
 
-            for call in &tool_calls {
+            // Attach tool-call metadata to the streamed message, or create the
+            // tool-call-only assistant message, so the next iteration's history
+            // carries the calls. The records carry a lifecycle status that is
+            // rewritten as each call runs, so a call is readable from the store
+            // while the turn is still in flight instead of only once it ends.
+            let mut call_records: Vec<ChatToolCall> =
+                tool_calls.iter().map(ChatToolCall::planned).collect();
+            let tool_calls_json = serde_json::to_string(&call_records).unwrap_or_default();
+            match &assistant_msg_id {
+                Some(id) => {
+                    if let Err(e) = store.set_chat_message_tool_calls(id, &tool_calls_json) {
+                        yield HarnessEvent::Error(e.to_string());
+                        return;
+                    }
+                }
+                None => {
+                    let id = uuid::Uuid::new_v4().to_string();
+                    if let Err(e) = store.insert_chat_message(
+                        &id,
+                        &chat_id,
+                        "assistant",
+                        "",
+                        Some(&tool_calls_json),
+                        &Utc::now().to_rfc3339(),
+                    ) {
+                        yield HarnessEvent::Error(e.to_string());
+                        return;
+                    }
+                    assistant_msg_id = Some(id);
+                }
+            }
+
+            for (index, call) in tool_calls.iter().enumerate() {
                 if cancel.load(Ordering::Relaxed) {
                     yield HarnessEvent::Error("cancelled".to_string());
                     break;
+                }
+                call_records[index].status = ToolCallStatus::Running;
+                if let Some(id) = &assistant_msg_id {
+                    if let Err(e) = persist_tool_call_records(&store, id, &call_records) {
+                        yield HarnessEvent::Error(e.to_string());
+                        return;
+                    }
                 }
                 yield HarnessEvent::ToolCallStarted {
                     id: call.id.clone(),
                     name: call.name.clone(),
                     arguments: call.arguments.clone(),
                 };
+
+                // A command tool suspends here, before it runs, until the user
+                // approves, edits or rejects it. `auto_approve` is the single
+                // switch that skips the gate and runs the command immediately.
+                if !auto_approve && call.name == COMMAND_TOOL {
+                    let candidates = command_candidates(call);
+                    let cwd = workspace_dir.display().to_string();
+                    let now = Utc::now().to_rfc3339();
+                    let candidates_json = match serde_json::to_string(&candidates) {
+                        Ok(json) => json,
+                        Err(e) => {
+                            yield HarnessEvent::Error(e.to_string());
+                            return;
+                        }
+                    };
+                    let message_id = assistant_msg_id.clone().unwrap_or_default();
+                    if let Err(e) = store.insert_pending_command(
+                        &call.id,
+                        &chat_id,
+                        &message_id,
+                        &candidates_json,
+                        &cwd,
+                        "pending",
+                        &now,
+                        &now,
+                    ) {
+                        yield HarnessEvent::Error(e.to_string());
+                        return;
+                    }
+                    yield HarnessEvent::CommandProposed {
+                        id: call.id.clone(),
+                        candidates,
+                        cwd,
+                    };
+                    return;
+                }
 
                 let sender_ref = deploy_sender.as_ref().map(|f| arc_to_sender_ref(f));
                 let result = execute_tool_call(&store, &*runner, sender_ref, &mcp_manager, &workspace_dir, &docs_dir, call, &web_search
@@ -652,6 +711,14 @@ pub fn run_mission_turn(
                             yield HarnessEvent::Error(e.to_string());
                             return;
                         }
+                        call_records[index].status = ToolCallStatus::Finished;
+                        call_records[index].result = Some(value.clone());
+                        if let Some(id) = &assistant_msg_id {
+                            if let Err(e) = persist_tool_call_records(&store, id, &call_records) {
+                                yield HarnessEvent::Error(e.to_string());
+                                return;
+                            }
+                        }
                         yield HarnessEvent::ToolCallFinished { id: call.id.clone(), result: value };
                     }
                     Err(e) => {
@@ -666,6 +733,14 @@ pub fn run_mission_turn(
                         ) {
                             yield HarnessEvent::Error(e2.to_string());
                             return;
+                        }
+                        call_records[index].status = ToolCallStatus::Error;
+                        call_records[index].result = Some(e.to_string());
+                        if let Some(id) = &assistant_msg_id {
+                            if let Err(e2) = persist_tool_call_records(&store, id, &call_records) {
+                                yield HarnessEvent::Error(e2.to_string());
+                                return;
+                            }
                         }
                         yield HarnessEvent::ToolCallError { id: call.id.clone(), message: e.to_string() };
                     }
@@ -769,6 +844,110 @@ pub fn resume_mission_turn(
             yield event;
         }
     })
+}
+
+/// Resume a turn that suspended on a proposed command, executing the user's
+/// decision and recording the outcome (A6).
+///
+/// `Approve` runs the chosen text verbatim, `Edit` runs the edited text, and
+/// `Reject` fails the tool call with a `ToolCallError` instead of running
+/// anything. The result (or the rejection) is persisted into the call's record
+/// and as a `role="tool"` row, exactly as the immediate path writes it.
+pub fn resume_command_turn(
+    store: Store,
+    runner: Arc<dyn crate::harness::CommandRunner>,
+    chat_id: String,
+    decision: CommandDecision,
+) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
+    Box::pin(async_stream::stream! {
+        let now = Utc::now().to_rfc3339();
+        let pending = match store.get_pending_command(&chat_id) {
+            Ok(Some(pending)) => pending,
+            _ => {
+                yield HarnessEvent::Error("no pending command for chat".to_string());
+                return;
+            }
+        };
+        let (call_id, message_id, _candidates, _cwd) = pending;
+        if let Err(e) = store.resolve_pending_command(&call_id, "resolved", &now) {
+            yield HarnessEvent::Error(e.to_string());
+            return;
+        }
+
+        let outcome = match decision {
+            CommandDecision::Reject(reason) => {
+                let message = if reason.trim().is_empty() {
+                    "rejected by user".to_string()
+                } else {
+                    format!("rejected by user: {reason}")
+                };
+                Err(anyhow::anyhow!(message))
+            }
+            CommandDecision::Approve(text) | CommandDecision::Edit(text) => {
+                run_approved_command(&store, &*runner, &text).await
+            }
+        };
+
+        let (status, body) = match &outcome {
+            Ok(value) => (ToolCallStatus::Finished, value.clone()),
+            Err(e) => (ToolCallStatus::Error, e.to_string()),
+        };
+        if let Err(e) = record_command_outcome(&store, &chat_id, &message_id, &call_id, status, &body) {
+            yield HarnessEvent::Error(e.to_string());
+            return;
+        }
+
+        match outcome {
+            Ok(value) => yield HarnessEvent::ToolCallFinished { id: call_id, result: value },
+            Err(e) => yield HarnessEvent::ToolCallError { id: call_id, message: e.to_string() },
+        }
+        yield HarnessEvent::Done;
+    })
+}
+
+/// Write a resumed command's outcome to the store: the tool-result row the
+/// immediate path writes, plus the call's `status`/`result` on the assistant row
+/// it was planned on.
+fn record_command_outcome(
+    store: &Store,
+    chat_id: &str,
+    message_id: &str,
+    call_id: &str,
+    status: ToolCallStatus,
+    body: &str,
+) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    let text = if status == ToolCallStatus::Error {
+        format!("{call_id}\nERROR: {body}")
+    } else {
+        format!("{call_id}\n{body}")
+    };
+    store.insert_chat_message(
+        &uuid::Uuid::new_v4().to_string(),
+        chat_id,
+        "tool",
+        &text,
+        None,
+        &now,
+    )?;
+
+    if message_id.is_empty() {
+        return Ok(());
+    }
+    let Some((_, _, _, Some(tool_calls), _)) = store
+        .list_chat_messages(chat_id)?
+        .into_iter()
+        .find(|(id, _, _, _, _)| id == message_id)
+    else {
+        return Ok(());
+    };
+    let mut records: Vec<ChatToolCall> = serde_json::from_str(&tool_calls).unwrap_or_default();
+    if let Some(record) = records.iter_mut().find(|r| r.id == call_id) {
+        record.status = status;
+        record.result = Some(body.to_string());
+        persist_tool_call_records(store, message_id, &records)?;
+    }
+    Ok(())
 }
 
 async fn build_history(
@@ -1050,6 +1229,145 @@ mod tests {
             .any(|(_, role, content, _, _)| role == "user" && content.contains("auto-approved")));
     }
 
+    /// Records each command line the harness runs, so the approval tests assert
+    /// exactly what a decision executed.
+    struct RecordingRunner {
+        runs: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingRunner {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                runs: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn lines(&self) -> Vec<String> {
+            self.runs.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::harness::CommandRunner for RecordingRunner {
+        async fn run(&self, command: &str, args: &[String]) -> anyhow::Result<String> {
+            let line = if args.is_empty() {
+                command.to_string()
+            } else {
+                format!("{command} {}", args.join(" "))
+            };
+            self.runs.lock().unwrap().push(line.clone());
+            Ok(format!("ran: {line}"))
+        }
+    }
+
+    /// Drive a turn until its `run_command` call suspends on approval, returning
+    /// the store, chat id, recording runner and the events observed so far.
+    async fn turn_suspends_on_command() -> (Store, String, Arc<RecordingRunner>, Vec<HarnessEvent>)
+    {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let llm = llm_with_reasoning_tools(
+            "",
+            vec![LlmToolCall {
+                id: "tc_cmd".to_string(),
+                name: "run_command".to_string(),
+                arguments: serde_json::json!({"command": "echo", "args": ["hi"]}),
+            }],
+        );
+        let runner = RecordingRunner::new();
+        let harness = Harness::new(store.clone())
+            .with_llm(llm)
+            .with_runner(runner.clone())
+            .with_workspace_dir("/tmp/workspace");
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "run echo hi", "mock", "mock")
+            .collect()
+            .await;
+        (store, chat_id, runner, events)
+    }
+
+    /// A `run_command` call suspends before it runs: the harness emits a
+    /// `CommandProposed` with the candidate line and the cwd, persists the
+    /// proposal, and leaves the call running until a decision arrives.
+    #[tokio::test]
+    async fn test_command_suspends_before_it_runs() {
+        let (store, chat_id, runner, events) = turn_suspends_on_command().await;
+        let (id, candidates, cwd) = events
+            .iter()
+            .find_map(|e| match e {
+                HarnessEvent::CommandProposed {
+                    id,
+                    candidates,
+                    cwd,
+                } => Some((id.clone(), candidates.clone(), cwd.clone())),
+                _ => None,
+            })
+            .expect("a command tool must suspend on a proposal");
+        assert_eq!(id, "tc_cmd");
+        assert_eq!(candidates, vec!["echo hi".to_string()]);
+        assert_eq!(cwd, "/tmp/workspace");
+        assert!(runner.lines().is_empty(), "nothing runs while suspended");
+        assert!(store.get_pending_command(&chat_id).unwrap().is_some());
+        assert_eq!(
+            tool_call_records(&store, &chat_id)[0].status,
+            ToolCallStatus::Running
+        );
+        assert!(!events.iter().any(|e| matches!(e, HarnessEvent::Done)));
+    }
+
+    /// Approving runs the chosen command text verbatim.
+    #[tokio::test]
+    async fn test_approve_runs_chosen_command() {
+        let (store, chat_id, runner, _) = turn_suspends_on_command().await;
+        let events: Vec<_> = Harness::new(store.clone())
+            .with_runner(runner.clone())
+            .resume_command(&chat_id, CommandDecision::Approve("echo hi".to_string()))
+            .collect()
+            .await;
+        assert_eq!(runner.lines(), vec!["echo hi".to_string()]);
+        assert!(events.iter().any(
+            |e| matches!(e, HarnessEvent::ToolCallFinished { id, result } if id == "tc_cmd" && result == "ran: echo hi")
+        ));
+        assert!(store.get_pending_command(&chat_id).unwrap().is_none());
+        let records = tool_call_records(&store, &chat_id);
+        assert_eq!(records[0].status, ToolCallStatus::Finished);
+        assert_eq!(records[0].result.as_deref(), Some("ran: echo hi"));
+    }
+
+    /// Editing runs the edited text instead of the proposal.
+    #[tokio::test]
+    async fn test_edit_runs_edited_command() {
+        let (store, chat_id, runner, _) = turn_suspends_on_command().await;
+        let events: Vec<_> = Harness::new(store.clone())
+            .with_runner(runner.clone())
+            .resume_command(&chat_id, CommandDecision::Edit("echo edited".to_string()))
+            .collect()
+            .await;
+        assert_eq!(runner.lines(), vec!["echo edited".to_string()]);
+        assert!(events.iter().any(
+            |e| matches!(e, HarnessEvent::ToolCallFinished { id, result } if id == "tc_cmd" && result == "ran: echo edited")
+        ));
+    }
+
+    /// Rejecting never runs the command; the tool call fails instead.
+    #[tokio::test]
+    async fn test_reject_errors() {
+        let (store, chat_id, runner, _) = turn_suspends_on_command().await;
+        let events: Vec<_> = Harness::new(store.clone())
+            .with_runner(runner.clone())
+            .resume_command(&chat_id, CommandDecision::Reject("too risky".to_string()))
+            .collect()
+            .await;
+        assert!(runner.lines().is_empty(), "a rejected command never runs");
+        assert!(events.iter().any(
+            |e| matches!(e, HarnessEvent::ToolCallError { id, message } if id == "tc_cmd" && message.contains("rejected by user: too risky"))
+        ));
+        assert_eq!(
+            tool_call_records(&store, &chat_id)[0].status,
+            ToolCallStatus::Error
+        );
+    }
+
     /// The execution phase streams assistant deltas into a single message row as
     /// they arrive (so the renderer can show the reply progressively), and the
     /// final content is the full concatenation.
@@ -1097,5 +1415,104 @@ mod tests {
         let msgs = store.list_chat_messages(&chat_id).unwrap();
         let assistant = msgs.into_iter().find(|m| m.1 == "assistant").unwrap();
         assert_eq!(assistant.2, "Hello world", "deltas should be concatenated into one assistant message");
+    }
+
+    /// Collect the persisted tool-call records from every row of a chat.
+    fn tool_call_records(store: &Store, chat_id: &str) -> Vec<ChatToolCall> {
+        store
+            .list_chat_messages(chat_id)
+            .unwrap()
+            .into_iter()
+            .filter_map(|(_, _, _, tool_calls, _)| tool_calls)
+            .flat_map(|json| serde_json::from_str::<Vec<ChatToolCall>>(&json).unwrap_or_default())
+            .collect()
+    }
+
+    /// A started call is readable from the store while the turn is still running,
+    /// and the same row carries the outcome once it finishes.
+    #[tokio::test]
+    async fn test_tool_call_is_running_in_store_before_turn_ends() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let llm = llm_with_reasoning_tools(
+            "",
+            vec![LlmToolCall {
+                id: "tc_live".to_string(),
+                name: "credentials".to_string(),
+                arguments: serde_json::json!({}),
+            }],
+        );
+        let harness = Harness::new(store.clone()).with_llm(llm);
+        let mut events = harness.run_turn(&chat_id, "list credentials", "mock", "mock");
+
+        // Drive the turn only up to the start event: the call must already be
+        // persisted as running, well before the turn ends.
+        let mut saw_started = false;
+        while let Some(event) = events.next().await {
+            if matches!(event, HarnessEvent::ToolCallStarted { .. }) {
+                saw_started = true;
+                break;
+            }
+        }
+        assert!(saw_started, "the turn should have started a tool call");
+
+        let records = tool_call_records(&store, &chat_id);
+        assert_eq!(records.len(), 1, "the started call is persisted");
+        assert_eq!(records[0].id, "tc_live");
+        assert_eq!(records[0].status, ToolCallStatus::Running);
+        assert_eq!(records[0].result, None, "a running call has no result yet");
+
+        // Finish the turn; the same row now carries the terminal state.
+        let rest: Vec<_> = events.collect().await;
+        assert!(rest.iter().any(|e| matches!(e, HarnessEvent::Done)));
+
+        let records = tool_call_records(&store, &chat_id);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].status, ToolCallStatus::Finished);
+        assert!(records[0].result.is_some(), "a finished call keeps its result");
+    }
+
+    /// A call that fails is persisted with the error state and the message.
+    #[tokio::test]
+    async fn test_failed_tool_call_is_persisted_as_error() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_id = chat(&store);
+        let llm = llm_with_reasoning_tools(
+            "",
+            vec![LlmToolCall {
+                id: "tc_bad".to_string(),
+                name: "no_such_tool".to_string(),
+                arguments: serde_json::json!({}),
+            }],
+        );
+        let harness = Harness::new(store.clone()).with_llm(llm);
+        let events: Vec<_> = harness
+            .run_turn(&chat_id, "do the impossible", "mock", "mock")
+            .collect()
+            .await;
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, HarnessEvent::ToolCallError { .. })));
+
+        let records = tool_call_records(&store, &chat_id);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].status, ToolCallStatus::Error);
+        assert!(records[0]
+            .result
+            .as_deref()
+            .unwrap_or_default()
+            .contains("unknown tool"));
+    }
+
+    /// A `tool_calls` row written by an older build carries only
+    /// `id`/`name`/`arguments`; the new fields must default rather than fail.
+    #[test]
+    fn test_tool_call_row_from_older_build_still_parses() {
+        let old = r#"[{"id":"call_1","name":"ls","arguments":{"path":"/tmp"}}]"#;
+        let records: Vec<ChatToolCall> = serde_json::from_str(old).expect("old row must parse");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name, "ls");
+        assert_eq!(records[0].status, ToolCallStatus::Pending);
+        assert_eq!(records[0].result, None);
     }
 }

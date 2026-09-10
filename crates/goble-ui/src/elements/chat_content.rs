@@ -1,4 +1,5 @@
 use crate::elements::terminal_block::TerminalData;
+use goble_core::harness::ToolCallStatus;
 
 /// The role of a chat message participant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -14,6 +15,24 @@ pub enum ChatAction {
     OpenUrl(String),
     RunCommand(String),
     Custom(String),
+}
+
+/// A single list item: its checkbox state (only set for GFM task lists) and
+/// the content it holds. Item content is itself a fragment sequence so a
+/// nested paragraph, quote or list survives instead of being flattened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListItem {
+    pub checked: Option<bool>,
+    pub content: Vec<ChatFragment>,
+}
+
+impl ListItem {
+    pub fn new(content: Vec<ChatFragment>) -> Self {
+        Self {
+            checked: None,
+            content,
+        }
+    }
 }
 
 /// A single piece of content inside a chat message.
@@ -80,15 +99,37 @@ impl ChatFragment {
         }
     }
 
-    pub fn list(items: Vec<String>, ordered: bool) -> Self {
+    /// An ordered list carries its source start number; `None` means bulleted.
+    pub fn list(items: Vec<ListItem>, start: Option<u64>) -> Self {
         Self {
-            kind: ChatFragmentKind::List { items, ordered },
+            kind: ChatFragmentKind::List { items, start },
         }
     }
 
-    pub fn block_quote(text: impl Into<String>) -> Self {
+    pub fn block_quote(content: Vec<ChatFragment>) -> Self {
         Self {
-            kind: ChatFragmentKind::BlockQuote(text.into()),
+            kind: ChatFragmentKind::BlockQuote(content),
+        }
+    }
+
+    pub fn table(header: Vec<String>, rows: Vec<Vec<String>>) -> Self {
+        Self {
+            kind: ChatFragmentKind::Table { header, rows },
+        }
+    }
+
+    pub fn rule() -> Self {
+        Self {
+            kind: ChatFragmentKind::Rule,
+        }
+    }
+
+    pub fn image(alt: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            kind: ChatFragmentKind::Image {
+                alt: alt.into(),
+                url: url.into(),
+            },
         }
     }
 
@@ -112,34 +153,68 @@ impl ChatFragment {
             kind: ChatFragmentKind::Terminal(data),
         }
     }
+
+    /// A model reasoning (thinking) step. `key` is the app-owned identity used
+    /// to hold the row's collapsed/expanded state across frames; `mode` is the
+    /// thinking mode label and `text` the step's accumulated text.
+    pub fn reasoning(
+        key: impl Into<String>,
+        mode: impl Into<String>,
+        text: impl Into<String>,
+        done: bool,
+    ) -> Self {
+        Self {
+            kind: ChatFragmentKind::Reasoning {
+                key: key.into(),
+                mode: mode.into(),
+                text: text.into(),
+                done,
+            },
+        }
+    }
 }
 
 /// A single tool invocation recorded on an assistant message. `arguments` is the
 /// JSON arguments the tool was called with, rendered alongside the name so the
-/// user can see what the agent actually invoked.
+/// user can see what the agent actually invoked. `status` and `result` are the
+/// persisted lifecycle carrier: a re-read renders the terminal state, and an
+/// in-flight `running` call is visible while it runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCall {
+    pub id: String,
     pub name: String,
     pub arguments: String,
+    pub status: ToolCallStatus,
+    pub result: Option<String>,
 }
 
 impl ToolCall {
     /// Parse tool-call metadata from the harness-produced `tool_calls` JSON column
     /// into renderable calls. Malformed or unknown JSON yields an empty list
-    /// rather than failing the whole transcript.
+    /// rather than failing the whole transcript. Rows written by older builds
+    /// carry only `name`/`arguments`; `id`, `status` and `result` default.
     pub fn from_llm_json(json: &str) -> Vec<ToolCall> {
         #[derive(serde::Deserialize)]
         struct Raw {
+            #[serde(default)]
+            id: String,
             name: String,
             #[serde(default)]
             arguments: serde_json::Value,
+            #[serde(default)]
+            status: ToolCallStatus,
+            #[serde(default)]
+            result: Option<String>,
         }
         serde_json::from_str::<Vec<Raw>>(json)
             .unwrap_or_default()
             .into_iter()
             .map(|raw| ToolCall {
+                id: raw.id,
                 name: raw.name,
                 arguments: serde_json::to_string(&raw.arguments).unwrap_or_default(),
+                status: raw.status,
+                result: raw.result,
             })
             .collect()
     }
@@ -217,11 +292,35 @@ pub enum ChatFragmentKind {
     CodeBlock { lang: Option<String>, code: String },
     Heading { level: u8, text: String },
     Link { label: String, url: String },
-    List { items: Vec<String>, ordered: bool },
-    BlockQuote(String),
+    /// A list and its items. `start` is `Some(n)` for an ordered list whose
+    /// first item is numbered `n`, and `None` for a bulleted list.
+    List {
+        items: Vec<ListItem>,
+        start: Option<u64>,
+    },
+    /// Blockquote content as nested fragments, so paragraph breaks and nested
+    /// blocks inside the quote are preserved.
+    BlockQuote(Vec<ChatFragment>),
+    /// A GFM table: one header row plus body rows.
+    Table {
+        header: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
+    /// A horizontal rule.
+    Rule,
+    /// An image, carried by its alt text and destination URL.
+    Image { alt: String, url: String },
     LineBreak,
     Action { label: String, payload: ChatAction },
     Terminal(TerminalData),
+    /// A model reasoning (thinking) step, rendered recessed and collapsed until
+    /// the user expands it. `key` identifies the row's app-owned expand state.
+    Reasoning {
+        key: String,
+        mode: String,
+        text: String,
+        done: bool,
+    },
 }
 
 /// The inline style of a span inside a paragraph block.
@@ -249,10 +348,29 @@ pub enum ChatBlock {
     Paragraph(Vec<InlineSpan>),
     Heading { level: u8, text: String },
     CodeBlock { lang: Option<String>, code: String },
-    List { items: Vec<String>, ordered: bool },
-    BlockQuote(String),
+    List {
+        items: Vec<ListItem>,
+        start: Option<u64>,
+    },
+    /// A blockquote rendered as a nested stack of blocks, so it keeps its
+    /// paragraph structure instead of collapsing to one line.
+    BlockQuote(Vec<ChatBlock>),
+    Table {
+        header: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
+    Rule,
+    Image { alt: String, url: String },
     Action { label: String, payload: ChatAction },
     Terminal(TerminalData),
+    /// A model reasoning step's own row: recessed (muted), collapsed until
+    /// expanded. `key` identifies the row's app-owned expand state.
+    Reasoning {
+        key: String,
+        mode: String,
+        text: String,
+        done: bool,
+    },
 }
 
 impl InlineSpan {
@@ -302,8 +420,7 @@ fn inline_span(kind: &ChatFragmentKind) -> Option<InlineSpan> {
             style: InlineStyle::BoldItalic,
         }),
         ChatFragmentKind::Code(t) => Some(InlineSpan::code(t.clone())),
-        // Links stay interactive (rendered as an action chip), so they are not
-        // folded into the inline flow of a paragraph.
+        ChatFragmentKind::Link { label, url } => Some(InlineSpan::link(label.clone(), url.clone())),
         _ => None,
     }
 }
@@ -339,14 +456,27 @@ pub fn group_fragments_into_blocks(fragments: &[ChatFragment]) -> Vec<ChatBlock>
                     code: code.clone(),
                 });
             }
-            ChatFragmentKind::List { items, ordered } => {
+            ChatFragmentKind::List { items, start } => {
                 blocks.push(ChatBlock::List {
                     items: items.clone(),
-                    ordered: *ordered,
+                    start: *start,
                 });
             }
-            ChatFragmentKind::BlockQuote(text) => {
-                blocks.push(ChatBlock::BlockQuote(text.clone()));
+            ChatFragmentKind::BlockQuote(content) => {
+                blocks.push(ChatBlock::BlockQuote(group_fragments_into_blocks(content)));
+            }
+            ChatFragmentKind::Table { header, rows } => {
+                blocks.push(ChatBlock::Table {
+                    header: header.clone(),
+                    rows: rows.clone(),
+                });
+            }
+            ChatFragmentKind::Rule => blocks.push(ChatBlock::Rule),
+            ChatFragmentKind::Image { alt, url } => {
+                blocks.push(ChatBlock::Image {
+                    alt: alt.clone(),
+                    url: url.clone(),
+                });
             }
             ChatFragmentKind::Action { label, payload } => {
                 blocks.push(ChatBlock::Action {
@@ -354,14 +484,21 @@ pub fn group_fragments_into_blocks(fragments: &[ChatFragment]) -> Vec<ChatBlock>
                     payload: payload.clone(),
                 });
             }
-            ChatFragmentKind::Link { label, url } => {
-                blocks.push(ChatBlock::Action {
-                    label: label.clone(),
-                    payload: ChatAction::OpenUrl(url.clone()),
-                });
-            }
             ChatFragmentKind::Terminal(data) => {
                 blocks.push(ChatBlock::Terminal(data.clone()));
+            }
+            ChatFragmentKind::Reasoning {
+                key,
+                mode,
+                text,
+                done,
+            } => {
+                blocks.push(ChatBlock::Reasoning {
+                    key: key.clone(),
+                    mode: mode.clone(),
+                    text: text.clone(),
+                    done: *done,
+                });
             }
             // A line break separates paragraphs; it is represented by the flush
             // above and does not produce a block of its own.
@@ -408,15 +545,20 @@ mod tests {
     }
 
     #[test]
-    fn link_fragment_becomes_interactive_action() {
-        let fragments = vec![ChatFragment::link("Goble", "https://goble.dev")];
+    fn link_fragment_stays_in_the_paragraph() {
+        let fragments = vec![
+            ChatFragment::text("see "),
+            ChatFragment::link("Goble", "https://goble.dev"),
+            ChatFragment::text(" for details"),
+        ];
         let blocks = group_fragments_into_blocks(&fragments);
         assert_eq!(
             blocks,
-            vec![ChatBlock::Action {
-                label: "Goble".to_string(),
-                payload: ChatAction::OpenUrl("https://goble.dev".to_string()),
-            }]
+            vec![ChatBlock::Paragraph(vec![
+                InlineSpan::plain("see "),
+                InlineSpan::link("Goble", "https://goble.dev"),
+                InlineSpan::plain(" for details"),
+            ])]
         );
     }
 
@@ -424,7 +566,13 @@ mod tests {
     fn heading_and_list_are_their_own_blocks() {
         let fragments = vec![
             ChatFragment::heading(1, "Title"),
-            ChatFragment::list(vec!["a".to_string(), "b".to_string()], true),
+            ChatFragment::list(
+                vec![
+                    ListItem::new(vec![ChatFragment::text("a")]),
+                    ListItem::new(vec![ChatFragment::text("b")]),
+                ],
+                Some(3),
+            ),
         ];
         let blocks = group_fragments_into_blocks(&fragments);
         assert_eq!(
@@ -435,8 +583,32 @@ mod tests {
                     text: "Title".to_string(),
                 },
                 ChatBlock::List {
-                    items: vec!["a".to_string(), "b".to_string()],
-                    ordered: true,
+                    items: vec![
+                        ListItem::new(vec![ChatFragment::text("a")]),
+                        ListItem::new(vec![ChatFragment::text("b")]),
+                    ],
+                    start: Some(3),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn reasoning_fragment_is_its_own_block() {
+        let fragments = vec![
+            ChatFragment::text("answer: "),
+            ChatFragment::reasoning("c1:0", "contemplating", "weighing options", false),
+        ];
+        let blocks = group_fragments_into_blocks(&fragments);
+        assert_eq!(
+            blocks,
+            vec![
+                ChatBlock::Paragraph(vec![InlineSpan::plain("answer: ")]),
+                ChatBlock::Reasoning {
+                    key: "c1:0".to_string(),
+                    mode: "contemplating".to_string(),
+                    text: "weighing options".to_string(),
+                    done: false,
                 },
             ]
         );
@@ -445,14 +617,43 @@ mod tests {
     #[test]
     fn tool_call_parses_harness_json() {
         let calls = ToolCall::from_llm_json(
-            r#"[{"id":"call_1","name":"ls","arguments":{"path":"/tmp"}}]"#,
+            r#"[{"id":"call_1","name":"ls","arguments":{"path":"/tmp"},"status":"running"}]"#,
         );
         assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
         assert_eq!(calls[0].name, "ls");
         assert!(calls[0].arguments.contains("/tmp"));
+        assert_eq!(calls[0].status, ToolCallStatus::Running);
+        assert_eq!(calls[0].result, None);
 
         // Malformed JSON is tolerated (empty list), never panics a transcript.
         assert!(ToolCall::from_llm_json("not json").is_empty());
         assert!(ToolCall::from_llm_json("").is_empty());
+    }
+
+    #[test]
+    fn tool_call_carries_status_and_result() {
+        let calls = ToolCall::from_llm_json(
+            r#"[{"id":"call_2","name":"credentials","arguments":{},"status":"finished","result":"no credentials stored"}]"#,
+        );
+        assert_eq!(calls[0].status, ToolCallStatus::Finished);
+        assert_eq!(calls[0].result.as_deref(), Some("no credentials stored"));
+
+        let failed = ToolCall::from_llm_json(
+            r#"[{"id":"call_3","name":"no_such_tool","arguments":{},"status":"error","result":"unknown tool"}]"#,
+        );
+        assert_eq!(failed[0].status, ToolCallStatus::Error);
+    }
+
+    /// Rows persisted before the status carrier existed carry only
+    /// `id`/`name`/`arguments`; they must still parse.
+    #[test]
+    fn tool_call_row_from_older_build_still_parses() {
+        let calls =
+            ToolCall::from_llm_json(r#"[{"id":"call_1","name":"ls","arguments":{"path":"/tmp"}}]"#);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "ls");
+        assert_eq!(calls[0].status, ToolCallStatus::Pending);
+        assert_eq!(calls[0].result, None);
     }
 }

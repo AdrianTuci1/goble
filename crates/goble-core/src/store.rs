@@ -213,6 +213,19 @@ impl Store {
 
             CREATE INDEX IF NOT EXISTS idx_pending_asks_chat ON pending_asks(chat_id, status);
 
+            CREATE TABLE IF NOT EXISTS pending_commands (
+                call_id TEXT PRIMARY KEY,
+                chat_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                candidates TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            ) STRICT;
+
+            CREATE INDEX IF NOT EXISTS idx_pending_commands_chat ON pending_commands(chat_id, status);
+
             CREATE TABLE IF NOT EXISTS llm_settings (
                 provider TEXT PRIMARY KEY,
                 api_key TEXT NOT NULL,
@@ -1587,6 +1600,67 @@ impl Store {
         Ok(())
     }
 
+    /// Record a command the harness proposed and is waiting on the user to
+    /// approve, edit or reject (A6). `message_id` is the assistant row holding
+    /// the call's tool-call record, so the resume path can rewrite its outcome.
+    pub fn insert_pending_command(
+        &self,
+        call_id: &str,
+        chat_id: &str,
+        message_id: &str,
+        candidates: &str,
+        cwd: &str,
+        status: &str,
+        created_at: &str,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO pending_commands (call_id, chat_id, message_id, candidates, cwd, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(call_id) DO UPDATE SET chat_id=excluded.chat_id, message_id=excluded.message_id,
+                                                candidates=excluded.candidates, cwd=excluded.cwd,
+                                                status=excluded.status, updated_at=excluded.updated_at",
+            params![call_id, chat_id, message_id, candidates, cwd, status, created_at, updated_at],
+        )?;
+        Ok(())
+    }
+
+    /// The oldest pending command proposal for a chat, as
+    /// `(call_id, message_id, candidates, cwd)`.
+    pub fn get_pending_command(
+        &self,
+        chat_id: &str,
+    ) -> Result<Option<(String, String, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT call_id, message_id, candidates, cwd FROM pending_commands WHERE chat_id = ?1 AND status = 'pending' ORDER BY created_at ASC LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![chat_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn resolve_pending_command(
+        &self,
+        call_id: &str,
+        status: &str,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE pending_commands SET status = ?1, updated_at = ?2 WHERE call_id = ?3",
+            params![status, updated_at, call_id],
+        )?;
+        Ok(())
+    }
+
     pub fn export_snapshot_payload(&self) -> Result<crate::snapshot::SnapshotPayload> {
         let mut tables = std::collections::HashMap::new();
         for table in SNAPSHOT_TABLES {
@@ -1752,6 +1826,7 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "missions",
     "reasoning_steps",
     "pending_asks",
+    "pending_commands",
     "agent_memory",
 ];
 

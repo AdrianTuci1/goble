@@ -174,6 +174,7 @@ impl RootView {
                             .get(&pane_id)
                             .map(|s| s.path.clone())
                             .unwrap_or_default();
+                        let pane_session = state.pane_session(pane_id, &conv);
                         if let Err(e) = crate::runtime::run_turn(
                             &desktop,
                             &conv,
@@ -186,6 +187,7 @@ impl RootView {
                             &session_id,
                             &cwd,
                             Some(state.selected_harness.as_str()),
+                            pane_session,
                         ) {
                             log::warn!("auto-submit queued prompt failed: {e}");
                         } else if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
@@ -220,6 +222,28 @@ impl RootView {
                         }
                     }
                     state.refresh_messages(&desktop);
+                }
+                // A live tool-call transition from the harness: hold a running
+                // call in the pane's in-flight map and clear it on finish/error.
+                // The call is overlaid on the transcript immediately, so it is
+                // visible before the turn ends instead of only after the store
+                // re-read that `chat:updated` triggers.
+                "chat:tool" => {
+                    if let Ok(call) =
+                        serde_json::from_value::<goble_desktop_service::ToolCallEvent>(payload)
+                    {
+                        state.apply_tool_event(&call);
+                    }
+                }
+                // A live reasoning transition: fold it into the owning pane's
+                // thinking rows and overlay them on the transcript, so the
+                // model's reasoning renders as it streams.
+                "chat:reasoning" => {
+                    if let Ok(event) =
+                        serde_json::from_value::<goble_desktop_service::ReasoningEvent>(payload)
+                    {
+                        state.apply_reasoning_event(&event);
+                    }
                 }
                 "workflows:updated" => {
                     state.refresh_crons(&desktop);
@@ -451,6 +475,7 @@ impl RootView {
                 fullscreen: s.fullscreen,
                 agent_header_menus: s.agent_header_menus.clone(),
                 terminal_filters: s.terminal_filters.clone(),
+                reasoning_expanded: s.reasoning_expanded.clone(),
                 terminal_global_filters: s.terminal_global_filters.clone(),
                 crons_open: s.crons_open,
                 crons: s.crons.clone(),

@@ -17,20 +17,22 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use goble_terminal::blocks::BlockView;
 use goble_terminal::{KeyEncoder, MouseAction, MouseButton, Palette, TermMode};
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
-    caret_beam, AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext,
-    Expanded, Fill, Flex, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint,
-    TerminalGrid, Text,
+    caret_beam, terminal_block, AppContext, Container, CrossAxisAlignment, EdgeInsets, Element,
+    EventContext, Expanded, Fill, Flex, LayoutContext, MainAxisSize, PaintContext, Point,
+    SizeConstraint, TerminalData, TerminalFilter, TerminalGrid, TerminalLine, TerminalStatus, Text,
 };
 use goble_ui::event::{DispatchedEvent, ModifiersState};
 use goble_ui::geometry::Vector2F;
 use goble_ui::theme::{ColorToken, FontFamily, SpacingToken};
 
+use crate::emulator::{AgentViewCard, VisibleBlock};
 use crate::terminal::{
     classify_input, classify_key, is_agent_submit, mouse_report, update_input_mirror, InputClass,
-    TerminalKeyAction, TerminalMode, TerminalRegistry,
+    TerminalKeyAction, TerminalMode, TerminalRegistry, TerminalSession,
 };
 
 const FONT_SIZE: f32 = 12.0;
@@ -41,6 +43,9 @@ const LINE_HEIGHT: f32 = 1.35;
 /// `harness_mode` is this pane's own rich-input mode: when it is on, the pane
 /// shows a harness input line at the bottom and routes turns to the agent
 /// instead of the shell (Cmd+Enter activates it, Esc returns to the plain pty).
+/// The pane's `view` is the filter over its block list: the shell's own history
+/// (the terminal) or one conversation's agent view. A conversation card left in
+/// the terminal is clickable to reopen its view.
 pub fn build_terminal(
     _app: &AppContext,
     state: &crate::ui::UiSnapshot,
@@ -53,17 +58,52 @@ pub fn build_terminal(
     let on_activate = actions.on_pane_activate.clone();
     let on_route = actions.on_terminal_command.clone();
     let on_harness_mode = actions.on_set_pane_harness_mode.clone();
+    let on_open_agent_view = actions.on_open_agent_view.clone();
+    let view = state
+        .pane_controls
+        .get(&pane_id)
+        .map(|c| c.view.clone())
+        .unwrap_or(BlockView::Terminal);
     TerminalView::new(
         state.terminal.clone(),
         pane_id,
         cwd,
         active,
         harness_mode,
+        view,
         on_activate,
         on_route,
         on_harness_mode,
+        on_open_agent_view,
     )
     .finish()
+}
+
+/// The block a pane's executed command is drawn as: the live session's output,
+/// titled for the pane.
+///
+/// This is the pane's own block path, and the transcript reuses it: a command
+/// that ran in the pane is drawn with the same terminal block the transcript
+/// draws a command the agent ran with, so one command is one block in both
+/// places. `None` while the session has drawn nothing.
+pub fn executed_command_block(session: &TerminalSession) -> Option<TerminalData> {
+    let snapshot = session.snapshot(48);
+    if snapshot.lines.is_empty() {
+        return None;
+    }
+    let lines = snapshot
+        .lines
+        .iter()
+        .map(|line| {
+            let text = line.trim_end().to_string();
+            if text.is_empty() {
+                TerminalLine::info(" ")
+            } else {
+                TerminalLine::output(text)
+            }
+        })
+        .collect();
+    Some(TerminalData::new("terminal", lines).with_status(TerminalStatus::Success))
 }
 
 struct TerminalView {
@@ -72,13 +112,20 @@ struct TerminalView {
     cwd: String,
     active: bool,
     harness_mode: bool,
+    /// The filter this pane's block list is drawn through: the terminal, or one
+    /// conversation's agent view.
+    view: BlockView,
     on_activate: Rc<RefCell<dyn FnMut(u64)>>,
     on_route: Rc<RefCell<dyn FnMut(u64, String)>>,
     on_harness_mode: Rc<RefCell<dyn FnMut(u64, bool)>>,
+    on_open_agent_view: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Where the grid ended up, written by the grid as it paints; a pointer
     /// event is turned into a cell against this, not against a second guess at
     /// the flex layout.
     geometry: Rc<RefCell<Option<GridGeometry>>>,
+    /// The conversation cards drawn in the terminal view this frame, with where
+    /// each landed, so a click on a card reopens its conversation.
+    cards: Rc<RefCell<Vec<CardRect>>>,
     /// The button held down, so motion is reported as a drag while it is.
     pressed: Option<MouseButton>,
     /// The last cell the pointer was over. A wheel event carries no position,
@@ -113,6 +160,97 @@ impl GridGeometry {
         let column = (x / column_pitch) as usize;
         let row = (y / row_pitch) as usize;
         (column < self.columns && row < self.rows).then_some((row, column))
+    }
+}
+
+/// Where one conversation card landed in the terminal view, in window
+/// coordinates, so a click on the card is a click on the conversation it names.
+#[derive(Debug, Clone)]
+struct CardRect {
+    conversation_id: String,
+    origin: Vector2F,
+    size: Vector2F,
+}
+
+impl CardRect {
+    fn contains(&self, position: Vector2F) -> bool {
+        position.x >= self.origin.x
+            && position.x <= self.origin.x + self.size.x
+            && position.y >= self.origin.y
+            && position.y <= self.origin.y + self.size.y
+    }
+}
+
+/// The row a conversation card draws: the card's label and how to open it.
+fn build_card(app: &AppContext, card: &AgentViewCard) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let row = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(
+            Text::new("▸")
+                .with_font_size(FONT_SIZE)
+                .with_font_family(FontFamily::Mono)
+                .with_theme_color(ColorToken::Accent, app)
+                .finish(),
+        )
+        .with_child(
+            Text::new(format!("agent view · {}", card.label))
+                .with_font_size(FONT_SIZE)
+                .with_line_height(LINE_HEIGHT)
+                .with_font_family(FontFamily::Mono)
+                .with_theme_color(ColorToken::Text, app)
+                .with_max_lines(1)
+                .finish(),
+        );
+    Container::new(row.finish())
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .with_border(app.theme.color(ColorToken::Border).into())
+        .with_corner_radius(app.theme.radius_px())
+        .with_padding(EdgeInsets::new(sm * 0.5, sm, sm * 0.5, sm))
+        .finish()
+}
+
+/// Draws a conversation card and records where it landed, so the pane can turn
+/// a pointer event into a click on the card rather than on the grid behind it.
+struct CardProbe {
+    inner: Box<dyn Element>,
+    cards: Rc<RefCell<Vec<CardRect>>>,
+    conversation_id: String,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl Element for CardProbe {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.inner.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        if let Some(size) = self.size {
+            self.cards.borrow_mut().push(CardRect {
+                conversation_id: self.conversation_id.clone(),
+                origin,
+                size,
+            });
+        }
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.inner.paint(origin, ctx, app);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
     }
 }
 
@@ -171,9 +309,11 @@ impl TerminalView {
         cwd: String,
         active: bool,
         harness_mode: bool,
+        view: BlockView,
         on_activate: Rc<RefCell<dyn FnMut(u64)>>,
         on_route: Rc<RefCell<dyn FnMut(u64, String)>>,
         on_harness_mode: Rc<RefCell<dyn FnMut(u64, bool)>>,
+        on_open_agent_view: Rc<RefCell<dyn FnMut(u64, String)>>,
     ) -> Self {
         Self {
             terminal,
@@ -181,10 +321,13 @@ impl TerminalView {
             cwd,
             active,
             harness_mode,
+            view,
             on_activate,
             on_route,
             on_harness_mode,
+            on_open_agent_view,
             geometry: Rc::new(RefCell::new(None)),
+            cards: Rc::new(RefCell::new(Vec::new())),
             pressed: None,
             last_cell: None,
             pointer: None,
@@ -226,7 +369,7 @@ impl TerminalView {
         reg.ensure_session(self.pane_id, &self.cwd);
         let mode = reg.mode(self.pane_id);
         let input = reg.input(self.pane_id);
-        let mut view = crate::terminal::TerminalViewState::empty();
+        let mut screen = crate::terminal::TerminalViewState::empty();
         if let Some(session) = reg.sessions.get_mut(&self.pane_id) {
             session.set_palette(palette);
             session.set_size(
@@ -238,9 +381,18 @@ impl TerminalView {
             // Answers to the program's questions are written from this thread,
             // so the pump runs every frame, painted or not.
             session.pump();
-            view = session.view();
+            screen = session.view();
         }
         drop(reg);
+
+        // The block list, filtered by this pane's view, is what the agent view
+        // draws and what its conversation cards name. The cards are reset here
+        // and recorded again as they paint.
+        let blocks = self
+            .terminal
+            .borrow()
+            .visible_blocks(self.pane_id, &self.view);
+        self.cards.borrow_mut().clear();
 
         let mut column = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
@@ -272,12 +424,18 @@ impl TerminalView {
             column = column.with_child(badge);
         }
 
-        // A session that has not drawn yet reads as a terminal only if we say
-        // where it is: the pane shows the shell's directory and a prompt marker
-        // until the shell itself paints over it.
-        let body: Box<dyn Element> = if view.has_content {
+        // The pane's own view. An agent view draws the conversation's blocks
+        // instead of the shell grid; the terminal view keeps the grid, and the
+        // conversation cards the list holds are drawn under it. A session that
+        // has not drawn yet reads as a terminal only if we say where it is: the
+        // pane shows the shell's directory and a prompt marker until the shell
+        // itself paints over it.
+        let body: Box<dyn Element> = if let BlockView::Agent { .. } = &self.view {
+            *self.geometry.borrow_mut() = None;
+            self.build_agent_view(&blocks, app)
+        } else if screen.has_content {
             GridProbe {
-                inner: TerminalGrid::new(view.rows, view.cursor)
+                inner: TerminalGrid::new(screen.rows, screen.cursor)
                     .with_palette(palette)
                     .with_font_size(FONT_SIZE)
                     .with_line_height(LINE_HEIGHT)
@@ -296,6 +454,24 @@ impl TerminalView {
             hint
         };
         column = column.with_child(Expanded::new(body).finish());
+
+        // The cards the conversations left behind: each is a block in the list,
+        // drawn here and clickable to reopen its agent view.
+        if self.view == BlockView::Terminal {
+            for block in &blocks {
+                let Some(card) = &block.card else { continue };
+                column = column.with_child(
+                    CardProbe {
+                        inner: build_card(app, card),
+                        cards: Rc::clone(&self.cards),
+                        conversation_id: card.conversation_id.clone(),
+                        size: None,
+                        origin: None,
+                    }
+                    .finish(),
+                );
+            }
+        }
 
         if self.harness_mode {
             // The rich input line is pinned to the bottom of the pane, under the
@@ -354,6 +530,54 @@ impl TerminalView {
 
     fn cell_at(&self, position: Vector2F) -> Option<(usize, usize)> {
         self.geometry.borrow().as_ref()?.cell_at(position)
+    }
+
+    /// The conversation whose card is under `position`, if any. A card sits on
+    /// top of the grid, so its click is the conversation's, not the program's.
+    fn card_at(&self, position: Vector2F) -> Option<String> {
+        let cards = self.cards.borrow();
+        cards
+            .iter()
+            .rev()
+            .find(|card| card.contains(position))
+            .map(|card| card.conversation_id.clone())
+    }
+
+    /// The agent view's body: the blocks the conversation's filter draws, each
+    /// through the one terminal-block renderer the transcript also uses. The
+    /// conversation's own card is hidden by the filter, so it is not one of
+    /// them.
+    fn build_agent_view(&self, blocks: &[VisibleBlock], app: &AppContext) -> Box<dyn Element> {
+        let sm = app.theme.spacing_px(SpacingToken::Sm);
+        let mut list = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(sm);
+        let mut any = false;
+        for block in blocks
+            .iter()
+            .filter(|block| block.card.is_none() && !block.command.is_empty())
+        {
+            any = true;
+            let status = if block.failed {
+                TerminalStatus::Error
+            } else {
+                TerminalStatus::Success
+            };
+            let data = TerminalData::for_command(block.command.clone(), &block.output, status);
+            list = list.with_child(terminal_block(&data, TerminalFilter::default(), None, None));
+        }
+        if !any {
+            list = list.with_child(
+                Text::new("the agent has not run a command in this conversation yet")
+                    .with_font_size(FONT_SIZE)
+                    .with_line_height(LINE_HEIGHT)
+                    .with_font_family(FontFamily::Mono)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            );
+        }
+        list.finish()
     }
 
     /// Whether the pointer was last seen inside this pane. A wheel event has no
@@ -628,6 +852,13 @@ impl Element for TerminalView {
                     return false;
                 }
                 (self.on_activate.borrow_mut())(self.pane_id);
+                // A click on a conversation card reopens that conversation's
+                // agent view. The card sits on top of the grid, so it consumes
+                // the press instead of reporting it to the program.
+                if let Some(conversation_id) = self.card_at(*position) {
+                    (self.on_open_agent_view.borrow_mut())(self.pane_id, conversation_id);
+                    return true;
+                }
                 let Some(button) = mouse_button(*button) else {
                     return true;
                 };
@@ -697,6 +928,15 @@ fn mouse_button(id: u32) -> Option<MouseButton> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::emulator::Emulator;
+    use goble_core::harness::ToolCallStatus;
+    use goble_ui::elements::{
+        terminal_block, ChatFragment, ChatMessageBubble, ChatRole, TerminalFilter, ToolCall,
+    };
+    use goble_ui::geometry::vec2f;
+    use goble_ui::render::RenderCommand;
+    use goble_ui::test_util::render_element;
+    use goble_ui::ColorU;
 
     fn key(key: &str, modifiers: ModifiersState) -> DispatchedEvent {
         DispatchedEvent::KeyDown {
@@ -722,6 +962,7 @@ mod tests {
             "/tmp".to_string(),
             true,
             true,
+            BlockView::Terminal,
             Rc::new(RefCell::new(|_: u64| {})),
             Rc::new(RefCell::new(move |_: u64, text: String| {
                 routed_cb.borrow_mut().push(text)
@@ -729,6 +970,7 @@ mod tests {
             Rc::new(RefCell::new(move |_: u64, on: bool| {
                 harness_cb.borrow_mut().push(on)
             })),
+            Rc::new(RefCell::new(|_: u64, _: String| {})),
         );
         let mut ctx = EventContext::default();
 
@@ -762,6 +1004,7 @@ mod tests {
             "/tmp".to_string(),
             true,
             false,
+            BlockView::Terminal,
             Rc::new(RefCell::new(|_: u64| {})),
             Rc::new(RefCell::new(move |_: u64, text: String| {
                 routed_cb.borrow_mut().push(text)
@@ -769,6 +1012,7 @@ mod tests {
             Rc::new(RefCell::new(move |_: u64, on: bool| {
                 harness_cb.borrow_mut().push(on)
             })),
+            Rc::new(RefCell::new(|_: u64, _: String| {})),
         );
         let mut ctx = EventContext::default();
         let cmd_enter = ModifiersState {
@@ -791,9 +1035,11 @@ mod tests {
             "/tmp".to_string(),
             false,
             false,
+            BlockView::Terminal,
             Rc::new(RefCell::new(|_: u64| {})),
             Rc::new(RefCell::new(|_: u64, _: String| {})),
             Rc::new(RefCell::new(|_: u64, _: bool| {})),
+            Rc::new(RefCell::new(|_: u64, _: String| {})),
         );
         let mut ctx = EventContext::default();
         assert!(!view.dispatch_event(&key("a", ModifiersState::none()), &mut ctx, &app));
@@ -849,9 +1095,11 @@ mod tests {
                 "/tmp".to_string(),
                 active,
                 false,
+                BlockView::Terminal,
                 Rc::new(RefCell::new(|_: u64| {})),
                 Rc::new(RefCell::new(|_: u64, _: String| {})),
                 Rc::new(RefCell::new(|_: u64, _: bool| {})),
+                Rc::new(RefCell::new(|_: u64, _: String| {})),
             )
         };
 
@@ -860,6 +1108,214 @@ mod tests {
         assert!(
             !view(false).report_focus(true),
             "a background pane is not the focused one"
+        );
+    }
+
+    /// The drawn text runs as `(text, colour, family, size)`, so two elements
+    /// can be compared without depending on where each was laid out.
+    fn text_runs(commands: &[RenderCommand]) -> Vec<(String, ColorU, FontFamily, f32)> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawText {
+                    text,
+                    color,
+                    font_family,
+                    font_size,
+                    ..
+                } => Some((text.clone(), *color, *font_family, *font_size)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Paint an element headlessly at a fixed size.
+    fn paint(element: Box<dyn Element>, app: &AppContext) -> Vec<RenderCommand> {
+        let mut element = element;
+        render_element(&mut element, vec2f(600.0, 200.0), app)
+    }
+
+    /// Q8: a command is one block, drawn by the same element in the transcript
+    /// and in the terminal pane. The pane's executed-command block renders
+    /// identically in the transcript, and a command the agent ran is that same
+    /// block built from the command the bridge produced for it.
+    #[test]
+    fn a_command_block_renders_identically_in_the_transcript_and_the_pane() {
+        let app = AppContext::default();
+
+        // The pane's block, from a session that ran `echo hi`.
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(b"echo hi\r\nhi\r\n");
+        let session = TerminalSession::with_emulator(emulator);
+        let pane_data = executed_command_block(&session).expect("the pane drew its block");
+        let pane_runs = text_runs(&paint(
+            terminal_block(&pane_data, TerminalFilter::default(), None, None),
+            &app,
+        ));
+        assert!(
+            !pane_runs.is_empty(),
+            "the pane's block draws the session's output"
+        );
+
+        // The transcript draws the pane's block as the same element.
+        let transcript = ChatMessageBubble::new(
+            ChatRole::Tool,
+            vec![ChatFragment::terminal(pane_data.clone())],
+        );
+        let transcript_runs = text_runs(&paint(Box::new(transcript), &app));
+        assert_eq!(
+            transcript_runs, pane_runs,
+            "the same block must render in the transcript"
+        );
+
+        // A command the agent ran is that block, built from the command and its
+        // output rather than re-drawn as agent output.
+        let command = TerminalData::for_command("echo hi", "hi", TerminalStatus::Success);
+        let command_runs = text_runs(&paint(
+            terminal_block(&command, TerminalFilter::default(), None, None),
+            &app,
+        ));
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "run_command".to_string(),
+            arguments: r#"{"command":"echo hi"}"#.to_string(),
+            status: ToolCallStatus::Finished,
+            result: Some("hi".to_string()),
+        };
+        let bubble =
+            ChatMessageBubble::new(ChatRole::Assistant, Vec::new()).with_tool_calls(vec![call]);
+        let bubble_runs = text_runs(&paint(Box::new(bubble), &app));
+        assert_eq!(
+            &bubble_runs[2..],
+            command_runs.as_slice(),
+            "the agent's command segment must be the terminal block"
+        );
+    }
+
+    /// A7: the agent view over the block list. Cmd+Enter pushes the
+    /// conversation's card and points the pane's filter at its agent view; Esc
+    /// returns the filter to the terminal, leaving the card behind; and clicking
+    /// that card reopens the view. The whole round trip goes through the pane's
+    /// own events and the app's own actions.
+    #[test]
+    fn cmd_enter_esc_and_a_card_click_round_trip_the_agent_view() {
+        use crate::actions::make_actions;
+        use crate::media::MediaState;
+        use crate::state::UiState;
+        use goble_ui::platform::WindowControl;
+
+        let state = Rc::new(RefCell::new(UiState::mock()));
+        // Pane 1 is bound to conversation `c1`; give it a live block list (a
+        // detached session: no pty) so the card has a list to go into.
+        state
+            .borrow()
+            .terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, TerminalSession::with_emulator(Emulator::new(80, 24)));
+        let actions = make_actions(
+            Rc::clone(&state),
+            None,
+            Rc::new(RefCell::new(MediaState::mock())),
+            WindowControl::default(),
+            Rc::new(RefCell::new(1.0)),
+        );
+        let app = AppContext::default();
+        let mut ctx = EventContext::default();
+
+        // The app rebuilds the pane from state every frame, so each step below
+        // builds the pane the frame after the previous step would.
+        let build = || {
+            let controls = state.borrow().pane_controls(1);
+            TerminalView::new(
+                Rc::clone(&state.borrow().terminal),
+                1,
+                "/tmp".to_string(),
+                true,
+                controls.harness_mode,
+                controls.view.clone(),
+                Rc::new(RefCell::new(|_: u64| {})),
+                Rc::new(RefCell::new(|_: u64, _: String| {})),
+                actions.on_set_pane_harness_mode.clone(),
+                actions.on_open_agent_view.clone(),
+            )
+        };
+
+        // Cmd+Enter enters the agent view: the card is pushed and the filter
+        // names the conversation.
+        let mut entered = build();
+        let cmd_enter = ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        };
+        assert!(entered.dispatch_event(&key("Enter", cmd_enter), &mut ctx, &app));
+        assert_eq!(
+            state.borrow().pane_view(1),
+            BlockView::Agent {
+                conversation_id: "c1".to_string()
+            },
+            "Cmd+Enter switches the pane's view filter to the agent view"
+        );
+        let cards: Vec<String> = state
+            .borrow()
+            .pane_terminal_view(1)
+            .into_iter()
+            .filter_map(|block| block.card.map(|card| card.conversation_id))
+            .collect();
+        assert_eq!(
+            cards,
+            vec!["c1".to_string()],
+            "the card stands for the conversation in the terminal list"
+        );
+        assert!(
+            state.borrow().pane_agent_view(1, "c1").is_empty(),
+            "the conversation's own view is the other filter over the list"
+        );
+
+        // Esc returns to the terminal; the card is left behind.
+        let mut left = build();
+        assert!(left.dispatch_event(&key("Escape", ModifiersState::none()), &mut ctx, &app));
+        assert_eq!(
+            state.borrow().pane_view(1),
+            BlockView::Terminal,
+            "Esc returns the pane to the terminal"
+        );
+        assert!(
+            state
+                .borrow()
+                .pane_terminal_view(1)
+                .iter()
+                .any(|block| block.card.is_some()),
+            "the card stays in the terminal scrollback"
+        );
+
+        // The card is clickable to come back: paint the pane so the card records
+        // where it landed, then click its centre.
+        let pane = build();
+        let drawn = Rc::clone(&pane.cards);
+        let mut pane: Box<dyn Element> = Box::new(pane);
+        render_element(&mut pane, vec2f(600.0, 200.0), &app);
+        let rect = drawn
+            .borrow()
+            .first()
+            .cloned()
+            .expect("the terminal view drew the card");
+        assert_eq!(rect.conversation_id, "c1");
+        let centre = Vector2F::new(
+            rect.origin.x + rect.size.x * 0.5,
+            rect.origin.y + rect.size.y * 0.5,
+        );
+        let click = DispatchedEvent::MouseDown {
+            position: centre,
+            button: 0,
+        };
+        assert!(pane.dispatch_event(&click, &mut ctx, &app));
+        assert_eq!(
+            state.borrow().pane_view(1),
+            BlockView::Agent {
+                conversation_id: "c1".to_string()
+            },
+            "clicking the card reopens the conversation's agent view"
         );
     }
 }

@@ -5,8 +5,8 @@
 //! agent (goble-core) through the same object-safe harness contract it uses for
 //! external/CLI harnesses. It owns the translation between the core
 //! [`HarnessEvent`] stream and the wire-shaped [`HarnessServerEvent`] frames the
-//! protocol layer speaks, dropping the `Reasoning*`/`ThinkingModeChanged`
-//! variants the wire shape does not carry.
+//! protocol layer speaks, carrying the `Reasoning*` variants through and
+//! dropping only `ThinkingModeChanged` (which the wire shape does not carry).
 //!
 //! [`InternalHarness`] holds a fully-configured `goble_core::Harness` (store +
 //! resolved [`LlmProvider`] + model + web-search/runner/reasoning) and surfaces
@@ -186,7 +186,8 @@ impl HarnessRuntime for InternalHarness {
 }
 
 /// Map a core [`HarnessEvent`] stream into the wire [`HarnessServerEvent`] shape,
-/// dropping the `Reasoning*`/`ThinkingModeChanged` variants the wire does not carry.
+/// carrying the `Reasoning*` variants through and dropping only
+/// `ThinkingModeChanged`, which the wire does not carry.
 fn map_stream(
     events: Pin<Box<dyn futures::Stream<Item = HarnessEvent> + Send>>,
     session_id: &SessionId,
@@ -203,7 +204,7 @@ fn map_stream(
 /// An `open_screen` tool call maps to **two** frames: the usual `ToolCallStarted`
 /// mirror (so the agent's intent stays visible) plus a `ScreenHandoff` request
 /// the host turns into a live desktop stream. Every other event maps to a single
-/// frame (or none, for the reasoning variants the wire shape drops).
+/// frame (or none, for `ThinkingModeChanged`).
 fn map_event(session_id: &SessionId, event: HarnessEvent) -> Vec<HarnessServerEvent> {
     match event {
         HarnessEvent::AssistantDelta(delta) => vec![HarnessServerEvent::AssistantDelta {
@@ -248,6 +249,10 @@ fn map_event(session_id: &SessionId, event: HarnessEvent) -> Vec<HarnessServerEv
             question,
             quick_replies,
         }],
+        // A command proposal is the harness-side suspension (A6). Carrying it to
+        // the wire and rendering the approve/edit composer is the renderer item
+        // (A5), so nothing is mapped here yet, exactly like `ThinkingModeChanged`.
+        HarnessEvent::CommandProposed { .. } => Vec::new(),
         HarnessEvent::MissionUpdated { mission_id, status } => {
             vec![HarnessServerEvent::MissionUpdated {
                 session_id: session_id.clone(),
@@ -262,10 +267,30 @@ fn map_event(session_id: &SessionId, event: HarnessEvent) -> Vec<HarnessServerEv
             session_id: session_id.clone(),
             message,
         }],
-        HarnessEvent::ThinkingModeChanged(_)
-        | HarnessEvent::ReasoningStarted { .. }
-        | HarnessEvent::ReasoningDelta(_)
-        | HarnessEvent::ReasoningDone { .. } => Vec::new(),
+        HarnessEvent::ReasoningStarted { step, mode } => {
+            vec![HarnessServerEvent::ReasoningStarted {
+                session_id: session_id.clone(),
+                step,
+                mode,
+            }]
+        }
+        HarnessEvent::ReasoningDelta(delta) => vec![HarnessServerEvent::ReasoningDelta {
+            session_id: session_id.clone(),
+            delta,
+        }],
+        HarnessEvent::ReasoningDone {
+            step,
+            mode,
+            content,
+            decision,
+        } => vec![HarnessServerEvent::ReasoningDone {
+            session_id: session_id.clone(),
+            step,
+            mode,
+            content,
+            decision,
+        }],
+        HarnessEvent::ThinkingModeChanged(_) => Vec::new(),
     }
 }
 
@@ -327,6 +352,53 @@ mod tests {
             e,
             HarnessServerEvent::ScreenHandoff { config, .. } if config.host == "vm.example.com" && config.username == "u"
         )));
+    }
+
+    #[test]
+    fn reasoning_events_are_carried_to_the_wire() {
+        let session_id = SessionId::new("s1");
+
+        let started = map_event(
+            &session_id,
+            HarnessEvent::ReasoningStarted {
+                step: 2,
+                mode: "contemplating".to_string(),
+            },
+        );
+        assert!(matches!(
+            started.as_slice(),
+            [HarnessServerEvent::ReasoningStarted { step: 2, mode, .. }] if mode == "contemplating"
+        ));
+
+        let delta = map_event(
+            &session_id,
+            HarnessEvent::ReasoningDelta("weighing".to_string()),
+        );
+        assert!(matches!(
+            delta.as_slice(),
+            [HarnessServerEvent::ReasoningDelta { delta, .. }] if delta == "weighing"
+        ));
+
+        let done = map_event(
+            &session_id,
+            HarnessEvent::ReasoningDone {
+                step: 2,
+                mode: "contemplating".to_string(),
+                content: "weighing options".to_string(),
+                decision: "\"execute\"".to_string(),
+            },
+        );
+        assert!(matches!(
+            done.as_slice(),
+            [HarnessServerEvent::ReasoningDone { step: 2, content, .. }] if content == "weighing options"
+        ));
+
+        // `ThinkingModeChanged` is the only harness event the wire still drops.
+        assert!(map_event(
+            &session_id,
+            HarnessEvent::ThinkingModeChanged("direct".to_string())
+        )
+        .is_empty());
     }
 
     #[test]

@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use chrono::{DateTime, Utc};
 use goble_core::agent::Trigger;
+use goble_core::harness::ToolCallStatus;
 use goble_desktop_service::DesktopState;
 use goble_ui::{
     AgentCardUi, AskUserUi, ChatFragment, ChatMessage, ChatRole, ConversationEntry,
@@ -20,6 +21,9 @@ use goble_ui::{
     TerminalStatus, ToolCall,
 };
 
+use goble_terminal::blocks::{BlockId, BlockView};
+
+use crate::emulator::VisibleBlock;
 use crate::terminal::TerminalRegistry;
 use crate::ui::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, HarnessEntry, LlmFormField, Pane,
@@ -119,8 +123,7 @@ fn fragment_text(f: &goble_ui::elements::chat_content::ChatFragment) -> Option<&
         | ChatFragmentKind::Bold(s)
         | ChatFragmentKind::Italic(s)
         | ChatFragmentKind::BoldItalic(s)
-        | ChatFragmentKind::Code(s)
-        | ChatFragmentKind::BlockQuote(s) => Some(s.as_str()),
+        | ChatFragmentKind::Code(s) => Some(s.as_str()),
         ChatFragmentKind::CodeBlock { code, .. } => Some(code.as_str()),
         ChatFragmentKind::Heading { text, .. } => Some(text.as_str()),
         ChatFragmentKind::Link { url, .. } => Some(url.as_str()),
@@ -186,19 +189,20 @@ fn trigger_label(trigger: &Trigger) -> String {
 
 /// Build a terminal-style block from a stored tool-result message. The harness
 /// writes tool output as `"<call_id>\n<output>"`, so the first line becomes the
-/// block title and the remaining lines render as mono output (or error) lines.
+/// block title and the remaining lines render as mono output lines.
+///
+/// The block carries no status: a tool call's real status lives on the
+/// assistant row's persisted `tool_calls` column (Q5) and is drawn on the
+/// tool-call row, so nothing here infers success or failure from the text.
 fn tool_terminal_data(content: &str) -> TerminalData {
     let mut parts = content.splitn(2, '\n');
     let title = parts.next().unwrap_or("tool").trim();
     let body = parts.next().unwrap_or("").trim();
-    let has_error = body.contains("ERROR:");
 
     let mut lines = Vec::new();
     for line in body.lines() {
         let text = line.trim_end().to_string();
-        if has_error || text.contains("ERROR:") {
-            lines.push(TerminalLine::error(text));
-        } else if text.is_empty() {
+        if text.is_empty() {
             lines.push(TerminalLine::info(" "));
         } else {
             lines.push(TerminalLine::output(text));
@@ -208,16 +212,191 @@ fn tool_terminal_data(content: &str) -> TerminalData {
         lines.push(TerminalLine::info("(no output)"));
     }
 
-    let status = if has_error {
-        TerminalStatus::Error
-    } else {
-        TerminalStatus::Success
-    };
     TerminalData::new(
         if title.is_empty() { "tool" } else { title }.to_string(),
         lines,
     )
-    .with_status(status)
+}
+
+/// One store row plus the message it parsed into. Remembered per row id so a
+/// refresh can tell an unchanged row from an edited one.
+#[derive(Clone, Debug)]
+struct CachedMessage {
+    role: String,
+    content: String,
+    tool_calls: Option<String>,
+    message: ChatMessage,
+}
+
+impl CachedMessage {
+    /// Whether `row` still carries the fields this entry was parsed from. An
+    /// edit to any of them (a streaming delta appends to `content`) invalidates
+    /// the entry so the message is re-parsed.
+    fn matches(&self, row: &goble_desktop_service::ChatMessage) -> bool {
+        self.role == row.role && self.content == row.content && self.tool_calls == row.tool_calls
+    }
+}
+
+/// Parse-once-per-change cache for one pane's transcript.
+///
+/// Each store row is parsed into a [`ChatMessage`] once and remembered under its
+/// row id together with the row fields it was parsed from. A refresh re-parses
+/// only the rows whose content (or role / tool calls) changed and reuses every
+/// other message, so a frame that carries no new delta does no parsing at all.
+/// Entries for rows that disappeared are dropped.
+#[derive(Clone, Debug, Default)]
+pub struct MessageParseCache {
+    entries: HashMap<String, CachedMessage>,
+    parses: u64,
+}
+
+impl MessageParseCache {
+    /// Build the transcript for `rows` (in store order), re-parsing only the
+    /// rows whose content changed since the previous call.
+    pub fn resolve(&mut self, rows: &[goble_desktop_service::ChatMessage]) -> Vec<ChatMessage> {
+        let mut messages = Vec::with_capacity(rows.len());
+        let mut next: HashMap<String, CachedMessage> = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let message = match self.entries.get(&row.id) {
+                Some(cached) if cached.matches(row) => cached.message.clone(),
+                _ => {
+                    self.parses += 1;
+                    parse_chat_row(row)
+                }
+            };
+            next.insert(
+                row.id.clone(),
+                CachedMessage {
+                    role: row.role.clone(),
+                    content: row.content.clone(),
+                    tool_calls: row.tool_calls.clone(),
+                    message: message.clone(),
+                },
+            );
+            messages.push(message);
+        }
+        self.entries = next;
+        messages
+    }
+
+    /// How many rows this cache has parsed. Test observability for the
+    /// parse-once-per-change contract; not read by the app.
+    pub fn parse_count(&self) -> u64 {
+        self.parses
+    }
+}
+
+/// Convert a live `chat:tool` event into the renderable [`ToolCall`] the
+/// transcript overlay uses.
+fn tool_call_from_event(call: &goble_desktop_service::ToolCallEvent) -> ToolCall {
+    ToolCall {
+        id: call.id.clone(),
+        name: call.name.clone(),
+        arguments: serde_json::to_string(&call.arguments).unwrap_or_default(),
+        status: call.status,
+        result: call.result.clone(),
+    }
+}
+
+/// Overlay a pane's in-flight calls on the transcript built from persisted
+/// rows: a call already present is updated to its live record, and a call not
+/// yet persisted is attached to the trailing assistant message (or a fresh one)
+/// so it renders while it runs. Only running calls are held, so a persisted
+/// terminal state is never overwritten.
+fn overlay_in_flight(messages: &mut Vec<ChatMessage>, in_flight: &HashMap<String, ToolCall>) {
+    if in_flight.is_empty() {
+        return;
+    }
+    for call in in_flight.values() {
+        if let Some(existing) = messages
+            .iter_mut()
+            .flat_map(|m| m.tool_calls.iter_mut())
+            .find(|c| c.id == call.id)
+        {
+            *existing = call.clone();
+            continue;
+        }
+        match messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.role == ChatRole::Assistant)
+        {
+            Some(message) => message.tool_calls.push(call.clone()),
+            None => {
+                let mut message = ChatMessage::new(ChatRole::Assistant, Vec::new());
+                message.tool_calls.push(call.clone());
+                messages.push(message);
+            }
+        }
+    }
+}
+
+/// Overlay the pane's accumulated reasoning steps on the transcript: they are
+/// pulled out of and re-inserted into the trailing assistant message so each
+/// step renders as its own row ahead of that message's prose. Re-running is
+/// idempotent, so a refresh or a live delta never duplicates a row.
+fn overlay_reasoning(messages: &mut Vec<ChatMessage>, reasoning: &[ReasoningRow]) {
+    if reasoning.is_empty() {
+        return;
+    }
+    let index = match messages.iter().rposition(|m| m.role == ChatRole::Assistant) {
+        Some(index) => index,
+        None => {
+            messages.push(ChatMessage::new(ChatRole::Assistant, Vec::new()));
+            messages.len() - 1
+        }
+    };
+    let message = &mut messages[index];
+    message.fragments.retain(|f| {
+        !matches!(
+            f.kind,
+            goble_ui::elements::chat_content::ChatFragmentKind::Reasoning { .. }
+        )
+    });
+    let mut fragments: Vec<ChatFragment> = reasoning
+        .iter()
+        .map(|row| {
+            ChatFragment::reasoning(
+                reasoning_row_key(&row.chat_id, row.step),
+                row.mode.clone(),
+                row.text.clone(),
+                row.done,
+            )
+        })
+        .collect();
+    fragments.extend(std::mem::take(&mut message.fragments));
+    message.fragments = fragments;
+}
+
+/// The app-owned expand-state key for one reasoning step. It is stable while
+/// the step's text streams, so a row the user opened stays open.
+pub(crate) fn reasoning_row_key(chat_id: &str, step: usize) -> String {
+    format!("{chat_id}:{step}")
+}
+
+/// Parse one stored row into a [`ChatMessage`]: a tool result becomes a terminal
+/// block, everything else is Markdown, and tool-call metadata is attached.
+fn parse_chat_row(row: &goble_desktop_service::ChatMessage) -> ChatMessage {
+    let role = match row.role.as_str() {
+        "user" => ChatRole::User,
+        "tool" => ChatRole::Tool,
+        _ => ChatRole::Assistant,
+    };
+    // Tool results are stored as "<call_id>\n<output>". Present them as a
+    // distinct terminal block instead of assistant prose so the user can tell
+    // execution output apart.
+    let mut message = if role == ChatRole::Tool {
+        ChatMessage::new(
+            role,
+            vec![ChatFragment::terminal(tool_terminal_data(&row.content))],
+        )
+    } else {
+        ChatMessage::from_markdown(role, row.content.clone())
+    };
+    if let Some(tc) = row.tool_calls.as_deref() {
+        message = message.with_tool_calls(ToolCall::from_llm_json(tc));
+    }
+    message
 }
 
 /// Per-pane conversation identity + composer draft + working directory.
@@ -243,6 +422,9 @@ pub struct PaneSession {
 #[derive(Clone, Debug, Default)]
 pub struct PaneRuntime {
     pub messages: Vec<ChatMessage>,
+    /// Parsed-message cache, so a refresh re-parses only the rows whose content
+    /// changed instead of every message on every event.
+    pub parse_cache: MessageParseCache,
     pub pending_ask: Option<AskUserUi>,
     pub queued_prompt: Option<String>,
     pub busy: bool,
@@ -250,6 +432,79 @@ pub struct PaneRuntime {
     pub inline_screen_source: Option<String>,
     /// A detected BYOH handoff URI from the assistant output.
     pub screen_link: Option<String>,
+    /// Live tool calls still running for this pane, keyed by call id. Fed by the
+    /// `chat:tool` event and overlaid on the transcript immediately, so a
+    /// running call is visible before the turn ends. A finish/error clears the
+    /// entry and the re-read from the store carries the terminal state.
+    pub in_flight_tools: HashMap<String, ToolCall>,
+    /// The model's reasoning (thinking) steps for this pane, fed by the live
+    /// `chat:reasoning` events. Overlaid on the transcript as their own rows;
+    /// replaced when the next reasoning turn starts (step 0).
+    pub reasoning: Vec<ReasoningRow>,
+}
+
+/// One reasoning (thinking) step carried by the live `chat:reasoning` events,
+/// accumulated as the step's deltas stream in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReasoningRow {
+    /// The store conversation the step belongs to (used to key its expand state
+    /// and to scope the row to its pane).
+    pub chat_id: String,
+    pub step: usize,
+    pub mode: String,
+    pub text: String,
+    pub done: bool,
+}
+
+impl PaneRuntime {
+    /// Fold one live reasoning transition into the pane's accumulated steps.
+    ///
+    /// A `started` at step 0 begins a new reasoning turn, so the previous
+    /// turn's rows are dropped; a `delta` appends to the currently open step; a
+    /// `done` finalises the step with the authoritative full text.
+    fn apply_reasoning(&mut self, event: &goble_desktop_service::ReasoningEvent) {
+        use goble_desktop_service::ReasoningPhase;
+        match event.phase {
+            ReasoningPhase::Started => {
+                let step = event.step.unwrap_or(0);
+                if step == 0 {
+                    self.reasoning.clear();
+                }
+                if let Some(row) = self.reasoning.iter_mut().find(|r| r.step == step) {
+                    row.mode = event.mode.clone();
+                    row.done = false;
+                } else {
+                    self.reasoning.push(ReasoningRow {
+                        chat_id: event.chat_id.clone(),
+                        step,
+                        mode: event.mode.clone(),
+                        text: String::new(),
+                        done: false,
+                    });
+                }
+            }
+            ReasoningPhase::Delta => match self.reasoning.last_mut() {
+                Some(row) => row.text.push_str(&event.delta),
+                None => self.reasoning.push(ReasoningRow {
+                    chat_id: event.chat_id.clone(),
+                    step: 0,
+                    mode: String::new(),
+                    text: event.delta.clone(),
+                    done: false,
+                }),
+            },
+            ReasoningPhase::Done => {
+                let step = event.step.unwrap_or(0);
+                if let Some(row) = self.reasoning.iter_mut().find(|r| r.step == step) {
+                    row.mode = event.mode.clone();
+                    if let Some(content) = &event.content {
+                        row.text = content.clone();
+                    }
+                    row.done = true;
+                }
+            }
+        }
+    }
 }
 
 /// The rich-input controls of one pane.
@@ -271,6 +526,11 @@ pub struct PaneControls {
     /// turns to the agent instead of the plain shell. Toggled at the rich
     /// input with Cmd+Enter; Esc returns the pane to the plain pty.
     pub harness_mode: bool,
+    /// Which view this pane's terminal surface shows: the shell's own history
+    /// (the terminal filter) or one conversation's agent view. Cmd+Enter and a
+    /// click on a conversation's card enter that view; Esc returns to the
+    /// terminal.
+    pub view: BlockView,
     pub model_menu_open: Rc<RefCell<bool>>,
     pub profile_menu_open: Rc<RefCell<bool>>,
     pub harness_menu_open: Rc<RefCell<bool>>,
@@ -285,6 +545,7 @@ impl PaneControls {
             model,
             branch,
             harness_mode: false,
+            view: BlockView::Terminal,
             model_menu_open: Rc::new(RefCell::new(false)),
             profile_menu_open: Rc::new(RefCell::new(false)),
             harness_menu_open: Rc::new(RefCell::new(false)),
@@ -356,6 +617,10 @@ pub struct UiState {
     /// the block's content key. Shared with the UI so the filter tray's open
     /// state + selection survive the per-frame element rebuild.
     pub terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
+    /// Per-reasoning-row collapsed/expanded state, keyed by the row's
+    /// `<conversation>:<step>` key. Shared with the UI so a row the user
+    /// expanded stays expanded across the per-frame element rebuild.
+    pub reasoning_expanded: Rc<RefCell<HashMap<String, bool>>>,
     /// Whole-transcript terminal filter (open flag + selected filter) per pane,
     /// so the filter bar of one pty/agent pane does not open in its sibling.
     pub terminal_global_filters: HashMap<u64, TerminalFilter>,
@@ -478,6 +743,10 @@ pub struct UiState {
     /// dropdown open flags), keyed by pane id so two pty/agent panes in the
     /// same workspace never share them.
     pub pane_controls: HashMap<u64, PaneControls>,
+    /// Per-pane transcript scroll offset, keyed by pane id. Owned here (not on
+    /// the element, which is rebuilt every frame) so a pane's scrollback
+    /// position and its follow-the-stream state survive the rebuild.
+    pub pane_chat_scroll: HashMap<u64, Rc<RefCell<ScrollState>>>,
     /// Live per-pane terminal sessions (PTY child + output buffer) and the local
     /// input mirrors used to route `Cmd+Enter` to the agent. Not persisted; a
     /// terminal pane is re-spawned in its cwd on next render.
@@ -548,6 +817,7 @@ impl UiState {
             fullscreen: false,
             agent_header_menus: HashMap::new(),
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
+            reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
             terminal_global_filters: HashMap::new(),
             crons_open: false,
             crons: Vec::new(),
@@ -619,6 +889,7 @@ impl UiState {
             })]),
             pane_runtime: HashMap::new(),
             pane_controls: HashMap::new(),
+            pane_chat_scroll: HashMap::new(),
             terminal: Rc::new(RefCell::new(TerminalRegistry::default())),
             command_palette_open: false,
             command_palette_query: String::new(),
@@ -910,6 +1181,86 @@ impl UiState {
             })
     }
 
+    /// The pane's own shell for an agent turn, when the pane has a terminal.
+    ///
+    /// A terminal pane's session is the harness's shell-tool route (P4): the
+    /// agent's commands run in the user's own shell, visibly, instead of the
+    /// sandbox. A pane that has never started a shell has no session and `None`
+    /// keeps the sandboxed runner.
+    pub fn pane_session(
+        &self,
+        pane_id: u64,
+        conversation_id: &str,
+    ) -> Option<std::sync::Arc<dyn goble_core::harness::PaneSession>> {
+        self.terminal.borrow().pane_session(pane_id, conversation_id)
+    }
+
+    /// The blocks a pane's terminal view draws, oldest first: the shell's own
+    /// history. A command the agent ran is a real block in this list too, since
+    /// it ran in the same shell.
+    pub fn pane_terminal_view(&self, pane_id: u64) -> Vec<VisibleBlock> {
+        self.terminal
+            .borrow()
+            .visible_blocks(pane_id, &BlockView::Terminal)
+    }
+
+    /// The blocks a conversation's agent view draws in `pane_id`, oldest first:
+    /// the commands the agent ran for that conversation. A command the user
+    /// typed has an owner that names no conversation, so it is not one of them.
+    pub fn pane_agent_view(&self, pane_id: u64, conversation_id: &str) -> Vec<VisibleBlock> {
+        self.terminal.borrow().visible_blocks(
+            pane_id,
+            &BlockView::Agent {
+                conversation_id: conversation_id.to_string(),
+            },
+        )
+    }
+
+    /// The view this pane's terminal surface shows. A pane with no controls
+    /// entry yet shows the shell's own history.
+    pub fn pane_view(&self, pane_id: u64) -> BlockView {
+        self.pane_controls(pane_id).view
+    }
+
+    /// Enter `conversation_id`'s agent view in `pane_id`: push the card that
+    /// stands for the conversation into the pane's block list (so the terminal
+    /// keeps a way back to it) and point the pane's filter at the conversation.
+    ///
+    /// Returns the card's block id, or `None` when the pane has no live
+    /// session. Entering the same conversation again reuses its card, so a
+    /// round trip through the terminal leaves one card, not a stack.
+    pub fn enter_agent_view(
+        &mut self,
+        pane_id: u64,
+        conversation_id: &str,
+        label: &str,
+    ) -> Option<BlockId> {
+        let block =
+            self.terminal
+                .borrow_mut()
+                .push_agent_view_block(pane_id, conversation_id, label);
+        self.pane_controls_mut(pane_id).view = BlockView::Agent {
+            conversation_id: conversation_id.to_string(),
+        };
+        block
+    }
+
+    /// Leave the agent view: the pane goes back to the shell's own history.
+    /// The card the conversation left behind stays in the list.
+    pub fn leave_agent_view(&mut self, pane_id: u64) {
+        self.pane_controls_mut(pane_id).view = BlockView::Terminal;
+    }
+
+    /// The display name of a conversation, falling back to its id when the
+    /// sidebar does not know it (a card naming a conversation from elsewhere).
+    pub fn conversation_name(&self, conversation_id: &str) -> String {
+        self.conversations
+            .iter()
+            .find(|c| c.id == conversation_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| conversation_id.to_string())
+    }
+
     /// Whether `pane_id` owns a conversation of its own (rather than lazily
     /// following the sidebar selection, as the initial pane does). A pane with
     /// no conversation of its own — a freshly opened PTY workspace — gets one
@@ -946,36 +1297,21 @@ impl UiState {
             });
         match desktop.list_chat_messages(conv) {
             Ok(msgs) => {
-                rt.messages = msgs
-                    .into_iter()
-                    .filter_map(|m| {
-                        let role = match m.role.as_str() {
-                            "user" => ChatRole::User,
-                            "tool" => ChatRole::Tool,
-                            _ => ChatRole::Assistant,
-                        };
-                        // Tool results are stored as "<call_id>\n<output>". Present
-                        // them as a distinct terminal block instead of assistant
-                        // prose so the user can tell execution output apart.
-                        let mut message = if role == ChatRole::Tool {
-                            ChatMessage::new(
-                                role,
-                                vec![ChatFragment::terminal(tool_terminal_data(&m.content))],
-                            )
-                        } else {
-                            ChatMessage::from_markdown(role, m.content)
-                        };
-                        if let Some(tc) = m.tool_calls.as_deref() {
-                            message = message.with_tool_calls(ToolCall::from_llm_json(tc));
-                        }
-                        Some(message)
-                    })
-                    .collect();
+                // Only the rows whose content changed are re-parsed; the rest
+                // are reused from the cache, so a frame with no new delta (or a
+                // handful of deltas on one streaming row) costs no parsing for
+                // the unchanged tail of the transcript.
+                rt.messages = rt.parse_cache.resolve(&msgs);
             }
             Err(e) => {
                 log::warn!("list_chat_messages({conv}): {e}");
             }
         }
+        // The live reasoning steps are overlaid first, so they sit ahead of the
+        // assistant message's prose; a running tool call is then overlaid after
+        // the store read, visible even if its persisted row has not landed.
+        overlay_reasoning(&mut rt.messages, &rt.reasoning);
+        overlay_in_flight(&mut rt.messages, &rt.in_flight_tools);
         // The Local/Remote runtime decision is tracked per-conversation.
         if pane_id == self.active_pane_id {
             self.workspace_routing = desktop
@@ -984,6 +1320,56 @@ impl UiState {
                 .flatten()
                 .and_then(|s| routing_from_str(&s));
         }
+    }
+
+    /// Apply one live `chat:tool` event: a running call is held in the owning
+    /// pane's in-flight map and overlaid on the transcript immediately, without
+    /// re-reading the store; a finished/errored call clears its overlay entry,
+    /// leaving the persisted terminal state to the next refresh.
+    pub fn apply_tool_event(&mut self, call: &goble_desktop_service::ToolCallEvent) {
+        let pane_id = self
+            .pane_id_for_conversation(&call.chat_id)
+            .unwrap_or(self.active_pane_id);
+        {
+            let rt = self.pane_runtime.entry(pane_id).or_default();
+            if call.status == ToolCallStatus::Running {
+                rt.in_flight_tools
+                    .insert(call.id.clone(), tool_call_from_event(call));
+            } else {
+                rt.in_flight_tools.remove(&call.id);
+            }
+            overlay_in_flight(&mut rt.messages, &rt.in_flight_tools);
+        }
+        if pane_id == self.active_pane_id {
+            self.sync_active_view();
+        }
+    }
+
+    /// Apply one live `chat:reasoning` event: fold it into the owning pane's
+    /// reasoning rows and overlay them on the transcript immediately, so the
+    /// model's thinking appears as it streams instead of only after the store
+    /// re-read that `chat:updated` triggers.
+    pub fn apply_reasoning_event(&mut self, event: &goble_desktop_service::ReasoningEvent) {
+        let pane_id = self
+            .pane_id_for_conversation(&event.chat_id)
+            .unwrap_or(self.active_pane_id);
+        {
+            let rt = self.pane_runtime.entry(pane_id).or_default();
+            rt.apply_reasoning(event);
+            overlay_reasoning(&mut rt.messages, &rt.reasoning);
+        }
+        if pane_id == self.active_pane_id {
+            self.sync_active_view();
+        }
+    }
+
+    /// How many live tool calls the pane is currently overlaying (test
+    /// observability; not read by the app).
+    pub fn pane_in_flight_tool_count(&self, pane_id: u64) -> usize {
+        self.pane_runtime
+            .get(&pane_id)
+            .map(|rt| rt.in_flight_tools.len())
+            .unwrap_or(0)
     }
 
     /// Point the global "active pane" fields at the active pane's own session +
@@ -1095,6 +1481,15 @@ impl UiState {
         self.chat_messages.push(message);
     }
 
+    /// This pane's transcript scroll state, creating nothing if it has no entry
+    /// yet (a pane that was never prepared gets a fresh following state).
+    pub fn pane_scroll(&self, pane_id: u64) -> Rc<RefCell<ScrollState>> {
+        self.pane_chat_scroll
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_else(|| Rc::new(RefCell::new(ScrollState::following())))
+    }
+
     /// Build the per-pane chat snapshot (transcript + draft + path) keyed by
     /// pane id, used to render each chat leaf as an independent session.
     pub fn pane_chat_snapshot(&self) -> HashMap<u64, PaneChatSnapshot> {
@@ -1113,6 +1508,7 @@ impl UiState {
                     agent_busy: rt.map(|r| r.busy).unwrap_or(false),
                     inline_screen: None,
                     screen_link: message_screen_link(&rt.map(|r| r.messages.clone()).unwrap_or_default()),
+                    scroll: self.pane_scroll(*pane_id),
                 },
             );
         }
@@ -1158,6 +1554,12 @@ impl UiState {
             self.terminal_global_filters
                 .entry(id)
                 .or_insert_with(TerminalFilter::default);
+            // Each pane's transcript owns a persistent scroll state, so the
+            // user's scrollback and the follow-the-stream flag survive the
+            // per-frame rebuild. A following state opens at the latest message.
+            self.pane_chat_scroll
+                .entry(id)
+                .or_insert_with(|| Rc::new(RefCell::new(ScrollState::following())));
         }
     }
 
@@ -1386,6 +1788,7 @@ impl UiState {
             fullscreen: false,
             agent_header_menus: HashMap::new(),
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
+            reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
             terminal_global_filters: HashMap::new(),
             crons_open: false,
             crons,
@@ -1459,14 +1862,18 @@ impl UiState {
                 1u64,
                 PaneRuntime {
                     messages: pane_mock_messages,
+                    parse_cache: MessageParseCache::default(),
                     pending_ask: None,
                     queued_prompt: None,
                     busy: false,
                     inline_screen_source: None,
                     screen_link: None,
+                    in_flight_tools: HashMap::new(),
+                    reasoning: Vec::new(),
                 },
             )]),
             pane_controls: HashMap::new(),
+            pane_chat_scroll: HashMap::new(),
             terminal: Rc::new(RefCell::new(TerminalRegistry::default())),
             command_palette_open: false,
             command_palette_query: String::new(),
@@ -1703,6 +2110,8 @@ fn parse_branch_head(content: &str) -> String {
 #[cfg(test)]
 mod pane_session_tests {
     use super::*;
+    use crate::emulator::Emulator;
+    use crate::terminal::TerminalSession;
 
     #[test]
     fn mock_pane_is_bound_to_its_own_conversation() {
@@ -1710,6 +2119,208 @@ mod pane_session_tests {
         let session = state.pane_sessions.get(&1).expect("pane 1 has a session");
         assert_eq!(session.conversation_id, "c1");
         assert_eq!(state.pane_conversation_id(1).as_deref(), Some("c1"));
+    }
+
+    /// The two views start as the shell's own history: the preamble block is in
+    /// the terminal view, and no conversation has a block until the agent runs
+    /// one in this pane.
+    #[test]
+    fn the_pane_views_start_as_the_shells_own_history() {
+        let state = UiState::mock();
+        state
+            .terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, TerminalSession::with_emulator(Emulator::new(80, 24)));
+
+        let terminal = state.pane_terminal_view(1);
+        assert_eq!(terminal.len(), 1, "the preamble block is shell history");
+        assert!(terminal[0].command.is_empty());
+        assert!(
+            state.pane_agent_view(1, "c1").is_empty(),
+            "no conversation has run a command in this pane"
+        );
+        assert!(
+            state.pane_terminal_view(9).is_empty(),
+            "a pane with no session has no view"
+        );
+    }
+
+    #[test]
+    fn live_tool_event_fills_and_clears_the_pane_in_flight_map() {
+        let mut state = UiState::mock();
+        let running = goble_desktop_service::ToolCallEvent {
+            chat_id: "c1".into(),
+            id: "t1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "src/lib.rs"}),
+            status: ToolCallStatus::Running,
+            result: None,
+        };
+        state.apply_tool_event(&running);
+        assert_eq!(
+            state.pane_in_flight_tool_count(1),
+            1,
+            "a started call gains an in-flight entry for its pane"
+        );
+        let overlaid = state
+            .pane_runtime
+            .get(&1)
+            .and_then(|rt| {
+                rt.messages
+                    .iter()
+                    .flat_map(|m| m.tool_calls.iter())
+                    .find(|c| c.id == "t1")
+            });
+        assert!(
+            overlaid.is_some_and(|c| c.status == ToolCallStatus::Running),
+            "the running call is overlaid on the transcript without a store re-read"
+        );
+
+        // A second call is tracked independently.
+        state.apply_tool_event(&goble_desktop_service::ToolCallEvent {
+            id: "t2".into(),
+            name: "run_command".into(),
+            ..running.clone()
+        });
+        assert_eq!(state.pane_in_flight_tool_count(1), 2);
+
+        let finished = goble_desktop_service::ToolCallEvent {
+            status: ToolCallStatus::Finished,
+            result: Some("ok".into()),
+            ..running.clone()
+        };
+        state.apply_tool_event(&finished);
+        assert_eq!(
+            state.pane_in_flight_tool_count(1),
+            1,
+            "a finished call clears its in-flight entry"
+        );
+
+        state.apply_tool_event(&goble_desktop_service::ToolCallEvent {
+            status: ToolCallStatus::Error,
+            result: Some("boom".into()),
+            ..goble_desktop_service::ToolCallEvent {
+                id: "t2".into(),
+                ..running
+            }
+        });
+        assert_eq!(
+            state.pane_in_flight_tool_count(1),
+            0,
+            "an errored call clears its in-flight entry too"
+        );
+    }
+
+    #[test]
+    fn reasoning_events_reach_the_transcript_and_render_recessed_rows() {
+        use goble_desktop_service::{ReasoningEvent, ReasoningPhase};
+        use goble_ui::elements::AppContext;
+        use goble_ui::render::RenderCommand;
+        use goble_ui::test_util::render_element;
+        use goble_ui::theme::ColorToken;
+        use goble_ui::{ChatView, Element};
+
+        let event = |phase, step, mode: &str, delta: &str, content: Option<&str>| ReasoningEvent {
+            chat_id: "c1".into(),
+            step,
+            mode: mode.to_string(),
+            delta: delta.to_string(),
+            content: content.map(str::to_string),
+            decision: None,
+            phase,
+        };
+
+        let mut state = UiState::mock();
+        state.apply_reasoning_event(&event(
+            ReasoningPhase::Started,
+            Some(0),
+            "contemplating",
+            "",
+            None,
+        ));
+        state.apply_reasoning_event(&event(
+            ReasoningPhase::Delta,
+            None,
+            "",
+            "weighing options",
+            None,
+        ));
+        state.apply_reasoning_event(&event(
+            ReasoningPhase::Done,
+            Some(0),
+            "contemplating",
+            "",
+            Some("weighing options"),
+        ));
+
+        let rows = &state.pane_runtime.get(&1).unwrap().reasoning;
+        assert_eq!(
+            rows.len(),
+            1,
+            "the deltas accumulate into one reasoning step"
+        );
+        assert_eq!(rows[0].text, "weighing options");
+        assert!(rows[0].done, "the done transition finalises the step");
+
+        let messages = state.pane_runtime.get(&1).unwrap().messages.clone();
+        assert!(
+            messages
+                .iter()
+                .flat_map(|m| m.fragments.iter())
+                .any(|f| matches!(
+                    &f.kind,
+                    goble_ui::ChatFragmentKind::Reasoning { text, .. } if text == "weighing options"
+                )),
+            "the reasoning step is overlaid on the transcript"
+        );
+
+        let app = AppContext::default();
+        let render = |state: &UiState| -> Vec<RenderCommand> {
+            let messages = state.pane_runtime.get(&1).unwrap().messages.clone();
+            let mut view: Box<dyn goble_ui::Element> = ChatView::new()
+                .with_messages(messages)
+                .with_reasoning_expanded(state.reasoning_expanded.clone())
+                .finish();
+            render_element(&mut view, goble_ui::vec2f(600.0, 400.0), &app)
+        };
+        let has_text = |commands: &[RenderCommand], needle: &str| {
+            commands
+                .iter()
+                .any(|c| matches!(c, RenderCommand::DrawText { text, .. } if text.contains(needle)))
+        };
+
+        let collapsed = render(&state);
+        assert!(
+            has_text(&collapsed, "Thinking"),
+            "the reasoning header renders"
+        );
+        assert!(
+            !has_text(&collapsed, "weighing options"),
+            "the thinking body is collapsed by default"
+        );
+        let header_color = collapsed.iter().find_map(|c| match c {
+            RenderCommand::DrawText { text, color, .. } if text.contains("Thinking") => {
+                Some(*color)
+            }
+            _ => None,
+        });
+        assert_eq!(
+            header_color,
+            Some(app.theme.color(ColorToken::Muted)),
+            "the reasoning row is recessed (muted)"
+        );
+
+        // Expanding the app-owned row shows the thinking body.
+        state
+            .reasoning_expanded
+            .borrow_mut()
+            .insert(reasoning_row_key("c1", 0), true);
+        let expanded = render(&state);
+        assert!(
+            has_text(&expanded, "weighing options"),
+            "an expanded reasoning row shows its body"
+        );
     }
 
     #[test]
@@ -1911,6 +2522,58 @@ mod pane_session_tests {
         state.ensure_pane_controls();
         assert!(state.pane_controls.contains_key(&1));
         assert!(state.pane_controls.contains_key(&2));
+    }
+
+    #[test]
+    fn refresh_reparses_only_the_changed_message() {
+        let dir = tempfile::tempdir().expect("create temp thread store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("open in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("open thread store"),
+        );
+        let chat_id = desktop
+            .create_chat("Stream", None, None)
+            .expect("create chat");
+        let store = desktop.store_clone();
+        let now = "2026-09-10T00:00:00Z";
+        store
+            .insert_chat_message("m1", &chat_id, "user", "hello", None, now)
+            .expect("insert user row");
+        store
+            .insert_chat_message("m2", &chat_id, "assistant", "first ", None, now)
+            .expect("insert assistant row");
+
+        let mut state = UiState::mock();
+        state.pane_sessions.get_mut(&1).unwrap().conversation_id = chat_id.clone();
+        state.selected_id = Some(chat_id.clone());
+        let parses = |s: &UiState| s.pane_runtime.get(&1).unwrap().parse_cache.parse_count();
+
+        state.refresh_messages(&desktop);
+        assert_eq!(parses(&state), 2, "the first load parses every row once");
+        assert_eq!(state.pane_runtime.get(&1).unwrap().messages.len(), 2);
+
+        // A frame with no new delta must re-parse nothing.
+        state.refresh_messages(&desktop);
+        assert_eq!(parses(&state), 2, "an unchanged refresh parses nothing");
+
+        // One delta lands on the last row; only that row is re-parsed.
+        store
+            .append_chat_message_content("m2", "delta")
+            .expect("append delta");
+        state.refresh_messages(&desktop);
+        assert_eq!(parses(&state), 3, "only the changed row is re-parsed");
+
+        let msgs = &state.pane_runtime.get(&1).unwrap().messages;
+        assert_eq!(msgs.len(), 2, "both rows are still in the transcript");
+        assert_eq!(
+            msgs[0].fragments,
+            ChatMessage::from_markdown(ChatRole::User, "hello").fragments
+        );
+        assert_eq!(
+            msgs[1].fragments,
+            ChatMessage::from_markdown(ChatRole::Assistant, "first delta").fragments,
+            "the delta is reflected in the re-parsed message"
+        );
     }
 }
 

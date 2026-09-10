@@ -647,6 +647,7 @@ impl WgpuRenderEngine {
                     color,
                     font_weight,
                     font_family,
+                    font_italic,
                     max_width,
                     line_height,
                 } => {
@@ -655,6 +656,7 @@ impl WgpuRenderEngine {
                         *font_size * scale,
                         *font_weight,
                         *font_family,
+                        *font_italic,
                         *max_width * scale,
                         *line_height,
                     ) {

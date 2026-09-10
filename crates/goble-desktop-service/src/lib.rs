@@ -9,8 +9,9 @@ pub use ssh_installer::{PlatformInfo, SshCredentials, WorkerInstallResult};
 
 pub use state::{
     AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, DesktopState, ExecutionInfo, Intent,
-    IntentParams, LogEntry, LlmSetting, TeamInfo, ThreadSummary, ThreadMessageSummary,
-    ThreadReactionSummary, VaultSecretInfo, WorkerConnection, WorkerInvite, WorkflowInfo,
+    IntentParams, LogEntry, LlmSetting, ReasoningEvent, ReasoningPhase, TeamInfo, ThreadSummary,
+    ThreadMessageSummary, ThreadReactionSummary, ToolCallEvent, VaultSecretInfo, WorkerConnection,
+    WorkerInvite, WorkflowInfo,
 };
 pub use thread_store::ThreadStore;
 pub use worker_manager::WorkerClient;

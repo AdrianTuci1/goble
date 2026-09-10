@@ -16,6 +16,7 @@ pub struct TextSpan {
     pub text: String,
     pub weight: FontWeight,
     pub family: FontFamily,
+    pub italic: bool,
     pub color: ColorU,
     pub background: Option<ColorU>,
 }
@@ -26,6 +27,7 @@ impl TextSpan {
             text: text.into(),
             weight: FontWeight::Regular,
             family: FontFamily::System,
+            italic: false,
             color: ColorU::default(),
             background: None,
         }
@@ -33,6 +35,11 @@ impl TextSpan {
 
     pub fn with_weight(mut self, weight: FontWeight) -> Self {
         self.weight = weight;
+        self
+    }
+
+    pub fn with_italic(mut self, italic: bool) -> Self {
+        self.italic = italic;
         self
     }
 
@@ -130,6 +137,7 @@ impl Element for InlineText {
                 f32::INFINITY,
                 span.weight,
                 span.family,
+                span.italic,
             );
             let single_w = single.x;
 
@@ -156,6 +164,7 @@ impl Element for InlineText {
                 remaining,
                 span.weight,
                 span.family,
+                span.italic,
             );
             if wrapped.y > line_h + 0.5 {
                 placed.push(PlacedSpan {
@@ -176,6 +185,7 @@ impl Element for InlineText {
                     max_width.max(1.0),
                     span.weight,
                     span.family,
+                    span.italic,
                 );
                 placed.push(PlacedSpan {
                     x: 0.0,
@@ -224,6 +234,7 @@ impl Element for InlineText {
                 self.line_height,
                 placed.span.weight,
                 placed.span.family,
+                placed.span.italic,
             );
         }
     }
@@ -238,7 +249,8 @@ impl Element for InlineText {
 }
 
 /// Resolve an inline span's style to a renderable [`TextSpan`] using theme colors.
-/// `is_link` is true when the span is a hyperlink (rendered in the accent color).
+/// `italic` selects the oblique face; `is_link` is true when the span is a
+/// hyperlink (rendered in the accent color).
 pub fn resolve_span(
     text: String,
     bold: bool,
@@ -271,11 +283,11 @@ pub fn resolve_span(
             None,
         )
     };
-    let _ = italic;
     TextSpan {
         text,
         weight,
         family,
+        italic,
         color,
         background,
     }

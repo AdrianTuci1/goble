@@ -79,6 +79,29 @@ pub enum HarnessServerEvent {
         mission_id: String,
         status: String,
     },
+    /// The model began a reasoning (thinking) step, identified by `step`, in the
+    /// current thinking `mode`. Carried so a host can render thinking live.
+    ReasoningStarted {
+        session_id: SessionId,
+        step: usize,
+        mode: String,
+    },
+    /// A chunk of the current reasoning step's text. The step is identified by
+    /// the preceding `ReasoningStarted`; deltas stream in order until
+    /// `ReasoningDone`.
+    ReasoningDelta {
+        session_id: SessionId,
+        delta: String,
+    },
+    /// The reasoning step finished: `content` is the step's full text and
+    /// `decision` the tool-call decision it settled on.
+    ReasoningDone {
+        session_id: SessionId,
+        step: usize,
+        mode: String,
+        content: String,
+        decision: String,
+    },
     Done {
         session_id: SessionId,
     },
@@ -199,6 +222,34 @@ mod tests {
         let line = msg.to_line().unwrap();
         let decoded = HarnessMessage::from_line(&line).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn reasoning_events_roundtrip() {
+        let events = vec![
+            HarnessServerEvent::ReasoningStarted {
+                session_id: SessionId::new("s1"),
+                step: 0,
+                mode: "contemplating".into(),
+            },
+            HarnessServerEvent::ReasoningDelta {
+                session_id: SessionId::new("s1"),
+                delta: "weighing options".into(),
+            },
+            HarnessServerEvent::ReasoningDone {
+                session_id: SessionId::new("s1"),
+                step: 0,
+                mode: "contemplating".into(),
+                content: "weighing options".into(),
+                decision: "\"execute\"".into(),
+            },
+        ];
+        for ev in events {
+            let msg = HarnessMessage::Server(ev.clone());
+            let line = msg.to_line().unwrap();
+            let decoded = HarnessMessage::from_line(&line).unwrap();
+            assert_eq!(decoded, msg);
+        }
     }
 
     #[test]

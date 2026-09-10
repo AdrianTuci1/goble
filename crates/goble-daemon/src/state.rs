@@ -628,6 +628,31 @@ fn map_event(ev: HarnessServerEvent) -> Option<DaemonEvent> {
             mission_id,
             status,
         }),
+        HarnessServerEvent::ReasoningStarted {
+            session_id,
+            step,
+            mode,
+        } => Some(DaemonEvent::ReasoningStarted {
+            session_id,
+            step,
+            mode,
+        }),
+        HarnessServerEvent::ReasoningDelta { session_id, delta } => {
+            Some(DaemonEvent::ReasoningDelta { session_id, delta })
+        }
+        HarnessServerEvent::ReasoningDone {
+            session_id,
+            step,
+            mode,
+            content,
+            decision,
+        } => Some(DaemonEvent::ReasoningDone {
+            session_id,
+            step,
+            mode,
+            content,
+            decision,
+        }),
         HarnessServerEvent::Done { session_id } => Some(DaemonEvent::Done { session_id }),
         HarnessServerEvent::Error { session_id, message } => {
             Some(DaemonEvent::Error { session_id, message })

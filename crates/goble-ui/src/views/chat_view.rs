@@ -9,7 +9,7 @@ use crate::elements::{
     ChatComposer, ChatMessageBubble, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
     Expanded, Fill, Flex, FrameView, Icon, LayoutContext, MainAxisAlignment, MainAxisSize,
     PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, QuickActionButton,
-    Scrollable, SizeConstraint, Switch, TerminalFilter, Text, TopbarButton,
+    ScrollState, Scrollable, SizeConstraint, Switch, TerminalFilter, Text, TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -39,6 +39,9 @@ pub struct ChatView {
     /// key; shared down to each `ChatMessageBubble` so the filter tray's open
     /// flag + selection persist across the per-frame rebuild.
     terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
+    /// App-owned collapsed/expanded state for the reasoning rows, keyed by the
+    /// reasoning fragment's key, shared down to each `ChatMessageBubble`.
+    reasoning_expanded: Rc<RefCell<HashMap<String, bool>>>,
     /// The whole-transcript filter, applied to every terminal block (filtered
     /// via a bar above the transcript). App-owned so it survives the rebuild.
     global_terminal_filter: Option<TerminalFilter>,
@@ -92,6 +95,10 @@ pub struct ChatView {
     /// A detected BYOH handoff URI rendered as a "open remote desktop" action.
     screen_link: Option<String>,
     on_open_screen_link: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    /// The transcript's scroll offset. App-owned in practice (the view is
+    /// rebuilt every frame); defaults to following the stream so a standalone
+    /// view still clips and tails its content.
+    scroll: Rc<RefCell<ScrollState>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -108,6 +115,7 @@ impl ChatView {
             on_cmd_enter: None,
             on_action: None,
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
+            reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
             global_terminal_filter: None,
             on_copy_terminal: None,
             empty_title: None,
@@ -154,10 +162,18 @@ impl ChatView {
             on_close_inline_screen: None,
             screen_link: None,
             on_open_screen_link: None,
+            scroll: Rc::new(RefCell::new(ScrollState::following())),
             root: None,
             size: None,
             origin: None,
         }
+    }
+
+    /// Attach the app-owned transcript scroll state, so the offset (and the
+    /// user's scrollback position) survives the per-frame rebuild.
+    pub fn with_scroll_state(mut self, scroll: Rc<RefCell<ScrollState>>) -> Self {
+        self.scroll = scroll;
+        self
     }
 
     pub fn with_header(mut self, header: Box<dyn Element>) -> Self {
@@ -209,6 +225,16 @@ impl ChatView {
         terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
     ) -> Self {
         self.terminal_filters = terminal_filters;
+        self
+    }
+
+    /// Set the app-owned collapsed/expanded map for the transcript's reasoning
+    /// rows, so a row the user expanded stays expanded across rebuilds.
+    pub fn with_reasoning_expanded(
+        mut self,
+        reasoning_expanded: Rc<RefCell<HashMap<String, bool>>>,
+    ) -> Self {
+        self.reasoning_expanded = reasoning_expanded;
         self
     }
 
@@ -610,6 +636,7 @@ impl ChatView {
                 let bubble = ChatMessageBubble::new(message.role, fragments)
                     .with_tool_calls(message.tool_calls.clone())
                     .with_terminal_filters(self.terminal_filters.clone())
+                    .with_reasoning_expanded(self.reasoning_expanded.clone())
                     .with_global_terminal_filter(self.global_terminal_filter.clone())
                     .with_on_copy_terminal(self.on_copy_terminal.clone())
                     .with_on_action(move |action| {
@@ -794,9 +821,13 @@ impl ChatView {
                     message_column = message_column.with_child(card);
                 }
             }
-            // The transcript scrolls; the whole-transcript filter bar stays
-            // pinned above it when terminal blocks are present.
-            let transcript = Scrollable::new(message_column.finish(), Axis::Vertical).finish();
+            // The transcript scrolls (clipped to the viewport, wheel handled)
+            // and tails the stream: the state is app-owned, so new content
+            // follows the bottom until the user scrolls up, and their
+            // scrollback position is held while it streams.
+            let transcript = Scrollable::new(message_column.finish(), Axis::Vertical)
+                .with_state(self.scroll.clone())
+                .finish();
             if self.has_terminal_blocks() {
                 if let Some(bar) = self.build_global_filter_bar(app) {
                     Flex::column()
@@ -1070,6 +1101,41 @@ mod tests {
         );
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
+    }
+
+    #[test]
+    fn chat_view_transcript_clips_to_the_viewport_and_follows_the_stream() {
+        use crate::test_util::{command_counts, render_element};
+
+        let app = AppContext::default();
+        let scroll = Rc::new(RefCell::new(ScrollState::following()));
+        let messages = (0..40)
+            .map(|i| {
+                ChatMessage::new(
+                    ChatRole::Assistant,
+                    vec![ChatFragment::text(format!("streamed line {i}"))],
+                )
+            })
+            .collect();
+        let mut view = ChatView::new()
+            .with_messages(messages)
+            .with_scroll_state(scroll.clone())
+            .finish();
+        let commands = render_element(&mut view, vec2f(600.0, 480.0), &app);
+        let counts = command_counts(&commands);
+        assert!(
+            counts.clip_rect > 0 && counts.pop_clip > 0,
+            "the transcript clips to its viewport"
+        );
+        assert!(
+            scroll.borrow().max_offset() > 0.0,
+            "40 messages are taller than the pane"
+        );
+        assert_eq!(
+            scroll.borrow().offset(),
+            scroll.borrow().max_offset(),
+            "the transcript opens on the latest message"
+        );
     }
 
     #[test]

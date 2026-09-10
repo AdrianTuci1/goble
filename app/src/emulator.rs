@@ -13,13 +13,40 @@
 //! colour report, the text-area size) are queued as bytes for the session to
 //! write back to the pty.
 
+use goble_terminal::blocks::BlockView;
 use goble_terminal::{
-    CursorState, HookEvent, HookTap, OscEvent, OscTap, Palette, Screen, ScreenConfig, ScreenEvent,
-    ScreenLine, ScreenQuery, ScreenSize, TermMode,
+    Block, BlockEvent, BlockId, BlockList, BlockOwner, CursorState, HookEvent, HookTap, OscEvent,
+    OscTap, Palette, Screen, ScreenConfig, ScreenEvent, ScreenLine, ScreenQuery, ScreenSize,
+    TermMode,
 };
 
 /// Lines of scrollback a pane keeps above the viewport.
 const SCROLLBACK: usize = 10_000;
+
+/// The card a conversation leaves behind in the terminal: the block that marks
+/// where the conversation happened, named so a click can reopen its agent view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentViewCard {
+    pub conversation_id: String,
+    pub label: String,
+}
+
+/// One block as a view shows it: the command, who ran it and what it printed.
+/// The owner is what puts an agent's command in its conversation's view and
+/// leaves the user's own out of it; a conversation card is a block too, so it
+/// carries its identity here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleBlock {
+    pub id: BlockId,
+    pub owner: BlockOwner,
+    pub command: String,
+    /// Everything the command printed, or `""` for a conversation card.
+    pub output: String,
+    /// Whether the command finished with a non-zero exit code.
+    pub failed: bool,
+    /// Set when this block is a conversation card rather than a shell block.
+    pub card: Option<AgentViewCard>,
+}
 
 /// The VT state of one pane.
 pub struct Emulator {
@@ -28,6 +55,14 @@ pub struct Emulator {
     osc: OscTap,
     hook_events: Vec<HookEvent>,
     osc_events: Vec<OscEvent>,
+    /// The block list of this session: the command boundaries the hooks delimit,
+    /// with each block's own screens. It is what turns a claimed command into a
+    /// tool result (`BlockEvent::ToolResult`), which is why the pane needs it
+    /// even though the renderer still paints `screen`.
+    blocks: BlockList,
+    /// Block-level events the pane has not read yet (block starts/finishes and
+    /// claimed commands' tool results).
+    block_events: Vec<BlockEvent>,
     /// Bytes the screen cannot write itself and the session must send back.
     replies: Vec<u8>,
     columns: usize,
@@ -55,6 +90,8 @@ impl Emulator {
             osc: OscTap::new(),
             hook_events: Vec::new(),
             osc_events: Vec::new(),
+            blocks: BlockList::new(ScreenSize::new(columns, screen_lines)),
+            block_events: Vec::new(),
             replies: Vec::new(),
             columns,
             screen_lines,
@@ -65,13 +102,44 @@ impl Emulator {
     pub fn feed(&mut self, bytes: &[u8]) {
         let mut staged = Vec::with_capacity(bytes.len());
         let hooks = self.hooks.tap(bytes, &mut staged);
-        self.hook_events.extend(hooks);
+        self.hook_events.extend(hooks.clone());
 
         let mut passthrough = Vec::with_capacity(staged.len());
         let osc = self.osc.tap(&staged, &mut passthrough);
         self.osc_events.extend(osc);
 
+        // The blocks see the same bytes the screen does; the hooks then delimit
+        // them into command/output blocks. Bytes are fed first so the shell's
+        // echo of a typed line stays in the command screen, where the block
+        // model puts it.
+        self.blocks.feed(&passthrough);
+        for hook in hooks {
+            let events = self.blocks.apply(hook);
+            // A `Preexec` is where the block's owner is decided. Once it is
+            // known, an agent's command joins its conversation's view right
+            // away, while a user's command — whose owner is `User` — stays out.
+            for event in &events {
+                if let BlockEvent::BlockStarted { id } = event {
+                    self.associate_owner(*id);
+                }
+            }
+            self.block_events.extend(events);
+        }
         self.screen.feed(&passthrough);
+    }
+
+    /// Make a block the agent owns visible inside its conversation's agent
+    /// view. A user-owned block names no conversation, so the terminal view
+    /// keeps it to itself.
+    fn associate_owner(&mut self, id: BlockId) {
+        let conversation_id = match self.blocks.get(id).map(Block::owner) {
+            Some(BlockOwner::Agent {
+                conversation_id, ..
+            }) => conversation_id.clone(),
+            _ => return,
+        };
+        self.blocks
+            .associate_with_conversation(id, &conversation_id);
     }
 
     /// Reshape the grid. Content reflows, so a pane resize never loses text.
@@ -81,6 +149,7 @@ impl Emulator {
         }
         self.columns = columns;
         self.screen_lines = screen_lines;
+        self.blocks.resize(ScreenSize::new(columns, screen_lines));
         self.screen.resize(ScreenSize::new(columns, screen_lines));
     }
 
@@ -127,6 +196,64 @@ impl Emulator {
 
     pub fn take_hook_events(&mut self) -> Vec<HookEvent> {
         std::mem::take(&mut self.hook_events)
+    }
+
+    /// Block-level events seen since the last call, oldest first. A claimed
+    /// command's tool result arrives here as `BlockEvent::ToolResult`.
+    pub fn take_block_events(&mut self) -> Vec<BlockEvent> {
+        std::mem::take(&mut self.block_events)
+    }
+
+    /// The blocks a view draws, oldest first: the terminal's own view, or one
+    /// conversation's agent view. The filter is the per-block visibility the
+    /// owner set, so the two views agree on who ran what.
+    pub fn visible_blocks(&self, view: &BlockView) -> Vec<VisibleBlock> {
+        self.blocks
+            .visible_blocks(view)
+            .into_iter()
+            .map(|block| VisibleBlock {
+                id: block.id(),
+                owner: block.owner().clone(),
+                command: block.command_text().to_string(),
+                output: block.output_text(),
+                failed: block.has_failed(),
+                card: block
+                    .conversation_id()
+                    .map(|conversation_id| AgentViewCard {
+                        conversation_id: conversation_id.to_string(),
+                        label: block.label().unwrap_or_default().to_string(),
+                    }),
+            })
+            .collect()
+    }
+
+    /// Push the card standing for `conversation_id` into the block list, or
+    /// return the one already there.
+    ///
+    /// A round trip through the terminal enters a conversation more than once,
+    /// so the card is reused rather than stacked: one conversation leaves one
+    /// card in the list.
+    pub fn push_agent_view_block(&mut self, conversation_id: &str, label: &str) -> BlockId {
+        if let Some(existing) = self
+            .blocks
+            .blocks()
+            .iter()
+            .find(|block| block.conversation_id() == Some(conversation_id))
+        {
+            return existing.id();
+        }
+        self.blocks.push_agent_view_block(conversation_id, label)
+    }
+
+    /// Aim the next `Preexec` at the active block for `owner`, so the block the
+    /// agent's command runs in belongs to that tool call.
+    ///
+    /// False when the active block cannot be claimed (the shell has not
+    /// bootstrapped yet), so the caller fails the tool call instead of writing a
+    /// command whose result could never be attributed.
+    pub fn claim_active_block(&mut self, owner: BlockOwner) -> bool {
+        let id = self.blocks.active_block().id();
+        self.blocks.claim_next_pre_exec(id, owner)
     }
 
     pub fn take_osc_events(&mut self) -> Vec<OscEvent> {

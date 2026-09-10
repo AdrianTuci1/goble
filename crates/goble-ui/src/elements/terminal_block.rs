@@ -27,6 +27,10 @@ const HEADER_SPACING: f32 = 8.0;
 const BUTTON_SIZE: f32 = 24.0;
 const PROMPT_PREFIX: &str = "❯ ";
 
+/// The copy handler a terminal block's header button fires with the block's
+/// full display text. App-owned, so it is shared like the block's filter state.
+pub type TerminalCopyHandler = Rc<RefCell<dyn FnMut(String) + 'static>>;
+
 /// App-owned, per-block filter state for a terminal block. Both cells live in
 /// app state (`UiState.terminal_filters`) so the tray's open flag and the
 /// selected filter survive the per-frame element rebuild; each terminal block
@@ -139,6 +143,25 @@ impl TerminalData {
         self
     }
 
+    /// The block a command produces: the command line, then its output, with the
+    /// command's state carried as the block's status.
+    ///
+    /// A command the agent ran and one that ran in the pane are the same block
+    /// shape, so both are drawn by [`terminal_block`] — one block, one renderer.
+    pub fn for_command(command: impl Into<String>, output: &str, status: TerminalStatus) -> Self {
+        let command = command.into();
+        let mut lines = vec![TerminalLine::command(command.clone())];
+        for line in output.lines() {
+            let text = line.trim_end().to_string();
+            if text.is_empty() {
+                lines.push(TerminalLine::info(" "));
+            } else {
+                lines.push(TerminalLine::output(text));
+            }
+        }
+        Self::new(command, lines).with_status(status)
+    }
+
     /// A stable per-block key (title + line text) used to look up the block's
     /// app-owned filter state in [`crate::elements::ChatView`]'s filter map.
     /// Two terminal blocks with identical content share a filter state, which
@@ -191,6 +214,31 @@ impl TerminalStatus {
             Self::Error => app.theme.color(ColorToken::Error),
         }
     }
+}
+
+/// Build the one terminal block element.
+///
+/// Every place a block appears draws it through here — a terminal fragment in
+/// the transcript, the segment a command the agent ran is drawn as, and the
+/// pane's own executed-command block — so one block has one renderer.
+pub fn terminal_block(
+    data: &TerminalData,
+    filter: TerminalFilter,
+    global_filter: Option<TerminalFilter>,
+    on_copy: Option<TerminalCopyHandler>,
+) -> Box<dyn Element> {
+    TerminalBlock::new()
+        .with_title(data.title.clone())
+        .with_status(data.status.unwrap_or_default())
+        .with_lines(data.lines.clone())
+        .with_filter(filter)
+        .with_global_filter(global_filter)
+        .with_on_copy(move |text| {
+            if let Some(cb) = on_copy.as_ref() {
+                (cb.borrow_mut())(text);
+            }
+        })
+        .finish()
 }
 
 /// A terminal-style command block matching warp's layout: a single header row
@@ -326,6 +374,7 @@ impl TerminalBlock {
                     max_text_width,
                     FontWeight::Regular,
                     FontFamily::Mono,
+                    false,
                 )
                 .x
             })
@@ -493,6 +542,7 @@ impl TerminalBlock {
             max_text_width,
             FontWeight::Regular,
             FontFamily::Mono,
+            false,
         )
         .x;
         // Conservative minimum for the header (title + copy + filter and their

@@ -701,6 +701,9 @@ pub struct PaneChatSnapshot {
     /// A detected BYOH handoff URI (`rdp://…` / `goble://desktop?…`), rendered
     /// as a clickable "open remote desktop" affordance when no live frame yet.
     pub screen_link: Option<String>,
+    /// This pane's transcript scroll offset (app-owned, so the scrollback
+    /// position and follow-the-stream flag survive the per-frame rebuild).
+    pub scroll: Rc<RefCell<ScrollState>>,
 }
 
 /// The composer's warp-new style context pills: which harness (the selected
@@ -767,6 +770,10 @@ pub struct UiSnapshot {
     /// Per-terminal-block filter state (open flag + selected filter), keyed by
     /// content; shared with app state so the filter tray persists.
     pub terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
+    /// Collapsed/expanded state per reasoning row, keyed by the row's
+    /// `<conversation>:<step>` key; shared with app state so a row the user
+    /// expanded stays expanded.
+    pub reasoning_expanded: Rc<RefCell<HashMap<String, bool>>>,
     /// Whole-transcript terminal filters (open flag + selected filter) keyed by
     /// pane id, so each pty/agent pane keeps its own filter bar.
     pub terminal_global_filters: HashMap<u64, TerminalFilter>,
@@ -981,6 +988,9 @@ pub struct UiActions {
     /// Turn one pane's harness mode on/off at the rich input (Warp-new style:
     /// Cmd+Enter activates the harness, Esc returns to the plain pty).
     pub on_set_pane_harness_mode: Rc<RefCell<dyn FnMut(u64, bool)>>,
+    /// Enter a conversation's agent view in a pane by clicking the card it left
+    /// behind in the terminal (Warp-new style: the `EnterAgentView` block).
+    pub on_open_agent_view: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Send a queued prompt now (interrupting the in-flight turn).
     pub on_send_queued: Rc<RefCell<dyn FnMut()>>,
     /// Dismiss a queued prompt.

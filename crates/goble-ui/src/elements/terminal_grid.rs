@@ -249,6 +249,7 @@ impl TerminalGrid {
                     self.line_height,
                     weight,
                     FontFamily::Mono,
+                    false,
                 );
             }
         }

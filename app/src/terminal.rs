@@ -24,17 +24,23 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use tokio::sync::oneshot;
 
+use goble_core::harness::PaneSession;
+use goble_terminal::blocks::BlockView;
+use goble_terminal::hooks::PreexecValue;
 use goble_terminal::{
-    encode_mouse, CursorState, HookEvent, Key, KeyEncoder, Modifiers, MouseAction, OscEvent,
-    Palette, ScreenLine, TermMode,
+    encode_mouse, BlockEvent, BlockId, BlockOwner, CursorState, HookEvent, Key, KeyEncoder,
+    Modifiers, MouseAction, OscEvent, Palette, ScreenLine, TermMode, ToolResult,
 };
 use goble_ui::event::ModifiersState;
 
-use crate::emulator::Emulator;
+use crate::emulator::{Emulator, VisibleBlock};
 
 // ---------------------------------------------------------------------------
 // TUI agent detection + terminal surface mode
@@ -368,6 +374,263 @@ pub fn resolve_cwd(cwd: &str) -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
 
+/// The name a shell was invoked as, without its path: `bash`, `zsh`, ...
+fn shell_name(shell: &str) -> &str {
+    Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell)
+}
+
+/// A per-session scratch directory for the integration script, so two panes
+/// never share one. Removed when the session drops.
+fn integration_dir() -> Option<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("goble-shell-{}-{seq}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Build a pane's shell command, pointing a supported shell at its
+/// shell-integration script. bash is given `--rcfile`; zsh reads
+/// `$ZDOTDIR/.zshrc`. Each script then reads the user's own rc itself, because
+/// both mechanisms replace the file the shell would normally read. An
+/// unsupported shell is spawned unchanged and degrades to a plain terminal.
+///
+/// Returns the command and the scratch directory to remove on drop.
+fn shell_command(shell: &str, cwd: PathBuf) -> (CommandBuilder, Option<PathBuf>) {
+    let mut cmd = CommandBuilder::new(shell);
+    cmd.cwd(cwd);
+
+    let name = shell_name(shell);
+    if name.starts_with("bash") {
+        let Some(dir) = integration_dir() else {
+            return (cmd, None);
+        };
+        let script = dir.join("goble.bashrc");
+        if std::fs::write(&script, goble_terminal::integration::BASH).is_err() {
+            return (cmd, None);
+        }
+        cmd.arg("--rcfile");
+        cmd.arg(&script);
+        (cmd, Some(dir))
+    } else if name.starts_with("zsh") {
+        let Some(dir) = integration_dir() else {
+            return (cmd, None);
+        };
+        if std::fs::write(dir.join(".zshrc"), goble_terminal::integration::ZSH).is_err() {
+            return (cmd, None);
+        }
+        if std::fs::write(dir.join(".zshenv"), goble_terminal::integration::ZSH_ENV).is_err() {
+            return (cmd, None);
+        }
+        // Hand the script the directory of the user's own zshrc; ZDOTDIR now
+        // points at ours, so it cannot find it on its own.
+        if let Some(original) = std::env::var_os("ZDOTDIR")
+            .filter(|value| !value.is_empty())
+            .or_else(|| std::env::var_os("HOME"))
+        {
+            cmd.env("GOBLE_ORIG_ZDOTDIR", original);
+        }
+        cmd.env("ZDOTDIR", &dir);
+        (cmd, Some(dir))
+    } else {
+        (cmd, None)
+    }
+}
+
+/// How long a claim waits for the shell's `Preexec` before it is failed.
+///
+/// The wait is bounded on purpose: a shell that never runs the command (a
+/// syntax error, a shell whose integration has not bootstrapped, a command the
+/// line editor rejected) must fail the tool call rather than hang it.
+pub const CLAIM_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A command the app asked the pane's shell to run, waiting for the `Preexec`
+/// that proves which command actually started.
+///
+/// Only a [`TerminalSession`] builds one: it is what the claim was placed for
+/// plus the bounded wait, so a caller cannot fake a resolved claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingCommandClaim {
+    /// Who the block belongs to once the claim resolves.
+    pub owner: BlockOwner,
+    /// The command line that was written to the pty, compared against the
+    /// `Preexec` the shell reports.
+    pub command: String,
+    /// When the bounded wait ends.
+    deadline: Instant,
+}
+
+/// Why a claim could not be placed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimError {
+    /// The command line is empty; there is nothing for the shell to run.
+    EmptyCommand,
+    /// A claim is already waiting for its `Preexec`. The shell has one line
+    /// editor, so a second claim would leave the first one unattributed.
+    AlreadyPending,
+}
+
+/// What happened to a claim.
+///
+/// Rule three of the bridge: a claim attaches only to the command it wrote. It
+/// is refused when a different command reaches the shell first, and it times
+/// out when the shell never answers — it is never attached on a guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimOutcome {
+    /// The next `Preexec` was the claimed command: the block it starts belongs
+    /// to the claim's owner.
+    Resolved { owner: BlockOwner, command: String },
+    /// A different command reached the shell first, so the claim is refused
+    /// rather than attached to the wrong block.
+    Refused {
+        owner: BlockOwner,
+        expected: String,
+        actual: String,
+    },
+    /// No `Preexec` arrived within the bounded wait.
+    TimedOut { owner: BlockOwner, expected: String },
+}
+
+impl ClaimOutcome {
+    /// The owner the claim was placed for, so the caller can fail the matching
+    /// tool call.
+    pub fn owner(&self) -> &BlockOwner {
+        match self {
+            ClaimOutcome::Resolved { owner, .. }
+            | ClaimOutcome::Refused { owner, .. }
+            | ClaimOutcome::TimedOut { owner, .. } => owner,
+        }
+    }
+
+    /// Whether the claim attached to the command it wrote.
+    pub fn is_resolved(&self) -> bool {
+        matches!(self, ClaimOutcome::Resolved { .. })
+    }
+}
+
+/// How long the harness waits for the pane to answer a shell-tool command.
+///
+/// A pane that is never pumped (a background tab) must fail the tool call
+/// rather than hang it. This is the outer bound, longer than the claim's own
+/// bounded wait so a genuine refusal or timeout is reported by the pane first.
+pub const PANE_TOOL_TIMEOUT: Duration = Duration::from_secs(35);
+
+/// One command the harness asked the pane's shell to run.
+struct PaneCommandRequest {
+    /// The composed command line (see `RoutedCommandRunner`).
+    line: String,
+    /// The conversation that asked for it, for the block owner.
+    conversation_id: String,
+    /// Identifies the claim so its tool result can be matched back.
+    call_id: String,
+    /// Where the tool result is sent once the pane resolves the claim.
+    reply: oneshot::Sender<Result<String, String>>,
+}
+
+/// The rendezvous between the harness and one pane's session.
+///
+/// The claim protocol allows one in-flight command per shell, so there is a
+/// single request slot: a second submission while one waits is refused rather
+/// than queued behind it.
+#[derive(Default)]
+struct PaneCommands {
+    request: Option<PaneCommandRequest>,
+}
+
+/// The harness's handle to a pane's own shell (the P4 route).
+///
+/// The harness runs on the daemon's runtime while the pane's session is pumped
+/// on the UI thread, so the handle only submits the command and waits; the
+/// session claims it and hands back the block list's tool result. That is the
+/// correlation model of `agent-terminal-bridge.md` §3 carried across the thread
+/// boundary the two live on.
+struct PaneCommandRunner {
+    commands: Arc<Mutex<PaneCommands>>,
+    /// The conversation this pane's turns belong to.
+    conversation_id: String,
+    /// Names each claim this runner makes, so results are matched, not guessed.
+    next_call: AtomicU64,
+}
+
+impl PaneCommandRunner {
+    /// A runner reaching the session that shares `commands`.
+    fn new(commands: Arc<Mutex<PaneCommands>>, conversation_id: impl Into<String>) -> Self {
+        Self {
+            commands,
+            conversation_id: conversation_id.into(),
+            next_call: AtomicU64::new(1),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl PaneSession for PaneCommandRunner {
+    async fn run_in_pane(&self, line: &str) -> anyhow::Result<String> {
+        let (reply, answer) = oneshot::channel();
+        {
+            let mut commands = self
+                .commands
+                .lock()
+                .map_err(|_| anyhow::anyhow!("the pane's command bridge is poisoned"))?;
+            if commands.request.is_some() {
+                anyhow::bail!("the pane is already running a command for the agent");
+            }
+            commands.request = Some(PaneCommandRequest {
+                line: line.to_string(),
+                conversation_id: self.conversation_id.clone(),
+                call_id: format!(
+                    "pane-call-{}",
+                    self.next_call.fetch_add(1, Ordering::Relaxed)
+                ),
+                reply,
+            });
+        }
+        match tokio::time::timeout(PANE_TOOL_TIMEOUT, answer).await {
+            Ok(Ok(Ok(output))) => Ok(output),
+            Ok(Ok(Err(message))) => anyhow::bail!(message),
+            Ok(Err(_)) => anyhow::bail!("the pane dropped the command before answering"),
+            Err(_) => anyhow::bail!(
+                "the pane did not answer within {}s",
+                PANE_TOOL_TIMEOUT.as_secs()
+            ),
+        }
+    }
+}
+
+/// The tool result text for a claimed block's outcome.
+///
+/// A non-zero exit is a failed tool call, exactly as the sandboxed runner's is;
+/// a command the shell moved past is not a hang — the result says it is still
+/// running and carries the output that had arrived.
+fn tool_result_text(result: &ToolResult) -> Result<String, String> {
+    if result.is_failure() {
+        return Err(format!(
+            "command failed (exit {}): {}",
+            result.exit_code().unwrap_or(-1),
+            result.output
+        ));
+    }
+    if result.is_still_running() {
+        return Ok(format!(
+            "{}\n(the command is still running; it did not report an exit code)",
+            result.output
+        ));
+    }
+    Ok(result.output.clone())
+}
+
+/// The claim id a verdict names, so its tool call can be failed.
+fn owner_call_id(owner: &BlockOwner) -> String {
+    match owner {
+        BlockOwner::Agent { call_id, .. } => call_id.clone(),
+        BlockOwner::User => String::new(),
+    }
+}
+
 /// One PTY-backed shell session for a terminal pane.
 ///
 /// The reader thread owns the blocking read end and interprets bytes into the
@@ -394,6 +657,24 @@ pub struct TerminalSession {
     osc: VecDeque<OscEvent>,
     /// The last working directory the shell reported (`OSC 7`).
     cwd: Option<String>,
+    /// Scratch directory holding this session's integration script; removed on
+    /// drop. `None` when the shell has no integration or the file could not be
+    /// written.
+    integration_dir: Option<PathBuf>,
+    /// A command the app claimed, waiting for its `Preexec` to resolve it.
+    pending_claim: Option<PendingCommandClaim>,
+    /// Claim verdicts the pane has not read yet, bounded like the hooks.
+    claim_outcomes: VecDeque<ClaimOutcome>,
+    /// The bounded wait a new claim gets; overridden in tests.
+    claim_timeout: Duration,
+    /// The harness's side of the shell-tool route for this pane. Commands are
+    /// submitted here and answered from the block list's tool results.
+    commands: Arc<Mutex<PaneCommands>>,
+    /// Tool calls waiting for their claimed block's result, keyed by call id.
+    awaiting: HashMap<String, oneshot::Sender<Result<String, String>>>,
+    /// Claimed blocks whose tool result has arrived but whose caller has not
+    /// been answered yet.
+    tool_results: Vec<ToolResult>,
 }
 
 /// How many shell-integration events a session holds before dropping the
@@ -437,7 +718,7 @@ impl TerminalSession {
 
     /// A session around a screen with no pty behind it: how a failed launch and
     /// a test both build one.
-    fn with_emulator(emulator: Emulator) -> Self {
+    pub(crate) fn with_emulator(emulator: Emulator) -> Self {
         Self {
             state: Arc::new(Mutex::new(emulator)),
             writer: None,
@@ -451,6 +732,13 @@ impl TerminalSession {
             hooks: VecDeque::new(),
             osc: VecDeque::new(),
             cwd: None,
+            integration_dir: None,
+            pending_claim: None,
+            claim_outcomes: VecDeque::new(),
+            claim_timeout: CLAIM_TIMEOUT,
+            commands: Arc::new(Mutex::new(PaneCommands::default())),
+            awaiting: HashMap::new(),
+            tool_results: Vec::new(),
         }
     }
 
@@ -470,8 +758,7 @@ impl TerminalSession {
             })
             .map_err(|e| e.to_string())?;
 
-        let mut cmd = CommandBuilder::new(default_shell());
-        cmd.cwd(resolve_cwd(cwd));
+        let (cmd, integration_dir) = shell_command(&default_shell(), resolve_cwd(cwd));
 
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         drop(pair.slave);
@@ -517,6 +804,13 @@ impl TerminalSession {
             hooks: VecDeque::new(),
             osc: VecDeque::new(),
             cwd: None,
+            integration_dir,
+            pending_claim: None,
+            claim_outcomes: VecDeque::new(),
+            claim_timeout: CLAIM_TIMEOUT,
+            commands: Arc::new(Mutex::new(PaneCommands::default())),
+            awaiting: HashMap::new(),
+            tool_results: Vec::new(),
         })
     }
 
@@ -536,7 +830,7 @@ impl TerminalSession {
     /// (its colours, the text area size) waits for the reply, so this has to run
     /// even when nothing is being painted — the pane calls it every frame.
     pub fn pump(&mut self) {
-        let (events, replies, hooks, osc) = {
+        let (events, replies, hooks, osc, block_events) = {
             let Ok(mut state) = self.state.lock() else {
                 return;
             };
@@ -547,6 +841,7 @@ impl TerminalSession {
                 replies,
                 state.take_hook_events(),
                 state.take_osc_events(),
+                state.take_block_events(),
             )
         };
 
@@ -560,11 +855,26 @@ impl TerminalSession {
         }
 
         for event in hooks {
+            // The claim is resolved (or refused) as the hooks arrive, so the
+            // pane never has to hand its hook stream to somebody else first.
+            if let HookEvent::Preexec(value) = &event {
+                self.observe_preexec(value);
+            }
             if self.hooks.len() == EVENT_BACKLOG {
                 self.hooks.pop_front();
             }
             self.hooks.push_back(event);
         }
+        // A block the agent claimed reaching a terminal state is that tool
+        // call's result: its output and exit code answer the harness.
+        for event in block_events {
+            if let BlockEvent::ToolResult(result) = event {
+                self.tool_results.push(result);
+            }
+        }
+        // A claim the shell never answered is failed on the frame it expires
+        // rather than left pending forever; the pane pumps every frame.
+        self.expire_claim();
         for event in osc {
             if let OscEvent::WorkingDirectory(path) = &event {
                 self.cwd = Some(path.clone());
@@ -577,6 +887,86 @@ impl TerminalSession {
 
         if !replies.is_empty() {
             self.write(&replies);
+        }
+
+        // The harness's shell tool rides this same frame: submit, claim, and
+        // hand back the block's result once the hooks have produced it.
+        self.service_pane_commands();
+    }
+
+    /// Carry the harness's shell tool through this pane (P4).
+    ///
+    /// One submitted command is claimed for its tool call and written to the
+    /// pty; a claim the shell refuses, or one that outlives the bounded wait,
+    /// fails the tool call, and a claimed block's tool result answers it with
+    /// its output and exit code. An unmapped result (a stale call) is dropped.
+    fn service_pane_commands(&mut self) {
+        let request = self
+            .commands
+            .lock()
+            .ok()
+            .and_then(|mut commands| commands.request.take());
+        if let Some(request) = request {
+            let owner = BlockOwner::Agent {
+                conversation_id: request.conversation_id.clone(),
+                call_id: request.call_id.clone(),
+            };
+            if !self.arm_block_claim(&owner) {
+                let _ = request.reply.send(Err(
+                    "the pane's shell is not ready to run an agent command".to_string(),
+                ));
+            } else if let Err(error) = self.claim_command(&request.line, owner) {
+                let _ = request.reply.send(Err(format!(
+                    "the pane could not claim the command: {error:?}"
+                )));
+            } else {
+                self.awaiting.insert(request.call_id, request.reply);
+            }
+        }
+
+        for outcome in self.claim_outcomes() {
+            let failure = match &outcome {
+                ClaimOutcome::Resolved { .. } => None,
+                ClaimOutcome::Refused {
+                    owner,
+                    expected,
+                    actual,
+                } => Some((
+                    owner_call_id(owner),
+                    format!("the pane's shell ran `{actual}` first, not `{expected}`"),
+                )),
+                ClaimOutcome::TimedOut { owner, expected } => Some((
+                    owner_call_id(owner),
+                    format!("the pane's shell did not run `{expected}` in time"),
+                )),
+            };
+            match failure {
+                // A verdict for one of our tool calls fails it; the pane's own
+                // record of the rest is left intact for whoever reads it.
+                Some((call_id, message)) => match self.awaiting.remove(&call_id) {
+                    Some(reply) => {
+                        let _ = reply.send(Err(message));
+                    }
+                    None => self.claim_outcomes.push_back(outcome),
+                },
+                None => self.claim_outcomes.push_back(outcome),
+            }
+        }
+
+        for result in std::mem::take(&mut self.tool_results) {
+            let Some(reply) = self.awaiting.remove(&result.call_id) else {
+                continue;
+            };
+            let _ = reply.send(tool_result_text(&result));
+        }
+    }
+
+    /// Aim the block list's next `Preexec` at the active block, so the command
+    /// the agent's tool call runs becomes a block that call owns.
+    fn arm_block_claim(&mut self, owner: &BlockOwner) -> bool {
+        match self.state.lock() {
+            Ok(mut state) => state.claim_active_block(owner.clone()),
+            Err(_) => false,
         }
     }
 
@@ -685,10 +1075,118 @@ impl TerminalSession {
         self.cwd.as_deref()
     }
 
+    /// The blocks a view draws for this session, oldest first.
+    ///
+    /// The terminal view is the shell's own history — the agent's commands are
+    /// real blocks in it too. A conversation's agent view is only the commands
+    /// the agent ran for that conversation: the owner decided at `Preexec` is
+    /// what tells the two apart, so a command the user typed is never in it.
+    pub fn visible_blocks(&self, view: &BlockView) -> Vec<VisibleBlock> {
+        self.state
+            .lock()
+            .map(|state| state.visible_blocks(view))
+            .unwrap_or_default()
+    }
+
+    /// Push the card standing for `conversation_id` into this session's block
+    /// list, returning the card's id (or `None` when the lock is poisoned).
+    pub fn push_agent_view_block(&self, conversation_id: &str, label: &str) -> Option<BlockId> {
+        self.state
+            .lock()
+            .ok()
+            .map(|mut state| state.push_agent_view_block(conversation_id, label))
+    }
+
     /// The listener thread has finished (child exited) — used to cheaply detect
     /// when the shell is closed so the pane can render a hint.
     pub fn is_alive(&self) -> bool {
         self.child.is_some()
+    }
+
+    /// Ask the pane's shell to run `command` on behalf of an agent turn.
+    ///
+    /// The command is written to the pty and held as a claim: the next `Preexec`
+    /// the shell reports decides whether it was the command we asked for. The
+    /// claim never attaches on a guess — a `Preexec` for a different command
+    /// refuses it, and one that never comes times out (see [`ClaimOutcome`]).
+    pub fn claim_command(&mut self, command: &str, owner: BlockOwner) -> Result<(), ClaimError> {
+        let command = command.trim();
+        if command.is_empty() {
+            return Err(ClaimError::EmptyCommand);
+        }
+        if self.pending_claim.is_some() {
+            return Err(ClaimError::AlreadyPending);
+        }
+        // Enter, as the terminal sees it: a carriage return. A program in raw
+        // mode does not read a line feed as "run this".
+        let mut bytes = command.as_bytes().to_vec();
+        bytes.push(b'\r');
+        self.write(&bytes);
+        self.pending_claim = Some(PendingCommandClaim {
+            owner,
+            command: command.to_string(),
+            deadline: Instant::now() + self.claim_timeout,
+        });
+        Ok(())
+    }
+
+    /// The claim waiting for its `Preexec`, if any.
+    pub fn pending_claim(&self) -> Option<&PendingCommandClaim> {
+        self.pending_claim.as_ref()
+    }
+
+    /// Take the claim verdicts seen since the last call, oldest first.
+    pub fn claim_outcomes(&mut self) -> Vec<ClaimOutcome> {
+        self.claim_outcomes.drain(..).collect()
+    }
+
+    /// Resolve the pending claim against one `Preexec`.
+    ///
+    /// A `Preexec` with no claim is the user's command and touches nothing.
+    /// With a claim, only the same command line resolves it; anything else —
+    /// including a `Preexec` that does not report a command at all — refuses
+    /// the claim, because attaching it to the wrong block is worse than failing
+    /// the tool call.
+    fn observe_preexec(&mut self, value: &PreexecValue) {
+        let Some(claim) = self.pending_claim.take() else {
+            return;
+        };
+        let actual = value.command.clone().unwrap_or_default();
+        let outcome = if actual.trim() == claim.command {
+            ClaimOutcome::Resolved {
+                owner: claim.owner,
+                command: claim.command,
+            }
+        } else {
+            ClaimOutcome::Refused {
+                owner: claim.owner,
+                expected: claim.command,
+                actual,
+            }
+        };
+        self.push_claim_outcome(outcome);
+    }
+
+    /// Fail a claim that outlived its bounded wait.
+    fn expire_claim(&mut self) {
+        let Some(claim) = self.pending_claim.as_ref() else {
+            return;
+        };
+        if Instant::now() < claim.deadline {
+            return;
+        }
+        let claim = self.pending_claim.take().expect("checked above");
+        self.push_claim_outcome(ClaimOutcome::TimedOut {
+            owner: claim.owner,
+            expected: claim.command,
+        });
+    }
+
+    fn push_claim_outcome(&mut self, outcome: ClaimOutcome) {
+        if self.claim_outcomes.len() == EVENT_BACKLOG {
+            self.claim_outcomes.pop_front();
+        }
+        self.claim_outcomes.push_back(outcome);
     }
 }
 
@@ -720,6 +1218,9 @@ impl Drop for TerminalSession {
         // thread).
         if let Some(c) = self.child.as_mut() {
             let _ = c.kill();
+        }
+        if let Some(dir) = self.integration_dir.take() {
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
 }
@@ -772,8 +1273,49 @@ impl TerminalRegistry {
         self.modes.get(&pane_id).cloned().unwrap_or_default()
     }
 
+    /// The blocks a view draws in `pane_id`, oldest first. A pane with no
+    /// session has no blocks, so the result is empty.
+    pub fn visible_blocks(&self, pane_id: u64, view: &BlockView) -> Vec<VisibleBlock> {
+        self.sessions
+            .get(&pane_id)
+            .map(|session| session.visible_blocks(view))
+            .unwrap_or_default()
+    }
+
+    /// Push the card standing for `conversation_id` into `pane_id`'s block list.
+    /// A pane with no live session has no list to push into, so `None`.
+    pub fn push_agent_view_block(
+        &mut self,
+        pane_id: u64,
+        conversation_id: &str,
+        label: &str,
+    ) -> Option<BlockId> {
+        self.sessions
+            .get_mut(&pane_id)
+            .and_then(|session| session.push_agent_view_block(conversation_id, label))
+    }
+
     pub fn set_mode(&mut self, pane_id: u64, mode: TerminalMode) {
         self.modes.insert(pane_id, mode);
+    }
+
+    /// The harness's shell-tool route for a pane that has a terminal, or `None`
+    /// for a pane that has none.
+    ///
+    /// A pane gets a session the first time it runs a command or paints a
+    /// terminal; until then there is no shell to route through, so the turn
+    /// keeps the sandboxed runner. Once a session exists the agent's commands
+    /// run in it, visibly, with the user's environment and credentials.
+    pub fn pane_session(
+        &self,
+        pane_id: u64,
+        conversation_id: &str,
+    ) -> Option<Arc<dyn PaneSession>> {
+        let session = self.sessions.get(&pane_id)?;
+        Some(Arc::new(PaneCommandRunner::new(
+            Arc::clone(&session.commands),
+            conversation_id,
+        )))
     }
 
     /// If the pane's current input line names a known TUI agent, switch the pane
@@ -817,6 +1359,44 @@ mod tests {
     /// A session whose screen the test drives directly, with no pty behind it.
     fn detached() -> TerminalSession {
         TerminalSession::with_emulator(Emulator::new(80, 24))
+    }
+
+    /// A capture for the bytes a session writes to its pty.
+    #[derive(Clone, Default)]
+    struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn agent_owner() -> BlockOwner {
+        BlockOwner::Agent {
+            conversation_id: "conv-1".to_string(),
+            call_id: "call-1".to_string(),
+        }
+    }
+
+    fn preexec(command: &str) -> HookEvent {
+        HookEvent::Preexec(PreexecValue {
+            command: Some(command.to_string()),
+        })
+    }
+
+    /// Feed a hook into the session's own pty tap, exactly as the shell would,
+    /// and let the frame's `pump` see it.
+    fn run_hook(session: &mut TerminalSession, event: HookEvent) {
+        {
+            let mut state = session.state.lock().unwrap();
+            state.feed(&goble_terminal::hooks::encode_hook(&event));
+        }
+        session.pump();
     }
 
     #[test]
@@ -1325,5 +1905,285 @@ mod tests {
                 other => panic!("expected Forward, got {other:?}"),
             }
         }
+    }
+
+    // -- The claim protocol (P2) --------------------------------------------
+
+    #[test]
+    fn a_claim_writes_the_command_to_the_pty() {
+        let mut session = detached();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
+
+        session.claim_command("git status", agent_owner()).unwrap();
+
+        assert_eq!(&*captured.lock().unwrap(), b"git status\r");
+        assert_eq!(
+            session.pending_claim().map(|c| c.command.as_str()),
+            Some("git status")
+        );
+    }
+
+    #[test]
+    fn a_claimed_command_resolves_on_its_own_preexec() {
+        let mut session = detached();
+        let owner = agent_owner();
+        session.claim_command("echo hi", owner.clone()).unwrap();
+
+        run_hook(&mut session, preexec("echo hi"));
+
+        assert!(session.pending_claim().is_none(), "the claim is consumed");
+        assert_eq!(
+            session.claim_outcomes(),
+            vec![ClaimOutcome::Resolved {
+                owner,
+                command: "echo hi".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_claim_that_never_gets_a_preexec_times_out() {
+        let mut session = detached();
+        let owner = agent_owner();
+        // A zero bounded wait, so the claim expires on the next pump without
+        // the test sleeping.
+        session.claim_timeout = Duration::ZERO;
+        session.claim_command("echo hi", owner.clone()).unwrap();
+
+        session.pump();
+
+        assert!(session.pending_claim().is_none(), "the claim is failed");
+        assert_eq!(
+            session.claim_outcomes(),
+            vec![ClaimOutcome::TimedOut {
+                owner,
+                expected: "echo hi".to_string(),
+            }]
+        );
+        // A late `Preexec` cannot revive a claim that already failed.
+        run_hook(&mut session, preexec("echo hi"));
+        assert!(session.claim_outcomes().is_empty());
+    }
+
+    #[test]
+    fn a_claim_is_refused_when_a_user_command_arrives_first() {
+        let mut session = detached();
+        let owner = agent_owner();
+        session.claim_command("echo agent", owner.clone()).unwrap();
+
+        // The user hit enter before the agent's command reached the shell, so
+        // the next `Preexec` is theirs.
+        run_hook(&mut session, preexec("ls -la"));
+
+        assert!(session.pending_claim().is_none(), "the claim is consumed");
+        assert_eq!(
+            session.claim_outcomes(),
+            vec![ClaimOutcome::Refused {
+                owner: owner.clone(),
+                expected: "echo agent".to_string(),
+                actual: "ls -la".to_string(),
+            }]
+        );
+
+        // The agent's command running afterwards does not resurrect the claim:
+        // the tool call already failed, and a guess is exactly what rule three
+        // forbids.
+        run_hook(&mut session, preexec("echo agent"));
+        assert!(session.claim_outcomes().is_empty());
+    }
+
+    #[test]
+    fn a_preexec_without_a_command_refuses_the_claim() {
+        let mut session = detached();
+        let owner = agent_owner();
+        session.claim_command("echo hi", owner.clone()).unwrap();
+
+        // The shell reported a command start but not what it was: it cannot be
+        // matched, so it is refused rather than attached blind.
+        run_hook(
+            &mut session,
+            HookEvent::Preexec(PreexecValue { command: None }),
+        );
+
+        assert_eq!(
+            session.claim_outcomes(),
+            vec![ClaimOutcome::Refused {
+                owner,
+                expected: "echo hi".to_string(),
+                actual: String::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_second_claim_while_one_is_pending_is_refused() {
+        let mut session = detached();
+        session.claim_command("echo one", agent_owner()).unwrap();
+
+        assert_eq!(
+            session.claim_command("echo two", agent_owner()),
+            Err(ClaimError::AlreadyPending)
+        );
+        assert_eq!(
+            session.claim_command("   ", agent_owner()),
+            Err(ClaimError::EmptyCommand)
+        );
+        assert_eq!(
+            session.pending_claim().map(|c| c.command.as_str()),
+            Some("echo one"),
+            "the refused claims changed nothing"
+        );
+    }
+
+    #[test]
+    fn an_unclaimed_preexec_leaves_no_outcome() {
+        let mut session = detached();
+        run_hook(&mut session, preexec("ls"));
+        assert!(session.claim_outcomes().is_empty());
+        assert!(session.pending_claim().is_none());
+    }
+
+    // -- Routing the harness's shell tool through the pane (P4) --------------
+
+    /// Feed pty bytes and let the frame's `pump` see them, as the reader thread
+    /// does for a real pane.
+    fn feed_bytes(session: &mut TerminalSession, bytes: &[u8]) {
+        {
+            let mut state = session.state.lock().unwrap();
+            state.feed(bytes);
+        }
+        session.pump();
+    }
+
+    /// The request the harness submits through a pane session.
+    fn submit(
+        session: &mut TerminalSession,
+        line: &str,
+    ) -> oneshot::Receiver<Result<String, String>> {
+        let (reply, answer) = oneshot::channel();
+        session.commands.lock().unwrap().request = Some(PaneCommandRequest {
+            line: line.to_string(),
+            conversation_id: "conv-1".to_string(),
+            call_id: "call-1".to_string(),
+            reply,
+        });
+        answer
+    }
+
+    #[test]
+    fn an_agent_command_runs_in_the_pane_and_returns_its_output() {
+        let mut session = detached();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
+        // The shell bootstrap: a claim needs a block to land on.
+        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+
+        let answer = submit(&mut session, "echo hi");
+        session.pump();
+        assert_eq!(&*captured.lock().unwrap(), b"echo hi\r");
+        assert!(session.pending_claim().is_some());
+
+        // The shell echoes the line, reports the preexec, prints, and finishes.
+        feed_bytes(&mut session, b"echo hi\r\n");
+        run_hook(&mut session, preexec("echo hi"));
+        feed_bytes(&mut session, b"hi\r\n");
+        run_hook(&mut session, HookEvent::CommandFinished(Default::default()));
+
+        assert_eq!(
+            answer.blocking_recv().expect("the pane answers"),
+            Ok("hi".to_string())
+        );
+    }
+
+    #[test]
+    fn a_command_the_shell_never_ran_fails_the_agent_call() {
+        let mut session = detached();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
+        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+
+        let answer = submit(&mut session, "echo agent");
+        session.pump();
+
+        // The user's own command runs first: rule three refuses the claim
+        // rather than attaching it to the wrong block, so the tool call fails.
+        run_hook(&mut session, preexec("ls -la"));
+
+        let result = answer.blocking_recv().expect("the pane answers");
+        assert!(result.is_err(), "a refused claim fails the tool call");
+    }
+
+    #[test]
+    fn a_pane_without_a_terminal_has_no_pane_session() {
+        let reg = TerminalRegistry::default();
+        assert!(reg.pane_session(1, "conv-1").is_none());
+    }
+
+    // -- The owner in the two views (P6) ------------------------------------
+
+    /// The terminal view and a conversation's agent view are two filters over
+    /// one block list. After a mix of commands the user typed and one the agent
+    /// ran, the terminal view shows all of them and the agent view shows only
+    /// the agent's block.
+    #[test]
+    fn the_two_views_show_the_right_blocks_after_a_mixed_sequence() {
+        let mut reg = TerminalRegistry::default();
+        reg.sessions.insert(1, detached());
+        let session = reg.sessions.get_mut(&1).expect("the session is there");
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
+        run_hook(session, HookEvent::Bootstrapped(Default::default()));
+
+        // The user types `ls`.
+        run_hook(session, preexec("ls"));
+        run_hook(session, HookEvent::CommandFinished(Default::default()));
+
+        // The agent runs `echo hi` in the same shell, through P4's route.
+        let answer = submit(session, "echo hi");
+        session.pump();
+        feed_bytes(session, b"echo hi\r\n");
+        run_hook(session, preexec("echo hi"));
+        feed_bytes(session, b"hi\r\n");
+        run_hook(session, HookEvent::CommandFinished(Default::default()));
+        assert_eq!(
+            answer.blocking_recv().expect("the pane answers"),
+            Ok("hi".to_string())
+        );
+
+        // The user types `pwd` afterwards.
+        run_hook(session, preexec("pwd"));
+        run_hook(session, HookEvent::CommandFinished(Default::default()));
+
+        let terminal: Vec<String> = reg
+            .visible_blocks(1, &BlockView::Terminal)
+            .into_iter()
+            .map(|block| block.command)
+            .filter(|command| !command.is_empty())
+            .collect();
+        let agent = reg.visible_blocks(
+            1,
+            &BlockView::Agent {
+                conversation_id: "conv-1".to_string(),
+            },
+        );
+
+        // The user's `ls`, the agent's `echo hi` (a real block in the same
+        // shell) and the user's `pwd`. The empty preamble/pending blocks are
+        // not commands.
+        assert_eq!(terminal, vec!["ls", "echo hi", "pwd"]);
+        // Only the agent's command is in the conversation's view; the two the
+        // user typed are not.
+        assert_eq!(
+            agent.iter().map(|b| b.command.as_str()).collect::<Vec<_>>(),
+            vec!["echo hi"]
+        );
+        assert_eq!(
+            agent[0].owner,
+            BlockOwner::Agent {
+                conversation_id: "conv-1".to_string(),
+                call_id: "call-1".to_string(),
+            }
+        );
     }
 }

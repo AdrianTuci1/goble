@@ -5,7 +5,7 @@ pub use avatar::{Avatar, AvatarShape};
 pub use button::{Button, ButtonVariant};
 pub use caption::Caption;
 pub use caret::{caret_beam, CARET_HEIGHT};
-pub use chat_composer::ChatComposer;
+pub use chat_composer::{ChatComposer, CommandProposalUi};
 pub use chat_content::{
     ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, ToolCall,
 };
@@ -17,6 +17,7 @@ pub use conversation_sidebar::{
     ConversationEntry, ConversationSidebar, CONVERSATION_SIDEBAR_WIDTH,
 };
 pub use dialog::{Dialog, DIALOG_DEFAULT_WIDTH};
+pub use diff::{parse_unified_diff, Diff, DiffLine, DiffLineKind, DiffRow, DiffStats, Hunk};
 pub mod markdown;
 pub use chat_message_bubble::ChatMessageBubble;
 pub use checkbox::Checkbox;
@@ -28,6 +29,7 @@ pub use connector_card::ConnectorCard;
 pub use constrained_box::ConstrainedBox;
 pub use container::Container;
 pub use context_pill::{ContextPill, PillTraySide, CONTEXT_PILL_HEIGHT};
+pub use conversation_card::{ConversationCard, ConversationCardStatus};
 pub use divider::Divider;
 pub use drawer::{Drawer, DrawerAnchor};
 pub use dropdown_menu::{DropdownItem, DropdownMenu};
@@ -63,8 +65,8 @@ pub use stack::Stack;
 pub use switch::Switch;
 pub use tab_bar::{Tab, TabBar};
 pub use terminal_block::{
-    filter_option_labels, TerminalBlock, TerminalData, TerminalFilter, TerminalLine,
-    TerminalLineKind, TerminalStatus,
+    filter_option_labels, terminal_block, TerminalBlock, TerminalCopyHandler, TerminalData,
+    TerminalFilter, TerminalLine, TerminalLineKind, TerminalStatus,
 };
 pub use terminal_grid::{TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT};
 pub use text::Text;
@@ -544,9 +546,11 @@ pub mod connector_card;
 pub mod constrained_box;
 pub mod container;
 pub mod context_pill;
+pub mod conversation_card;
 pub mod conversation_list_item;
 pub mod conversation_sidebar;
 pub mod dialog;
+pub mod diff;
 pub mod divider;
 pub mod drawer;
 pub mod dropdown_menu;

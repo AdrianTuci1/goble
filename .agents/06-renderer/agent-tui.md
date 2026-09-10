@@ -158,3 +158,13 @@ A1 blocks A7 and A8; A2–A3 block A4; A5 and A6 are one feature split at the wi
 - App items (A3, A7): `cargo test -p goble-app`.
 - Element items (A4, A5): `cargo test -p goble-ui`.
 - No step here builds or runs the `goble-app` binary; the renderer is exercised through the app's element tests, and anything that genuinely needs a window is recorded as unverified rather than claimed.
+
+## 9. Follow-ups found by the first rollout
+
+The first end-to-end rollout implemented A2–A8 and Q1–Q11; each item passed its own acceptance command, and the run's integration pass then found what per-item verification cannot see. They are tracked as R1–R6 in [`../TRACKER.md`](../TRACKER.md); three land here.
+
+- **R1 — the approval gate made commands un-runnable.** A6 suspends any `run_command` when `auto_approve` is off, and that is the default (`crates/goble-core/src/harness.rs:515`, `app/src/state.rs:815`, `:1786`). It yields `CommandProposed` and returns; `crates/goble-harness-internal/src/lib.rs:255` maps that event to `Vec::new()` and `Harness::resume_command` (`harness.rs:662` → `reasoning.rs:856`) has no caller outside tests. Under the default configuration a command never runs and the turn never closes, where before this work it ran through the sandbox. §5's design is unchanged; what is missing is the path back, and A5's composer is what should answer it.
+- **R6 — the cards A5 and A8 promised did not arrive card-free.** A5's proposal is a `Container` with `Border::all(1.0)` and `corner_radius(8)` (`chat_composer.rs:620-629`), and the app still draws its own bordered card in `app/src/ui/terminal.rs::build_card` while A8's card-free `ConversationCard` element is exported and never constructed.
+- **R5 — the status is inferred, not read.** `app/src/ui/terminal.rs:562-566` renders a still-running block as `Success` from the boolean `block.failed`, which is the same defect as the `ERROR: ` prefix in [`agent-parser.md`](agent-parser.md) §10: A4's row reads its status, the surfaces around it still guess.
+
+The lesson worth keeping: an item's acceptance test proves the item, not the feature. The approval gate passed its own test — suspend, approve, edit, reject all behaved — while the default path through it dead-ended at a wire boundary no single item owned.

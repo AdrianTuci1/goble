@@ -121,3 +121,11 @@ P1–P3 are self-contained and useful without P4; P4 is the switch that makes th
 - App items (P2, P6): `cargo test -p goble-app`.
 - Harness item (P4): `cargo test -p goble-core`.
 - End-to-end: a scripted shell is not enough to prove the mode works against a real zsh; that check needs B0 and a running window. It is recorded as unverified until then, rather than claimed.
+
+## 9. Follow-ups found by the first rollout
+
+B0 and P1–P4, P6 landed and each passed its own acceptance command. The run's integration pass then found one defect in this doc's area, tracked as R2 in [`../TRACKER.md`](../TRACKER.md).
+
+- **R2 — P4 stranded every shell without integration.** `shell_command` writes the hook scripts only for bash and zsh and spawns anything else unchanged, but `pane_session` (`app/src/terminal.rs:1300-1316`) returns a runner for any pane that has a session. Under any other shell the agent's command is written to the pty, no `Preexec` ever arrives, and the claim fails after `CLAIM_TIMEOUT` (30 s) — where the same command used to run through `SandboxedCommandRunner`. The route has to be decided by whether the shell can answer, not by whether a session exists; §3's rule 3 ("a claim that cannot resolve is a definite failure") is satisfied and the outcome is still wrong, because the failure is chosen too late.
+
+The automated check that follows from this: a pane whose shell was not bootstrapped must report no pane session at all, and the sandbox must be the documented fallback rather than an accident of which shell the user runs.

@@ -16,6 +16,7 @@ let meta = #{
         #{ title: "Wave 4: Bridge", detail: "block ownership, claim protocol, pane routing" },
         #{ title: "Wave 5: Surface", detail: "inline rows, presenters, agent view, approval" },
         #{ title: "Wave 6: Integration", detail: "full suite plus adversarial review of the whole diff" },
+        #{ title: "Wave 7: Integration fixes", detail: "the findings the first run's integration pass caught" },
     ],
 };
 
@@ -181,6 +182,20 @@ let g_a7 = "Make the agent view work over the block list. Cmd+Enter pushes the a
 
 let g_a8 = "Add the conversation card element. The card stands for 'there is a conversation here, click to enter': conversation title, status, last activity, and a click handler, as an element under `crates/goble-ui/src/elements/`. It reads the same block that A7 pushes into the list, and it is drawn in the pager idiom - a row with a rail or accent, not a bordered widget.";
 
+// ------------------------------------------------ wave 7 goals (verified findings)
+
+let g_r1 = "The approval gate must actually run commands. Today `if !auto_approve && call.name == COMMAND_TOOL` in `crates/goble-core/src/reasoning.rs:664` suspends the call, persists a pending command and yields `HarnessEvent::CommandProposed`, then returns; `auto_approve` defaults to false (`crates/goble-core/src/harness.rs:515`, `app/src/state.rs:815`, `:1786`). That event is then discarded: `crates/goble-harness-internal/src/lib.rs:255` maps `HarnessEvent::CommandProposed { .. } => Vec::new()`, and `Harness::resume_command` (`harness.rs:662` -> `reasoning.rs:856`) is called only from tests. So under the default configuration no command tool ever runs and the turn never closes - a suspension with no path back. Wire the path end to end: carry the proposal through the harness/daemon boundary, emit a structured event the app can see (the desktop service already emits `chat:reasoning` for a comparable case), hold the pending proposal per pane, answer it from A5's composer proposal UI with approve/edit/reject, and resume the turn through the existing resume path. A reject must produce a `ToolCallError`, and every exit path must still emit the turn-finished event so the pane cannot stay busy. Read `agent-tui.md` section 5 and section 9 first: the design is written, the wire is what is missing.";
+
+let g_r2 = "Pane routing must fall back to the sandbox when the pane's shell cannot answer. `fn shell_command` in `app/src/terminal.rs` (around line 403) writes the hook scripts and bootstraps only bash and zsh, and spawns any other shell unchanged; but `TerminalSession::pane_session` (`app/src/terminal.rs:1300-1316`) returns a `PaneCommandRunner` for any pane that has a session. Under fish or any other shell the agent's command is written to the pty, no `Preexec` hook ever arrives, and the claim fails after `CLAIM_TIMEOUT` (30s) instead of running - where before this work the same command ran through `SandboxedCommandRunner`. Fix both halves: the pane must offer a session to the shell tool only when its shell was actually bootstrapped (otherwise return None so the harness keeps the sandbox), and a claim that can never resolve must fail immediately and visibly rather than costing the full timeout. Read `agent-terminal-bridge.md` section 9 for the finding.";
+
+let g_r3 = "Restore clickable links inside a paragraph. Q2 moved markdown links into the inline flow as `InlineSpan::link` (`crates/goble-ui/src/elements/chat_content.rs:423`), but `crates/goble-ui/src/elements/chat_message_bubble.rs:512-515` paints a paragraph as a bare `InlineText`, and the previous `ChatBlock::Action { OpenUrl }` path and its test `link_fragment_becomes_interactive_action` were deleted. A link must be a real hit target again, not just styled text: carry the link's action through the inline span to the painted element and make the click reach something - the app never wired `ChatView::with_on_action`, so wire the path or state precisely where the click terminates and why. Bring back a test named `link_fragment_becomes_interactive_action` that proves a link inside a paragraph is one live action target carrying its URL.";
+
+let g_r4 = "One renderer for a tool-result terminal segment. `crates/goble-ui/src/elements/group_chat_message.rs:288` renders `ChatFragmentKind::Terminal` as `Empty::new()`, so a tool result that is a terminal segment disappears instead of drawing its block. Q8 built the shared renderer (`crates/goble-ui/src/elements/terminal_block.rs::terminal_block`, fed by `TerminalData::for_command`) and `app/src/ui/terminal.rs::executed_command_block` is the pane path that feeds it. Make this path draw the same block as the transcript's command tool call and as terminal mode - one block, one renderer, two places it can appear - and delete whatever bespoke drawing it replaces. Read `agent-parser.md` section 10.";
+
+let g_r5 = "Stop encoding status as a string, and stop inferring it from a boolean. `crates/goble-core/src/reasoning.rs:726` and `:925-928` build a tool-result row whose status is the literal text prefix `ERROR: `, and `app/src/state.rs::tool_terminal_data` (around lines 197-218) renders that text with no status read from a field; separately `app/src/ui/terminal.rs:562-566` (`build_agent_view`) computes `if block.failed { Error } else { Success }`, which paints a still-running command as Success. Carry the outcome as data - the block already knows its lifecycle and `ToolResult`/`ToolOutcome` already exist - and read it at both surfaces. A running block must not render as a finished one, and a failed one must not be recognised by string matching. Read `agent-parser.md` section 10 and `agent-tui.md` section 9.";
+
+let g_r6 = "Make the two remaining cards card-free. A5's command proposal in `crates/goble-ui/src/elements/chat_composer.rs:620-629` is a `Container` with `with_background(SurfaceRaised)`, `Border::all(1.0)` and `corner_radius(8.0)`, and its test around `:1376` asserts that border; the app draws the conversation card itself in `app/src/ui/terminal.rs::build_card` (`:185-211`, a `Container` with `with_border(ColorToken::Border)` and a corner radius) while A8's card-free `crates/goble-ui/src/elements/conversation_card.rs` element is exported at `crates/goble-ui/src/elements.rs:32` and constructed nowhere. The rule for this product is explicit: everything the agent does is drawn as native rows - an accent rail, a one-character bullet, full-width bands - and nothing is wrapped in a generic bordered card. Rebuild the proposal and the card as row-based surfaces, construct the real `ConversationCard` element from the app instead of a private bordered container, and update the tests that currently assert the border so they assert its absence. Read `agent-tui.md` section 9.";
+
 // ---------------------------------------------------------------- waves
 
 let waves = [
@@ -281,6 +296,32 @@ let waves = [
             "crates/goble-ui/src/elements/ (new element)",
             [], g_a8,
             "cargo test -p goble-ui"),
+    ]},
+    #{ n: 7, title: "Integration fixes", phase_title: "Wave 7: Integration fixes", items: [
+        item("R1", "R1", "The approval gate must run commands", "agent-tui.md",
+            "crates/goble-core/src/reasoning.rs, crates/goble-harness-internal/src/lib.rs, crates/goble-daemon-protocol/, crates/goble-desktop-service/src/state.rs, app/src/, crates/goble-ui/src/elements/chat_composer.rs",
+            [], g_r1,
+            "cargo test -p goble-core -p goble-harness-internal -p goble-desktop-service -p goble-app, including a test that a suspended command, once approved, runs and the turn finishes; that a rejected command produces a ToolCallError and finishes; and that a turn containing a command tool never leaves the session busy"),
+        item("R2", "R2", "Pane routing falls back to the sandbox", "agent-terminal-bridge.md",
+            "app/src/terminal.rs",
+            [], g_r2,
+            "cargo test -p goble-app: a pane whose shell was not bootstrapped offers no pane session (the sandbox path is kept), and a claim that can never resolve fails immediately rather than after the full timeout"),
+        item("R3", "R3", "Links stay clickable inside a paragraph", "agent-parser.md",
+            "crates/goble-ui/src/elements/chat_content.rs, crates/goble-ui/src/elements/chat_message_bubble.rs, crates/goble-ui/src/elements/inline_text.rs, crates/goble-ui/src/views/chat_view.rs",
+            [], g_r3,
+            "cargo test -p goble-ui (and -p goble-app if the action path is wired there): a link inside a paragraph is one live action target carrying its URL"),
+        item("R4", "R4", "One renderer for a tool-result terminal segment", "agent-parser.md",
+            "crates/goble-ui/src/elements/group_chat_message.rs, crates/goble-ui/src/elements/terminal_block.rs",
+            [], g_r4,
+            "cargo test -p goble-ui and cargo test -p goble-app: a Terminal fragment draws through the shared terminal_block renderer instead of Empty"),
+        item("R5", "R5", "Read the status, do not encode it as a string", "agent-parser.md",
+            "crates/goble-core/src/reasoning.rs, app/src/state.rs, app/src/ui/terminal.rs",
+            [], g_r5,
+            "cargo test -p goble-core -p goble-ui -p goble-app: a still-running block is not drawn as Success, and no status is recovered from an ERROR: string prefix"),
+        item("R6", "R6", "The card-free cards", "agent-tui.md",
+            "crates/goble-ui/src/elements/chat_composer.rs, crates/goble-ui/src/elements/conversation_card.rs, app/src/ui/terminal.rs",
+            [], g_r6,
+            "cargo test -p goble-ui and cargo test -p goble-app: neither the proposal nor the conversation card contains a border, and the app constructs the ConversationCard element"),
     ]},
 ];
 

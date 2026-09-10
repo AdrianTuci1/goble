@@ -123,3 +123,13 @@ Q1 is first because nothing else can be judged on a transcript that cannot scrol
 - App items (Q1, Q5, Q6, Q8, Q10): `cargo test -p goble-app`.
 - Q11 is verified by `cargo test -p goble-harness-internal` (the adapter carries `Reasoning*` instead of dropping it) and `cargo test -p goble-app` (the `chat:reasoning` event reaches the transcript and paints a recessed, collapsed row that expands on click).
 - No step here builds or runs the `goble-app` binary. Anything that needs a window to judge — line wrapping in a real pane, the feel of following a stream — is recorded as unverified rather than claimed.
+
+## 10. Follow-ups found by the first rollout
+
+The first end-to-end rollout (`.grok/workflows/agent-ui-rollout.rhai`) implemented Q1–Q11 and the bridge items; every item passed its own acceptance command, and the run's integration pass — a full suite, a regression review, a card-free audit and a bookkeeping audit — then found what per-item verification cannot see. Those items are tracked as R1–R6 in [`../TRACKER.md`](../TRACKER.md); three of them land on this doc.
+
+- **R3 — a link inside a paragraph stopped being clickable.** Q2 folded links into the inline flow as `InlineSpan::link` (`chat_content.rs:423`), but `chat_message_bubble.rs:512-515` paints a paragraph as bare `InlineText`, and the older `ChatBlock::Action { OpenUrl }` path and its test `link_fragment_becomes_interactive_action` were deleted. Styling a link is not making it interactive.
+- **R4 — a tool-result terminal segment still is not the shared block.** `crates/goble-ui/src/elements/group_chat_message.rs:288` renders `ChatFragmentKind::Terminal` as `Empty` instead of the one `terminal_block` renderer Q8 built. Q8's rule — one block, one renderer, two places it can appear — is not yet true for this path.
+- **R5 — status still travels as a string.** `crates/goble-core/src/reasoning.rs:726`, `:925-928` encode a tool result's status as the literal `ERROR: ` prefix and `app/src/state.rs::tool_terminal_data` renders that text, so Q6's "read the real status from the persisted field" is true on the row and not yet true on the result.
+
+The bookkeeping audit found one false claim — a resolver row naming a test that Q7 had renamed — which was corrected directly rather than left to a repair pass.

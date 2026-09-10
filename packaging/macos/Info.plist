@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template consumed by make-bundle.sh. The following tokens are substituted
+  verbatim (sed) before the file is written into the bundle:
+
+    @APP_NAME@    display name, e.g. "Goble"
+    @BIN_NAME@    executable inside Contents/MacOS, e.g. "goble-app"
+    @BUNDLE_ID@   reverse-DNS identifier, e.g. "com.goble.app"
+    @VERSION@     CFBundleShortVersionString, e.g. "0.1.0"
+    @BUILD_NUMBER@ CFBundleVersion (build counter; defaults to @VERSION@)
+    @YEAR@        copyright year
+
+  Keep this file a valid plist with the tokens in place: `plutil -lint` is run
+  by make-bundle.sh on the substituted output, not on this template.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>@APP_NAME@</string>
+	<key>CFBundleExecutable</key>
+	<string>@BIN_NAME@</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>@BUNDLE_ID@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>@APP_NAME@</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>@BUILD_NUMBER@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+	<!-- Voice input (STT) needs the microphone; screen features that record
+	     video need the camera. macOS shows these strings in the consent
+	     prompt, so they must describe the actual use, not a generic request. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>@APP_NAME@ uses the microphone for voice input when you start a voice session.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>@APP_NAME@ uses the camera only when you enable a screen or video capture feature.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright (c) @YEAR@ Goble Contributors. Licensed under the MIT License.</string>
+</dict>
+</plist>

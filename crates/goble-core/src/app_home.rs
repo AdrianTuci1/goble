@@ -9,13 +9,17 @@ use crate::principal::PrincipalId;
 
 /// Directories that every user's home has, regardless of whether their workspace
 /// is local or remote: identity/auth, config, sessions, client logs, per-principal
-/// context and bundled docs.
+/// context, bundled docs, and the two directories crash reporting writes to
+/// (`crashes` for reports a user can attach to an issue, `telemetry-queue` for
+/// what is waiting to be uploaded).
 const BASE_DIRS: &[&str] = &[
     "sessions",
     "logs",
     "principals",
     "docs/user-guide",
     "relocations",
+    "crashes",
+    "telemetry-queue",
 ];
 
 /// Directories that only materialize when the workspace runs **on this machine**

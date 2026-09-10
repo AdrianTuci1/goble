@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 400" width="1600" height="400" role="img" aria-label="goble">
+  <title>goble</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#101014"/>
+      <stop offset="0.55" stop-color="#15151b"/>
+      <stop offset="1" stop-color="#1b1b23"/>
+    </linearGradient>
+    <linearGradient id="trace" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2b6f7a" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#4fd1c5" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#2b6f7a" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="wordmark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#c9d4dd"/>
+    </linearGradient>
+    <filter id="glow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="400" fill="url(#bg)"/>
+
+  <!-- A reversible trace: one line branches, and both branches rejoin. -->
+  <g fill="none" stroke="url(#trace)" stroke-width="1.5" stroke-linecap="round">
+    <path d="M120 300 H560"/>
+    <path d="M560 300 C640 300 640 236 720 236 H900 C980 236 980 300 1060 300 H1480"/>
+    <path d="M560 300 C640 300 640 364 720 364 H1100 C1180 364 1180 300 1260 300"/>
+  </g>
+  <g fill="#4fd1c5" opacity="0.75">
+    <circle cx="560" cy="300" r="4"/>
+    <circle cx="720" cy="236" r="3"/>
+    <circle cx="900" cy="236" r="3"/>
+    <circle cx="1060" cy="300" r="4"/>
+    <circle cx="1260" cy="300" r="4"/>
+  </g>
+
+  <text x="800" y="212" text-anchor="middle"
+        font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif"
+        font-size="132" font-weight="600" letter-spacing="-4" fill="url(#wordmark)" filter="url(#glow)">goble</text>
+
+  <text x="800" y="256" text-anchor="middle"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="19" letter-spacing="6" fill="#7f8c99">REVERSIBLE EXECUTION SUBSTRATE</text>
+</svg>

@@ -1,0 +1,13 @@
+[package]
+name = "goble-terminal"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal core: vendored VT emulator, host->PTY key encoding, shell-hook decoding, and the command block model."
+
+[dependencies]
+alacritty_terminal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }

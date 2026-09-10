@@ -18,6 +18,10 @@ goble-harness-types = { path = "../crates/goble-harness-types" }
 goble-harness-cli = { path = "../crates/goble-harness-cli" }
 goble-persistence = { path = "../crates/goble-persistence" }
 goble-screen-core = { path = "../crates/goble-screen-core" }
+# Crash reporting, and the update check. Both are best effort: neither may stop
+# the app from starting.
+goble-telemetry = { path = "../crates/goble-telemetry" }
+goble-update = { path = "../crates/goble-update" }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

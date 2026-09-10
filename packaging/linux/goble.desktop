@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Goble
+GenericName=Agent Runtime
+Comment=Reversible execution substrate for agentic work
+Exec=goble-app
+TryExec=goble-app
+Icon=goble
+Terminal=false
+Categories=Development;Utility;IDE;
+Keywords=agent;harness;terminal;ai;workflow;
+StartupNotify=true
+# Must match the winit window title set in crates/goble-ui (`with_title("Goble")`)
+# so the compositor associates the window with this entry.
+StartupWMClass=Goble
+# Single main window; the app does not open additional top-level windows.
+SingleMainWindow=true

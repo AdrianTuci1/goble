@@ -22,6 +22,23 @@ The harness emits events as it runs (agent started/finished, tool calls, assista
 
 - [`executions-and-trace.md`](executions-and-trace.md) — execution + trace model and the event flow.
 - [`logs.md`](logs.md) — the log stream, filtering, and secret scrubbing.
+- [`crash-reporting-and-updates.md`](crash-reporting-and-updates.md) — crash capture and telemetry
+  upload, the collector, release manifests and verified updates, and the installer scripts.
+
+## Crash reporting and delivery
+
+Product-side observability: what happens when *our* binary fails, rather than what a running agent
+did. Three layers, all implemented and tested, none of them deployed:
+
+- `crates/goble-telemetry` writes a JSON crash report to `~/.goble/crashes/` on every panic and
+  uploads it only with consent (`DO_NOT_TRACK` > `GOBLE_TELEMETRY` > the stored setting > the channel
+  default). Reports carry a fixed field set; every free-text field is scrubbed.
+- `crates/goble-telemetry-server` receives them into a directory per fingerprint.
+- `crates/goble-update` + `packaging/` turn a release into a signed manifest plus per-platform
+  installers, and refuse to install anything whose signature does not check out.
+
+See [`crash-reporting-and-updates.md`](crash-reporting-and-updates.md) for the decisions, the
+reference mapping, and what is still open.
 
 ## Reuse & existing code
 

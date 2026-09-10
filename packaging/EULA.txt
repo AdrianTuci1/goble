@@ -1,0 +1,69 @@
+GOBLE END-USER LICENSE AND DISTRIBUTION TERMS
+Version @VERSION@ — generated @DATE@
+
+This document covers the Goble installer and bundled distribution only. The
+Goble software itself is free and open-source software: it is licensed under
+the MIT License, reproduced in full in the LICENSE file shipped alongside this
+document and available at the project repository. Nothing in this document
+narrows, replaces, or adds conditions to the rights the MIT License grants you.
+
+1. WHAT YOU MAY DO
+
+   You may use, copy, modify, merge, publish, distribute, sublicense, and sell
+   copies of Goble, in source or binary form, under the terms of the MIT
+   License. That includes running this installer to place Goble on a machine you
+   own or administer, and redistributing the installer itself, provided the
+   copyright notice and the MIT License text are preserved.
+
+2. WHAT THIS INSTALLER DOES
+
+   The installer copies the Goble application binary, its icon, and the LICENSE
+   and NOTICE files to a location you choose, and registers an uninstaller with
+   the operating system. On Windows the default is a per-user installation that
+   does not require administrator rights. Goble stores its own configuration and
+   local data in your user profile; uninstalling the application does not remove
+   that data unless you delete it yourself.
+
+3. NO WARRANTY
+
+   Goble is provided "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+   INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+   PARTICULAR PURPOSE AND NONINFRINGEMENT. In no event shall the authors or
+   copyright holders be liable for any claim, damages, or other liability,
+   whether in an action of contract, tort or otherwise, arising from, out of, or
+   in connection with Goble or its use.
+
+4. NETWORK AND EXTERNAL SERVICES
+
+   Goble is a client application. It can connect to harnesses, daemons, and
+   third-party services that you configure. Those services have their own terms
+   and privacy practices, and your use of them is between you and their
+   operators. Goble does not include credentials and does not transmit your data
+   anywhere unless you configure a connection.
+
+5. ACCEPTABLE USE
+
+   You are responsible for how you use Goble and for the commands you run
+   through it, including any code an agent executes on your behalf. Do not use
+   Goble to violate applicable law, to access systems you are not authorized to
+   access, or to distribute malware.
+
+6. UPDATES
+
+   If you enable automatic updates, Goble may download and run newer installer
+   or package versions from the configured release channel. Update artifacts are
+   published with checksums; signatures are published when a signing key is
+   available. You can decline an update.
+
+7. THIRD-PARTY COMPONENTS
+
+   Goble bundles third-party open-source components, each under its own license.
+   See the NOTICE file (THIRD-PARTY-NOTICES.md) shipped with the application for
+   the full list and attributions.
+
+8. ACCEPTANCE
+
+   Installing or using Goble means you have read and accepted this document. If
+   you do not accept it, do not install or use the software.
+
+Copyright (c) 2026 Goble Contributors. Licensed under the MIT License.

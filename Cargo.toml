@@ -2,6 +2,10 @@
 members = ["app",
   "crates/*",
 ]
+# Vendored third-party source, kept verbatim. Excluded so that workspace-wide
+# tooling (fmt, clippy, --workspace builds) never rewrites it; `goble-terminal`
+# depends on it by path. See THIRD-PARTY-NOTICES.md.
+exclude = ["vendor/alacritty_terminal"]
 resolver = "2"
 
 [workspace.package]
@@ -49,9 +53,12 @@ rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
 
 # CLI / logs
 clap = { version = "4.5", features = ["derive", "env"] }
-log = "0.4"
+log = { version = "0.4", features = ["std"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# vendored VT emulator core (Apache-2.0) — see THIRD-PARTY-NOTICES.md
+alacritty_terminal = { path = "vendor/alacritty_terminal" }
 
 crossterm = "0.28"
 ratatui = "0.29"
@@ -60,6 +67,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # db / time
 rusqlite = { version = "0.34", features = ["bundled", "chrono"] }
 chrono = { version = "0.4", features = ["serde"] }
+
+# text
+regex = "1.11"
+semver = "1.0"
 
 # testing
 tokio-test = "0.4"
@@ -80,8 +91,12 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [profile.release]
 lto = true
-strip = true
 opt-level = 3
+# Line tables are kept so a backtrace in a crash report names real files and
+# functions instead of bare addresses. Symbols are not stripped from the
+# shipped binary; `cargo build --release` output is what gets installed.
+debug = 1
+strip = false
 
 [profile.dev]
 opt-level = 0

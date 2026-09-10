@@ -1,8 +1,6 @@
 use crate::color::ColorU;
 
 /// A complete theme for Goble UI.
-///
-/// Mirrors the TypeScript design tokens in `goble-desktop/src/utils/designSystem.ts`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
     pub name: &'static str,

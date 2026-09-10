@@ -18,9 +18,6 @@ Tokens mirror:
 
 - `crates/goble-ui/src/theme.rs` (Rust native UI theme — current source of
   truth for the wgpu native app)
-- `crates/goble-desktop/src/utils/designSystem.ts` (TypeScript design system
-  for the Tauri shell; values currently differ from `theme.rs`)
-- `crates/goble-desktop/src/index.css` (CSS custom properties)
 
 ## Status
 

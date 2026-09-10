@@ -13,7 +13,7 @@ grok-build architectural approach (small crates per concern) + warp-new (thick-a
 
 ```
 goble/
-├─ Cargo.toml                 # workspace: members = ["app", "crates/*"]; exclude goble-desktop
+├─ Cargo.toml                 # workspace: members = ["app", "crates/*"]
 ├─ app/                       # GUIPRODUCT shell (goble-app, native wgpu/winit) → thin client over daemon
 ├─ crates/                    # composable crates; the daemon core is framework-agnostic
 ├─ deploy/                    # goblin Dockerfile + goblin-cluster Helm chart
@@ -77,7 +77,6 @@ Thick-app rule: a module goes into `crates/` if it **does not depend on `app/`/w
 | `goble-cli` | CLI utility for worker operations |
 | `goble-desktop-service` | **embedded daemon** `DesktopState` + `event_bus` + `thread_store` + `worker_manager` + `ssh_installer` → `[refactor]` the core is extracted into `goble-daemon`; `DesktopState` is now the composition root driving a `DaemonClient` |
 | `goble-desktop-native` | backend-integration reference (state_api + views); **not** the product shell |
-| `goble-desktop` | the **legacy Tauri/React/Rust** frontend (`exclude`d from the workspace) — being migrated |
 | `goble-ui` | the wgpu/winit widget library (the WarpUI equivalent): `elements/` (67 widgets), `views/`, `platform/` (`app`, `mac`, `linux`, `windows`, `wgpu_render_engine`, `text_atlas`, `icon_atlas`), `theme`, `style`, `render`, `scene`, `event`, `geometry` |
 | `goble-harness-types` | `[new]` model-facing types for `HarnessTurn`/`Grant`/`InteractionHint`/`Schedule`/`HarnessSnapshot` + `HarnessCapabilities.reversible` flag (no transport) |
 | `goble-harness-protocol` | `[new]` wire types (BYOH seam): `HarnessClientRequest`/`HarnessServerEvent`/`HarnessMessage`; reversible: `Checkpoint`/`Restore` requests + `Checkpoint` event |

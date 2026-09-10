@@ -33,8 +33,7 @@ cargo test -p goble-app
 
 ## Idei de teste viitoare
 
-- Flux de workeri: adăugare + pairing + mesaj (necesită un server WebSocket de test, vezi
-  `crates/goble-desktop/src-tauri/tests/integration_test.rs`).
+- Flux de workeri: adăugare + pairing + mesaj (necesită un server WebSocket de test).
 - Ro-unda de persistență (store reopen) pentru chat-uri, workflow-uri și secrete.
 - Identitate de cluster: creare/import cheie, generare invitație worker, `helm install`.
 - Backend de mesaje agent (execuții): `AgentStarted`/`AgentFinished`/loguri prin `handle_worker_message`.

@@ -80,23 +80,102 @@ packaging/macos/make-bundle.sh --binary target/release/goble-app \
 
 ## Signing and notarization
 
-All signing is environment-driven. When a variable is missing the scripts
-produce an **unsigned** artifact and print a clear warning — they never fail
-just because secrets are absent, and they never fabricate a signature.
+**A release is signed, or it is not a release.** `GOBLE_REQUIRE_SIGNING=1` turns a
+missing credential into a build failure instead of a warning, and
+`scripts/release.sh` sets it for every channel except `dev`, where an unsigned
+artifact is the point. Without it, the failure mode is an "official" download
+that Gatekeeper refuses on macOS or SmartScreen flags on Windows — which is
+exactly what happened before this existed.
+
+`scripts/release.sh --allow-unsigned` is the deliberate way out for a local test
+build. Running a packaging script directly, set `GOBLE_REQUIRE_SIGNING=0`. The
+scripts never fabricate a signature.
+
+### What each credential buys
 
 | Variable | Effect |
 |---|---|
-| `APPLE_SIGNING_IDENTITY` | `codesign --deep --force --options runtime --timestamp` on the `.app` and the `.dmg` |
-| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | `xcrun notarytool submit --wait` + `stapler staple` on the `.dmg` (requires an identity) |
+| `APPLE_SIGNING_IDENTITY` | `codesign --force --options runtime --timestamp --entitlements macos/entitlements.plist` on the `.app` and the `.dmg`, then `codesign --verify --strict` |
+| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | `xcrun notarytool submit --wait`, `stapler staple`, `stapler validate`, then a `spctl --assess` on both the DMG and the app — the check that answers "would Gatekeeper accept this?" |
 | `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` | CI only: base64 `.p12` imported into a temporary keychain before signing |
-| `WINDOWS_SIGN_CERT_PFX` + `WINDOWS_SIGN_CERT_PASSWORD` | Inno `SignTool` via `signtool sign /f …` |
+| `WINDOWS_SIGN_CERT_PFX` + `WINDOWS_SIGN_CERT_PASSWORD` | `signtool sign /f … /fd sha256 /tr … /td sha256` |
 | `WINDOWS_SIGN_CERT_THUMBPRINT` | alternative: `signtool sign /sha1 …` from the user store |
 | `WINDOWS_SIGN_TIMESTAMP_URL` | RFC 3161 timestamp URL (default `http://timestamp.digicert.com`) |
 | `GOBLE_UPDATE_SIGNING_KEY` | hex Ed25519 seed; signs the manifest channel (see below) |
 | `INNO_SETUP_ISCC` | explicit path to `ISCC.exe` |
 
-Both timestamp and hardened-runtime options are always passed when signing.
-`make-dmg.sh --no-sign` forces an unsigned build even when secrets are present.
+The app executable is signed **before** it is packaged on Windows, and the
+result is checked with `signtool verify /pa`; the setup engine and uninstaller
+are signed by Inno through the `SignTool` directive and verified the same way.
+The hardened runtime is enabled on macOS with the entitlements in
+`macos/entitlements.plist`, which is deliberately empty and explains why; there
+is no `--deep`, because Apple deprecates it for signing.
+
+### Obtaining the credentials
+
+Both certificates cost money and are tied to a verified identity; there is no
+free path to a trusted signature.
+
+| Platform | What to get | Cost |
+|---|---|---|
+| macOS | [Apple Developer Program](https://developer.apple.com/programs/) membership, then a **Developer ID Application** certificate (Xcode → Settings → Accounts → Manage Certificates, or `developer.apple.com` → Certificates). The identity string looks like `Developer ID Application: Example Ltd (ABCDE12345)`. `APPLE_TEAM_ID` is the parenthesised part. `APPLE_APP_PASSWORD` is an app-specific password from [appleid.apple.com](https://appleid.apple.com) — not the account password. | 99 USD/year |
+| Windows | An **OV or EV code-signing certificate** from a CA (DigiCert, Sectigo, SSL.com…). Since June 2023 a private key must live on a FIPS 140-2 Level 2 / Common Criteria hardware token or a cloud HSM, so `WINDOWS_SIGN_CERT_THUMBPRINT` against a token in the store is often easier than a `.pfx`. | ~200–500 USD/year |
+
+CI reads them from repository secrets with exactly the names in the table above.
+For `APPLE_CERTIFICATE_P12`, export the certificate and key from Keychain Access
+as a `.p12` and base64 it:
+
+```sh
+base64 -i certificate.p12 | pbcopy      # paste into the APPLE_CERTIFICATE_P12 secret
+```
+
+Export the `.p12` with the legacy algorithms if you generated it with OpenSSL 3:
+macOS `security import` cannot read the default PBES2/AES-256 format.
+
+### Verifying a download
+
+Exactly what a user can do, and what a reviewer should do before publishing:
+
+```sh
+# macOS
+codesign --verify --strict --verbose=2 /Applications/Goble.app
+codesign -dv --verbose=4 /Applications/Goble.app      # expect: Developer ID Application, flags=runtime
+spctl --assess --type exec --verbose=4 /Applications/Goble.app   # expect: accepted, source=Developer ID
+xcrun stapler validate Goble-<v>-arm64.dmg
+```
+
+```powershell
+# Windows
+Get-AuthenticodeSignature .\GobleSetup.exe | Format-List Status, SignerCertificate
+signtool verify /pa /v .\GobleSetup.exe
+```
+
+```sh
+# Linux: there is no per-artifact signature. The ed25519 signature over
+# channel_versions.json is what authenticates the AppImage/.deb, because the
+# signed payload contains each artifact's sha256.
+```
+
+`make-dmg.sh --no-sign` forces an unsigned build even when secrets are present,
+and is refused when `GOBLE_REQUIRE_SIGNING=1`.
+
+### Testing the signing path without a certificate
+
+The signing code can be exercised on any Mac with an ad-hoc signature, which
+applies `--options runtime` and the entitlements exactly like a real identity
+does. Only Apple's timestamp service cannot be reached, so shim `codesign` to
+drop `--timestamp`:
+
+```sh
+mkdir -p /tmp/shim
+printf '#!/bin/sh\nargs=""; for a in "$@"; do [ "$a" = "--timestamp" ] && continue; args="$args \\"$a\\""; done\neval exec /usr/bin/codesign $args\n' > /tmp/shim/codesign
+chmod +x /tmp/shim/codesign
+PATH="/tmp/shim:$PATH" packaging/macos/make-bundle.sh --binary /path/to/binary --sign-identity -
+codesign -dv --verbose=4 dist/Goble.app | grep flags     # expect flags=0x10002(adhoc,runtime)
+```
+
+`spctl` will still reject the result — an ad-hoc signature is not a trusted
+source — which is the reason `GOBLE_REQUIRE_SIGNING` exists.
 
 ## Artifact naming — the updater contract
 
@@ -206,8 +285,13 @@ RFC 8032 test vectors.
 
 ## Not covered yet
 
-* **Notarization without secrets.** `APPLE_ID` / `APPLE_TEAM_ID` /
-  `APPLE_APP_PASSWORD` must be present; otherwise the DMG ships unsigned.
+* **No certificate has ever been used.** The signing code is exercised with an
+  ad-hoc signature (see *Testing the signing path without a certificate*), and
+  the DMG pipeline runs end to end locally, but a real Developer ID identity,
+  a real notarization round trip and a real Authenticode certificate have not
+  been tried: neither credential exists yet. Everything downstream of the
+  certificate is therefore unverified — in particular, `xcrun notarytool`
+  rejections and the `spctl` assessment.
 * **MSI / WiX.** Only the Inno Setup `.exe` is produced.
 * **RPM.** `rpmbuild` is not wired up even though packages list it as a
   prerequisite for future work.
@@ -218,5 +302,7 @@ RFC 8032 test vectors.
 * **ARM64 Linux and Windows CI builds.** The scripts accept `--arch` for both,
   but the workflow matrix builds Linux x86_64 and Windows x64 only.
 * **Code signing in the release workflow** is wired to repository secrets
-  (`APPLE_*`, `WINDOWS_SIGN_*`) but is not exercised until those secrets exist.
+  (`APPLE_*`, `WINDOWS_SIGN_*`) and now fails the build when they are absent,
+  rather than publishing an unsigned artifact; it is not exercised until those
+  secrets exist.
 * **Reproducible builds.** Timestamps and archive metadata are not pinned.

@@ -27,6 +27,11 @@ on:
         required: false
         default: false
         type: boolean
+      allow_unsigned:
+        description: 'Build unsigned (test builds only; a real release must be signed)'
+        required: false
+        default: false
+        type: boolean
 
 # Minimal by default; only the job that creates the GitHub release asks for
 # `contents: write`. Downloading/uploading workflow artifacts does not.
@@ -220,12 +225,14 @@ jobs:
       - name: Assemble .app and .dmg
         if: matrix.platform == 'macos'
         env:
-          # Only advertise an identity when the certificate was imported above;
-          # otherwise the packaging scripts ship unsigned with a warning.
+          # Only advertise an identity when the certificate was imported above.
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_SIGNING_IDENTITY || '' }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          # A release is signed; without the secrets above this fails here
+          # rather than publishing a download Gatekeeper refuses.
+          GOBLE_REQUIRE_SIGNING: ${{ !inputs.allow_unsigned && '1' || '0' }}
         run: |
           packaging/macos/make-bundle.sh \
             --binary "target/${{ matrix.target }}/release/goble-app" \
@@ -270,6 +277,9 @@ jobs:
           WINDOWS_SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGN_CERT_PASSWORD }}
           WINDOWS_SIGN_CERT_THUMBPRINT: ${{ secrets.WINDOWS_SIGN_CERT_THUMBPRINT }}
           WINDOWS_SIGN_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGN_TIMESTAMP_URL }}
+          # A release is signed; without a certificate this fails here rather
+          # than publishing an installer SmartScreen flags.
+          GOBLE_REQUIRE_SIGNING: ${{ !inputs.allow_unsigned && '1' || '0' }}
         run: |
           ./packaging/windows/build-installer.ps1 `
             -Version "$env:GOBLE_VERSION" `
@@ -333,6 +343,10 @@ jobs:
       - name: Write SHA256SUMS and channel manifest
         env:
           GOBLE_UPDATE_SIGNING_KEY: ${{ secrets.GOBLE_UPDATE_SIGNING_KEY }}
+          # The manifest signature is what authenticates every platform's
+          # artifact — including Linux, which has no artifact signature of its
+          # own — so a release must not ship one unsigned.
+          GOBLE_REQUIRE_SIGNING: ${{ !inputs.allow_unsigned && '1' || '0' }}
         run: |
           scripts/release.sh --skip-build --skip-package --manifest \
             --version "$GOBLE_VERSION" \

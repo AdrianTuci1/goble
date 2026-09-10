@@ -25,6 +25,8 @@ ROOT_DIR="$(cd "$PACKAGING_DIR/.." && pwd)"
 
 # shellcheck source=../version.env
 source "$PACKAGING_DIR/version.env"
+# shellcheck source=../signing.sh
+source "$PACKAGING_DIR/signing.sh"
 
 APP_NAME="${APP_NAME:-Goble}"
 BIN_NAME="${BIN_NAME:-goble-app}"
@@ -52,6 +54,7 @@ Options:
   --aarch64-binary PATH  arm64 slice, used with --universal
   --icon PATH            .icns file, or a PNG (>=512px recommended)
   --sign-identity ID     codesign identity (default: \$APPLE_SIGNING_IDENTITY)
+  --entitlements PATH    Entitlements plist (default: macos/entitlements.plist)
   --app-name NAME        Bundle display/name (default: ${APP_NAME})
   --bundle-id ID         CFBundleIdentifier (default: ${BUNDLE_ID})
   --build-number N       CFBundleVersion (default: \$GOBLE_BUILD_NUMBER or version)
@@ -80,6 +83,7 @@ X86_BINARY=""
 ARM_BINARY=""
 ICON_SRC="${APP_ICON:-$DEFAULT_ICON}"
 SIGN_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
+ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
 BUILD_NUMBER="${GOBLE_BUILD_NUMBER:-}"
 
 while [[ $# -gt 0 ]]; do
@@ -93,6 +97,7 @@ while [[ $# -gt 0 ]]; do
         --aarch64-binary)  ARM_BINARY="${2:?--aarch64-binary needs a path}"; shift 2 ;;
         --icon)            ICON_SRC="${2:?--icon needs a path}"; shift 2 ;;
         --sign-identity)   SIGN_IDENTITY="${2:?--sign-identity needs a value}"; shift 2 ;;
+        --entitlements)    ENTITLEMENTS="${2:?--entitlements needs a path}"; shift 2 ;;
         --app-name)        APP_NAME="${2:?--app-name needs a value}"; shift 2 ;;
         --bundle-id)       BUNDLE_ID="${2:?--bundle-id needs a value}"; shift 2 ;;
         --build-number)    BUILD_NUMBER="${2:?--build-number needs a value}"; shift 2 ;;
@@ -103,6 +108,12 @@ done
 
 need mktemp
 [[ "$(uname -s)" == "Darwin" ]] || die "make-bundle.sh only runs on macOS"
+
+# Fail before doing any work, not after assembling a bundle nobody can ship.
+require_macos_signing "$SIGN_IDENTITY"
+if [[ -n "$SIGN_IDENTITY" ]]; then
+    [[ -f "$ENTITLEMENTS" ]] || die "entitlements file not found: $ENTITLEMENTS"
+fi
 
 BUNDLE="$OUTDIR/$APP_NAME.app"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/goble-bundle.XXXXXX")"
@@ -206,15 +217,20 @@ printf 'APPL????' > "$BUNDLE/Contents/PkgInfo"
 build_icns "$ICON_SRC" "$BUNDLE/Contents/Resources/AppIcon.icns"
 
 # --- sign ------------------------------------------------------------------
+# One Mach-O per bundle (Contents/MacOS/$BIN_NAME), so the bundle is signed
+# directly: --deep is not used, because Apple deprecates it for signing and it
+# would hide any nested code that needs its own signature.
 if [[ -n "$SIGN_IDENTITY" ]]; then
     need codesign
     log "Codesigning bundle with identity: $SIGN_IDENTITY"
-    codesign --force --deep --options runtime --timestamp \
+    codesign --force --options runtime --timestamp \
+        --entitlements "$ENTITLEMENTS" \
         --sign "$SIGN_IDENTITY" "$BUNDLE"
-    codesign --verify --deep --strict --verbose=2 "$BUNDLE"
+    codesign --verify --strict --verbose=2 "$BUNDLE"
+    log "Signature verified (hardened runtime, entitlements: $(basename "$ENTITLEMENTS"))"
 else
     warn "APPLE_SIGNING_IDENTITY is not set: producing an UNSIGNED bundle."
-    warn "Gatekeeper will warn on download and the DMG cannot be notarized."
+    warn "Gatekeeper will refuse it on download and it cannot be notarized."
 fi
 
 log "Bundle ready: $BUNDLE"

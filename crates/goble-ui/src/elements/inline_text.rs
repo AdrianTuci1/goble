@@ -1,7 +1,12 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::color::ColorU;
+use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint,
+    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
 };
+use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, Vector2F};
 use crate::platform::text_atlas::{measure_text_family, FontWeight};
 use crate::theme::{ColorToken, FontFamily};
@@ -17,8 +22,15 @@ pub struct TextSpan {
     pub weight: FontWeight,
     pub family: FontFamily,
     pub italic: bool,
+    /// Draw a rule under the run. Terminal output carries underline as an SGR
+    /// attribute; prose never sets it.
+    pub underline: bool,
     pub color: ColorU,
     pub background: Option<ColorU>,
+    /// When set, this run is a live hit target: a click on it invokes the
+    /// callback. A link carries one so the span the app painted is the thing
+    /// the click lands on, not just text styled as a link.
+    pub on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
 }
 
 impl TextSpan {
@@ -28,8 +40,10 @@ impl TextSpan {
             weight: FontWeight::Regular,
             family: FontFamily::System,
             italic: false,
+            underline: false,
             color: ColorU::default(),
             background: None,
+            on_click: None,
         }
     }
 
@@ -40,6 +54,11 @@ impl TextSpan {
 
     pub fn with_italic(mut self, italic: bool) -> Self {
         self.italic = italic;
+        self
+    }
+
+    pub fn with_underline(mut self, underline: bool) -> Self {
+        self.underline = underline;
         self
     }
 
@@ -57,6 +76,13 @@ impl TextSpan {
         self.background = Some(color.into());
         self
     }
+
+    /// Make this run a live hit target: a click completed inside its placed
+    /// bounds invokes `callback`.
+    pub fn with_on_click<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_click = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
 }
 
 struct PlacedSpan {
@@ -65,6 +91,10 @@ struct PlacedSpan {
     max_width: f32,
     width: f32,
     span: TextSpan,
+    /// Pointer-interaction state for this run, tracked only when it is a hit
+    /// target. It is reset by the per-frame rebuild, and `handle_mouse_event`
+    /// fires a click on any release inside the bounds regardless.
+    state: InteractiveState,
 }
 
 /// Renders a sequence of [`TextSpan`]s as a single wrapping text flow.
@@ -148,6 +178,7 @@ impl Element for InlineText {
                     max_width: max_width - cursor_x,
                     width: single_w,
                     span: span.clone(),
+                    state: InteractiveState::default(),
                 });
                 cursor_x += single_w;
                 continue;
@@ -173,6 +204,7 @@ impl Element for InlineText {
                     max_width: remaining,
                     width: wrapped.x,
                     span: span.clone(),
+                    state: InteractiveState::default(),
                 });
                 cursor_y += wrapped.y;
                 cursor_x = 0.0;
@@ -193,6 +225,7 @@ impl Element for InlineText {
                     max_width: max_width,
                     width: full.x,
                     span: span.clone(),
+                    state: InteractiveState::default(),
                 });
                 cursor_x = full.x;
             }
@@ -236,6 +269,14 @@ impl Element for InlineText {
                 placed.span.family,
                 placed.span.italic,
             );
+            if placed.span.underline {
+                let thickness = 1.0;
+                let baseline = base.y + self.font_size * self.line_height - thickness;
+                renderer.fill_rect(
+                    rectf(base.x, baseline, placed.width, thickness),
+                    placed.span.color,
+                );
+            }
         }
     }
 
@@ -245,6 +286,36 @@ impl Element for InlineText {
 
     fn origin(&self) -> Option<Point> {
         self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        _app: &AppContext,
+    ) -> bool {
+        let origin = match self.origin {
+            Some(origin) => origin.xy(),
+            None => return false,
+        };
+        let line_h = self.font_size * self.line_height;
+        for placed in &mut self.placed {
+            let callback = match placed.span.on_click.clone() {
+                Some(callback) => callback,
+                None => continue,
+            };
+            let bounds = rectf(
+                origin.x + placed.x,
+                origin.y + placed.y,
+                placed.width.max(1.0),
+                line_h,
+            );
+            let mut on_click = move || (callback.borrow_mut())();
+            if handle_mouse_event(&mut placed.state, event, bounds, ctx, &mut on_click) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -288,8 +359,10 @@ pub fn resolve_span(
         weight,
         family,
         italic,
+        underline: false,
         color,
         background,
+        on_click: None,
     }
 }
 

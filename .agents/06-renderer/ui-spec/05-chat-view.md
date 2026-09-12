@@ -7,13 +7,13 @@
 | [Avatar] Chief of Staff        [≡]  |
 +---------------------------------------+
 |                                       |
-|  +----------------------------+       |
-|  | message bubble             |       |
-|  +----------------------------+       |
+| message from the user                 |
+| (a square SurfaceRaised band,         |
+|  pane-wide)                           |
 |                                       |
-|           +----------------+          |
-|           | agent pill     |          |
-|           +----------------+          |
+| the agent's own reply                 |
+| (no box: no fill, no border, no       |
+|  radius, pane-wide)                   |
 |                                       |
 +---------------------------------------+
 | [+]  Message Chief of Staff    [➤]  |
@@ -30,9 +30,9 @@
 
 - Reuse `ChatMessageBubble` and `GroupChatMessageGroup`.
 - Sender avatar on the left of each group.
-- Bubble background: `SurfaceRaised` with `Default` radius.
+- A transcript row is full-width and square, not a pill: the agent's own reply paints no box at all (no background, no border, no corner radius) and the user's own message is a `SurfaceRaised` band with square corners. Both span the pane and carry `md` (12 px at the default density, 10–15 px across the density range) of padding at both edges, so no line of text touches the pane's border. This holds for every row the agent's turn draws — prose, reasoning, a tool call in any fold and any status, a sub-agent, the interruption bands, the footer — and it is locked by tests rather than asserted by hand ([`agent-parser.md`](../agent-parser.md) §12).
 - Text color `Text`.
-- Small agent pills (e.g., "ask Agent for ...") use `Rounded` pill with `Hover` background.
+- Small agent pills (e.g., "ask Agent for ...") use `Rounded` pill with `Hover` background. This is the composer's own quick-action control, not the agent's row: nothing the agent's transcript draws is ever wrapped in one.
 
 ## Composer
 

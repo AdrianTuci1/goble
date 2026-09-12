@@ -21,6 +21,7 @@
 
 #![warn(missing_debug_implementations)]
 
+pub mod ansi;
 pub mod blocks;
 pub mod hooks;
 /// The shell-integration scripts that emit the hook channel. The pane's PTY

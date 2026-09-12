@@ -8,10 +8,12 @@ pub use event_bus::{CollectingEventBus, EventBus, NoOpEventBus};
 pub use ssh_installer::{PlatformInfo, SshCredentials, WorkerInstallResult};
 
 pub use state::{
-    AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, DesktopState, ExecutionInfo, Intent,
-    IntentParams, LogEntry, LlmSetting, ReasoningEvent, ReasoningPhase, TeamInfo, ThreadSummary,
-    ThreadMessageSummary, ThreadReactionSummary, ToolCallEvent, VaultSecretInfo, WorkerConnection,
-    WorkerInvite, WorkflowInfo,
+    AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, CommandProposedEvent, DesktopState,
+    ExecutionInfo, Intent, IntentParams, LlmSetting, LogEntry, ReasoningEvent, ReasoningPhase,
+    SubAgentFinishedEvent, SubAgentProgressEvent, SubAgentSpawnedEvent, TeamInfo,
+    ThreadMessageSummary, ThreadReactionSummary, ThreadSummary, TokenUsageEvent, ToolCallEvent,
+    VaultSecretInfo,
+    WorkerConnection, WorkerInvite, WorkflowInfo,
 };
 pub use thread_store::ThreadStore;
 pub use worker_manager::WorkerClient;

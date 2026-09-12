@@ -128,8 +128,69 @@ Q1 is first because nothing else can be judged on a transcript that cannot scrol
 
 The first end-to-end rollout (`.grok/workflows/agent-ui-rollout.rhai`) implemented Q1–Q11 and the bridge items; every item passed its own acceptance command, and the run's integration pass — a full suite, a regression review, a card-free audit and a bookkeeping audit — then found what per-item verification cannot see. Those items are tracked as R1–R6 in [`../TRACKER.md`](../TRACKER.md); three of them land on this doc.
 
-- **R3 — a link inside a paragraph stopped being clickable.** Q2 folded links into the inline flow as `InlineSpan::link` (`chat_content.rs:423`), but `chat_message_bubble.rs:512-515` paints a paragraph as bare `InlineText`, and the older `ChatBlock::Action { OpenUrl }` path and its test `link_fragment_becomes_interactive_action` were deleted. Styling a link is not making it interactive.
-- **R4 — a tool-result terminal segment still is not the shared block.** `crates/goble-ui/src/elements/group_chat_message.rs:288` renders `ChatFragmentKind::Terminal` as `Empty` instead of the one `terminal_block` renderer Q8 built. Q8's rule — one block, one renderer, two places it can appear — is not yet true for this path.
-- **R5 — status still travels as a string.** `crates/goble-core/src/reasoning.rs:726`, `:925-928` encode a tool result's status as the literal `ERROR: ` prefix and `app/src/state.rs::tool_terminal_data` renders that text, so Q6's "read the real status from the persisted field" is true on the row and not yet true on the result.
+- **R3 — a link inside a paragraph stopped being clickable (fixed).** Q2 folded links into the inline flow as `InlineSpan::link` (`chat_content.rs:423`), but `chat_message_bubble.rs:512-515` painted a paragraph as bare `InlineText`, and the older `ChatBlock::Action { OpenUrl }` path and its test `link_fragment_becomes_interactive_action` were deleted. Styling a link is not making it interactive. `TextSpan` now carries an optional click handler and `InlineText` hit-tests each placed run and dispatches the click; the paragraph renderer attaches the run's handler so an `InlineStyle::Link(url)` span calls `on_action(OpenUrl(url))`. The click reaches `ChatMessageBubble::on_action` and is relayed by `ChatView::with_on_action`; `app/src/ui/chat.rs` still never calls it and the app has no external-URL opener, so in the app the action terminates at that unwired slot (wiring an OS opener was out of scope). Restored test: `chat_message_bubble::tests::link_fragment_becomes_interactive_action`.
+- **R4 — a tool-result terminal segment still is not the shared block (fixed).** `crates/goble-ui/src/elements/group_chat_message.rs:288` rendered `ChatFragmentKind::Terminal` as `Empty` instead of the one `terminal_block` renderer Q8 built, so Q8's rule — one block, one renderer, two places it can appear — was not true for this path. `GroupChatMessage::build_content_column` now flushes the pending inline run and draws the fragment through `render_terminal`, which calls `terminal_block(data, TerminalFilter::default(), None, None)`; the fragment thus draws the same block the transcript's command tool call and terminal mode draw. New test: `group_chat_message::tests::terminal_fragment_draws_the_shared_block`, which compares the fragment's drawn runs (`text, size`) against `terminal_block`'s.
+- **R5 — status still travels as a string (fixed).** `crates/goble-core/src/reasoning.rs:726`, `:925-928` encoded a tool result's status as the literal `ERROR: ` prefix and `app/src/state.rs::tool_terminal_data` rendered that text, so Q6's "read the real status from the persisted field" was true on the row and not yet true on the result. The result row is now `<call_id>\n<body>` on both the immediate and the resumed path; `tool_terminal_data` takes the status and `MessageParseCache::resolve` resolves it from the call record on the assistant row's `tool_calls` column (the cache also invalidates a result row when only that resolved status changed), so nothing reads the result text. `app/src/ui/terminal.rs`'s agent view reads the block's own `BlockState`/`exit_code` instead of a `failed` boolean. Tests: `reasoning::tests::test_failed_tool_result_row_does_not_encode_status_as_text`, `state::pane_session_tests::a_tool_result_reads_its_status_from_the_call_record`, `ui::terminal::tests::the_agent_view_never_draws_a_running_block_as_success`.
 
 The bookkeeping audit found one false claim — a resolver row naming a test that Q7 had renamed — which was corrected directly rather than left to a repair pass.
+
+## 11. Transcript fidelity: the fold, highlighting, and the diff
+
+The second rollout closed six of those findings. What it did not touch is the part of the transcript that has to *look* like a development tool: a tool call as a foldable row, code coloured as code, a diff whose changed lines sit on a green or red band. grok-build is the reference for all of it — not to copy bytes from, but to match behaviour — and the two decisions below are made, not open.
+
+- **H1 — highlighting infrastructure.** `syntect` (default features off; its pure-Rust regex backend, no C dependency) plus `two-face` for bat's grammar set, and **our own** `.tmTheme` under `crates/goble-ui/assets/` written in grok-build's visual idiom. Nothing is copied out of `~/Projects/grok-build` (the harness reference) or `~/Projects/warp-new` (AGPL) — not a theme, not a grammar. One entry point turns `(text, language)` into styled spans; the language is resolved from a file extension, a markdown fence info string, or the `bash` token a command carries. syntect's foreground colours are kept and its backgrounds dropped, the way grok-build's `syntect_to_ratatui_fg` does. This supersedes Q4's "do not add a syntax-highlighting dependency": the owner asked for coloured code after Q4 landed, so the dependency is now the requirement.
+- **H2 — a read is an IDE excerpt.** Collapsed, a read is the path alone (that is A4's default for this presentation). Expanded, it is the file's lines with a right-aligned line-number gutter and H1's colours, on their own background band — the shape grok-build's `ReadToolCallBlock::render_content_lines` builds.
+- **H3 — the diff bands.** The band already exists (`crates/goble-ui/src/elements/diff.rs:461` fills each changed row with `surface.mix(&color, 0.10)`) but a 10% tint does not read as *added* or *removed*, and each changed line's text is a single flat colour. Saturate our own insert/delete background tokens to our dark palette, and run the changed lines through H1 so the code is coloured inside the band.
+- **H4 — a command's own colours.** `TerminalData::for_command` flattens the tool result onto one colour per line, so an agent command's output loses the ANSI colours it emitted, while the pane keeps them because the emulator draws it. The command line itself is highlighted as shell. Reuse `crates/goble-terminal`'s parser if it accepts a plain byte string, otherwise a bounded SGR parser; either way the transcript and the pane must agree on what a command looked like.
+- **R7 — where a link click ends (fixed).** R3 made the link a live target and stopped there: nothing in `app/src/` called `with_on_action`, and the app had no external-URL opener at all. The design said where it terminates — `app/src/ui/chat.rs` passes the action through, and the app opens the URL behind a scheme guard (http/https only, never an arbitrary string) — and that is now wired: `chat_action_relay` relays each fragment's `ChatAction::OpenUrl` to `UiActions::on_open_url` (`app/src/actions.rs`), which hands the URL to `app/src/state.rs::open_external_url`; `web_scheme` accepts only a well-formed `http`/`https` URL and every other scheme is refused before the platform opener (`open`/`xdg-open`/`explorer`, invoked with the URL as a single argument, never through a shell) is reached. The `rdp://`/`goble://desktop` handoff path is unchanged. Tests: `ui::chat::link_action_tests::{a_link_click_reaches_the_app_opener_with_its_url,a_non_http_scheme_click_is_refused_before_the_opener}` and `state::external_url_tests::{web_scheme_accepts_only_http_and_https,open_external_url_refuses_non_http_schemes}`.
+- **R8 — the pane's executed-command block (fixed).** `executed_command_block` (`app/src/ui/terminal.rs:90`) hard-coded `TerminalStatus::Success` while `block_status` (`:113`) reads the block's real state and exit code. One of the two was wrong; the block is the one the function now reads. It takes the newest visible block that carries a command — a finished command leaves an empty prompt block behind it, so `last()` is not it — and maps it through `block_status`, so a command still running draws `Running` and a finished non-zero exit draws `Error`. Test: `ui::terminal::tests::the_executed_command_block_reads_the_blocks_status` (a session fed `Bootstrapped`+`Preexec` with no `CommandFinished` is `Running`; one closed with exit 2 is `Error`).
+
+### Found by the second rollout's integration pass
+
+Three defects survived those items' own acceptance tests, because each test proved its own path and not the wiring between paths.
+
+- **R14 — one command still draws two ways.** H4 taught `TerminalData::for_command` to highlight the command line as shell and to keep the output's ANSI colours, and the pane (`app/src/ui/terminal.rs:150`) and the assistant row's tool call (`chat_message_bubble.rs:382`) both go through it — but the app's persisted tool-result row builds its block by hand with `TerminalData::new` + `TerminalLine::output` (`app/src/state.rs:278-301`), so the third path silently keeps the old flat rendering. One command must have one rendering; that path goes through `for_command` too.
+- **R12 — R5 took the model's only failure signal.** Removing the `ERROR: ` prefix was right for the UI, and the status really is persisted on the assistant row — but `build_history` (`crates/goble-core/src/reasoning.rs:966-969`) hands the tool row's text to the *model*, and the structured status never reaches it: `tool_calls` deserializes into `LlmToolCall` (`crates/goble-core/src/llm.rs:8-12`), which has no status field. Before R5 the model read `ERROR: <message>`; now it reads `<message>`. Whatever replaces it must be visible to the model and not only to the renderer — and it must not be a prefix re-added for the UI's benefit.
+- **R11 — the new approval state is not cleared.** R1 added `pending_command` and `command_selection` to the pane's runtime and `finish_turn` clears them (`app/src/state.rs:1523-1524`), but the other paths that reset a pane's transcript state do not: `on_clear_transcript` (`app/src/actions.rs:633-644`), the store-less branch of `bind_active_pane_conversation` (`app/src/state.rs:1623-1625`) and `on_stop` (`app/src/actions.rs:645-654`). A stale approval card can outlive the transcript it belonged to. The rule to keep: every clear path resets every suspension field that exists.
+
+## 12. Tool-call parsing matched to grok-build, and the pill lock (done)
+
+Q7's "per-tool presentation" is now grok-build's own parse, name for name, and the
+surface is locked pill-free. Two pieces, both landed:
+
+- **The parse is one function, shared by every shape.** `goble_core::harness::presentation`
+  answers `tool_row(name, arguments, result) -> ToolRow { verb, subject, detail, kind }`
+  and `tool_kind_for(name) -> ToolKind` (`Execute, Read, Edit, Create, List, Search,
+  WebSearch, WebFetch, SearchTools, UseTool, MemorySearch, Skill, SubAgent, Other`).
+  grok-build's names come first (`read`, `edit`, `write`, `bash`, `grep`, `ls`,
+  `web_fetch`, `search_tool`, `use_tool`, `memory_search`, `skill`), then our harness
+  names (`crates/goble-core/src/harness/definitions.rs`). The row is the bold verb, the
+  operand the arguments carry and the dim detail the result states — `● Read src/lib.rs`,
+  `Edit src/lib.rs +1/-1`, `Run cargo test`, `Search "fn build" in src`,
+  `Subagent “audit the migration” running · reading · 4.5s` — never the raw tool name and
+  never the raw argument JSON. Core's `the_parse_answers_for_every_defined_tool` iterates
+  every defined tool, so the parse cannot drift from the definitions.
+- **The transcript draws that row and nothing around it.** `tool_call_header`
+  (`crates/goble-ui/src/elements/chat_message_bubble/tool_call.rs`) paints one line of
+  runs inside a paint-free `Chip`: the status glyph, the bold verb, the subject and the
+  detail. The bodies stay the family's own (`tool_body.rs`): a command is the shared
+  terminal block, a read is an excerpt, an edit is a diff, a sub-agent is its own rows.
+
+**The pill lock.** `crates/goble-ui/src/test_util.rs` now owns the predicate
+(`is_pill`, `pills`, `assert_pill_free`, `assert_no_row_border`, `pill_rects`), and every
+agent row is tested against it:
+
+| Level | Test |
+|---|---|
+| Element | `chat_message_bubble::tests::pill::{no_agent_row_paints_a_pill,no_sub_agent_row_paints_a_pill,no_interruption_panel_paints_a_pill,a_tool_result_row_draws_only_the_shared_block}` — prose and markdown, both roles, reasoning collapsed and expanded, every family in every fold and in `Pending`/`Running`/`Error`, every sub-agent status, the ask card, the footer |
+| Element (tripwire) | `the_lock_catches_a_row_wrapped_in_a_card` — the same row wrapped in a rounded card *is* reported, and unwrapped is not |
+| Pane | `views::chat_view::tests::the_agent_transcript_paints_no_pill` — the whole pane in one frame, with a tool call in flight, an interrupted ask, a command proposal, a queued prompt and the footer |
+| App | `ui::chat::agent::agent_pill_tests::the_agent_pane_paints_no_pill_around_its_rows` — the `RootView` over a real store, no pill covering any row's own run |
+
+What counts as a pill, and what does not: a rounded fill that wraps a row, and a border
+with no control under it, fail. Two shapes pass, and both are deliberate: a **bordered
+control** (a border and a fill over the same rect — the shared terminal command block's
+card, or a button such as the ask card's option), and a **text highlight** (a rounded fill
+no taller than the line of text it backs — an inline code span). The pane's own square
+split frame encloses every row and is window chrome, not a row's box; the app-level test
+excludes it by that property and asserts it is square.

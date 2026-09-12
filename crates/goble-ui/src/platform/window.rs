@@ -58,6 +58,14 @@ pub const ZOOM_MIN: f32 = 0.5;
 pub const ZOOM_MAX: f32 = 2.0;
 pub const ZOOM_STEP: f32 = 0.1;
 
+/// The frame interval while something is animating (a live turn, a command
+/// still printing): roughly the display's own rate.
+const ACTIVE_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+/// The idle heartbeat. The tree is rebuilt from app state that background
+/// threads also write (the daemon's event bus, a pty's output), so an otherwise
+/// idle window still wakes this often to notice a change nobody announced.
+const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Clamp a zoom value into `[ZOOM_MIN, ZOOM_MAX]`.
 pub fn clamp_zoom(zoom: f32) -> f32 {
     zoom.clamp(ZOOM_MIN, ZOOM_MAX)
@@ -94,6 +102,7 @@ pub fn run_with_root(
         cursor_position: vec2f(0.0, 0.0),
         cursor_inside: false,
         modifiers: winit::event::Modifiers::default(),
+        next_frame: std::time::Instant::now(),
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -107,6 +116,9 @@ struct App {
     cursor_position: Vector2F,
     cursor_inside: bool,
     modifiers: winit::event::Modifiers,
+    /// When the next frame is due. Input requests its own frames; this is the
+    /// animation clock, and it also caps how long the window sleeps while idle.
+    next_frame: std::time::Instant,
 }
 
 impl ApplicationHandler for App {
@@ -360,10 +372,25 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // The window repaints on demand. Input events request their own frames
+        // as they arrive; between them a frame is only due when something is
+        // animating (a live turn, a command printing), and an idle window wakes
+        // on a slow heartbeat instead of rebuilding and repainting at the
+        // display's refresh rate forever.
+        let now = std::time::Instant::now();
+        if now >= self.next_frame {
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+            let interval = if self.root.wants_animation() {
+                ACTIVE_FRAME
+            } else {
+                IDLE_FRAME
+            };
+            self.next_frame = now + interval;
         }
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(self.next_frame));
     }
 }
 

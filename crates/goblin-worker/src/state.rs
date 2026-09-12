@@ -388,7 +388,14 @@ pub(crate) fn map_daemon_event(event: DaemonEvent) -> Option<WorkerMessage> {
         | DE::ScreenHandoff { .. }
         | DE::ReasoningStarted { .. }
         | DE::ReasoningDelta { .. }
-        | DE::ReasoningDone { .. } => None,
+        | DE::ReasoningDone { .. }
+        | DE::CommandProposed { .. }
+        | DE::SubAgentSpawned { .. }
+        | DE::SubAgentProgress { .. }
+        | DE::SubAgentFinished { .. }
+        // The worker's channel has no usage frame; the daemon's own accounting
+        // still carries the call, this side just does not forward it.
+        | DE::TokenUsage { .. } => None,
     }
 }
 

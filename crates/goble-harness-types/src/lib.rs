@@ -215,6 +215,20 @@ impl HarnessSnapshot {
     }
 }
 
+/// The user's decision on a command the harness proposed before running it.
+///
+/// Shared by the harness seam and the daemon wire so the same decision travels
+/// from the composer to the executing harness: `Approve` runs the chosen text
+/// verbatim, `Edit` runs the user's edited text, and `Reject` refuses the
+/// command (the harness turns it into a failed tool call).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+pub enum CommandDecision {
+    Approve(String),
+    Edit(String),
+    Reject(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChatRole {
     System,

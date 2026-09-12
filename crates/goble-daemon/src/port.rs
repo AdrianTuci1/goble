@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use goble_daemon_protocol::DaemonEvent;
-use goble_harness_types::{HarnessId, HarnessTurn, SessionId};
+use goble_harness_types::{CommandDecision, HarnessId, HarnessTurn, SessionId};
 use goble_workflow::{WorkflowHostRequest, WorkflowRun};
 
 use crate::state::ExecutionRecord;
@@ -27,6 +27,10 @@ pub trait DaemonPort: Send + Sync {
         response: &str,
         credential: Option<(String, String)>,
     ) -> Result<()>;
+    /// Answer a turn that suspended on a command proposal with the user's
+    /// decision (approve, edit or reject). The harness runs the chosen command
+    /// or fails the call, then the turn settles.
+    fn resume_command(&self, session_id: &SessionId, decision: CommandDecision) -> Result<()>;
     fn cancel(&self, session_id: &SessionId) -> Result<()>;
     fn list_harnesses(&self) -> Vec<HarnessId>;
     fn snapshot(&self) -> Vec<ExecutionRecord>;

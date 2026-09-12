@@ -55,10 +55,7 @@ impl Runner {
             provider_factory: Box::new(|| {
                 Ok(std::sync::Arc::new(goble_core::llm::MockProvider::new(
                     "mock",
-                    goble_core::llm::CompletionResponse {
-                        content: "ok".to_string(),
-                        tool_calls: vec![],
-                    },
+                    goble_core::llm::CompletionResponse::new("ok", vec![]),
                 )))
             }),
         }

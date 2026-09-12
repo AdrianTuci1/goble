@@ -98,12 +98,14 @@ async fn test_deepseek_with_conversation_history() {
             content: "Answer in one word.".to_string(),
             tool_calls: None,
             tool_call_id: None,
+            tool_status: None,
         },
         Message {
             role: Role::User,
             content: "Capital of France?".to_string(),
             tool_calls: None,
             tool_call_id: None,
+            tool_status: None,
         },
     ];
     let request = CompletionRequest::new("deepseek", "deepseek-v4-pro").with_messages(messages);

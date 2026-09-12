@@ -43,6 +43,13 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+        fn resume_command(
+            &self,
+            _session_id: &SessionId,
+            _decision: goble_harness_types::CommandDecision,
+        ) -> Result<()> {
+            Ok(())
+        }
         fn cancel(&self, _session_id: &SessionId) -> Result<()> {
             Ok(())
         }

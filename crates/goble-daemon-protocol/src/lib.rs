@@ -7,7 +7,9 @@
 //!
 //! The natural framing is newline-delimited JSON: each message is one line.
 
-use goble_harness_types::{HarnessTurn, MediumId, ProjectId, RemoteScreenConfig, SessionId};
+use goble_harness_types::{
+    CommandDecision, HarnessTurn, MediumId, ProjectId, RemoteScreenConfig, SessionId,
+};
 use goble_workflow::WorkflowHostRequest;
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +28,12 @@ pub enum DaemonRequest {
     Resume {
         session_id: SessionId,
         response: String,
+    },
+    /// Answer a turn that suspended on a command proposal with the user's
+    /// decision (approve, edit or reject).
+    ResumeCommand {
+        session_id: SessionId,
+        decision: CommandDecision,
     },
     /// Cancel a running turn.
     Cancel {
@@ -118,10 +126,68 @@ pub enum DaemonEvent {
         question: String,
         quick_replies: Vec<String>,
     },
+    /// A command tool is suspended waiting on the user's approval before it
+    /// runs. Mirrors the harness-level `CommandProposed`; answer it with a
+    /// [`DaemonRequest::ResumeCommand`].
+    CommandProposed {
+        session_id: SessionId,
+        id: String,
+        candidates: Vec<String>,
+        cwd: String,
+    },
+    /// A sub-agent child was spawned on the session's conversation. Mirrors
+    /// the harness-level `SubAgentSpawned`; plain data, the same fields as
+    /// `goble-core`'s lifecycle event.
+    SubAgentSpawned {
+        session_id: SessionId,
+        chat_id: String,
+        subagent_id: String,
+        subagent_type: String,
+        description: String,
+        parent_call_id: String,
+        run_in_background: bool,
+    },
+    /// A live sub-agent's record moved forward: status kind, activity,
+    /// budget counters and elapsed time. Mirrors `SubAgentProgress`.
+    SubAgentProgress {
+        session_id: SessionId,
+        chat_id: String,
+        subagent_id: String,
+        status: String,
+        activity: String,
+        turns: u32,
+        tool_calls: u32,
+        tokens: u64,
+        duration_ms: u64,
+    },
+    /// A sub-agent reached a terminal status: `output` for `completed`,
+    /// `error` for `failed`/`cancelled`. Mirrors `SubAgentFinished`.
+    SubAgentFinished {
+        session_id: SessionId,
+        chat_id: String,
+        subagent_id: String,
+        status: String,
+        output: Option<String>,
+        error: Option<String>,
+        duration_ms: u64,
+        turns: u32,
+        tool_calls: u32,
+        tokens: u64,
+    },
     MissionUpdated {
         session_id: SessionId,
         mission_id: String,
         status: String,
+    },
+    /// A model call's token accounting, mirrored from the harness level so a
+    /// client can total a conversation without re-reading the store. `cached`
+    /// is the part of `input` the provider served from its prompt cache.
+    TokenUsage {
+        session_id: SessionId,
+        chat_id: String,
+        input: u64,
+        cached: Option<u64>,
+        output: u64,
     },
     /// The model began a reasoning (thinking) step, identified by `step`, in the
     /// current thinking `mode`. The GUI renders the thinking as its own rows.
@@ -271,6 +337,30 @@ mod tests {
         let line = cancel_msg.to_line().unwrap();
         let decoded = DaemonMessage::from_line(&line).unwrap();
         assert_eq!(decoded, cancel_msg);
+    }
+
+    #[test]
+    fn daemon_request_resume_command_roundtrip() {
+        let req = DaemonRequest::ResumeCommand {
+            session_id: SessionId::new("s1"),
+            decision: CommandDecision::Approve("git status".into()),
+        };
+        let msg = DaemonMessage::Request(req.clone());
+        let line = msg.to_line().unwrap();
+        assert_eq!(DaemonMessage::from_line(&line).unwrap(), msg);
+    }
+
+    #[test]
+    fn daemon_event_command_proposed_roundtrip() {
+        let ev = DaemonEvent::CommandProposed {
+            session_id: SessionId::new("s1"),
+            id: "call-1".into(),
+            candidates: vec!["git status".into(), "git diff --stat".into()],
+            cwd: "/workspace".into(),
+        };
+        let msg = DaemonMessage::Event(ev.clone());
+        let line = msg.to_line().unwrap();
+        assert_eq!(DaemonMessage::from_line(&line).unwrap(), msg);
     }
 
     #[test]

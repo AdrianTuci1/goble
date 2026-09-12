@@ -58,10 +58,12 @@ fn file_writer_factory() -> goblin_worker::runner::ProviderFactory {
                 CompletionResponse {
                     content: "I will create the file.".to_string(),
                     tool_calls: step1,
+                    usage: None,
                 },
                 CompletionResponse {
                     content: "I am done.".to_string(),
                     tool_calls: vec![],
+                    usage: None,
                 },
             ],
             index: std::sync::atomic::AtomicUsize::new(0),
@@ -77,6 +79,7 @@ fn simple_ok_factory() -> goblin_worker::runner::ProviderFactory {
             CompletionResponse {
                 content: "ok".to_string(),
                 tool_calls: vec![],
+                usage: None,
             },
         )))
     })

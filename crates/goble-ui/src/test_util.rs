@@ -1,5 +1,5 @@
 use crate::elements::{AppContext, Element, LayoutContext, PaintContext, SizeConstraint};
-use crate::geometry::{vec2f, Vector2F};
+use crate::geometry::{vec2f, RectF, Vector2F};
 use crate::render::{RenderCommand, Renderer};
 
 /// Lays out and paints `element` into a headless command list.
@@ -53,6 +53,170 @@ pub struct RenderCommandCounts {
     pub clip_rect: usize,
     pub pop_clip: usize,
     pub draw_image: usize,
+}
+
+/// A bordered control: a border and a rounded fill drawn over the same rect.
+/// `Container`'s card (the shared terminal command block) and `Button` both
+/// paint that pair, and the theme's radius is what makes it a control's corner
+/// rather than a row's wrapped box.
+///
+/// The largest such rect is returned, so a card that holds controls of its own
+/// (the command block's copy and filter buttons) is recognized as the card and
+/// the controls inside it lie within it.
+pub fn bordered_control(commands: &[RenderCommand], app: &AppContext) -> Option<RectF> {
+    let radius = app.theme.radius_px();
+    if radius <= 0.0 {
+        return None;
+    }
+    let pairs = commands.iter().filter_map(|command| match command {
+        RenderCommand::StrokeRect { rect, .. } => commands.iter().find_map(|other| match other {
+            RenderCommand::FillRect {
+                rect: fill,
+                corner_radius,
+                ..
+            } if fill == rect && *corner_radius == radius => Some(*rect),
+            _ => None,
+        }),
+        _ => None,
+    });
+    pairs.max_by(|a, b| (a.width() * a.height()).total_cmp(&(b.width() * b.height())))
+}
+
+/// Whether `command` is a pill: a rounded box wrapping a row, or a border with
+/// no control under it. Two shapes are not pills:
+///
+/// - a bordered control (a border and a fill over the same rect) — the shared
+///   terminal command block's card, or a button;
+/// - a text highlight: a rounded fill no taller than the line of text it backs
+///   (an inline code span in prose), which is not chrome around a row.
+///
+/// `commands` is the whole row's list, because a border and its fill are only
+/// recognizable together.
+pub fn is_pill(command: &RenderCommand, commands: &[RenderCommand]) -> bool {
+    let has_border = |rect: &RectF| {
+        commands.iter().any(
+            |other| matches!(other, RenderCommand::StrokeRect { rect: border, .. } if border == rect),
+        )
+    };
+    let has_rounded_fill = |rect: &RectF| {
+        commands.iter().any(|other| {
+            matches!(other, RenderCommand::FillRect { rect: fill, corner_radius, .. }
+                if fill == rect && *corner_radius > 0.0)
+        })
+    };
+    let is_text_highlight = |rect: &RectF| {
+        commands.iter().any(|other| match other {
+            RenderCommand::DrawText {
+                origin, font_size, ..
+            } => {
+                origin.x >= rect.min_x()
+                    && origin.x <= rect.max_x()
+                    && origin.y >= rect.min_y()
+                    && origin.y <= rect.max_y()
+                    && rect.height() <= font_size * 1.8
+            }
+            _ => false,
+        })
+    };
+    match command {
+        RenderCommand::FillRect {
+            rect,
+            corner_radius,
+            ..
+        }
+        | RenderCommand::FillRectFadeRight {
+            rect,
+            corner_radius,
+            ..
+        } => *corner_radius > 0.0 && !has_border(rect) && !is_text_highlight(rect),
+        RenderCommand::StrokeRect { rect, .. } => !has_rounded_fill(rect),
+        _ => false,
+    }
+}
+
+/// Every pill `commands` paint, described for a failure message.
+pub fn pills(commands: &[RenderCommand]) -> Vec<String> {
+    commands
+        .iter()
+        .filter(|command| is_pill(command, commands))
+        .map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                corner_radius,
+                ..
+            }
+            | RenderCommand::FillRectFadeRight {
+                rect,
+                corner_radius,
+                ..
+            } => format!("rounded fill {rect:?} radius {corner_radius}"),
+            RenderCommand::StrokeRect { rect, width, .. } => {
+                format!("border {rect:?} width {width}")
+            }
+            _ => String::new(),
+        })
+        .collect()
+}
+
+/// The rect of every pill `commands` paint, so a host can assert that no pill
+/// covers one of its own rows.
+pub fn pill_rects(commands: &[RenderCommand]) -> Vec<RectF> {
+    commands
+        .iter()
+        .filter(|command| is_pill(command, commands))
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, .. }
+            | RenderCommand::FillRectFadeRight { rect, .. }
+            | RenderCommand::StrokeRect { rect, .. } => Some(*rect),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `point` lies inside `rect`.
+pub fn rect_contains(rect: RectF, point: Vector2F) -> bool {
+    point.x >= rect.min_x()
+        && point.x <= rect.max_x()
+        && point.y >= rect.min_y()
+        && point.y <= rect.max_y()
+}
+
+/// Assert the agent row `what` is pill-free: no rounded box wrapping it and no
+/// unexplained border. Panics with the offending commands, so a regression
+/// names the box that appeared.
+pub fn assert_pill_free(commands: &[RenderCommand], what: &str) {
+    let pills = pills(commands);
+    assert!(
+        pills.is_empty(),
+        "{what} draws no pill, got {}",
+        pills.join(", ")
+    );
+}
+
+/// Assert the agent row `what` draws no border of its own. A border that is a
+/// control's own outline — a rounded fill under it, over the same rect (the
+/// shared terminal command block's card, a button) — is not the row's; every
+/// other border is, and fails. The rows that must draw no border whatsoever
+/// are locked one by one as well (a tool call, a pager card, the footer).
+pub fn assert_no_row_border(commands: &[RenderCommand], what: &str) {
+    let borders: Vec<String> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::StrokeRect { rect, .. } => {
+                let backed = commands.iter().any(|other| {
+                    matches!(other, RenderCommand::FillRect { rect: fill, corner_radius, .. }
+                        if fill == rect && *corner_radius > 0.0)
+                });
+                (!backed).then(|| format!("border {rect:?}"))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        borders.is_empty(),
+        "{what} draws no border, got {}",
+        borders.join(", ")
+    );
 }
 
 #[cfg(test)]

@@ -100,6 +100,7 @@ async fn test_harness_mcp_mock_tool_call() {
                     name: "mcp_mock_echo_echo".to_string(),
                     arguments: serde_json::json!({ "message": "gobble mcp ok" }),
                 }],
+                usage: None,
             },
         )))
         .with_cancel(Arc::new(AtomicBool::new(false)));
@@ -133,6 +134,7 @@ async fn test_harness_mcp_generic_call_fallback() {
                         "arguments": { "message": "generic fallback" }
                     }),
                 }],
+                usage: None,
             },
         )))
         .with_cancel(Arc::new(AtomicBool::new(false)));
@@ -170,6 +172,7 @@ async fn test_harness_mcp_install_list_delete() {
                         "source_value": src.to_string_lossy(),
                     }),
                 }],
+                usage: None,
             },
         )))
         .with_cancel(Arc::new(AtomicBool::new(false)));

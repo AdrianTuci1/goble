@@ -20,10 +20,18 @@ const BACKDROP_COLOR: ColorU = ColorU::new(0, 0, 0, 110);
 /// the underlying UI is fully interactive. When open it paints a dimmed
 /// backdrop over the whole area plus the panel centered in it; clicking the
 /// backdrop fires `on_close`.
+///
+/// `with_inset` swaps the centered box for a panel that fills the area minus
+/// the inset on every side — the shape a full-surface menu (Settings) wants,
+/// where the panel reads as the window's own surface rather than a floating
+/// card.
 pub struct Dialog {
     child: Box<dyn Element>,
     open: bool,
     width: f32,
+    /// When set, the panel fills the constraint minus this inset all round and
+    /// `width` is ignored.
+    inset: Option<f32>,
     on_close: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -37,6 +45,7 @@ impl Dialog {
             child,
             open: false,
             width: DIALOG_DEFAULT_WIDTH,
+            inset: None,
             on_close: None,
             size: None,
             origin: None,
@@ -52,6 +61,13 @@ impl Dialog {
 
     pub fn with_width(mut self, width: f32) -> Self {
         self.width = width.max(0.0);
+        self
+    }
+
+    /// Make the panel fill the constraint minus `inset` on every side instead
+    /// of being a centered box of `width`. `width` is then ignored.
+    pub fn with_inset(mut self, inset: f32) -> Self {
+        self.inset = Some(inset.max(0.0));
         self
     }
 
@@ -73,6 +89,25 @@ impl Element for Dialog {
             self.panel_origin = Vector2F::zero();
             self.panel_size = Vector2F::zero();
             return Vector2F::zero();
+        }
+        if let Some(inset) = self.inset {
+            // Inset mode: the panel is the window surface minus a small margin,
+            // anchored at the top-left rather than centered.
+            let inset = inset
+                .min(constraint.max.x * 0.5)
+                .min(constraint.max.y * 0.5);
+            let panel_width = (constraint.max.x - inset * 2.0).max(0.0);
+            let panel_height = (constraint.max.y - inset * 2.0).max(0.0);
+            let panel_constraint = SizeConstraint::new(
+                vec2f(panel_width, panel_height),
+                vec2f(panel_width, panel_height),
+            );
+            self.child.layout(panel_constraint, ctx, app);
+            self.panel_origin = vec2f(inset, inset);
+            self.panel_size = vec2f(panel_width, panel_height);
+            let size = vec2f(constraint.max.x, constraint.max.y);
+            self.size = Some(size);
+            return size;
         }
         let panel_width = self.width.min(constraint.max.x).max(0.0);
         // Force the panel to the dialog width so the form fields fill it, and
@@ -207,6 +242,34 @@ mod tests {
         let counts = command_counts(&commands);
         assert_eq!(counts.fill_rect, 2, "backdrop + panel background");
         assert!(counts.draw_text > 0, "panel content should render text");
+    }
+
+    #[test]
+    fn inset_dialog_fills_the_viewport_minus_the_inset() {
+        let app = app();
+        let mut element = Dialog::new(
+            Container::new(Text::new("hi").finish())
+                .with_background(Fill::Solid(app.theme.color(crate::theme::ColorToken::Surface)))
+                .finish(),
+        )
+        .with_open(true)
+        .with_inset(12.0)
+        .finish();
+        let commands = render_element(&mut element, vec2f(400.0, 300.0), &app);
+
+        let panel = commands.iter().find_map(|c| match c {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(crate::theme::ColorToken::Surface) =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        });
+        let panel = panel.expect("inset dialog should paint its panel background");
+        assert_eq!(panel.min_x(), 12.0);
+        assert_eq!(panel.min_y(), 12.0);
+        assert_eq!(panel.width(), 400.0 - 24.0);
+        assert_eq!(panel.height(), 300.0 - 24.0);
     }
 
     #[test]

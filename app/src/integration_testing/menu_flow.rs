@@ -133,9 +133,9 @@ fn agent_header_3_dots_opens_menu() {
 /// Mount a `ChatComposer` that carries a `PopupMenu` pill, click the pill's
 /// trigger icon, and assert the app-owned open flag flips.
 ///
-/// This is the rich-input regression: the model, directory, branch, profile and
-/// harness pills all share the same dispatch path (`ChatComposer` → `self.root`
-/// → `Padding`), so proving each one opens proves the `Padding`/`PopupMenu`
+/// This is the rich-input regression: the model, directory, branch and harness
+/// pills all share the same dispatch path (`ChatComposer` → `self.root` →
+/// `Padding`), so proving each one opens proves the `Padding`/`PopupMenu`
 /// wiring the topbar swallow bug used to break.
 fn assert_composer_pill_opens(mut composer: Box<dyn Element>, trigger_icon: &str, open: Rc<RefCell<bool>>) {
     let app = AppContext::default();
@@ -246,19 +246,71 @@ fn composer_harness_pill_opens_menu() {
     assert_composer_pill_opens(composer, "agentmode", open);
 }
 
+/// The rich input carries no account button any more. The pills around its
+/// editor describe the surface (the harness and the directory above, the model
+/// below); nothing account-shaped is drawn in the pane's input at all, so the
+/// app must not wire one.
 #[test]
-fn composer_profile_pill_opens_menu() {
-    let open = Rc::new(RefCell::new(false));
-    let open_menu = open.clone();
-    let composer = ChatComposer::new()
-        .with_profile_menu(
-            vec![
-                PopupMenuItem::new("Settings"),
-                PopupMenuItem::new("Log out"),
-            ],
-            open_menu,
-            |_| {},
-        )
-        .finish();
-    assert_composer_pill_opens(composer, "user", open);
+fn the_rich_input_has_no_account_button() {
+    let (mut root, _desktop, _dir) = build_root();
+    let app = AppContext::default();
+    let _ = render(&mut root, &app);
+    let cmds = render(&mut root, &app);
+    assert!(
+        icon_center(&cmds, "user").is_none(),
+        "the account button is gone from the rich input"
+    );
+    assert!(icon_center(&cmds, "plus").is_some(), "the attach pill is still drawn");
+}
+
+/// The turn-status footer's still-running line is information the user needs —
+/// how much work is running — so it stays drawn while a worker execution is in
+/// flight, and it is not a hit target: nothing opens from it.
+#[test]
+fn the_status_footer_names_the_work_still_running() {
+    let (mut root, _desktop, _dir) = build_root();
+    let app = AppContext::default();
+    // A worker execution is running while the pane's own turn is idle, so the
+    // footer is in its still-running state.
+    root.state_rc().borrow_mut().apply_agent_started(
+        "worker-a",
+        "trace-1",
+        "agent-1",
+        "2026-09-11T10:00:00Z",
+    );
+    assert!(
+        root.state_rc()
+            .borrow()
+            .pane_chat_snapshot()
+            .get(&1)
+            .expect("the active pane's snapshot")
+            .turn_status
+            .is_in_flight(),
+        "the footer reads the still-running execution"
+    );
+
+    let _ = render(&mut root, &app);
+    let cmds = render(&mut root, &app);
+    let (line, origin) = cmds
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::DrawText { origin, text, .. } if text.contains("still running") => {
+                Some((text.clone(), *origin))
+            }
+            _ => None,
+        })
+        .expect("the still-running footer line is drawn");
+    assert!(
+        line.contains("1 execution still running"),
+        "the footer names how much work is running: {line:?}"
+    );
+
+    click(&mut root, &app, (origin.x + 4.0, origin.y + 4.0));
+
+    let state = root.state_rc();
+    let s = state.borrow();
+    assert!(
+        !s.settings_overlay_open && !s.crons_open && !s.right_sidebar_open,
+        "clicking the footer line opens nothing"
+    );
 }

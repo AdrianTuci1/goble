@@ -43,6 +43,10 @@ pub struct TerminalGrid {
     font_size: f32,
     line_height: f32,
     show_cursor: bool,
+    /// Whether the rows hug the bottom of the box. A shell's history grows
+    /// upwards from the input line below it (warp-new), while a full-screen
+    /// program owns its own layout and must be drawn where it painted.
+    bottom_anchor: bool,
     columns: usize,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -59,6 +63,7 @@ impl TerminalGrid {
             font_size: DEFAULT_FONT_SIZE,
             line_height: DEFAULT_LINE_HEIGHT,
             show_cursor: true,
+            bottom_anchor: false,
             columns,
             size: None,
             origin: None,
@@ -84,6 +89,15 @@ impl TerminalGrid {
     /// does not, which is how a terminal signals where typing goes.
     pub fn with_cursor_visible(mut self, visible: bool) -> Self {
         self.show_cursor = visible;
+        self
+    }
+
+    /// Whether the content hugs the bottom of the box. Off by default, so a
+    /// block sized to its own rows is unaffected; the interactive pane turns it
+    /// on so a short history sits above its input line, and a full-screen
+    /// program leaves it off because its rows are its own layout.
+    pub fn with_bottom_anchor(mut self, anchored: bool) -> Self {
+        self.bottom_anchor = anchored;
         self
     }
 
@@ -116,7 +130,8 @@ impl TerminalGrid {
     ///
     /// Used to turn a mouse event into a report for the application; the
     /// geometry comes from the last paint, which is the same frame the pointer
-    /// is being matched against.
+    /// is being matched against. The origin is the *painted* origin, so a
+    /// bottom-anchored screen maps to the cells the user sees.
     pub fn cell_at(&self, position: Vector2F) -> Option<(usize, usize)> {
         let origin = self.origin?.xy();
         let column_pitch = Self::column_pitch(self.font_size, FontWeight::Regular);
@@ -143,6 +158,24 @@ impl TerminalGrid {
             && self.cursor.line == row
             && self.cursor.column == column
             && self.cursor.shape == CursorShape::Block
+    }
+
+    /// How many rows the content is pushed down so its last row sits on the
+    /// box's last row: a short history hugs the input line below the pane
+    /// instead of floating at the top of it. Zero once the screen is full.
+    ///
+    /// The cursor counts as content even on a blank row — a shell sits on the
+    /// row after its last output, and that row must stay visible.
+    fn bottom_offset_rows(&self, box_rows: usize) -> usize {
+        let Some(last) = self
+            .rows
+            .iter()
+            .rposition(|row| !row.is_blank())
+            .map(|last| last.max(self.cursor.line))
+        else {
+            return 0;
+        };
+        box_rows.saturating_sub(last + 1)
     }
 
     fn color(&self, rgb: (u8, u8, u8)) -> ColorU {
@@ -337,7 +370,6 @@ impl Element for TerminalGrid {
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
-        self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let Some(size) = self.size else {
             return;
         };
@@ -345,12 +377,24 @@ impl Element for TerminalGrid {
             return;
         };
 
+        // The rows are drawn from their own origin, which a bottom-anchored
+        // screen pushes down to the bottom of the box.
+        let row_pitch = Self::row_pitch(self.font_size, self.line_height);
+        let box_rows = (size.y / row_pitch).floor().max(0.0) as usize;
+        let offset = if self.bottom_anchor {
+            self.bottom_offset_rows(box_rows) as f32 * row_pitch
+        } else {
+            0.0
+        };
+        let content_origin = Vector2F::new(origin.x, origin.y + offset);
+        self.origin = Some(Point::from_vec2f(content_origin, Default::default()));
+
         let area = rectf(origin.x, origin.y, size.x, size.y);
         renderer.fill_rect(area, self.color(self.palette.background));
         renderer.clip_rect(area);
-        self.paint_backgrounds(renderer, origin);
-        self.paint_glyphs(renderer, origin);
-        self.paint_rules(renderer, origin);
+        self.paint_backgrounds(renderer, content_origin);
+        self.paint_glyphs(renderer, content_origin);
+        self.paint_rules(renderer, content_origin);
         renderer.pop_clip();
     }
 
@@ -560,6 +604,31 @@ mod tests {
         let grid = grid_from(b"abc", 12, 3);
         assert_eq!(grid.columns(), 12);
         assert_eq!(grid.rows(), 3);
+    }
+
+    #[test]
+    fn a_bottom_anchored_screen_hugs_the_box_bottom() {
+        let row_pitch = TerminalGrid::row_pitch(DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT);
+        let mut grid = grid_from(b"abc", 10, 3).with_bottom_anchor(true);
+        let commands = painted(&mut grid);
+        // One used row in a box several rows tall: the row is pushed to the
+        // bottom of the box, so its origin is the last row's, not the first's.
+        let expected = (100.0 / row_pitch).floor() * row_pitch - row_pitch;
+        let glyph = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { origin, text, .. } if text == "a" => Some(origin.y),
+                _ => None,
+            })
+            .expect("the glyph");
+        assert!(
+            (glyph - expected).abs() < 0.01,
+            "glyph at {glyph}, expected {expected}"
+        );
+        // Points follow the content, not the box: the empty band above it is
+        // not a cell, and the content's own first row is.
+        assert_eq!(grid.cell_at(Vector2F::new(0.5, 0.5)), None);
+        assert_eq!(grid.cell_at(Vector2F::new(0.5, glyph + 0.5)), Some((0, 0)));
     }
 
     #[test]

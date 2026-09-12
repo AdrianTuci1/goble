@@ -16,6 +16,10 @@ const LANGUAGE_GAP: f32 = 2.0;
 /// block's info string is carried as the language label and drawn above the
 /// body in the same mono family; a caller that would rather place the label
 /// itself can read it back with [`Code::language`].
+///
+/// A body may also arrive pre-highlighted, as the styled runs
+/// [`crate::syntax::highlight`] returns; it is then painted run by run. The mono
+/// family, the label and the no-wrap contract are the same either way.
 pub struct Code {
     text: String,
     language: Option<String>,
@@ -25,6 +29,7 @@ pub struct Code {
     line_height: f32,
     inline: bool,
     wrap: bool,
+    highlighted: Option<Vec<crate::syntax::HighlightedLine>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -41,6 +46,7 @@ impl Code {
             inline: false,
             // Code is pre-formatted: wrapping it would break indentation.
             wrap: false,
+            highlighted: None,
             size: None,
             origin: None,
         }
@@ -90,6 +96,22 @@ impl Code {
     /// Opt in to wrapping long lines at the available width. Off by default.
     pub fn with_wrap(mut self, wrap: bool) -> Self {
         self.wrap = wrap;
+        self
+    }
+
+    /// Highlight the body as `language` through [`crate::syntax::highlight`].
+    /// The body is painted run by run in the runs' own colours. A language that
+    /// cannot be resolved leaves the body in the plain colour it had before, so
+    /// an unknown fence falls back rather than drawing nothing.
+    pub fn with_highlight(mut self, language: &str) -> Self {
+        self.highlighted = crate::syntax::highlight(&self.text, language);
+        self
+    }
+
+    /// Carry pre-highlighted lines — the runs [`crate::syntax::highlight`]
+    /// returns — when the caller already resolved the language.
+    pub fn with_highlighted_lines(mut self, lines: Vec<crate::syntax::HighlightedLine>) -> Self {
+        self.highlighted = Some(lines);
         self
     }
 
@@ -148,15 +170,18 @@ impl Element for Code {
         _app: &AppContext,
     ) -> Vector2F {
         let max_width = self.measure_max_width(constraint);
-        let mut size = measure_text_family(
-            &self.text,
-            self.font_size,
-            self.line_height,
-            max_width,
-            FontWeight::Regular,
-            FontFamily::Mono,
-            false,
-        );
+        let mut size = match &self.highlighted {
+            Some(lines) => measure_highlighted_lines(lines, self.font_size, self.line_height),
+            None => measure_text_family(
+                &self.text,
+                self.font_size,
+                self.line_height,
+                max_width,
+                FontWeight::Regular,
+                FontFamily::Mono,
+                false,
+            ),
+        };
         if let Some(label_size) = self.label_size(max_width) {
             size.x = size.x.max(label_size.x);
             size.y += label_size.y + LANGUAGE_GAP;
@@ -193,6 +218,37 @@ impl Element for Code {
                 y += label_size.y + LANGUAGE_GAP;
             }
         }
+        if let Some(lines) = &self.highlighted {
+            let line_height = self.font_size * self.line_height;
+            for (index, runs) in lines.iter().enumerate() {
+                let line_y = y + index as f32 * line_height;
+                let mut x = origin.x;
+                for run in runs {
+                    let run_size = measure_text_family(
+                        &run.text,
+                        self.font_size,
+                        self.line_height,
+                        f32::INFINITY,
+                        run.weight,
+                        FontFamily::Mono,
+                        run.italic,
+                    );
+                    renderer.draw_text_with_font(
+                        vec2f(x, line_y),
+                        run.text.clone(),
+                        self.font_size,
+                        run.color,
+                        f32::INFINITY,
+                        self.line_height,
+                        run.weight,
+                        FontFamily::Mono,
+                        run.italic,
+                    );
+                    x += run_size.x;
+                }
+            }
+            return;
+        }
         renderer.draw_text_with_font(
             vec2f(origin.x, y),
             self.text.clone(),
@@ -213,6 +269,37 @@ impl Element for Code {
     fn origin(&self) -> Option<Point> {
         self.origin
     }
+}
+
+/// Measure highlighted lines: the widest line's runs summed, one line height per
+/// line. The runs are mono, so this matches the plain measurement of the same
+/// characters while keeping the size consistent with the per-line painting.
+fn measure_highlighted_lines(
+    lines: &[crate::syntax::HighlightedLine],
+    font_size: f32,
+    line_height: f32,
+) -> Vector2F {
+    let mut width: f32 = 0.0;
+    for runs in lines {
+        let line_width: f32 = runs
+            .iter()
+            .map(|run| {
+                measure_text_family(
+                    &run.text,
+                    font_size,
+                    line_height,
+                    f32::INFINITY,
+                    run.weight,
+                    FontFamily::Mono,
+                    run.italic,
+                )
+                .x
+            })
+            .sum();
+        width = width.max(line_width);
+    }
+    let height = lines.len().max(1) as f32 * font_size * line_height;
+    vec2f(width.ceil(), height.ceil())
 }
 
 #[cfg(test)]
@@ -327,5 +414,63 @@ mod tests {
             runs.iter().all(|(text, _)| text != "rust"),
             "inline code must not draw the fence label, got {runs:?}"
         );
+    }
+
+    #[test]
+    fn highlighted_code_paints_the_runs_in_more_than_one_colour() {
+        let source = "fn main() {\n    let x = 1;\n}";
+        let lines = crate::syntax::highlight(source, "rust").expect("rust resolves");
+        let mut code = Code::new(source)
+            .with_language("rust")
+            .with_highlighted_lines(lines);
+        let app = AppContext::default();
+        code.layout(
+            SizeConstraint::loose(vec2f(600.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        code.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx
+            .renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default();
+
+        let mut colours = std::collections::HashSet::new();
+        let mut joined = String::new();
+        for command in &commands {
+            if let RenderCommand::DrawText {
+                text,
+                font_family,
+                color,
+                ..
+            } = command
+            {
+                if text == "rust" {
+                    continue;
+                }
+                assert_eq!(*font_family, FontFamily::Mono, "run {text:?} is not mono");
+                colours.insert(*color);
+                joined.push_str(text);
+            }
+        }
+        assert!(
+            colours.len() > 1,
+            "highlighted code must paint more than one colour, got {colours:?}"
+        );
+        // The split into runs loses nothing but the line endings.
+        let stripped: String = source.chars().filter(|c| *c != '\n').collect();
+        assert_eq!(joined, stripped);
+    }
+
+    #[test]
+    fn an_unresolved_language_keeps_the_plain_body() {
+        let unresolved = Code::new("fn main() {}").with_highlight("not-a-language");
+        assert!(unresolved.highlighted.is_none());
+        assert!(crate::syntax::highlight("fn main() {}", "not-a-language").is_none());
+
+        let resolved = Code::new("fn main() {}").with_highlight("rust");
+        assert!(resolved.highlighted.is_some());
     }
 }

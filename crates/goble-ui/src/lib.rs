@@ -6,8 +6,14 @@ pub mod platform;
 pub mod render;
 pub mod scene;
 pub mod style;
+pub mod syntax;
 pub mod test_util;
 pub mod theme;
+pub mod vim;
+
+/// The provider-reported token accounting, re-exported so a host can hand the
+/// transcript its conversation totals without naming `goble-core`.
+pub use goble_core::llm::TokenUsage;
 pub mod views;
 
 pub use platform::current as platform_current;
@@ -26,18 +32,22 @@ pub use elements::{
     DiffStats, Hunk, Divider, Drawer, DrawerAnchor, DropdownItem,
     DropdownMenu, EdgeInsets, Element, EventContext, Expanded, Fill, Flex, FrameSize, FrameView,
     Header as UiHeader,
-    Icon, IconButton, IconName, Label, LabelSize, LayoutContext, MainAxisAlignment, MainAxisSize,
+    Icon, IconButton, IconName, KeyHandler, Label, LabelSize, LayoutContext, MainAxisAlignment,
+    MainAxisSize,
     Margin, Modal, Padding, Page, PaintContext, Point, QuickActionButton, Rect, RightPanel,
     RunningIndicator, ScrollState, Scrollable, SearchInput, Select, SelectOption,
     SelectableElement, Sidebar,
-    SidebarItem, SizeConstraint, Sheet, Spacer, SplitNode, Stack, Switch, Tab, TabBar, TerminalBlock,
+    SidebarItem, SizeConstraint, Sheet, Spacer, SplitNode, Stack, SubAgentRow, SubAgentRowStatus,
+    Switch, Tab, TabBar, TerminalBlock,
     TerminalData, TerminalFilter, TerminalLine, TerminalLineKind, TerminalStatus, Text, TextArea,
     TextInput,
-    ToolCall,
-    ThreadListItem, ToggleButton, Toolbar, Topbar, TopbarButton, Vector2FExt,
+    ToolCall, ToolDisplayMode, tool_fold_key,
+    ThreadListItem, ToggleButton, Toolbar, Topbar, TopbarButton, TurnActivity, TurnStatus,
+    TurnStatusFooter, Vector2FExt, WorkKind, WorkKindCount,
     CHAT_RIGHT_SIDEBAR_WIDTH, CONVERSATION_SIDEBAR_WIDTH, DIALOG_DEFAULT_WIDTH, SHEET_DEFAULT_WIDTH,
 };
 pub use geometry::{rectf, size2f, vec2f, PointF, RectF, Size2F, Vector2F};
+pub use syntax::highlight;
 pub use views::chat_view::ChatView;
 pub use views::settings_view::{SettingsPage, SettingsView};
 pub use views::thread_list_view::{ThreadKind, ThreadListEntry, ThreadListView};

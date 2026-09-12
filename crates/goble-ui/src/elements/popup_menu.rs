@@ -50,10 +50,16 @@ impl PopupMenuItem {
 }
 
 /// Where a [`PopupMenu`] panel appears relative to its trigger.
+///
+/// The `*End` variants align the panel's trailing edge with the trigger's, so a
+/// trigger that sits near the right edge of its pane opens the panel leftwards,
+/// inside the window, instead of spilling past the edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PopupMenuPosition {
     Below,
     Above,
+    BelowEnd,
+    AboveEnd,
 }
 
 impl Default for PopupMenuPosition {
@@ -215,14 +221,29 @@ impl Element for PopupMenu {
             self.panel_size = Some(panel_size);
             // Default: right-align a panel narrower than its trigger so it sits
             // under the trigger, otherwise align to the trigger's leading edge.
-            let mut x = (trigger_size.x - panel_size.x).max(0.0);
+            // A trailing-aligned panel keeps its right edge on the trigger's,
+            // which is what lets a control near the window's right edge open to
+            // the left rather than off-screen.
+            let trailing = matches!(
+                self.position,
+                PopupMenuPosition::BelowEnd | PopupMenuPosition::AboveEnd
+            );
+            let mut x = if trailing {
+                trigger_size.x - panel_size.x
+            } else {
+                (trigger_size.x - panel_size.x).max(0.0)
+            };
             // Clamp so the whole panel stays within the available width (no
             // spill past the composer/window edge on a narrow or resized layout).
             let max_x = (constraint.max.x - panel_size.x).max(0.0);
             x = x.min(max_x);
             let y = match self.position {
-                PopupMenuPosition::Below => trigger_size.y + POPUP_GAP,
-                PopupMenuPosition::Above => -(panel_size.y + POPUP_GAP),
+                PopupMenuPosition::Below | PopupMenuPosition::BelowEnd => {
+                    trigger_size.y + POPUP_GAP
+                }
+                PopupMenuPosition::Above | PopupMenuPosition::AboveEnd => {
+                    -(panel_size.y + POPUP_GAP)
+                }
             };
             self.panel_origin = vec2f(x, y);
         }
@@ -518,6 +539,33 @@ mod tests {
         click(&mut menu, 10.0, -64.0, &app);
         assert!(!menu.is_open());
         assert_eq!(*selected.borrow(), Some(0));
+    }
+
+    #[test]
+    fn a_trailing_panel_aligns_its_right_edge_with_the_trigger() {
+        let items = vec![
+            PopupMenuItem::new("A long label"),
+            PopupMenuItem::new("Another item"),
+        ];
+        let app = AppContext::default();
+        let mut menu = PopupMenu::new(trigger(), items)
+            .with_open(Rc::new(RefCell::new(true)))
+            .with_position(PopupMenuPosition::BelowEnd);
+        // The trigger is 40 wide and sits at the right end of a 360 wide row,
+        // which is the dots button at the pane's right edge.
+        menu.layout(
+            SizeConstraint::loose(vec2f(360.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let size = menu.panel_size.expect("panel built");
+        assert!(size.x > 40.0, "the panel is wider than its trigger");
+        assert!(
+            (menu.panel_origin.x + size.x - 40.0).abs() < 0.01,
+            "the panel's right edge sits on the trigger's: origin {} size {}",
+            menu.panel_origin.x,
+            size.x
+        );
     }
 
     #[test]

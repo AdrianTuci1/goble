@@ -83,18 +83,21 @@ pub struct ConversationCard {
 }
 
 impl ConversationCard {
-    /// The card for the agent-view block `block`. `None` for a shell block:
-    /// only a conversation block has a card. An unnamed conversation falls back
-    /// to its id, so a card always has a title.
-    pub fn from_block(block: &Block) -> Option<Self> {
-        let conversation_id = block.conversation_id()?.to_string();
-        let label = block.label().unwrap_or_default();
+    /// The card for the conversation `conversation_id`, titled `label`. An
+    /// unnamed conversation falls back to its id, so a card always has a title.
+    ///
+    /// This is the pane's path: its view carries the identity off the block as
+    /// two fields, not the block itself. [`Self::from_block`] is the same thing
+    /// from the block.
+    pub fn new(conversation_id: impl Into<String>, label: impl Into<String>) -> Self {
+        let conversation_id = conversation_id.into();
+        let label = label.into();
         let title = if label.is_empty() {
             conversation_id.clone()
         } else {
-            label.to_string()
+            label
         };
-        Some(Self {
+        Self {
             conversation_id,
             title,
             status: ConversationCardStatus::default(),
@@ -104,7 +107,16 @@ impl ConversationCard {
             root: None,
             size: None,
             origin: None,
-        })
+        }
+    }
+
+    /// The card for the agent-view block `block`. `None` for a shell block:
+    /// only a conversation block has a card.
+    pub fn from_block(block: &Block) -> Option<Self> {
+        Some(Self::new(
+            block.conversation_id()?,
+            block.label().unwrap_or_default(),
+        ))
     }
 
     pub fn with_status(mut self, status: ConversationCardStatus) -> Self {

@@ -39,6 +39,8 @@ impl Theme {
                 warning: ColorU::hex(0xf59e0b),
                 error: ColorU::hex(0xef4444),
                 badge: ColorU::hex(0xe01e5a),
+                diff_insert_bg: ColorU::hex(0x0f3d20),
+                diff_delete_bg: ColorU::hex(0x4d1116),
             },
             accent: AccentColor::Blue,
             primary: None,
@@ -68,6 +70,8 @@ impl Theme {
                 warning: ColorU::hex(0xf59e0b),
                 error: ColorU::hex(0xef4444),
                 badge: ColorU::hex(0xe01e5a),
+                diff_insert_bg: ColorU::hex(0xd6f5e0),
+                diff_delete_bg: ColorU::hex(0xfbdada),
             },
             accent: AccentColor::Blue,
             primary: None,
@@ -97,6 +101,8 @@ impl Theme {
                 warning: ColorU::hex(0xf59e0b),
                 error: ColorU::hex(0xef4444),
                 badge: ColorU::hex(0xe01e5a),
+                diff_insert_bg: ColorU::hex(0x0f3d20),
+                diff_delete_bg: ColorU::hex(0x4d1116),
             },
             accent: AccentColor::Blue,
             primary: None,
@@ -144,6 +150,8 @@ impl Theme {
             ColorToken::Warning => self.colors.warning,
             ColorToken::Error => self.colors.error,
             ColorToken::Badge => self.colors.badge,
+            ColorToken::DiffInsertBg => self.colors.diff_insert_bg,
+            ColorToken::DiffDeleteBg => self.colors.diff_delete_bg,
         }
     }
 
@@ -183,6 +191,10 @@ pub struct ColorScheme {
     pub warning: ColorU,
     pub error: ColorU,
     pub badge: ColorU,
+    /// Background band behind an added line of a diff.
+    pub diff_insert_bg: ColorU,
+    /// Background band behind a removed line of a diff.
+    pub diff_delete_bg: ColorU,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -200,6 +212,8 @@ pub enum ColorToken {
     Warning,
     Error,
     Badge,
+    DiffInsertBg,
+    DiffDeleteBg,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

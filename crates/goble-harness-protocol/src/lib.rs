@@ -74,10 +74,70 @@ pub enum HarnessServerEvent {
         question: String,
         quick_replies: Vec<String>,
     },
+    /// A command tool is suspended waiting on the user's approval before it
+    /// runs: `id` is the suspended call, `candidates` the proposed command
+    /// lines and `cwd` where they would run. The host answers it with a
+    /// command decision through the harness runtime's resume path.
+    CommandProposed {
+        session_id: SessionId,
+        id: String,
+        candidates: Vec<String>,
+        cwd: String,
+    },
+    /// A sub-agent child was spawned on this session's conversation: the
+    /// child's identity as its record carries it (`chat_id` is the parent
+    /// conversation, the rest the spawn spec), mirrored from the core
+    /// `HarnessEvent::SubAgentSpawned` as plain data.
+    SubAgentSpawned {
+        session_id: SessionId,
+        chat_id: String,
+        subagent_id: String,
+        subagent_type: String,
+        description: String,
+        parent_call_id: String,
+        run_in_background: bool,
+    },
+    /// A live sub-agent's record moved forward: status kind, activity line,
+    /// budget counters and the elapsed time from the record's own clock.
+    SubAgentProgress {
+        session_id: SessionId,
+        chat_id: String,
+        subagent_id: String,
+        status: String,
+        activity: String,
+        turns: u32,
+        tool_calls: u32,
+        tokens: u64,
+        duration_ms: u64,
+    },
+    /// A sub-agent reached a terminal status: `output` for `completed`,
+    /// `error` for `failed`/`cancelled`, with the record's final counters.
+    SubAgentFinished {
+        session_id: SessionId,
+        chat_id: String,
+        subagent_id: String,
+        status: String,
+        output: Option<String>,
+        error: Option<String>,
+        duration_ms: u64,
+        turns: u32,
+        tool_calls: u32,
+        tokens: u64,
+    },
     MissionUpdated {
         session_id: SessionId,
         mission_id: String,
         status: String,
+    },
+    /// One model call's token accounting, from the provider's own response.
+    /// `cached` is the part of `input` the provider served from its prompt
+    /// cache, when it reports one.
+    TokenUsage {
+        session_id: SessionId,
+        chat_id: String,
+        input: u64,
+        cached: Option<u64>,
+        output: u64,
     },
     /// The model began a reasoning (thinking) step, identified by `step`, in the
     /// current thinking `mode`. Carried so a host can render thinking live.
@@ -222,6 +282,20 @@ mod tests {
         let line = msg.to_line().unwrap();
         let decoded = HarnessMessage::from_line(&line).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn command_proposed_event_roundtrips() {
+        // The approval suspension crosses the harness wire as its own frame
+        // instead of being dropped at the adaptor.
+        let ev = HarnessMessage::Server(HarnessServerEvent::CommandProposed {
+            session_id: SessionId::new("s1"),
+            id: "call-1".into(),
+            candidates: vec!["git status".into(), "git diff --stat".into()],
+            cwd: "/workspace".into(),
+        });
+        let line = ev.to_line().unwrap();
+        assert_eq!(HarnessMessage::from_line(&line).unwrap(), ev);
     }
 
     #[test]

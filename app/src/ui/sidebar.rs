@@ -7,11 +7,10 @@ use goble_ui::elements::{
     AgentCardUi, AppContext, Axis, Button, ButtonVariant, Container, ConversationEntry,
     ConversationListItem, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill, Flex,
     HoverButton, Icon, Label, LabelSize, MainAxisSize, Scrollable, SearchInput, Spacer, Text,
-    TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 
-use super::{AiActions, ScreenActions, UiActions, UiSnapshot};
+use super::{UiActions, UiSnapshot};
 
 /// How many conversation cards the collapsed sidebar shows before the
 /// "View all" button.
@@ -27,8 +26,6 @@ pub fn build_sidebar(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
-    ai_actions: &AiActions,
-    screen_actions: &ScreenActions,
     selected_medium: &str,
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Md);
@@ -201,57 +198,8 @@ pub fn build_sidebar(
         );
     }
 
-    // Plugins footer -> opens the MCP connectors panel.
-    let on_plugins = ai_actions.on_open_connectors.clone();
-    let plugins_button = TopbarButton::new(
-        Icon::new("plus")
-            .with_size(16.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_size(28.0)
-    .with_on_click(move || (on_plugins.borrow_mut())())
-    .finish();
-
-    // Screen footer -> opens the screen (broadcast + computer-use) sheet.
-    let on_open_screen = screen_actions.on_open.clone();
-    let screen_button = TopbarButton::new(
-        Icon::new("monitor")
-            .with_size(16.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_size(28.0)
-    .with_on_click(move || (on_open_screen.borrow_mut())())
-    .finish();
-
-    let footer = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(sm)
-        .with_child(
-            Label::new("Plugins")
-                .with_size(LabelSize::Xs)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
-        .with_child(Spacer::new().finish())
-        .with_child(plugins_button)
-        .finish();
-
-    let screen_footer = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(sm)
-        .with_child(
-            Label::new("Screen")
-                .with_size(LabelSize::Xs)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
-        .with_child(Spacer::new().finish())
-        .with_child(screen_button)
-        .finish();
+    // Plugins/Screen open from the Cmd+K palette ("Open connectors" /
+    // "Open screen"), not from the sidebar.
 
     let mut column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
@@ -262,9 +210,9 @@ pub fn build_sidebar(
     column = column.with_child(header);
     column = column.with_child(Divider::horizontal().finish());
     column = column.with_child(section_label);
-    // The list is the only flexible row: it takes the space left above the
-    // footer and scrolls inside it (its offset lives in app state, so it
-    // survives the per-frame rebuild).
+    // The list is the only flexible row: it takes the remaining height and
+    // scrolls inside it (its offset lives in app state, so it survives the
+    // per-frame rebuild).
     column = column.with_child(
         Expanded::new(
             Scrollable::new(list.finish(), Axis::Vertical)
@@ -273,9 +221,6 @@ pub fn build_sidebar(
         )
         .finish(),
     );
-    column = column.with_child(Divider::horizontal().finish());
-    column = column.with_child(footer);
-    column = column.with_child(screen_footer);
 
     Container::new(column.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))

@@ -1,9 +1,9 @@
-//! Settings overlay: a centered modal covering the window with a dimmed
-//! backdrop, showing the grok-build style categories (Appearance, Mouse,
-//! Editor & Input, Agent & Approval, Models, Advanced), each with a few
-//! essential controls. Model configuration is done by editing the global
-//! `~/.goble/config.toml`; this panel only lists the resulting models and
-//! offers a reload.
+//! Settings overlay: a wide panel inset a few pixels from the window edges,
+//! showing the grok-build style categories (Appearance, Mouse, Editor & Input,
+//! Agent & Approval, Models, Advanced), each with a few essential controls. The
+//! category list is navigable with the arrow keys and Escape closes the panel.
+//! Model configuration is done by editing the global `~/.goble/config.toml`;
+//! this panel only lists the resulting models and offers a reload.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -11,17 +11,22 @@ use std::rc::Rc;
 use goble_ui::color::ColorU;
 use goble_ui::elements::{
     AppContext, Axis, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment,
-    Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, Icon, MainAxisAlignment,
-    MainAxisSize, Scrollable, Spacer, Switch, Text, TopbarButton,
+    Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, Icon, KeyHandler,
+    MainAxisAlignment, MainAxisSize, Scrollable, Spacer, Switch, Text, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 
-use super::color_picker::{ColorPicker, ColorTarget};
+use super::color_picker::{ColorTarget, ColorWheel, COLOR_TARGET_ORDER};
 use super::{SettingsCategory, UiActions, UiSnapshot, WorkspaceRouting};
 
-const NAV_WIDTH: f32 = 150.0;
+/// Width of the category rail on the left of the panel.
+const NAV_WIDTH: f32 = 180.0;
+/// Widest the content pane grows; a wide panel should not stretch a short row
+/// of controls across the whole window.
+const CONTENT_MAX_WIDTH: f32 = 720.0;
 
-/// Build the whole settings overlay (header + nav + content pane).
+/// Build the whole settings overlay (header + nav + content pane), with the
+/// arrow keys moving the category selection and Escape closing the panel.
 pub fn build_settings_overlay(
     app: &AppContext,
     state: &UiSnapshot,
@@ -39,6 +44,12 @@ pub fn build_settings_overlay(
                 .finish(),
         )
         .with_child(Spacer::new().finish())
+        .with_child(
+            Text::new("↑/↓ category · Esc close")
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(11.0)
+                .finish(),
+        )
         .with_child(
             TopbarButton::new(
                 Icon::new("x")
@@ -65,8 +76,16 @@ pub fn build_settings_overlay(
 
     // Lay the nav (fixed width) + content pane side by side, exactly like the
     // goble-ui SettingsView. The content pane scrolls inside the space left by
-    // the header (Appearance alone is taller than the panel), and the body row
-    // takes only that leftover height.
+    // the header (Appearance alone is taller than the panel), keeps a readable
+    // max width, and the body row takes only that leftover height.
+    let md = app.theme.spacing_px(SpacingToken::Md);
+    let content = ConstrainedBox::new(
+        Container::new(pane)
+            .with_padding(EdgeInsets::new(md, md, md, md))
+            .finish(),
+    )
+    .with_max_width(CONTENT_MAX_WIDTH)
+    .finish();
     let body = Flex::row()
         .with_main_axis_alignment(MainAxisAlignment::Start)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -74,7 +93,7 @@ pub fn build_settings_overlay(
         .with_child(Divider::vertical().finish())
         .with_child(
             Expanded::new(
-                Scrollable::new(pane, Axis::Vertical)
+                Scrollable::new(content, Axis::Vertical)
                     .with_state(state.settings_scroll.clone())
                     .finish(),
             )
@@ -88,9 +107,35 @@ pub fn build_settings_overlay(
         .with_child(Divider::horizontal().finish())
         .with_child(Expanded::new(body.finish()).finish());
 
-    Container::new(column.finish())
+    let panel = Container::new(column.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-        .finish()
+        .finish();
+
+    // The category rail is mouse-driven, so the keys that navigate it are
+    // intercepted here, before any child sees them.
+    let on_step = actions.on_settings_category_step.clone();
+    let on_escape = actions.on_settings_close.clone();
+    KeyHandler::new(panel, move |key: &str, modifiers| {
+        if modifiers.ctrl || modifiers.command || modifiers.alt {
+            return false;
+        }
+        match key {
+            "Escape" => {
+                (on_escape.borrow_mut())();
+                true
+            }
+            "ArrowUp" => {
+                (on_step.borrow_mut())(-1);
+                true
+            }
+            "ArrowDown" => {
+                (on_step.borrow_mut())(1);
+                true
+            }
+            _ => false,
+        }
+    })
+    .finish()
 }
 
 /// Left column listing each settings category; the active one is highlighted.
@@ -216,13 +261,50 @@ fn build_appearance(
     actions: &UiActions,
 ) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
-    let row = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+    let md = app.theme.spacing_px(SpacingToken::Md);
+
+    let heading = Text::new("Theme colors")
+        .with_theme_color(ColorToken::Muted, app)
+        .with_font_size(11.0)
+        .finish();
+
+    let target = state.theme_color_target;
+    let color = effective_theme_color(app, state, target);
+    let on_change = match target {
+        ColorTarget::Primary => actions.on_set_theme_primary.clone(),
+        ColorTarget::Secondary => actions.on_set_theme_secondary.clone(),
+        ColorTarget::Accent => actions.on_set_theme_accent.clone(),
+    };
+    let wheel = ColorWheel::new(color)
+        .with_drag(state.theme_color_drag.clone())
+        .with_on_change(move |c: ColorU| {
+            // Report the new color as `#rrggbb` to set + persist the channel.
+            (on_change.borrow_mut())(c.to_hex_string());
+        })
+        .finish();
+
+    // The wheel edits one channel at a time: this column picks which.
+    let wheel_block = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_main_axis_size(MainAxisSize::Min)
-        .with_spacing(sm)
-        .with_child(build_color_picker(app, state, actions, ColorTarget::Primary))
-        .with_child(build_color_picker(app, state, actions, ColorTarget::Secondary))
-        .with_child(build_color_picker(app, state, actions, ColorTarget::Accent));
+        .with_spacing(md)
+        .with_child(build_color_targets(app, state, actions))
+        .with_child(
+            Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_spacing(app.theme.spacing_px(SpacingToken::Xs))
+                .with_child(wheel)
+                .with_child(
+                    Text::new(format!("{}  {}", target.label(), color.to_hex_string()))
+                        .with_theme_color(ColorToken::Text, app)
+                        .with_font_size(11.0)
+                        .finish(),
+                )
+                .finish(),
+        )
+        .finish();
+
     let col = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min)
@@ -234,8 +316,57 @@ fn build_appearance(
             actions.on_toggle_dark_mode.clone(),
         ))
         .with_child(Divider::horizontal().finish())
-        .with_child(row.finish());
+        .with_child(Container::new(heading).with_padding_uniform(sm).finish())
+        .with_child(Container::new(wheel_block).with_padding_uniform(sm).finish());
     Container::new(col.finish()).finish()
+}
+
+/// The three theme channels as clickable swatches; the active one is the
+/// channel the wheel edits, and its swatch is highlighted.
+fn build_color_targets(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let mut col = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_spacing(app.theme.spacing_px(SpacingToken::Xs));
+
+    for target in COLOR_TARGET_ORDER {
+        let selected = target == state.theme_color_target;
+        let color = effective_theme_color(app, state, target);
+        let on_select = actions.on_set_theme_target.clone();
+        let swatch = ConstrainedBox::new(
+            Container::new(Box::new(Empty::new()))
+                .with_background(Fill::Solid(color))
+                .finish(),
+        )
+        .with_width(16.0)
+        .with_height(16.0)
+        .finish();
+        let row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_spacing(sm)
+            .with_child(
+                Text::new(target.label())
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_font_size(12.0)
+                    .finish(),
+            )
+            .with_child(Spacer::new().finish())
+            .with_child(swatch)
+            .finish();
+        let button = Button::new(row)
+            .with_variant(if selected { ButtonVariant::Primary } else { ButtonVariant::Ghost })
+            .with_on_click(move || (on_select.borrow_mut())(target))
+            .finish();
+        col = col.with_child(button);
+    }
+
+    ConstrainedBox::new(col.finish()).with_width(150.0).finish()
 }
 
 /// Resolve the effective color for a theme channel: the custom override if set,
@@ -259,73 +390,6 @@ fn effective_theme_color(
         ColorTarget::Accent => ColorToken::Accent,
     };
     app.theme.color(token)
-}
-
-/// A single theme color: a labeled live swatch + the HSV picker that edits it.
-fn build_color_picker(
-    app: &AppContext,
-    state: &UiSnapshot,
-    actions: &UiActions,
-    target: ColorTarget,
-) -> Box<dyn Element> {
-    let label = match target {
-        ColorTarget::Primary => "Primary",
-        ColorTarget::Secondary => "Secondary",
-        ColorTarget::Accent => "Accent",
-    };
-    let on_change = match target {
-        ColorTarget::Primary => actions.on_set_theme_primary.clone(),
-        ColorTarget::Secondary => actions.on_set_theme_secondary.clone(),
-        ColorTarget::Accent => actions.on_set_theme_accent.clone(),
-    };
-    let color = effective_theme_color(app, state, target);
-    // The current hex, shown under the picker so the user can read it back.
-    let hex = color.to_hex_string();
-
-    let header = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(app.theme.spacing_px(SpacingToken::Sm))
-        .with_child(
-            Text::new(label)
-                .with_theme_color(ColorToken::Text, app)
-                .with_font_size(12.0)
-                .finish(),
-        )
-        .with_child(Spacer::new().finish())
-        // Live swatch of the current color.
-        .with_child(
-            ConstrainedBox::new(
-                Container::new(Box::new(Empty::new()))
-                    .with_background(Fill::Solid(color))
-                    .finish(),
-            )
-            .with_width(18.0)
-            .with_height(18.0)
-            .finish(),
-        )
-        .finish();
-
-    let picker = ColorPicker::new(color, target)
-        .with_drag(state.theme_color_drag.clone())
-        .with_on_change(move |c: goble_ui::color::ColorU| {
-            // Report the new color as `#rrggbb` to set + persist the channel.
-            let hex = c.to_hex_string();
-            (on_change.borrow_mut())(hex);
-        })
-        .finish();
-
-    let block = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_main_axis_size(MainAxisSize::Min)
-        .with_spacing(app.theme.spacing_px(SpacingToken::Xs))
-        .with_child(header)
-        .with_child(picker)
-        .with_child(Text::new(hex).with_theme_color(ColorToken::Muted, app).with_font_size(11.0).finish())
-        .finish();
-    Container::new(block)
-        .with_padding_uniform(app.theme.spacing_px(SpacingToken::Sm))
-        .finish()
 }
 
 fn build_mouse(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
@@ -426,6 +490,12 @@ fn build_agent(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box
         Rc::new(RefCell::new(move |v: bool| {
             (on_auto_approve_action.borrow_mut())(pane_id, v)
         }));
+    // Modal editing is a single app-wide choice (the pane states are per pane,
+    // but the switch that turns the feature on is not).
+    let on_vim_action = actions.on_toggle_vim_mode.clone();
+    let on_vim: Rc<RefCell<dyn FnMut(bool)>> = Rc::new(RefCell::new(move |v: bool| {
+        (on_vim_action.borrow_mut())(v)
+    }));
     let rows = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min)
@@ -436,6 +506,7 @@ fn build_agent(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box
             state.auto_approve,
             on_auto_approve,
         ))
+        .with_child(switch_row(app, "Vim mode", state.vim_mode, on_vim))
         .with_child(Container::new(routing).with_padding_uniform(app.theme.spacing_px(SpacingToken::Sm)).finish())
         .finish();
     Container::new(rows).finish()

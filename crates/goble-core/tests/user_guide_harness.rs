@@ -41,6 +41,7 @@ async fn user_guide_tool_returns_mobile_access_doc() {
                     name: "user_guide".to_string(),
                     arguments: serde_json::json!({ "topic": "mobile-access" }),
                 }],
+                usage: None,
             },
         )))
         .with_docs_dir(docs.path())

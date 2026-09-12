@@ -15,10 +15,11 @@
 
 use goble_terminal::blocks::BlockView;
 use goble_terminal::{
-    Block, BlockEvent, BlockId, BlockList, BlockOwner, CursorState, HookEvent, HookTap, OscEvent,
-    OscTap, Palette, Screen, ScreenConfig, ScreenEvent, ScreenLine, ScreenQuery, ScreenSize,
-    TermMode,
+    Block, BlockEvent, BlockId, BlockList, BlockOwner, BlockState, CursorState, HookEvent, HookTap,
+    OscEvent, OscTap, Palette, Screen, ScreenConfig, ScreenEvent, ScreenLine, ScreenQuery,
+    ScreenSize, TermMode,
 };
+use std::time::Duration;
 
 /// Lines of scrollback a pane keeps above the viewport.
 const SCROLLBACK: usize = 10_000;
@@ -42,8 +43,19 @@ pub struct VisibleBlock {
     pub command: String,
     /// Everything the command printed, or `""` for a conversation card.
     pub output: String,
-    /// Whether the command finished with a non-zero exit code.
-    pub failed: bool,
+    /// Where the block is in its lifecycle, so a view can tell a command still
+    /// running from one that finished instead of guessing from an exit flag.
+    pub state: BlockState,
+    /// The command's exit code once the shell reported it; `None` while it runs.
+    pub exit_code: Option<i32>,
+    /// Where the command ran, as the shell reported it. The view shortens it for
+    /// display; the block itself keeps what the shell said.
+    pub pwd: Option<String>,
+    /// The git branch the command ran on, when the shell reported one.
+    pub git_branch: Option<String>,
+    /// How long the command took: its finished duration, or how long it has been
+    /// running so far. `None` before the shell reported the command.
+    pub duration: Option<Duration>,
     /// Set when this block is a conversation card rather than a shell block.
     pub card: Option<AgentViewCard>,
 }
@@ -56,9 +68,10 @@ pub struct Emulator {
     hook_events: Vec<HookEvent>,
     osc_events: Vec<OscEvent>,
     /// The block list of this session: the command boundaries the hooks delimit,
-    /// with each block's own screens. It is what turns a claimed command into a
-    /// tool result (`BlockEvent::ToolResult`), which is why the pane needs it
-    /// even though the renderer still paints `screen`.
+    /// with each block's own screens. It is what the pane draws as its sections
+    /// and what turns a claimed command into a tool result
+    /// (`BlockEvent::ToolResult`); `screen` is still kept for what blocks cannot
+    /// represent — the alternate screen of a full-screen program.
     blocks: BlockList,
     /// Block-level events the pane has not read yet (block starts/finishes and
     /// claimed commands' tool results).
@@ -153,6 +166,13 @@ impl Emulator {
         self.screen.resize(ScreenSize::new(columns, screen_lines));
     }
 
+    /// Whether the shell's integration has bootstrapped — B0's handshake hook,
+    /// which is what makes the shell able to report a `Preexec` at all. The
+    /// block list only offers a claimable block once it has arrived.
+    pub fn bootstrapped(&self) -> bool {
+        self.blocks.bootstrapped()
+    }
+
     pub fn columns(&self) -> usize {
         self.columns
     }
@@ -178,6 +198,16 @@ impl Emulator {
 
     pub fn is_alt_screen(&self) -> bool {
         self.screen.is_alt_screen()
+    }
+
+    /// Whether a command is running right now (a block in the executing state),
+    /// so a pane knows output is still arriving and keeps repainting instead of
+    /// idling between keystrokes.
+    pub fn has_running_command(&self) -> bool {
+        self.blocks
+            .blocks()
+            .iter()
+            .any(|block| block.state() == BlockState::Executing)
     }
 
     /// Lines scrolled back from the bottom of the display.
@@ -216,7 +246,11 @@ impl Emulator {
                 owner: block.owner().clone(),
                 command: block.command_text().to_string(),
                 output: block.output_text(),
-                failed: block.has_failed(),
+                state: block.state(),
+                exit_code: block.exit_code(),
+                pwd: block.metadata().pwd.clone(),
+                git_branch: block.metadata().git_branch.clone(),
+                duration: block.duration().or_else(|| block.elapsed()),
                 card: block
                     .conversation_id()
                     .map(|conversation_id| AgentViewCard {

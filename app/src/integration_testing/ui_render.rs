@@ -18,7 +18,9 @@ use goble_core::store::Store;
 use goble_desktop_service::{DesktopState, ThreadStore};
 use goble_ui::elements::AppContext;
 use goble_ui::platform::WindowControl;
+use goble_ui::render::RenderCommand;
 use goble_ui::test_util::{command_counts, render_element, RenderCommandCounts};
+use goble_ui::theme::ColorToken;
 use goble_ui::{vec2f, Element, SettingsPage};
 
 fn render(desktop: &Arc<DesktopState>) -> RenderCommandCounts {
@@ -248,11 +250,156 @@ fn topbar_lists_every_workspace() {
     );
 }
 
-/// The Settings→Appearance HSV pickers paint at their own layout origin (the
-/// panel column), not at the window origin where they would smear over the
-/// sidebar and the toolbar.
+/// The full-width fill the toolbar paints at the very top of the window.
+fn topbar_surface(commands: &[RenderCommand], app: &AppContext) -> goble_ui::geometry::RectF {
+    commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::Surface)
+                    && rect.min_y() == 0.0
+                    && rect.width() == 1024.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the toolbar paints its own surface")
+}
+
+/// Center of the top-most icon drawn under `atlas_name` (smallest y), so a
+/// glyph the shell reuses lower down still resolves to the toolbar control.
+fn topmost_icon_center(commands: &[RenderCommand], atlas_name: &str) -> Option<(f32, f32)> {
+    commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawIcon {
+                origin, name, size, ..
+            } if name == atlas_name => Some((origin.x + size / 2.0, origin.y + size / 2.0)),
+            _ => None,
+        })
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+}
+
+/// R2: the workspace tabs read as browser-style tabs. Each tab is drawn at the
+/// full height of the toolbar, and a strip of N tabs draws exactly N-1 vertical
+/// rules — one per boundary, never a doubled line.
 #[test]
-fn settings_color_pickers_paint_inside_the_panel() {
+fn workspace_tabs_fill_the_toolbar_and_draw_one_rule_per_boundary() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let view = RootView::new(&app, &desktop, None);
+    let state_rc = view.state_rc();
+    let space_count = {
+        let mut state = state_rc.borrow_mut();
+        let id = state.next_pane_id;
+        state.next_pane_id += 1;
+        state.spaces.push(goble_app::ui::Space::new(
+            "Workspace Two",
+            goble_app::ui::Pane::Leaf {
+                id,
+                kind: goble_app::ui::PaneKind::Terminal,
+            },
+        ));
+        state.spaces.len()
+    };
+    assert_eq!(space_count, 2, "two spaces to separate");
+    let mut root: Box<dyn Element> = Box::new(view);
+    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+    let topbar_height = goble_app::ui::shell::TOPBAR_HEIGHT;
+
+    assert_eq!(
+        topbar_surface(&commands, &app).height(),
+        topbar_height,
+        "the bar is exactly TOPBAR_HEIGHT tall"
+    );
+
+    let border = app.theme.color(ColorToken::Border);
+    let rules: Vec<_> = commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == border && rect.width() == 1.0 && rect.min_y() == 0.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        rules.len(),
+        space_count - 1,
+        "one rule per boundary, not one per tab: {rules:?}"
+    );
+    for rect in rules {
+        assert_eq!(
+            rect.height(),
+            topbar_height,
+            "a rule spans the full tab height: {rect:?}"
+        );
+    }
+
+    let raised = app.theme.color(ColorToken::SurfaceRaised);
+    let active: Vec<_> = commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == raised
+                && rect.min_y() == 0.0
+                && rect.height() == topbar_height
+                && rect.width() > 1.0 =>
+            {
+                Some(*corner_radius)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(active.len(), 1, "exactly one tab is the active, filled one");
+    assert_eq!(active[0], 0.0, "the active tab has square corners");
+
+    // The +/▾ control and the Settings icon keep their place and size: both
+    // stay centered in the bar.
+    for icon in ["chevron-down", "settings"] {
+        let (_, y) = topmost_icon_center(&commands, icon).unwrap_or_else(|| panic!("{icon} drawn"));
+        assert_eq!(y, topbar_height / 2.0, "{icon} stays centered in the bar");
+    }
+}
+
+/// R2: while the active space is being renamed, its tab still renders the inline
+/// name field, and the bar keeps its height.
+#[test]
+fn the_active_workspace_tab_becomes_the_rename_field() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let view = RootView::new(&app, &desktop, None);
+    view.state_rc().borrow_mut().space_rename_editing = true;
+    let mut root: Box<dyn Element> = Box::new(view);
+    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+
+    assert!(
+        text_index(&commands, "Workspace name").is_some(),
+        "the inline rename field replaces the label"
+    );
+    assert!(
+        text_index(&commands, "Space 1").is_none(),
+        "the label is swapped out while renaming"
+    );
+    assert_eq!(
+        topbar_surface(&commands, &app).height(),
+        goble_app::ui::shell::TOPBAR_HEIGHT,
+        "the bar keeps its height while the rename field is shown"
+    );
+}
+
+/// The Settings→Appearance color wheel paints at its own layout origin (the
+/// panel's content column), not at the window origin where it would smear over
+/// the sidebar and the toolbar. The panel itself is the window minus a small
+/// inset, so "inside the panel" means the whole viewport minus that margin.
+#[test]
+fn settings_color_wheel_paints_inside_the_panel() {
     let (desktop, _dir) = common::desktop_state();
     let app = AppContext::default();
     let view = RootView::new(&app, &desktop, None);
@@ -265,7 +412,7 @@ fn settings_color_pickers_paint_inside_the_panel() {
     let mut root: Box<dyn Element> = Box::new(view);
     let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
 
-    // The SV square is drawn as a column of fade-right rows (see ColorPicker).
+    // The saturation/value square is drawn as a column of fade-right rows.
     let rows: Vec<f32> = commands
         .iter()
         .filter_map(|c| match c {
@@ -273,13 +420,33 @@ fn settings_color_pickers_paint_inside_the_panel() {
             _ => None,
         })
         .collect();
-    assert!(!rows.is_empty(), "the appearance pane draws its HSV pickers");
+    assert!(!rows.is_empty(), "the appearance pane draws its color wheel");
     for x in rows {
         assert!(
-            x > 300.0,
-            "picker painted at x={x}, outside the settings panel column"
+            x > goble_app::ui::SETTINGS_OVERLAY_INSET,
+            "wheel painted at x={x}, left of the settings panel"
+        );
+        assert!(
+            x < 1024.0,
+            "wheel painted at x={x}, outside the window"
         );
     }
+
+    // The hue ring is one image fill, also inside the inset panel.
+    let ring = commands.iter().find_map(|c| match c {
+        goble_ui::render::RenderCommand::DrawImage { rect, source, .. }
+            if source.contains("ring") =>
+        {
+            Some(*rect)
+        }
+        _ => None,
+    });
+    let ring = ring.expect("the hue ring is drawn as an image");
+    assert!(
+        ring.min_x() >= goble_app::ui::SETTINGS_OVERLAY_INSET
+            && ring.max_y() <= 768.0 - goble_app::ui::SETTINGS_OVERLAY_INSET,
+        "the ring stays inside the inset panel, got {ring:?}"
+    );
 }
 
 /// Origin of the first `DrawText` command whose text contains `needle`.

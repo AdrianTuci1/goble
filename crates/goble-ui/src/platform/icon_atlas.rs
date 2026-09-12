@@ -76,6 +76,11 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("plug", "plug.svg"),
 ];
 
+/// Whether `name` is a canonical icon file registered in the atlas.
+pub fn is_registered(name: &str) -> bool {
+    ICON_FILES.iter().any(|(candidate, _)| *candidate == name)
+}
+
 pub struct IconAtlas {
     #[allow(dead_code)]
     texture: wgpu::Texture,

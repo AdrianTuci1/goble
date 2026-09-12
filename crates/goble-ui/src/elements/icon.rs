@@ -1,6 +1,7 @@
 use crate::color::ColorU;
 use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
 use crate::geometry::{vec2f, Vector2F};
+use crate::platform::icon_atlas::is_registered;
 use crate::theme::ColorToken;
 
 const DEFAULT_ICON_SIZE: f32 = 16.0;
@@ -85,7 +86,7 @@ impl Element for Icon {
 }
 
 /// Maps logical icon names used by components to canonical SVG file names in the icon atlas.
-fn icon_atlas_name(name: &str) -> &'static str {
+fn icon_atlas_name(name: IconName) -> IconName {
     match name {
         "close" => "close",
         "x" => "x-close",
@@ -152,6 +153,7 @@ fn icon_atlas_name(name: &str) -> &'static str {
         }
         "info" => "info",
         "local-only" | "cloud-off" | "not-synced" => "cloud-off",
+        other if is_registered(other) => other,
         _ => {
             log::warn!("unknown icon name: {name}");
             "x-close"
@@ -181,5 +183,12 @@ mod tests {
         assert_eq!(icon_atlas_name("threads"), "message-chat-square");
         assert_eq!(icon_atlas_name("x"), "x-close");
         assert_eq!(icon_atlas_name("settings"), "settings");
+    }
+
+    #[test]
+    fn icon_atlas_name_passes_canonical_names_through() {
+        assert_eq!(icon_atlas_name("menu-01"), "menu-01");
+        assert_eq!(icon_atlas_name("minimize-01"), "minimize-01");
+        assert_eq!(icon_atlas_name("maximize-01"), "maximize-01");
     }
 }

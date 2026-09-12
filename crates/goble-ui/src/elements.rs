@@ -4,10 +4,11 @@ pub use ask_user::{AskUserCard, AskUserUi};
 pub use avatar::{Avatar, AvatarShape};
 pub use button::{Button, ButtonVariant};
 pub use caption::Caption;
-pub use caret::{caret_beam, CARET_HEIGHT};
+pub use caret::{caret, caret_beam, CaretShape, CARET_HEIGHT};
 pub use chat_composer::{ChatComposer, CommandProposalUi};
 pub use chat_content::{
-    ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, ToolCall,
+    tool_fold_key, ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, SubAgentRow,
+    SubAgentRowStatus, ToolCall, ToolDisplayMode,
 };
 pub use chat_header::ChatHeader;
 pub use chat_layout::{ChatLayout, CHAT_RIGHT_SIDEBAR_WIDTH};
@@ -29,7 +30,7 @@ pub use connector_card::ConnectorCard;
 pub use constrained_box::ConstrainedBox;
 pub use container::Container;
 pub use context_pill::{ContextPill, PillTraySide, CONTEXT_PILL_HEIGHT};
-pub use conversation_card::{ConversationCard, ConversationCardStatus};
+pub use conversation_card::{ConversationCard, ConversationCardStatus, CARD_RAIL_WIDTH};
 pub use divider::Divider;
 pub use drawer::{Drawer, DrawerAnchor};
 pub use dropdown_menu::{DropdownItem, DropdownMenu};
@@ -42,6 +43,7 @@ pub use hover_button::HoverButton;
 pub use icon::{Icon, IconName};
 pub use icon_button::IconButton;
 pub use inline_text::{resolve_span as resolve_inline_span, InlineText, TextSpan};
+pub use key_handler::KeyHandler;
 pub use label::{Label, LabelSize};
 pub use markdown::parse_markdown;
 pub use modal::Modal;
@@ -65,8 +67,8 @@ pub use stack::Stack;
 pub use switch::Switch;
 pub use tab_bar::{Tab, TabBar};
 pub use terminal_block::{
-    filter_option_labels, terminal_block, TerminalBlock, TerminalCopyHandler, TerminalData,
-    TerminalFilter, TerminalLine, TerminalLineKind, TerminalStatus,
+    filter_option_labels, terminal_block, TerminalBlock, TerminalBlockPlumbing, TerminalCopyHandler,
+    TerminalData, TerminalFilter, TerminalLine, TerminalLineKind, TerminalMeta, TerminalStatus,
 };
 pub use terminal_grid::{TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT};
 pub use text::Text;
@@ -78,6 +80,7 @@ pub use toggle_button::ToggleButton;
 pub use toolbar::Toolbar;
 pub use tooltip::{Tooltip, TooltipPosition};
 pub use topbar::{Topbar, TopbarButton};
+pub use turn_status::{TurnActivity, TurnStatus, TurnStatusFooter, WorkKind, WorkKindCount};
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -475,6 +478,15 @@ pub trait Element {
         None
     }
 
+    /// Whether the element has a reason to be redrawn without any new input: a
+    /// live turn, a command still printing, a spinner. The platform keeps the
+    /// frame clock running while anything answers `true` and lets the window
+    /// idle otherwise, so an unchanged screen is not repainted at the display's
+    /// refresh rate.
+    fn wants_animation(&self) -> bool {
+        false
+    }
+
     fn flex_grow(&self) -> Option<f32> {
         None
     }
@@ -568,6 +580,7 @@ pub mod icon;
 pub mod icon_button;
 pub mod inline_text;
 pub mod interactive;
+pub mod key_handler;
 pub mod label;
 pub mod modal;
 pub mod padding;
@@ -600,3 +613,4 @@ pub mod toggle_button;
 pub mod toolbar;
 pub mod tooltip;
 pub mod topbar;
+pub mod turn_status;

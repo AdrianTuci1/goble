@@ -46,6 +46,10 @@ env_logger = "0.11"
 [dev-dependencies]
 # Integration tests spin up an in-memory sqlite store + a temp thread-store dir.
 tempfile = "3"
+# The work-overlay kill test registers a recording harness whose `cancel` the
+# test observes, so the cancel path is proven rather than assumed.
+futures = { workspace = true }
+goble-harness-runtime = { path = "../crates/goble-harness-runtime" }
 
 [[test]]
 name = "chat_flow"

@@ -44,6 +44,7 @@ async fn test_ollama_provider_e2e() {
             content: "hi".to_string(),
             tool_calls: None,
             tool_call_id: None,
+            tool_status: None,
         },
     ]);
     let mut stream = provider.complete_stream(request).await.expect("stream");

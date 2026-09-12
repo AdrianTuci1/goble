@@ -9,6 +9,7 @@
 
 pub mod actions;
 pub mod ai;
+pub mod clipboard;
 pub mod daemon;
 pub mod emulator;
 pub mod features;

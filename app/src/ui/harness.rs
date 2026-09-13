@@ -111,12 +111,13 @@ fn status(app: &AppContext, status: &str) -> (ColorToken, Box<dyn Element>) {
     )
 }
 
-/// Card shell for a single list row.
+/// Shell for a single list row: a square `SurfaceRaised` band, the shape the
+/// transcript's rows and the sidebar's cards use. Shared by the observability
+/// pages and the tasks & workflows overlay, so a record is drawn once.
 fn card(app: &AppContext, content: Box<dyn Element>) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     Container::new(content)
         .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-        .with_corner_radius(app.theme.radius_px())
         .with_padding(EdgeInsets::uniform(sm))
         .finish()
 }
@@ -144,7 +145,7 @@ pub fn build_workflows_page(
     )
 }
 
-fn build_workflow_row(app: &AppContext, wf: &WorkflowEntry) -> Box<dyn Element> {
+pub(crate) fn build_workflow_row(app: &AppContext, wf: &WorkflowEntry) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let (color, status_el) = status(app, if wf.enabled { "enabled" } else { "disabled" });
     let info = Flex::column()
@@ -221,7 +222,7 @@ pub fn build_executions_page(
     )
 }
 
-fn build_execution_row(app: &AppContext, ex: &ExecutionEntry) -> Box<dyn Element> {
+pub(crate) fn build_execution_row(app: &AppContext, ex: &ExecutionEntry) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let (color, status_el) = status(app, &ex.status);
     let info = Flex::column()
@@ -262,7 +263,7 @@ fn build_execution_row(app: &AppContext, ex: &ExecutionEntry) -> Box<dyn Element
     )
 }
 
-fn build_task_row(app: &AppContext, task: &TaskEntry) -> Box<dyn Element> {
+pub(crate) fn build_task_row(app: &AppContext, task: &TaskEntry) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let (color, status_el) = status(app, &task.status);
     let info = Flex::column()

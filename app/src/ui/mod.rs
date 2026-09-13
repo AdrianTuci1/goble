@@ -26,12 +26,14 @@ pub mod settings;
 pub mod shell;
 pub mod sidebar;
 pub mod space_bar;
+pub mod task_workflow;
 pub mod terminal;
 pub mod vault;
 
 mod actions;
 mod build;
 mod pane;
+mod shortcut_hints;
 mod snapshot;
 mod types;
 

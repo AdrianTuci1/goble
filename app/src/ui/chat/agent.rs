@@ -183,6 +183,11 @@ pub fn build_agent_chat(
         .with_composer_path(crate::state::display_path(&session.composer_path))
         .with_composer_model_label(controls.model.clone())
         .with_composer_stop_visible(session.agent_busy)
+        // The instructions the composer draws above its editor: grok-build's
+        // own hints, as this GUI binds them.
+        .with_composer_hints(crate::ui::shortcut_hints::agent_rich_input_hints(
+            session.agent_busy,
+        ))
         // The live turn-status footer, fed by C1's real live state per pane. It
         // is information only, so it carries no click handler.
         .with_turn_status(session.turn_status.clone())

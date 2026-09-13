@@ -36,13 +36,22 @@
 
 ## Composer
 
-- Left attach button: `+` or `paperclip` icon inside a circle / subtle button.
-- Center: rounded input field with placeholder "Message {name}...".
-- Right send button: `send` / arrow icon, `Accent` background when text is non-empty.
-- Height ~48px, padding `md`, background `Surface`.
+- The rich input is the shared `ChatComposer`: the context pills (harness, working directory, git branch) above the editor, the action row (model, stop) below it, and — above all of them — the instruction strip (`R8`, current).
+- Centre: the draft editor with placeholder "Ask anything...". No box behind it: the card keeps its gutters only, on the square workspace surface.
+- Right of the action row: `Stop` while this pane's turn is in flight.
+- Height hugs its content (48 px editor, capped at 160 px), padding `md`.
+
+## The instruction strip
+
+- What the keys do, drawn as the first row of the input, above the context pills and the editor. Element: `crates/goble-ui/src/elements/shortcut_hints.rs` (`ShortcutHint` / `ShortcutHints`); the composer takes the entries with `with_hints` and `ChatView` forwards them with `with_composer_hints`, so both surfaces that mount the rich input (the chat pane and the shell pane's bar) draw the same widget.
+- The shape is warp-new's shortcuts view: a cap per key of the chord (`⌘` and `K` are two caps, 2 px apart), then the name 4 px after them, in `Muted` at 11 px. Caps are square (`SurfaceRaised` fill, 1 px `Border` stroke), like every other control.
+- The entries are the app's, in `app/src/ui/shortcut_hints.rs`: grok-build's prompt-focused hints, worded as grok-build words them, and kept only where this GUI binds the chord. The agent input draws `↵ send` (or `↵ queue` while this pane's turn is in flight, grok-build's own relabel), `⌘↵ new conversation`, `! shell`, `⌘K commands` and `⌘⇧W tasks`; the shell input draws `↵ run`, `⌘↵ agent`, `⌘K commands`, `⌘⇧W tasks` and no `!`, because a shell pane's input is a command already.
+- Not shown, because nothing here answers them: grok-build's `newline`, `mode`, `cancel`, `yolo`, `todos`, `sessions`, `extensions`, `send to bg`, `multiline` and `stash`. (`queue` is not a separate entry in either program: it is what grok-build relabels its send hint to while a turn runs, and this strip relabels the same way.)
+- An empty list draws nothing at all, so a surface with no instructions pays neither the row's height nor the column's spacing.
 
 ## Files
 
-- `crates/goble-ui/src/views/chat_view.rs`
+- `crates/goble-ui/src/views/chat_view/`
 - `crates/goble-ui/src/elements/chat_message_bubble.rs`
-- `crates/goble-ui/src/elements/chat_composer.rs`
+- `crates/goble-ui/src/elements/chat_composer/`
+- `crates/goble-ui/src/elements/shortcut_hints.rs`

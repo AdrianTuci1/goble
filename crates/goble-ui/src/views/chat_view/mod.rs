@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
-    AskUserUi, CommandProposalUi, Element, Point, PopupMenuItem, ScrollState, TerminalFilter,
-    TurnStatus,
+    AskUserUi, CommandProposalUi, Element, Point, PopupMenuItem, ScrollState, ShortcutHint,
+    TerminalFilter, TurnStatus,
 };
 use crate::geometry::Vector2F;
 use crate::vim::{Clipboard, VimState};
@@ -90,6 +90,9 @@ pub struct ChatView {
     composer_model_label: Option<String>,
     composer_path: Option<String>,
     composer_stop_visible: bool,
+    /// The instruction strip the composer draws above its editor: the gestures
+    /// this pane's input answers, as key caps and names. Empty draws nothing.
+    composer_hints: Vec<ShortcutHint>,
     /// The live turn-status footer: what the pane is doing, or what is still
     /// running once its turn stops. [`TurnStatus::Idle`] gives the row zero
     /// height, so it costs nothing when nothing is in flight.
@@ -191,6 +194,7 @@ impl ChatView {
             composer_model_label: None,
             composer_path: None,
             composer_stop_visible: false,
+            composer_hints: Vec::new(),
             turn_status: TurnStatus::Idle,
             on_composer_change: None,
             on_composer_focus_change: None,

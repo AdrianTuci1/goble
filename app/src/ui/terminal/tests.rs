@@ -483,6 +483,27 @@ use goble_ui::theme::FontFamily;
             pane_has(&chat_runs, &placeholder),
             "the chat pane draws that same composer: {chat_runs:?}"
         );
+
+        // The bar carries its own instructions (R8): a shell pane runs the
+        // line, and its agent view is a chord away — not the agent pane's
+        // "send"/"new conversation", and no `!` shell prefix, which would be
+        // meaningless on an input that is a command already.
+        for label in ["run", "agent", "commands", "tasks"] {
+            assert!(
+                pane_has(&shell_runs, label),
+                "the shell bar draws the {label:?} instruction: {shell_runs:?}"
+            );
+        }
+        for label in ["send", "new conversation", "shell"] {
+            assert!(
+                !pane_has(&shell_runs, label),
+                "the shell bar does not draw the agent pane's {label:?}: {shell_runs:?}"
+            );
+        }
+        assert!(
+            pane_has(&chat_runs, "send") && pane_has(&chat_runs, "shell"),
+            "the chat pane draws its own instructions: {chat_runs:?}"
+        );
     }
 
     /// The pane's topbar tray is an overlay, not another child of the pane's

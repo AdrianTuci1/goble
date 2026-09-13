@@ -67,6 +67,9 @@ pub(crate) fn build_terminal_composer(
         .with_caret(controls.caret.clone())
         .with_path_label(crate::state::display_path(&session.composer_path))
         .with_stop_visible(session.agent_busy)
+        // The shell's own instructions: Enter runs the line here, and the
+        // pane's agent view is one chord away.
+        .with_hints(crate::ui::shortcut_hints::shell_rich_input_hints())
         .with_on_change(move |text| (on_composer_change.borrow_mut())(text))
         .with_on_send(move |text| {
             // Enter at the shell's bar runs the draft as a command in this

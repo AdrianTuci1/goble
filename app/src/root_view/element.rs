@@ -84,6 +84,12 @@ impl Element for RootView {
                     (actions.on_new_terminal.borrow_mut())();
                     return true;
                 }
+                // Cmd/Ctrl+Shift+W toggles the tasks & workflows overlay: the
+                // workspace stays mounted, the panel floats over it.
+                if has_ctrl_cmd && modifiers.shift && key.eq_ignore_ascii_case("w") {
+                    (actions.on_toggle_task_workflow.borrow_mut())();
+                    return true;
+                }
                 if has_ctrl_cmd && !modifiers.shift && key.eq_ignore_ascii_case("w") {
                     (actions.on_close_pane.borrow_mut())();
                     return true;

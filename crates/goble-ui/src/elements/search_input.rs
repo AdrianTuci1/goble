@@ -14,6 +14,8 @@ pub struct SearchInput {
     placeholder: String,
     focused: bool,
     compact: bool,
+    icon: bool,
+    extra_height: f32,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     size: Option<Vector2F>,
@@ -28,6 +30,8 @@ impl SearchInput {
             placeholder: "Search...".to_string(),
             focused: false,
             compact: false,
+            icon: true,
+            extra_height: 0.0,
             on_change: None,
             on_focus_change: None,
             size: None,
@@ -63,10 +67,23 @@ impl SearchInput {
         self
     }
 
-    /// Use a tighter vertical padding and a small corner radius for compact
-    /// placements (e.g. the sidebar search box).
+    /// Use a tighter box for a sidebar: less padding around the row.
     pub fn with_compact(mut self, compact: bool) -> Self {
         self.compact = compact;
+        self
+    }
+
+    /// Show or hide the leading magnifier. A sidebar search reads fine as a
+    /// plain field, without the glyph taking the row's first slot.
+    pub fn with_icon(mut self, icon: bool) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    /// Grow the box by `px` above and below its content, so a short row still
+    /// has a comfortable click target.
+    pub fn with_extra_height(mut self, px: f32) -> Self {
+        self.extra_height = px;
         self
     }
 
@@ -81,7 +98,6 @@ impl SearchInput {
             SpacingToken::Md
         };
         let padding = app.theme.spacing_px(token);
-        let radius = if self.compact { 6.0 } else { 0.0 };
         let gap = app.theme.spacing_px(SpacingToken::Sm);
         let display = if self.value.is_empty() && !self.placeholder.is_empty() {
             self.placeholder.clone()
@@ -105,17 +121,19 @@ impl SearchInput {
         let mut row = crate::elements::Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(gap)
-            .with_child(icon)
-            .with_child(text);
+            .with_spacing(gap);
+        if self.icon {
+            row = row.with_child(icon);
+        }
+        row = row.with_child(text);
         if self.focused {
             row = row.with_child(caret_beam(app));
         }
         let row = row.finish();
+        let v_pad = padding + self.extra_height;
         let mut container = Container::new(row)
-            .with_padding(EdgeInsets::uniform(padding))
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-            .with_corner_radius(radius);
+            .with_padding(EdgeInsets::new(padding, v_pad, padding, v_pad))
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
         if self.focused {
             container = container.with_border(app.theme.color(ColorToken::Accent).into());
         } else {
@@ -214,6 +232,23 @@ impl Element for SearchInput {
 mod tests {
     use super::*;
     use crate::geometry::vec2f;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    /// Renders the input at `extra` px of extra height, returning its size and
+    /// the commands it painted.
+    fn render(extra: f32, icon: bool) -> (Vector2F, Vec<RenderCommand>) {
+        let app = AppContext::default();
+        let mut element: Box<dyn Element> = Box::new(
+            SearchInput::new()
+                .with_placeholder("Search")
+                .with_compact(true)
+                .with_icon(icon)
+                .with_extra_height(extra),
+        );
+        let commands = render_element(&mut element, vec2f(240.0, 200.0), &app);
+        (element.size().expect("the field lays out"), commands)
+    }
 
     #[test]
     fn search_input_accepts_text() {
@@ -244,5 +279,50 @@ mod tests {
             &app,
         ));
         assert_eq!(input.value(), "h");
+    }
+
+    /// The sidebar's field, as the sidebar configures it: square, without the
+    /// magnifier, and a few pixels taller than the text it holds.
+    #[test]
+    fn the_sidebar_search_is_a_taller_square_field_without_a_magnifier() {
+        let (plain, commands) = render(0.0, false);
+        let (taller, _) = render(3.0, false);
+
+        assert_eq!(
+            taller.y - plain.y,
+            6.0,
+            "the extra height is added above and below the text"
+        );
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "search"
+            )),
+            "the sidebar search draws no magnifier"
+        );
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect {
+                    corner_radius,
+                    ..
+                } if *corner_radius > 0.0
+            )),
+            "the sidebar search is square"
+        );
+    }
+
+    /// The magnifier is still the field's default, so the flag above is a real
+    /// switch and not a no-op.
+    #[test]
+    fn the_search_field_keeps_its_magnifier_by_default() {
+        let (_, commands) = render(0.0, true);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "search"
+            )),
+            "a plain search field keeps its magnifier"
+        );
     }
 }

@@ -100,6 +100,7 @@ impl UiState {
             tool_fold: Rc::new(RefCell::new(HashMap::new())),
             terminal_global_filters: HashMap::new(),
             crons_open: false,
+            task_workflow_open: false,
             crons,
             workflows: Vec::new(),
             executions: Vec::new(),

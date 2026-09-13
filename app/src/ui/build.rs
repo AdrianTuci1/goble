@@ -13,8 +13,8 @@ use super::palette::PaletteCommand;
 use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, ScreenSnapshot, UiSnapshot};
 use super::types::AppTab;
 use super::{
-    chat, connectors, crons, media, model_form, palette, screen, settings, shell, sidebar, vault,
-    CONNECTORS_WIDTH,
+    chat, connectors, crons, media, model_form, palette, screen, settings, shell, sidebar,
+    task_workflow, vault, CONNECTORS_WIDTH,
 };
 
 /// Margin between the Settings overlay panel and the window edges. The panel
@@ -101,6 +101,17 @@ pub fn build_ui(
         .with_on_close(move || (on_close_crons.borrow_mut())())
         .finish();
 
+    // The tasks & workflows overlay: the durable tasks, the daemon's execution
+    // ledger and the registered workflows, over the workspace rather than in
+    // place of it. Cmd/Ctrl+Shift+W toggles it; its ✕ and the backdrop close it.
+    let on_close_task_workflow = actions.on_close_task_workflow.clone();
+    let task_workflow_sheet =
+        Sheet::new(task_workflow::build_task_workflow_overlay(app, state, actions))
+            .with_expanded(state.task_workflow_open)
+            .with_width(SHEET_DEFAULT_WIDTH)
+            .with_on_close(move || (on_close_task_workflow.borrow_mut())())
+            .finish();
+
     let on_close_connectors = ai_actions.on_close_connectors.clone();
     let connectors_sheet = Sheet::new(connectors::build_connectors_sheet(app, ai, ai_actions))
         .with_expanded(ai.connectors_open)
@@ -151,6 +162,7 @@ pub fn build_ui(
         // reason. Sheets and dialogs below stay above the toolbar.
         topbar,
         crons_sheet,
+        task_workflow_sheet,
         connectors_sheet,
         vault_sheet,
         screen_sheet,
@@ -208,6 +220,7 @@ pub fn build_ui(
         run(&actions.on_settings).with_label("Open settings", ""),
         run(&actions.on_projects).with_label("Open projects", ""),
         run(&actions.on_open_crons).with_label("Open scheduled tasks", ""),
+        run(&actions.on_toggle_task_workflow).with_label("Tasks & workflows", ""),
         run(&actions.on_toggle_right_sidebar).with_label("Toggle right sidebar", ""),
     ];
     {

@@ -88,6 +88,9 @@ pub struct UiState {
     /// so the filter bar of one pty/agent pane does not open in its sibling.
     pub terminal_global_filters: HashMap<u64, TerminalFilter>,
     pub crons_open: bool,
+    /// Whether the tasks & workflows overlay is up (it covers the workspace
+    /// without replacing it).
+    pub task_workflow_open: bool,
     pub crons: Vec<CronEntry>,
     /// Harness workflows (real daemon workflow store).
     pub workflows: Vec<WorkflowEntry>,

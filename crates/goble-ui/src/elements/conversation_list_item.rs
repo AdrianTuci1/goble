@@ -171,7 +171,6 @@ impl ConversationListItem {
                 .finish(),
         )
         .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-        .with_corner_radius(6.0)
         .with_padding(crate::style::EdgeInsets::new(5.0, 5.0, 5.0, 5.0))
         .finish();
 
@@ -192,6 +191,7 @@ impl ConversationListItem {
                     .finish(),
             )
             .with_size(26.0)
+            .with_corner_radius(0.0)
             .with_on_click(move || {
                 let mut ui = ui_dots.borrow_mut();
                 ui.menu_open = !ui.menu_open;
@@ -219,10 +219,11 @@ impl ConversationListItem {
             );
         }
 
+        // Square: the sidebar is a flat surface, so a card is a full-width band
+        // rather than a rounded widget.
         self.root = Some(
             Container::new(column.finish())
                 .with_background(Fill::Solid(bg))
-                .with_corner_radius(app.theme.radius_px())
                 .finish(),
         );
     }
@@ -248,6 +249,7 @@ impl ConversationListItem {
             .finish();
         Button::new(row)
             .with_variant(ButtonVariant::Ghost)
+            .with_corner_radius(0.0)
             .with_on_click(move || {
                 if let Some(cb) = on_delete.as_ref() {
                     (cb.borrow_mut())();

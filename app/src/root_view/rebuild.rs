@@ -211,6 +211,7 @@ impl RootView {
                 terminal_global_filters: s.terminal_global_filters.clone(),
                 pane_terminal_scroll: s.pane_terminal_scroll.clone(),
                 crons_open: s.crons_open,
+                task_workflow_open: s.task_workflow_open,
                 crons: s.crons.clone(),
                 workflows: s.workflows.clone(),
                 executions: s.executions.clone(),

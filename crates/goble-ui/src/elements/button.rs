@@ -27,6 +27,8 @@ pub struct Button {
     state: InteractiveState,
     variant: ButtonVariant,
     disabled: bool,
+    /// The fill's corner radius. `None` uses the theme's radius.
+    corner_radius: Option<f32>,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -39,6 +41,7 @@ impl Button {
             state: InteractiveState::default(),
             variant: ButtonVariant::Default,
             disabled: false,
+            corner_radius: None,
             on_click: None,
             size: None,
             origin: None,
@@ -47,6 +50,13 @@ impl Button {
 
     pub fn with_variant(mut self, variant: ButtonVariant) -> Self {
         self.variant = variant;
+        self
+    }
+
+    /// Set the fill's corner radius instead of the theme's. A control inside a
+    /// flat surface passes `0.0` so its fill is a square band.
+    pub fn with_corner_radius(mut self, radius: f32) -> Self {
+        self.corner_radius = Some(radius);
         self
     }
 
@@ -116,7 +126,11 @@ impl Element for Button {
                 crate::geometry::PointF::new(origin.x, origin.y),
                 crate::geometry::Size2F::new(size.x, size.y),
             );
-            renderer.fill_rounded_rect(rect, bg_color, app.theme.radius_px());
+            renderer.fill_rounded_rect(
+                rect,
+                bg_color,
+                self.corner_radius.unwrap_or_else(|| app.theme.radius_px()),
+            );
         }
 
         let child_size = self.child.size().unwrap_or(Vector2F::zero());

@@ -136,6 +136,10 @@ pub struct UiActions {
     pub on_plugins: Rc<RefCell<dyn FnMut()>>,
     pub on_open_crons: Rc<RefCell<dyn FnMut()>>,
     pub on_close_crons: Rc<RefCell<dyn FnMut()>>,
+    /// Toggle the tasks & workflows overlay (a panel over the workspace).
+    pub on_toggle_task_workflow: Rc<RefCell<dyn FnMut()>>,
+    /// Close the tasks & workflows overlay (its ✕, its backdrop).
+    pub on_close_task_workflow: Rc<RefCell<dyn FnMut()>>,
     pub on_toggle_right_sidebar: Rc<RefCell<dyn FnMut()>>,
     /// Toggle the agent/window fullscreen (borderless). Flips app state and
     /// requests the platform window to enter/leave fullscreen.

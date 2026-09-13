@@ -6,6 +6,7 @@ use crate::elements::Element;
 use crate::elements::LayoutContext;
 use crate::elements::PopupMenuItem;
 use crate::elements::SizeConstraint;
+use crate::elements::ShortcutHint;
 use crate::event::DispatchedEvent;
 use crate::event::ModifiersState;
 use crate::geometry::vec2f;
@@ -525,4 +526,49 @@ fn a_press_anywhere_in_the_rich_input_focuses_the_editor() {
     );
     assert!(!handled, "a press outside the bar is left to the pane");
     assert_eq!(*focused.borrow(), vec![true], "and it does not re-report focus");
+}
+
+/// The instruction strip sits at the head of the input — above the pills and
+/// the editor — and a composer that was handed none draws no strip at all.
+#[test]
+fn the_hints_are_drawn_above_the_editor_and_only_when_given() {
+    let app = AppContext::default();
+    let mut plain = ChatComposer::new();
+    let commands = paint_composer(&app, &mut plain);
+    let texts = drawn_texts(&commands);
+    assert!(
+        !texts.iter().any(|text| text == "commands"),
+        "a composer with no hints draws no strip"
+    );
+
+    let mut hinted = ChatComposer::new().with_hints(vec![
+        ShortcutHint::new(&["⌘", "K"], "commands"),
+        ShortcutHint::new(&["⌘", "⇧", "W"], "tasks"),
+    ]);
+    let commands = paint_composer(&app, &mut hinted);
+    let texts = drawn_texts(&commands);
+    for drawn in ["⌘", "K", "commands", "⇧", "W", "tasks"] {
+        assert!(texts.iter().any(|text| text == drawn), "{drawn:?} is drawn");
+    }
+
+    // Above the editor, not in the footer: the strip's own line is the highest
+    // of the input's rows, and the draft's placeholder sits below it.
+    let line_of = |needle: &str| {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                crate::render::RenderCommand::DrawText { text, origin, .. } if text == needle => {
+                    Some(origin.y)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{needle:?} is drawn"))
+    };
+    let placeholder = line_of("Ask anything...");
+    for hint in ["commands", "tasks"] {
+        assert!(
+            line_of(hint) < placeholder,
+            "the strip is above the editor ({hint:?})"
+        );
+    }
 }

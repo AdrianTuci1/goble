@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::{AppContext, Chip, Clipped, ComposerButton, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, Padding, PaintContext, PillTraySide, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, SizeConstraint, Text, TextArea, Tooltip, TooltipPosition};
+use crate::elements::{AppContext, Chip, Clipped, ComposerButton, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, Padding, PaintContext, PillTraySide, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, Text, TextArea, Tooltip, TooltipPosition};
 use crate::event::{DispatchedEvent, ModifiersState};
 use crate::geometry::{PointF, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
@@ -28,6 +28,9 @@ pub struct ChatComposer {
     /// this composer the only typing surface of its pane (the terminal pane):
     /// clicking the output above the bar must leave the caret where it was.
     blur_on_outside_click: bool,
+    /// The instruction strip at the head of the input. Empty on a surface that
+    /// passes none, and then nothing is drawn at all.
+    hints: Vec<ShortcutHint>,
     stop_visible: bool,
     /// warp-new style context pills: the agent harness, the working directory
     /// and the git branch, each with its own dropdown selector. The working
@@ -93,6 +96,7 @@ impl ChatComposer {
             path_label: None,
             focused: false,
             blur_on_outside_click: true,
+            hints: Vec::new(),
             stop_visible: false,
             on_change: None,
             on_send: None,
@@ -254,6 +258,14 @@ impl ChatComposer {
 
     pub fn with_stop_visible(mut self, visible: bool) -> Self {
         self.stop_visible = visible;
+        self
+    }
+
+    /// The instruction strip drawn at the head of the input: one entry per
+    /// gesture this surface answers, each a key cap and the name of what it
+    /// does. The caller owns the list, so the strip names only real bindings.
+    pub fn with_hints(mut self, hints: Vec<ShortcutHint>) -> Self {
+        self.hints = hints;
         self
     }
 
@@ -642,6 +654,14 @@ impl ChatComposer {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Min)
             .with_spacing(sm);
+
+        // The instructions sit at the head of the input, above the context
+        // pills and the editor (the warp-new order, where the shortcuts view is
+        // the first child of the input column). A surface that passes none pays
+        // neither the row's height nor the column's inter-child spacing.
+        if !self.hints.is_empty() {
+            column = column.with_child(ShortcutHints::new(self.hints.clone()).finish(app));
+        }
 
         if !self.attachments.is_empty() {
             let mut attachment_row = Flex::row().with_spacing(sm);

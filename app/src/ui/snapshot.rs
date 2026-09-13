@@ -164,6 +164,9 @@ pub struct UiSnapshot {
     /// with app state so a scrollback position survives the per-frame rebuild.
     pub pane_terminal_scroll: HashMap<u64, Rc<RefCell<goble_ui::ScrollState>>>,
     pub crons_open: bool,
+    /// Whether the tasks & workflows overlay is up. It floats over the
+    /// workspace, so the panes stay mounted underneath it.
+    pub task_workflow_open: bool,
     pub crons: Vec<CronEntry>,
     /// Workflows registered with the embedded daemon (real data).
     pub workflows: Vec<WorkflowEntry>,

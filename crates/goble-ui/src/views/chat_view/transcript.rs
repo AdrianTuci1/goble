@@ -553,6 +553,7 @@ impl ChatView {
         let mut composer = ChatComposer::new()
             .with_value(current_value)
             .with_focused(self.composer_focused)
+            .with_hints(self.composer_hints.clone())
             .with_caret(self.composer_caret.clone())
             .with_stop_visible(self.composer_stop_visible)
             .with_on_change(move |text| {

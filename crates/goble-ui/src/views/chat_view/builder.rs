@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
-    AskUserUi, CommandProposalUi, Element, PopupMenuItem, ScrollState, TerminalFilter, TurnStatus,
+    AskUserUi, CommandProposalUi, Element, PopupMenuItem, ScrollState, ShortcutHint, TerminalFilter,
+    TurnStatus,
 };
 use crate::vim::{Clipboard, VimState};
 use goble_core::harness::CommandDecision;
@@ -233,6 +234,13 @@ impl ChatView {
 
     pub fn with_composer_stop_visible(mut self, visible: bool) -> Self {
         self.composer_stop_visible = visible;
+        self
+    }
+
+    /// The instruction strip the composer draws above its editor: the gestures
+    /// this pane's input answers, as key caps and names.
+    pub fn with_composer_hints(mut self, hints: Vec<ShortcutHint>) -> Self {
+        self.composer_hints = hints;
         self
     }
 

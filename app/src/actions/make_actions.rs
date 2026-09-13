@@ -94,6 +94,8 @@ pub fn make_actions(
     let on_mcps = Rc::clone(&state);
     let on_open_crons = Rc::clone(&state);
     let on_close_crons = Rc::clone(&state);
+    let on_toggle_task_workflow = Rc::clone(&state);
+    let on_close_task_workflow = Rc::clone(&state);
     let on_toggle_right_sidebar = Rc::clone(&state);
     let on_toggle_fullscreen = Rc::clone(&state);
     let on_clear_transcript = Rc::clone(&state);
@@ -930,6 +932,13 @@ pub fn make_actions(
         })),
         on_close_crons: Rc::new(RefCell::new(move || {
             on_close_crons.borrow_mut().crons_open = false;
+        })),
+        on_toggle_task_workflow: Rc::new(RefCell::new(move || {
+            let mut state = on_toggle_task_workflow.borrow_mut();
+            state.task_workflow_open = !state.task_workflow_open;
+        })),
+        on_close_task_workflow: Rc::new(RefCell::new(move || {
+            on_close_task_workflow.borrow_mut().task_workflow_open = false;
         })),
         on_toggle_right_sidebar: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_right_sidebar.borrow_mut();

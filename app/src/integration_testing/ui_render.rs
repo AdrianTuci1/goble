@@ -70,6 +70,50 @@ fn full_app_renders_with_chat_data() {
     assert!(counts.draw_text > 0, "shell should paint text");
 }
 
+/// A file pane draws the file it was opened on: the file's own lines and its
+/// name, read once while the frame is built.
+#[test]
+fn a_file_view_pane_draws_the_file_it_was_opened_on() {
+    let (desktop, _dir) = common::desktop_state();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("main.rs");
+    std::fs::write(&path, "fn main() { println!(\"hi\"); }\n").expect("write the file");
+    let path = path.to_string_lossy().to_string();
+
+    let app = AppContext::default();
+    let view = RootView::new(&app, &desktop, None);
+    {
+        let state = view.state_rc();
+        let mut state = state.borrow_mut();
+        let (space, pane_id) = (state.active_space, state.active_pane_id);
+        state.spaces[space].set_leaf_kind(
+            pane_id,
+            goble_app::ui::PaneKind::File { path: path.clone() },
+        );
+    }
+    let mut root: Box<dyn Element> = Box::new(view);
+    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+    let texts: Vec<&str> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        texts.iter().any(|text| text.contains("fn main()")),
+        "the file's own line is drawn: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text.contains("main.rs")),
+        "the view names the file it shows: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text.contains("1 lines")),
+        "the view says how much of the file it shows: {texts:?}"
+    );
+}
+
 #[test]
 fn full_app_renders_inline_key_error() {
     let (desktop, _dir) = common::desktop_state();

@@ -99,6 +99,7 @@ impl DesktopState {
             agent_id: None,
             worker_id: None,
             workspace_routing: None,
+            working_dir: None,
             updated_at: now,
         };
         self.chats.lock().push(chat);
@@ -133,6 +134,17 @@ impl DesktopState {
     /// Read where a conversation's agent should run, if the user chose.
     pub fn get_chat_workspace_routing(&self, id: &str) -> anyhow::Result<Option<String>> {
         self.store.lock().get_chat_workspace_routing(id)
+    }
+
+    /// Persist the directory a conversation works in (the pane's cwd when it
+    /// ran), so its sidebar card can say where the work happens.
+    pub fn set_chat_working_dir(&self, id: &str, dir: &str) -> anyhow::Result<()> {
+        self.store.lock().set_chat_working_dir(id, dir)?;
+        if let Some(chat) = self.chats.lock().iter_mut().find(|c| c.id == id) {
+            chat.working_dir = Some(dir.to_string());
+        }
+        self.emit("chats:updated", ());
+        Ok(())
     }
 
     pub fn list_chats(&self) -> Vec<Chat> {

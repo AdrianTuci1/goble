@@ -89,6 +89,21 @@ pub fn measure_text_family(
     crate::geometry::vec2f(width, height)
 }
 
+/// Whether the bundled face that draws `text` covers every character in it.
+///
+/// The fonts are bundled (Roboto for prose, Hack for the terminal), so a
+/// character outside their coverage — the Command or Shift key symbol, say —
+/// would rasterize as the font's `.notdef` box instead of the glyph the UI
+/// means. A caller that has an icon for such a character asks here first and
+/// draws the icon when the answer is `false`.
+pub fn font_covers(text: &str, family: FontFamily, weight: FontWeight) -> bool {
+    let Some(font_set) = font_set() else {
+        return true;
+    };
+    let font = font_set.select(weight, family, false);
+    text.chars().all(|ch| ch.is_whitespace() || font.has_glyph(ch))
+}
+
 /// The advance width of one character in the bundled monospace font.
 ///
 /// A cell grid has to know its column pitch before it can place anything, and

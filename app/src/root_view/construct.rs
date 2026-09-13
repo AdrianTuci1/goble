@@ -13,6 +13,9 @@ use crate::media::MediaState;
 use crate::projects::ProjectsState;
 use crate::screen::ScreenState;
 use crate::state::UiState;
+use crate::ui::explorer::ExplorerCache;
+use crate::ui::file_view::FileCache;
+use crate::ui::pickers::PickerCache;
 
 use super::RootView;
 
@@ -42,6 +45,9 @@ impl RootView {
             window_control: app.window_control.clone(),
             ui_zoom: app.ui_zoom.clone(),
             app_context: None,
+            pickers: Rc::new(RefCell::new(PickerCache::default())),
+            explorer: Rc::new(RefCell::new(ExplorerCache::default())),
+            file_cache: Rc::new(RefCell::new(FileCache::default())),
             actions: None,
             size: None,
             origin: None,
@@ -69,5 +75,13 @@ impl RootView {
     #[doc(hidden)]
     pub fn screen_state_rc(&self) -> Rc<RefCell<ScreenState>> {
         Rc::clone(&self.screen_state)
+    }
+
+    /// Expose the backing environment state so integration render tests can
+    /// assert which environment is the active/default one (the environment new
+    /// spaces start in).
+    #[doc(hidden)]
+    pub fn media_state_rc(&self) -> Rc<RefCell<MediaState>> {
+        Rc::clone(&self.media_state)
     }
 }

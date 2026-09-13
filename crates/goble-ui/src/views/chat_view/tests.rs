@@ -153,6 +153,58 @@ fn chat_view_transcript_clips_to_the_viewport_and_follows_the_stream() {
     );
 }
 
+/// The transcript takes the height it is given and the composer stays at the
+/// bottom of the pane: a long conversation scrolls under the input instead of
+/// carrying it out of the view. The outer column must claim its height
+/// (`MainAxisSize::Max`); without that the `Expanded` transcript is laid out
+/// unbounded, the column reports the whole conversation's height and the input
+/// lands below the pane (measured at y=5964 in a 480 px view before the fix).
+#[test]
+fn the_composer_stays_at_the_bottom_of_the_pane_with_a_long_transcript() {
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let height = 480.0;
+    let messages: Vec<ChatMessage> = (0..40)
+        .map(|i| {
+            ChatMessage::new(
+                ChatRole::Assistant,
+                vec![ChatFragment::text(format!("streamed line {i}"))],
+            )
+        })
+        .collect();
+    let mut view = ChatView::new()
+        .with_messages(messages)
+        .with_scroll_state(Rc::new(RefCell::new(ScrollState::following())))
+        .finish();
+    let commands = render_element(&mut view, vec2f(600.0, height), &app);
+    let editor = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { text, origin, .. } if text == "Ask anything..." => {
+                Some(origin.y)
+            }
+            _ => None,
+        })
+        .expect("the composer's editor is drawn");
+    assert!(
+        editor > height * 0.5 && editor < height,
+        "the input stays at the bottom of the pane: {editor} of {height}"
+    );
+    let lowest = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { origin, .. } => Some(origin.y),
+            _ => None,
+        })
+        .fold(0.0_f32, f32::max);
+    assert!(
+        lowest < height,
+        "nothing is drawn below the pane: {lowest} of {height}"
+    );
+}
+
 /// The pane's topbar is an overlay, not the transcript's first row: with the
 /// dots' tray open, the panel is painted after the messages, so it covers the
 /// text, and it opens leftwards from a trigger at the pane's right edge, so it
@@ -829,3 +881,88 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
         "no fabricated zero: {texts:?}"
     );
 }
+
+/// The instructions the caller hands the view are drawn over the input's
+/// separator, as the content's last row above it — the warp-new placement, where
+/// the shortcuts view sits between the transcript and the input it describes.
+/// A view handed none draws neither strip nor a gap where one would have been.
+#[test]
+fn the_composer_hints_sit_over_the_separator_and_only_when_given() {
+    use crate::elements::ShortcutHint;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let width = 600.0;
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::text("Hi")],
+    )];
+    let line_of = |commands: &[RenderCommand], needle: &str| -> Option<f32> {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText { text, origin, .. } if text == needle => Some(origin.y),
+            _ => None,
+        })
+    };
+    // The pane-wide rules this frame drew: the input's separator is the one
+    // over the bottom of the view.
+    let rules = |commands: &[RenderCommand]| -> Vec<f32> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, .. }
+                    if rect.height() <= 2.0 && rect.width() >= width - 0.5 =>
+                {
+                    Some(rect.min_y())
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    let mut plain = ChatView::new().with_messages(messages.clone()).finish();
+    let commands = render_element(&mut plain, vec2f(width, 520.0), &app);
+    for text in ["commands", "tasks", "⌘"] {
+        assert!(
+            line_of(&commands, text).is_none(),
+            "a view with no hints draws no strip ({text:?})"
+        );
+    }
+    let plain_rules = rules(&commands);
+    assert_eq!(plain_rules.len(), 1, "one separator divides input from content");
+
+    let mut view = ChatView::new()
+        .with_messages(messages)
+        .with_composer_hints(vec![
+            ShortcutHint::new(&["⌘", "K"], "commands"),
+            ShortcutHint::new(&["⌘", "⇧", "W"], "tasks"),
+        ])
+        .finish();
+    let commands = render_element(&mut view, vec2f(width, 520.0), &app);
+    let strip = line_of(&commands, "commands").expect("the strip is drawn");
+    let tasks = line_of(&commands, "tasks").expect("the whole strip is drawn");
+    assert_eq!(strip, tasks, "the strip is one line");
+
+    // The strip is the last row of the content: under the transcript, over the
+    // separator, over the editor.
+    let transcript = line_of(&commands, "Hi").expect("the message is drawn");
+    let editor = line_of(&commands, "Ask anything...").expect("the editor is drawn");
+    assert!(transcript < strip, "the strip closes the content");
+    let separator = rules(&commands)
+        .into_iter()
+        .find(|y| *y > strip)
+        .unwrap_or_else(|| panic!("a separator under the strip (strip at {strip})"));
+    assert!(strip < separator, "the strip is over the separator");
+    assert!(
+        separator < editor,
+        "and the separator is the input's top edge"
+    );
+    // The strip costs the pane nothing but its own height: the separator stays
+    // where it would have been without it, since the input below is unchanged.
+    assert!(
+        (separator - plain_rules[0]).abs() < 0.5,
+        "the input did not move: separator at {separator} against {} without the strip",
+        plain_rules[0]
+    );
+}
+

@@ -102,6 +102,15 @@ pub struct Scrollable {
     child: Box<dyn Element>,
     axis: Axis,
     state: Option<Rc<RefCell<ScrollState>>>,
+    /// Whether content shorter than the viewport is flushed to the end of it
+    /// instead of being drawn from the start. A shell's newest section and a
+    /// transcript's newest message hug the input above them (warp-new), so a
+    /// short conversation reads as content ending at the input rather than as
+    /// content floating at the top of the pane.
+    bottom_anchor: bool,
+    /// The child's size from the last layout, which is what the flush above is
+    /// measured against.
+    content: Vector2F,
     /// Whether the pointer was over the viewport at the last paint. Wheel
     /// events carry no position, and the element instance survives from the
     /// paint to the event that follows it.
@@ -116,6 +125,8 @@ impl Scrollable {
             child,
             axis,
             state: None,
+            bottom_anchor: false,
+            content: Vector2F::zero(),
             pointer_over: false,
             size: None,
             origin: None,
@@ -126,6 +137,13 @@ impl Scrollable {
     /// viewport (offset + clip + wheel).
     pub fn with_state(mut self, state: Rc<RefCell<ScrollState>>) -> Self {
         self.state = Some(state);
+        self
+    }
+
+    /// Flush content shorter than the viewport to the end of it. Only a region
+    /// with a state has a viewport to flush against; without one this is inert.
+    pub fn with_bottom_anchor(mut self, anchored: bool) -> Self {
+        self.bottom_anchor = anchored;
         self
     }
 
@@ -191,6 +209,7 @@ impl Element for Scrollable {
                 .borrow_mut()
                 .set_metrics(child_size.along(self.axis), viewport.along(self.axis));
         }
+        self.content = child_size;
         self.size = Some(viewport);
         viewport
     }
@@ -206,9 +225,17 @@ impl Element for Scrollable {
         let viewport_rect = rectf(origin.x, origin.y, viewport.x, viewport.y);
         self.pointer_over = ctx.hovered(viewport_rect);
         let offset = self.offset();
+        // Content shorter than the viewport is flushed to its end: no offset
+        // can express that (the scroll range is zero), so the child is painted
+        // pushed down instead. Hit-testing follows the paint.
+        let slack = if self.bottom_anchor {
+            (viewport.along(self.axis) - self.content.along(self.axis)).max(0.0)
+        } else {
+            0.0
+        };
         let child_origin = match self.axis {
-            Axis::Vertical => vec2f(origin.x, origin.y - offset),
-            Axis::Horizontal => vec2f(origin.x - offset, origin.y),
+            Axis::Vertical => vec2f(origin.x, origin.y - offset + slack),
+            Axis::Horizontal => vec2f(origin.x - offset + slack, origin.y),
         };
         if let Some(renderer) = ctx.renderer.as_mut() {
             renderer.clip_rect(viewport_rect);
@@ -240,13 +267,18 @@ impl Element for Scrollable {
             if !self.pointer_over {
                 return false;
             }
-            // Wheel down (positive y) moves the content up, i.e. the offset
-            // grows along the axis.
+            // The wheel reports how far the *content* should move, and positive
+            // is right/down (winit's own contract, and AppKit's
+            // `scrollingDeltaY` underneath it): a positive delta pulls the
+            // content down, which walks the viewport back towards the start, so
+            // the offset falls. Negating here is what makes a two-finger swipe
+            // up scroll the transcript down on macOS, and the same sign gives
+            // macOS' natural scrolling and a wheel the same direction.
             let delta = match self.axis {
                 Axis::Vertical => delta.y,
                 Axis::Horizontal => delta.x,
             };
-            state.borrow_mut().scroll_by(delta);
+            state.borrow_mut().scroll_by(-delta);
             return true;
         }
         // Hit-testing already sees the offset: the child was painted at
@@ -258,7 +290,7 @@ impl Element for Scrollable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elements::Empty;
+    use crate::elements::{Empty, Text};
     use crate::geometry::vec2f;
 
     #[test]
@@ -366,6 +398,47 @@ mod tests {
         );
     }
 
+    /// Short content in a bottom-anchored region is painted against the end of
+    /// the viewport rather than against its start, and hit-testing follows it.
+    #[test]
+    fn a_bottom_anchored_region_flushes_short_content_to_the_end() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::following()));
+        let mut scrollable = Scrollable::new(
+            Text::new("only a line")
+                .with_font_size(12.0)
+                .finish(),
+            Axis::Vertical,
+        )
+        .with_state(Rc::clone(&state))
+        .with_bottom_anchor(true);
+        let size = scrollable.layout(
+            SizeConstraint::loose(vec2f(300.0, 100.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert_eq!(size.y, 100.0, "the viewport fills the space it was given");
+
+        let mut ctx = crate::elements::PaintContext::new(crate::render::Renderer::new());
+        scrollable.paint(vec2f(0.0, 40.0), &mut ctx, &app);
+        let commands = ctx.renderer.take().map(|r| r.commands().to_vec()).unwrap_or_default();
+        let line = commands
+            .iter()
+            .find_map(|command| match command {
+                crate::render::RenderCommand::DrawText { text, origin, .. }
+                    if text == "only a line" =>
+                {
+                    Some(origin.y)
+                }
+                _ => None,
+            })
+            .expect("the content is drawn");
+        assert!(
+            line > 100.0,
+            "the content sits at the end of the 40..140 viewport, not its start: {line}"
+        );
+    }
+
     #[test]
     fn a_following_region_opens_at_the_end_of_its_content() {
         let app = AppContext::default();
@@ -457,16 +530,33 @@ mod tests {
         ctx.cursor_position = vec2f(10.0, 10.0);
         scrollable.paint(vec2f(0.0, 0.0), &mut ctx, &app);
 
-        let mut event_ctx = EventContext::default();
-        let consumed = scrollable.dispatch_event(
-            &DispatchedEvent::Scroll {
-                delta: vec2f(0.0, 30.0),
-            },
-            &mut event_ctx,
-            &app,
+        // The delta is how far the *content* moves and positive is down
+        // (winit's contract): pulling the content down walks back to the start,
+        // so a positive delta leaves the region at the top, and a negative one
+        // — the swipe that moves the content up — carries the offset down the
+        // transcript.
+        let mut wheel = |dy: f32| {
+            let mut event_ctx = EventContext::default();
+            scrollable.dispatch_event(
+                &DispatchedEvent::Scroll {
+                    delta: vec2f(0.0, dy),
+                },
+                &mut event_ctx,
+                &app,
+            )
+        };
+        assert!(wheel(30.0), "wheel inside the viewport scrolls the region");
+        assert_eq!(
+            state.borrow().offset(),
+            0.0,
+            "a delta that pulls the content down keeps the region at its start"
         );
-        assert!(consumed, "wheel inside the viewport scrolls the region");
-        assert_eq!(state.borrow().offset(), 30.0);
+        assert!(wheel(-30.0));
+        assert_eq!(
+            state.borrow().offset(),
+            30.0,
+            "and one that moves the content up carries the offset down the transcript"
+        );
     }
 
     #[test]
@@ -491,7 +581,7 @@ mod tests {
         let mut event_ctx = EventContext::default();
         let consumed = scrollable.dispatch_event(
             &DispatchedEvent::Scroll {
-                delta: vec2f(0.0, 30.0),
+                delta: vec2f(0.0, -30.0),
             },
             &mut event_ctx,
             &app,

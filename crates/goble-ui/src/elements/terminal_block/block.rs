@@ -1,8 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::color::ColorU;
-use crate::elements::{AppContext, Border, Clipped, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex, Icon, InlineText, LayoutContext, MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, SizeConstraint, Spacer, Text, TextSpan, TopbarButton};
+use crate::elements::{AppContext, Clipped, ConstrainedBox, CrossAxisAlignment, Divider, Element, Flex, Icon, InlineText, LayoutContext, MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, SizeConstraint, Spacer, Text, TextSpan, TopbarButton};
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 use crate::platform::text_atlas::{measure_text_family, FontWeight};
@@ -10,12 +9,6 @@ use crate::theme::{ColorToken, FontFamily};
 use super::data::{TerminalData, TerminalMeta, TerminalStatus};
 use super::filter::{FILTERS, TerminalCopyHandler, TerminalFilter};
 use super::line::{TerminalLine, TerminalLineKind};
-
-/// Blend two colours in sRGB space, weight `t` toward `b`.
-fn mix(a: ColorU, b: ColorU, t: f32) -> ColorU {
-    let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-    ColorU::new(lerp(a.r, b.r), lerp(a.g, b.g), lerp(a.b, b.b), lerp(a.a, b.a))
-}
 
 const FONT_SIZE: f32 = 13.0;
 
@@ -30,10 +23,6 @@ const META_FONT_SIZE: f32 = 11.0;
 
 /// Widest a single context label is allowed to draw before it ellipsizes.
 const META_MAX_WIDTH: f32 = 240.0;
-
-pub(crate) const PADDING_X: f32 = 12.0;
-
-pub(crate) const PADDING_Y: f32 = 10.0;
 
 pub(crate) const HEADER_SPACING: f32 = 8.0;
 
@@ -303,14 +292,13 @@ impl TerminalBlock {
 
     fn rebuild(&mut self, app: &AppContext) {
         let sm = app.theme.spacing_px(crate::theme::SpacingToken::Sm);
-        let radius = app.theme.radius_px();
         let muted = ColorToken::Muted;
 
         // Header: warp-style command-block header. The label group (the block's
         // title and the context it carries) is content-sized but the row is
         // flex-grown so the Spacer pushes the copy/filter controls to the right
         // edge. There is no leading icon and no literal status label — the block
-        // identity carries the state colour and the card is tinted on failure.
+        // identity carries the state colour.
         let labels = self.header_labels();
         let title = self.title.clone();
         let mut header = Flex::row()
@@ -405,31 +393,20 @@ impl TerminalBlock {
             }
         }
 
-        // The card is tinted toward the error colour on failure (warp paints a
-        // red-tinted block background) and stays default otherwise.
-        let base_bg = app.theme.color(ColorToken::SurfaceRaised);
-        let bg = match self.status {
-            Some(TerminalStatus::Error) => mix(base_bg, app.theme.color(ColorToken::Error), 0.10),
-            _ => base_bg,
-        };
-        let card = Container::new(
+        // A section of the page, not a card: a hairline over the header
+        // separates it from what is above, and the rows below it carry no fill,
+        // no border and no corner. The block is drawn at the full width it is
+        // given (see `layout`), the way a command reads in a terminal rather
+        // than in a panel floating over one.
+        self.root = Some(
             Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_spacing(sm)
+                .with_child(Divider::horizontal().finish())
                 .with_child(header.finish())
                 .with_child(body.finish())
                 .finish(),
-        )
-        .with_background(Fill::Solid(bg))
-        .with_border(Border::all(1.0).with_border_fill(Fill::Solid(app.theme.color(ColorToken::Border))))
-        .with_padding(EdgeInsets::new(PADDING_Y, PADDING_X, PADDING_Y, PADDING_X))
-        .with_corner_radius(radius)
-        .finish();
-
-        // Width is offered below (in layout) via `self.constraint_width`; the
-        // block stays content-adaptive. Store a placeholder width of 0 here and
-        // let `layout` rebuild with the resolved width.
-        self.root = Some(card);
+        );
     }
 
     fn resolve_width(&self, max_text_width: f32) -> f32 {
@@ -469,9 +446,15 @@ impl Element for TerminalBlock {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        let max_text_width = (constraint.max.x - 2.0 * PADDING_X).max(0.0);
-        let block_width = (self.resolve_width(max_text_width) + 2.0 * PADDING_X)
-            .min(constraint.max.x);
+        // Full width: the block is the pane's own row, so it spans what the
+        // pane offers instead of sizing itself to its content. A caller that
+        // measures it with no width at all (an unbounded constraint) still gets
+        // the width its own lines need.
+        let block_width = if constraint.max.x.is_finite() && constraint.max.x > 0.0 {
+            constraint.max.x
+        } else {
+            self.resolve_width(f32::INFINITY)
+        };
         self.rebuild(app);
         let mut root = ConstrainedBox::new(self.root.take().expect("rebuild set root"))
             .with_width(block_width);

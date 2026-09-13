@@ -26,17 +26,19 @@ use super::*;
         let app = AppContext::default();
         let mut root: Box<dyn Element> = Box::new(root);
 
-        // Nothing in flight: the topbar draws no live cue.
+        // Nothing in flight: the topbar band draws no live cue.
         let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
         assert!(
             !commands.iter().any(|c| matches!(
                 c,
-                RenderCommand::DrawText { text, .. } if text.starts_with("◆ ")
+                RenderCommand::DrawIcon { origin, name, .. }
+                    if name == "diamond" && origin.y < crate::ui::shell::TOPBAR_HEIGHT
             )),
             "an idle topbar draws no live cue"
         );
 
-        // One in-flight tool for the active pane: the cue shows `◆ 1`.
+        // One in-flight tool for the active pane: the cue shows the diamond
+        // next to `1`.
         state.borrow_mut().apply_tool_event(&ToolCallEvent {
             chat_id: "conv-1".into(),
             id: "call_1".into(),
@@ -46,31 +48,51 @@ use super::*;
             result: None,
         });
         let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        // The pane's turn-status footer draws a diamond too, so the cue's own
+        // icon is the one in the topbar band.
+        let icon = commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::DrawIcon { origin, name, .. }
+                    if name == "diamond"
+                        && origin.y < crate::ui::shell::TOPBAR_HEIGHT =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the cue marks the count with the diamond icon");
         let origin = commands
             .iter()
             .find_map(|c| match c {
-                RenderCommand::DrawText { origin, text, .. } if text == "◆ 1" => Some(*origin),
+                RenderCommand::DrawText { origin, text, .. }
+                    if text == "1" && origin.y < crate::ui::shell::TOPBAR_HEIGHT =>
+                {
+                    Some(*origin)
+                }
                 _ => None,
             })
             .expect("the topbar cue draws the live count");
 
-        // Click it: the indicator is not a hit target, so the event travels on
-        // unconsumed.
-        let position = origin + vec2f(2.0, 4.0);
+        // Click it, on the count and on the diamond beside it: the indicator is
+        // not a hit target, so the events travel on unconsumed.
         let mut ctx = EventContext::default();
-        for event in [
-            DispatchedEvent::MouseDown {
-                position,
-                button: 0,
-            },
-            DispatchedEvent::MouseUp {
-                position,
-                button: 0,
-            },
-        ] {
-            assert!(
-                !root.dispatch_event(&event, &mut ctx, &app),
-                "the topbar indicator takes no pointer event"
-            );
+        for position in [origin + vec2f(2.0, 4.0), icon + vec2f(2.0, 4.0)] {
+            for event in [
+                DispatchedEvent::MouseDown {
+                    position,
+                    button: 0,
+                },
+                DispatchedEvent::MouseUp {
+                    position,
+                    button: 0,
+                },
+            ] {
+                assert!(
+                    !root.dispatch_event(&event, &mut ctx, &app),
+                    "the topbar indicator takes no pointer event at {position:?}"
+                );
+            }
         }
     }
+

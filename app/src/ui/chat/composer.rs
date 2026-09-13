@@ -1,9 +1,12 @@
 
-use goble_ui::elements::Element;
+use goble_ui::elements::{
+    slash_menu_open, CrossAxisAlignment, Element, Flex, ShortcutHint, SlashMenu,
+};
 use goble_ui::ChatComposer;
 
 use crate::state::PaneControls;
 use crate::terminal::{classify_input, InputClass};
+use crate::ui::palette::slash_accept;
 
 use super::super::{UiActions, UiSnapshot};
 use super::pane_session_snapshot;
@@ -46,7 +49,13 @@ pub(crate) fn build_terminal_composer(
     let on_composer_change = actions.on_composer_change.clone();
     let on_composer_focus = actions.on_composer_focus_change.clone();
     let on_stop = actions.on_stop.clone();
-    let on_composer_slash = actions.on_composer_slash.clone();
+    let on_slash_move = actions.on_slash_move.clone();
+    let on_slash_close = actions.on_slash_close.clone();
+    let on_slash_dismiss = actions.on_slash_dismiss.clone();
+    // The same two gestures drive the list itself, which this bar draws above
+    // the composer rather than inside it.
+    let on_slash_move_menu = on_slash_move.clone();
+    let on_slash_close_menu = on_slash_close.clone();
 
     let on_activate_for_send = actions.on_pane_activate.clone();
     let on_run_shell_command = actions.on_run_shell_command.clone();
@@ -67,9 +76,16 @@ pub(crate) fn build_terminal_composer(
         .with_caret(controls.caret.clone())
         .with_path_label(crate::state::display_path(&session.composer_path))
         .with_stop_visible(session.agent_busy)
-        // The shell's own instructions: Enter runs the line here, and the
-        // pane's agent view is one chord away.
-        .with_hints(crate::ui::shortcut_hints::shell_rich_input_hints())
+        // The shell's own context — this pane's working directory and its git
+        // branch — rides above the editor: it describes the command line below
+        // it, the way the shell prompt does.
+        .with_context_above_editor(true)
+        // What the bar answers, written where the bar is: Cmd/Ctrl+Enter is the
+        // one gesture that leaves the shell (it opens the agent on a new
+        // conversation), so it is the one instruction the strip names — and it
+        // is the one entry this pane keeps inside the input, under the editor,
+        // rather than over the separator with the agent view's strip.
+        .with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")])
         .with_on_change(move |text| (on_composer_change.borrow_mut())(text))
         .with_on_send(move |text| {
             // Enter at the shell's bar runs the draft as a command in this
@@ -95,8 +111,28 @@ pub(crate) fn build_terminal_composer(
             }
             (on_composer_focus.borrow_mut())(focused);
         })
-        .with_on_stop(move || (on_stop.borrow_mut())())
-        .with_on_slash(move || (on_composer_slash.borrow_mut())());
+        .with_on_stop(move || (on_stop.borrow_mut())());
+
+    // The bar's own slash commands: `/` opens the palette's command list above
+    // the editor, narrowed by what was typed after the slash. Same list as the
+    // Cmd+K overlay, drawn in place.
+    let slash_commands = crate::ui::palette::slash_commands(state, actions);
+    let slash_query =
+        crate::ui::palette::slash_query(&session.composer_draft).unwrap_or_default();
+    let slash_filtered = crate::ui::palette::matching_slash_commands(&slash_commands, &slash_query);
+    let slash_items = crate::ui::palette::slash_items(&slash_filtered);
+    composer = composer
+        .with_slash_menu(
+            slash_items.clone(),
+            controls.slash_index.clone(),
+            controls.slash_dismissed.clone(),
+        )
+        .with_on_slash_move(move |index| (on_slash_move.borrow_mut())(index))
+        .with_on_slash_accept(crate::ui::palette::slash_accept(
+            slash_filtered.clone(),
+            on_slash_close,
+        ))
+        .with_on_slash_dismiss(move || (on_slash_dismiss.borrow_mut())());
 
     // Modal editing is the user's choice, and the mode state is this pane's own
     // (see `PaneControls::vim`). The clipboard is the app's system-clipboard
@@ -141,5 +177,19 @@ pub(crate) fn build_terminal_composer(
         }
     }
 
-    composer.finish()
+    // The command list the draft is typing is drawn over the whole bar, above
+    // it — over the instruction strip the composer carries at its bottom — the
+    // way grok-build puts it over the prompt.
+    let composer = composer.finish();
+    if !slash_menu_open(&session.composer_draft, *controls.slash_dismissed.borrow()) {
+        return composer;
+    }
+    let menu = SlashMenu::new(slash_items, controls.slash_index.clone())
+        .with_on_move(move |index| (on_slash_move_menu.borrow_mut())(index))
+        .with_on_accept(slash_accept(slash_filtered, on_slash_close_menu));
+    Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(menu.finish())
+        .with_child(composer)
+        .finish()
 }

@@ -5,7 +5,7 @@ use goble_ui::SettingsPage;
 
 use super::color_picker;
 use super::pane::NavDir;
-use super::types::{AppTab, SettingsCategory, WorkspaceRouting};
+use super::types::{AppTab, SettingsCategory, SidebarView, WorkspaceRouting};
 
 /// Callbacks supplied by the host app for the main view. Created fresh on
 /// every rebuild; they mutate app-owned state, which is rendered back on the
@@ -25,9 +25,14 @@ pub struct UiActions {
     /// agent conversation (warp-new behavior), binding the pane to a fresh
     /// conversation before the turn.
     pub on_cmd_enter: Rc<RefCell<dyn FnMut(String)>>,
-    /// Fire when the composer draft starts with `/` (slash command): the host
-    /// opens the command palette.
-    pub on_composer_slash: Rc<RefCell<dyn FnMut()>>,
+    /// Move the active pane's slash-command menu selection to another row.
+    pub on_slash_move: Rc<RefCell<dyn FnMut(usize)>>,
+    /// Put the slash-command menu away after a command ran: the draft it was
+    /// querying is spent, so the bar is cleared and the menu closes with it.
+    pub on_slash_close: Rc<RefCell<dyn FnMut()>>,
+    /// Put the slash-command menu away on Escape without touching the draft, so
+    /// a command half-typed is not thrown away by closing the menu.
+    pub on_slash_dismiss: Rc<RefCell<dyn FnMut()>>,
     pub on_attach: Rc<RefCell<dyn FnMut()>>,
     pub on_voice: Rc<RefCell<dyn FnMut()>>,
     pub on_select_model: Rc<RefCell<dyn FnMut()>>,
@@ -95,6 +100,22 @@ pub struct UiActions {
     /// Toggle the sidebar conversation list between "a few cards" and the full,
     /// scrollable list.
     pub on_toggle_conversations_expanded: Rc<RefCell<dyn FnMut()>>,
+    /// Show one of the sidebar's views (conversations, project explorer, global
+    /// search).
+    pub on_select_sidebar_view: Rc<RefCell<dyn FnMut(SidebarView)>>,
+    /// Collapse or expand one sidebar section, by its key.
+    pub on_toggle_section: Rc<RefCell<dyn FnMut(String)>>,
+    /// Star or unstar a conversation, from its card's menu.
+    pub on_toggle_star: Rc<RefCell<dyn FnMut(String)>>,
+    /// Expand or collapse a directory in the project explorer, by path.
+    pub on_toggle_explorer_dir: Rc<RefCell<dyn FnMut(String)>>,
+    /// Hand a file path to the active pane's input, from a click in the project
+    /// explorer or on a global-search result.
+    pub on_explorer_file_click: Rc<RefCell<dyn FnMut(String)>>,
+    /// Update the global search query and run it.
+    pub on_global_search_change: Rc<RefCell<dyn FnMut(String)>>,
+    /// Track focus of the global search field.
+    pub on_global_search_focus_change: Rc<RefCell<dyn FnMut(bool)>>,
     /// Click on a topbar workspace chip: selects that space, and a double-click
     /// enters inline rename for its name.
     pub on_workspace_click: Rc<RefCell<dyn FnMut(usize)>>,
@@ -140,6 +161,10 @@ pub struct UiActions {
     pub on_toggle_task_workflow: Rc<RefCell<dyn FnMut()>>,
     /// Close the tasks & workflows overlay (its ✕, its backdrop).
     pub on_close_task_workflow: Rc<RefCell<dyn FnMut()>>,
+    /// Toggle the keyboard shortcuts panel (Ctrl+.).
+    pub on_toggle_shortcuts_help: Rc<RefCell<dyn FnMut()>>,
+    /// Close the keyboard shortcuts panel (its ✕, its backdrop, Escape).
+    pub on_close_shortcuts_help: Rc<RefCell<dyn FnMut()>>,
     pub on_toggle_right_sidebar: Rc<RefCell<dyn FnMut()>>,
     /// Toggle the agent/window fullscreen (borderless). Flips app state and
     /// requests the platform window to enter/leave fullscreen.

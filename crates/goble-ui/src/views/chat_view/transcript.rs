@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind};
 use crate::elements::{
-    filter_option_labels, AppContext, AskUserCard, Axis, Button, ButtonVariant, ChatComposer,
-    ChatMessageBubble, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty,
-    Expanded, Fill, Flex, FrameView, Icon, MainAxisAlignment, MainAxisSize, PopupMenu,
-    PopupMenuItem, PopupMenuPosition, QuickActionButton, Scrollable, Stack, Switch, Text,
-    Tooltip, TooltipPosition, TopbarButton, TurnStatusFooter,
+    filter_option_labels, slash_menu_open, AppContext, AskUserCard, Axis, Button, ButtonVariant,
+    ChatComposer, ChatMessageBubble, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
+    Empty, Expanded, Fill, Flex, FrameView, Icon, MainAxisAlignment, MainAxisSize, Padding,
+    PopupMenu, PopupMenuItem, PopupMenuPosition, QuickActionButton, Scrollable, ShortcutHints,
+    SlashMenu, Stack, Text, Tooltip, TooltipPosition, TopbarButton, TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
@@ -28,6 +28,30 @@ fn group_digits(value: u64) -> String {
 }
 
 impl ChatView {
+    /// The slash-command list, when the draft the composer holds is a command:
+    /// the items the host filtered for that draft, drawn over the whole input
+    /// block. `None` when the draft is not a command (or Escape put the list
+    /// away), so a closed list takes no space at all.
+    fn slash_menu(&self) -> Option<Box<dyn Element>> {
+        if !slash_menu_open(
+            &self.composer_value.borrow(),
+            *self.composer_slash_dismissed.borrow(),
+        ) {
+            return None;
+        }
+        let mut menu = SlashMenu::new(
+            self.composer_slash_items.clone(),
+            self.composer_slash_index.clone(),
+        );
+        if let Some(cb) = self.on_composer_slash_move.clone() {
+            menu = menu.with_on_move(move |index| (cb.borrow_mut())(index));
+        }
+        if let Some(cb) = self.on_composer_slash_accept.clone() {
+            menu = menu.with_on_accept(move |index| (cb.borrow_mut())(index));
+        }
+        Some(menu.finish())
+    }
+
     fn build_empty_state(&self, app: &AppContext) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
         let xl = app.theme.spacing_px(SpacingToken::Xl);
@@ -341,9 +365,9 @@ impl ChatView {
                     );
                 if let Some(cb) = self.on_dismiss_queued.clone() {
                     let dismiss = Button::new(
-                        Text::new("✕")
+                        Icon::new("x-close")
+                            .with_size(11.0)
                             .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(12.0)
                             .finish(),
                     )
                     .with_variant(ButtonVariant::Ghost)
@@ -402,9 +426,9 @@ impl ChatView {
                     );
                 if let Some(cb) = self.on_close_inline_screen.clone() {
                     let close = Button::new(
-                        Text::new("✕")
+                        Icon::new("x-close")
+                            .with_size(11.0)
                             .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(12.0)
                             .finish(),
                     )
                     .with_variant(ButtonVariant::Ghost)
@@ -479,13 +503,23 @@ impl ChatView {
             // The transcript scrolls (clipped to the viewport, wheel handled)
             // and tails the stream: the state is app-owned, so new content
             // follows the bottom until the user scrolls up, and their
-            // scrollback position is held while it streams.
+            // scrollback position is held while it streams. A conversation
+            // shorter than the pane is flushed to the end of it, so the last
+            // message sits on the input (warp-new) instead of leaving the gap
+            // between it and the input on screen.
             let transcript = Scrollable::new(message_column.finish(), Axis::Vertical)
                 .with_state(self.scroll.clone())
+                .with_bottom_anchor(true)
                 .finish();
             if self.has_terminal_blocks() {
                 if let Some(bar) = self.build_global_filter_bar(app) {
+                    // The filter bar is content-sized, the transcript takes the
+                    // rest: the column must claim the height it was given, or
+                    // the inner `Expanded` is laid out unbounded and reports
+                    // the whole transcript's height, pushing the composer below
+                    // the pane whenever the conversation is long.
                     Flex::column()
+                        .with_main_axis_size(MainAxisSize::Max)
                         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                         .with_child(bar)
                         .with_child(Expanded::new(transcript).finish())
@@ -514,35 +548,6 @@ impl ChatView {
             column = column.with_child(row.finish());
         }
 
-        // Control strip above the rich input: the auto-approve toggle. Stop
-        // lives in the composer footer (visible while the agent is streaming).
-        if let Some(cb) = self.on_toggle_auto_approve.clone() {
-            let sm = app.theme.spacing_px(SpacingToken::Sm);
-            let md = app.theme.spacing_px(SpacingToken::Md);
-            let switch = Switch::new()
-                .with_checked(self.auto_approve)
-                .with_size(Vector2F::new(36.0, 20.0))
-                .with_on_change(move |checked| (cb.borrow_mut())(checked))
-                .finish();
-            let controls = Container::new(
-                Flex::row()
-                    .with_main_axis_alignment(MainAxisAlignment::Start)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_spacing(sm)
-                    .with_child(
-                        Text::new("Auto-approve")
-                            .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(12.0)
-                            .finish(),
-                    )
-                    .with_child(switch)
-                    .finish(),
-            )
-            .with_padding(EdgeInsets::new(0.0, md, 0.0, 0.0))
-            .finish();
-            column = column.with_child(controls);
-        }
-
         let current_value = self.composer_value.borrow().clone();
         let composer_value_for_change = self.composer_value.clone();
         let composer_value = self.composer_value.clone();
@@ -553,9 +558,16 @@ impl ChatView {
         let mut composer = ChatComposer::new()
             .with_value(current_value)
             .with_focused(self.composer_focused)
-            .with_hints(self.composer_hints.clone())
             .with_caret(self.composer_caret.clone())
             .with_stop_visible(self.composer_stop_visible)
+            // The rich input is built the same way in both surfaces: the
+            // context row (harness, directory, branch, attach) rides above the
+            // editor, where it describes the draft, and the pane's instructions
+            // are drawn by the pane over the separator above it. A terminal
+            // pane's bar is built from this same widget in this same order, so
+            // switching a pane between the shell and its agent view moves
+            // nothing but the text in the editor.
+            .with_context_above_editor(true)
             .with_on_change(move |text| {
                 *composer_value_for_change.borrow_mut() = text.clone();
                 if let Some(cb) = on_composer_change.as_ref() {
@@ -638,8 +650,21 @@ impl ChatView {
                 move |idx| (cb.borrow_mut())(idx),
             );
         }
-        if let Some(cb) = self.on_composer_slash.clone() {
-            composer = composer.with_on_slash(move || (cb.borrow_mut())());
+        // The slash-command menu: the draft is its query, so the host hands the
+        // view the commands it matches and the view keeps the editor focused.
+        composer = composer.with_slash_menu(
+            self.composer_slash_items.clone(),
+            self.composer_slash_index.clone(),
+            self.composer_slash_dismissed.clone(),
+        );
+        if let Some(cb) = self.on_composer_slash_move.clone() {
+            composer = composer.with_on_slash_move(move |index| (cb.borrow_mut())(index));
+        }
+        if let Some(cb) = self.on_composer_slash_accept.clone() {
+            composer = composer.with_on_slash_accept(move |index| (cb.borrow_mut())(index));
+        }
+        if let Some(cb) = self.on_composer_slash_dismiss.clone() {
+            composer = composer.with_on_slash_dismiss(move || (cb.borrow_mut())());
         }
         // Modal editing, when the user turned it on: the pane's own mode state
         // and the app's system clipboard for the `"+`/`"*` registers.
@@ -661,10 +686,27 @@ impl ChatView {
         // A separator line above the rich input separates it from the
         // transcript. The composer is a content-sized child (not flex-grown),
         // so it pins to the bottom: its textarea grows with the draft (capped)
-        // and the footer pills sit just below it, leaving the message
+        // and the row under it (the model) hugs the bottom, leaving the message
         // transcript most of the height. A read-only transcript (a sub-agent's
         // child view) drops both — the input belongs to another conversation.
+        //
+        // The pane's instructions are the strip over the separator, the last row
+        // of the content: they name the gestures the input under them answers,
+        // and warp-new keeps them off the input's own rows. The build draws the
+        // slash menu over the whole input block — above the strip — the way
+        // grok-build puts it over the prompt, not over the pane.
         if self.show_composer {
+            if let Some(menu) = self.slash_menu() {
+                column = column.with_child(menu);
+            }
+            if !self.composer_hints.is_empty() {
+                let md = app.theme.spacing_px(SpacingToken::Md);
+                let sm = app.theme.spacing_px(SpacingToken::Sm);
+                let strip = ShortcutHints::new(self.composer_hints.clone()).finish(app);
+                column = column.with_child(
+                    Padding::new(strip, EdgeInsets::new(md, 0.0, md, sm)).finish(),
+                );
+            }
             column = column.with_child(Divider::horizontal().finish());
             column = column.with_child(composer);
         }

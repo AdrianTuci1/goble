@@ -24,6 +24,9 @@ use crate::media::MediaState;
 use crate::projects::ProjectsState;
 use crate::screen::ScreenState;
 use crate::state::UiState;
+use crate::ui::explorer::ExplorerCache;
+use crate::ui::file_view::FileCache;
+use crate::ui::pickers::PickerCache;
 use crate::ui::UiActions;
 
 mod construct;
@@ -57,6 +60,18 @@ pub struct RootView {
     /// written back each frame. `None` in tests/render harnesses, which skip
     /// theme application.
     app_context: Option<Rc<RefCell<AppContext>>>,
+    /// The working-directory and branch rows an open composer pill menu lists.
+    /// Kept beside the state rather than inside it: the tree is built while the
+    /// state is borrowed, and a listing is a read of the machine, not app state.
+    pickers: Rc<RefCell<PickerCache>>,
+    /// The open project explorer's directory listings. Beside the state for the
+    /// same reason as the pickers: the tree is built while the state is
+    /// borrowed, and reading a directory is a read of the machine.
+    explorer: Rc<RefCell<ExplorerCache>>,
+    /// The files the open file views have read. Beside the state for the same
+    /// reason: a file view is built while the state is borrowed, and a frame
+    /// that changes nothing must read nothing.
+    file_cache: Rc<RefCell<FileCache>>,
     /// The callbacks built on the last rebuild; kept here so the root can
     /// dispatch global keyboard shortcuts (split/space) before the tree does.
     actions: Option<UiActions>,

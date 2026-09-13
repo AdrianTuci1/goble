@@ -1,5 +1,5 @@
 use goble_ui::elements::{
-    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, Element, Flex, Text,
+    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, Element, Flex, Icon, Text,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 
@@ -46,7 +46,19 @@ pub fn build_main(
 /// Settings surface is inactive in this build, so this only backs out to Chat.
 fn build_settings_disabled(app: &AppContext, actions: &UiActions) -> Box<dyn Element> {
     let on_back = actions.on_settings_back.clone();
-    let back = Button::new(Text::new("← Back").with_theme_color(ColorToken::Text, app).finish())
+    let back = Button::new(
+        Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0)
+        .with_child(
+            Icon::new("arrow-left")
+                .with_size(13.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_child(Text::new("Back").with_theme_color(ColorToken::Text, app).finish())
+        .finish(),
+    )
         .with_variant(ButtonVariant::Ghost)
         .with_on_click(move || (on_back.borrow_mut())())
         .finish();

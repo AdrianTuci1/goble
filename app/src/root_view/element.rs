@@ -76,6 +76,13 @@ impl Element for RootView {
                     (actions.on_split_right.borrow_mut())();
                     return true;
                 }
+                // Ctrl+. opens the keyboard shortcuts panel, grok-build's own
+                // binding for its cheatsheet. Shift is not part of the chord, so
+                // it stays free for whatever the panes bind next.
+                if modifiers.ctrl && !modifiers.shift && !modifiers.alt && key == "." {
+                    (actions.on_toggle_shortcuts_help.borrow_mut())();
+                    return true;
+                }
                 if modifiers.command && modifiers.shift && key.eq_ignore_ascii_case("d") {
                     (actions.on_split_down.borrow_mut())();
                     return true;

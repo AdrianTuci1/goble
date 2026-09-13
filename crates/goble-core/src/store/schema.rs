@@ -53,6 +53,7 @@ impl Store {
                 worker_id TEXT,
                 workspace_routing TEXT,
                 parent_chat_id TEXT,
+                working_dir TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             ) STRICT;
@@ -276,6 +277,20 @@ impl Store {
         if !has_parent {
             conn.execute("ALTER TABLE chats ADD COLUMN parent_chat_id TEXT", [])
                 .context("failed to add chats.parent_chat_id")?;
+        }
+
+        // Same idiom for `working_dir`: the directory a conversation works in,
+        // shown on its sidebar card.
+        let has_working_dir: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'working_dir'",
+                [],
+                |r| r.get(0),
+            )
+            .context("failed to check for chats.working_dir")?;
+        if !has_working_dir {
+            conn.execute("ALTER TABLE chats ADD COLUMN working_dir TEXT", [])
+                .context("failed to add chats.working_dir")?;
         }
 
         Ok(())

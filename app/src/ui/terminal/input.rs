@@ -76,7 +76,11 @@ impl TerminalView {
         if delta_y == 0.0 {
             return;
         }
-        let down = delta_y > 0.0;
+        // The wheel reports how far the content should move, and positive is
+        // down (winit's contract): a positive delta pulls the content down, so
+        // the view walks back into the scrollback — wheel *up* in a program's
+        // terms, the button a pager calls "scroll up".
+        let down = delta_y < 0.0;
         if self.input_mode().mouse_reported() {
             let cell = self.last_cell.unwrap_or((0, 0));
             self.report_mouse(

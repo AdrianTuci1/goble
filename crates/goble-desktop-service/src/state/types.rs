@@ -31,6 +31,9 @@ pub struct Chat {
     /// Where the agent for this conversation should run: `"local"` or `"remote"`.
     /// `None` when the user has not chosen yet.
     pub workspace_routing: Option<String>,
+    /// The directory this conversation works in, shown on its sidebar card.
+    /// `None` until a pane has run something for it.
+    pub working_dir: Option<String>,
     pub updated_at: String,
 }
 

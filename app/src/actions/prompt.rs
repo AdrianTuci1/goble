@@ -160,7 +160,19 @@ pub(super) fn send_agent_prompt(
 /// so a terminal command actually executes in a shell; the output lands in the
 /// pane's terminal buffer (rendered live for a terminal pane). The shell echoes
 /// the typed line, so no separate echo is needed.
-pub(super) fn run_terminal_command(state: &mut UiState, text: &str, pane_id: u64) {
+///
+/// `conversation` names the conversation this command was typed inside, when it
+/// was one: the block the shell runs it in becomes that conversation's own
+/// block, so the conversation's agent view draws it and the shell's history
+/// leaves it out — a command typed inside a conversation is the conversation's
+/// (warp-new's split between a block created in the terminal and one created in
+/// an agent view). A command typed at the shell's own bar passes `None`.
+pub(super) fn run_terminal_command(
+    state: &mut UiState,
+    text: &str,
+    pane_id: u64,
+    conversation: Option<&str>,
+) {
     let cwd = state
         .pane_sessions
         .get(&pane_id)
@@ -169,6 +181,9 @@ pub(super) fn run_terminal_command(state: &mut UiState, text: &str, pane_id: u64
     let mut reg = state.terminal.borrow_mut();
     reg.ensure_session(pane_id, &cwd);
     if let Some(session) = reg.sessions.get_mut(&pane_id) {
+        if let Some(conversation) = conversation {
+            session.run_block_for_conversation(conversation);
+        }
         let mut line = text.trim_end().to_string();
         line.push('\n');
         session.write(line.as_bytes());

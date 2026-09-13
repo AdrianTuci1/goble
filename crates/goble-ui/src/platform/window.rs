@@ -299,6 +299,10 @@ impl ApplicationHandler for App {
                     .root
                     .dispatch_event(&event, &mut event_ctx, &app_context);
                 drop(app_context);
+                // Hover is read at paint time, so a pointer move needs a frame
+                // of its own: without one a menu's hover tray (and any other
+                // hover-only surface) would wait for the idle heartbeat.
+                window.request_redraw();
             }
             winit::event::WindowEvent::MouseWheel { delta, .. } => {
                 let zoom = *self.app_context.borrow().ui_zoom.borrow();

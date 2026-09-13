@@ -298,6 +298,11 @@ impl UiState {
             self.pane_terminal_scroll
                 .entry(id)
                 .or_insert_with(|| Rc::new(RefCell::new(ScrollState::following())));
+            // A file view opens at the file's first line and keeps the user's
+            // place, so its offset is a plain one, never a following one.
+            self.file_scroll
+                .entry(id)
+                .or_insert_with(|| Rc::new(RefCell::new(ScrollState::default())));
             // The usage disclosure starts collapsed and remembers its state.
             self.pane_usage_open
                 .entry(id)

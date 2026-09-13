@@ -13,8 +13,8 @@ use super::palette::PaletteCommand;
 use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, ScreenSnapshot, UiSnapshot};
 use super::types::AppTab;
 use super::{
-    chat, connectors, crons, media, model_form, palette, screen, settings, shell, sidebar,
-    task_workflow, vault, CONNECTORS_WIDTH,
+    chat, connectors, crons, media, model_form, palette, screen, settings, shell, shortcuts_help,
+    sidebar, task_workflow, vault, CONNECTORS_WIDTH,
 };
 
 /// Margin between the Settings overlay panel and the window edges. The panel
@@ -154,6 +154,16 @@ pub fn build_ui(
         .with_on_close(move || (on_close_settings.borrow_mut())())
         .finish();
 
+    // The keyboard shortcuts panel: a centered sheet over the workspace, the
+    // shape grok-build's cheatsheet has. Ctrl+. toggles it; it is stacked last
+    // (see the stack's children) so it is the top-most overlay while open.
+    let on_close_shortcuts = actions.on_close_shortcuts_help.clone();
+    let shortcuts_help_dialog = Dialog::new(shortcuts_help::build_shortcuts_help(app, actions))
+        .with_open(state.shortcuts_help_open)
+        .with_width(shortcuts_help::SHORTCUTS_PANEL_WIDTH)
+        .with_on_close(move || (on_close_shortcuts.borrow_mut())())
+        .finish();
+
     let mut stack = Stack::new().with_children(vec![
         shell_col.finish(),
         // The toolbar paints after the body so the popups/trays anchored in it
@@ -168,6 +178,10 @@ pub fn build_ui(
         screen_sheet,
         chat_panel_sheet,
         settings_dialog,
+        // The shortcuts panel goes last: Ctrl+. is a global chord, so wherever
+        // the keyboard is, the panel it opens is the top-most surface and the
+        // first to see Escape and a backdrop click.
+        shortcuts_help_dialog,
     ]);
 
     // First-run onboarding overlays: the local/remote workspace choice. The

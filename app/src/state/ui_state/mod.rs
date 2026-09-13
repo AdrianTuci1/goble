@@ -91,6 +91,8 @@ pub struct UiState {
     /// Whether the tasks & workflows overlay is up (it covers the workspace
     /// without replacing it).
     pub task_workflow_open: bool,
+    /// Whether the keyboard shortcuts panel is up.
+    pub shortcuts_help_open: bool,
     pub crons: Vec<CronEntry>,
     /// Harness workflows (real daemon workflow store).
     pub workflows: Vec<WorkflowEntry>,
@@ -170,9 +172,36 @@ pub struct UiState {
     /// Whether the sidebar's conversation list shows every conversation. While
     /// false only a few cards are drawn, followed by a "View all" button.
     pub conversations_expanded: bool,
+    /// Which of the sidebar's views is showing: the conversations list, the
+    /// project explorer or global search.
+    pub sidebar_view: SidebarView,
+    /// Conversations the user starred, by id. They are collected at the top of
+    /// the sidebar and marked on their own cards.
+    pub starred_conversations: HashSet<String>,
+    /// The sidebar sections the user collapsed, by key: `starred`, or
+    /// `folder:<name>` for one of the conversation folders.
+    pub collapsed_sections: HashSet<String>,
+    /// The directories the project explorer has open, by absolute path.
+    pub explorer_expanded: HashSet<String>,
+    /// Global search: the query, the rows it produced and whether it has run at
+    /// all. The search is run when the query changes, never per frame.
+    pub global_search_query: String,
+    pub global_search_rows: Vec<SearchRow>,
+    pub global_search_searched: bool,
+    /// Why the search has nothing to show, when that is not simply an empty
+    /// result: no ripgrep on this machine, or a query ripgrep refused.
+    pub global_search_error: Option<String>,
+    pub global_search_focused: bool,
+    /// The walk behind the query, on a thread of its own: reading every file
+    /// under the root is far too slow to run between two keystrokes. The field
+    /// hands it the query and the frame collects the answer.
+    pub global_search_worker: Rc<SearchWorker>,
     /// Scroll offset of the sidebar's conversation list (owned here so it
     /// survives the per-frame element rebuild).
     pub sidebar_scroll: Rc<RefCell<ScrollState>>,
+    /// Scroll offsets of the project explorer's and the global search's lists.
+    pub explorer_scroll: Rc<RefCell<ScrollState>>,
+    pub global_search_scroll: Rc<RefCell<ScrollState>>,
     /// Scroll offset of the settings overlay's content pane.
     pub settings_scroll: Rc<RefCell<ScrollState>>,
     /// Whether the topbar workspace frame is in inline-rename mode (entered by
@@ -236,6 +265,10 @@ pub struct UiState {
     /// block view), keyed by pane id. Owned here for the same reason as the
     /// transcript scroll: the pane's element tree is rebuilt every frame.
     pub pane_terminal_scroll: HashMap<u64, Rc<RefCell<ScrollState>>>,
+    /// Per-pane scroll offset of a pane's file view, keyed by pane id. A file
+    /// view opens at its first line and keeps the user's place, so it is a plain
+    /// offset rather than the terminal's follow-the-end state.
+    pub file_scroll: HashMap<u64, Rc<RefCell<ScrollState>>>,
     /// Live per-pane terminal sessions (PTY child + output buffer) and the local
     /// input mirrors used to route `Cmd+Enter` to the agent. Not persisted; a
     /// terminal pane is re-spawned in its cwd on next render.
@@ -256,6 +289,10 @@ pub struct UiState {
     /// App-owned open flag for the topbar compact environment selector, so it
     /// survives the per-frame element rebuild.
     pub env_selector_open: Rc<RefCell<bool>>,
+    /// The environment menu's hovered row (an item index), shared with the menu
+    /// so its hover tray survives the per-frame element rebuild — hover itself
+    /// is read at paint time.
+    pub env_selector_hover: Rc<RefCell<Option<usize>>>,
     /// Whether the "add a new medium" dialog is open over the app.
     pub add_medium_dialog_open: bool,
     /// The new medium's name as typed in the add-medium dialog.

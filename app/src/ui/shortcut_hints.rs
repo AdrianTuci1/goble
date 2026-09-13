@@ -32,18 +32,6 @@ pub(crate) fn agent_rich_input_hints(agent_busy: bool) -> Vec<ShortcutHint> {
     ]
 }
 
-/// The shell rich input's instructions: Enter runs the line in this pane's own
-/// pty, and the pane's agent view is one chord away. No `!` here — a shell
-/// pane's input is a command already.
-pub(crate) fn shell_rich_input_hints() -> Vec<ShortcutHint> {
-    vec![
-        ShortcutHint::new(&["↵"], "run"),
-        ShortcutHint::new(&["⌘", "↵"], "agent"),
-        ShortcutHint::new(&["⌘", "K"], "commands"),
-        ShortcutHint::new(&["⌘", "⇧", "W"], "tasks"),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,16 +64,13 @@ mod tests {
         let busy = agent_rich_input_hints(true);
         assert_eq!(busy[0].label(), "queue");
         assert_eq!(busy[1..], idle[1..]);
-
-        let shell_hints = shell_rich_input_hints();
-        let shell: Vec<&str> = shell_hints.iter().map(|hint| hint.label()).collect();
-        assert_eq!(shell, vec!["run", "agent", "commands", "tasks"]);
     }
 }
 
 /// The strip in the real tree: the agent pane's rich input draws grok-build's
-/// instructions at the head of the input — above the context pills and the
-/// editor — and a running turn turns the send hint into a queue.
+/// instructions between the transcript and the input's separator line — above
+/// the context pills and the editor — and a running turn turns the send hint
+/// into a queue.
 #[cfg(test)]
 mod rich_input_tests {
     use crate::root_view::RootView;
@@ -148,22 +133,45 @@ mod rich_input_tests {
             .collect()
     }
 
+    /// Every run of `text` sits over `ceiling`.
     fn above(commands: &[RenderCommand], text: &str, ceiling: f32, case: &str) {
         let lines = lines_of(commands, text);
         assert!(!lines.is_empty(), "{case}: {text:?} is drawn");
         assert!(
-            lines.iter().any(|line| *line < ceiling),
+            lines.iter().all(|line| *line < ceiling),
             "{case}: {text:?} is drawn above {ceiling} (found {lines:?})"
         );
     }
 
+    /// The thin horizontal rules in a frame — the pane's separators, in a
+    /// widget-free pane, nothing else.
+    fn rules(commands: &[RenderCommand]) -> Vec<f32> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, .. }
+                    if rect.height() <= 2.0 && rect.width() > 200.0 =>
+                {
+                    Some(rect.min_y())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The agent view's instructions are the pane's own strip over the input's
+    /// separator: the last content row, under the transcript, over the rule and
+    /// the rich input under it (the warp-new order, where the shortcuts view
+    /// sits between the conversation and the input it describes). Nothing about
+    /// the input is lifted when a pane switches between the shell and its agent
+    /// view — the separator above it is its top edge on both surfaces.
     #[test]
-    fn the_agent_rich_input_carries_the_instructions_above_its_editor() {
+    fn the_agent_strip_sits_over_the_inputs_separator() {
         let (mut root, state, _dir) = workspace();
         let app = AppContext::default();
         let commands = frame(&mut root, &app);
 
-        // The editor is on screen, so the strip's place above it means
+        // The editor is on screen, so the strip's place over it means
         // something: the same frame drew the rich input's placeholder.
         let placeholder = lines_of(&commands, "Ask anything...");
         let editor = *placeholder.first().expect("the rich input is drawn");
@@ -172,18 +180,63 @@ mod rich_input_tests {
         for label in ["send", "new conversation", "shell", "commands", "tasks"] {
             above(&commands, label, editor, case);
         }
-        // Every key of every chord is its own cap, and the caps are on the
-        // strip's own line.
-        for key in ["↵", "⌘", "⇧", "W", "!"] {
+        // Every key of every chord has its own cap on the strip's own line. A
+        // key the bundled text faces lack is drawn from the icon set, so no
+        // strip ever paints the font's `.notdef` box for it; the ASCII keys keep
+        // their own glyph.
+        let drawn_icons: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        for key in ["W", "!"] {
             above(&commands, key, editor, case);
         }
-        // Above the context pills too: the strip is the head of the input, not
-        // a footer under the draft.
+        for icon in ["key-command", "key-shift", "key-return"] {
+            assert!(
+                drawn_icons.contains(&icon),
+                "{case}: the {icon} cap is drawn"
+            );
+        }
+        for symbol in ["⌘", "⇧", "↵"] {
+            assert!(
+                lines_of(&commands, symbol).is_empty(),
+                "{case}: {symbol:?} is never drawn as a character"
+            );
+        }
+
+        // The separator is the input's top edge, under the strip: the nearest
+        // rule under the instructions, not a heading far above them.
+        let strip_bottom = ["send", "new conversation", "shell", "commands", "tasks"]
+            .iter()
+            .flat_map(|label| lines_of(&commands, label))
+            .fold(f32::NEG_INFINITY, f32::max);
+        let rule = rules(&commands)
+            .into_iter()
+            .find(|y| *y > strip_bottom && *y - strip_bottom < 60.0)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{case}: a separator under the strip (strip at {strip_bottom}, rules {:?})",
+                    rules(&commands)
+                )
+            });
+        assert!(rule > strip_bottom, "{case}: the strip is over the rule");
+
+        // The context pills are the row under the instruction strip, inside the
+        // input and over the editor, the way the shell bar keeps the directory
+        // and the branch over the draft.
         let pills = lines_of(&commands, "~/Projects/goble/app");
         assert!(!pills.is_empty(), "{case}: the context pills are drawn");
         assert!(
-            lines_of(&commands, "send").iter().all(|line| *line < pills[0]),
-            "{case}: the strip is above the pills"
+            pills.iter().all(|line| *line < editor),
+            "{case}: the pills sit above the editor (found {pills:?} against {editor})"
+        );
+        let pills_top = pills.iter().cloned().fold(f32::INFINITY, f32::min);
+        assert!(
+            rule < pills_top,
+            "{case}: the pills are inside the input, under its separator (rule {rule}, pills {pills_top})"
         );
 
         // A running turn: the same key queues instead of sending, and the other
@@ -201,9 +254,19 @@ mod rich_input_tests {
             lines_of(&commands, "send").is_empty(),
             "{case}: the send hint is gone"
         );
-        above(&commands, "queue", editor, case);
+        let queue = lines_of(&commands, "queue");
+        assert!(!queue.is_empty(), "{case}: the queue hint replaced it");
         for label in ["new conversation", "shell", "commands", "tasks"] {
             above(&commands, label, editor, case);
         }
+        let running_strip_bottom = ["queue", "new conversation", "shell", "commands", "tasks"]
+            .iter()
+            .flat_map(|label| lines_of(&commands, label))
+            .fold(f32::NEG_INFINITY, f32::max);
+        let running_rule = rules(&commands)
+            .into_iter()
+            .find(|y| *y > running_strip_bottom && *y - running_strip_bottom < 60.0)
+            .unwrap_or_else(|| panic!("{case}: a separator under the strip"));
+        assert!(running_rule > running_strip_bottom, "{case}: the strip is over the rule");
     }
 }

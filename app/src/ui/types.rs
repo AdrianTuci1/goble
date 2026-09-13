@@ -190,6 +190,75 @@ impl SettingsCategory {
     }
 }
 
+/// Which of the sidebar's views is showing. The conversations list is the
+/// default; the other two are windows onto the active pane's working directory.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SidebarView {
+    /// The agent conversations: search, Starred, the folders and their cards.
+    #[default]
+    Agents,
+    /// The project explorer: the working directory as a real file tree.
+    Explorer,
+    /// Global search: the query, and what it matches in the files under the
+    /// working directory.
+    Search,
+}
+
+impl SidebarView {
+    /// The three views, in the order the sidebar's tab strip draws them.
+    pub const ALL: &'static [SidebarView] = &[
+        SidebarView::Agents,
+        SidebarView::Explorer,
+        SidebarView::Search,
+    ];
+
+    /// The tab's label.
+    pub fn label(self) -> &'static str {
+        match self {
+            SidebarView::Agents => "Agents",
+            SidebarView::Explorer => "Explorer",
+            SidebarView::Search => "Search",
+        }
+    }
+
+    /// What the tab does, spelled out where the pointer rests on it.
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            SidebarView::Agents => "Agent conversations",
+            SidebarView::Explorer => "Project explorer",
+            SidebarView::Search => "Global search",
+        }
+    }
+}
+
+/// One row of the project explorer, already flattened: the entry, how deep it
+/// sits under the root, and whether a directory is open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExplorerRow {
+    /// Absolute path of the entry.
+    pub path: String,
+    /// The name drawn on the row.
+    pub name: String,
+    /// Nesting depth: 0 is a direct child of the root.
+    pub depth: usize,
+    pub is_dir: bool,
+    /// Whether an open directory's children are drawn under it.
+    pub expanded: bool,
+}
+
+/// One row of the global search: a file header, or one matched line inside it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchRow {
+    /// Absolute path of the file the row belongs to.
+    pub path: String,
+    /// The name on a file header row; empty on a line row.
+    pub name: String,
+    /// The line number of a matched line; `None` on a file header row.
+    pub line: Option<u32>,
+    /// The matched line's text.
+    pub text: String,
+}
+
 /// Where the first-run agent should run its execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceRouting {

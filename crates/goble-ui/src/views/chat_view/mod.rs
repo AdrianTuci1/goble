@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
-    AskUserUi, CommandProposalUi, Element, Point, PopupMenuItem, ScrollState, ShortcutHint,
+    AskUserUi, CommandProposalUi, Element, Point, PopupMenuItem, ScrollState, ShortcutHint, SlashMenuItem,
     TerminalFilter, TurnStatus,
 };
 use crate::geometry::Vector2F;
@@ -90,8 +90,9 @@ pub struct ChatView {
     composer_model_label: Option<String>,
     composer_path: Option<String>,
     composer_stop_visible: bool,
-    /// The instruction strip the composer draws above its editor: the gestures
-    /// this pane's input answers, as key caps and names. Empty draws nothing.
+    /// The instruction strip the pane draws over the separator above its input:
+    /// the gestures this pane's input answers, as key caps and names. Empty
+    /// draws nothing.
     composer_hints: Vec<ShortcutHint>,
     /// The live turn-status footer: what the pane is doing, or what is still
     /// running once its turn stops. [`TurnStatus::Idle`] gives the row zero
@@ -117,7 +118,12 @@ pub struct ChatView {
     composer_branch_items: Vec<PopupMenuItem>,
     composer_branch_menu_open: Rc<RefCell<bool>>,
     on_select_branch_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
-    on_composer_slash: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    composer_slash_items: Vec<SlashMenuItem>,
+    composer_slash_index: Rc<RefCell<usize>>,
+    composer_slash_dismissed: Rc<RefCell<bool>>,
+    on_composer_slash_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    on_composer_slash_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    on_composer_slash_dismiss: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     pending_ask: Option<AskUserUi>,
     on_answer_ask: Option<Rc<RefCell<dyn FnMut(String, Option<(String, String)>) + 'static>>>,
     on_skip_ask: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -129,8 +135,6 @@ pub struct ChatView {
     /// per-frame composer rebuild.
     composer_proposal_selection: Rc<RefCell<usize>>,
     on_command_decision: Option<Rc<RefCell<dyn FnMut(String, CommandDecision) + 'static>>>,
-    auto_approve: bool,
-    on_toggle_auto_approve: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     /// A prompt the user sent while the agent was running, queued (not
     /// interrupted) and shown inline as a pending block (warp-new model).
     queued_prompt: Option<String>,
@@ -216,15 +220,18 @@ impl ChatView {
             composer_branch_items: Vec::new(),
             composer_branch_menu_open: Rc::new(RefCell::new(false)),
             on_select_branch_item: None,
-            on_composer_slash: None,
+            composer_slash_items: Vec::new(),
+            composer_slash_index: Rc::new(RefCell::new(0)),
+            composer_slash_dismissed: Rc::new(RefCell::new(false)),
+            on_composer_slash_move: None,
+            on_composer_slash_accept: None,
+            on_composer_slash_dismiss: None,
             pending_ask: None,
             on_answer_ask: None,
             on_skip_ask: None,
             composer_proposal: None,
             composer_proposal_selection: Rc::new(RefCell::new(0)),
             on_command_decision: None,
-            auto_approve: false,
-            on_toggle_auto_approve: None,
             queued_prompt: None,
             on_send_queued: None,
             on_dismiss_queued: None,

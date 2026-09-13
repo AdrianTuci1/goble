@@ -13,7 +13,7 @@
 //! colour report, the text-area size) are queued as bytes for the session to
 //! write back to the pty.
 
-use goble_terminal::blocks::BlockView;
+use goble_terminal::blocks::{BlockView, BlockVisibility};
 use goble_terminal::{
     Block, BlockEvent, BlockId, BlockList, BlockOwner, BlockState, CursorState, HookEvent, HookTap,
     OscEvent, OscTap, Palette, Screen, ScreenConfig, ScreenEvent, ScreenLine, ScreenQuery,
@@ -288,6 +288,23 @@ impl Emulator {
     pub fn claim_active_block(&mut self, owner: BlockOwner) -> bool {
         let id = self.blocks.active_block().id();
         self.blocks.claim_next_pre_exec(id, owner)
+    }
+
+    /// Make the block the shell is about to run belong to `conversation_id`'s
+    /// agent view alone.
+    ///
+    /// A command typed inside a conversation is the conversation's command: the
+    /// agent view draws it, and the terminal's own history leaves it out — the
+    /// split warp-new keeps between a block created in the terminal and one
+    /// created inside an agent view. False when the shell is not waiting at a
+    /// prompt, since there is then no block that can be the command's.
+    pub fn run_block_for_conversation(&mut self, conversation_id: &str) -> bool {
+        let active = self.blocks.active_block();
+        if active.state() != BlockState::BeforeExecution {
+            return false;
+        }
+        self.blocks
+            .set_visibility(active.id(), BlockVisibility::agent(conversation_id))
     }
 
     pub fn take_osc_events(&mut self) -> Vec<OscEvent> {

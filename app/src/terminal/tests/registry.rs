@@ -140,3 +140,64 @@ use super::*;
             }
         );
     }
+
+    /// A command typed inside a conversation — a `!` line in the agent input —
+    /// is the conversation's own block: the agent view draws it and the
+    /// terminal's history leaves it out. That is the split warp-new keeps
+    /// between a block created in the terminal and one created inside an agent
+    /// view, and it is why the command is not left behind the shell's view the
+    /// user gets back with Esc.
+    #[test]
+    fn a_command_typed_in_a_conversation_belongs_to_it_and_not_the_shell() {
+        let mut reg = TerminalRegistry::default();
+        reg.sessions.insert(1, detached());
+        let session = reg.sessions.get_mut(&1).expect("the session is there");
+        run_hook(session, HookEvent::Bootstrapped(Default::default()));
+
+        // `ls` at the shell, then `!pwd` typed inside the conversation.
+        run_hook(session, preexec("ls"));
+        run_hook(session, HookEvent::CommandFinished(Default::default()));
+        assert!(
+            session.run_block_for_conversation("conv-1"),
+            "the shell is at a prompt, so the block is the command's"
+        );
+        run_hook(session, preexec("pwd"));
+        run_hook(session, HookEvent::CommandFinished(Default::default()));
+
+        let commands = |view: BlockView| -> Vec<String> {
+            reg.visible_blocks(1, &view)
+                .into_iter()
+                .map(|block| block.command)
+                .filter(|command| !command.is_empty())
+                .collect()
+        };
+        assert_eq!(
+            commands(BlockView::Terminal),
+            vec!["ls"],
+            "the shell's own history keeps what was typed at it"
+        );
+        assert_eq!(
+            commands(BlockView::Agent {
+                conversation_id: "conv-1".to_string(),
+            }),
+            vec!["pwd"],
+            "the conversation draws the command typed inside it"
+        );
+    }
+
+    /// A command is only the conversation's while the shell is at a prompt: a
+    /// line written into a running command is not a block of its own, so
+    /// nothing is marked.
+    #[test]
+    fn a_command_is_not_the_conversations_while_one_is_still_running() {
+        let mut reg = TerminalRegistry::default();
+        reg.sessions.insert(1, detached());
+        let session = reg.sessions.get_mut(&1).expect("the session is there");
+        run_hook(session, HookEvent::Bootstrapped(Default::default()));
+        run_hook(session, preexec("sleep 30"));
+
+        assert!(
+            !session.run_block_for_conversation("conv-1"),
+            "a running command owns the block; there is no prompt to type at"
+        );
+    }

@@ -30,7 +30,7 @@ fn cue(count: usize) -> Box<dyn Element> {
 }
 
 /// C3: while work is in flight the topbar cue shows the live count next to a
-/// spinner frame.
+/// spinner frame and the diamond that marks the count.
 #[test]
 fn the_cue_shows_the_live_count_and_a_spinner() {
     let app = AppContext::default();
@@ -39,8 +39,15 @@ fn the_cue_shows_the_live_count_and_a_spinner() {
     let drawn = drawn_texts(&commands);
 
     assert!(
-        drawn.iter().any(|t| t == "◆ 3"),
+        drawn.iter().any(|t| t == "3"),
         "the live count is drawn: {drawn:?}"
+    );
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawIcon { name, .. } if name == "diamond"
+        )),
+        "the count is marked with the diamond icon: {commands:?}"
     );
     assert!(
         drawn.iter().any(|t| SPINNER_FRAMES.contains(&t.as_str())),

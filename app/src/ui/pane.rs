@@ -1,8 +1,14 @@
 /// Which kind of content a pane hosts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// Not `Copy`: a file view carries the file it shows, so the pane survives a
+/// save/load with the same file open instead of coming back empty.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PaneKind {
     Chat,
     Terminal,
+    /// A read-only view of one file, opened from the explorer tree or a search
+    /// result.
+    File { path: String },
 }
 
 /// Which way a pane tree splits.
@@ -77,8 +83,50 @@ impl Pane {
         }
     }
 
+    /// Every file view in this subtree as `(pane id, path)`, in traversal order.
+    /// What the surfaces that read the machine (the frame's file cache) look at.
+    pub fn file_leaves(&self, out: &mut Vec<(u64, String)>) {
+        match self {
+            Pane::Leaf {
+                id,
+                kind: PaneKind::File { path },
+            } => out.push((*id, path.clone())),
+            Pane::Leaf { .. } => {}
+            Pane::Split { first, second, .. } => {
+                first.file_leaves(out);
+                second.file_leaves(out);
+            }
+        }
+    }
+
     fn is_leaf(&self, target: u64) -> bool {
         matches!(self, Pane::Leaf { id, .. } if *id == target)
+    }
+
+    /// The kind of the leaf `target`, if this subtree has it.
+    pub fn leaf_kind(&self, target: u64) -> Option<&PaneKind> {
+        match self {
+            Pane::Leaf { id, kind } if *id == target => Some(kind),
+            Pane::Split { first, second, .. } => {
+                first.leaf_kind(target).or_else(|| second.leaf_kind(target))
+            }
+            _ => None,
+        }
+    }
+
+    /// Point the leaf `target` at different content. Returns whether the leaf
+    /// was found.
+    fn set_leaf_kind(&mut self, target: u64, kind: PaneKind) -> bool {
+        match self {
+            Pane::Leaf { id, kind: current } if *id == target => {
+                *current = kind;
+                true
+            }
+            Pane::Split { first, second, .. } => {
+                first.set_leaf_kind(target, kind.clone()) || second.set_leaf_kind(target, kind)
+            }
+            _ => false,
+        }
     }
 
     /// Replace the leaf `target` with a `Split` whose first child is the old
@@ -88,12 +136,12 @@ impl Pane {
         match self {
             Pane::Leaf { id, kind } if *id == target => {
                 let id = *id;
-                let kind = *kind;
+                let kind = kind.clone();
                 *self = Pane::Split {
                     id: split_id,
                     dir,
                     ratio: 0.5,
-                    first: Box::new(Pane::leaf(id, kind)),
+                    first: Box::new(Pane::leaf(id, kind.clone())),
                     second: Box::new(Pane::leaf(second_id, kind)),
                 };
                 true
@@ -119,7 +167,7 @@ impl Pane {
         match self {
             Pane::Leaf { id, kind } if *id == target => {
                 let id = *id;
-                let kind = *kind;
+                let kind = kind.clone();
                 *self = Pane::Split {
                     id: split_id,
                     dir,
@@ -130,7 +178,7 @@ impl Pane {
                 true
             }
             Pane::Split { first, second, .. } => {
-                first.split_leaf_into(target, dir, split_id, second_id, second_kind)
+                first.split_leaf_into(target, dir, split_id, second_id, second_kind.clone())
                     || second.split_leaf_into(target, dir, split_id, second_id, second_kind)
             }
             _ => false,
@@ -303,6 +351,16 @@ impl Space {
 
     pub fn set_ratio(&mut self, split_id: u64, ratio: f32) -> bool {
         self.root.set_ratio(split_id, ratio)
+    }
+
+    /// The kind of the leaf `target` (see [`Pane::leaf_kind`]).
+    pub fn leaf_kind(&self, target: u64) -> Option<&PaneKind> {
+        self.root.leaf_kind(target)
+    }
+
+    /// Point the leaf `target` at different content (see [`Pane::set_leaf_kind`]).
+    pub fn set_leaf_kind(&mut self, target: u64, kind: PaneKind) -> bool {
+        self.root.set_leaf_kind(target, kind)
     }
 
     /// Close the leaf `target`, returning the id of the pane to focus next.

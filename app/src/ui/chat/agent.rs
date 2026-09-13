@@ -1,11 +1,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use goble_terminal::blocks::BlockView;
+use goble_terminal::BlockOwner;
 use goble_ui::elements::{
     AppContext, Element, PopupMenuItem,
 };
 use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView};
 
+use crate::emulator::VisibleBlock;
 use crate::state::PaneControls;
 
 use super::super::{UiActions, UiSnapshot};
@@ -35,6 +38,45 @@ fn with_inline_terminal(
             vec![ChatFragment::terminal(data)],
         ));
     }
+    messages
+}
+
+/// The transcript rows for the commands typed *inside* a conversation — the `!`
+/// lines the user ran from the pane's agent input — so the conversation draws
+/// them where they ran instead of leaving them behind the shell's own view
+/// (Esc). Each is the shared terminal block, so a command typed in a
+/// conversation and one the agent ran read the same.
+///
+/// A block the agent owns is left out: its turn already carries that command as
+/// its own tool-call row. The caller passes the conversation's own blocks, so a
+/// shell block is never among them: the shell's history keeps its blocks to
+/// itself, and a conversation opened from the terminal still starts on a clean
+/// sheet.
+fn conversation_command_rows(blocks: &[VisibleBlock]) -> Vec<ChatMessage> {
+    blocks
+        .iter()
+        .filter(|block| block.owner == BlockOwner::User)
+        .filter_map(crate::ui::terminal::section_data)
+        .map(|data| ChatMessage::new(ChatRole::Tool, vec![ChatFragment::terminal(data)]))
+        .collect()
+}
+
+/// Append the commands typed inside `conversation_id` to the transcript. See
+/// [`conversation_command_rows`].
+fn with_conversation_commands(
+    mut messages: Vec<ChatMessage>,
+    state: &UiSnapshot,
+    pane_id: u64,
+    conversation_id: &str,
+) -> Vec<ChatMessage> {
+    if conversation_id.is_empty() {
+        return messages;
+    }
+    let view = BlockView::Agent {
+        conversation_id: conversation_id.to_string(),
+    };
+    let blocks = state.terminal.borrow().visible_blocks(pane_id, &view);
+    messages.extend(conversation_command_rows(&blocks));
     messages
 }
 
@@ -71,8 +113,8 @@ pub fn build_agent_chat(
     let header = build_agent_header(app, state, actions, pane_id, harness_open);
 
     // The rich-input controls belong to this pane, not to the workspace: two
-    // pty/agent panes side by side keep their own model, auto-approve switch,
-    // branch and dropdown open flags.
+    // pty/agent panes side by side keep their own model, branch and dropdown
+    // open flags.
     let controls = state.pane_controls.get(&pane_id).cloned().unwrap_or_else(|| {
         PaneControls::new(state.selected_model.clone(), state.auto_approve, String::new())
     });
@@ -88,7 +130,6 @@ pub fn build_agent_chat(
     let on_answer_ask = actions.on_answer_ask.clone();
     let on_skip_ask = actions.on_skip_ask.clone();
     let on_command_decision = actions.on_command_decision.clone();
-    let on_toggle_auto_approve = actions.on_toggle_auto_approve.clone();
     let on_send_queued = actions.on_send_queued.clone();
     let on_dismiss_queued = actions.on_dismiss_queued.clone();
     let on_close_inline_screen = actions.on_close_inline_screen.clone();
@@ -106,7 +147,9 @@ pub fn build_agent_chat(
     let on_select_harness = actions.on_select_harness.clone();
     let on_select_dir = actions.on_select_dir.clone();
     let on_select_branch = actions.on_select_branch.clone();
-    let on_composer_slash = actions.on_composer_slash.clone();
+    let on_slash_move = actions.on_slash_move.clone();
+    let on_slash_close = actions.on_slash_close.clone();
+    let on_slash_dismiss = actions.on_slash_dismiss.clone();
     let on_cmd_enter = actions.on_cmd_enter.clone();
 
     // Model dropdown: one item per available model; the current one is marked
@@ -126,16 +169,22 @@ pub fn build_agent_chat(
     let models_for_select = state.models.clone();
     let model_menu_open = controls.model_menu_open.clone();
 
-    // Append any live terminal-command output the pane's PTY has produced, so
-    // a `!cmd` run from the chat pane shows its output inline.
+    // Append the live terminal blocks this pane's conversation owns, so a
+    // command run from the agent input (`!cmd`) shows where it ran.
     //
-    // Not for the terminal pane's harness view: that view is opened *from* the
-    // shell, and the shell's own commands already are the pane's history behind
-    // it. Carrying them into the conversation would open a new chat with the
-    // terminal's screen pasted into it. A pane that came from the terminal
-    // starts its conversation on a clean sheet.
+    // The terminal pane's harness view draws the conversation's own commands —
+    // the `!` lines typed in it, which belong to the conversation alone — and
+    // none of the shell's history: that view is opened *from* the shell, and
+    // carrying the shell's blocks into it would open a new chat with the
+    // terminal's screen pasted in. A plain chat pane has no shell view to fall
+    // back on, so it shows the pane's newest command block instead.
     let messages = if harness_open {
-        session.messages.clone()
+        with_conversation_commands(
+            session.messages.clone(),
+            state,
+            pane_id,
+            &session.conversation_id,
+        )
     } else {
         with_inline_terminal(session.messages.clone(), &state.terminal, pane_id)
     };
@@ -212,8 +261,6 @@ pub fn build_agent_chat(
         .with_on_command_decision(move |id, decision| {
             (on_command_decision.borrow_mut())(pane_id, id, decision)
         })
-        .with_auto_approve(controls.auto_approve)
-        .with_on_toggle_auto_approve(move |on| (on_toggle_auto_approve.borrow_mut())(pane_id, on))
         .with_queued_prompt(session.queued_prompt.clone())
         .with_on_send_queued(move || (on_send_queued.borrow_mut())())
         .with_on_dismiss_queued(move || (on_dismiss_queued.borrow_mut())())
@@ -298,7 +345,26 @@ pub fn build_agent_chat(
                 );
         }
     }
-    let mut chat = chat.with_composer_on_slash(move || (on_composer_slash.borrow_mut())());
+    // Slash commands: a draft that starts with `/` opens the command menu above
+    // the editor, narrowed by what was typed after the slash. The list is the
+    // Cmd+K palette's own, drawn in place instead of as a full-screen overlay.
+    let slash_commands = crate::ui::palette::slash_commands(state, actions);
+    let slash_query =
+        crate::ui::palette::slash_query(&session.composer_draft).unwrap_or_default();
+    let slash_filtered = crate::ui::palette::matching_slash_commands(&slash_commands, &slash_query);
+    let slash_items = crate::ui::palette::slash_items(&slash_filtered);
+    let mut chat = chat
+        .with_composer_slash_menu(
+            slash_items,
+            controls.slash_index.clone(),
+            controls.slash_dismissed.clone(),
+        )
+        .with_composer_on_slash_move(move |index| (on_slash_move.borrow_mut())(index))
+        .with_composer_on_slash_accept(crate::ui::palette::slash_accept(
+            slash_filtered,
+            on_slash_close,
+        ))
+        .with_composer_on_slash_dismiss(move || (on_slash_dismiss.borrow_mut())());
     // The way out of this view, for a pane that has one (the terminal pane's
     // harness returns to the shell). A chat pane wires nothing here.
     if let Some(on_escape) = on_escape {
@@ -901,5 +967,66 @@ mod agent_pill_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod conversation_command_tests {
+    use super::*;
+    use crate::emulator::VisibleBlock;
+    use goble_terminal::{BlockId, BlockOwner, BlockState};
+    use goble_ui::elements::ChatFragmentKind;
+
+    fn block(owner: BlockOwner, command: &str) -> VisibleBlock {
+        VisibleBlock {
+            id: BlockId(1),
+            owner,
+            command: command.to_string(),
+            output: "out".to_string(),
+            state: BlockState::DoneWithExecution,
+            exit_code: Some(0),
+            pwd: Some("/tmp".to_string()),
+            git_branch: None,
+            duration: None,
+            card: None,
+        }
+    }
+
+    /// The commands the conversation ran with `!` are the rows it adds, drawn
+    /// through the shared terminal block. A block the agent owns is left out:
+    /// its turn already carries that command as a tool-call row.
+    #[test]
+    fn a_conversations_own_commands_are_the_rows_it_adds() {
+        let typed = block(BlockOwner::User, "pwd");
+        let ran_by_the_agent = block(
+            BlockOwner::Agent {
+                conversation_id: "c1".to_string(),
+                call_id: "call-1".to_string(),
+            },
+            "echo hi",
+        );
+
+        let rows = conversation_command_rows(&[typed, ran_by_the_agent]);
+
+        assert_eq!(rows.len(), 1, "a command is one row");
+        assert_eq!(rows[0].role, ChatRole::Tool);
+        match &rows[0].fragments[0].kind {
+            ChatFragmentKind::Terminal(data) => {
+                assert_eq!(data.lines[0].text, "pwd", "the row is the command's block");
+                assert_eq!(
+                    data.meta.as_ref().map(|meta| meta.path.as_str()),
+                    Some("/tmp"),
+                    "the block carries where it ran"
+                );
+            }
+            other => panic!("the row is the shared terminal block, got {other:?}"),
+        }
+    }
+
+    /// Nothing to add is no row: a pane with no conversation of its own draws
+    /// no command rows.
+    #[test]
+    fn a_pane_without_a_conversation_adds_no_rows() {
+        assert!(conversation_command_rows(&[]).is_empty());
     }
 }

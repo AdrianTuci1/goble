@@ -131,6 +131,27 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Persist the directory a conversation works in.
+    pub fn set_chat_working_dir(&self, id: &str, dir: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chats SET working_dir = ?1 WHERE id = ?2",
+            params![dir, id],
+        )?;
+        Ok(())
+    }
+
+    /// Read the directory a conversation works in, if it has one.
+    pub fn get_chat_working_dir(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT working_dir FROM chats WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(row.get::<_, Option<String>>(0)?)
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn insert_chat_message(
         &self,
         id: &str,

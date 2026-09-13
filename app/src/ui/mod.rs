@@ -15,15 +15,20 @@ pub mod chat;
 pub mod color_picker;
 pub mod connectors;
 pub mod crons;
+pub mod explorer;
+pub mod file_view;
+pub mod global_search;
 pub mod harness;
 pub mod media;
 pub mod model_form;
 pub mod palette;
 pub mod panes;
+pub mod pickers;
 pub mod projects;
 pub mod screen;
 pub mod settings;
 pub mod shell;
+pub mod shortcuts_help;
 pub mod sidebar;
 pub mod space_bar;
 pub mod task_workflow;
@@ -46,9 +51,9 @@ pub use snapshot::{
     ScreenSnapshot, ScreenSourceEntry, SubAgentViewSnapshot, UiSnapshot,
 };
 pub use types::{
-    AppTab, CostEntry, CronEntry, ExecutionEntry, HarnessEntry, HarnessKind, LlmFormField,
-    McpSearchEntry, McpServerEntry, SettingsCategory, TaskEntry, TimelineEntry, VaultSecretEntry,
-    WorkflowEntry, WorkspaceRouting,
+    AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, HarnessKind,
+    LlmFormField, McpSearchEntry, McpServerEntry, SearchRow, SettingsCategory, SidebarView,
+    TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkspaceRouting,
 };
 
 /// Width of the left conversation sidebar.

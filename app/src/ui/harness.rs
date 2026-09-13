@@ -7,7 +7,7 @@
 
 use goble_ui::elements::{
     AppContext, Axis, Button, ButtonVariant, Container, CrossAxisAlignment, Divider, EdgeInsets,
-    Element, Fill, Flex, MainAxisSize, Rect, Scrollable, Spacer, Text,
+    Element, Fill, Flex, Icon, MainAxisSize, Rect, Scrollable, Spacer, Text,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -30,7 +30,19 @@ fn build_page(
     let sm = app.theme.spacing_px(SpacingToken::Sm);
 
     let on_back = actions.on_settings_back.clone();
-    let back_button = Button::new(Text::new("← Back").with_theme_color(ColorToken::Text, app).finish())
+    let back_button = Button::new(
+        Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0)
+        .with_child(
+            Icon::new("arrow-left")
+                .with_size(13.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_child(Text::new("Back").with_theme_color(ColorToken::Text, app).finish())
+        .finish(),
+    )
         .with_variant(ButtonVariant::Ghost)
         .with_on_click(move || (on_back.borrow_mut())())
         .finish();

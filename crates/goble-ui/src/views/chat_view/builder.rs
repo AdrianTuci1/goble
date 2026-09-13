@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
-    AskUserUi, CommandProposalUi, Element, PopupMenuItem, ScrollState, ShortcutHint, TerminalFilter,
-    TurnStatus,
+    AskUserUi, CommandProposalUi, Element, PopupMenuItem, ScrollState, ShortcutHint, SlashMenuItem,
+    TerminalFilter, TurnStatus,
 };
 use crate::vim::{Clipboard, VimState};
 use goble_core::harness::CommandDecision;
@@ -237,8 +237,8 @@ impl ChatView {
         self
     }
 
-    /// The instruction strip the composer draws above its editor: the gestures
-    /// this pane's input answers, as key caps and names.
+    /// The instruction strip the pane draws over the separator above its input:
+    /// the gestures this pane's input answers, as key caps and names.
     pub fn with_composer_hints(mut self, hints: Vec<ShortcutHint>) -> Self {
         self.composer_hints = hints;
         self
@@ -328,9 +328,36 @@ impl ChatView {
         self
     }
 
-    /// Fired when the composer draft begins with `/` (slash command).
-    pub fn with_composer_on_slash<F: FnMut() + 'static>(mut self, callback: F) -> Self {
-        self.on_composer_slash = Some(Rc::new(RefCell::new(callback)));
+    /// Set the composer's slash-command menu: the commands the host offers for
+    /// the draft being typed (already filtered by it), the app-owned selection,
+    /// the app-owned Escape flag, and the three gestures the menu answers.
+    pub fn with_composer_slash_menu(
+        mut self,
+        items: Vec<SlashMenuItem>,
+        index: Rc<RefCell<usize>>,
+        dismissed: Rc<RefCell<bool>>,
+    ) -> Self {
+        self.composer_slash_items = items;
+        self.composer_slash_index = index;
+        self.composer_slash_dismissed = dismissed;
+        self
+    }
+
+    /// Fired when the slash menu's selection moves.
+    pub fn with_composer_on_slash_move<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
+        self.on_composer_slash_move = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Fired when a slash command is run (Enter, Tab or a click on its row).
+    pub fn with_composer_on_slash_accept<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
+        self.on_composer_slash_accept = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Fired on Escape: the menu closes and the draft stays as typed.
+    pub fn with_composer_on_slash_dismiss<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_composer_slash_dismiss = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -377,19 +404,6 @@ impl ChatView {
         callback: F,
     ) -> Self {
         self.on_command_decision = Some(Rc::new(RefCell::new(callback)));
-        self
-    }
-
-    /// Whether the agent auto-approves `ask_user` questions (skip the ask and
-    /// continue). Shown as a toggle in the controls strip above the composer.
-    pub fn with_auto_approve(mut self, enabled: bool) -> Self {
-        self.auto_approve = enabled;
-        self
-    }
-
-    /// Fired when the user toggles the auto-approve switch.
-    pub fn with_on_toggle_auto_approve<F: FnMut(bool) + 'static>(mut self, callback: F) -> Self {
-        self.on_toggle_auto_approve = Some(Rc::new(RefCell::new(callback)));
         self
     }
 

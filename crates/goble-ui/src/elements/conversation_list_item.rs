@@ -11,6 +11,11 @@ use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, RectF, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
 
+/// Extra height above and below a card's rows. The card is a full-width band,
+/// so without it the two text rows sit flush against the cards above and below
+/// and the digest reads as one block of text.
+const CARD_EXTRA_HEIGHT: f32 = 4.0;
+
 /// Per-card interaction state that must survive the per-frame element rebuild.
 /// Owned by the app (a map keyed by conversation id) and shared with the card
 /// through `Rc<RefCell<_>>`, so hover / the delete menu persist across frames.
@@ -34,13 +39,21 @@ pub struct ConversationListItem {
     name: String,
     last_response: String,
     timestamp: String,
+    /// The directory the conversation works in, drawn under its subject. `None`
+    /// (or empty) draws no row, so a conversation that has not run anywhere yet
+    /// keeps the two-line card.
+    directory: Option<String>,
     selected: bool,
+    /// Whether the conversation is starred, which the card marks and the
+    /// sidebar's Starred section lists.
+    starred: bool,
     /// The work environment this conversation runs in (`"local"` / `"remote"`),
     /// used to pick the environment SVG shown in the card.
     workspace_routing: String,
     ui: Rc<RefCell<AgentCardUi>>,
     on_select: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_delete: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    on_toggle_star: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     root: Option<Box<dyn Element>>,
     bg: crate::color::ColorU,
     state: InteractiveState,
@@ -62,11 +75,14 @@ impl ConversationListItem {
             name: name.into(),
             last_response: last_response.into(),
             timestamp: timestamp.into(),
+            directory: None,
             selected,
+            starred: false,
             workspace_routing: "local".to_string(),
             ui,
             on_select: None,
             on_delete: None,
+            on_toggle_star: None,
             root: None,
             bg: crate::color::ColorU::default(),
             state: InteractiveState::default(),
@@ -85,10 +101,35 @@ impl ConversationListItem {
         self
     }
 
+    /// Whether the conversation is starred. A starred card marks itself, so a
+    /// card that also sits in the sidebar's Starred section still says why.
+    pub fn with_starred(mut self, starred: bool) -> Self {
+        self.starred = starred;
+        self
+    }
+
+    /// Star or unstar the conversation, from the card's own menu.
+    pub fn with_on_toggle_star<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_toggle_star = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     /// Set the conversation's work environment, which picks the SVG shown in
     /// the card (local vs remote avatar).
     pub fn with_workspace_routing(mut self, routing: impl Into<String>) -> Self {
         self.workspace_routing = routing.into();
+        self
+    }
+
+    /// Set the working directory drawn under the card's subject. An empty path
+    /// draws no row.
+    pub fn with_directory(mut self, directory: impl Into<String>) -> Self {
+        let directory = directory.into();
+        self.directory = if directory.trim().is_empty() {
+            None
+        } else {
+            Some(directory)
+        };
         self
     }
 
@@ -119,16 +160,28 @@ impl ConversationListItem {
         };
         self.bg = bg;
 
-        let name_row = Flex::row()
+        let mut subject = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
             .with_spacing(xs)
             .with_child(
                 Text::new(self.name.clone())
                     .with_theme_color(ColorToken::Text, app)
                     .with_font_size(12.0)
                     .finish(),
-            )
+            );
+        if self.starred {
+            subject = subject.with_child(
+                Icon::new("star-filled")
+                    .with_size(12.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            );
+        }
+        let name_row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_spacing(xs)
+            .with_child(subject.finish())
             .with_child(
                 Text::new(self.timestamp.clone())
                     .with_theme_color(ColorToken::Muted, app)
@@ -149,12 +202,34 @@ impl ConversationListItem {
             )
             .finish();
 
-        let text_column = Flex::column()
+        let mut text_column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_spacing(2.0)
-            .with_child(name_row)
-            .with_child(last_row)
-            .finish();
+            .with_child(name_row);
+        // The directory the conversation works in, directly under its subject:
+        // it says where the work happens, which the title alone cannot.
+        if let Some(directory) = self.directory.clone() {
+            text_column = text_column.with_child(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(4.0)
+                    .with_child(
+                        Icon::new("folder")
+                            .with_size(11.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
+                    .with_child(
+                        Text::new(directory)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_size(11.0)
+                            .with_max_lines(1)
+                            .finish(),
+                    )
+                    .finish(),
+            );
+        }
+        let text_column = text_column.with_child(last_row).finish();
 
         // Environment SVG badge: the conversation's work medium (Local or
         // Remote) is shown directly on the card, mirroring the topbar medium
@@ -205,15 +280,18 @@ impl ConversationListItem {
             .with_main_axis_size(MainAxisSize::Min)
             .with_child(row.finish());
 
-        // Delete menu, shown as a row under the card while open.
+        // The card's own menu, shown as a row under it while open: star the
+        // conversation, or delete it.
         if menu_open {
-            let delete = self.delete_button(app);
-            let del_row = Flex::row()
+            let mut actions = Flex::row()
                 .with_main_axis_alignment(MainAxisAlignment::End)
-                .with_child(delete)
-                .finish();
+                .with_spacing(xs);
+            if let Some(star) = self.star_button(app) {
+                actions = actions.with_child(star);
+            }
+            actions = actions.with_child(self.delete_button(app));
             column = column.with_child(
-                Container::new(del_row)
+                Container::new(actions.finish())
                     .with_padding(crate::style::EdgeInsets::new(0.0, 0.0, xs, 0.0))
                     .finish(),
             );
@@ -224,8 +302,50 @@ impl ConversationListItem {
         self.root = Some(
             Container::new(column.finish())
                 .with_background(Fill::Solid(bg))
+                .with_padding(crate::style::EdgeInsets::new(
+                    0.0,
+                    CARD_EXTRA_HEIGHT,
+                    0.0,
+                    CARD_EXTRA_HEIGHT,
+                ))
                 .finish(),
         );
+    }
+
+    /// The menu's star row, or `None` when the card was given no star action.
+    /// Starring closes the menu: the choice is made, and the card and the
+    /// sidebar's Starred section already show it.
+    fn star_button(&self, app: &AppContext) -> Option<Box<dyn Element>> {
+        let on_toggle = self.on_toggle_star.clone()?;
+        let xs = app.theme.spacing_px(SpacingToken::Xs);
+        let starred = self.starred;
+        let row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(xs)
+            .with_child(
+                Icon::new(if starred { "star-filled" } else { "star" })
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_child(
+                Text::new(if starred { "Unstar" } else { "Star" })
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_font_size(12.0)
+                    .finish(),
+            )
+            .finish();
+        let ui = Rc::clone(&self.ui);
+        Some(
+            Button::new(row)
+                .with_variant(ButtonVariant::Ghost)
+                .with_corner_radius(0.0)
+                .with_on_click(move || {
+                    ui.borrow_mut().menu_open = false;
+                    (on_toggle.borrow_mut())();
+                })
+                .finish(),
+        )
     }
 
     fn delete_button(&self, app: &AppContext) -> Box<dyn Element> {
@@ -500,5 +620,62 @@ mod tests {
         });
         assert!(has_dots, "hover/menu card should render the 3-dot icon");
         assert!(has_delete, "open menu should render a 'Delete agent' action");
+    }
+
+    /// The card's menu carries the star toggle, and clicking it stars the
+    /// conversation and puts the menu away: the card and the sidebar's Starred
+    /// section are where the choice now shows.
+    #[test]
+    fn the_menus_star_row_stars_the_conversation_and_closes_the_menu() {
+        let app = AppContext::default();
+        let ui = Rc::new(RefCell::new(AgentCardUi {
+            hover: true,
+            menu_open: true,
+        }));
+        let toggled = Rc::new(RefCell::new(0usize));
+        let ran = Rc::clone(&toggled);
+        let item = ConversationListItem::new(
+            "c1",
+            "Ada",
+            "A long last message",
+            "5 min ago",
+            Rc::clone(&ui),
+            false,
+        )
+        .with_on_toggle_star(move || *ran.borrow_mut() += 1);
+        let mut element: Box<dyn Element> = Box::new(item);
+        let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
+
+        let offers_star = commands.iter().any(|command| {
+            matches!(command, crate::render::RenderCommand::DrawText { text, .. } if text == "Star")
+        });
+        assert!(offers_star, "the open menu should offer Star");
+
+        let origin = commands
+            .iter()
+            .find_map(|command| match command {
+                crate::render::RenderCommand::DrawIcon { name, origin, .. } if name == "star" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the star row's icon is drawn");
+        let at = origin + vec2f(7.0, 7.0);
+        let mut event_ctx = EventContext::default();
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
+        ] {
+            element.dispatch_event(&event, &mut event_ctx, &app);
+        }
+
+        assert_eq!(*toggled.borrow(), 1, "the star row ran the toggle");
+        assert!(!ui.borrow().menu_open, "starring closes the menu");
     }
 }

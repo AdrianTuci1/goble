@@ -13,9 +13,10 @@ use crate::ai::make_ai_actions;
 use crate::media::make_media_actions;
 use crate::projects::make_projects_actions;
 use crate::screen::make_screen_actions;
+use crate::ui::pickers::PARENT_LABEL;
 use crate::ui::{
     build_ui, AiSnapshot, ComposerContext, MediaSnapshot, ProjectsSnapshot, ScreenFrameSnapshot,
-    ScreenSnapshot, UiSnapshot,
+    ScreenSnapshot, SidebarView, UiSnapshot,
 };
 
 use super::RootView;
@@ -24,6 +25,10 @@ impl RootView {
     /// Rebuild the element tree from the current app state.
     pub(super) fn rebuild(&mut self, app: &AppContext) {
         self.drain_events();
+        // Collect the global search the worker has finished, if it answered the
+        // query the field holds now. The walk runs off this thread, so this is
+        // where its answer reaches the rows the sidebar draws.
+        self.state.borrow_mut().take_global_search_result();
         // Advance any running screen-event replay by real time (one step per
         // frame). The schedule itself is deterministic; only the pacing uses
         // the wall clock, and tests drive it through `step_replay`.
@@ -37,11 +42,9 @@ impl RootView {
         // snapshot is built, so two pty/agent panes never share the composer's
         // buttons.
         self.state.borrow_mut().ensure_pane_controls();
-        // Derive the composer context pills (harness = the selected harness,
-        // working dir = the selected session's path, branch = git branch) from
-        // the environment tree + the active pane's cwd. The harness pill lists
-        // the work environment (medium) the active pane runs on; the sidebar
-        // hosts the same selector, this pill is the quick overlay.
+        // The composer's left pill is the window-wide environment (medium) every
+        // pane shares; the other two pills describe one pane's own shell and are
+        // filled in per pane below, from that pane's working directory.
         let composer_context = {
             let media = self.media_state.borrow();
             let state_s = self.state.borrow();
@@ -61,53 +64,17 @@ impl RootView {
                 }
                 harness_items.push(item);
             }
-            let session_path = media.selected_session_path();
-            let dir_label = if session_path.is_empty() {
-                state_s.composer_path.clone()
-            } else {
-                session_path
-            };
-            let dir_label = crate::state::display_path(&dir_label);
-            let mut dir_ids = Vec::new();
-            let mut dir_items = Vec::new();
-            if let Some(m) = media.mediums.iter().find(|m| m.id == media.selected_medium) {
-                if let Some(proj) = m.projects.iter().find(|p| p.id == media.selected_project) {
-                    for s in &proj.sessions {
-                        dir_ids.push(s.id.clone());
-                        let mut item = PopupMenuItem::new(crate::state::display_path(&s.path))
-                            .with_icon("folder");
-                        if s.id == media.selected_session {
-                            item = item.selected();
-                        }
-                        dir_items.push(item);
-                    }
-                }
-            }
-            let branch_label = state_s.composer_branch.clone();
-            let branch_ids = if branch_label.is_empty() {
-                Vec::new()
-            } else {
-                vec![branch_label.clone()]
-            };
-            let branch_items = if branch_label.is_empty() {
-                Vec::new()
-            } else {
-                vec![PopupMenuItem::new(branch_label.clone())
-                    .with_icon("git-branch")
-                    .selected()]
-            };
             ComposerContext {
                 harness_label,
                 harness_ids,
                 harness_items,
                 harness_menu_open: state_s.harness_menu_open.clone(),
-                dir_label,
-                dir_ids,
-                dir_items,
                 dir_menu_open: state_s.dir_menu_open.clone(),
-                branch_label,
-                branch_ids,
-                branch_items,
+                dir_ids: Vec::new(),
+                dir_items: Vec::new(),
+                branch_label: String::new(),
+                branch_ids: Vec::new(),
+                branch_items: Vec::new(),
                 branch_menu_open: state_s.branch_menu_open.clone(),
             }
         };
@@ -144,40 +111,88 @@ impl RootView {
                 }
             }
             // Fan the composer pills out per pane: the harness (medium) choice
-            // is a window-level environment, but each pane keeps its own
-            // working directory, branch and dropdown open flags.
+            // is window-level, but each pane keeps its own working directory,
+            // branch and dropdown open flags. The directory and branch menus are
+            // the pane's own two, and both are windows onto the real machine:
+            // the directory lists what sits under the pane's cwd, the branch
+            // lists the repository's local branches. Neither is read while its
+            // menu is closed, which is why the rows arrive with the open flag.
             let composer_context: HashMap<u64, ComposerContext> = {
-                let media = self.media_state.borrow();
-                let media_dir = media.selected_session_path();
+                let mut pickers = self.pickers.borrow_mut();
                 pane_chat
                     .keys()
                     .map(|&pid| {
                         let mut ctx = composer_context.clone();
                         let controls = s.pane_controls(pid);
+                        let cwd = s
+                            .pane_sessions
+                            .get(&pid)
+                            .map(|session| session.path.clone())
+                            .unwrap_or_default();
                         ctx.harness_menu_open = controls.harness_menu_open.clone();
+
                         ctx.dir_menu_open = controls.dir_menu_open.clone();
-                        ctx.branch_menu_open = controls.branch_menu_open.clone();
-                        if media_dir.is_empty() {
-                            if let Some(pane) = pane_chat.get(&pid) {
-                                if !pane.composer_path.is_empty() {
-                                    ctx.dir_label =
-                                        crate::state::display_path(&pane.composer_path);
+                        let dir_rows =
+                            pickers.directories(&cwd, *controls.dir_menu_open.borrow());
+                        ctx.dir_ids = dir_rows.iter().map(|row| row.path.clone()).collect();
+                        ctx.dir_items = dir_rows
+                            .iter()
+                            .map(|row| {
+                                let icon = if row.label == PARENT_LABEL {
+                                    "arrow-up"
+                                } else {
+                                    "folder"
+                                };
+                                let mut item =
+                                    PopupMenuItem::new(row.label.clone()).with_icon(icon);
+                                if row.path == cwd {
+                                    item = item.selected();
                                 }
-                            }
-                        }
+                                item
+                            })
+                            .collect();
+
+                        // The pill names where the pane is; a directory that is
+                        // no repository has no branch and draws no branch pill.
                         ctx.branch_label = controls.branch.clone();
-                        if ctx.branch_label.is_empty() {
-                            ctx.branch_ids = Vec::new();
-                            ctx.branch_items = Vec::new();
-                        } else {
-                            ctx.branch_ids = vec![ctx.branch_label.clone()];
-                            ctx.branch_items = vec![PopupMenuItem::new(ctx.branch_label.clone())
-                                .with_icon("git-branch")
-                                .selected()];
-                        }
+                        ctx.branch_menu_open = controls.branch_menu_open.clone();
+                        let branch_rows =
+                            pickers.branches(&cwd, *controls.branch_menu_open.borrow());
+                        ctx.branch_ids = branch_rows.iter().map(|row| row.name.clone()).collect();
+                        ctx.branch_items = branch_rows
+                            .iter()
+                            .map(|row| {
+                                let mut item =
+                                    PopupMenuItem::new(row.name.clone()).with_icon("git-branch");
+                                if row.current {
+                                    item = item.selected();
+                                }
+                                item
+                            })
+                            .collect();
                         (pid, ctx)
                     })
                     .collect()
+            };
+            // The project explorer is the active pane's working directory. Its
+            // rows are read only while the explorer is the view on screen; the
+            // cache lives beside the state, so a frame that changes nothing
+            // reads no directory.
+            let explorer_root = s.active_working_directory();
+            let explorer_rows = self.explorer.borrow_mut().rows(
+                &explorer_root,
+                &s.explorer_expanded,
+                s.sidebar_view == SidebarView::Explorer,
+            );
+            // Every file view on screen reads its file here, once — when the
+            // file changed — instead of per frame in the element tree. Only the
+            // active space is mounted, so only its file views are read.
+            let pane_files = {
+                let mut wanted = Vec::new();
+                if let Some(space) = s.spaces.get(s.active_space) {
+                    space.root.file_leaves(&mut wanted);
+                }
+                self.file_cache.borrow_mut().read(&wanted)
             };
             UiSnapshot {
                 current_tab: s.current_tab,
@@ -212,6 +227,7 @@ impl RootView {
                 pane_terminal_scroll: s.pane_terminal_scroll.clone(),
                 crons_open: s.crons_open,
                 task_workflow_open: s.task_workflow_open,
+                shortcuts_help_open: s.shortcuts_help_open,
                 crons: s.crons.clone(),
                 workflows: s.workflows.clone(),
                 executions: s.executions.clone(),
@@ -270,7 +286,27 @@ impl RootView {
                 sidebar_dragging: s.sidebar_dragging,
                 sidebar_visible: s.sidebar_visible,
                 conversations_expanded: s.conversations_expanded,
+                sidebar_view: s.sidebar_view,
+                starred: {
+                    let mut ids: Vec<String> = s.starred_conversations.iter().cloned().collect();
+                    ids.sort();
+                    ids
+                },
+                collapsed_sections: {
+                    let mut keys: Vec<String> = s.collapsed_sections.iter().cloned().collect();
+                    keys.sort();
+                    keys
+                },
+                explorer_root: explorer_root.clone(),
+                explorer_rows,
+                global_search_query: s.global_search_query.clone(),
+                global_search_rows: s.global_search_rows.clone(),
+                global_search_searched: s.global_search_searched,
+                global_search_error: s.global_search_error.clone(),
+                global_search_focused: s.global_search_focused,
                 sidebar_scroll: s.sidebar_scroll.clone(),
+                explorer_scroll: s.explorer_scroll.clone(),
+                global_search_scroll: s.global_search_scroll.clone(),
                 settings_scroll: s.settings_scroll.clone(),
                 space_rename_editing: s.space_rename_editing,
                 space_rename_draft: s.space_rename_draft.clone(),
@@ -283,10 +319,13 @@ impl RootView {
                 show_onboarding_tip: s.show_onboarding_tip,
                 add_space_menu_open: s.add_space_menu_open.clone(),
                 env_selector_open: s.env_selector_open.clone(),
+                env_selector_hover: s.env_selector_hover.clone(),
                 add_medium_dialog_open: s.add_medium_dialog_open,
                 add_medium_draft: s.add_medium_draft.clone(),
                 add_medium_focused: s.add_medium_focused,
                 terminal_run_agent_menu_open: s.terminal_run_agent_menu_open.clone(),
+                file_scroll: s.file_scroll.clone(),
+                pane_files,
             }
         };
         let actions = make_actions(

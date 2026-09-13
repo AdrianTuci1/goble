@@ -22,6 +22,8 @@
 - [ ] `cargo run --example preview -p goble-ui` renders the layered shell.
 - [ ] Topbar shows traffic lights and right-side controls.
 - [ ] Left sidebar shows search, create button, conversation cards, Plugins footer.
+- [ ] Left sidebar toolbelt switches between the agent conversations, the project explorer and the global search.
+- [ ] Section headers collapse, and the Starred section pins the starred conversations.
 - [ ] Conversation cards show hover background and three-dots delete menu.
 - [ ] Chat view shows header, messages, and composer.
 - [ ] Right chat-sidebar toggles on/off.

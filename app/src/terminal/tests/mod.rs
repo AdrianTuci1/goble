@@ -19,6 +19,7 @@ use super::*;
 
 mod agents;
 mod claims;
+mod context_pills;
 mod input;
 mod keys;
 mod pane_commands;

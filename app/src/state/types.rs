@@ -377,6 +377,16 @@ pub struct PaneControls {
     /// the composer is rebuilt every frame, so it lives here and not in the
     /// element tree.
     pub vim: Rc<RefCell<VimState>>,
+    /// The row this pane's slash-command menu has selected. App-owned like the
+    /// caret: the composer element is rebuilt every frame, and the highlight
+    /// has to survive that. Reset to the first row whenever the draft changes,
+    /// the way the query resets the list.
+    pub slash_index: Rc<RefCell<usize>>,
+    /// Whether Escape has put this pane's slash menu away. The menu is open
+    /// while the draft is a command, so without this flag Escape would have to
+    /// clear what was typed to close it; the flag lets the menu close and the
+    /// draft stay. The next edit clears it, so typing brings the menu back.
+    pub slash_dismissed: Rc<RefCell<bool>>,
 }
 
 impl PaneControls {
@@ -393,6 +403,8 @@ impl PaneControls {
             branch_menu_open: Rc::new(RefCell::new(false)),
             caret: Rc::new(RefCell::new(0)),
             vim: Rc::new(RefCell::new(VimState::new())),
+            slash_index: Rc::new(RefCell::new(0)),
+            slash_dismissed: Rc::new(RefCell::new(false)),
         }
     }
 }

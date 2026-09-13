@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::{AppContext, Chip, Clipped, ComposerButton, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, Padding, PaintContext, PillTraySide, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, Text, TextArea, Tooltip, TooltipPosition};
+use crate::elements::{AppContext, Chip, Clipped, ComposerButton, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisSize, Padding, PaintContext, PillTraySide, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Text, TextArea, Tooltip, TooltipPosition, Wrap};
 use crate::event::{DispatchedEvent, ModifiersState};
 use crate::geometry::{PointF, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
@@ -28,9 +28,31 @@ pub struct ChatComposer {
     /// this composer the only typing surface of its pane (the terminal pane):
     /// clicking the output above the bar must leave the caret where it was.
     blur_on_outside_click: bool,
-    /// The instruction strip at the head of the input. Empty on a surface that
-    /// passes none, and then nothing is drawn at all.
+    /// Draw the context row (the harness/directory/branch pills) above the
+    /// editor instead of under it. A shell pane's bar keeps its own context
+    /// over the draft, where the command it describes is typed.
+    context_above_editor: bool,
+    /// The instructions drawn in the rich input's own bottom row, under the
+    /// editor and the action row — the gestures this surface answers that the
+    /// host keeps inside the input. An empty list draws nothing.
+    ///
+    /// The strip a pane shows over its input is the host's, drawn above the
+    /// separator: what belongs *in* the input is the one entry the host marks
+    /// as its own, which is the shell bar's `⌘↵ new conversation`.
     hints: Vec<ShortcutHint>,
+    /// The slash-command menu: the commands the draft can run, drawn above the
+    /// editor while the draft starts with `/`. `slash_enabled` records that the
+    /// host offers one at all, so a query that matches nothing still shows the
+    /// menu (with its own empty state) instead of silently closing it.
+    slash_enabled: bool,
+    slash_items: Vec<SlashMenuItem>,
+    slash_index: Rc<RefCell<usize>>,
+    /// Whether Escape has put the menu away for the draft as it stands. Shared
+    /// with the host so the dismissal survives the per-frame rebuild.
+    slash_dismissed: Rc<RefCell<bool>>,
+    on_slash_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    on_slash_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    on_slash_dismiss: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     stop_visible: bool,
     /// warp-new style context pills: the agent harness, the working directory
     /// and the git branch, each with its own dropdown selector. The working
@@ -54,7 +76,6 @@ pub struct ChatComposer {
     /// flags, because the composer element is rebuilt every frame.
     pub(super) proposal_selected: Rc<RefCell<usize>>,
     pub(super) on_decision: Option<Rc<RefCell<dyn FnMut(String, CommandDecision) + 'static>>>,
-    on_slash: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     pub(super) on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     /// Cmd/Ctrl+Enter submit: start a NEW agent conversation (warp-new). The
@@ -96,7 +117,15 @@ impl ChatComposer {
             path_label: None,
             focused: false,
             blur_on_outside_click: true,
+            context_above_editor: false,
             hints: Vec::new(),
+            slash_enabled: false,
+            slash_items: Vec::new(),
+            slash_index: Rc::new(RefCell::new(0)),
+            slash_dismissed: Rc::new(RefCell::new(false)),
+            on_slash_move: None,
+            on_slash_accept: None,
+            on_slash_dismiss: None,
             stop_visible: false,
             on_change: None,
             on_send: None,
@@ -130,7 +159,6 @@ impl ChatComposer {
             proposal: None,
             proposal_selected: Rc::new(RefCell::new(0)),
             on_decision: None,
-            on_slash: None,
             root: None,
             size: None,
             origin: None,
@@ -215,11 +243,98 @@ impl ChatComposer {
         self
     }
 
-    /// Fired when the user begins typing a slash command (the draft starts
-    /// with `/`), so the host can open the command palette (grok-build style).
-    pub fn with_on_slash<F: FnMut() + 'static>(mut self, callback: F) -> Self {
-        self.on_slash = Some(Rc::new(RefCell::new(callback)));
+    /// Show the slash-command menu above the editor while the draft starts
+    /// with `/`. `items` are the commands the host offers for the current
+    /// draft, `index` is the chosen row (host-owned, like every other menu's
+    /// open flag), `dismissed` is the host's Escape flag, and the callbacks are
+    /// the host's: move the selection, run it, put the menu away.
+    pub fn with_slash_menu(
+        mut self,
+        items: Vec<SlashMenuItem>,
+        index: Rc<RefCell<usize>>,
+        dismissed: Rc<RefCell<bool>>,
+    ) -> Self {
+        self.slash_enabled = true;
+        self.slash_items = items;
+        self.slash_index = index;
+        self.slash_dismissed = dismissed;
         self
+    }
+
+    /// Fired when the selection moves (arrow keys, or the pointer onto a row).
+    pub fn with_on_slash_move<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
+        self.on_slash_move = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Fired when a row is run: Enter, Tab, or a click on it.
+    pub fn with_on_slash_accept<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
+        self.on_slash_accept = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Fired on Escape: the menu closes and the draft stays as typed.
+    pub fn with_on_slash_dismiss<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_slash_dismiss = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// The keys that pick from the slash menu, taken before the editor sees
+    /// them: Up/Down move the selection, Enter or Tab runs it, Escape puts the
+    /// menu away. Every other key belongs to the editor, because what it types
+    /// is the menu's query — which is why the menu is not a modal.
+    fn handle_slash_key(&mut self, event: &DispatchedEvent) -> bool {
+        if !self.slash_enabled
+            || !crate::elements::slash_menu_open(
+                &self.value.borrow(),
+                *self.slash_dismissed.borrow(),
+            )
+        {
+            return false;
+        }
+        let DispatchedEvent::KeyDown { key, modifiers } = event else {
+            return false;
+        };
+        match key.as_str() {
+            "ArrowDown" | "ArrowUp" => {
+                let len = self.slash_items.len();
+                if len == 0 {
+                    return true;
+                }
+                let selected = (*self.slash_index.borrow()).min(len - 1);
+                let target = if key == "ArrowDown" {
+                    (selected + 1).min(len - 1)
+                } else {
+                    selected.saturating_sub(1)
+                };
+                *self.slash_index.borrow_mut() = target;
+                if let Some(cb) = self.on_slash_move.clone() {
+                    (cb.borrow_mut())(target);
+                }
+                true
+            }
+            // Cmd/Ctrl+Enter is the host's own gesture (a new conversation),
+            // so it falls through to the editor even with the menu up.
+            "Enter" | "Tab" if !modifiers.command && !modifiers.ctrl && !modifiers.shift => {
+                let len = self.slash_items.len();
+                let selected = if len == 0 {
+                    0
+                } else {
+                    (*self.slash_index.borrow()).min(len - 1)
+                };
+                if let Some(cb) = self.on_slash_accept.clone() {
+                    (cb.borrow_mut())(selected);
+                }
+                true
+            }
+            "Escape" => {
+                if let Some(cb) = self.on_slash_dismiss.clone() {
+                    (cb.borrow_mut())();
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn with_focused(mut self, focused: bool) -> Self {
@@ -232,6 +347,20 @@ impl ChatComposer {
     /// above the bar does not take the keyboard away from the editor.
     pub fn with_blur_on_outside_click(mut self, blur: bool) -> Self {
         self.blur_on_outside_click = blur;
+        self
+    }
+
+    /// Draw the context row above the editor rather than under it.
+    pub fn with_context_above_editor(mut self, above: bool) -> Self {
+        self.context_above_editor = above;
+        self
+    }
+
+    /// The instructions to draw in the input's own bottom row, under the editor
+    /// and the action row. The strip that belongs over the input is the host's;
+    /// this is the one entry the host keeps inside the input.
+    pub fn with_hints(mut self, hints: Vec<ShortcutHint>) -> Self {
+        self.hints = hints;
         self
     }
 
@@ -258,14 +387,6 @@ impl ChatComposer {
 
     pub fn with_stop_visible(mut self, visible: bool) -> Self {
         self.stop_visible = visible;
-        self
-    }
-
-    /// The instruction strip drawn at the head of the input: one entry per
-    /// gesture this surface answers, each a key cap and the name of what it
-    /// does. The caller owns the list, so the strip names only real bindings.
-    pub fn with_hints(mut self, hints: Vec<ShortcutHint>) -> Self {
-        self.hints = hints;
         self
     }
 
@@ -361,25 +482,71 @@ impl ChatComposer {
         &self.attachments
     }
 
-    /// The context pills above the editor, left-aligned: what the draft will run
-    /// on. Each is drawn only when the surface set it, so a terminal composer
-    /// that sets only the directory and the branch shows exactly those two, and a
-    /// composer with no context at all draws no row.
+    /// The context controls, left to right: what the draft will run on, as one
+    /// wrapping row. Drawn above the editor when the host asked for it (a
+    /// terminal pane keeps the shell's own context over the bar), below it
+    /// otherwise.
     fn context_row(&self, app: &AppContext, sm: f32) -> Option<Box<dyn Element>> {
-        if self.harness_label.is_none()
-            && self.path_label.is_none()
-            && self.branch_label.is_none()
-            && self.on_attach.is_none()
-        {
+        let children = self.context_children(app);
+        if children.is_empty() {
             return None;
         }
-        let mut row = Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_main_axis_alignment(MainAxisAlignment::Start)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(sm);
+        Some(
+            Wrap::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(sm)
+                .with_run_spacing(sm)
+                .with_children(children)
+                .finish(),
+        )
+    }
+
+    /// The action controls, left to right: the model the draft runs on, stop
+    /// while a turn streams, and the modal-editing badge. They stay under the
+    /// editor: they describe the turn, not the text being typed.
+    fn action_row(&self, app: &AppContext, sm: f32) -> Option<Box<dyn Element>> {
+        let children = self.action_children(app);
+        if children.is_empty() {
+            return None;
+        }
+        Some(
+            Wrap::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(sm)
+                .with_run_spacing(sm)
+                .with_children(children)
+                .finish(),
+        )
+    }
+
+    /// The footer under the editor with everything on it: the context controls
+    /// and the actions. They share the row (and wrap together) unless the host
+    /// keeps the context above the editor, in which case the two are drawn apart
+    /// — see `rebuild`.
+    fn footer_row(&self, app: &AppContext, sm: f32) -> Option<Box<dyn Element>> {
+        let mut children = self.context_children(app);
+        children.extend(self.action_children(app));
+        if children.is_empty() {
+            return None;
+        }
+        Some(
+            Wrap::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(sm)
+                .with_run_spacing(sm)
+                .with_children(children)
+                .finish(),
+        )
+    }
+
+    /// The context controls, left to right: what the draft will run on. Each is
+    /// drawn only when the surface set it, so a terminal composer that sets
+    /// only the directory and the branch shows exactly those two, and a
+    /// composer with no context at all contributes nothing.
+    fn context_children(&self, app: &AppContext) -> Vec<Box<dyn Element>> {
+        let mut children: Vec<Box<dyn Element>> = Vec::new();
         if let Some(label) = self.harness_label.clone() {
-            row = row.with_child(self.context_pill(
+            children.push(self.context_pill(
                 app,
                 "computer",
                 &label,
@@ -431,21 +598,23 @@ impl ChatComposer {
             )
             .with_position(TooltipPosition::Above)
             .finish();
-            let dir = if !self.dir_menu_items.is_empty() {
-                let mut menu = PopupMenu::new(trigger, self.dir_menu_items.clone())
+            // The menu is the host's when it wired a select callback, rows or
+            // not: the directory list is read when the menu opens, so it is
+            // empty while closed and gating on the rows would leave the pill
+            // with no way to open it.
+            let dir = if let Some(cb) = self.on_select_dir_item.clone() {
+                PopupMenu::new(trigger, self.dir_menu_items.clone())
                     .with_open(self.dir_menu_open.clone())
-                    .with_position(PopupMenuPosition::Above);
-                if let Some(cb) = self.on_select_dir_item.clone() {
-                    menu = menu.with_on_select(move |idx| (cb.borrow_mut())(idx));
-                }
-                menu.finish()
+                    .with_position(PopupMenuPosition::Above)
+                    .with_on_select(move |idx| (cb.borrow_mut())(idx))
+                    .finish()
             } else {
                 trigger
             };
-            row = row.with_child(dir);
+            children.push(dir);
         }
         if let Some(label) = self.branch_label.clone() {
-            row = row.with_child(self.context_pill(
+            children.push(self.context_pill(
                 app,
                 "git-branch",
                 &label,
@@ -465,29 +634,22 @@ impl ChatComposer {
             .with_height(28.0)
             .with_on_click(move || (cb.borrow_mut())())
             .finish();
-            row = row.with_child(
+            children.push(
                 Tooltip::new(attach, "Attach")
                     .with_position(TooltipPosition::Above)
                     .finish(),
             );
         }
-        Some(row.finish())
+        children
     }
 
-    /// The row under the editor: the model the draft runs on and stop while a
-    /// turn streams, left-aligned; the modal-editing mode badge, right-aligned.
-    /// A plain shell command runs no model, so a terminal composer that sets
-    /// neither draws no row.
-    fn action_row(&self, app: &AppContext, sm: f32) -> Option<Box<dyn Element>> {
+    /// The action controls, left to right: the model the draft runs on, stop
+    /// while a turn streams, and the modal-editing badge. A plain shell command
+    /// runs no model, so a terminal composer contributes nothing here.
+    fn action_children(&self, app: &AppContext) -> Vec<Box<dyn Element>> {
+        let mut children: Vec<Box<dyn Element>> = Vec::new();
         let has_stop = self.stop_visible && self.on_stop.is_some();
         let badge = self.vim.as_ref().map(|vim| self.mode_badge(app, vim));
-        if self.model_label.is_none() && !has_stop && badge.is_none() {
-            return None;
-        }
-        let mut left = Flex::row()
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(sm);
         if let Some(label) = self.model_label.clone() {
             let model_child = || {
                 Flex::row()
@@ -526,13 +688,13 @@ impl ChatComposer {
                 if let Some(cb) = self.on_select_model_item.clone() {
                     menu = menu.with_on_select(move |idx| (cb.borrow_mut())(idx));
                 }
-                left = left.with_child(menu.finish());
+                children.push(menu.finish());
             } else if let Some(cb) = self.on_select_model.clone() {
                 let model = ComposerButton::new(model_child())
                     .with_height(28.0)
                     .with_on_click(move || (cb.borrow_mut())())
                     .finish();
-                left = left.with_child(
+                children.push(
                     Tooltip::new(model, "Select model")
                         .with_position(TooltipPosition::Above)
                         .finish(),
@@ -550,37 +712,22 @@ impl ChatComposer {
                 .with_height(28.0)
                 .with_on_click(move || (cb.borrow_mut())())
                 .finish();
-                left = left.with_child(
+                children.push(
                     Tooltip::new(stop, "Stop")
                         .with_position(TooltipPosition::Above)
                         .finish(),
                 );
             }
         }
-        match badge {
-            Some(badge) => Some(
-                Flex::row()
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_child(left.finish())
-                    .with_child(badge)
-                    .finish(),
-            ),
-            None => Some(
-                Flex::row()
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_main_axis_alignment(MainAxisAlignment::Start)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_spacing(sm)
-                    .with_child(left.finish())
-                    .finish(),
-            ),
+        if let Some(badge) = badge {
+            children.push(badge);
         }
+        children
     }
 
-    /// The modal-editing badge at the row's right edge: the half-typed command
-    /// while one is pending, otherwise the mode the next key belongs to.
+    /// The modal-editing badge, the last control of the footer: the half-typed
+    /// command while one is pending, otherwise the mode the next key belongs
+    /// to.
     fn mode_badge(&self, app: &AppContext, vim: &Rc<RefCell<VimState>>) -> Box<dyn Element> {
         let vim = vim.borrow();
         let showcmd = vim.showcmd();
@@ -632,20 +779,22 @@ impl ChatComposer {
         let mut pill = ContextPill::new(icon, label.to_string())
             .with_tooltip(tooltip)
             .with_tray_side(PillTraySide::Above);
-        if !items.is_empty() {
-            let cb = on_select
-                .clone()
-                .unwrap_or_else(|| Rc::new(RefCell::new(|_: usize| {})));
+        // The callback, not the rows, is what says the host wired a menu: a
+        // pill whose rows are read when it opens has none while it is closed.
+        if let Some(cb) = on_select.clone() {
             pill = pill.with_menu(items.to_vec(), open, move |idx| (cb.borrow_mut())(idx));
         }
         pill.finish(app)
     }
 
-    /// Rebuild the rich-input tree. The composer hugs its content: the context
-    /// pills sit above the editor and the action row (model, stop) below it, so
-    /// the rich input never fills the whole pane. This keeps the message
-    /// transcript visible and lets the user see the terminal/agent surface
-    /// instead of a tall input box.
+    /// Rebuild the rich-input tree. The composer hugs its content: the editor
+    /// leads it, the context pills sit above the editor when the host asked for
+    /// them there (a shell bar keeps its directory and branch over the draft)
+    /// and under it otherwise, and the action row (model, stop) below it, so the
+    /// rich input never fills the whole pane. This keeps the message transcript
+    /// visible and lets the user see the terminal/agent surface instead of a
+    /// tall input box. The instructions the host keeps inside the input close
+    /// the block, under the action row.
     fn rebuild(&mut self, app: &AppContext) {
         let sm = app.theme.spacing_px(SpacingToken::Sm);
         let md = app.theme.spacing_px(SpacingToken::Md);
@@ -654,14 +803,6 @@ impl ChatComposer {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Min)
             .with_spacing(sm);
-
-        // The instructions sit at the head of the input, above the context
-        // pills and the editor (the warp-new order, where the shortcuts view is
-        // the first child of the input column). A surface that passes none pays
-        // neither the row's height nor the column's inter-child spacing.
-        if !self.hints.is_empty() {
-            column = column.with_child(ShortcutHints::new(self.hints.clone()).finish(app));
-        }
 
         if !self.attachments.is_empty() {
             let mut attachment_row = Flex::row().with_spacing(sm);
@@ -695,15 +836,6 @@ impl ChatComposer {
             column = column.with_child(card);
         }
 
-        // Context pills sit *above* the editor, left-aligned: they describe what
-        // the draft will run on (the directory it runs in, the branch it is in),
-        // so they read as the head of the input rather than as a footer. A
-        // surface that has no such context (a plain shell command) sets none of
-        // them and the row is not drawn at all.
-        if let Some(row) = self.context_row(app, sm) {
-            column = column.with_child(row);
-        }
-
         // Send closure shared between Enter-to-submit and the (removed) send
         // button path; keeps Enter-to-send working. The submit carries the
         // Enter key's modifiers so the host can route a plain Enter (terminal
@@ -731,12 +863,22 @@ impl ChatComposer {
             }
         }));
 
+        if self.context_above_editor {
+            if let Some(row) = self.context_row(app, sm) {
+                column = column.with_child(row);
+            }
+        }
+
+        // The slash-command menu is not drawn here: the host puts it over the
+        // whole input block (its own width), above the instruction strip. What
+        // the composer keeps of it is the key routing — see
+        // `handle_slash_key`.
+
         // The textarea fills the whole composer width and is visually part of
         // the rich-input bar (no separate box).
         let value = self.value.clone();
         let on_change = self.on_change.clone();
         let on_focus_change = self.on_focus_change.clone();
-        let on_slash = self.on_slash.clone();
         let send_for_submit = send.clone();
         let textarea = TextArea::new()
             .with_value(self.value.borrow().clone())
@@ -744,16 +886,17 @@ impl ChatComposer {
             .with_min_height(48.0)
             .with_focused(self.focused)
             .with_blur_on_outside_click(self.blur_on_outside_click)
+            // The editor owns its whole line: a press to the right of the text
+            // is a press in the editor and puts the beam at the end.
+            .with_full_width(true)
             .with_caret(self.caret.clone())
             .with_vim_opt(self.vim.clone())
             .with_clipboard_opt(self.clipboard.clone())
             .with_on_change(move |text| {
                 *value.borrow_mut() = text.clone();
-                if text.trim_start().starts_with('/') {
-                    if let Some(cb) = on_slash.as_ref() {
-                        (cb.borrow_mut())();
-                    }
-                }
+                // The draft is the menu's query: the host re-filters the
+                // commands from it, and the menu opens and closes with the
+                // leading `/` itself (see `slash_menu_open`).
                 if let Some(cb) = on_change.as_ref() {
                     (cb.borrow_mut())(text);
                 }
@@ -774,11 +917,25 @@ impl ChatComposer {
                 .finish(),
         );
 
-        // Action row below the editor, left-aligned: the model a draft runs
-        // on, and stop while a turn streams. A plain shell command has no
-        // model, so a terminal composer draws no action row at all.
-        if let Some(row) = self.action_row(app, sm) {
+        // The rest of the input's controls sit under the editor: the context
+        // pills (when the host keeps them here) and the actions the draft runs
+        // with.
+        if self.context_above_editor {
+            // The context is over the editor, so what is left under it is the
+            // actions.
+            if let Some(row) = self.action_row(app, sm) {
+                column = column.with_child(row);
+            }
+        } else if let Some(row) = self.footer_row(app, sm) {
             column = column.with_child(row);
+        }
+
+        // The instructions the host keeps inside the input close it, under the
+        // action row: the shell bar's `⌘↵ new conversation` is the entry the
+        // pane shows here rather than over the separator, where the rest of a
+        // pane's strip goes.
+        if !self.hints.is_empty() {
+            column = column.with_child(ShortcutHints::new(self.hints.clone()).finish(app));
         }
 
         // The composer card keeps only its gutters/padding; the raised
@@ -831,6 +988,11 @@ impl Element for ChatComposer {
         app: &AppContext,
     ) -> bool {
         if self.handle_proposal_key(event) {
+            return true;
+        }
+        // While the menu is up it owns the keys that pick from it: the editor
+        // keeps every other key, because what it types is the menu's query.
+        if self.handle_slash_key(event) {
             return true;
         }
         let handled = self

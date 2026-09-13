@@ -176,9 +176,9 @@ impl ChatComposer {
                 .with_spacing(6.0);
             if is_selected {
                 row = row.with_child(
-                    Text::new("▸")
+                    Icon::new("chevron-right")
+                        .with_size(10.0)
                         .with_theme_color(ColorToken::Accent, app)
-                        .with_font_size(11.0)
                         .finish(),
                 );
             }
@@ -221,7 +221,7 @@ impl ChatComposer {
 
         let hint = Expanded::new(
             Clipped::new(
-                Text::new("↑/↓ switch · Enter run · Esc reject")
+                Text::new("Arrows switch · Enter run · Esc reject")
                     .with_theme_color(ColorToken::Muted, app)
                     .with_font_size(10.0)
                     .with_max_lines(1)

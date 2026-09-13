@@ -101,6 +101,30 @@ impl UiState {
         self.pane_controls_mut(pane_id).view = BlockView::Terminal;
     }
 
+    /// Whether `pane_id` is in this space's pane tree as a file view.
+    pub fn active_pane_shows_file(&self) -> bool {
+        self.spaces
+            .get(self.active_space)
+            .and_then(|space| space.leaf_kind(self.active_pane_id))
+            .is_some_and(|kind| matches!(kind, PaneKind::File { .. }))
+    }
+
+    /// The working directory the cwd-following surfaces read: the project
+    /// explorer's tree and the global search both walk this.
+    ///
+    /// It is the active pane's own directory, or — for a file view, which owns
+    /// no directory — the last pane that had one, so opening a file never moves
+    /// the tree the user is browsing out from under them.
+    pub fn active_working_directory(&self) -> String {
+        if self.active_pane_shows_file() {
+            return self.composer_path.clone();
+        }
+        self.pane_sessions
+            .get(&self.active_pane_id)
+            .map(|session| session.path.clone())
+            .unwrap_or_else(|| self.composer_path.clone())
+    }
+
     /// The display name of a conversation, falling back to its id when the
     /// sidebar does not know it (a card naming a conversation from elsewhere).
     pub fn conversation_name(&self, conversation_id: &str) -> String {

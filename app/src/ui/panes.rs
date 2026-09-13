@@ -19,6 +19,7 @@ use goble_ui::geometry::{rectf, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::chat;
+use super::file_view;
 use super::terminal;
 use super::{Pane, PaneKind, SplitDir, UiActions, UiSnapshot};
 
@@ -54,7 +55,7 @@ fn build_pane(
     pane: &Pane,
 ) -> Box<dyn Element> {
     match pane {
-        Pane::Leaf { id, kind } => build_leaf(app, state, actions, *id, *kind),
+        Pane::Leaf { id, kind } => build_leaf(app, state, actions, *id, kind.clone()),
         Pane::Split {
             id,
             dir,
@@ -174,6 +175,9 @@ fn build_leaf(
     let active = state.active_pane_id == id;
     let content = match kind {
         PaneKind::Chat => chat::build_agent_chat(app, state, actions, id, active, None),
+        // A file view is read-only: no composer, no shell, just the file the
+        // pane was opened on.
+        PaneKind::File { path } => file_view::build_file_view(app, state, actions, id, &path),
         PaneKind::Terminal => {
             // The terminal spawns in this pane's own cwd (the same per-session
             // path used by the composer for chat panes), so a terminal and a

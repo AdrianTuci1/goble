@@ -8,7 +8,7 @@
 //! [`crate::actions`].
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -30,9 +30,10 @@ use crate::emulator::VisibleBlock;
 use crate::terminal::TerminalRegistry;
 use crate::ui::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, HarnessEntry, LlmFormField, Pane,
-    PaneChatSnapshot, PaneKind, SettingsCategory, Space, TaskEntry, TimelineEntry, WorkflowEntry,
-    WorkspaceRouting, SIDEBAR_WIDTH,
+    PaneChatSnapshot, PaneKind, SearchRow, SettingsCategory, SidebarView, Space, TaskEntry,
+    TimelineEntry, WorkflowEntry, WorkspaceRouting, SIDEBAR_WIDTH,
 };
+use crate::ui::global_search::SearchWorker;
 
 
 mod routing;

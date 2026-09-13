@@ -7,8 +7,15 @@ use crate::elements::{
 };
 use crate::event::{DispatchedEvent, ModifiersState};
 use crate::geometry::{PointF, Vector2F};
-use crate::theme::ColorToken;
+use crate::platform::text_atlas::{measure_text_family, FontWeight};
+use crate::theme::{ColorToken, FontFamily};
 use crate::vim::{Clipboard, VimBuffer, VimOutcome, VimState};
+
+/// The size the field's own text is drawn at, matching the `Text` elements the
+/// row is built from: a click is turned into a character index by measuring
+/// prefixes at the very size they are painted.
+const TEXT_FONT_SIZE: f32 = 12.0;
+const TEXT_LINE_HEIGHT: f32 = 1.2;
 
 pub struct TextArea {
     value: String,
@@ -27,6 +34,10 @@ pub struct TextArea {
     /// rich input keeps it: it is the only place a command can be typed, so a
     /// click on the output above it must not take the keyboard away.
     blur_on_outside_click: bool,
+    /// Whether the field claims the whole width it is given, so a press on the
+    /// empty tail of its line still lands in it. Off by default: a field that
+    /// shares a row with something else must not cover it.
+    full_width: bool,
     /// Modal (vim) editing, when the host turned it on. The state lives beside
     /// the host's own, because this element is rebuilt every frame.
     vim: Option<Rc<RefCell<VimState>>>,
@@ -52,6 +63,7 @@ impl TextArea {
             caret: None,
             local_caret: 0,
             blur_on_outside_click: true,
+            full_width: false,
             vim: None,
             clipboard: None,
             on_change: None,
@@ -89,6 +101,14 @@ impl TextArea {
     /// value intact — used for credential/secret fields.
     pub fn with_masked(mut self, masked: bool) -> Self {
         self.masked = masked;
+        self
+    }
+
+    /// Claim the whole width the field is given, so a press to the right of the
+    /// text is still a press in the field (the beam then lands at the end of the
+    /// line). Leave it off when the field shares a row with a control beside it.
+    pub fn with_full_width(mut self, full_width: bool) -> Self {
+        self.full_width = full_width;
         self
     }
 
@@ -164,15 +184,22 @@ impl TextArea {
         }
     }
 
-    fn rebuild(&mut self, app: &AppContext) {
-        let empty = self.value.is_empty();
-        let display = if self.masked && !empty {
-            "•".repeat(self.value.chars().count())
-        } else if empty {
+    /// The string the field draws: the value itself, one bullet per character
+    /// when the field is masked, and the placeholder when there is nothing of
+    /// the user's own to draw.
+    fn display(&self) -> String {
+        if self.value.is_empty() {
             self.placeholder.clone()
+        } else if self.masked {
+            "•".repeat(self.value.chars().count())
         } else {
             self.value.clone()
-        };
+        }
+    }
+
+    fn rebuild(&mut self, app: &AppContext) {
+        let empty = self.value.is_empty();
+        let display = self.display();
         // An empty field draws its placeholder in the muted colour, so a guide
         // never reads as text the user typed.
         let color = if empty {
@@ -282,6 +309,39 @@ impl TextArea {
         }
     }
 
+    /// The character index a press `offset` pixels from the field's left edge
+    /// falls on: the character boundary nearest the press, measured at the very
+    /// size the text is drawn at. A press past the end of the line puts the beam
+    /// at the end, where the next character typed joins on.
+    fn index_at_offset(&self, offset: f32) -> usize {
+        if self.value.is_empty() || offset <= 0.0 {
+            return 0;
+        }
+        let mut nearest = (0usize, offset.abs());
+        let mut boundary = String::new();
+        for (index, ch) in self.display().chars().enumerate() {
+            boundary.push(ch);
+            let end = measure_text_family(
+                &boundary,
+                TEXT_FONT_SIZE,
+                TEXT_LINE_HEIGHT,
+                f32::INFINITY,
+                FontWeight::Regular,
+                FontFamily::System,
+                false,
+            )
+            .x;
+            let distance = (end - offset).abs();
+            if distance < nearest.1 {
+                nearest = (index + 1, distance);
+            }
+            if end >= offset {
+                break;
+            }
+        }
+        nearest.0.min(self.value.chars().count())
+    }
+
     /// Hand one key to the modal engine, writing its buffer back when the engine
     /// moved the insertion point or edited the text. The engine owns the mode
     /// and the registers; the field owns the text and the caret.
@@ -382,6 +442,12 @@ impl Element for TextArea {
         // when the displayed text is empty.
         size.x = size.x.max(inner_constraint.min.x);
         size.y = size.y.max(inner_constraint.min.y);
+        // When the field claims its line, the hit area is the whole bounded
+        // width rather than the text extent, so a press to the right of the
+        // text reaches the field and moves the beam to the end.
+        if self.full_width && inner_constraint.max.x.is_finite() {
+            size.x = size.x.max(inner_constraint.max.x);
+        }
         self.size = Some(size);
         size
     }
@@ -410,6 +476,12 @@ impl Element for TextArea {
                 if let Some(bounds) = self.bounds() {
                     if bounds.contains(PointF::new(position.x, position.y)) {
                         self.set_focused(true);
+                        // The press moves the beam as well as the focus: the
+                        // press is turned into the character boundary nearest
+                        // it, so the beam lands under the pointer instead of
+                        // staying where the last keystroke left it.
+                        let offset = position.x - bounds.min_x();
+                        self.set_caret_index(self.index_at_offset(offset));
                         return true;
                     }
                     if self.blur_on_outside_click {
@@ -773,5 +845,141 @@ mod tests {
         );
         area.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
         assert_eq!(area.value(), "hello", "selection changes no text");
+    }
+
+    /// A press in the field moves the beam: it lands on the character boundary
+    /// nearest the press, so a click between two letters puts it between them
+    /// rather than at the end of the line.
+    #[test]
+    fn a_press_puts_the_beam_where_the_pointer_is() {
+        let app = app();
+        let caret = Rc::new(RefCell::new(0));
+        let mut area = TextArea::new()
+            .with_value("abcd")
+            .with_focused(true)
+            .with_full_width(true)
+            .with_caret(caret.clone());
+        area.layout(
+            SizeConstraint::loose(Vector2F::new(200.0, 40.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        area.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+
+        let after_two = measure_text_family(
+            "ab",
+            TEXT_FONT_SIZE,
+            TEXT_LINE_HEIGHT,
+            f32::INFINITY,
+            FontWeight::Regular,
+            FontFamily::System,
+            false,
+        )
+        .x;
+        let mut event_ctx = EventContext::default();
+        let mut click = |area: &mut TextArea, x: f32| {
+            area.dispatch_event(
+                &DispatchedEvent::MouseDown {
+                    position: vec2f(x, 10.0),
+                    button: 0,
+                },
+                &mut event_ctx,
+                &app,
+            )
+        };
+
+        assert!(click(&mut area, after_two), "the press is the field's");
+        assert_eq!(*caret.borrow(), 2, "the beam lands between b and c");
+
+        // Past the end of the line the beam clamps to the end, where the next
+        // character typed joins on.
+        assert!(click(&mut area, 190.0));
+        assert_eq!(*caret.borrow(), 4, "a press in the empty tail ends the line");
+
+        assert!(click(&mut area, 0.0));
+        assert_eq!(*caret.borrow(), 0, "a press at the left edge leads the line");
+
+        assert!(
+            !click(&mut area, 400.0),
+            "a press outside the field is not its own"
+        );
+        assert_eq!(*caret.borrow(), 0, "and it leaves the beam where it was");
+    }
+
+    /// A field that does not claim its line keeps its hit box at the text, so a
+    /// control sharing the row keeps its own clicks.
+    #[test]
+    fn a_field_that_does_not_claim_its_line_keeps_its_hit_box_at_the_text() {
+        let app = app();
+        let mut area = TextArea::new().with_value("a");
+        let size = area.layout(
+            SizeConstraint::loose(Vector2F::new(200.0, 40.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert!(
+            size.x < 200.0,
+            "the hit box is the text extent, not the whole line, got {}",
+            size.x
+        );
+        area.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+
+        let mut event_ctx = EventContext::default();
+        assert!(
+            !area.dispatch_event(
+                &DispatchedEvent::MouseDown {
+                    position: vec2f(150.0, 10.0),
+                    button: 0,
+                },
+                &mut event_ctx,
+                &app,
+            ),
+            "a press right of the text belongs to whatever sits beside the field"
+        );
+    }
+
+    /// The block caret is a filled cell with the letter it covers drawn on top
+    /// of it in the cell's background colour, so a letter under the beam is
+    /// still readable instead of disappearing behind the block.
+    #[test]
+    fn the_block_caret_draws_the_letter_it_covers() {
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = app();
+        let vim = Rc::new(RefCell::new(VimState::new()));
+        let mut area: Box<dyn Element> = Box::new(
+            TextArea::new()
+                .with_value("hello")
+                .with_focused(true)
+                .with_vim(vim.clone()),
+        );
+        let mut event_ctx = EventContext::default();
+        area.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut event_ctx,
+            &app,
+        );
+        assert_eq!(vim.borrow().mode(), crate::vim::VimMode::Normal);
+
+        let commands = render_element(&mut area, vec2f(200.0, 40.0), &app);
+        let covered = commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText { text, color, .. } if text == "h" => Some(*color),
+            _ => None,
+        });
+        assert_eq!(
+            covered,
+            Some(app.theme.color(ColorToken::Bg)),
+            "the letter under the block is drawn in the cell's background colour"
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, RenderCommand::FillRect { .. })),
+            "the block itself is a filled cell under the letter"
+        );
     }
 }

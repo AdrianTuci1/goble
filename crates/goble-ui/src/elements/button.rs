@@ -111,26 +111,40 @@ impl Element for Button {
         let v_pad = self.vertical_padding(app);
 
         let bounds = rectf(origin.x, origin.y, size.x, size.y);
-        let bg_color = match self.variant {
-            ButtonVariant::Primary => app.theme.color(crate::theme::ColorToken::Accent),
-            ButtonVariant::Ghost | ButtonVariant::Default => {
-                if ctx.hovered(bounds) {
+        let hovered = ctx.hovered(bounds);
+        // A raised fill and a 1px outline: the default button is the app's
+        // secondary control, so it reads as a button on a flat surface instead
+        // of dissolving into it. The ghost variant is the low-emphasis one and
+        // stays a bare fill; the primary carries the accent.
+        let (bg_color, outline) = match self.variant {
+            ButtonVariant::Primary => (app.theme.color(crate::theme::ColorToken::Accent), None),
+            ButtonVariant::Default => (
+                if hovered {
+                    app.theme.color(crate::theme::ColorToken::Hover)
+                } else {
+                    app.theme.color(crate::theme::ColorToken::SurfaceRaised)
+                },
+                Some(app.theme.color(crate::theme::ColorToken::Border)),
+            ),
+            ButtonVariant::Ghost => (
+                if hovered {
                     app.theme.color(crate::theme::ColorToken::Hover)
                 } else {
                     app.theme.color(crate::theme::ColorToken::Surface)
-                }
-            }
+                },
+                None,
+            ),
         };
+        let corner_radius = self.corner_radius.unwrap_or_else(|| app.theme.radius_px());
         if let Some(renderer) = ctx.renderer.as_mut() {
             let rect = crate::geometry::RectF::new(
                 crate::geometry::PointF::new(origin.x, origin.y),
                 crate::geometry::Size2F::new(size.x, size.y),
             );
-            renderer.fill_rounded_rect(
-                rect,
-                bg_color,
-                self.corner_radius.unwrap_or_else(|| app.theme.radius_px()),
-            );
+            renderer.fill_rounded_rect(rect, bg_color, corner_radius);
+            if let Some(outline) = outline {
+                renderer.stroke_rect(rect, outline, 1.0, corner_radius);
+            }
         }
 
         let child_size = self.child.size().unwrap_or(Vector2F::zero());

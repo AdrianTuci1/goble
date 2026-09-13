@@ -116,6 +116,7 @@ impl DesktopState {
         let mut chats_vec = self.chats.lock();
         for (id, title, provider, model, _created_at, updated_at) in chats {
             let workspace_routing = self.store.lock().get_chat_workspace_routing(&id)?;
+            let working_dir = self.store.lock().get_chat_working_dir(&id)?;
             chats_vec.push(Chat {
                 id,
                 title,
@@ -124,6 +125,7 @@ impl DesktopState {
                 agent_id: None,
                 worker_id: None,
                 workspace_routing,
+                working_dir,
                 updated_at,
             });
         }

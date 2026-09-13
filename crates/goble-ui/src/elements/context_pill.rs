@@ -125,7 +125,11 @@ impl ContextPill {
             PillTraySide::Below => TooltipPosition::Below,
         })
         .finish();
-        if self.items.is_empty() {
+        // A menu the host wired is a menu even before it has rows: a dropdown
+        // whose content is read when it opens (the working directory, the
+        // branch list) has nothing to show while it is closed, and gating the
+        // menu on its rows would leave the pill with no way to open it.
+        if self.on_select.is_none() {
             return trigger;
         }
         let mut menu = PopupMenu::new(trigger, self.items).with_position(match self.tray_side {

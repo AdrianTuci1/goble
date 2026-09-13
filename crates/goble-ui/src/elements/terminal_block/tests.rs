@@ -36,7 +36,7 @@ fn terminal_block_measures_non_zero() {
 }
 
 #[test]
-fn terminal_block_paints_background_header_and_lines() {
+fn a_block_is_a_section_with_a_separator_and_no_card() {
     let app = app();
     let mut block = TerminalBlock::new()
         .with_title("zsh")
@@ -44,11 +44,14 @@ fn terminal_block_paints_background_header_and_lines() {
         .with_line(TerminalLine::success("test result: ok. 42 passed"))
         .with_line(TerminalLine::error("warning: unused variable"))
         .with_status(TerminalStatus::Running);
-    block.layout(
+    let size = block.layout(
         SizeConstraint::loose(vec2f(600.0, 400.0)),
         &mut LayoutContext::default(),
         &app,
     );
+    // Full width: the section is the pane's own row, not a panel sized to its
+    // content.
+    assert_eq!(size.x, 600.0, "a block spans the width it is given");
     let mut paint_ctx = PaintContext::new(Renderer::new());
     block.paint(vec2f(10.0, 20.0), &mut paint_ctx, &app);
     let commands = paint_ctx
@@ -56,11 +59,28 @@ fn terminal_block_paints_background_header_and_lines() {
         .take()
         .map(|r| r.commands().to_vec())
         .unwrap_or_default();
+    // The separator: a square full-width rule over the section.
     assert!(
-        commands
+        commands.iter().any(|c| matches!(
+            c,
+            crate::render::RenderCommand::FillRect { rect, corner_radius, .. }
+                if *corner_radius == 0.0 && rect.width() == size.x
+        )),
+        "the section should open with a full-width separator"
+    );
+    // No card: no border and no rounded fill anywhere in the block.
+    assert!(
+        !commands
             .iter()
-            .any(|c| matches!(c, crate::render::RenderCommand::FillRect { .. })),
-        "terminal block should paint a background"
+            .any(|c| matches!(c, crate::render::RenderCommand::StrokeRect { .. })),
+        "a block draws no border"
+    );
+    assert!(
+        !commands.iter().any(|c| matches!(
+            c,
+            crate::render::RenderCommand::FillRect { corner_radius, .. } if *corner_radius > 0.0
+        )),
+        "a block draws no rounded card"
     );
     // The header shows the block identity (no icon, no status label).
     let text: Vec<&String> = commands
@@ -99,11 +119,21 @@ fn terminal_copy_fires_with_block_text() {
         &mut LayoutContext::default(),
         &app,
     );
-    block.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    block.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let commands = paint_ctx.renderer.take().map(|r| r.commands().to_vec()).unwrap_or_default();
     // Compute the copy button's center (right-aligned, left of the filter
-    // button) and click it.
-    let size = block.size.unwrap();
-    let copy_center = vec2f(size.x - PADDING_X - BUTTON_SIZE - HEADER_SPACING - BUTTON_SIZE / 2.0, PADDING_Y + BUTTON_SIZE / 2.0);
+    // button) from the icon it draws, so the click lands on the button wherever
+    // the header sits under the section's separator.
+    let copy_center = commands
+        .iter()
+        .find_map(|c| match c {
+            crate::render::RenderCommand::DrawIcon { origin, name, size, .. } if name == "copy" => {
+                Some(vec2f(origin.x + size / 2.0, origin.y + size / 2.0))
+            }
+            _ => None,
+        })
+        .expect("the header draws the copy button's icon");
     let mut event_ctx = crate::elements::EventContext::default();
     let down = DispatchedEvent::MouseDown { position: copy_center, button: 0 };
     let up = DispatchedEvent::MouseUp { position: copy_center, button: 0 };

@@ -118,26 +118,36 @@ fn home_directory() -> Option<String> {
     None
 }
 
-/// Best-effort git branch of `dir`, read from `.git/HEAD`. Handles a normal
-/// `.git` directory and a `.git` *file* (worktree/submodule) whose first line
-/// is `gitdir: <path>`. Returns empty when the directory is not a git repo.
+/// Best-effort git branch of `dir`, read from the `.git/HEAD` of the repository
+/// `dir` sits in. The search walks up from `dir`, the way git itself resolves the
+/// repository for a subdirectory, so a shell in a repository's subdirectory still
+/// names the branch. Returns empty when no directory above is a repository.
 pub(crate) fn current_branch(dir: &str) -> String {
-    if let Ok(content) = std::fs::read_to_string(std::path::Path::new(dir).join(".git/HEAD")) {
-        return parse_branch_head(&content);
-    }
-    // `.git` may be a file pointing at the real gitdir (worktrees, submodules).
-    if let Ok(gitfile) = std::fs::read_to_string(std::path::Path::new(dir).join(".git")) {
-        if let Some(gitdir) = gitfile
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("gitdir:"))
-        {
-            let head = std::path::Path::new(gitdir.trim()).join("HEAD");
-            if let Ok(content) = std::fs::read_to_string(&head) {
-                return parse_branch_head(&content);
-            }
+    let mut candidate = Some(std::path::Path::new(dir));
+    while let Some(path) = candidate {
+        if let Some(branch) = branch_at(path) {
+            return branch;
         }
+        candidate = path.parent();
     }
     String::new()
+}
+
+/// The branch the repository rooted at `path` reports, or `None` when `path` is
+/// not a repository root. Handles a normal `.git` directory and a `.git` *file*
+/// (worktree/submodule) whose first line is `gitdir: <path>`.
+fn branch_at(path: &std::path::Path) -> Option<String> {
+    if let Ok(content) = std::fs::read_to_string(path.join(".git/HEAD")) {
+        return Some(parse_branch_head(&content));
+    }
+    let gitfile = std::fs::read_to_string(path.join(".git")).ok()?;
+    let gitdir = gitfile
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("gitdir:"))?;
+    let head = std::path::Path::new(gitdir.trim()).join("HEAD");
+    std::fs::read_to_string(head)
+        .ok()
+        .map(|content| parse_branch_head(&content))
 }
 
 pub(crate) fn parse_branch_head(content: &str) -> String {
@@ -148,5 +158,30 @@ pub(crate) fn parse_branch_head(content: &str) -> String {
         "detached".to_string()
     } else {
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A directory inside a repository reports the repository's branch: git
+    /// resolves the repository from a subdirectory, and so does the pill, so a
+    /// shell that `cd`s into a crate or a folder still names the branch.
+    #[test]
+    fn a_directory_inside_a_repository_reports_its_branch() {
+        let repo = tempfile::tempdir().expect("temp repo");
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        std::fs::write(repo.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let nested = repo.path().join("crates").join("ui");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(current_branch(&repo.path().to_string_lossy()), "main");
+        assert_eq!(current_branch(&nested.to_string_lossy()), "main");
+        assert_eq!(
+            current_branch("/definitely/not/a/repository/at/all"),
+            "",
+            "the walk stops at the filesystem root"
+        );
     }
 }

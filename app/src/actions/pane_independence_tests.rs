@@ -71,6 +71,102 @@ fn split_binds_new_pane_to_a_distinct_conversation() {
     let _ = chat_id;
 }
 
+/// The split chord starts an agent *and* a terminal: the pane it opens is a
+/// terminal leaf with its harness open, so Esc (and the pane's `esc for
+/// terminal` chip) has a shell to return to. A chat leaf would leave the pane
+/// with no terminal mode at all.
+#[test]
+fn a_split_opens_an_agent_pane_that_can_return_to_its_terminal() {
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+
+    (actions.on_split_right.borrow_mut())();
+
+    let pane_id = {
+        let s = state.borrow();
+        let pane = s.active_pane_id;
+        assert!(
+            matches!(
+                s.spaces[0].root,
+                Pane::Split { ref second, .. }
+                    if matches!(**second, Pane::Leaf { kind: PaneKind::Terminal, .. })
+            ),
+            "the new leaf is a terminal pane"
+        );
+        assert!(
+            s.pane_controls.get(&pane).map(|c| c.harness_mode).unwrap_or(false),
+            "its harness is open, so the agent view is what it shows"
+        );
+        assert!(
+            matches!(s.pane_view(pane), goble_terminal::blocks::BlockView::Agent { .. }),
+            "the pane starts at its agent view"
+        );
+        pane
+    };
+
+    // Esc, and the header's chip, are this: the pane's view drops back to the
+    // shell it owns, with the conversation's card left in the list.
+    (actions.on_set_pane_harness_mode.borrow_mut())(pane_id, false);
+    let s = state.borrow();
+    assert_eq!(
+        s.pane_view(pane_id),
+        goble_terminal::blocks::BlockView::Terminal,
+        "the pane returns to its terminal mode"
+    );
+    assert!(
+        !s.pane_controls.get(&pane_id).map(|c| c.harness_mode).unwrap_or(true),
+        "the harness switch is off"
+    );
+    assert!(
+        s.pane_owns_conversation(pane_id),
+        "the pane keeps the conversation its agent view ran in"
+    );
+}
+
+/// Clicking a file in the explorer opens it in a pane of its own beside the
+/// active one, in the tab on screen — and a second click while that view is up
+/// loads the other file into the same pane instead of tiling the tab with them.
+#[test]
+fn a_file_click_opens_a_file_pane_and_a_second_click_retargets_it() {
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+
+    (actions.on_explorer_file_click.borrow_mut())("/tmp/one.rs".to_string());
+    let pane_id = {
+        let s = state.borrow();
+        let pane_id = s.active_pane_id;
+        assert_ne!(pane_id, 1, "the file view opens as its own pane");
+        assert_eq!(
+            s.spaces[0].leaf_kind(pane_id),
+            Some(&PaneKind::File {
+                path: "/tmp/one.rs".to_string()
+            }),
+            "the pane shows the file that was clicked"
+        );
+        assert!(
+            !s.pane_owns_conversation(pane_id),
+            "a file view opens no conversation"
+        );
+        pane_id
+    };
+
+    (actions.on_explorer_file_click.borrow_mut())("/tmp/two.rs".to_string());
+    let s = state.borrow();
+    assert_eq!(s.active_pane_id, pane_id, "the file view keeps the pane");
+    assert_eq!(
+        s.spaces[0].leaf_kind(pane_id),
+        Some(&PaneKind::File {
+            path: "/tmp/two.rs".to_string()
+        }),
+        "the pane takes the newly clicked file over"
+    );
+    assert_eq!(
+        s.spaces[0].root.max_id(),
+        pane_id,
+        "no second file pane was opened"
+    );
+}
+
 #[test]
 fn send_routes_to_active_pane_conversation() {
     let (desktop, _dir) = desktop_state();

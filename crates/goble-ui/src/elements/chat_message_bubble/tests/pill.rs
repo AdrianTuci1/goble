@@ -218,9 +218,9 @@ fn no_sub_agent_row_paints_a_pill() {
     }
 }
 
-/// A `role="tool"` row is the shared terminal block and nothing else; its card
-/// is the one box the transcript may draw, and it is not a pill around an agent
-/// row.
+/// A `role="tool"` row is the shared terminal block and nothing else. The block
+/// is a section of the page, not a card — a full-width separator over the
+/// command and its output — so the row draws no box at all.
 #[test]
 fn a_tool_result_row_draws_only_the_shared_block() {
     let app = AppContext::default();
@@ -233,9 +233,16 @@ fn a_tool_result_row_draws_only_the_shared_block() {
     );
     let commands = paint_bubble(&mut bubble, &app);
     assert!(
-        bordered_control(&commands, &app).is_some(),
-        "a command row draws the shared terminal block's card"
+        commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::DrawText { text, .. } if text == "hi")),
+        "the row draws the block's own output"
     );
+    assert!(
+        bordered_control(&commands, &app).is_none(),
+        "the shared block draws no card"
+    );
+    assert_no_row_border(&commands, "a tool result row");
     assert_pill_free(&commands, "a tool result row");
 }
 

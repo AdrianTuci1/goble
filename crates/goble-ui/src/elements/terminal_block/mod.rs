@@ -20,6 +20,3 @@ pub use data::{TerminalData, TerminalMeta, TerminalStatus};
 pub use filter::{filter_option_labels, TerminalCopyHandler, TerminalFilter};
 pub use line::{TerminalLine, TerminalLineKind, TerminalRun};
 pub use plumbing::TerminalBlockPlumbing;
-
-#[cfg(test)]
-pub(crate) use block::{BUTTON_SIZE, HEADER_SPACING, PADDING_X, PADDING_Y};

@@ -1,6 +1,18 @@
 use super::*;
 
 impl UiState {
+    /// Take the search the worker has finished, when it answered the newest
+    /// query. Called once per frame, so a result appears as soon as the walk
+    /// behind it lands — whichever pane's directory the user has moved to.
+    pub fn take_global_search_result(&mut self) {
+        let Some(outcome) = self.global_search_worker.take() else {
+            return;
+        };
+        self.global_search_rows = outcome.rows;
+        self.global_search_error = outcome.error;
+        self.global_search_searched = true;
+    }
+
     /// Start from real backend data. Falls back to an empty state when the
     /// store has no conversations yet; the sidebar shows an empty list until
     /// the user creates the first chat.
@@ -41,6 +53,7 @@ impl UiState {
             terminal_global_filters: HashMap::new(),
             crons_open: false,
             task_workflow_open: false,
+            shortcuts_help_open: false,
             crons: Vec::new(),
             workflows: Vec::new(),
             executions: Vec::new(),
@@ -89,7 +102,19 @@ impl UiState {
             sidebar_drag_start_width: SIDEBAR_WIDTH,
             sidebar_visible: true,
             conversations_expanded: false,
+            sidebar_view: SidebarView::default(),
+            starred_conversations: HashSet::new(),
+            collapsed_sections: HashSet::new(),
+            explorer_expanded: HashSet::new(),
+            global_search_query: String::new(),
+            global_search_rows: Vec::new(),
+            global_search_searched: false,
+            global_search_error: None,
+            global_search_focused: false,
+            global_search_worker: Rc::new(SearchWorker::new()),
             sidebar_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            explorer_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            global_search_scroll: Rc::new(RefCell::new(ScrollState::default())),
             settings_scroll: Rc::new(RefCell::new(ScrollState::default())),
             space_rename_editing: false,
             space_rename_draft: String::new(),
@@ -117,6 +142,7 @@ impl UiState {
             pane_chat_scroll: HashMap::new(),
             pane_usage_open: HashMap::new(),
             pane_terminal_scroll: HashMap::new(),
+            file_scroll: HashMap::new(),
             terminal: Rc::new(RefCell::new(TerminalRegistry::default())),
             command_palette_open: false,
             command_palette_query: String::new(),
@@ -124,6 +150,7 @@ impl UiState {
             show_onboarding_tip: false,
             add_space_menu_open: Rc::new(RefCell::new(false)),
             env_selector_open: Rc::new(RefCell::new(false)),
+            env_selector_hover: Rc::new(RefCell::new(None)),
             add_medium_dialog_open: false,
             add_medium_draft: String::new(),
             add_medium_focused: false,
@@ -341,6 +368,9 @@ impl UiState {
                             .clone()
                             .unwrap_or_else(|| "local".to_string()),
                     )
+                    // The directory the conversation works in, drawn on its
+                    // card under the subject.
+                    .with_directory(c.working_dir.clone().unwrap_or_default())
             })
             .collect();
         // Keep one shared card-state entry per conversation id so hover / the

@@ -6,7 +6,6 @@ use crate::elements::Element;
 use crate::elements::LayoutContext;
 use crate::elements::PopupMenuItem;
 use crate::elements::SizeConstraint;
-use crate::elements::ShortcutHint;
 use crate::event::DispatchedEvent;
 use crate::event::ModifiersState;
 use crate::geometry::vec2f;
@@ -46,8 +45,11 @@ fn composer_keeps_value_and_attachments() {
     assert_eq!(composer.attachments(), &["doc.md".to_string()]);
 }
 
+/// Every control the rich input owns sits in one footer row under the editor:
+/// the context pill and attach, then the model and stop, then the mode badge,
+/// left to right. Nothing but the draft is above the editor.
 #[test]
-fn composer_puts_the_context_row_above_the_editor_and_the_model_below_it() {
+fn composer_puts_every_control_in_the_footer_below_the_editor() {
     use crate::elements::PaintContext;
     use crate::render::{RenderCommand, Renderer};
 
@@ -93,11 +95,29 @@ fn composer_puts_the_context_row_above_the_editor_and_the_model_below_it() {
     let plus = icon_y("plus").expect("attach pill icon");
     let sparkle = icon_y("sparkle").expect("model pill icon");
     let editor = text_y("hi").expect("editor text");
+    let folder = icon_y("folder").expect("directory pill icon");
 
-    assert!(plus < editor, "the attach pill sits above the editor: {plus} vs {editor}");
     assert!(
-        sparkle > editor,
+        editor < folder,
+        "the directory pill sits below the editor: {folder} vs {editor}"
+    );
+    assert!(
+        editor < plus,
+        "the attach button sits below the editor: {plus} vs {editor}"
+    );
+    assert!(
+        editor < sparkle,
         "the model pill sits below the editor: {sparkle} vs {editor}"
+    );
+    // One row: the directory pill, attach and the model share the footer's
+    // line, within the few pixels their different heights account for.
+    assert!(
+        (plus - folder).abs() < 20.0,
+        "attach is on the directory pill's line: {folder} vs {plus}"
+    );
+    assert!(
+        (sparkle - folder).abs() < 20.0,
+        "the model is on the directory pill's line: {folder} vs {sparkle}"
     );
 
     // The account button is gone from the rich input.
@@ -247,18 +267,28 @@ fn paint_composer(
     app: &AppContext,
     composer: &mut ChatComposer,
 ) -> Vec<crate::render::RenderCommand> {
-    composer.layout(
-        SizeConstraint::loose(vec2f(600.0, 500.0)),
+    paint_composer_in(app, composer, vec2f(600.0, 500.0)).1
+}
+
+/// The same, at a chosen width: the composer's own size and what it painted.
+fn paint_composer_in(
+    app: &AppContext,
+    composer: &mut ChatComposer,
+    window: crate::geometry::Vector2F,
+) -> (crate::geometry::Vector2F, Vec<crate::render::RenderCommand>) {
+    let size = composer.layout(
+        SizeConstraint::loose(window),
         &mut LayoutContext::default(),
         app,
     );
     let mut paint_ctx = crate::elements::PaintContext::new(crate::render::Renderer::new());
     composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
-    paint_ctx
+    let commands = paint_ctx
         .renderer
         .take()
         .map(|r| r.commands().to_vec())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (size, commands)
 }
 
 /// Dispatch a key the way the window does.
@@ -528,47 +558,123 @@ fn a_press_anywhere_in_the_rich_input_focuses_the_editor() {
     assert_eq!(*focused.borrow(), vec![true], "and it does not re-report focus");
 }
 
-/// The instruction strip sits at the head of the input — above the pills and
-/// the editor — and a composer that was handed none draws no strip at all.
+/// Narrowed, the footer's controls move onto a second line instead of being
+/// drawn past the input's own edge — the warp-new behaviour at resize, where
+/// the input column grows downwards rather than sideways.
 #[test]
-fn the_hints_are_drawn_above_the_editor_and_only_when_given() {
+fn the_footer_wraps_instead_of_overflowing_the_input() {
+    use crate::render::RenderCommand;
+
     let app = AppContext::default();
-    let mut plain = ChatComposer::new();
-    let commands = paint_composer(&app, &mut plain);
-    let texts = drawn_texts(&commands);
-    assert!(
-        !texts.iter().any(|text| text == "commands"),
-        "a composer with no hints draws no strip"
-    );
+    let composer = || {
+        ChatComposer::new()
+            .with_harness_label("grok build")
+            .with_path_label("~/Projects/goble")
+            .with_branch_label("main")
+            .with_model_label("gpt-4o")
+            .with_stop_visible(true)
+            .with_on_stop(|| {})
+            .with_on_select_model(|| {})
+            .with_vim(Rc::new(RefCell::new(crate::vim::VimState::new())))
+    };
 
-    let mut hinted = ChatComposer::new().with_hints(vec![
-        ShortcutHint::new(&["⌘", "K"], "commands"),
-        ShortcutHint::new(&["⌘", "⇧", "W"], "tasks"),
-    ]);
-    let commands = paint_composer(&app, &mut hinted);
-    let texts = drawn_texts(&commands);
-    for drawn in ["⌘", "K", "commands", "⇧", "W", "tasks"] {
-        assert!(texts.iter().any(|text| text == drawn), "{drawn:?} is drawn");
-    }
-
-    // Above the editor, not in the footer: the strip's own line is the highest
-    // of the input's rows, and the draft's placeholder sits below it.
-    let line_of = |needle: &str| {
+    // Wide enough for the whole footer: one line.
+    let (wide, wide_commands) = paint_composer_in(&app, &mut composer(), vec2f(700.0, 500.0));
+    let model_y = |commands: &[RenderCommand]| -> f32 {
         commands
             .iter()
             .find_map(|command| match command {
-                crate::render::RenderCommand::DrawText { text, origin, .. } if text == needle => {
-                    Some(origin.y)
-                }
+                RenderCommand::DrawText { text, origin, .. } if text == "gpt-4o" => Some(origin.y),
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("{needle:?} is drawn"))
+            .expect("the model label is drawn")
     };
-    let placeholder = line_of("Ask anything...");
-    for hint in ["commands", "tasks"] {
+
+    // Narrow: the same controls, wrapped, and nothing drawn past the input's
+    // own width.
+    let (narrow, narrow_commands) = paint_composer_in(&app, &mut composer(), vec2f(260.0, 500.0));
+    assert!(
+        model_y(&narrow_commands) > model_y(&wide_commands),
+        "the model label moved to a second line: {} then {}",
+        model_y(&wide_commands),
+        model_y(&narrow_commands)
+    );
+    assert!(
+        narrow.y > wide.y,
+        "the wrapped footer is taller: {wide:?} then {narrow:?}"
+    );
+    for command in &narrow_commands {
+        let max_x = match command {
+            RenderCommand::DrawText { origin, .. } => origin.x,
+            RenderCommand::FillRect { rect, .. } => rect.max_x(),
+            RenderCommand::StrokeRect { rect, .. } => rect.max_x(),
+            RenderCommand::DrawIcon { origin, .. } => origin.x,
+            _ => continue,
+        };
         assert!(
-            line_of(hint) < placeholder,
-            "the strip is above the editor ({hint:?})"
+            max_x <= narrow.x + 0.5,
+            "nothing is drawn past the input's width ({}): {command:?}",
+            narrow.x
         );
     }
+}
+
+/// The instructions the host hands the composer are drawn in the input's own
+/// bottom row, under the editor and the action row: the one entry a surface
+/// keeps inside its input rather than over the separator above it. The composer
+/// hugs its content either way — the strip adds its own height and nothing else.
+#[test]
+fn the_instructions_close_the_input_under_the_action_row() {
+    use crate::elements::ShortcutHint;
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let line_of = |commands: &[RenderCommand], text: &str| -> Option<f32> {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText { text: run, origin, .. } if run == text => Some(origin.y),
+            _ => None,
+        })
+    };
+    // The shell bar: its directory pill over the editor, its one instruction
+    // under it, and no model or stop control in between.
+    let bare = paint_composer_in(
+        &app,
+        &mut ChatComposer::new()
+            .with_context_above_editor(true)
+            .with_path_label("~/Projects/goble"),
+        vec2f(600.0, 500.0),
+    );
+    let with_hints = paint_composer_in(
+        &app,
+        &mut ChatComposer::new()
+            .with_context_above_editor(true)
+            .with_path_label("~/Projects/goble")
+            .with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]),
+        vec2f(600.0, 500.0),
+    );
+
+    let (bare_size, bare_commands) = bare;
+    let (size, commands) = with_hints;
+    assert!(
+        line_of(&bare_commands, "new conversation").is_none(),
+        "an input handed no instructions draws none"
+    );
+    let editor = line_of(&commands, "Ask anything...").expect("the editor is drawn");
+    let hint = line_of(&commands, "new conversation").expect("the instruction is drawn");
+    assert!(
+        hint > editor,
+        "the instruction is under the editor, inside the input ({hint} against {editor})"
+    );
+    // The strip's own height is all it costs.
+    let bare_editor = line_of(&bare_commands, "Ask anything...").expect("the editor is drawn");
+    assert!(
+        (bare_editor - editor).abs() < 1.0,
+        "the editor does not move for the strip ({editor} against {bare_editor})"
+    );
+    assert!(
+        size.y > bare_size.y,
+        "the input grows by the strip's height ({} against {})",
+        bare_size.y,
+        size.y
+    );
 }

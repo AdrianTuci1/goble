@@ -325,6 +325,11 @@ impl TerminalView {
             *self.geometry.borrow_mut() = None;
             Scrollable::new(list.finish(), Axis::Vertical)
                 .with_state(Rc::clone(&self.scroll))
+                // The shell's history grows upwards from the rich input below
+                // it (warp-new), so a history shorter than the pane ends on the
+                // input instead of floating at the top. A full-screen program
+                // painted its own layout; its rows stay where it put them.
+                .with_bottom_anchor(!screen.alt_screen)
                 .finish()
         } else if screen.has_content {
             GridProbe {

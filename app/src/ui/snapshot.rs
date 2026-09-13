@@ -15,9 +15,9 @@ use crate::terminal::TerminalRegistry;
 use super::color_picker;
 use super::pane::Space;
 use super::types::{
-    AppTab, CostEntry, CronEntry, ExecutionEntry, HarnessEntry, LlmFormField, McpSearchEntry,
-    McpServerEntry, SettingsCategory, TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry,
-    WorkspaceRouting,
+    AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, LlmFormField,
+    McpSearchEntry, McpServerEntry, SearchRow, SettingsCategory, SidebarView, TaskEntry,
+    TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkspaceRouting,
 };
 
 /// What a pane's sub-agent child view (S6) shows: the child's own conversation,
@@ -82,17 +82,16 @@ pub struct PaneChatSnapshot {
 }
 
 /// The composer's warp-new style context pills: which harness (the selected
-/// environment medium), which working directory (a session's path) and which
-/// git branch the next turn is scoped to. The labels/menu items are derived
-/// from the environment tree each frame; the menu open flags are app-owned so
-/// they survive the per-frame element rebuild.
+/// environment medium), which working directory and which git branch the next
+/// turn is scoped to. The harness is window-wide; the directory and branch are
+/// the pane's own, read off the machine when their menus open. The menu open
+/// flags are app-owned so they survive the per-frame element rebuild.
 #[derive(Clone, Debug)]
 pub struct ComposerContext {
     pub harness_label: String,
     pub harness_ids: Vec<String>,
     pub harness_items: Vec<PopupMenuItem>,
     pub harness_menu_open: Rc<RefCell<bool>>,
-    pub dir_label: String,
     pub dir_ids: Vec<String>,
     pub dir_items: Vec<PopupMenuItem>,
     pub dir_menu_open: Rc<RefCell<bool>>,
@@ -163,10 +162,19 @@ pub struct UiSnapshot {
     /// Per-pane scroll offset of the terminal pane's command sections, shared
     /// with app state so a scrollback position survives the per-frame rebuild.
     pub pane_terminal_scroll: HashMap<u64, Rc<RefCell<goble_ui::ScrollState>>>,
+    /// Per-pane scroll offset of a pane's file view, shared with app state so a
+    /// file keeps the user's place across the per-frame rebuild.
+    pub file_scroll: HashMap<u64, Rc<RefCell<goble_ui::ScrollState>>>,
+    /// What each open file view draws, keyed by pane id. Read while the snapshot
+    /// is built (never per frame), so a pane that shows a file reads it once.
+    pub pane_files: HashMap<u64, crate::ui::file_view::FileBody>,
     pub crons_open: bool,
     /// Whether the tasks & workflows overlay is up. It floats over the
     /// workspace, so the panes stay mounted underneath it.
     pub task_workflow_open: bool,
+    /// Whether the keyboard shortcuts panel is up (also an overlay over the
+    /// workspace, opened with Ctrl+.).
+    pub shortcuts_help_open: bool,
     pub crons: Vec<CronEntry>,
     /// Workflows registered with the embedded daemon (real data).
     pub workflows: Vec<WorkflowEntry>,
@@ -229,8 +237,27 @@ pub struct UiSnapshot {
     /// Whether the sidebar lists every conversation (false shows a few cards
     /// plus a "View all" button).
     pub conversations_expanded: bool,
+    /// Which of the sidebar's views is showing.
+    pub sidebar_view: SidebarView,
+    /// The starred conversations, by id: the sidebar's Starred section.
+    pub starred: Vec<String>,
+    /// The sidebar sections the user collapsed, by key.
+    pub collapsed_sections: Vec<String>,
+    /// The project explorer: which directory the tree shows (the active pane's
+    /// working directory) and its rows, flattened to what is on screen.
+    pub explorer_root: String,
+    pub explorer_rows: Vec<ExplorerRow>,
+    /// Global search: the query, its rows and whether it has run.
+    pub global_search_query: String,
+    pub global_search_rows: Vec<SearchRow>,
+    pub global_search_searched: bool,
+    pub global_search_error: Option<String>,
+    pub global_search_focused: bool,
     /// Scroll offset of the sidebar's conversation list.
     pub sidebar_scroll: Rc<RefCell<ScrollState>>,
+    /// Scroll offsets of the project explorer's and the global search's lists.
+    pub explorer_scroll: Rc<RefCell<ScrollState>>,
+    pub global_search_scroll: Rc<RefCell<ScrollState>>,
     /// Scroll offset of the settings overlay's content pane.
     pub settings_scroll: Rc<RefCell<ScrollState>>,
     /// Whether the topbar workspace frame is in inline-rename mode.
@@ -292,6 +319,9 @@ pub struct UiSnapshot {
     pub add_space_menu_open: Rc<RefCell<bool>>,
     /// App-owned open flag for the topbar compact environment selector.
     pub env_selector_open: Rc<RefCell<bool>>,
+    /// The environment menu's hovered row (an item index), shared with the menu
+    /// so its hover tray survives the per-frame rebuild.
+    pub env_selector_hover: Rc<RefCell<Option<usize>>>,
     /// Whether the "add a new medium" dialog is open over the app.
     pub add_medium_dialog_open: bool,
     /// The new medium's name as typed in the add-medium dialog.

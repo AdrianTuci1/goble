@@ -6,6 +6,7 @@ use goble_core::agent::Trigger;
 use goble_core::worker::WorkerId;
 use goble_core::workflow::WorkflowId;
 use goble_desktop_service::DesktopState;
+use goble_terminal::blocks::BlockView;
 use goble_ui::platform::WindowControl;
 use goble_ui::{ChatMessage, ChatRole, ConversationEntry, SettingsPage};
 
@@ -13,13 +14,16 @@ use crate::media::MediaState;
 use crate::state::{default_pane_path, routing_to_str, UiState};
 use crate::terminal::{classify_input, InputClass};
 use crate::ui::{
-    AppTab, CronEntry, NavDir, Pane, PaneKind, SettingsCategory, Space, SplitDir, UiActions,
-    WorkspaceRouting,
+    AppTab, CronEntry, NavDir, Pane, PaneKind, SettingsCategory, SidebarView, Space, SplitDir,
+    UiActions, WorkspaceRouting,
 };
 use crate::ui::color_picker::ColorTarget;
 
-use super::pane_ops::{collect_leaf_ids, ensure_pane_hover, split_active_pane};
+use super::pane_ops::{
+    collect_leaf_ids, ensure_pane_hover, open_file_pane, open_pane_harness, split_active_pane,
+};
 use super::prompt::{run_terminal_command, send_agent_prompt};
+use crate::ui::pickers::{change_directory_command, checkout_branch_command};
 
 pub fn make_actions(
     state: Rc<RefCell<UiState>>,
@@ -35,6 +39,13 @@ pub fn make_actions(
     let on_create_submit = Rc::clone(&state);
     let on_toggle_sidebar = Rc::clone(&state);
     let on_toggle_conversations_expanded = Rc::clone(&state);
+    let on_select_sidebar_view = Rc::clone(&state);
+    let on_toggle_section = Rc::clone(&state);
+    let on_toggle_star = Rc::clone(&state);
+    let on_toggle_explorer_dir = Rc::clone(&state);
+    let on_explorer_file_click = Rc::clone(&state);
+    let on_global_search_change = Rc::clone(&state);
+    let on_global_search_focus_change = Rc::clone(&state);
     let on_workspace_click = Rc::clone(&state);
     let on_space_rename_change = Rc::clone(&state);
     let on_space_rename_focus = Rc::clone(&state);
@@ -49,7 +60,9 @@ pub fn make_actions(
     let on_select_conversation = Rc::clone(&state);
     let on_select_tab = Rc::clone(&state);
     let on_composer_change = Rc::clone(&state);
-    let on_composer_slash = Rc::clone(&state);
+    let on_slash_move = Rc::clone(&state);
+    let on_slash_close = Rc::clone(&state);
+    let on_slash_dismiss = Rc::clone(&state);
     let on_composer_focus_change = Rc::clone(&state);
     let on_send_message = Rc::clone(&state);
     let on_run_shell_command = Rc::clone(&state);
@@ -58,10 +71,9 @@ pub fn make_actions(
     let on_voice = Rc::clone(&state);
     let on_model_select = Rc::clone(&state);
     let on_select_harness_state = Rc::clone(&state);
-    let on_select_dir = Rc::clone(&media);
+    let on_select_dir = Rc::clone(&state);
     let on_select_medium = Rc::clone(&media);
     let on_create_medium = Rc::clone(&media);
-    let on_select_dir_state = Rc::clone(&state);
     let on_select_branch = Rc::clone(&state);
     let on_stop = Rc::clone(&state);
     let on_open_sub_agent = Rc::clone(&state);
@@ -96,6 +108,8 @@ pub fn make_actions(
     let on_close_crons = Rc::clone(&state);
     let on_toggle_task_workflow = Rc::clone(&state);
     let on_close_task_workflow = Rc::clone(&state);
+    let on_toggle_shortcuts_help = Rc::clone(&state);
+    let on_close_shortcuts_help = Rc::clone(&state);
     let on_toggle_right_sidebar = Rc::clone(&state);
     let on_toggle_fullscreen = Rc::clone(&state);
     let on_clear_transcript = Rc::clone(&state);
@@ -189,6 +203,7 @@ pub fn make_actions(
     let desktop_dismiss_workspace = desktop.clone();
     let desktop_split_right = desktop.clone();
     let desktop_split_down = desktop.clone();
+    let desktop_file_view = desktop.clone();
     let desktop_new_terminal = desktop.clone();
     let desktop_close_pane = desktop.clone();
     let desktop_term_cmd = desktop.clone();
@@ -262,6 +277,13 @@ pub fn make_actions(
             let routing = crate::media::medium_routing(
                 on_create_medium.borrow().selected_medium_id(),
             );
+            // The conversation starts where its pane is: the card says which
+            // directory the work happens in, so it is recorded with the row.
+            let pane_cwd = state
+                .pane_sessions
+                .get(&state.active_pane_id)
+                .map(|session| session.path.clone())
+                .unwrap_or_default();
             if let Some(desktop) = &desktop_create {
                 match desktop.create_chat(&title, None, None) {
                     Ok(id) => {
@@ -269,6 +291,11 @@ pub fn make_actions(
                             desktop.set_chat_workspace_routing(&id, Some(routing))
                         {
                             log::warn!("set_chat_workspace_routing failed: {e}");
+                        }
+                        if !pane_cwd.trim().is_empty() {
+                            if let Err(e) = desktop.set_chat_working_dir(&id, &pane_cwd) {
+                                log::warn!("set_chat_working_dir failed: {e}");
+                            }
                         }
                         state.new_conversation_draft.clear();
                         // Bind the newly created conversation to the active pane
@@ -300,13 +327,35 @@ pub fn make_actions(
             on_select_tab.borrow_mut().current_tab = tab;
         })),
         on_composer_change: Rc::new(RefCell::new(move |value: String| {
-            on_composer_change.borrow_mut().set_active_pane_draft(value);
+            let mut state = on_composer_change.borrow_mut();
+            state.set_active_pane_draft(value);
+            // The draft is the slash menu's query, so a new query starts the
+            // menu's selection over at the first row — and typing brings the
+            // menu back after Escape put it away.
+            let pane_id = state.active_pane_id;
+            *state.pane_controls_mut(pane_id).slash_index.borrow_mut() = 0;
+            *state.pane_controls_mut(pane_id).slash_dismissed.borrow_mut() = false;
         })),
-        on_composer_slash: Rc::new(RefCell::new(move || {
-            let mut state = on_composer_slash.borrow_mut();
-            state.command_palette_open = true;
-            state.command_palette_query.clear();
-            state.command_palette_index = 0;
+        on_slash_move: Rc::new(RefCell::new(move |index: usize| {
+            let mut state = on_slash_move.borrow_mut();
+            let pane_id = state.active_pane_id;
+            *state.pane_controls_mut(pane_id).slash_index.borrow_mut() = index;
+        })),
+        on_slash_close: Rc::new(RefCell::new(move || {
+            let mut state = on_slash_close.borrow_mut();
+            // A command ran, so the bar it was typed in is spent: clearing the
+            // draft empties the editor and closes the menu with it.
+            state.set_active_pane_draft(String::new());
+            let pane_id = state.active_pane_id;
+            *state.pane_controls_mut(pane_id).slash_index.borrow_mut() = 0;
+        })),
+        on_slash_dismiss: Rc::new(RefCell::new(move || {
+            let mut state = on_slash_dismiss.borrow_mut();
+            // Escape: the menu goes away and the draft stays as typed, so the
+            // flag — not the draft — is what closes it.
+            let pane_id = state.active_pane_id;
+            *state.pane_controls_mut(pane_id).slash_dismissed.borrow_mut() = true;
+            *state.pane_controls_mut(pane_id).slash_index.borrow_mut() = 0;
         })),
         on_composer_focus_change: Rc::new(RefCell::new(move |focused: bool| {
             on_composer_focus_change.borrow_mut().composer_focused = focused;
@@ -321,7 +370,18 @@ pub fn make_actions(
             // `!`, which forces a terminal command (warp-new input model).
             match classify_input(&text, true) {
                 Some(InputClass::TerminalCommand(cmd)) => {
-                    run_terminal_command(&mut state, &cmd, pane_id);
+                    // A `!` line typed in an agent view is that conversation's
+                    // command, so the conversation draws it: the block belongs to
+                    // the conversation and not to the shell behind Esc.
+                    let conversation = match state.pane_controls(pane_id).view {
+                        BlockView::Agent { conversation_id } => Some(conversation_id),
+                        BlockView::Terminal => None,
+                    };
+                    run_terminal_command(&mut state, &cmd, pane_id, conversation.as_deref());
+                    // The line ran, so the input it was typed in is spent; the
+                    // app-owned draft is what the next frame rebuilds that
+                    // editor from.
+                    state.set_active_pane_draft(String::new());
                 }
                 Some(InputClass::AgentPrompt(prompt)) => {
                     let pane_busy = state
@@ -417,21 +477,36 @@ pub fn make_actions(
             }
             *state.harness_menu_open.borrow_mut() = false;
         })),
-        on_select_dir: Rc::new(RefCell::new(move |pane_id: u64, session_id: String| {
-            let loc = on_select_dir.borrow().session_location(&session_id);
-            let mut media = on_select_dir.borrow_mut();
-            if let Some((medium_id, project_id, sid)) = loc {
-                if media.select_session(&medium_id, &project_id, &sid) {
-                    let path = media.selected_session_path();
-                    drop(media);
-                    on_select_dir_state
-                        .borrow_mut()
-                        .set_pane_path(pane_id, path);
-                }
+        // The working-directory pill's selection, warp-new's model: the menu
+        // browses the machine and the choice moves the pane. A pane that owns a
+        // shell is told to `cd` — the very command the user would type, run in
+        // that pane's own pty — and the pane's recorded directory follows, so
+        // the pill and the branch under it describe where the shell now is. A
+        // pane that has no shell yet has nowhere to run it, so its directory is
+        // recorded for the shell it will start and for its composer.
+        on_select_dir: Rc::new(RefCell::new(move |pane_id: u64, path: String| {
+            let mut state = on_select_dir.borrow_mut();
+            let has_shell = state.terminal.borrow().sessions.contains_key(&pane_id);
+            if has_shell {
+                run_terminal_command(&mut state, &change_directory_command(&path), pane_id, None);
             }
+            state.set_pane_path(pane_id, path);
         })),
+        // The branch pill's selection: `git checkout '<branch>'` in the pane's
+        // own shell, the command warp-new runs. The pill moves to the chosen
+        // branch with it, and only when there was a shell to check it out in.
         on_select_branch: Rc::new(RefCell::new(move |pane_id: u64, branch: String| {
             let mut state = on_select_branch.borrow_mut();
+            let has_shell = state.terminal.borrow().sessions.contains_key(&pane_id);
+            if !has_shell {
+                return;
+            }
+            run_terminal_command(
+                &mut state,
+                &checkout_branch_command(&branch),
+                pane_id,
+                None,
+            );
             {
                 let controls = state.pane_controls_mut(pane_id);
                 controls.branch = branch.clone();
@@ -668,16 +743,10 @@ pub fn make_actions(
         // stays in the list.
         on_set_pane_harness_mode: Rc::new(RefCell::new(move |pane_id: u64, on: bool| {
             let mut state = on_set_harness_mode.borrow_mut();
-            state.pane_controls_mut(pane_id).harness_mode = on;
             if on {
-                if !state.pane_owns_conversation(pane_id) {
-                    state.bind_pane_new_conversation(pane_id, desktop_set_harness.as_deref());
-                }
-                if let Some(conversation_id) = state.pane_conversation_id(pane_id) {
-                    let label = state.conversation_name(&conversation_id);
-                    state.enter_agent_view(pane_id, &conversation_id, &label);
-                }
+                open_pane_harness(&mut state, pane_id, desktop_set_harness.as_ref());
             } else {
+                state.pane_controls_mut(pane_id).harness_mode = false;
                 state.leave_agent_view(pane_id);
             }
         })),
@@ -774,6 +843,47 @@ pub fn make_actions(
             // Entering the list always starts at the top, and a collapsed list
             // has nothing to scroll.
             state.sidebar_scroll.borrow_mut().reset();
+        })),
+        on_select_sidebar_view: Rc::new(RefCell::new(move |view: SidebarView| {
+            let mut state = on_select_sidebar_view.borrow_mut();
+            state.sidebar_view = view;
+            // Each view has its own list and its own offset, so switching views
+            // starts that list at the top.
+            match view {
+                SidebarView::Agents => state.sidebar_scroll.borrow_mut().reset(),
+                SidebarView::Explorer => state.explorer_scroll.borrow_mut().reset(),
+                SidebarView::Search => state.global_search_scroll.borrow_mut().reset(),
+            }
+        })),
+        on_toggle_section: Rc::new(RefCell::new(move |key: String| {
+            let mut state = on_toggle_section.borrow_mut();
+            if !state.collapsed_sections.remove(&key) {
+                state.collapsed_sections.insert(key);
+            }
+        })),
+        on_toggle_star: Rc::new(RefCell::new(move |id: String| {
+            let mut state = on_toggle_star.borrow_mut();
+            if !state.starred_conversations.remove(&id) {
+                state.starred_conversations.insert(id);
+            }
+        })),
+        on_toggle_explorer_dir: Rc::new(RefCell::new(move |path: String| {
+            let mut state = on_toggle_explorer_dir.borrow_mut();
+            if !state.explorer_expanded.remove(&path) {
+                state.explorer_expanded.insert(path);
+            }
+        })),
+        on_explorer_file_click: Rc::new(RefCell::new(move |path: String| {
+            let mut state = on_explorer_file_click.borrow_mut();
+            open_file_pane(&mut state, path, desktop_file_view.as_ref());
+        })),
+        on_global_search_change: Rc::new(RefCell::new(move |value: String| {
+            let mut state = on_global_search_change.borrow_mut();
+            state.global_search_query = value;
+            run_global_search(&mut state);
+        })),
+        on_global_search_focus_change: Rc::new(RefCell::new(move |focused: bool| {
+            on_global_search_focus_change.borrow_mut().global_search_focused = focused;
         })),
         on_workspace_click: Rc::new(RefCell::new(move |index: usize| {
             let mut state = on_workspace_click.borrow_mut();
@@ -940,6 +1050,13 @@ pub fn make_actions(
         on_close_task_workflow: Rc::new(RefCell::new(move || {
             on_close_task_workflow.borrow_mut().task_workflow_open = false;
         })),
+        on_toggle_shortcuts_help: Rc::new(RefCell::new(move || {
+            let mut state = on_toggle_shortcuts_help.borrow_mut();
+            state.shortcuts_help_open = !state.shortcuts_help_open;
+        })),
+        on_close_shortcuts_help: Rc::new(RefCell::new(move || {
+            on_close_shortcuts_help.borrow_mut().shortcuts_help_open = false;
+        })),
         on_toggle_right_sidebar: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_right_sidebar.borrow_mut();
             state.right_sidebar_open = !state.right_sidebar_open;
@@ -1021,14 +1138,20 @@ pub fn make_actions(
         })),
         on_split_right: Rc::new(RefCell::new(move || {
             let (mut state, media) = (on_split_right.borrow_mut(), media_split_right.borrow());
+            // The new pane is an agent *and* a terminal: a terminal leaf whose
+            // harness is open. A chat leaf has no shell to return to, so the
+            // pane would have no way back to the terminal mode (Esc, and the
+            // pane's own `esc for terminal` chip, both need one).
             split_active_pane(
                 &mut state,
                 SplitDir::Horizontal,
                 desktop_split_right.as_ref(),
                 &media,
-                PaneKind::Chat,
+                PaneKind::Terminal,
             );
             drop(media);
+            let pane_id = state.active_pane_id;
+            open_pane_harness(&mut state, pane_id, desktop_split_right.as_ref());
             if let Some(desktop) = &desktop_split_right {
                 state.save_panes(desktop);
             }
@@ -1040,9 +1163,11 @@ pub fn make_actions(
                 SplitDir::Vertical,
                 desktop_split_down.as_ref(),
                 &media,
-                PaneKind::Chat,
+                PaneKind::Terminal,
             );
             drop(media);
+            let pane_id = state.active_pane_id;
+            open_pane_harness(&mut state, pane_id, desktop_split_down.as_ref());
             if let Some(desktop) = &desktop_split_down {
                 state.save_panes(desktop);
             }
@@ -1128,7 +1253,9 @@ pub fn make_actions(
         // with a line the user types there.
         on_run_shell_command: Rc::new(RefCell::new(move |pane_id: u64, text: String| {
             let mut state = on_run_shell_command.borrow_mut();
-            run_terminal_command(&mut state, &text, pane_id);
+            // The shell's own bar: the command is the shell's, so it stays in
+            // the shell's history (no conversation to own it).
+            run_terminal_command(&mut state, &text, pane_id, None);
             // The composer cleared its own editor on submit; the app-owned draft
             // is what the next frame rebuilds that editor from, so it clears
             // here too — for this pane, which the submit just activated.
@@ -1707,4 +1834,28 @@ pub fn make_actions(
             on_command_palette_move.borrow_mut().command_palette_index = index;
         })),
     }
+}
+
+/// Run the global search over the active pane's working directory and store the
+/// rows. The query field calls this when the query changes, never per frame:
+/// the search reads every file under the root, so it runs on the worker's own
+/// thread and the frame collects the answer when it lands. Clearing the query
+/// abandons a walk in flight and clears the results rather than searching for
+/// nothing.
+fn run_global_search(state: &mut UiState) {
+    let query = state.global_search_query.clone();
+    if query.trim().is_empty() {
+        state.global_search_worker.cancel();
+        state.global_search_rows.clear();
+        state.global_search_searched = false;
+        state.global_search_error = None;
+        return;
+    }
+    let root = state.active_working_directory();
+    state.global_search_worker.search(&root, &query);
+    // Until the walk answers, the summary says it is still searching. The rows
+    // of the previous query stay on screen meanwhile, so typing does not blank
+    // the band on every keystroke.
+    state.global_search_searched = false;
+    state.global_search_error = None;
 }

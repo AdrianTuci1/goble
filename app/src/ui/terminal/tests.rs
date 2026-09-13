@@ -450,6 +450,23 @@ use goble_ui::theme::FontFamily;
         runs.iter().any(|(t, _)| t == text)
     }
 
+    /// The pane-wide rules of the pane's own area, top down: its separators.
+    fn pane_rules(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<f32> {
+        render_element(root, vec2f(1024.0, 768.0), app)
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::FillRect { rect, .. }
+                    if rect.height() <= 2.0
+                        && rect.width() > 200.0
+                        && rect.min_x() >= crate::ui::SIDEBAR_WIDTH =>
+                {
+                    Some(rect.min_y())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Dispatch one plain key through the whole app tree, so the pane's own
     /// routing is exercised where the app runs it.
     fn press(root: &mut Box<dyn Element>, app: &AppContext, name: &str) -> bool {
@@ -484,25 +501,233 @@ use goble_ui::theme::FontFamily;
             "the chat pane draws that same composer: {chat_runs:?}"
         );
 
-        // The bar carries its own instructions (R8): a shell pane runs the
-        // line, and its agent view is a chord away — not the agent pane's
-        // "send"/"new conversation", and no `!` shell prefix, which would be
-        // meaningless on an input that is a command already.
-        for label in ["run", "agent", "commands", "tasks"] {
-            assert!(
-                pane_has(&shell_runs, label),
-                "the shell bar draws the {label:?} instruction: {shell_runs:?}"
-            );
-        }
-        for label in ["send", "new conversation", "shell"] {
+        // The bar carries the one instruction that applies to a command line:
+        // Cmd/Ctrl+Enter leaves the shell for a new agent conversation, and that
+        // chord is named under the bar. The agent rich input's own vocabulary —
+        // what Enter runs, what `!` runs — does not describe this line, which is
+        // a command already.
+        assert!(
+            pane_has(&shell_runs, "new conversation"),
+            "the shell bar names the gesture that opens a new conversation: {shell_runs:?}"
+        );
+        for label in ["run", "agent", "send", "shell", "commands", "tasks"] {
             assert!(
                 !pane_has(&shell_runs, label),
-                "the shell bar does not draw the agent pane's {label:?}: {shell_runs:?}"
+                "the shell bar draws no instruction {label:?}: {shell_runs:?}"
             );
         }
         assert!(
             pane_has(&chat_runs, "send") && pane_has(&chat_runs, "shell"),
             "the chat pane draws its own instructions: {chat_runs:?}"
+        );
+
+        // The shell's one instruction is the exception to the pane's rule that
+        // its instructions are the strip over the input's separator: it is
+        // drawn inside the bar, under that separator, where the line it opens
+        // from is typed.
+        let hint = pane_runs(&mut root, &app)
+            .into_iter()
+            .find(|(text, _)| text == "new conversation")
+            .map(|(_, origin)| origin.y)
+            .expect("the shell bar names the gesture that opens a conversation");
+        let separator = pane_rules(&mut root, &app)
+            .into_iter()
+            .filter(|y| *y < hint)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            separator.is_finite(),
+            "the bar has a separator over it (hint at {hint})"
+        );
+        assert!(
+            separator < hint,
+            "the shell's instruction is inside the input, under its separator ({separator} against {hint})"
+        );
+    }
+
+    /// The directory pill's menu is a window onto the machine: while it is open
+    /// it lists the directories under this pane's working directory — sorted,
+    /// hidden entries and plain files left out, the way up last — and while it is
+    /// closed it reads nothing at all, so a dropped menu costs no disk.
+    #[test]
+    fn the_directory_menu_lists_the_panes_subdirectories_and_the_way_up() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        let home = tempfile::tempdir().expect("temp home");
+        std::fs::create_dir(home.path().join("goble")).unwrap();
+        std::fs::create_dir(home.path().join(".hidden")).unwrap();
+        std::fs::write(home.path().join("notes.txt"), "not a directory").unwrap();
+        let cwd = home.path().to_string_lossy().to_string();
+        {
+            let mut s = state.borrow_mut();
+            s.set_pane_path(1, cwd);
+        }
+
+        let closed = pane_runs(&mut root, &app);
+        assert!(
+            !pane_has(&closed, "goble"),
+            "a closed menu lists nothing: {closed:?}"
+        );
+
+        {
+            let mut s = state.borrow_mut();
+            let flag = s.pane_controls_mut(1).dir_menu_open.clone();
+            *flag.borrow_mut() = true;
+        }
+        let open = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&open, "goble"),
+            "the subdirectory is a row: {open:?}"
+        );
+        assert!(
+            pane_has(&open, crate::ui::pickers::PARENT_LABEL),
+            "the way up is a row: {open:?}"
+        );
+        assert!(
+            !pane_has(&open, ".hidden") && !pane_has(&open, "notes.txt"),
+            "only visible directories are rows: {open:?}"
+        );
+    }
+
+    /// The branch pill's menu is the repository's own branch list, read while the
+    /// menu is open: every local branch is a row, not just the one the pane is
+    /// on. The other branch's name is the discriminator — the pill draws the
+    /// current one whether the menu is open or not.
+    #[test]
+    fn the_branch_menu_lists_the_repositorys_local_branches() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        let Some(repo) = repository_on_two_branches() else {
+            return; // no git on this machine: there is no list to read
+        };
+        let cwd = repo.path().to_string_lossy().to_string();
+        {
+            let mut s = state.borrow_mut();
+            s.set_pane_path(1, cwd);
+        }
+
+        let closed = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&closed, "feature/x"),
+            "the pill names the branch the repository is on: {closed:?}"
+        );
+        assert!(
+            !pane_has(&closed, "main"),
+            "a closed menu lists nothing: {closed:?}"
+        );
+
+        {
+            let mut s = state.borrow_mut();
+            let flag = s.pane_controls_mut(1).branch_menu_open.clone();
+            *flag.borrow_mut() = true;
+        }
+        let open = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&open, "main") && pane_has(&open, "feature/x"),
+            "both local branches are rows: {open:?}"
+        );
+    }
+
+    /// A scratch repository with a commit on `main` and `feature/x` checked out.
+    /// `None` when git is not on this machine, so the case has nothing to read
+    /// rather than a failure to report.
+    fn repository_on_two_branches() -> Option<tempfile::TempDir> {
+        let dir = tempfile::tempdir().ok()?;
+        let git = |args: &[&str]| -> bool {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        };
+        if !git(&["init", "--initial-branch=main"]) {
+            return None;
+        }
+        if !git(&[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]) {
+            return None;
+        }
+        if !git(&["checkout", "-b", "feature/x"]) {
+            return None;
+        }
+        Some(dir)
+    }
+
+    /// The wheel over the shell's grid follows the platform's sign, the same
+    /// way the transcript and the sidebar do: winit reports how far the
+    /// *content* should move and positive is down (AppKit's `scrollingDeltaY`
+    /// and X11's button 4 both mean "content down"), so a positive delta walks
+    /// back into the scrollback — the wheel-up a pager calls "scroll up" — and
+    /// a negative one returns towards the live screen.
+    #[test]
+    fn the_wheels_sign_scrolls_the_panes_scrollback() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        {
+            let s = state.borrow_mut();
+            // More lines than the grid holds, so there is history to walk into.
+            let mut emulator = Emulator::new(80, 24);
+            for line in 0..120 {
+                emulator.feed(format!("line {line}\r\n").as_bytes());
+            }
+            s.terminal
+                .borrow_mut()
+                .sessions
+                .insert(1, TerminalSession::with_emulator(emulator));
+        }
+        // One frame, so the pane has bounds and the wheel has somewhere to land.
+        let _ = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+
+        let offset = || {
+            state
+                .borrow()
+                .terminal
+                .borrow()
+                .sessions
+                .get(&1)
+                .map(|session| session.view().display_offset)
+                .expect("the pane's session")
+        };
+        let wheel = |root: &mut Box<dyn Element>, dy: f32| {
+            let mut ctx = EventContext::default();
+            root.dispatch_event(
+                &DispatchedEvent::MouseMove {
+                    position: vec2f(600.0, 300.0),
+                },
+                &mut ctx,
+                &app,
+            );
+            root.dispatch_event(
+                &DispatchedEvent::Scroll {
+                    delta: vec2f(0.0, dy),
+                },
+                &mut ctx,
+                &app,
+            );
+        };
+
+        assert_eq!(offset(), 0, "the pane opens at the live screen");
+        wheel(&mut root, 60.0);
+        let back = offset();
+        assert!(
+            back > 0,
+            "a positive delta walks back into the scrollback: {back}"
+        );
+        wheel(&mut root, -60.0);
+        assert!(
+            offset() < back,
+            "and a negative one returns towards the live screen: {} then {}",
+            back,
+            offset()
         );
     }
 
@@ -947,3 +1172,4 @@ use goble_ui::theme::FontFamily;
         assert_eq!(duration_text(Duration::from_millis(68_920)), "(1m 8.92s)");
         assert_eq!(duration_text(Duration::from_secs(3 * 3600 + 4 * 60 + 12)), "(3h 4m 12s)");
     }
+

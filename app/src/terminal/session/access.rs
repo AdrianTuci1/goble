@@ -48,6 +48,18 @@ impl TerminalSession {
             .map(|mut state| state.push_agent_view_block(conversation_id, label))
     }
 
+    /// Make the block the shell is at a prompt in belong to `conversation_id`'s
+    /// agent view alone: the command that block is about to run was typed inside
+    /// the conversation, so it is the conversation's command and not part of the
+    /// shell's own history (see `Emulator::run_block_for_conversation`). False
+    /// when the shell is not waiting at a prompt.
+    pub fn run_block_for_conversation(&mut self, conversation_id: &str) -> bool {
+        self.state
+            .lock()
+            .map(|mut state| state.run_block_for_conversation(conversation_id))
+            .unwrap_or(false)
+    }
+
     /// Whether this pane's shell has bootstrapped its integration: the
     /// `Bootstrapped` handshake B0's script sends before the shell can report a
     /// `Preexec`. Until it arrives a claim could never resolve.

@@ -45,7 +45,7 @@ pub fn build_settings_overlay(
         )
         .with_child(Spacer::new().finish())
         .with_child(
-            Text::new("↑/↓ category · Esc close")
+            Text::new("Arrow keys move the category · Esc close")
                 .with_theme_color(ColorToken::Muted, app)
                 .with_font_size(11.0)
                 .finish(),

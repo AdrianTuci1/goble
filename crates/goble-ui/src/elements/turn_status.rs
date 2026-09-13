@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::elements::{
-    AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Flex, LayoutContext,
+    AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Flex, Icon, LayoutContext,
     MainAxisAlignment, MainAxisSize, PaintContext, Point, RunningIndicator, SizeConstraint, Spacer,
     Text,
 };
@@ -211,10 +211,22 @@ impl TurnStatusFooter {
                 }
                 if *work_count > 0 {
                     row = row.with_child(Spacer::new().finish()).with_child(
-                        Text::new(format!("◆ {work_count}"))
-                            .with_theme_color(ColorToken::Accent, app)
-                            .with_font_size(FONT_SIZE)
-                            .with_max_lines(1)
+                        Flex::row()
+                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                            .with_spacing(4.0)
+                            .with_child(
+                                Icon::new("diamond")
+                                    .with_size(8.0)
+                                    .with_theme_color(ColorToken::Accent, app)
+                                    .finish(),
+                            )
+                            .with_child(
+                                Text::new(work_count.to_string())
+                                    .with_theme_color(ColorToken::Accent, app)
+                                    .with_font_size(FONT_SIZE)
+                                    .with_max_lines(1)
+                                    .finish(),
+                            )
                             .finish(),
                     );
                 }
@@ -229,8 +241,8 @@ impl TurnStatusFooter {
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_spacing(sm)
                     .with_child(
-                        Text::new("◆")
-                            .with_font_size(FONT_SIZE)
+                        Icon::new("diamond")
+                            .with_size(8.0)
                             .with_theme_color(ColorToken::Accent, app)
                             .finish(),
                     )
@@ -363,8 +375,15 @@ mod tests {
             "the elapsed time is drawn: {drawn:?}"
         );
         assert!(
-            drawn.iter().any(|t| t == "◆ 2"),
+            drawn.iter().any(|t| t == "2"),
             "the in-flight work count is on the right: {drawn:?}"
+        );
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                RenderCommand::DrawIcon { name, .. } if name == "diamond"
+            )),
+            "the count is marked by the diamond icon, not a glyph: {drawn:?}"
         );
         assert!(
             drawn.iter().any(|t| SPINNER_FRAMES.contains(&t.as_str())),

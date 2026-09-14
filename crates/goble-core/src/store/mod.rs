@@ -6,8 +6,9 @@
 //! device identities and cluster invites ([`device_identity`]), the audit log
 //! ([`audit`]), agents and their memory ([`agents`]), workers ([`workers`]),
 //! chats and their messages ([`chats`]), MCP servers, principals and grants
-//! ([`mcp`]), teams ([`teams`]), vault secrets ([`vault`]), workflows and
-//! executions ([`workflows`]), missions with their reasoning steps and pending
+//! ([`mcp`]), teams ([`teams`]), vault secrets ([`vault`]), the named groups of
+//! environment secrets ([`secret_groups`]), workflows and executions
+//! ([`workflows`]), missions with their reasoning steps and pending
 //! asks/commands ([`missions`]) and the snapshot export/import
 //! ([`snapshot`]). Every surface is a block of methods on the single [`Store`]
 //! handle, which is the state they all share.
@@ -26,12 +27,15 @@ mod device_identity;
 mod mcp;
 mod missions;
 mod schema;
+mod secret_groups;
 mod settings;
 mod snapshot;
 mod teams;
 mod vault;
 mod workers;
 mod workflows;
+
+pub use secret_groups::{SecretEntry, SecretGroup};
 
 #[cfg(test)]
 mod tests;

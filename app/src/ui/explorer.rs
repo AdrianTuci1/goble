@@ -13,6 +13,7 @@ use goble_ui::elements::{
     TooltipPosition,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
+use goble_ui::vec2f;
 
 use super::{ExplorerRow, UiActions, UiSnapshot};
 
@@ -27,8 +28,13 @@ const ITEM_FONT_SIZE: f32 = 14.0;
 /// name (warp-new's own 4 and 8).
 const CHEVRON_GAP: f32 = 4.0;
 const ICON_GAP: f32 = 8.0;
+/// The chevron glyph itself, inside the 16pt slot it shares with the icon of
+/// the column beside it.
+const CHEVRON_SIZE: f32 = 12.0;
 /// The row's own vertical padding, above and below the 16pt icon slot.
 const ITEM_PADDING: f32 = 4.0;
+/// The highlight's corner radius, the reference tree's own 4pt.
+const ROW_RADIUS: f32 = 4.0;
 
 /// One entry of a directory listing.
 #[derive(Clone, Debug)]
@@ -135,9 +141,9 @@ impl ExplorerCache {
 
 /// The explorer: which directory the tree shows, then the tree itself.
 ///
-/// A directory row opens and closes it. A file row puts its path in the active
-/// pane's input, quoted, which is the one thing a terminal-side tree can usefully
-/// hand over: the path lands as an argument rather than as more words.
+/// A directory row opens and closes it. A file row opens that file in a pane of
+/// its own beside the active one (the reference tool's editor pane), leaving
+/// whatever the user was typing in the input alone.
 pub(crate) fn build_explorer(
     app: &AppContext,
     state: &UiSnapshot,
@@ -150,7 +156,9 @@ pub(crate) fn build_explorer(
 
     let mut list = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(1.0);
+        // Rows sit flush: the reference tree's list has no spacing between its
+        // items, the rows' own padding is what separates them.
+        .with_spacing(0.0);
     if state.explorer_root.is_empty() {
         list = list.with_child(hint(app, "No working directory yet."));
     } else if state.explorer_rows.is_empty() {
@@ -158,81 +166,77 @@ pub(crate) fn build_explorer(
     }
     for row in &state.explorer_rows {
         let path = row.path.clone();
+        // The reference tree gives a row one colour: its chevron, its icon and
+        // its name are all the 60% font colour at rest and the main 90% one
+        // while the pointer is over the row. Hover itself is known only while
+        // the previous frame paints, so this is the row the pointer reached one
+        // frame ago — the move that reached it already asked for that frame.
+        let hovered = state.explorer_hover.borrow().as_deref() == Some(row.path.as_str());
+        let row_color = if hovered {
+            ColorToken::Text
+        } else {
+            ColorToken::Muted
+        };
         let mut line = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(0.0);
+        // The reference tree's row recipe: a spacer for the depth, the chevron's
+        // 16pt slot, the gap after it, the icon's 16pt slot, the gap after that,
+        // then the name. Every column is a fixed box so the icon and the name
+        // line up at every depth, whether the row is a file or a directory.
         if row.depth > 0 {
-            line = line.with_child(
-                ConstrainedBox::new(Empty::new().finish())
-                    .with_width(row.depth as f32 * INDENT)
-                    .finish(),
-            );
+            line = line.with_child(fixed(row.depth as f32 * INDENT));
         }
         // The chevron is the row's own control: a directory shows which way it
         // opens, a file keeps the slot (empty) so every name lines up in one
         // column at every depth.
-        line = line.with_child(
-            if row.is_dir {
-                ConstrainedBox::new(
-                    Icon::new(if row.expanded {
-                        "chevron-down"
-                    } else {
-                        "chevron-right"
-                    })
-                    .with_size(12.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-                )
-                .with_width(INDENT)
-                .with_height(INDENT)
-                .finish()
-            } else {
-                ConstrainedBox::new(Empty::new().finish())
-                    .with_width(INDENT)
-                    .with_height(INDENT)
-                    .finish()
-            },
-        );
-        line = line.with_child(
-            ConstrainedBox::new(Empty::new().finish())
-                .with_width(CHEVRON_GAP)
+        line = line.with_child(if row.is_dir {
+            // The glyph inset to the middle of the slot, as the reference tree
+            // draws it inside its own 16x16 box.
+            Container::new(
+                Icon::new(if row.expanded {
+                    "chevron-down"
+                } else {
+                    "chevron-right"
+                })
+                .with_size(CHEVRON_SIZE)
+                .with_theme_color(row_color, app)
                 .finish(),
-        );
+            )
+            .with_padding(EdgeInsets::uniform((INDENT - CHEVRON_SIZE) / 2.0))
+            .finish()
+        } else {
+            fixed(INDENT)
+        });
+        line = line.with_child(fixed(CHEVRON_GAP));
         line = line.with_child(
             ConstrainedBox::new(
                 Icon::new(if row.is_dir {
-                    if row.expanded {
-                        "folder"
-                    } else {
-                        "folder-closed"
-                    }
+                    // One folder glyph for both states, as the reference tool's
+                    // tree draws it: the chevron beside it is what says whether
+                    // the directory is open, and a second folder shape in
+                    // another drawing style would make the tree read as two
+                    // icon sets.
+                    "folder"
                 } else {
                     file_icon_name(&row.name)
                 })
                 .with_size(16.0)
-                .with_theme_color(if row.is_dir {
-                    ColorToken::Muted
-                } else {
-                    ColorToken::Text
-                }, app)
+                .with_theme_color(row_color, app)
                 .finish(),
             )
             .with_width(INDENT)
             .with_height(INDENT)
             .finish(),
         );
+        line = line.with_child(fixed(ICON_GAP));
         line = line.with_child(
-            ConstrainedBox::new(Empty::new().finish())
-                .with_width(ICON_GAP)
-                .finish(),
-        );
-        line = line.with_child(
+            // A directory's name is drawn like a file's: the reference tool
+            // gives folders no colour of their own, so the row's three parts
+            // share one colour and the icons carry the folder/file difference.
             Text::new(row.name.clone())
-                .with_theme_color(if row.is_dir {
-                    ColorToken::Muted
-                } else {
-                    ColorToken::Text
-                }, app)
+                .with_theme_color(row_color, app)
                 .with_font_size(ITEM_FONT_SIZE)
                 .with_max_lines(1)
                 .finish(),
@@ -244,6 +248,8 @@ pub(crate) fn build_explorer(
         let is_dir = row.is_dir;
         let row = HoverRow::new(line.finish())
             .with_padding(EdgeInsets::new(8.0, ITEM_PADDING, 8.0, ITEM_PADDING))
+            .with_corner_radius(ROW_RADIUS)
+            .with_hover_key(state.explorer_hover.clone(), path.clone())
             .with_on_click(move || {
                 if is_dir {
                     (on_toggle_dir.borrow_mut())(path.clone());
@@ -295,6 +301,14 @@ pub(crate) fn build_explorer(
         .finish(),
     );
     column.finish()
+}
+
+/// An invisible box `width` wide: a row's column that draws nothing (the
+/// indent, a gap, the chevron slot of a file). Sized on the `Empty` itself
+/// because a `ConstrainedBox` around one measures the empty box — 0 wide — and
+/// would collapse the column it was meant to hold open.
+fn fixed(width: f32) -> Box<dyn Element> {
+    Empty::new().with_size(vec2f(width, 0.0)).finish()
 }
 
 /// A muted line that says why the tree has nothing to show.

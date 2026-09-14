@@ -19,10 +19,18 @@ use crate::theme::ColorToken;
 /// [`HoverButton`](crate::elements::HoverButton) instead when the *layout*
 /// depends on hover (a control that exists only while hovered); this row is for
 /// surfaces where only the paint does.
+///
+/// A row can also *report* its hover, through [`Self::with_hover_key`], for the
+/// hosts whose row's own children are coloured by it: those are built before the
+/// paint that decides hover, so they need the app to remember it between frames.
 pub struct HoverRow {
     content: Box<dyn Element>,
     selected: bool,
     padding: EdgeInsets,
+    corner_radius: f32,
+    /// The app's own cell the row names itself in while the pointer is over it,
+    /// and the key it writes there. See [`Self::with_hover_key`].
+    hover_key: Option<(Rc<RefCell<Option<String>>>, String)>,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     state: InteractiveState,
     size: Option<Vector2F>,
@@ -35,6 +43,8 @@ impl HoverRow {
             content,
             selected: false,
             padding: EdgeInsets::uniform(0.0),
+            corner_radius: 0.0,
+            hover_key: None,
             on_click: None,
             state: InteractiveState::default(),
             size: None,
@@ -53,8 +63,40 @@ impl HoverRow {
         self
     }
 
+    /// Round the highlight's corners. The default band is square, which is what
+    /// a row of a list inside a flat surface draws; the project explorer passes
+    /// the reference tool's 4pt so the highlight reads as the row's own shape
+    /// rather than a slice of the panel.
+    pub fn with_corner_radius(mut self, radius: f32) -> Self {
+        self.corner_radius = radius;
+        self
+    }
+
     pub fn with_on_click<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_click = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Report the row under the pointer into the app's own cell, named `key`.
+    ///
+    /// For a host whose row is styled by hover (its chevron, icon and label in
+    /// the row's own colour): the tree is rebuilt every frame, so those children
+    /// are built in `layout` — before the `paint` that is where hover is known.
+    /// The app passes one shared cell and a key per row, reads it while building
+    /// the next frame's rows, and so styles the row the pointer was over. Pass
+    /// the app's own cell, not an element-owned one, or the frame-to-frame
+    /// memory is lost with the element.
+    ///
+    /// A row the pointer has left clears its own key, so the cell never keeps a
+    /// row highlighted after the pointer has gone. The styling lags hover by one
+    /// frame, which a pointer move covers: the move already asks for the frame
+    /// that applies it.
+    pub fn with_hover_key(
+        mut self,
+        cell: Rc<RefCell<Option<String>>>,
+        key: impl Into<String>,
+    ) -> Self {
+        self.hover_key = Some((cell, key.into()));
         self
     }
 }
@@ -86,17 +128,32 @@ impl Element for HoverRow {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        if let Some(bounds) = self.bounds() {
+        let bounds = self.bounds();
+        let hovered = bounds.is_some_and(|bounds| ctx.hovered(bounds));
+        if let Some((cell, key)) = &self.hover_key {
+            let mut cell = cell.borrow_mut();
+            if hovered {
+                *cell = Some(key.clone());
+            } else if cell.as_deref() == Some(key.as_str()) {
+                *cell = None;
+            }
+        }
+        if let Some(bounds) = bounds {
             let background = if self.selected {
                 Some(ColorToken::Selected)
-            } else if ctx.hovered(bounds) {
+            } else if hovered {
                 Some(ColorToken::Hover)
             } else {
                 None
             };
             if let Some(token) = background {
                 if let Some(renderer) = ctx.renderer.as_mut() {
-                    renderer.fill_rect(bounds, app.theme.color(token));
+                    let color = app.theme.color(token);
+                    if self.corner_radius > 0.0 {
+                        renderer.fill_rounded_rect(bounds, color, self.corner_radius);
+                    } else {
+                        renderer.fill_rect(bounds, color);
+                    }
                 }
             }
         }
@@ -195,6 +252,104 @@ mod tests {
             "the hovered row draws its own band {band:?}: {:?}",
             bands(&over)
         );
+    }
+
+    /// A rounded row paints its highlight with the given corner radius, which is
+    /// what the project explorer's tree asks for (the reference tree's 4pt): the
+    /// band reads as the row's own shape rather than a slice of the panel. A row
+    /// that asks for nothing keeps the square band every other list draws.
+    #[test]
+    fn a_row_with_a_corner_radius_paints_a_rounded_highlight() {
+        let app = AppContext::default();
+        let radius_of = |ctx: &PaintContext| -> Option<f32> {
+            ctx.renderer
+                .as_ref()
+                .expect("renderer")
+                .commands()
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::FillRect { corner_radius, .. } => Some(*corner_radius),
+                    _ => None,
+                })
+        };
+        let hovered = |row: &mut HoverRow, app: &AppContext| -> Option<f32> {
+            let mut ctx = PaintContext::new(Renderer::new());
+            ctx.cursor_inside = true;
+            ctx.cursor_position = vec2f(10.0, 10.0);
+            let _ = paint(row, &mut ctx, app);
+            radius_of(&ctx)
+        };
+
+        assert_eq!(
+            hovered(&mut row(Text::new("src").finish()), &app),
+            Some(0.0),
+            "a plain row's band is square"
+        );
+        assert_eq!(
+            hovered(
+                &mut row(Text::new("src").finish()).with_corner_radius(4.0),
+                &app
+            ),
+            Some(4.0),
+            "the explorer's row rounds its band"
+        );
+    }
+
+    /// A row that is given the app's cell names itself there while the pointer
+    /// is over it — and clears its own key when the pointer leaves, so the host
+    /// that colours a row from that cell cannot keep one highlighted after the
+    /// pointer has gone. The band it paints meanwhile is the rounded one.
+    #[test]
+    fn a_row_reports_its_hover_through_the_app_cell() {
+        let app = AppContext::default();
+        let cell = Rc::new(RefCell::new(None));
+        let mut row = row(Text::new("src").finish())
+            .with_corner_radius(4.0)
+            .with_hover_key(Rc::clone(&cell), "src");
+
+        let away = |row: &mut HoverRow, cell: &Rc<RefCell<Option<String>>>| {
+            let mut ctx = PaintContext::new(Renderer::new());
+            ctx.cursor_inside = true;
+            ctx.cursor_position = vec2f(0.0, 400.0);
+            let _ = paint(row, &mut ctx, &app);
+            assert_eq!(
+                *cell.borrow(),
+                None,
+                "a row the pointer is away from names nothing"
+            );
+        };
+        away(&mut row, &cell);
+
+        let mut over = PaintContext::new(Renderer::new());
+        over.cursor_inside = true;
+        over.cursor_position = vec2f(10.0, 10.0);
+        let _ = paint(&mut row, &mut over, &app);
+        assert_eq!(
+            cell.borrow().as_deref(),
+            Some("src"),
+            "the row under the pointer names itself in the app's cell"
+        );
+        let band = over
+            .renderer
+            .as_ref()
+            .expect("renderer")
+            .commands()
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == app.theme.color(ColorToken::Hover) => Some((*rect, *corner_radius)),
+                _ => None,
+            });
+        assert_eq!(
+            band.map(|(_, radius)| radius),
+            Some(4.0),
+            "the row that reports its hover paints the rounded band"
+        );
+
+        away(&mut row, &cell);
     }
 
     /// A click anywhere in the row — the indent, the chevron, the label — runs

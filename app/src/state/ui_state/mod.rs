@@ -122,6 +122,31 @@ pub struct UiState {
     pub settings_overlay_open: bool,
     /// Active settings category in the overlay.
     pub settings_category: SettingsCategory,
+    /// Which of the overlay's two regions (the category rail, the content
+    /// pane) holds the keyboard. Opening the overlay starts in the rail.
+    pub settings_focus: SettingsFocus,
+    /// The pane control the keyboard is on: an index into the order
+    /// [`crate::ui::settings::pane_controls`] answers for the active category.
+    pub settings_pane_focus: usize,
+    /// Whether the focused pane control is a text field that holds the caret.
+    /// While it does, the overlay reserves only `Escape` and every other key
+    /// reaches the field.
+    pub settings_pane_field_active: bool,
+    /// Settings → Environment: the persisted groups of secrets and their
+    /// entries, reloaded from the store whenever one changes.
+    pub settings_environment_groups: Vec<SecretGroup>,
+    /// Settings → Environment: the group whose secrets the pane is showing.
+    pub settings_environment_open_group: Option<String>,
+    /// Settings → Environment: the new-group name field.
+    pub settings_environment_group_draft: String,
+    /// Settings → Environment: the secret-name field.
+    pub settings_environment_secret_name: String,
+    /// Settings → Environment: the secret-value field. Held here, like every
+    /// other settings field, because the element tree is rebuilt every frame.
+    pub settings_environment_secret_value: String,
+    /// Settings → Environment: the name the entry being edited carried before
+    /// the fields were filled in, so an edit that renames removes the old one.
+    pub settings_environment_editing: Option<String>,
     /// Mouse: invert the wheel/scroll direction.
     pub settings_invert_scroll: bool,
     /// Mouse: scroll speed multiplier (1..=100, default 50).
@@ -183,6 +208,11 @@ pub struct UiState {
     pub collapsed_sections: HashSet<String>,
     /// The directories the project explorer has open, by absolute path.
     pub explorer_expanded: HashSet<String>,
+    /// The explorer row under the pointer, by path, shared with the tree so its
+    /// hover-dependent colour survives the per-frame element rebuild — hover
+    /// itself is read at paint time, so the row styles one frame after the
+    /// pointer reaches it.
+    pub explorer_hover: Rc<RefCell<Option<String>>>,
     /// Global search: the query, the rows it produced and whether it has run at
     /// all. The search is run when the query changes, never per frame.
     pub global_search_query: String,

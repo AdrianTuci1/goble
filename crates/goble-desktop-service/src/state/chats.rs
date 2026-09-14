@@ -1,11 +1,24 @@
 use chrono::Utc;
 use goble_core::store::Store;
 
-use super::{Chat, ChatMessage, DesktopState};
+use super::{Chat, ChatMessage, DesktopState, TokenUsageEvent};
 
 impl DesktopState {
     pub fn add_chat_log(&self, message: impl Into<String>) {
         self.add_log(message);
+    }
+
+    /// A conversation's durable token total, as the provider reported it over
+    /// its model calls (live `chat:usage` events fold the same numbers into the
+    /// running app). `None` when nothing was ever reported for it, so a
+    /// restored conversation shows its real total instead of a zero.
+    pub fn chat_usage(&self, chat_id: &str) -> Option<TokenUsageEvent> {
+        let usage = self.store.lock().chat_usage(chat_id).ok().flatten()?;
+        Some(TokenUsageEvent {
+            input: usage.input,
+            cached: usage.cached,
+            output: usage.output,
+        })
     }
 
     pub fn add_chat_message(&self, chat_id: &str, role: &str, content: &str) -> anyhow::Result<()> {
@@ -147,7 +160,27 @@ impl DesktopState {
         Ok(())
     }
 
+    /// The conversations the sidebar lists, newest first.
+    ///
+    /// The store decides which conversations still exist: a chat deleted out of
+    /// band (a database cleanup, or another process) must not linger in the
+    /// list until the app restarts. The in-memory cache carries the fields each
+    /// row's card draws, and the order the app created them in.
     pub fn list_chats(&self) -> Vec<Chat> {
-        self.chats.lock().clone()
+        let live: std::collections::HashSet<String> = match self.store.lock().list_chats() {
+            Ok(rows) => rows.into_iter().map(|row| row.0).collect(),
+            // A store that cannot be read leaves the cache as the app's own
+            // record of what exists, rather than emptying the sidebar.
+            Err(e) => {
+                log::warn!("list_chats: {e}");
+                return self.chats.lock().clone();
+            }
+        };
+        self.chats
+            .lock()
+            .iter()
+            .filter(|chat| live.contains(&chat.id))
+            .cloned()
+            .collect()
     }
 }

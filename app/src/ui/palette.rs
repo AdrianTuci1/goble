@@ -378,7 +378,7 @@ impl PaletteContent {
         )
         .with_padding(EdgeInsets::uniform(md))
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-        .with_border(app.theme.color(ColorToken::Accent).into())
+        .with_border(app.theme.color(ColorToken::Focus).into())
         .finish();
 
         let mut list = Flex::column()

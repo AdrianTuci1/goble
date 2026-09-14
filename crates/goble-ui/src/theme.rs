@@ -35,6 +35,7 @@ impl Theme {
                 muted: ColorU::hex(0x8e8e8e),
                 hover: ColorU::hex(0x1e1e1e),
                 selected: ColorU::hex(0x2a2a2a),
+                focus: ColorU::hex(0x19aad8),
                 success: ColorU::hex(0x10b981),
                 warning: ColorU::hex(0xf59e0b),
                 error: ColorU::hex(0xef4444),
@@ -66,6 +67,7 @@ impl Theme {
                 muted: ColorU::hex(0x6f6f6f),
                 hover: ColorU::hex(0xf0f0f0),
                 selected: ColorU::hex(0xe2e2e2),
+                focus: ColorU::hex(0x00c2ff),
                 success: ColorU::hex(0x10b981),
                 warning: ColorU::hex(0xf59e0b),
                 error: ColorU::hex(0xef4444),
@@ -97,6 +99,7 @@ impl Theme {
                 muted: ColorU::hex(0x6f6f6f),
                 hover: ColorU::hex(0x191919),
                 selected: ColorU::hex(0x222222),
+                focus: ColorU::hex(0x19aad8),
                 success: ColorU::hex(0x10b981),
                 warning: ColorU::hex(0xf59e0b),
                 error: ColorU::hex(0xef4444),
@@ -145,6 +148,7 @@ impl Theme {
             ColorToken::Muted => self.secondary.unwrap_or(self.colors.muted),
             ColorToken::Hover => self.colors.hover,
             ColorToken::Selected => self.colors.selected,
+            ColorToken::Focus => self.colors.focus,
             ColorToken::Accent => self.custom_accent.unwrap_or_else(|| self.accent.color()),
             ColorToken::Success => self.colors.success,
             ColorToken::Warning => self.colors.warning,
@@ -187,6 +191,12 @@ pub struct ColorScheme {
     pub muted: ColorU,
     pub hover: ColorU,
     pub selected: ColorU,
+    /// The focused text field's insertion caret and its ring, kept apart from
+    /// `accent` so the neutral UI accent stays neutral. warp-new's default dark
+    /// (and light) theme accent — `app/src/themes/default_themes.rs::dark_theme`
+    /// `#19aad8`, `light_theme` `#00c2ff` — which is also its editor cursor
+    /// colour, since `WarpTheme::cursor()` falls back to `accent()`.
+    pub focus: ColorU,
     pub success: ColorU,
     pub warning: ColorU,
     pub error: ColorU,
@@ -207,6 +217,8 @@ pub enum ColorToken {
     Muted,
     Hover,
     Selected,
+    /// The focused text field's caret and ring — see `ColorScheme::focus`.
+    Focus,
     Accent,
     Success,
     Warning,
@@ -369,6 +381,20 @@ mod tests {
     #[test]
     fn accent_color_resolves() {
         assert_eq!(AccentColor::Blue.color(), ColorU::hex(0x9a9a9a));
+    }
+
+    /// The focus blue is warp-new's own default dark theme accent, and it is
+    /// deliberately not the UI accent: the caret and the focused field's ring
+    /// stay blue even though the rest of the UI is neutral.
+    #[test]
+    fn focus_is_the_reference_blue_and_not_the_accent() {
+        let theme = Theme::dark();
+        assert_eq!(theme.color(ColorToken::Focus), ColorU::hex(0x19aad8));
+        assert_ne!(
+            theme.color(ColorToken::Focus),
+            theme.color(ColorToken::Accent),
+            "the focus blue is not the neutral UI accent"
+        );
     }
 
     #[test]

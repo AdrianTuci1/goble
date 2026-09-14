@@ -36,6 +36,36 @@ fn build(
     (state, actions, media)
 }
 
+/// Make the app a configured one — provider `mock` plus a key, so a turn
+/// actually runs — and hand back the runtime for the test to enter. A prompt
+/// with no runnable model is not persisted at all (`chat_flow`), so every test
+/// that expects messages to land calls this first.
+fn configured(state: &Rc<RefCell<UiState>>) -> tokio::runtime::Runtime {
+    let runtime = tokio::runtime::Runtime::new().expect("build runtime");
+    let mut s = state.borrow_mut();
+    s.settings_llm_provider = "mock".to_string();
+    s.settings_llm_api_key = "test-key".to_string();
+    runtime
+}
+
+/// Wait until `conversation` holds at least `count` messages, so a test can
+/// assert on the turn the provider writes on its background task.
+fn wait_for_messages(desktop: &DesktopState, conversation: &str, count: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while desktop
+        .list_chat_messages(conversation)
+        .map(|m| m.len())
+        .unwrap_or(0)
+        < count
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {count} messages in {conversation}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 #[test]
 fn split_binds_new_pane_to_a_distinct_conversation() {
     let (desktop, _dir) = desktop_state();
@@ -177,11 +207,13 @@ fn send_routes_to_active_pane_conversation() {
     let conv3 = { state.borrow().pane_sessions.get(&3).unwrap().conversation_id.clone() };
     assert_ne!(conv3, chat_id);
 
-    // No key configured: the user message + an honest assistant reply are
-    // kept, routed to pane 3's own conversation, not pane 1's.
+    // The turn runs on the pane's own conversation, not pane 1's.
+    let rt = configured(&state);
+    let _guard = rt.enter();
     (actions.on_composer_change.borrow_mut())("hi".to_string());
     (actions.on_send_message.borrow_mut())("hi".to_string());
 
+    wait_for_messages(&desktop, &conv3, 2);
     let messages3 = desktop.list_chat_messages(&conv3).expect("list pane 3");
     assert_eq!(messages3.len(), 2);
     assert_eq!(messages3[0].role, "user");
@@ -202,13 +234,15 @@ fn cmd_enter_appends_to_the_pane_conversation() {
         .bind_active_pane_conversation(initial.clone(), Some(&desktop));
     let initial = state.borrow().pane_conversation_id(1).unwrap();
 
-    // No key configured: Cmd/Ctrl+Enter keeps the turn on the pane's own
-    // conversation and appends the user message + an honest assistant reply;
-    // it does NOT create a new conversation.
+    // Cmd/Ctrl+Enter keeps the turn on the pane's own conversation; it does
+    // NOT create a new conversation.
+    let rt = configured(&state);
+    let _guard = rt.enter();
     (actions.on_cmd_enter.borrow_mut())("hello from cmd+enter".to_string());
 
     let conv = state.borrow().pane_conversation_id(1).unwrap();
     assert_eq!(conv, initial, "Cmd+Enter reuses the pane's conversation");
+    wait_for_messages(&desktop, &conv, 2);
     let msgs = desktop.list_chat_messages(&conv).expect("list conv");
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].role, "user");
@@ -369,6 +403,8 @@ fn first_agent_turn_in_a_pty_workspace_creates_its_conversation() {
     assert_eq!(desktop.list_chats().len(), 0);
 
     let pane_id = state.borrow().active_pane_id;
+    let rt = configured(&state);
+    let _guard = rt.enter();
     (actions.on_terminal_command.borrow_mut())(pane_id, "salut".to_string());
 
     let s = state.borrow();
@@ -384,6 +420,7 @@ fn first_agent_turn_in_a_pty_workspace_creates_its_conversation() {
         1,
         "the thread is created lazily, on the pane's first agent turn"
     );
+    wait_for_messages(&desktop, &conv, 2);
 }
 
 #[test]
@@ -474,9 +511,10 @@ fn terminal_command_appends_to_the_pane_conversation() {
     };
     assert_ne!(term_conv, chat_id);
 
-    // No API key configured: Cmd+Enter in the terminal keeps the turn on the
-    // terminal pane's own conversation and appends a user message + an
-    // honest assistant reply; it does NOT create a brand-new conversation.
+    // Cmd+Enter in the terminal keeps the turn on the terminal pane's own
+    // conversation; it does NOT create a brand-new conversation.
+    let rt = configured(&state);
+    let _guard = rt.enter();
     (actions.on_terminal_command.borrow_mut())(term_pane, "run me as an agent".to_string());
 
     let conv = state
@@ -487,6 +525,7 @@ fn terminal_command_appends_to_the_pane_conversation() {
         .conversation_id
         .clone();
     assert_eq!(conv, term_conv, "Cmd+Enter reuses the terminal pane's conversation");
+    wait_for_messages(&desktop, &conv, 2);
     let term_msgs = desktop.list_chat_messages(&conv).expect("list terminal conv");
     assert_eq!(term_msgs.len(), 2);
     assert_eq!(term_msgs[0].role, "user");

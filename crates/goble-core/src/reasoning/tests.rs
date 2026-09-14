@@ -415,6 +415,69 @@ async fn test_execution_streams_assistant_deltas_into_one_message() {
     assert_eq!(assistant.2, "Hello world", "deltas should be concatenated into one assistant message");
 }
 
+/// The token counts a provider reports are durable: each call's usage is folded
+/// into the conversation's own row as it arrives, so a conversation that is
+/// reopened later still knows what it spent. A chat whose provider reports
+/// nothing keeps reporting nothing rather than a zero.
+#[tokio::test]
+async fn test_reported_usage_is_persisted_on_the_chat() {
+    use crate::llm::CompletionResponse;
+    use futures::Stream;
+    use std::pin::Pin;
+
+    struct ReportingProvider;
+    #[async_trait::async_trait]
+    impl LlmProvider for ReportingProvider {
+        fn name(&self) -> &str {
+            "reporting"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            Ok(CompletionResponse {
+                content: String::new(),
+                tool_calls: Vec::new(),
+                usage: None,
+            })
+        }
+        async fn complete_stream(
+            &self,
+            _req: CompletionRequest,
+        ) -> anyhow::Result<Pin<Box<dyn Stream<Item = CompletionStreamEvent> + Send>>> {
+            let events = vec![
+                CompletionStreamEvent::AssistantDelta("hi".to_string()),
+                CompletionStreamEvent::Usage(crate::llm::TokenUsage {
+                    input: 1_200,
+                    cached: Some(900),
+                    output: 80,
+                }),
+                CompletionStreamEvent::Done,
+            ];
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    assert!(
+        store.chat_usage(&chat_id).unwrap().is_none(),
+        "a chat that reported nothing has no total"
+    );
+
+    let harness = Harness::new(store.clone()).with_llm(Arc::new(ReportingProvider));
+    let _: Vec<_> = harness
+        .run_turn(&chat_id, "hi", "mock", "mock")
+        .collect()
+        .await;
+
+    let usage = store
+        .chat_usage(&chat_id)
+        .unwrap()
+        .expect("the reported counts are on the chat");
+    assert_eq!(usage.input, 1_200);
+    assert_eq!(usage.cached, Some(900));
+    assert_eq!(usage.output, 80);
+    assert_eq!(usage.total(), 1_280);
+}
+
 /// Collect the persisted tool-call records from every row of a chat.
 fn tool_call_records(store: &Store, chat_id: &str) -> Vec<ChatToolCall> {
     store

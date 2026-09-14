@@ -678,3 +678,34 @@ fn the_instructions_close_the_input_under_the_action_row() {
         size.y
     );
 }
+
+/// The composer's editor draws its insertion beam in the focus blue — the
+/// colour the reference's editor cursor carries, not the UI's neutral accent —
+/// and a blurred composer draws no beam.
+#[test]
+fn the_focused_editor_shows_the_focus_blue_caret() {
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let focus = app.theme.color(ColorToken::Focus);
+
+    let mut focused = ChatComposer::new().with_value("hi").with_focused(true);
+    let commands = paint_composer(&app, &mut focused);
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { color, .. } if *color == focus
+        )),
+        "the focused editor's beam is the focus blue: {commands:?}"
+    );
+
+    let mut blurred = ChatComposer::new().with_value("hi");
+    let commands = paint_composer(&app, &mut blurred);
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { color, .. } if *color == focus
+        )),
+        "a blurred composer draws no caret: {commands:?}"
+    );
+}

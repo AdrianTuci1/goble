@@ -5,7 +5,8 @@
 //! ([`bootstrap`]), the daemon-event translator that feeds the UI ([`translator`]),
 //! chat turns ([`turns`]), chat storage ([`chats`]), agents, workflows and teams
 //! ([`agents`]), worker pairing and routing ([`workers`]), cluster identity and
-//! installs ([`cluster`]), the vault and access grants ([`vault`]), LLM settings
+//! installs ([`cluster`]), the vault and access grants ([`vault`]), the
+//! environment secret groups ([`environment`]), LLM settings
 //! and provider resolution ([`llm`]), app-level settings ([`settings`]), MCP
 //! servers ([`mcp`]) and the store-to-memory load ([`load`]). What the surfaces
 //! share — the [`DesktopState`] record and the DTOs the app reads back — lives
@@ -33,6 +34,7 @@ mod agents;
 mod bootstrap;
 mod chats;
 mod cluster;
+mod environment;
 mod llm;
 mod load;
 mod mcp;

@@ -87,6 +87,25 @@ impl UiState {
         );
     }
 
+    /// Seed a conversation's token total from the store: what its model calls
+    /// reported before this app run, which is what a restored conversation shows
+    /// in its footer. A conversation that already holds counts from live
+    /// `chat:usage` events keeps them — the store's figure is that same spend,
+    /// so seeding on top of the running total would count it twice.
+    pub fn seed_conversation_usage(
+        &mut self,
+        conversation_id: &str,
+        usage: Option<goble_ui::TokenUsage>,
+    ) {
+        if self.conversation_usage.contains_key(conversation_id) {
+            return;
+        }
+        if let Some(usage) = usage {
+            self.conversation_usage
+                .insert(conversation_id.to_string(), usage);
+        }
+    }
+
     /// Apply one live `chat:reasoning` event: fold it into the owning pane's
     /// reasoning rows and overlay them on the transcript immediately, so the
     /// model's thinking appears as it streams instead of only after the store

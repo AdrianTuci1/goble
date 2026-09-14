@@ -18,9 +18,10 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
 use goble_ui::elements::{
-    file_icon_name, AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets,
-    Element, Empty, Expanded, Flex, HoverRow, Icon, MainAxisSize, Scrollable, SearchInput, Text,
+    file_icon_name, AppContext, Axis, Container, CrossAxisAlignment, EdgeInsets, Element, Empty,
+    Expanded, Flex, HoverRow, Icon, MainAxisSize, Scrollable, SearchInput, Text,
 };
+use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::{SearchRow, UiActions, UiSnapshot};
@@ -530,9 +531,12 @@ pub(crate) fn build_search(
             Some(number) => {
                 line = line
                     .with_child(
-                        ConstrainedBox::new(Empty::new().finish())
-                            .with_width(14.0)
-                            .finish(),
+                        // A blank column of the file row's icon width, so a
+                        // matched line's number lines up under the file's name.
+                        // `ConstrainedBox` reports its child's size, and an
+                        // `Empty` ignores a constraint, so the width has to be
+                        // the empty element's own.
+                        Empty::new().with_size(vec2f(14.0, 0.0)).finish(),
                     )
                     .with_child(
                         Text::new(format!("{number}"))

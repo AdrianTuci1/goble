@@ -92,11 +92,19 @@ pub(super) fn ensure_pane_hover(state: &mut UiState, pane_id: u64) {
 /// conversation's card into the pane's block list, which is what the terminal
 /// shows as the way back to it. The caller decides the pane's kind: the harness
 /// only has a terminal to return to when the pane is a terminal leaf.
+///
+/// That new conversation needs a model behind it: with no runnable one the pane
+/// keeps the view it had and the notice band names what is missing, rather than
+/// opening an agent view on a thread nothing could ever answer.
 pub(super) fn open_pane_harness(
     state: &mut UiState,
     pane_id: u64,
     desktop: Option<&Arc<DesktopState>>,
 ) {
+    if !state.pane_owns_conversation(pane_id) && !state.can_run_agent_turn(pane_id) {
+        state.show_llm_key_banner = true;
+        return;
+    }
     state.pane_controls_mut(pane_id).harness_mode = true;
     if !state.pane_owns_conversation(pane_id) {
         state.bind_pane_new_conversation(pane_id, desktop.map(|d| d.as_ref()));

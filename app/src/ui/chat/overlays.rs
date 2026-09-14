@@ -1,7 +1,7 @@
 
 use goble_ui::elements::{
     AppContext, Button, ButtonVariant, ChatSidebar, Container, CrossAxisAlignment, Divider,
-    EdgeInsets, Element, Expanded, Fill, Flex, Icon, MainAxisSize, RoutineItem, Spacer, Text, TopbarButton,
+    EdgeInsets, Element, Fill, Flex, Icon, MainAxisSize, RoutineItem, Spacer, Text, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 
@@ -78,26 +78,31 @@ pub(crate) fn build_chat_panel_overlay(
 /// instead of floating over the app as a dialog.
 ///
 /// It is a full-width band of rows in the pager idiom, like the rest of the
-/// agent surface: no border and no rounded card. The heading carries the error
-/// color, and the row below is two columns: what went wrong, and the button
-/// that fixes it (the model-provider dialog).
-pub(crate) fn build_agent_error(app: &AppContext, actions: &UiActions) -> Box<dyn Element> {
-    let on_config = actions.on_config_llm_key.clone();
-    let sm = app.theme.spacing_px(SpacingToken::Sm);
+/// agent surface: no border and no rounded card. The heading — what is missing,
+/// and nothing else — carries the error color, with the button that fixes it
+/// beside it. That button opens `~/.goble/config.toml` in a file pane, not a
+/// form: the file is where the keys and the models live, and editing it is the
+/// app's own configuration route. A prompt that could not run writes nothing
+/// into the conversation, so this band is the whole of what the user sees when
+/// they submit one.
+pub(crate) fn build_agent_error(
+    app: &AppContext,
+    actions: &UiActions,
+    heading: &str,
+) -> Box<dyn Element> {
+    let on_config = actions.on_open_config_file.clone();
     let md = app.theme.spacing_px(SpacingToken::Md);
-    let columns = Flex::row()
+    let row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(md)
         .with_child(
-            Expanded::new(
-                Text::new("Failed to use agent. Configure your API keys before using agent.")
-                    .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(12.0)
-                    .finish(),
-            )
-            .finish(),
+            Text::new(heading)
+                .with_theme_color(ColorToken::Error, app)
+                .with_font_size(13.0)
+                .finish(),
         )
+        .with_child(Spacer::new().finish())
         .with_child(
             Button::new(Text::new("Edit API keys").finish())
                 .with_variant(ButtonVariant::Primary)
@@ -105,18 +110,7 @@ pub(crate) fn build_agent_error(app: &AppContext, actions: &UiActions) -> Box<dy
                 .finish(),
         )
         .finish();
-    let body = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(sm)
-        .with_child(
-            Text::new("No API key configured")
-                .with_theme_color(ColorToken::Error, app)
-                .with_font_size(13.0)
-                .finish(),
-        )
-        .with_child(columns)
-        .finish();
-    Container::new(body)
+    Container::new(row)
         // A full-width band of rows: no border and no rounded card.
         .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
         .with_padding(EdgeInsets::uniform(md))
@@ -226,7 +220,7 @@ mod error_notice_tests {
             Rc::new(RefCell::new(1.0)),
         );
 
-        let mut notice = build_agent_error(&app, &actions);
+        let mut notice = build_agent_error(&app, &actions, "No API key configured");
         let commands = render_element(&mut notice, vec2f(600.0, 200.0), &app);
         let counts = command_counts(&commands);
 
@@ -246,6 +240,37 @@ mod error_notice_tests {
             band_radius,
             Some(0.0),
             "the error notice band has no corner radius"
+        );
+    }
+
+    /// The band is the whole of what a refused prompt leaves behind: the reason,
+    /// and the button that fixes it. No user line, no assistant reply — nothing
+    /// was written, so there is nothing else to draw.
+    #[test]
+    fn the_error_notice_is_the_reason_and_the_button() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(UiState::mock()));
+        let actions = crate::actions::make_actions(
+            state,
+            None,
+            Rc::new(RefCell::new(MediaState::mock())),
+            WindowControl::default(),
+            Rc::new(RefCell::new(1.0)),
+        );
+
+        let mut notice = build_agent_error(&app, &actions, "No API key configured");
+        let commands = render_element(&mut notice, vec2f(600.0, 200.0), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["No API key configured", "Edit API keys"],
+            "the band names what is missing and offers to fix it"
         );
     }
 }

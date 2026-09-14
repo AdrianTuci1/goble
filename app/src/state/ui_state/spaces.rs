@@ -22,6 +22,21 @@ impl UiState {
         // Restore the per-pane session data (conversation id, draft, cwd) so a
         // pane stays the same independent conversation across a restart.
         self.pane_sessions = saved.pane_sessions;
+        // A conversation the store no longer holds — deleted in another process,
+        // or cleaned out of the database — is not restored: the pane goes back
+        // to following the sidebar selection instead of owning a thread that is
+        // gone (a turn sent to it would write rows under a chat that is not
+        // there, leaving them unreachable from the sidebar).
+        let live: HashSet<String> = desktop
+            .list_chats()
+            .into_iter()
+            .map(|chat| chat.id)
+            .collect();
+        for session in self.pane_sessions.values_mut() {
+            if !session.conversation_id.is_empty() && !live.contains(&session.conversation_id) {
+                session.conversation_id.clear();
+            }
+        }
         let max_id = self
             .spaces
             .iter()

@@ -135,6 +135,42 @@ pub struct UiActions {
     /// arrow-key path, which must advance from the live category rather than
     /// from the one captured when the tree was built.
     pub on_settings_category_step: Rc<RefCell<dyn FnMut(i32)>>,
+    /// Settings: move the keyboard's slot inside the region that holds it —
+    /// the rail's category, or the pane's control.
+    pub on_settings_focus_move: Rc<RefCell<dyn FnMut(i32)>>,
+    /// Settings: move the keyboard from the category rail into the content
+    /// pane, onto its first control.
+    pub on_settings_focus_into_pane: Rc<RefCell<dyn FnMut()>>,
+    /// Settings: move the keyboard from the content pane back to the rail.
+    pub on_settings_focus_out_of_pane: Rc<RefCell<dyn FnMut()>>,
+    /// Settings: activate the focused pane control — a switch flips, a button
+    /// runs, a text field takes the caret.
+    pub on_settings_activate: Rc<RefCell<dyn FnMut()>>,
+    /// Settings: adjust the focused pane control by `delta`; only the controls
+    /// that hold a discrete value change.
+    pub on_settings_adjust: Rc<RefCell<dyn FnMut(i32)>>,
+    /// Settings: take the caret out of the focused text field, which is what
+    /// `Escape` means before it means "back to the rail".
+    pub on_settings_release_field: Rc<RefCell<dyn FnMut()>>,
+    /// Settings → Environment: the new-group name field.
+    pub on_environment_group_draft_change: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings → Environment: create the group the name field holds.
+    pub on_environment_create_group: Rc<RefCell<dyn FnMut()>>,
+    /// Settings → Environment: open a group (its secrets join the pane).
+    pub on_environment_open_group: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings → Environment: delete a group and its secrets.
+    pub on_environment_delete_group: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings → Environment: the secret-name field.
+    pub on_environment_secret_name_change: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings → Environment: the secret-value field.
+    pub on_environment_secret_value_change: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings → Environment: add the secret the fields hold, or save the
+    /// entry they were loaded from.
+    pub on_environment_save_secret: Rc<RefCell<dyn FnMut()>>,
+    /// Settings → Environment: load one secret back into the fields to edit.
+    pub on_environment_edit_secret: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings → Environment: remove one secret.
+    pub on_environment_delete_secret: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: toggle mouse scroll-direction inversion.
     pub on_toggle_invert_scroll: Rc<RefCell<dyn FnMut(bool)>>,
     /// Settings: set mouse scroll speed (1..=100).
@@ -275,8 +311,18 @@ pub struct UiActions {
     /// Open an external URL clicked in the transcript. The app guards it to
     /// `http`/`https` before any OS opener sees it.
     pub on_open_url: Rc<RefCell<dyn FnMut(String)>>,
-    /// First-run: open Settings->LLM to configure a model key (banner click).
+    /// First-run: open Settings->LLM to configure a model key.
+    ///
+    /// No surface calls this any more: the notice band's "Edit API keys" opens
+    /// the home's `config.toml` in a file pane ([`Self::on_open_config_file`])
+    /// instead, because that file is where the keys and the models live. The
+    /// action is kept whole — the model form is still the flow's route, and its
+    /// own tests drive it — but it has no opener in the tree until one is given
+    /// a reason to carry it.
     pub on_config_llm_key: Rc<RefCell<dyn FnMut()>>,
+    /// Open `~/.goble/config.toml` — where the API keys and the models live — in
+    /// a file pane beside the active pane.
+    pub on_open_config_file: Rc<RefCell<dyn FnMut()>>,
     /// First-run: choose the workspace routing (Local or Remote).
     pub on_choose_workspace: Rc<RefCell<dyn FnMut(WorkspaceRouting)>>,
     /// First-run: close the model-provider dialog without saving.

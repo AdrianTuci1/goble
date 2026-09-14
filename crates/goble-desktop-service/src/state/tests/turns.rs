@@ -8,6 +8,31 @@ use super::{
     command_suspension, command_suspension_with_runner, tmp_state, tool_messages, wait_for_bus_event,
 };
 
+/// The token totals a conversation's model calls reported are readable from the
+/// store through the service, which is how a pane restored after a restart
+/// shows what the conversation spent. A conversation nothing was reported for
+/// reads as absent, not as a zero.
+#[test]
+fn chat_usage_reads_the_persisted_totals() {
+    let (_dir, state) = tmp_state();
+    let chat_id = state.create_chat("Demo", None, None).expect("create chat");
+    assert!(
+        state.chat_usage(&chat_id).is_none(),
+        "a fresh conversation has reported nothing"
+    );
+
+    state
+        .store
+        .lock()
+        .add_chat_usage(&chat_id, 1_200, Some(900), 80)
+        .expect("folding one model call");
+
+    let usage = state.chat_usage(&chat_id).expect("the reported totals");
+    assert_eq!(usage.input, 1_200);
+    assert_eq!(usage.cached, Some(900));
+    assert_eq!(usage.output, 80);
+}
+
 #[test]
 fn run_chat_turn_unregistered_harness_errors() {
     // A harness id that was never registered must not silently fall back to

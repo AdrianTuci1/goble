@@ -689,7 +689,8 @@ mod tests {
     }
 
     #[test]
-    fn mouse_down_fires_focus_change() {        let app = app();
+    fn mouse_down_fires_focus_change() {
+        let app = app();
         let focus_changes = Rc::new(RefCell::new(Vec::new()));
         let changes_clone = focus_changes.clone();
         // The textarea is transparent, so the clickable area is the text
@@ -980,6 +981,42 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, RenderCommand::FillRect { .. })),
             "the block itself is a filled cell under the letter"
+        );
+    }
+
+    /// The beam is the focus blue — the colour the reference's editor cursor
+    /// carries — and a blurred field draws no beam at all.
+    #[test]
+    fn the_focused_field_paints_its_beam_in_the_focus_blue() {
+        use crate::elements::caret::{CARET_HEIGHT, CARET_WIDTH};
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = app();
+        let focus = app.theme.color(ColorToken::Focus);
+
+        let mut area: Box<dyn Element> =
+            Box::new(TextArea::new().with_value("hi").with_focused(true));
+        let commands = render_element(&mut area, vec2f(200.0, 40.0), &app);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == focus
+                        && (rect.width() - CARET_WIDTH).abs() < 0.5
+                        && (rect.height() - CARET_HEIGHT).abs() < 0.5
+            )),
+            "the focused field draws its beam in the focus blue: {commands:?}"
+        );
+
+        let mut blurred: Box<dyn Element> = Box::new(TextArea::new().with_value("hi"));
+        let commands = render_element(&mut blurred, vec2f(200.0, 40.0), &app);
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { color, .. } if *color == focus
+            )),
+            "a blurred field draws no beam: {commands:?}"
         );
     }
 }

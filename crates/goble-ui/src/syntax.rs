@@ -182,6 +182,15 @@ mod tests {
     fn a_file_path_resolves_by_its_extension() {
         assert!(highlight("fn main() {}", "src/main.rs").is_some());
         assert!(highlight("set -e", "deploy/run.sh").is_some());
+        // The app's own configuration file is opened in a pane and drawn from
+        // this call, so its path has to resolve like any other.
+        let config = highlight("model = \"gpt-4o\"\n", "~/.goble/config.toml")
+            .expect("config.toml resolves as TOML");
+        let colours: HashSet<ColorU> = colours(&config);
+        assert!(
+            colours.len() > 1,
+            "a TOML key and its string are not one colour, got {colours:?}"
+        );
     }
 
     #[test]

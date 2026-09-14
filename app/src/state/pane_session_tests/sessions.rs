@@ -26,6 +26,55 @@ use super::*;
         assert_ne!(pane1, pane2, "two panes never share a conversation");
     }
 
+    /// What a turn on a pane would run on: the pane's own model first, then the
+    /// window-global selection, then the configured default.
+    #[test]
+    fn a_panes_own_model_wins_over_the_windows_selection() {
+        let mut state = UiState::mock();
+        state.selected_model = "pane-choice".to_string();
+        state.settings_llm_model = "configured".to_string();
+        state.ensure_pane_controls();
+        assert_eq!(state.pane_agent_model(1), "pane-choice");
+
+        // A later window-wide pick does not move a pane that already chose.
+        state.selected_model = "another".to_string();
+        assert_eq!(state.pane_agent_model(1), "pane-choice");
+
+        // A pane that never chose follows the window selection, and with no
+        // selection at all the configured default is what a turn would use.
+        assert_eq!(state.pane_agent_model(2), "another");
+        state.selected_model.clear();
+        assert_eq!(state.pane_agent_model(2), "configured");
+    }
+
+    /// A turn runs only with a key, a provider and a model. Anything missing
+    /// means no conversation is created and nothing is written: the composer's
+    /// notice band names what is missing instead.
+    #[test]
+    fn a_turn_runs_only_with_a_key_a_provider_and_a_model() {
+        let mut state = UiState::mock();
+        state.selected_model = "mock".to_string();
+        state.settings_llm_provider = "openai".to_string();
+        state.settings_llm_api_key = String::new();
+        assert!(!state.can_run_agent_turn(1), "no key: nothing can answer");
+        assert_eq!(state.llm_notice_heading(), "No API key configured");
+
+        state.settings_llm_api_key = "sk-test".to_string();
+        assert!(state.can_run_agent_turn(1));
+
+        state.settings_llm_provider.clear();
+        assert!(
+            !state.can_run_agent_turn(1),
+            "a key with no provider cannot run either"
+        );
+        assert_eq!(state.llm_notice_heading(), "No model configured");
+
+        state.settings_llm_provider = "openai".to_string();
+        state.selected_model.clear();
+        state.settings_llm_model.clear();
+        assert!(!state.can_run_agent_turn(1), "a key with no model cannot run");
+    }
+
     #[test]
     fn sync_active_view_reflects_active_pane() {
         let mut state = UiState::mock();

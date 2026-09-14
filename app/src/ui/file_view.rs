@@ -4,9 +4,11 @@
 //! Reading is the explorer's rule — a frame that changes nothing reads nothing.
 //! A view keeps the file's lines in a cache beside the state and re-reads it only
 //! when its size or modification time moved, so a file being written under the
-//! view updates it without a read per frame. A file view is a pane leaf like any
-//! other, so it sits beside the terminal that opened it and comes back on the
-//! next launch with the same file open.
+//! view updates it without a read per frame. The highlighted runs are built in
+//! that same cache entry, so a frame that changes nothing re-highlights nothing
+//! either. A file view is a pane leaf like any other, so it sits beside the
+//! terminal that opened it and comes back on the next launch with the same file
+//! open.
 
 use std::collections::HashMap;
 use std::fs;
@@ -15,11 +17,12 @@ use std::rc::Rc;
 use std::time::SystemTime;
 
 use goble_ui::elements::{
-    file_icon_name, AppContext, Axis, Container, CrossAxisAlignment, EdgeInsets, Element, Empty,
-    Expanded, Fill, Flex, Icon, MainAxisSize, Scrollable, Spacer, Stack, Text, Tooltip,
+    file_icon_name, AppContext, Axis, Code, Container, CrossAxisAlignment, EdgeInsets, Element,
+    Empty, Expanded, Fill, Flex, Icon, MainAxisSize, Scrollable, Spacer, Stack, Text, Tooltip,
     TooltipPosition,
 };
 use goble_ui::geometry::Vector2F;
+use goble_ui::syntax::HighlightedLine;
 use goble_ui::theme::{ColorToken, FontFamily, SpacingToken};
 
 use super::chat;
@@ -87,6 +90,33 @@ impl FileBody {
     }
 }
 
+/// What a file view draws for one file: the body, and — when the file's own
+/// type resolves — the body's lines already broken into the highlighted runs
+/// the pane paints.
+///
+/// The runs live beside the body rather than inside it because a run carries a
+/// click callback and so is neither `PartialEq` nor `Eq`, which [`FileBody`]
+/// is; the two are still read and cached together (see [`FileCache`]).
+#[derive(Clone)]
+pub struct FileContent {
+    body: FileBody,
+    /// One entry per line the body shows, in the same order. `None` — a
+    /// language that did not resolve, or a file that is not text at all —
+    /// keeps the pane drawing its plain lines.
+    runs: Option<Rc<Vec<HighlightedLine>>>,
+}
+
+/// A run carries a click callback, so the runs themselves are not printable;
+/// how many sets there are is what a failing assertion needs to see.
+impl std::fmt::Debug for FileContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileContent")
+            .field("body", &self.body)
+            .field("runs", &self.runs.as_ref().map(|runs| runs.len()))
+            .finish()
+    }
+}
+
 /// A size as the title spells it: whole kilobytes and megabytes, because the
 /// exact byte count of a file this view refuses to open is noise.
 fn bytes_label(bytes: u64) -> String {
@@ -110,86 +140,112 @@ pub(crate) struct FileCache {
 struct Cached {
     len: u64,
     modified: Option<SystemTime>,
-    body: FileBody,
+    /// The body and its highlighted runs, read once under the one size +
+    /// modification-time stamp: a frame that changes nothing re-reads and
+    /// re-highlights nothing.
+    content: FileContent,
 }
 
 impl FileCache {
-    /// The body of every file the listed panes show, keyed by pane id. `wanted`
+    /// What every file the listed panes show draws, keyed by pane id. `wanted`
     /// is the file every open view points at, so the cache holds exactly the
     /// files on screen.
-    pub fn read(&mut self, wanted: &[(u64, String)]) -> HashMap<u64, FileBody> {
-        let mut bodies = HashMap::new();
+    pub fn read(&mut self, wanted: &[(u64, String)]) -> HashMap<u64, FileContent> {
+        let mut contents = HashMap::new();
         for (pane_id, path) in wanted {
-            bodies.insert(*pane_id, self.body(path));
+            contents.insert(*pane_id, self.content(path));
         }
         self.files
             .retain(|path, _| wanted.iter().any(|(_, wanted)| wanted == path));
-        bodies
+        contents
     }
 
-    fn body(&mut self, path: &str) -> FileBody {
+    fn content(&mut self, path: &str) -> FileContent {
         let stamp = fs::metadata(path)
             .ok()
             .map(|metadata| (metadata.len(), metadata.modified().ok()));
         if let Some(cached) = self.files.get(path) {
             if Some((cached.len, cached.modified)) == stamp {
-                return cached.body.clone();
+                return cached.content.clone();
             }
         }
-        let body = read(path);
+        let content = read(path);
         if let Some((len, modified)) = stamp {
             self.files.insert(
                 path.to_string(),
                 Cached {
                     len,
                     modified,
-                    body: body.clone(),
+                    content: content.clone(),
                 },
             );
         }
-        body
+        content
     }
 }
 
-/// Read one file into the body a view draws.
-fn read(path: &str) -> FileBody {
+/// Read one file into what its view draws, and nothing otherwise.
+fn read(path: &str) -> FileContent {
+    /// A file the view will not draw.
+    fn none(body: FileBody) -> FileContent {
+        FileContent { body, runs: None }
+    }
+
     let Ok(metadata) = fs::metadata(path) else {
-        return FileBody::Unreadable;
+        return none(FileBody::Unreadable);
     };
     if !metadata.is_file() {
-        return FileBody::Unreadable;
+        return none(FileBody::Unreadable);
     }
     if metadata.len() > MAX_FILE_BYTES {
-        return FileBody::TooLarge {
+        return none(FileBody::TooLarge {
             bytes: metadata.len(),
-        };
+        });
     }
     let Ok(bytes) = fs::read(path) else {
-        return FileBody::Unreadable;
+        return none(FileBody::Unreadable);
     };
     // A NUL near the start is the cheap test for a binary file: rendering PNGs
     // and object files as text helps nobody, and the alternative is a pane full
     // of replacement glyphs.
     if bytes.iter().take(8 * 1024).any(|byte| *byte == 0) {
-        return FileBody::NotText;
+        return none(FileBody::NotText);
     }
     let Ok(text) = String::from_utf8(bytes) else {
-        return FileBody::NotText;
+        return none(FileBody::NotText);
     };
     let total = text.lines().count();
-    let shown = text
+    let shown: Vec<String> = text
         .lines()
         .take(MAX_LINES)
         .map(|line| line.to_string())
         .collect();
-    FileBody::Lines {
-        shown: Rc::new(shown),
-        total,
+    let runs = highlight(&shown, path);
+    FileContent {
+        body: FileBody::Lines {
+            shown: Rc::new(shown),
+            total,
+        },
+        runs,
     }
 }
 
+/// The lines this pane draws as the highlighted runs for the file's own type —
+/// the same [`goble_ui::syntax::highlight`] every other surface colours code
+/// with, resolved from the path itself. `None` when the language does not
+/// resolve (an unknown extension, a file whose name has none), which is the
+/// pane's cue to draw the text plain.
+///
+/// Only the lines the pane shows are handed over, so [`MAX_LINES`] bounds this
+/// exactly as it bounds the body, and the whole thing runs inside [`FileCache`]
+/// with the read rather than per frame.
+fn highlight(lines: &[String], path: &str) -> Option<Rc<Vec<HighlightedLine>>> {
+    goble_ui::syntax::highlight(&lines.join("\n"), path).map(Rc::new)
+}
+
 /// The pane's view of `path`: the pane's one topbar, the file's name and size,
-/// and the file's lines under a line-number gutter.
+/// and the file's lines, highlighted by the file's own type, under a
+/// line-number gutter.
 pub(crate) fn build_file_view(
     app: &AppContext,
     state: &UiSnapshot,
@@ -201,11 +257,13 @@ pub(crate) fn build_file_view(
     // The pane wears the same topbar as its siblings (the close button and the
     // app's own tray), so a pane is closed the same way whatever it hosts.
     let header = chat::build_agent_header(app, state, actions, pane_id, false);
-    let body = match state.pane_files.get(&pane_id) {
-        Some(FileBody::Lines { shown, total }) => {
-            lines_view(app, state, pane_id, Rc::clone(shown), *total)
-        }
-        Some(body) => note(app, &body.message()),
+    let file = state.pane_files.get(&pane_id);
+    let body = match file {
+        Some(FileContent {
+            body: FileBody::Lines { shown, total },
+            runs,
+        }) => lines_view(app, state, pane_id, Rc::clone(shown), runs.as_ref(), *total),
+        Some(content) => note(app, &content.body.message()),
         // The body is read while the snapshot is built, so a pane with no body
         // yet is a frame old at most.
         None => note(app, "Reading the file…"),
@@ -221,7 +279,7 @@ pub(crate) fn build_file_view(
                 .with_size(Vector2F::new(0.0, super::shell::TOPBAR_HEIGHT))
                 .finish(),
         )
-        .with_child(title_row(app, path, state.pane_files.get(&pane_id)))
+        .with_child(title_row(app, path, file.map(|file| &file.body)))
         .with_child(Expanded::new(body).finish())
         .finish();
     let content = Container::new(column)
@@ -274,18 +332,26 @@ fn title_row(app: &AppContext, path: &str, body: Option<&FileBody>) -> Box<dyn E
 
 /// The file's lines: one row per line, a padded line number then the text, in
 /// the pane's own scroll offset so a long file scrolls and keeps its place.
+///
+/// `runs` are the lines already highlighted for the file's type, one entry per
+/// line, or `None` when the type did not resolve — a line without runs of its
+/// own (or a file without any) is drawn plain.
 fn lines_view(
     app: &AppContext,
     state: &UiSnapshot,
     pane_id: u64,
     lines: Rc<Vec<String>>,
+    runs: Option<&Rc<Vec<HighlightedLine>>>,
     total: usize,
 ) -> Box<dyn Element> {
     let mut list = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     for (index, line) in lines.iter().enumerate() {
-        list = list.with_child(line_row(app, index + 1, line));
+        let runs = runs
+            .and_then(|runs| runs.get(index))
+            .filter(|runs| !runs.is_empty());
+        list = list.with_child(line_row(app, index + 1, line, runs));
     }
     if total > lines.len() {
         list = list.with_child(note(
@@ -305,7 +371,33 @@ fn lines_view(
         .finish()
 }
 
-fn line_row(app: &AppContext, number: usize, line: &str) -> Box<dyn Element> {
+/// One line: the padded number, then the line itself — its highlighted runs
+/// when the file's type resolved, its plain text when it did not.
+///
+/// The runs are painted through the shared `Code` element, the same text model
+/// the chat's code blocks and read excerpts use: the runs carry their own
+/// colours, and it keeps the mono, unwrapped line this pane draws either way.
+fn line_row(
+    app: &AppContext,
+    number: usize,
+    line: &str,
+    runs: Option<&HighlightedLine>,
+) -> Box<dyn Element> {
+    let text: Box<dyn Element> = match runs {
+        // One line's runs are one entry of the lines `Code` paints.
+        Some(runs) => Code::new(line.to_string())
+            .with_font_size(LINE_FONT_SIZE)
+            .with_line_height(LINE_HEIGHT)
+            .with_highlighted_lines(vec![runs.clone()])
+            .finish(),
+        None => Text::new(line.to_string())
+            .with_font_size(LINE_FONT_SIZE)
+            .with_line_height(LINE_HEIGHT)
+            .with_font_family(FontFamily::Mono)
+            .with_theme_color(ColorToken::Text, app)
+            .with_max_lines(1)
+            .finish(),
+    };
     Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_child(
@@ -317,15 +409,7 @@ fn line_row(app: &AppContext, number: usize, line: &str) -> Box<dyn Element> {
                 .with_max_lines(1)
                 .finish(),
         )
-        .with_child(
-            Text::new(line.to_string())
-                .with_font_size(LINE_FONT_SIZE)
-                .with_line_height(LINE_HEIGHT)
-                .with_font_family(FontFamily::Mono)
-                .with_theme_color(ColorToken::Text, app)
-                .with_max_lines(1)
-                .finish(),
-        )
+        .with_child(text)
         .finish()
 }
 
@@ -354,8 +438,8 @@ mod tests {
         let path = path.to_string_lossy().to_string();
 
         let mut cache = FileCache::default();
-        let bodies = cache.read(&[(7, path.clone())]);
-        match bodies.get(&7) {
+        let contents = cache.read(&[(7, path.clone())]);
+        match contents.get(&7).map(|content| &content.body) {
             Some(FileBody::Lines { shown, total }) => {
                 assert_eq!(shown.as_slice(), ["fn main() {}", "", "let x = 1;"]);
                 assert_eq!(*total, 3);
@@ -365,7 +449,8 @@ mod tests {
     }
 
     /// A frame that changes nothing reads nothing: the second read of an
-    /// unchanged file is the cached body, and a file that changed is read again.
+    /// unchanged file is the cached body — and the cached runs, not a second
+    /// highlight — while a file that changed is read again.
     #[test]
     fn an_unchanged_file_is_not_read_again_and_a_changed_one_is() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -376,23 +461,108 @@ mod tests {
 
         let mut cache = FileCache::default();
         let first = cache.read(&wanted);
-        let cached = cache.files.get(&path).expect("the file is cached").body.clone();
+        let cached = cache
+            .files
+            .get(&path)
+            .expect("the file is cached")
+            .content
+            .clone();
         let second = cache.read(&wanted);
-        assert_eq!(first.get(&1), second.get(&1), "the same file, the same body");
-        assert_eq!(second.get(&1), Some(&cached));
+        assert_eq!(
+            first.get(&1).map(|content| &content.body),
+            second.get(&1).map(|content| &content.body),
+            "the same file, the same body"
+        );
+        assert_eq!(
+            second.get(&1).map(|content| &content.body),
+            Some(&cached.body)
+        );
+        let runs = |contents: &HashMap<u64, FileContent>| {
+            contents
+                .get(&1)
+                .and_then(|content| content.runs.as_ref())
+                .expect("markdown resolves, so the lines carry runs")
+                .clone()
+        };
+        assert!(
+            Rc::ptr_eq(&runs(&first), &runs(&second)),
+            "an unchanged file is not highlighted again: the cached runs are handed back"
+        );
 
         // A different size re-reads it (the modification time can share a
         // timestamp with the previous write on a coarse clock).
         fs::write(&path, "one\ntwo\n").expect("write again");
         let third = cache.read(&wanted);
-        match third.get(&1) {
+        match third.get(&1).map(|content| &content.body) {
             Some(FileBody::Lines { total, .. }) => assert_eq!(*total, 2, "the new text is read"),
             other => panic!("expected the new lines, got {other:?}"),
         }
+        assert!(
+            !Rc::ptr_eq(&runs(&first), &runs(&third)),
+            "a file that changed is highlighted again"
+        );
 
         // A view that is gone drops its file.
         cache.read(&[]);
         assert!(cache.files.is_empty(), "no open view keeps no file");
+    }
+
+    /// The pane's lines are coloured by the file's own type — every type the
+    /// same one call resolves: a `config.toml` carries one set of runs per line
+    /// it shows, and so do `.rs`, `.md` and `.json` — while a file whose type
+    /// does not resolve carries none. The runs are read, and cached, with the
+    /// lines.
+    #[test]
+    fn a_files_lines_carry_the_runs_of_its_own_type_or_none_at_all() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let names = [
+            "config.toml",
+            "main.rs",
+            "notes.md",
+            "data.json",
+            "deploy.sh",
+            "notes.zzz",
+        ];
+        let wanted: Vec<(u64, String)> = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let path = dir.path().join(name);
+                fs::write(&path, "model = \"gpt-4o\"\napi_key = \"sk-test\"\n").expect("write");
+                (index as u64, path.to_string_lossy().to_string())
+            })
+            .collect();
+
+        let mut cache = FileCache::default();
+        let contents = cache.read(&wanted);
+
+        for (index, name) in names.iter().enumerate() {
+            let content = contents
+                .get(&(index as u64))
+                .unwrap_or_else(|| panic!("{name} is read"));
+            if *name == "notes.zzz" {
+                assert!(
+                    content.runs.is_none(),
+                    "a type that does not resolve keeps the pane on plain lines"
+                );
+                continue;
+            }
+            let runs = content
+                .runs
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} resolves its own language"));
+            assert_eq!(runs.len(), 2, "{name}: one set of runs per line shown");
+            if matches!(*name, "config.toml" | "main.rs") {
+                // These two grammars do colour this text: the key, the `=` and
+                // the string value are not one colour.
+                let colours: std::collections::HashSet<_> =
+                    runs.iter().flatten().map(|span| span.color).collect();
+                assert!(
+                    colours.len() > 1,
+                    "{name}: a key and its string must not come out one colour: {colours:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -402,19 +572,26 @@ mod tests {
         fs::write(&binary, [0x89, b'P', b'N', b'G', 0x00, 0x1a]).expect("write");
 
         let mut cache = FileCache::default();
+        let body = |contents: HashMap<u64, FileContent>, pane: u64| {
+            contents.get(&pane).map(|content| content.body.clone())
+        };
         assert_eq!(
-            cache.read(&[(1, binary.to_string_lossy().to_string())]).get(&1),
-            Some(&FileBody::NotText)
+            body(cache.read(&[(1, binary.to_string_lossy().to_string())]), 1),
+            Some(FileBody::NotText)
         );
         assert_eq!(
-            cache
-                .read(&[(2, dir.path().join("gone.rs").to_string_lossy().to_string())])
-                .get(&2),
-            Some(&FileBody::Unreadable)
+            body(
+                cache.read(&[(2, dir.path().join("gone.rs").to_string_lossy().to_string())]),
+                2
+            ),
+            Some(FileBody::Unreadable)
         );
         assert_eq!(
-            cache.read(&[(3, dir.path().to_string_lossy().to_string())]).get(&3),
-            Some(&FileBody::Unreadable),
+            body(
+                cache.read(&[(3, dir.path().to_string_lossy().to_string())]),
+                3
+            ),
+            Some(FileBody::Unreadable),
             "a directory is not a file to open"
         );
     }
@@ -429,8 +606,8 @@ mod tests {
         fs::write(&path, text).expect("write");
 
         let mut cache = FileCache::default();
-        let bodies = cache.read(&[(4, path.to_string_lossy().to_string())]);
-        match bodies.get(&4) {
+        let contents = cache.read(&[(4, path.to_string_lossy().to_string())]);
+        match contents.get(&4).map(|content| &content.body) {
             Some(FileBody::Lines { shown, total }) => {
                 assert_eq!(shown.len(), MAX_LINES);
                 assert_eq!(*total, MAX_LINES + 25);

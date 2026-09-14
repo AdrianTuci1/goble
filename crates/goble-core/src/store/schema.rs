@@ -54,6 +54,9 @@ impl Store {
                 workspace_routing TEXT,
                 parent_chat_id TEXT,
                 working_dir TEXT,
+                usage_input INTEGER NOT NULL DEFAULT 0,
+                usage_output INTEGER NOT NULL DEFAULT 0,
+                usage_cached INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             ) STRICT;
@@ -204,6 +207,29 @@ impl Store {
                 name TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             ) STRICT;
+
+            -- Settings -> Environment: named groups of secrets, each group a
+            -- set of name/value pairs. A group of secrets is its own thing, not
+            -- a `credentials` row under a prefix, so it gets its own tables.
+            CREATE TABLE IF NOT EXISTS secret_groups (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            ) STRICT;
+
+            CREATE TABLE IF NOT EXISTS secret_group_entries (
+                id TEXT PRIMARY KEY,
+                group_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                value TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (group_id, name)
+            ) STRICT;
+
+            CREATE INDEX IF NOT EXISTS idx_secret_group_entries_group
+                ON secret_group_entries(group_id);
             CREATE TABLE IF NOT EXISTS audit_log (
                 id TEXT PRIMARY KEY,
                 timestamp TEXT NOT NULL,
@@ -291,6 +317,28 @@ impl Store {
         if !has_working_dir {
             conn.execute("ALTER TABLE chats ADD COLUMN working_dir TEXT", [])
                 .context("failed to add chats.working_dir")?;
+        }
+
+        // The token counts the provider reported for a conversation, so its
+        // totals survive a restart instead of living only in the running app's
+        // memory. `usage_cached` stays nullable: a provider that reports no
+        // cache accounting leaves the figure absent, which is not a zero.
+        for (column, ty) in [
+            ("usage_input", "INTEGER NOT NULL DEFAULT 0"),
+            ("usage_output", "INTEGER NOT NULL DEFAULT 0"),
+            ("usage_cached", "INTEGER"),
+        ] {
+            let present: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = ?1",
+                    [column],
+                    |r| r.get(0),
+                )
+                .with_context(|| format!("failed to check for chats.{column}"))?;
+            if !present {
+                conn.execute(&format!("ALTER TABLE chats ADD COLUMN {column} {ty}"), [])
+                    .with_context(|| format!("failed to add chats.{column}"))?;
+            }
         }
 
         Ok(())

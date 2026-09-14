@@ -181,4 +181,12 @@ async fn a_childs_reported_usage_lands_on_the_parent_conversation() {
         *tokens, 40,
         "the budget counts the provider's generated tokens, not the estimate"
     );
+
+    // The parent's own row carries the child's spend too, so reopening the
+    // conversation shows what the whole turn cost.
+    let usage = store
+        .chat_usage(&parent_chat)
+        .expect("reading the parent's usage")
+        .expect("the child's call is on the parent's row");
+    assert_eq!((usage.input, usage.cached, usage.output), (900, Some(700), 40));
 }

@@ -43,6 +43,33 @@ fn test_chat_workspace_routing_roundtrip() {
     assert_eq!(store.get_chat_workspace_routing("missing").unwrap(), None);
 }
 
+/// A conversation's reported token counts accumulate across its model calls and
+/// are read back as one total. A provider that reports no cache accounting
+/// leaves the cached figure absent rather than folding in a zero, and a chat
+/// nothing has been reported for has no total at all (not a zero).
+#[test]
+fn test_chat_usage_accumulates_and_stays_absent_when_unreported() {
+    let store = Store::open_in_memory().unwrap();
+    store
+        .insert_chat("c1", "Demo", None, None, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+        .unwrap();
+    assert_eq!(
+        store.chat_usage("c1").unwrap(),
+        None,
+        "a chat with no reported usage has no total"
+    );
+    assert_eq!(store.chat_usage("missing").unwrap(), None);
+
+    store.add_chat_usage("c1", 1_200, Some(900), 80).unwrap();
+    store.add_chat_usage("c1", 300, None, 20).unwrap();
+
+    let usage = store.chat_usage("c1").unwrap().expect("the total");
+    assert_eq!(usage.input, 1_500);
+    assert_eq!(usage.cached, Some(900), "the cache-sharing call left it as it was");
+    assert_eq!(usage.output, 100);
+    assert_eq!(usage.total(), 1_600);
+}
+
 #[test]
 fn test_credentials_roundtrip() {
     let store = Store::open_in_memory().unwrap();
@@ -388,4 +415,99 @@ fn update_agent_changes_name_and_spec() {
     let agent = store.get_agent(id).unwrap().unwrap();
     assert_eq!(agent.1, "New");
     assert_eq!(agent.2, spec);
+}
+
+/// An environment group is a thing of its own: it is created, listed with its
+/// entries, edited in place by (group, name), and deleted with every entry it
+/// holds. A group that is deleted takes its entries with it, and an entry that
+/// is renamed does not leave the old name behind.
+#[test]
+fn test_secret_groups_roundtrip_and_lifecycle() {
+    let store = Store::open_in_memory().unwrap();
+    assert!(store.list_secret_groups().unwrap().is_empty());
+
+    store
+        .create_secret_group("g1", "production", "2024-01-01T00:00:00Z")
+        .unwrap();
+    store
+        .create_secret_group("g2", "staging", "2024-01-01T00:00:00Z")
+        .unwrap();
+
+    // A fresh group has no entries, and comes back with an empty list rather
+    // than being absent.
+    let groups = store.list_secret_groups().unwrap();
+    assert_eq!(groups.len(), 2, "both groups are listed, ordered by name");
+    assert_eq!(groups[0].name, "production");
+    assert_eq!(groups[1].name, "staging");
+    assert!(groups[0].entries.is_empty());
+
+    store
+        .upsert_secret_entry("e1", "g1", "API_KEY", "sk-live", "2024-01-01T00:00:01Z")
+        .unwrap();
+    store
+        .upsert_secret_entry("e2", "g1", "DB_URL", "postgres://x", "2024-01-01T00:00:02Z")
+        .unwrap();
+    store
+        .upsert_secret_entry("e3", "g2", "API_KEY", "sk-stage", "2024-01-01T00:00:03Z")
+        .unwrap();
+
+    let production = store.get_secret_group("g1").unwrap().expect("production");
+    assert_eq!(production.entries.len(), 2);
+    // Entries are ordered by name, and each one belongs to its own group.
+    assert_eq!(production.entries[0].name, "API_KEY");
+    assert_eq!(production.entries[0].value, "sk-live");
+    assert_eq!(production.entries[1].name, "DB_URL");
+    assert!(production.entries.iter().all(|e| e.group_id == "g1"));
+    let staging = store.get_secret_group("g2").unwrap().expect("staging");
+    assert_eq!(staging.entries.len(), 1);
+    assert_eq!(staging.entries[0].value, "sk-stage");
+
+    // The same name in the same group edits the entry rather than duplicating
+    // it; the same name in another group is a different entry.
+    store
+        .upsert_secret_entry("e9", "g1", "API_KEY", "sk-rotated", "2024-01-02T00:00:00Z")
+        .unwrap();
+    let production = store.get_secret_group("g1").unwrap().unwrap();
+    assert_eq!(production.entries.len(), 2, "the name did not duplicate");
+    assert_eq!(production.entries[0].value, "sk-rotated");
+
+    // Renaming an entry removes the name it used to carry.
+    assert!(store.delete_secret_entry_named("g1", "DB_URL").unwrap());
+    assert!(!store.delete_secret_entry_named("g1", "DB_URL").unwrap());
+    store
+        .upsert_secret_entry("e4", "g1", "DATABASE_URL", "postgres://y", "2024-01-02T00:00:01Z")
+        .unwrap();
+    let names: Vec<String> = store
+        .get_secret_group("g1")
+        .unwrap()
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(names, vec!["API_KEY".to_string(), "DATABASE_URL".to_string()]);
+
+    // Removing one entry leaves the others. (`e2` is already gone: the rename
+    // above removed the entry that carried `DB_URL`.)
+    assert!(!store.delete_secret_entry("e2").unwrap());
+    assert!(store.delete_secret_entry("e4").unwrap());
+    assert!(!store.delete_secret_entry("e4").unwrap());
+    assert_eq!(store.get_secret_group("g1").unwrap().unwrap().entries.len(), 1);
+
+    // Deleting a group removes its entries and leaves the other groups alone.
+    assert!(store.delete_secret_group("g1").unwrap());
+    assert!(!store.delete_secret_group("g1").unwrap());
+    assert!(store.get_secret_group("g1").unwrap().is_none());
+    let remaining = store.list_secret_groups().unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].name, "staging");
+    assert_eq!(remaining[0].entries.len(), 1);
+    assert!(
+        store
+            .list_secret_groups()
+            .unwrap()
+            .iter()
+            .all(|g| g.entries.iter().all(|e| e.group_id != "g1")),
+        "no entry outlives the group it belonged to"
+    );
 }

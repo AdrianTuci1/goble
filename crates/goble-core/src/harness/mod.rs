@@ -25,7 +25,7 @@ use crate::subagent_run::{
 };
 use crate::worker::WorkerId;
 use anyhow::Result;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 
 mod agents;
 mod commands;
@@ -240,7 +240,7 @@ impl Harness {
         provider: &str,
         model: &str,
     ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
-        crate::subagent_run::with_subagent_lifecycle(
+        let events = crate::subagent_run::with_subagent_lifecycle(
             &self.subagents,
             crate::reasoning::run_mission_turn(
                 self.store.clone(),
@@ -260,7 +260,34 @@ impl Harness {
                 self.web_search.clone(),
                 self.subagent_host(),
             ),
-        )
+        );
+        self.recorded_usage(events)
+    }
+
+    /// Persist every token count a turn reports on the conversation's own row
+    /// before the event is passed on, so the totals outlive the app run. The
+    /// turn's stream is the one place every count crosses — the conversation's
+    /// own model calls and the ones its sub-agents report under its chat id
+    /// alike — so one wrapper covers the whole turn's spend.
+    fn recorded_usage(
+        &self,
+        events: Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>,
+    ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
+        let store = self.store.clone();
+        Box::pin(events.map(move |event| {
+            if let HarnessEvent::TokenUsage {
+                chat_id,
+                input,
+                cached,
+                output,
+            } = &event
+            {
+                if let Err(e) = store.add_chat_usage(chat_id, *input, *cached, *output) {
+                    return HarnessEvent::Error(e.to_string());
+                }
+            }
+            event
+        }))
     }
 
     /// Resume a turn that was suspended waiting for a user answer.
@@ -272,7 +299,7 @@ impl Harness {
         provider: &str,
         model: &str,
     ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
-        crate::subagent_run::with_subagent_lifecycle(
+        let events = crate::subagent_run::with_subagent_lifecycle(
             &self.subagents,
             crate::reasoning::resume_mission_turn(
                 self.store.clone(),
@@ -292,7 +319,8 @@ impl Harness {
                 self.web_search.clone(),
                 self.subagent_host(),
             ),
-        )
+        );
+        self.recorded_usage(events)
     }
 
     /// Resume a turn that suspended on a proposed command, executing the user's

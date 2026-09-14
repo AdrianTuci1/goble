@@ -9,6 +9,59 @@ use super::*;
         assert_eq!(state.pane_conversation_id(1).as_deref(), Some("c1"));
     }
 
+    /// A pane restored from the persisted layout keeps its own conversation, so
+    /// it is still the same independent thread after a restart.
+    #[test]
+    fn a_restored_pane_keeps_its_conversation() {
+        let dir = tempfile::tempdir().expect("create temp thread store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("open in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("open thread store"),
+        );
+        let kept = desktop.create_chat("Kept", None, None).expect("create chat");
+
+        let mut saved = UiState::mock();
+        saved.pane_sessions.get_mut(&1).unwrap().conversation_id = kept.clone();
+        saved.save_panes(&desktop);
+
+        let mut restored = UiState::mock();
+        restored.restore_panes(&desktop);
+        assert_eq!(
+            restored.pane_sessions.get(&1).unwrap().conversation_id,
+            kept,
+            "the pane keeps the conversation it was on"
+        );
+    }
+
+    /// A conversation the store no longer holds (deleted out of band, or
+    /// cleaned out of the database) is not restored as the pane's own: the pane
+    /// follows the sidebar selection instead of owning a thread that is gone.
+    #[test]
+    fn a_restored_pane_does_not_point_at_a_conversation_the_store_lost() {
+        let dir = tempfile::tempdir().expect("create temp thread store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("open in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("open thread store"),
+        );
+        let gone = desktop.create_chat("Gone", None, None).expect("create chat");
+
+        let mut saved = UiState::mock();
+        saved.pane_sessions.get_mut(&1).unwrap().conversation_id = gone.clone();
+        saved.save_panes(&desktop);
+        desktop
+            .store_clone()
+            .delete_chat(&gone)
+            .expect("delete the conversation out of band");
+
+        let mut restored = UiState::mock();
+        restored.restore_panes(&desktop);
+        assert_eq!(
+            restored.pane_sessions.get(&1).unwrap().conversation_id,
+            "",
+            "the pane is not left pointing at a deleted conversation"
+        );
+    }
+
     /// The two views start as the shell's own history: the preamble block is in
     /// the terminal view, and no conversation has a block until the agent runs
     /// one in this pane.

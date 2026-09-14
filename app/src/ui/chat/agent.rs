@@ -195,7 +195,7 @@ pub fn build_agent_chat(
         .with_notice(
             state
                 .show_llm_key_banner
-                .then(|| build_agent_error(app, actions)),
+                .then(|| build_agent_error(app, actions, state.llm_notice_heading)),
         )
         .with_messages(messages)
         // The transcript scrolls and follows the stream; the state is

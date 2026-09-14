@@ -15,6 +15,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use goble_core::agent::Trigger;
 use goble_core::harness::{tool_kind_for, ToolCallStatus, ToolKind};
+use goble_core::store::SecretGroup;
 use goble_desktop_service::DesktopState;
 use goble_ui::{
     AgentCardUi, AskUserUi, ChatFragment, ChatMessage, ChatRole, CommandProposalUi,
@@ -30,8 +31,8 @@ use crate::emulator::VisibleBlock;
 use crate::terminal::TerminalRegistry;
 use crate::ui::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, HarnessEntry, LlmFormField, Pane,
-    PaneChatSnapshot, PaneKind, SearchRow, SettingsCategory, SidebarView, Space, TaskEntry,
-    TimelineEntry, WorkflowEntry, WorkspaceRouting, SIDEBAR_WIDTH,
+    PaneChatSnapshot, PaneKind, SearchRow, SettingsCategory, SettingsControl, SettingsFocus,
+    SidebarView, Space, TaskEntry, TimelineEntry, WorkflowEntry, WorkspaceRouting, SIDEBAR_WIDTH,
 };
 use crate::ui::global_search::SearchWorker;
 

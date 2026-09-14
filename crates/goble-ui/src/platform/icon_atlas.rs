@@ -98,7 +98,8 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("folder-closed", "folder-closed.svg"),
     // The project explorer's file-type icons, taken from warp-new's bundled
     // set: one per language the tree can name, with a generic document for the
-    // rest.
+    // rest. `folder` is that set's own folder glyph, so a directory row and a
+    // file row are drawn from one family.
     icon_bytes!("file", "file.svg"),
     icon_bytes!("file-angular", "file_type/angular.svg"),
     icon_bytes!("file-c", "file_type/c.svg"),

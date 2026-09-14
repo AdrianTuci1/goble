@@ -4,6 +4,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_harness_types::MediumKind;
+use goble_core::store::SecretGroup;
 use goble_ui::elements::{
     AgentCardUi, ChatMessage as UiChatMessage, ConversationEntry, PopupMenuItem, TerminalFilter,
 };
@@ -16,8 +17,8 @@ use super::color_picker;
 use super::pane::Space;
 use super::types::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, LlmFormField,
-    McpSearchEntry, McpServerEntry, SearchRow, SettingsCategory, SidebarView, TaskEntry,
-    TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkspaceRouting,
+    McpSearchEntry, McpServerEntry, SearchRow, SettingsCategory, SettingsFocus, SidebarView,
+    TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkspaceRouting,
 };
 
 /// What a pane's sub-agent child view (S6) shows: the child's own conversation,
@@ -165,9 +166,10 @@ pub struct UiSnapshot {
     /// Per-pane scroll offset of a pane's file view, shared with app state so a
     /// file keeps the user's place across the per-frame rebuild.
     pub file_scroll: HashMap<u64, Rc<RefCell<goble_ui::ScrollState>>>,
-    /// What each open file view draws, keyed by pane id. Read while the snapshot
-    /// is built (never per frame), so a pane that shows a file reads it once.
-    pub pane_files: HashMap<u64, crate::ui::file_view::FileBody>,
+    /// What each open file view draws, keyed by pane id — its body and the
+    /// body's highlighted runs. Read while the snapshot is built (never per
+    /// frame), so a pane that shows a file reads and highlights it once.
+    pub pane_files: HashMap<u64, crate::ui::file_view::FileContent>,
     pub crons_open: bool,
     /// Whether the tasks & workflows overlay is up. It floats over the
     /// workspace, so the panes stay mounted underneath it.
@@ -202,6 +204,20 @@ pub struct UiSnapshot {
     pub settings_vault_unlocked: bool,
     pub settings_overlay_open: bool,
     pub settings_category: SettingsCategory,
+    /// The overlay's two-region keyboard focus, and the pane control it is on.
+    pub settings_focus: SettingsFocus,
+    pub settings_pane_focus: usize,
+    /// Whether the focused pane control is a text field holding the caret.
+    pub settings_pane_field_active: bool,
+    /// Settings → Environment: the persisted groups with their secrets, the
+    /// group the pane has open, and the fields a new or edited secret is typed
+    /// into.
+    pub settings_environment_groups: Vec<SecretGroup>,
+    pub settings_environment_open_group: Option<String>,
+    pub settings_environment_group_draft: String,
+    pub settings_environment_secret_name: String,
+    pub settings_environment_secret_value: String,
+    pub settings_environment_editing: Option<String>,
     pub settings_invert_scroll: bool,
     pub settings_scroll_speed: i32,
     pub settings_font_size: f32,
@@ -216,6 +232,9 @@ pub struct UiSnapshot {
     pub theme_color_drag: Rc<RefCell<Option<color_picker::ColorPickerDrag>>>,
     /// First-run: whether the "configure a model key" banner is shown in chat.
     pub show_llm_key_banner: bool,
+    /// What that banner is headed: the missing API key, or a key with no
+    /// provider/model behind it.
+    pub llm_notice_heading: &'static str,
     /// First-run: whether the "local or remote workspace?" choice is shown.
     pub show_workspace_choice: bool,
     /// First-run routing decision once the user picks Local or Remote.
@@ -247,6 +266,11 @@ pub struct UiSnapshot {
     /// working directory) and its rows, flattened to what is on screen.
     pub explorer_root: String,
     pub explorer_rows: Vec<ExplorerRow>,
+    /// The explorer row the pointer was over on the last frame, by path: the
+    /// tree draws that row's chevron, icon and label in the main colour and
+    /// every other row in the muted one, and hover is only known while the
+    /// previous frame paints (see `HoverRow::with_hover_key`).
+    pub explorer_hover: Rc<RefCell<Option<String>>>,
     /// Global search: the query, its rows and whether it has run.
     pub global_search_query: String,
     pub global_search_rows: Vec<SearchRow>,

@@ -2,6 +2,7 @@ use anyhow::Result;
 use rusqlite::params;
 
 use super::Store;
+use crate::llm::TokenUsage;
 
 impl Store {
     pub fn insert_chat(
@@ -68,6 +69,50 @@ impl Store {
         } else {
             Ok(None)
         }
+    }
+
+    /// Fold one model call's provider-reported token counts into a
+    /// conversation's durable total. Accounting only, no price. A call that
+    /// reports no cache accounting leaves `usage_cached` as it was rather than
+    /// folding in a zero, which is not the same as a cache hit of zero.
+    pub fn add_chat_usage(
+        &self,
+        id: &str,
+        input: u64,
+        cached: Option<u64>,
+        output: u64,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chats
+                SET usage_input = usage_input + ?2,
+                    usage_output = usage_output + ?3,
+                    usage_cached = CASE
+                        WHEN ?4 IS NULL THEN usage_cached
+                        ELSE COALESCE(usage_cached, 0) + ?4
+                    END
+              WHERE id = ?1",
+            params![id, input, output, cached],
+        )?;
+        Ok(())
+    }
+
+    /// A conversation's durable token total. `None` when the provider has
+    /// reported no counts for it at all — the UI then draws no usage rather
+    /// than a zero.
+    pub fn chat_usage(&self, id: &str) -> Result<Option<TokenUsage>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT usage_input, usage_cached, usage_output FROM chats WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let usage = TokenUsage {
+            input: row.get(0)?,
+            cached: row.get(1)?,
+            output: row.get(2)?,
+        };
+        Ok(if usage.is_empty() { None } else { Some(usage) })
     }
 
     /// Open a sub-agent's own conversation: a `chats` row keyed by the child's

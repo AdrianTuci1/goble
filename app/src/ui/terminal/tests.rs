@@ -900,6 +900,50 @@ use goble_ui::theme::FontFamily;
         );
     }
 
+    /// No runnable model: Cmd+Enter at the shell's bar opens nothing. No
+    /// conversation is created — the sidebar must not gain a row for a turn that
+    /// never happened — the pane stays on its shell and the bar keeps the draft.
+    #[test]
+    fn a_prompt_with_no_model_creates_no_conversation() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        let _ = pane_runs(&mut root, &app);
+
+        let typed = "explain the last command";
+        for ch in typed.chars() {
+            assert!(press(&mut root, &app, &ch.to_string()));
+        }
+        let cmd_enter = key(
+            "Enter",
+            ModifiersState {
+                command: true,
+                ..ModifiersState::default()
+            },
+        );
+        let mut ctx = EventContext::default();
+        assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
+
+        let s = state.borrow();
+        assert!(
+            s.pane_conversation_id(1).is_none(),
+            "no conversation was bound without a model to answer it"
+        );
+        assert_eq!(
+            s.pane_view(1),
+            BlockView::Terminal,
+            "the pane stays on its shell"
+        );
+        assert!(
+            s.show_llm_key_banner,
+            "the notice band names the missing model"
+        );
+        assert_eq!(
+            s.pane_sessions.get(&1).unwrap().draft,
+            typed,
+            "the bar keeps what was typed"
+        );
+    }
+
     /// The shell's bar is the pane's submit line for *commands*: Enter runs the
     /// draft in this pane's own PTY and leaves the pane on the shell — it does
     /// not open the harness, because the agent view has a composer of its own
@@ -911,6 +955,17 @@ use goble_ui::theme::FontFamily;
     fn the_shells_bar_runs_its_draft_as_a_command_and_cmd_enter_opens_the_agent_view() {
         let app = AppContext::default();
         let (mut root, state, _dir) = shell_root();
+
+        // A model is configured here, because Cmd+Enter below opens a *new*
+        // conversation and nothing is created while nothing could answer it
+        // (that refusal is covered in `terminal/tests::a_prompt_with_no_model`).
+        let rt = tokio::runtime::Runtime::new().expect("build runtime");
+        let _guard = rt.enter();
+        {
+            let mut s = state.borrow_mut();
+            s.settings_llm_provider = "mock".to_string();
+            s.settings_llm_api_key = "test-key".to_string();
+        }
 
         // No focus flag is set by hand: an active shell pane's own build gives
         // the bar the keyboard, because typing happens only there.

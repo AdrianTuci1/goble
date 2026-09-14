@@ -17,3 +17,4 @@ mod proposals;
 mod sessions;
 mod snapshots;
 mod transcript;
+mod usage;

@@ -273,3 +273,72 @@ fn migrate_legacy_chats_creates_threads() {
         .unwrap();
     assert_eq!(messages.len(), 2);
 }
+
+/// The settings pane's read path for Settings → Environment: a group is
+/// created by name, secrets are added and edited through one save, an entry is
+/// removed, and deleting a group takes its secrets with it. Everything is read
+/// back from the store, which is what proves the persistence rather than the
+/// service's own view of it.
+#[test]
+fn environment_groups_are_persisted_and_lifecycle_is_complete() {
+    let (_dir, state) = tmp_state();
+    assert!(state.environment_groups().unwrap().is_empty());
+
+    let group = state.create_environment_group("production").unwrap();
+    assert_eq!(group.name, "production");
+    assert!(state.create_environment_group("  ").is_err(), "a group needs a name");
+
+    state
+        .save_environment_secret(&group.id, None, "API_KEY", "sk-live")
+        .unwrap();
+    state
+        .save_environment_secret(&group.id, None, "DB_URL", "postgres://x")
+        .unwrap();
+    // The store, not the service's return value, is what the assertion reads.
+    let rows = state.store.lock().get_secret_group(&group.id).unwrap().unwrap();
+    assert_eq!(rows.entries.len(), 2);
+    assert_eq!(rows.entries[0].value, "sk-live");
+
+    // Saving the same name edits the entry in place.
+    state
+        .save_environment_secret(&group.id, Some("API_KEY"), "API_KEY", "sk-rotated")
+        .unwrap();
+    let rows = state.store.lock().get_secret_group(&group.id).unwrap().unwrap();
+    assert_eq!(rows.entries.len(), 2, "an edit does not duplicate the name");
+    assert_eq!(rows.entries[0].value, "sk-rotated");
+
+    // Saving under a new name deletes the old one.
+    state
+        .save_environment_secret(&group.id, Some("DB_URL"), "DATABASE_URL", "postgres://y")
+        .unwrap();
+    let names: Vec<String> = state
+        .store
+        .lock()
+        .get_secret_group(&group.id)
+        .unwrap()
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(names, vec!["API_KEY".to_string(), "DATABASE_URL".to_string()]);
+
+    // One entry is removable on its own.
+    let entry = state.environment_group(&group.id).unwrap().unwrap().entries[0].id.clone();
+    assert!(state.delete_environment_secret(&entry).unwrap());
+    assert_eq!(
+        state.store.lock().get_secret_group(&group.id).unwrap().unwrap().entries.len(),
+        1
+    );
+
+    // A secret cannot be added to a group that is not there.
+    assert!(state
+        .save_environment_secret("missing", None, "K", "V")
+        .is_err());
+
+    // Deleting the group removes it and everything it held.
+    assert!(state.delete_environment_group(&group.id).unwrap());
+    assert!(!state.delete_environment_group(&group.id).unwrap());
+    assert!(state.environment_group(&group.id).unwrap().is_none());
+    assert!(state.environment_groups().unwrap().is_empty());
+}

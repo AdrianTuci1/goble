@@ -146,6 +146,42 @@ impl UiState {
             .unwrap_or(false)
     }
 
+    /// The model an agent turn on `pane_id` runs: the pane's own choice, then
+    /// the window-global selection, then the configured default.
+    pub fn pane_agent_model(&self, pane_id: u64) -> String {
+        self.pane_controls
+            .get(&pane_id)
+            .map(|c| c.model.clone())
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| {
+                if self.selected_model.trim().is_empty() {
+                    self.settings_llm_model.clone()
+                } else {
+                    self.selected_model.clone()
+                }
+            })
+    }
+
+    /// Whether an agent turn on `pane_id` can run at all: an API key, a provider
+    /// and a resolved model. Every submit path asks first, so a machine with no
+    /// model never creates a conversation — and never writes a message into one
+    /// — that nothing could answer. The composer shows the notice band instead.
+    pub fn can_run_agent_turn(&self, pane_id: u64) -> bool {
+        !self.settings_llm_api_key.trim().is_empty()
+            && !self.settings_llm_provider.trim().is_empty()
+            && !self.pane_agent_model(pane_id).trim().is_empty()
+    }
+
+    /// What that notice band is headed: the missing API key, or an API key with
+    /// no provider/model behind it.
+    pub fn llm_notice_heading(&self) -> &'static str {
+        if self.settings_llm_api_key.trim().is_empty() {
+            "No API key configured"
+        } else {
+            "No model configured"
+        }
+    }
+
     /// Refresh one pane's runtime state (transcript + suspended ask) from the
     /// store conversation `conv`.
     pub(crate) fn refresh_pane(&mut self, pane_id: u64, conv: &str, desktop: &DesktopState) {
@@ -186,6 +222,17 @@ impl UiState {
         // the store read, visible even if its persisted row has not landed.
         overlay_reasoning(&mut rt.messages, &rt.reasoning);
         overlay_in_flight(&mut rt.messages, &rt.in_flight_tools);
+        // The conversation's durable token total, for a pane that has not seen a
+        // live `chat:usage` event yet (a restored conversation, or one whose
+        // pane mounted after the turn).
+        self.seed_conversation_usage(
+            conv,
+            desktop.chat_usage(conv).map(|usage| goble_ui::TokenUsage {
+                input: usage.input,
+                cached: usage.cached,
+                output: usage.output,
+            }),
+        );
         // The Local/Remote runtime decision is tracked per-conversation.
         if pane_id == self.active_pane_id {
             self.workspace_routing = desktop

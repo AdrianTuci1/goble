@@ -135,7 +135,7 @@ impl SearchInput {
             .with_padding(EdgeInsets::new(padding, v_pad, padding, v_pad))
             .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
         if self.focused {
-            container = container.with_border(app.theme.color(ColorToken::Accent).into());
+            container = container.with_border(app.theme.color(ColorToken::Focus).into());
         } else {
             container = container.with_border(app.theme.color(ColorToken::Border).into());
         }
@@ -323,6 +323,64 @@ mod tests {
                 RenderCommand::DrawIcon { name, .. } if name == "search"
             )),
             "a plain search field keeps its magnifier"
+        );
+    }
+
+    /// The sidebar field's focused state is the focus blue, ring and beam
+    /// alike; blurred, neither is drawn and the ring is the plain border.
+    #[test]
+    fn the_focused_field_paints_its_caret_and_ring_in_the_focus_blue() {
+        use crate::elements::caret::{CARET_HEIGHT, CARET_WIDTH};
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = AppContext::default();
+        let focus = app.theme.color(ColorToken::Focus);
+        let border = app.theme.color(ColorToken::Border);
+
+        let mut field: Box<dyn Element> =
+            Box::new(SearchInput::new().with_value("hi").with_focused(true));
+        let commands = render_element(&mut field, vec2f(240.0, 200.0), &app);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == focus
+                        && (rect.width() - CARET_WIDTH).abs() < 0.5
+                        && (rect.height() - CARET_HEIGHT).abs() < 0.5
+            )),
+            "the focused field draws its beam in the focus blue: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::StrokeRect { color, .. } if *color == focus
+            )),
+            "the focused field's ring is the focus blue: {commands:?}"
+        );
+
+        let mut blurred: Box<dyn Element> = Box::new(SearchInput::new().with_value("hi"));
+        let commands = render_element(&mut blurred, vec2f(240.0, 200.0), &app);
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { color, .. } if *color == focus
+            )),
+            "a blurred field draws no caret: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::StrokeRect { color, .. } if *color == border
+            )),
+            "a blurred field keeps the plain border ring: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::StrokeRect { color, .. } if *color == focus
+            )),
+            "a blurred field draws no focus ring: {commands:?}"
         );
     }
 }

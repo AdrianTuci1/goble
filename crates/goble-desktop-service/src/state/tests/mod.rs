@@ -127,3 +127,29 @@ fn tool_messages(store: &Store, chat_id: &str) -> Vec<String> {
         .map(|m| m.2)
         .collect()
 }
+
+/// The sidebar lists what the store holds: a conversation removed out of band
+/// (a database cleanup, or another process) leaves the list at once, without an
+/// app restart. The rows the app owns are untouched.
+#[test]
+fn a_chat_deleted_out_of_band_leaves_the_list() {
+    let (_dir, state) = tmp_state();
+    let kept = state.create_chat("Kept", None, None).expect("create chat");
+    let removed = state
+        .create_chat("Removed", None, None)
+        .expect("create chat");
+    assert_eq!(state.list_chats().len(), 2);
+
+    state
+        .store_clone()
+        .delete_chat(&removed)
+        .expect("delete chat out of band");
+
+    let chats = state.list_chats();
+    assert_eq!(
+        chats.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        vec![kept.as_str()],
+        "the deleted conversation is gone from the list"
+    );
+    assert!(state.store_clone().list_chats().unwrap().len() == 1);
+}

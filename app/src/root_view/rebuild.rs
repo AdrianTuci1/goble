@@ -185,8 +185,9 @@ impl RootView {
                 s.sidebar_view == SidebarView::Explorer,
             );
             // Every file view on screen reads its file here, once — when the
-            // file changed — instead of per frame in the element tree. Only the
-            // active space is mounted, so only its file views are read.
+            // file changed — instead of per frame in the element tree, and the
+            // same pass highlights the lines it just read. Only the active
+            // space is mounted, so only its file views are read.
             let pane_files = {
                 let mut wanted = Vec::new();
                 if let Some(space) = s.spaces.get(s.active_space) {
@@ -250,6 +251,15 @@ impl RootView {
                 settings_vault_unlocked: s.settings_vault_unlocked,
                 settings_overlay_open: s.settings_overlay_open,
                 settings_category: s.settings_category,
+                settings_focus: s.settings_focus,
+                settings_pane_focus: s.settings_pane_focus,
+                settings_pane_field_active: s.settings_pane_field_active,
+                settings_environment_groups: s.settings_environment_groups.clone(),
+                settings_environment_open_group: s.settings_environment_open_group.clone(),
+                settings_environment_group_draft: s.settings_environment_group_draft.clone(),
+                settings_environment_secret_name: s.settings_environment_secret_name.clone(),
+                settings_environment_secret_value: s.settings_environment_secret_value.clone(),
+                settings_environment_editing: s.settings_environment_editing.clone(),
                 settings_invert_scroll: s.settings_invert_scroll,
                 settings_scroll_speed: s.settings_scroll_speed,
                 settings_font_size: s.settings_font_size,
@@ -260,6 +270,7 @@ impl RootView {
                 theme_color_target: s.theme_color_target,
                 theme_color_drag: s.theme_color_drag.clone(),
                 show_llm_key_banner: s.show_llm_key_banner,
+                llm_notice_heading: s.llm_notice_heading(),
                 show_workspace_choice: s.show_workspace_choice,
                 workspace_routing: s.workspace_routing,
                 llm_dialog_open: s.llm_dialog_open,
@@ -299,6 +310,7 @@ impl RootView {
                 },
                 explorer_root: explorer_root.clone(),
                 explorer_rows,
+                explorer_hover: s.explorer_hover.clone(),
                 global_search_query: s.global_search_query.clone(),
                 global_search_rows: s.global_search_rows.clone(),
                 global_search_searched: s.global_search_searched,

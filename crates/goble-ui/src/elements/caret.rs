@@ -41,17 +41,17 @@ pub fn caret_beam(app: &AppContext) -> Box<dyn Element> {
 /// The insertion point, drawn in the shape the editor's mode calls for.
 ///
 /// `under` is the character the caret covers: a block caret paints it in the
-/// background colour so it stays readable inside the accent cell, and an
+/// background colour so it stays readable inside the caret cell, and an
 /// underline caret gives it a slot to sit under. Both are ignored by the bar.
 pub fn caret(app: &AppContext, shape: CaretShape, under: Option<char>) -> Box<dyn Element> {
-    let accent = Fill::Solid(app.theme.color(ColorToken::Accent));
+    let focus = Fill::Solid(app.theme.color(ColorToken::Focus));
     match shape {
         CaretShape::Bar => Container::new(
             Empty::new()
                 .with_size(vec2f(CARET_WIDTH, CARET_HEIGHT))
                 .finish(),
         )
-        .with_background(accent)
+        .with_background(focus)
         .finish(),
         CaretShape::Block => {
             // A blank cell (a space, or the end of the line) still has to be
@@ -64,10 +64,10 @@ pub fn caret(app: &AppContext, shape: CaretShape, under: Option<char>) -> Box<dy
                     .with_size(vec2f(CARET_CELL_WIDTH, CARET_HEIGHT))
                     .finish(),
             };
-            Container::new(cell).with_background(accent).finish()
+            Container::new(cell).with_background(focus).finish()
         }
         CaretShape::Underline => {
-            // The character keeps its own line box; the accent is a bar under
+            // The character keeps its own line box; the caret is a bar under
             // it, so the text does not shift when the mode changes.
             let slot: Box<dyn Element> = match under {
                 Some(ch) if !ch.is_whitespace() => Text::new(ch.to_string())
@@ -82,7 +82,7 @@ pub fn caret(app: &AppContext, shape: CaretShape, under: Option<char>) -> Box<dy
                     .with_size(vec2f(CARET_CELL_WIDTH, CARET_UNDERLINE_HEIGHT))
                     .finish(),
             )
-            .with_background(accent)
+            .with_background(focus)
             .finish();
             Flex::column()
                 .with_child(slot)

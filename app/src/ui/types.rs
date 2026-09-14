@@ -164,6 +164,11 @@ pub enum SettingsCategory {
     Mouse,
     EditorInput,
     AgentApproval,
+    /// Groups of secrets a remote session is meant to start with. It sits
+    /// directly after Agent & Approval because that page is where the user
+    /// picks Local or Remote: the secrets belong next to the choice that makes
+    /// them matter, before the model and machine-config pages.
+    Environment,
     Models,
     Advanced,
 }
@@ -174,6 +179,7 @@ impl SettingsCategory {
         SettingsCategory::Mouse,
         SettingsCategory::EditorInput,
         SettingsCategory::AgentApproval,
+        SettingsCategory::Environment,
         SettingsCategory::Models,
         SettingsCategory::Advanced,
     ];
@@ -184,9 +190,96 @@ impl SettingsCategory {
             SettingsCategory::Mouse => "Mouse",
             SettingsCategory::EditorInput => "Editor & Input",
             SettingsCategory::AgentApproval => "Agent & Approval",
+            SettingsCategory::Environment => "Environment",
             SettingsCategory::Models => "Models",
             SettingsCategory::Advanced => "Advanced",
         }
+    }
+}
+
+/// Which of the settings overlay's two regions holds the keyboard: the
+/// category rail on the left, or the content pane beside it. Opening the
+/// overlay starts in the rail.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SettingsFocus {
+    #[default]
+    Rail,
+    Pane,
+}
+
+/// One focusable control inside a settings pane, in the pane's focus order.
+///
+/// The pane's order is produced by
+/// [`crate::ui::settings::pane_controls`], which the pane itself walks while
+/// drawing its rows, so the order and the drawn rows cannot drift apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SettingsControl {
+    /// Appearance: the dark-mode switch.
+    DarkMode,
+    /// Appearance: one channel of the colour-target column.
+    ThemeChannel(super::color_picker::ColorTarget),
+    /// Appearance: the colour wheel; it is a drag surface, so it takes a focus
+    /// stop and the ring but no arrow adjustment.
+    ColorWheel,
+    /// Mouse: invert the scroll direction.
+    InvertScroll,
+    /// Mouse: the scroll-speed stepper.
+    ScrollSpeed,
+    /// Editor & Input: the font-size stepper.
+    FontSize,
+    /// Agent & Approval: the auto-approve switch of the active pane.
+    AutoApprove,
+    /// Agent & Approval: the vim-mode switch.
+    VimMode,
+    /// Agent & Approval: where the agent runs.
+    Route(WorkspaceRouting),
+    /// Models: reload the list from `~/.goble/config.toml`.
+    ReloadModels,
+    /// Environment: the new-group name field.
+    EnvironmentGroupName,
+    /// Environment: create the group the name field holds.
+    EnvironmentCreateGroup,
+    /// Environment: one group in the list; Enter opens it.
+    EnvironmentGroup(String),
+    /// Environment: delete a group and its secrets.
+    EnvironmentDeleteGroup(String),
+    /// Environment: the secret-name field.
+    EnvironmentSecretName,
+    /// Environment: the secret-value field.
+    EnvironmentSecretValue,
+    /// Environment: add the secret the fields hold, or save the edited one.
+    EnvironmentSaveSecret,
+    /// Environment: one secret of the open group; Enter loads it for editing.
+    EnvironmentSecret(String),
+    /// Environment: remove one secret.
+    EnvironmentDeleteSecret(String),
+}
+
+impl SettingsControl {
+    /// Whether the control holds a discrete value, so Left/Right change it
+    /// (a stepper, the theme-channel column, the Local/Remote choice). A
+    /// control that does not hands the keyboard back to the rail on
+    /// `ArrowLeft` instead. The colour wheel is deliberately not one of these:
+    /// it is a drag surface, and there is no keyboard value to step.
+    pub fn has_discrete_values(&self) -> bool {
+        matches!(
+            self,
+            SettingsControl::ScrollSpeed
+                | SettingsControl::FontSize
+                | SettingsControl::ThemeChannel(_)
+                | SettingsControl::Route(_)
+        )
+    }
+
+    /// Whether the control is a text field, so Enter/Space puts the caret in it
+    /// and every key the overlay does not reserve reaches it.
+    pub fn is_text_field(&self) -> bool {
+        matches!(
+            self,
+            SettingsControl::EnvironmentGroupName
+                | SettingsControl::EnvironmentSecretName
+                | SettingsControl::EnvironmentSecretValue
+        )
     }
 }
 

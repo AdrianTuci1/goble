@@ -14,8 +14,8 @@ use crate::media::MediaState;
 use crate::state::{default_pane_path, routing_to_str, UiState};
 use crate::terminal::{classify_input, InputClass};
 use crate::ui::{
-    AppTab, CronEntry, NavDir, Pane, PaneKind, SettingsCategory, SidebarView, Space, SplitDir,
-    UiActions, WorkspaceRouting,
+    AppTab, CronEntry, NavDir, Pane, PaneKind, SettingsCategory, SettingsControl, SidebarView,
+    Space, SplitDir, UiActions, WorkspaceRouting,
 };
 use crate::ui::color_picker::ColorTarget;
 
@@ -93,6 +93,27 @@ pub fn make_actions(
     let on_settings_close = Rc::clone(&state);
     let on_settings_category = Rc::clone(&state);
     let on_settings_category_step = Rc::clone(&state);
+    let on_settings_focus_move = Rc::clone(&state);
+    let on_settings_focus_into_pane = Rc::clone(&state);
+    let on_settings_focus_out_of_pane = Rc::clone(&state);
+    let on_settings_activate = Rc::clone(&state);
+    let on_settings_adjust = Rc::clone(&state);
+    let on_settings_release_field = Rc::clone(&state);
+    let on_environment_group_draft_change = Rc::clone(&state);
+    let on_environment_create_group = Rc::clone(&state);
+    let on_environment_open_group = Rc::clone(&state);
+    let on_environment_delete_group = Rc::clone(&state);
+    let on_environment_secret_name_change = Rc::clone(&state);
+    let on_environment_secret_value_change = Rc::clone(&state);
+    let on_environment_save_secret = Rc::clone(&state);
+    let on_environment_edit_secret = Rc::clone(&state);
+    let on_environment_delete_secret = Rc::clone(&state);
+    // The handle the Settings -> Environment rows persist through. One clone
+    // per closure: several callbacks need it at once.
+    let desktop_environment_create = desktop.clone();
+    let desktop_environment_delete = desktop.clone();
+    let desktop_environment_save = desktop.clone();
+    let desktop_environment_secret_delete = desktop.clone();
     let on_set_theme_target = Rc::clone(&state);
     let on_toggle_invert_scroll = Rc::clone(&state);
     let on_set_scroll_speed = Rc::clone(&state);
@@ -161,6 +182,7 @@ pub fn make_actions(
     let on_add_authorized_key = Rc::clone(&state);
     let on_remove_authorized_key = Rc::clone(&state);
     let on_config_llm_key = Rc::clone(&state);
+    let on_open_config_file = Rc::clone(&state);
     let on_choose_workspace = Rc::clone(&state);
     let on_close_llm_dialog = Rc::clone(&state);
     let on_dismiss_llm_key_banner = Rc::clone(&state);
@@ -204,6 +226,7 @@ pub fn make_actions(
     let desktop_split_right = desktop.clone();
     let desktop_split_down = desktop.clone();
     let desktop_file_view = desktop.clone();
+    let desktop_open_config = desktop.clone();
     let desktop_new_terminal = desktop.clone();
     let desktop_close_pane = desktop.clone();
     let desktop_term_cmd = desktop.clone();
@@ -227,6 +250,111 @@ pub fn make_actions(
     let media_add_space = Rc::clone(&media);
     let media_add_space_with_medium = Rc::clone(&media);
 
+    // The settings overlay runs these through `with_settings_key_activation`
+    // as well as from the controls themselves, so the behaviour that already
+    // lives in an action is created once and shared by both paths.
+    let action_toggle_dark_mode: Rc<RefCell<dyn FnMut(bool)>> =
+        Rc::new(RefCell::new(move |enabled: bool| {
+            on_toggle_dark_mode.borrow_mut().settings_dark_mode = enabled;
+            if let Some(desktop) = &desktop_dark_mode {
+                let mut config = desktop.config();
+                config.theme.dark = enabled;
+                if let Err(e) = desktop.save_config(&config) {
+                    log::warn!("save_config (theme) failed: {e}");
+                }
+            }
+        }));
+    let action_set_theme_target: Rc<RefCell<dyn FnMut(ColorTarget)>> =
+        Rc::new(RefCell::new(move |target: ColorTarget| {
+            on_set_theme_target.borrow_mut().theme_color_target = target;
+        }));
+    let action_toggle_invert_scroll: Rc<RefCell<dyn FnMut(bool)>> =
+        Rc::new(RefCell::new(move |enabled: bool| {
+            on_toggle_invert_scroll.borrow_mut().settings_invert_scroll = enabled;
+        }));
+    let action_reload_model_config: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
+        let mut state = on_reload_model_config.borrow_mut();
+        if let Some(desktop) = &desktop_reload_model {
+            if let Ok(home) = goble_core::app_home::GobleHome::locate() {
+                desktop.reload_config(&home.config_path());
+            }
+            state.models = desktop.available_models(&state.settings_llm_provider);
+        }
+    }));
+    let action_toggle_auto_approve: Rc<RefCell<dyn FnMut(u64, bool)>> =
+        Rc::new(RefCell::new(move |pane_id: u64, enabled: bool| {
+            let mut state = on_toggle_auto_approve.borrow_mut();
+            state.pane_controls_mut(pane_id).auto_approve = enabled;
+            if pane_id == state.active_pane_id {
+                state.auto_approve = enabled;
+            }
+            if let Some(desktop) = &desktop_auto {
+                if let Err(e) = desktop.set_auto_approve(enabled) {
+                    log::warn!("set_auto_approve failed: {e}");
+                }
+            }
+        }));
+    // Modal (vim) editing for the rich input, off by default. The choice is
+    // persisted; turning it off drops every pane's half-typed command and
+    // returns its editor to insert mode, so no pane is left in a mode whose
+    // keys the editor no longer reads.
+    let action_toggle_vim_mode: Rc<RefCell<dyn FnMut(bool)>> =
+        Rc::new(RefCell::new(move |enabled: bool| {
+            let mut state = on_toggle_vim_mode.borrow_mut();
+            state.vim_mode = enabled;
+            for controls in state.pane_controls.values_mut() {
+                controls.vim.borrow_mut().reset();
+            }
+            if let Some(desktop) = &desktop_vim {
+                if let Err(e) = desktop.set_vim_mode(enabled) {
+                    log::warn!("set_vim_mode failed: {e}");
+                }
+            }
+        }));
+    let action_choose_workspace: Rc<RefCell<dyn FnMut(WorkspaceRouting)>> =
+        Rc::new(RefCell::new(move |routing: WorkspaceRouting| {
+            let mut state = on_choose_workspace.borrow_mut();
+            state.workspace_routing = Some(routing);
+            state.show_workspace_choice = false;
+            state.show_llm_key_banner = false;
+            // Persist the decision on the selected conversation so it survives
+            // restarts and is tracked per-conversation.
+            if let Some(desktop) = &desktop_choose_workspace {
+                if let Some(chat_id) = state.selected_id.clone() {
+                    if let Err(e) =
+                        desktop.set_chat_workspace_routing(&chat_id, Some(routing_to_str(routing)))
+                    {
+                        log::warn!("set_chat_workspace_routing failed: {e}");
+                    }
+                }
+            }
+            // The first-run flow is complete: show a short getting-started tip
+            // over the conversation and mark the run as done so a returning
+            // run skips the onboarding overlays entirely.
+            state.show_onboarding_tip = true;
+            state.onboarding_done = true;
+            if let Some(desktop) = &desktop_choose_workspace {
+                if let Err(e) = desktop.set_onboarding_done() {
+                    log::warn!("set_onboarding_done failed: {e}");
+                }
+            }
+            // Returning to chat lets the conversation continue in the chosen
+            // workspace.
+            state.current_tab = AppTab::Chat;
+        }));
+    let action_set_scroll_speed: Rc<RefCell<dyn FnMut(i32)>> =
+        Rc::new(RefCell::new(move |speed: i32| {
+            on_set_scroll_speed.borrow_mut().settings_scroll_speed = speed.clamp(1, 100);
+        }));
+    let action_set_font_size: Rc<RefCell<dyn FnMut(f32)>> =
+        Rc::new(RefCell::new(move |size: f32| {
+            let mut state = on_set_font_size.borrow_mut();
+            state.settings_font_size = size.clamp(0.5, 2.0);
+            // Drive the real window zoom from the same shared cell the keyboard
+            // shortcut and menubar use, so the settings control reflects 1:1.
+            *ui_zoom_font.borrow_mut() = state.settings_font_size;
+        }));
+
     UiActions {
         on_search_change: Rc::new(RefCell::new(move |value: String| {
             on_search_change.borrow_mut().search_query = value;
@@ -242,6 +370,13 @@ pub fn make_actions(
         })),
         on_create_submit: Rc::new(RefCell::new(move || {
             let mut state = on_create_submit.borrow_mut();
+            // A conversation nobody can answer is not created: with no runnable
+            // model, this row would leave an empty entry in the sidebar with no
+            // way to put anything in it. The notice band names what is missing.
+            if !state.can_run_agent_turn(state.active_pane_id) {
+                state.show_llm_key_banner = true;
+                return;
+            }
             // If the active pane already sits on a fresh, message-less
             // conversation, reuse it instead of creating another: repeated
             // clicks on "New conversation" must not pile up empty duplicates.
@@ -424,7 +559,11 @@ pub fn make_actions(
             }
             let mut state = on_cmd_enter.borrow_mut();
             let pane_id = state.active_pane_id;
-            if state.pane_conversation_id(pane_id).is_none() {
+            // A turn that cannot run opens no conversation either: with no model
+            // there is nothing to answer the prompt, so the pane keeps whatever
+            // conversation it had (usually none) and the composer shows the
+            // notice band.
+            if state.can_run_agent_turn(pane_id) && state.pane_conversation_id(pane_id).is_none() {
                 state.bind_pane_new_conversation(pane_id, desktop_cmd_enter.as_deref());
             }
             send_agent_prompt(
@@ -692,34 +831,8 @@ pub fn make_actions(
                 }
             },
         )),
-        on_toggle_auto_approve: Rc::new(RefCell::new(move |pane_id: u64, enabled: bool| {
-            let mut state = on_toggle_auto_approve.borrow_mut();
-            state.pane_controls_mut(pane_id).auto_approve = enabled;
-            if pane_id == state.active_pane_id {
-                state.auto_approve = enabled;
-            }
-            if let Some(desktop) = &desktop_auto {
-                if let Err(e) = desktop.set_auto_approve(enabled) {
-                    log::warn!("set_auto_approve failed: {e}");
-                }
-            }
-        })),
-        // Modal (vim) editing for the rich input, off by default. The choice is
-        // persisted; turning it off drops every pane's half-typed command and
-        // returns its editor to insert mode, so no pane is left in a mode whose
-        // keys the editor no longer reads.
-        on_toggle_vim_mode: Rc::new(RefCell::new(move |enabled: bool| {
-            let mut state = on_toggle_vim_mode.borrow_mut();
-            state.vim_mode = enabled;
-            for controls in state.pane_controls.values_mut() {
-                controls.vim.borrow_mut().reset();
-            }
-            if let Some(desktop) = &desktop_vim {
-                if let Err(e) = desktop.set_vim_mode(enabled) {
-                    log::warn!("set_vim_mode failed: {e}");
-                }
-            }
-        })),
+        on_toggle_auto_approve: action_toggle_auto_approve.clone(),
+        on_toggle_vim_mode: action_toggle_vim_mode.clone(),
         clipboard: crate::clipboard::system_clipboard(),
         // The transcript footer's Fork: a new conversation inheriting this
         // pane's transcript, bound to the pane that asked for it.
@@ -944,50 +1057,153 @@ pub fn make_actions(
         })),
         on_settings: Rc::new(RefCell::new(move || {
             // Settings becomes a floating overlay (the old Settings tab is gone).
-            on_settings.borrow_mut().settings_overlay_open = true;
+            let mut state = on_settings.borrow_mut();
+            state.settings_overlay_open = true;
+            // Opening starts the keyboard in the rail, on the pane's first
+            // control, with no field holding the caret.
+            state.settings_focus = crate::ui::SettingsFocus::Rail;
+            state.settings_pane_focus = 0;
+            state.settings_pane_field_active = false;
         })),
         on_settings_close: Rc::new(RefCell::new(move || {
             on_settings_close.borrow_mut().settings_overlay_open = false;
         })),
         on_settings_category: Rc::new(RefCell::new(move |category: SettingsCategory| {
-            on_settings_category.borrow_mut().settings_category = category;
+            on_settings_category.borrow_mut().settings_select_category(category);
         })),
         on_settings_category_step: Rc::new(RefCell::new(move |delta: i32| {
-            let mut state = on_settings_category_step.borrow_mut();
-            let all = SettingsCategory::ALL;
-            let count = all.len() as i32;
-            if count == 0 {
-                return;
-            }
-            let pos = all.iter().position(|c| *c == state.settings_category).unwrap_or(0) as i32;
-            let next = (pos + delta).rem_euclid(count) as usize;
-            state.settings_category = all[next];
+            on_settings_category_step.borrow_mut().settings_category_step(delta);
         })),
-        on_set_theme_target: Rc::new(RefCell::new(move |target: ColorTarget| {
-            on_set_theme_target.borrow_mut().theme_color_target = target;
+        on_settings_focus_move: Rc::new(RefCell::new(move |delta: i32| {
+            on_settings_focus_move.borrow_mut().settings_focus_step(delta);
         })),
-        on_toggle_invert_scroll: Rc::new(RefCell::new(move |enabled: bool| {
-            on_toggle_invert_scroll.borrow_mut().settings_invert_scroll = enabled;
+        on_settings_focus_into_pane: Rc::new(RefCell::new(move || {
+            on_settings_focus_into_pane.borrow_mut().settings_focus_into_pane();
         })),
-        on_set_scroll_speed: Rc::new(RefCell::new(move |speed: i32| {
-            on_set_scroll_speed.borrow_mut().settings_scroll_speed = speed.clamp(1, 100);
+        on_settings_focus_out_of_pane: Rc::new(RefCell::new(move || {
+            on_settings_focus_out_of_pane.borrow_mut().settings_focus_out_of_pane();
         })),
-        on_set_font_size: Rc::new(RefCell::new(move |size: f32| {
-            let mut state = on_set_font_size.borrow_mut();
-            state.settings_font_size = size.clamp(0.5, 2.0);
-            // Drive the real window zoom from the same shared cell the keyboard
-            // shortcut and menubar use, so the settings control reflects 1:1.
-            *ui_zoom_font.borrow_mut() = state.settings_font_size;
-        })),
-        on_reload_model_config: Rc::new(RefCell::new(move || {
-            let mut state = on_reload_model_config.borrow_mut();
-            if let Some(desktop) = &desktop_reload_model {
-                if let Ok(home) = goble_core::app_home::GobleHome::locate() {
-                    desktop.reload_config(&home.config_path());
+        on_settings_activate: Rc::new(RefCell::new({
+            let activate_state = Rc::clone(&on_settings_activate);
+            let on_dark = action_toggle_dark_mode.clone();
+            let on_invert = action_toggle_invert_scroll.clone();
+            let on_theme = action_set_theme_target.clone();
+            let on_auto = action_toggle_auto_approve.clone();
+            let on_vim = action_toggle_vim_mode.clone();
+            let on_route = action_choose_workspace.clone();
+            let on_reload = action_reload_model_config.clone();
+            let desktop_activate = desktop.clone();
+            move || {
+                let control = activate_state.borrow().settings_focused_control();
+                match control {
+                    // The controls whose behaviour is already an action run
+                    // through it, so a click and the Enter key share one path.
+                    Some(SettingsControl::DarkMode) => {
+                        let next = !activate_state.borrow().settings_dark_mode;
+                        (on_dark.borrow_mut())(next);
+                    }
+                    Some(SettingsControl::InvertScroll) => {
+                        let next = !activate_state.borrow().settings_invert_scroll;
+                        (on_invert.borrow_mut())(next);
+                    }
+                    Some(SettingsControl::ThemeChannel(target)) => {
+                        (on_theme.borrow_mut())(target);
+                    }
+                    Some(SettingsControl::AutoApprove) => {
+                        let (pane, next) = {
+                            let state = activate_state.borrow();
+                            (state.active_pane_id, !state.auto_approve)
+                        };
+                        (on_auto.borrow_mut())(pane, next);
+                    }
+                    Some(SettingsControl::VimMode) => {
+                        let next = !activate_state.borrow().vim_mode;
+                        (on_vim.borrow_mut())(next);
+                    }
+                    Some(SettingsControl::Route(routing)) => (on_route.borrow_mut())(routing),
+                    Some(SettingsControl::ReloadModels) => (on_reload.borrow_mut())(),
+                    // Everything else belongs to the state: the environment
+                    // rows, and a text field taking the caret.
+                    _ => activate_state
+                        .borrow_mut()
+                        .settings_activate_control(desktop_activate.as_deref()),
                 }
-                state.models = desktop.available_models(&state.settings_llm_provider);
             }
         })),
+        on_settings_adjust: Rc::new(RefCell::new({
+            let adjust_state = Rc::clone(&on_settings_adjust);
+            let on_speed = action_set_scroll_speed.clone();
+            let on_font = action_set_font_size.clone();
+            move |delta: i32| {
+                // Read the focused control into a local first: the arms below
+                // run the actions that own the value, and those borrow the same
+                // state, so the match must not hold a borrow of its own.
+                let control = adjust_state.borrow().settings_focused_control();
+                match control {
+                    // The steppers run through the actions that already own
+                    // their bounds and, for the font, the shared zoom cell.
+                    Some(SettingsControl::ScrollSpeed) => {
+                        let next = adjust_state.borrow().settings_scroll_speed + delta;
+                        (on_speed.borrow_mut())(next);
+                    }
+                    Some(SettingsControl::FontSize) => {
+                        let next =
+                            adjust_state.borrow().settings_font_size + delta as f32 * 0.1;
+                        (on_font.borrow_mut())(next);
+                    }
+                    _ => adjust_state.borrow_mut().settings_adjust_control(delta),
+                }
+            }
+        })),
+        on_settings_release_field: Rc::new(RefCell::new(move || {
+            on_settings_release_field.borrow_mut().settings_release_field();
+        })),
+        on_environment_group_draft_change: Rc::new(RefCell::new(move |value: String| {
+            on_environment_group_draft_change
+                .borrow_mut()
+                .settings_environment_group_draft = value;
+        })),
+        on_environment_create_group: Rc::new(RefCell::new(move || {
+            on_environment_create_group
+                .borrow_mut()
+                .environment_create_group(desktop_environment_create.as_deref());
+        })),
+        on_environment_open_group: Rc::new(RefCell::new(move |id: String| {
+            on_environment_open_group.borrow_mut().environment_open_group(&id);
+        })),
+        on_environment_delete_group: Rc::new(RefCell::new(move |id: String| {
+            on_environment_delete_group
+                .borrow_mut()
+                .environment_delete_group(&id, desktop_environment_delete.as_deref());
+        })),
+        on_environment_secret_name_change: Rc::new(RefCell::new(move |value: String| {
+            on_environment_secret_name_change
+                .borrow_mut()
+                .settings_environment_secret_name = value;
+        })),
+        on_environment_secret_value_change: Rc::new(RefCell::new(move |value: String| {
+            on_environment_secret_value_change
+                .borrow_mut()
+                .settings_environment_secret_value = value;
+        })),
+        on_environment_save_secret: Rc::new(RefCell::new(move || {
+            on_environment_save_secret
+                .borrow_mut()
+                .environment_save_secret(desktop_environment_save.as_deref());
+        })),
+        on_environment_edit_secret: Rc::new(RefCell::new(move |id: String| {
+            on_environment_edit_secret.borrow_mut().environment_edit_secret(&id);
+        })),
+        on_environment_delete_secret: Rc::new(RefCell::new(move |id: String| {
+            on_environment_delete_secret
+                .borrow_mut()
+                .environment_delete_secret(&id, desktop_environment_secret_delete.as_deref());
+        })),
+        on_set_theme_target: action_set_theme_target.clone(),
+        on_toggle_invert_scroll: action_toggle_invert_scroll.clone(),
+        on_set_scroll_speed: action_set_scroll_speed.clone(),
+        on_set_font_size: action_set_font_size.clone(),
+        on_reload_model_config: action_reload_model_config.clone(),
         on_projects: Rc::new(RefCell::new(move || {
             on_projects.borrow_mut().current_tab = AppTab::Projects;
         })),
@@ -1231,7 +1447,10 @@ pub fn make_actions(
                 .get(&pane_id)
                 .map(|s| s.path.clone())
                 .unwrap_or_default();
-            if !state.pane_owns_conversation(pane_id) {
+            // A turn that cannot run opens no conversation either: no model means
+            // nothing to answer the prompt, so the composer shows the notice band
+            // and the sidebar gains no row for a turn that never happened.
+            if state.can_run_agent_turn(pane_id) && !state.pane_owns_conversation(pane_id) {
                 state.bind_pane_new_conversation(pane_id, desktop_term_cmd.as_deref());
             }
             // Re-seat the pane's path (a fresh pane session may not have one).
@@ -1526,16 +1745,7 @@ pub fn make_actions(
         on_settings_navigate: Rc::new(RefCell::new(move |page: SettingsPage| {
             on_settings_navigate.borrow_mut().settings_page = page;
         })),
-        on_toggle_dark_mode: Rc::new(RefCell::new(move |enabled: bool| {
-            on_toggle_dark_mode.borrow_mut().settings_dark_mode = enabled;
-            if let Some(desktop) = &desktop_dark_mode {
-                let mut config = desktop.config();
-                config.theme.dark = enabled;
-                if let Err(e) = desktop.save_config(&config) {
-                    log::warn!("save_config (theme) failed: {e}");
-                }
-            }
-        })),
+        on_toggle_dark_mode: action_toggle_dark_mode.clone(),
         // Set a custom theme color (as `#rrggbb`) and persist it in config so
         // the live scheme matches what the color wheel picked.
         on_set_theme_primary: Rc::new(RefCell::new(move |hex: String| {
@@ -1749,39 +1959,27 @@ pub fn make_actions(
             state.prime_llm_form();
             state.llm_dialog_open = true;
         })),
+        on_open_config_file: Rc::new(RefCell::new(move || {
+            // The API keys and the models live in the home's `config.toml`, so
+            // the notice band opens that file in a pane beside the pane that
+            // noticed the missing key. The home is the one the app itself
+            // reads: `GobleHome::locate()`, the same path `DesktopState` loads
+            // at startup and the model dialog saves to.
+            let Ok(home) = goble_core::app_home::GobleHome::locate() else {
+                log::warn!("cannot locate the Goble home to open config.toml");
+                return;
+            };
+            let mut state = on_open_config_file.borrow_mut();
+            open_file_pane(
+                &mut state,
+                home.config_path().to_string_lossy().to_string(),
+                desktop_open_config.as_ref(),
+            );
+        })),
         on_close_llm_dialog: Rc::new(RefCell::new(move || {
             on_close_llm_dialog.borrow_mut().llm_dialog_open = false;
         })),
-        on_choose_workspace: Rc::new(RefCell::new(move |routing: WorkspaceRouting| {
-            let mut state = on_choose_workspace.borrow_mut();
-            state.workspace_routing = Some(routing);
-            state.show_workspace_choice = false;
-            state.show_llm_key_banner = false;
-            // Persist the decision on the selected conversation so it survives
-            // restarts and is tracked per-conversation.
-            if let Some(desktop) = &desktop_choose_workspace {
-                if let Some(chat_id) = state.selected_id.clone() {
-                    if let Err(e) =
-                        desktop.set_chat_workspace_routing(&chat_id, Some(routing_to_str(routing)))
-                    {
-                        log::warn!("set_chat_workspace_routing failed: {e}");
-                    }
-                }
-            }
-            // The first-run flow is complete: show a short getting-started tip
-            // over the conversation and mark the run as done so a returning
-            // run skips the onboarding overlays entirely.
-            state.show_onboarding_tip = true;
-            state.onboarding_done = true;
-            if let Some(desktop) = &desktop_choose_workspace {
-                if let Err(e) = desktop.set_onboarding_done() {
-                    log::warn!("set_onboarding_done failed: {e}");
-                }
-            }
-            // Returning to chat lets the conversation continue in the chosen
-            // workspace.
-            state.current_tab = AppTab::Chat;
-        })),
+        on_choose_workspace: action_choose_workspace.clone(),
         // First-run: dismiss the model-key banner without configuring a key.
         // This is not a dead end: it marks onboarding complete so the flow
         // moves on, and the user can still configure a key later via settings.

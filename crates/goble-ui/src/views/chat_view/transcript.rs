@@ -4,9 +4,10 @@ use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind};
 use crate::elements::{
     filter_option_labels, slash_menu_open, AppContext, AskUserCard, Axis, Button, ButtonVariant,
     ChatComposer, ChatMessageBubble, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    Empty, Expanded, Fill, Flex, FrameView, Icon, MainAxisAlignment, MainAxisSize, Padding,
-    PopupMenu, PopupMenuItem, PopupMenuPosition, QuickActionButton, Scrollable, ShortcutHints,
-    SlashMenu, Stack, Text, Tooltip, TooltipPosition, TopbarButton, TurnStatusFooter,
+    Empty, Expanded, Fill, Flex, FrameView, HoverRow, Icon, MainAxisAlignment, MainAxisSize,
+    Padding, PopupMenu, PopupMenuItem, PopupMenuPosition, QuickActionButton, Scrollable,
+    ShortcutHints, SlashMenu, Stack, Text, Tooltip, TooltipPosition, TopbarButton,
+    TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
@@ -89,10 +90,13 @@ impl ChatView {
     /// The conversation's own footer, at the end of its transcript: fork it
     /// into a new one, and the tokens it has spent behind a disclosure.
     ///
-    /// The counts are the provider's own, summed over the conversation's model
-    /// calls (input, the cached part when the provider reports one, and
-    /// output). Nothing here is a price. A conversation with no reported usage
-    /// draws no usage affordance at all, rather than a zero.
+    /// Both are hover affordances — no fill at rest, a band under the pointer,
+    /// the shape the reference tool's response footer gives them — rather than
+    /// the raised controls a button draws. The counts are the provider's own,
+    /// summed over the conversation's model calls (input, the cached part when
+    /// the provider reports one, and output). Nothing here is a price. A
+    /// conversation whose provider has reported nothing yet says so rather than
+    /// drawing a zero, and its disclosure does not open.
     fn build_conversation_footer(&self, app: &AppContext) -> Option<Box<dyn Element>> {
         if self.messages.is_empty() {
             return None;
@@ -103,13 +107,15 @@ impl ChatView {
             return None;
         }
         let sm = app.theme.spacing_px(SpacingToken::Sm);
+        let xs = app.theme.spacing_px(SpacingToken::Xs);
+        let padding = EdgeInsets::new(sm, xs, sm, xs);
         let mut row = Flex::row()
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(sm);
 
         if let Some(cb) = self.on_fork.clone() {
-            let fork = Button::new(
+            let fork = HoverRow::new(
                 Flex::row()
                     .with_spacing(6.0)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -127,7 +133,7 @@ impl ChatView {
                     )
                     .finish(),
             )
-            .with_variant(ButtonVariant::Ghost)
+            .with_padding(padding)
             .with_on_click(move || (cb.borrow_mut())())
             .finish();
             row = row.with_child(
@@ -141,7 +147,7 @@ impl ChatView {
             let open = self.usage_open.clone();
             let is_open = *open.borrow();
             let label = format!("{} tokens", group_digits(self.usage.total()));
-            let usage = Button::new(
+            let usage = HoverRow::new(
                 Flex::row()
                     .with_spacing(6.0)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -165,7 +171,7 @@ impl ChatView {
                     )
                     .finish(),
             )
-            .with_variant(ButtonVariant::Ghost)
+            .with_padding(padding)
             .with_on_click(move || {
                 let mut open = open.borrow_mut();
                 *open = !*open;
@@ -175,6 +181,39 @@ impl ChatView {
                 Tooltip::new(usage, "Show this conversation's token usage")
                     .with_position(TooltipPosition::Above)
                     .finish(),
+            );
+        } else {
+            // Nothing reported yet: the slot stays, saying so, so the footer of
+            // a conversation that has run turns reads the same as one that has
+            // not — with no number invented to fill it.
+            let usage = HoverRow::new(
+                Flex::row()
+                    .with_spacing(6.0)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        Icon::new("activity")
+                            .with_size(13.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
+                    .with_child(
+                        Text::new("no usage yet")
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_size(11.0)
+                            .finish(),
+                    )
+                    .finish(),
+            )
+            .with_padding(padding)
+            .finish();
+            row = row.with_child(
+                Tooltip::new(
+                    usage,
+                    "The provider reports the token counts on each model call; \
+                     none have been reported for this conversation yet",
+                )
+                .with_position(TooltipPosition::Above)
+                .finish(),
             );
         }
 

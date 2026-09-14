@@ -799,13 +799,92 @@ fn a_composerless_view_shows_no_input_line_and_hands_escape_to_its_handler() {
 }
 
 /// The transcript's closing footer: a Fork affordance, and the conversation's
-/// token usage. The counts are the provider's own; with none reported the usage
-/// affordance is not drawn at all (rather than a zero), while Fork stays.
+/// token usage beside it. Neither is a physical button — the footer draws no
+/// band at rest, and the pointer over one draws its band — and the counts are
+/// the provider's own: with none reported the slot says so rather than drawing
+/// a zero.
 #[test]
 fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
-    use crate::render::RenderCommand;
-    use crate::test_util::render_element;
+    use crate::elements::interactive::contains;
+    use crate::elements::{LayoutContext, PaintContext, SizeConstraint};
+    use crate::geometry::RectF;
+    use crate::render::{RenderCommand, Renderer};
     use goble_core::llm::TokenUsage;
+
+    /// Lay the view out and paint it, optionally with the pointer at `cursor`,
+    /// returning the frame's commands.
+    fn paint_with(
+        view: &mut Box<dyn crate::elements::Element>,
+        cursor: Option<Vector2F>,
+        app: &AppContext,
+    ) -> Vec<RenderCommand> {
+        let size = vec2f(600.0, 800.0);
+        let _ = view.layout(
+            SizeConstraint::loose(size),
+            &mut LayoutContext::default(),
+            app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        if let Some(position) = cursor {
+            ctx.cursor_inside = true;
+            ctx.cursor_position = position;
+        }
+        view.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        ctx.renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default()
+    }
+
+    fn fills(commands: &[RenderCommand]) -> Vec<RectF> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, .. } => Some(*rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn texts(commands: &[RenderCommand]) -> Vec<String> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn text_origin(commands: &[RenderCommand], needle: &str) -> Vector2F {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == needle => Some(*origin),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{needle:?} is drawn: {:?}", texts(commands)))
+    }
+
+    /// The fills that could be a row's band: the frame's own background and the
+    /// 1px rules are not candidates for a control's hover band.
+    fn bands(commands: &[RenderCommand]) -> Vec<RectF> {
+        fills(commands)
+            .into_iter()
+            .filter(|rect| rect.height() <= 40.0)
+            .collect()
+    }
+
+    /// The band the pointer at `point` sits in: the frame draws a row-height
+    /// fill under it that the rest frame did not, and no band at all when the
+    /// pointer is over a control with no resting chrome.
+    fn band_at(rest: &[RenderCommand], hovered: &[RenderCommand], point: Vector2F) -> RectF {
+        let rest = bands(rest);
+        let band = bands(hovered)
+            .into_iter()
+            .find(|candidate| contains(*candidate, point) && !rest.contains(candidate));
+        band.unwrap_or_else(|| panic!("the pointer at {point:?} is inside a hovered band"))
+    }
 
     let app = AppContext::default();
     let messages = vec![ChatMessage::new(
@@ -825,61 +904,88 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
         .with_usage_open(open.clone())
         .with_on_fork(move || *forked_clone.borrow_mut() += 1)
         .finish();
-    let commands = render_element(&mut view, vec2f(600.0, 800.0), &app);
-    let texts: Vec<String> = commands
-        .iter()
-        .filter_map(|c| match c {
-            RenderCommand::DrawText { text, .. } => Some(text.clone()),
-            _ => None,
-        })
-        .collect();
-    assert!(texts.iter().any(|t| t == "Fork"), "no fork affordance: {texts:?}");
+
+    // At rest: both affordances are there, and neither is a filled control.
+    let rest = paint_with(&mut view, None, &app);
+    let drawn = texts(&rest);
+    assert!(drawn.iter().any(|t| t == "Fork"), "no fork affordance: {drawn:?}");
     assert!(
-        texts.iter().any(|t| t == "1,290 tokens"),
-        "the total is input + output, grouped: {texts:?}"
+        drawn.iter().any(|t| t == "1,290 tokens"),
+        "the total is input + output, grouped: {drawn:?}"
     );
     assert!(
-        !texts.iter().any(|t| t.contains("cached")),
-        "the detail stays collapsed until asked for: {texts:?}"
+        !drawn.iter().any(|t| t.contains("cached")),
+        "the detail stays collapsed until asked for: {drawn:?}"
+    );
+    let fork_origin = text_origin(&rest, "Fork");
+    let usage_origin = text_origin(&rest, "1,290 tokens");
+    let probe = |origin: Vector2F| origin + vec2f(1.0, 1.0);
+    let resting = bands(&rest);
+    assert!(
+        !resting.iter().any(|band| contains(*band, probe(fork_origin))),
+        "a resting fork draws no band: {resting:?}"
+    );
+    assert!(
+        !resting.iter().any(|band| contains(*band, probe(usage_origin))),
+        "a resting usage readout draws no band: {resting:?}"
+    );
+
+    // The pointer over one draws that one's band, and the other keeps none.
+    let over_fork = paint_with(&mut view, Some(probe(fork_origin)), &app);
+    let fork_band = band_at(&rest, &over_fork, probe(fork_origin));
+    assert!(
+        !contains(fork_band, probe(usage_origin)),
+        "the band belongs to the fork row: {fork_band:?}"
+    );
+    assert_eq!(
+        bands(&over_fork)
+            .into_iter()
+            .find(|band| contains(*band, probe(usage_origin))),
+        None,
+        "the fork's band does not reach the usage readout"
+    );
+
+    let over_usage = paint_with(&mut view, Some(probe(usage_origin)), &app);
+    let usage_band = band_at(&rest, &over_usage, probe(usage_origin));
+    assert!(
+        !contains(usage_band, probe(fork_origin)),
+        "the band belongs to the usage row: {usage_band:?}"
     );
 
     // Expanding the disclosure reveals the breakdown: the cached share rides
     // inside the input figure, so the line never reads as a sum.
     *open.borrow_mut() = true;
-    let commands = render_element(&mut view, vec2f(600.0, 800.0), &app);
-    let texts: Vec<String> = commands
-        .iter()
-        .filter_map(|c| match c {
-            RenderCommand::DrawText { text, .. } => Some(text.clone()),
-            _ => None,
-        })
-        .collect();
-    let detail = texts
+    let expanded = paint_with(&mut view, None, &app);
+    let drawn = texts(&expanded);
+    let detail = drawn
         .iter()
         .find(|t| t.contains("cached"))
-        .unwrap_or_else(|| panic!("no usage detail: {texts:?}"));
+        .unwrap_or_else(|| panic!("no usage detail: {drawn:?}"));
     assert!(detail.contains("Input 1,234 (800 cached)"), "{detail}");
     assert!(detail.contains("Output 56"), "{detail}");
     assert!(detail.contains("Total 1,290"), "{detail}");
 
-    // A conversation with no reported usage draws no usage line, only Fork.
+    // A conversation whose provider has reported nothing keeps the slot and
+    // says so, with no number invented to fill it, and no disclosure to open.
     let mut bare = ChatView::new()
         .with_messages(messages)
+        .with_usage_open(std::rc::Rc::new(std::cell::RefCell::new(false)))
         .with_on_fork(|| {})
         .finish();
-    let commands = render_element(&mut bare, vec2f(600.0, 800.0), &app);
-    let texts: Vec<String> = commands
-        .iter()
-        .filter_map(|c| match c {
-            RenderCommand::DrawText { text, .. } => Some(text.clone()),
-            _ => None,
-        })
-        .collect();
-    assert!(texts.iter().any(|t| t == "Fork"), "{texts:?}");
+    let rest = paint_with(&mut bare, None, &app);
+    let drawn = texts(&rest);
+    assert!(drawn.iter().any(|t| t == "Fork"), "{drawn:?}");
     assert!(
-        !texts.iter().any(|t| t.contains("tokens")),
-        "no fabricated zero: {texts:?}"
+        drawn.iter().any(|t| t == "no usage yet"),
+        "the usage slot states that nothing was reported: {drawn:?}"
     );
+    assert!(
+        !drawn.iter().any(|t| t.contains("tokens")),
+        "no fabricated zero: {drawn:?}"
+    );
+    let usage_origin = text_origin(&rest, "no usage yet");
+    let over_usage = paint_with(&mut bare, Some(probe(usage_origin)), &app);
+    let _ = band_at(&rest, &over_usage, probe(usage_origin));
 }
 
 /// The instructions the caller hands the view are drawn over the input's

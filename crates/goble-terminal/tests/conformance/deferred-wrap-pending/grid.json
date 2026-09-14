@@ -1,0 +1,7 @@
+{
+  "rows": ["abcd", ""],
+  "cursor": { "line": 0, "column": 3, "visible": true, "shape": "block", "wrap_pending": true },
+  "cells": [
+    { "row": 0, "column": 3, "wrapline": false }
+  ]
+}

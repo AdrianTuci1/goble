@@ -22,6 +22,8 @@ pub struct HoverButton {
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     state: InteractiveState,
     padding: EdgeInsets,
+    /// The hover highlight's corner radius. `None` uses the theme's radius.
+    corner_radius: Option<f32>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -35,6 +37,7 @@ impl HoverButton {
             on_click: None,
             state: InteractiveState::default(),
             padding: EdgeInsets::uniform(0.0),
+            corner_radius: None,
             root: None,
             size: None,
             origin: None,
@@ -43,6 +46,13 @@ impl HoverButton {
 
     pub fn with_padding(mut self, padding: EdgeInsets) -> Self {
         self.padding = padding;
+        self
+    }
+
+    /// Set the hover highlight's corner radius instead of the theme's. A row in
+    /// a flat surface passes `0.0` so the highlight is a square band.
+    pub fn with_corner_radius(mut self, radius: f32) -> Self {
+        self.corner_radius = Some(radius);
         self
     }
 
@@ -63,7 +73,7 @@ impl HoverButton {
         self.root = Some(
             Container::new(self.child.take().expect("child already consumed"))
                 .with_padding(self.padding)
-                .with_corner_radius(app.theme.radius_px())
+                .with_corner_radius(self.corner_radius.unwrap_or_else(|| app.theme.radius_px()))
                 .with_background(bg)
                 .finish(),
         );

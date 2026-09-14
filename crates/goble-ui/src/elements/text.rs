@@ -16,6 +16,7 @@ pub fn measure_text(text: &str, font_size: f32, line_height: f32, max_width: f32
         max_width,
         FontWeight::Regular,
         FontFamily::System,
+        false,
     )
 }
 
@@ -120,6 +121,7 @@ impl Element for Text {
             constraint.max.x,
             self.weight,
             self.font_family,
+            false,
         );
         if let Some(max_lines) = self.max_lines {
             let max_height = self.font_size * self.line_height * max_lines as f32;
@@ -149,6 +151,7 @@ impl Element for Text {
                     self.line_height,
                     self.weight,
                     self.font_family,
+                    false,
                 );
             }
         }

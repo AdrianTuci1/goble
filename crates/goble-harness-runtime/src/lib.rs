@@ -16,7 +16,9 @@ use std::sync::{Arc, RwLock};
 
 use futures::Stream;
 use goble_harness_protocol::HarnessServerEvent;
-use goble_harness_types::{HarnessCapabilities, HarnessId, HarnessSnapshot, HarnessTurn, SessionId};
+use goble_harness_types::{
+    CommandDecision, HarnessCapabilities, HarnessId, HarnessSnapshot, HarnessTurn, SessionId,
+};
 
 /// A stream of events a harness produces for one run.
 pub struct HarnessRun {
@@ -49,6 +51,18 @@ pub trait HarnessRuntime: Send + Sync {
         credential: Option<(String, String)>,
     ) -> Option<HarnessRun> {
         let _ = (session_id, response, credential);
+        None
+    }
+
+    /// Resume a turn that suspended on a command proposal, executing the user's
+    /// [`CommandDecision`]. Returns `None` if the harness does not support
+    /// command approval.
+    fn resume_command(
+        &self,
+        session_id: &SessionId,
+        decision: CommandDecision,
+    ) -> Option<HarnessRun> {
+        let _ = (session_id, decision);
         None
     }
 

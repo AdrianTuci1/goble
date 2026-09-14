@@ -69,18 +69,16 @@ fn first_run_send_message_surfaces_key_banner() {
         assert!(s.show_llm_key_banner, "no key -> banner should surface");
         assert!(!s.show_workspace_choice);
         assert_eq!(s.workspace_routing, None);
-        assert_eq!(s.chat_messages.len(), 2);
-        assert_eq!(s.chat_messages[0].role, goble_ui::ChatRole::User);
-        assert_eq!(s.chat_messages[1].role, goble_ui::ChatRole::Assistant);
+        // Nothing could answer the prompt, so nothing was written: neither the
+        // user's line nor a reply. The notice band is the whole of it.
+        assert!(s.chat_messages.is_empty(), "no transcript was produced");
+        assert_eq!(s.composer_draft, "Hello", "the typed line is kept");
     }
 
     let messages = desktop.list_chat_messages(&chat_id).expect("list messages");
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0].role, "user");
-    assert_eq!(messages[1].role, "assistant");
     assert!(
-        messages[1].content.contains("No model is configured"),
-        "assistant reply should explain the missing model"
+        messages.is_empty(),
+        "an unanswerable prompt is never persisted: {messages:?}"
     );
 }
 
@@ -202,9 +200,8 @@ fn choosing_local_sets_routing_and_continues_conversation() {
         assert!(!s.show_workspace_choice, "choice clears after deciding");
         assert!(!s.show_llm_key_banner, "banner stays cleared");
         assert_eq!(s.current_tab, AppTab::Chat, "returns to the conversation");
-        // The no-key send kept the user's message plus an honest assistant reply.
-        assert_eq!(s.chat_messages.len(), 2);
-        assert_eq!(s.chat_messages[1].role, goble_ui::ChatRole::Assistant);
+        // The no-key send wrote nothing, so the conversation is still empty.
+        assert!(s.chat_messages.is_empty());
     }
 }
 
@@ -238,7 +235,7 @@ fn workspace_routing_persists_and_reloads_per_conversation() {
         Some(chat_id.as_str())
     );
 
-    // No key yet: the first send surfaces the key banner (and a helpful reply).
+    // No key yet: the first send surfaces the key banner, and writes nothing.
     (actions.on_send_message.borrow_mut())("Hi".to_string());
     assert!(state.borrow().show_llm_key_banner);
 

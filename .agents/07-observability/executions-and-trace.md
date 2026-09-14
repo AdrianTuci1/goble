@@ -41,8 +41,18 @@ sequenceDiagram
 
 `root_view.rs` only drains `chats:updated`, `workflows:updated`, `agents:updated`, `vault:updated`. It does **not** subscribe to `executions:updated` / `agent:*`, and `app/src/ui` has no executions view. So executions are computed but invisible.
 
+The drain half is closed (item C1 of `06-renderer/agent-tui.md` §11, see the first task below). The view half is open, and its first form has landed as the **tasks & workflows overlay**.
+
+## The tasks & workflows overlay (2026-09-13)
+
+`app/src/ui/task_workflow.rs` builds one right-anchored `Sheet` over the workspace: a header (`Tasks & workflows` plus the three counts and a ✕), then a scrollable body with three sections — **Tasks** (the durable ones), **Executions** (the daemon's ledger) and **Workflows** (the registered ones) — each with its own count and an honest empty line when it has no records. The rows are the observability pages' own builders (`app/src/ui/harness.rs`: `build_task_row`, `build_execution_row`, `build_workflow_row`, now `pub(crate)`), so a record is drawn once and the pages and the panel cannot drift apart. Those rows are square `SurfaceRaised` bands (`harness::card` lost its corner radius), matching the transcript and the sidebar.
+
+It is an overlay, not a page: `AppTab` is untouched, the pane tree stays mounted underneath, and it opens with **Cmd/Ctrl+Shift+W** (also a palette entry, "Tasks & workflows") and closes with the same chord, Escape, its ✕, or a click on the backdrop. State: `UiState::task_workflow_open` with `UiActions::{on_toggle_task_workflow,on_close_task_workflow}`.
+
+What it is **not**: the deleted "Work in flight" panel (S7 of `04-agent-runtime/subagents.md`). That one listed in-flight commands and sub-agents with a kill per row and was removed on the user's instruction; this one lists durable records — tasks, executions, workflows — and carries no kill.
+
 ## Tasks
 
 - [ ] Drain `executions:updated`/`agent:*` events into app state.
-- [ ] Add an executions list + per-execution trace view in the renderer.
+- [ ] Add an executions list + per-execution trace view in the renderer — the **list** now ships in the tasks & workflows overlay above; the per-execution trace view is still open.
 - [ ] Make local harness runs feed the same trace path as remote.

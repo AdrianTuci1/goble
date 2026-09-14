@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use goble_core::harness::PaneSession;
 use goble_desktop_service::DesktopState;
 
 use crate::daemon::DaemonModel;
@@ -20,6 +21,11 @@ use crate::ui::WorkspaceRouting;
 /// on the embedded daemon the desktop service owns; a `remote` routing either
 /// drives an attached remote client or errors with a clear message — it never
 /// silently degrades to a local run.
+///
+/// `pane_session` is the pane's own shell when it has a terminal: the agent's
+/// shell tool then runs there, in the user's own shell, instead of the sandbox.
+/// A pane with no terminal passes `None` and keeps the sandboxed runner.
+#[allow(clippy::too_many_arguments)]
 pub fn run_turn(
     desktop: &Arc<DesktopState>,
     chat_id: &str,
@@ -32,20 +38,23 @@ pub fn run_turn(
     session_id: &str,
     cwd: &str,
     harness_id: Option<&str>,
+    pane_session: Option<Arc<dyn PaneSession>>,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     // Run the harness in the pane's own working directory when one is set,
     // else fall back to the harness default (process cwd).
     let workspace_dir = if cwd.is_empty() { None } else { Some(cwd) };
-    DaemonModel::new(Arc::clone(desktop)).run_turn(
-        chat_id,
-        prompt,
-        provider,
-        model,
-        routing,
-        medium_id,
-        project_id,
-        session_id,
-        workspace_dir,
-        harness_id,
-    )
+    DaemonModel::new(Arc::clone(desktop))
+        .with_pane_session(pane_session)
+        .run_turn(
+            chat_id,
+            prompt,
+            provider,
+            model,
+            routing,
+            medium_id,
+            project_id,
+            session_id,
+            workspace_dir,
+            harness_id,
+        )
 }

@@ -1,0 +1,8 @@
+{
+  "rows": ["hello world", "", ""],
+  "cursor": { "line": 0, "column": 11, "visible": true, "shape": "block", "wrap_pending": false },
+  "cells": [
+    { "row": 0, "column": 0, "fg": "default", "bg": "default" },
+    { "row": 0, "column": 10, "fg": "default", "bold": false }
+  ]
+}

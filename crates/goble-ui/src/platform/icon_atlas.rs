@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use crate::platform::text_atlas::AtlasEntry;
 
-const ATLAS_SIZE: u32 = 512;
+/// The atlas is a square grid of 64px cells. 1024 holds 16x16 cells, enough for
+/// the general icons plus the per-language file icons the project explorer
+/// draws.
+const ATLAS_SIZE: u32 = 1024;
 const CELL_SIZE: u32 = 64;
 const COLUMNS: u32 = ATLAS_SIZE / CELL_SIZE;
 
@@ -67,6 +70,22 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("git-branch", "git-branch.svg"),
     icon_bytes!("stop", "stop.svg"),
     icon_bytes!("arrow-up", "arrow-up.svg"),
+    icon_bytes!("arrow-left", "arrow-left.svg"),
+    // The keyboard keys the instruction strips draw as caps. The bundled text
+    // faces carry none of the modifier symbols (`⌘ ⇧ ⌥ ⌃ ↵ ⌫`), so a cap that
+    // drew its character would paint the font's `.notdef` box instead.
+    icon_bytes!("key-command", "key-command.svg"),
+    icon_bytes!("key-shift", "key-shift.svg"),
+    icon_bytes!("key-option", "key-option.svg"),
+    icon_bytes!("key-control", "key-control.svg"),
+    icon_bytes!("key-return", "key-return.svg"),
+    icon_bytes!("key-delete", "key-delete.svg"),
+    icon_bytes!("key-tab", "key-tab.svg"),
+    icon_bytes!("key-arrow-up", "key-arrow-up.svg"),
+    icon_bytes!("key-arrow-down", "key-arrow-down.svg"),
+    icon_bytes!("key-arrow-left", "key-arrow-left.svg"),
+    icon_bytes!("key-arrow-right", "key-arrow-right.svg"),
+    icon_bytes!("diamond", "diamond.svg"),
     icon_bytes!("info", "info.svg"),
     icon_bytes!("cloud-off", "cloud-off.svg"),
     icon_bytes!("workflow", "workflow.svg"),
@@ -74,7 +93,41 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("timeline", "timeline.svg"),
     icon_bytes!("costs", "costs.svg"),
     icon_bytes!("plug", "plug.svg"),
+    icon_bytes!("star", "star.svg"),
+    icon_bytes!("star-filled", "star-filled.svg"),
+    icon_bytes!("folder-closed", "folder-closed.svg"),
+    // The project explorer's file-type icons, taken from warp-new's bundled
+    // set: one per language the tree can name, with a generic document for the
+    // rest. `folder` is that set's own folder glyph, so a directory row and a
+    // file row are drawn from one family.
+    icon_bytes!("file", "file.svg"),
+    icon_bytes!("file-angular", "file_type/angular.svg"),
+    icon_bytes!("file-c", "file_type/c.svg"),
+    icon_bytes!("file-cpp", "file_type/cpp.svg"),
+    icon_bytes!("file-cython", "file_type/cython.svg"),
+    icon_bytes!("file-flash", "file_type/flash.svg"),
+    icon_bytes!("file-go", "file_type/go.svg"),
+    icon_bytes!("file-javascript", "file_type/javascript.svg"),
+    icon_bytes!("file-json", "file_type/json.svg"),
+    icon_bytes!("file-kotlin", "file_type/kotlin.svg"),
+    icon_bytes!("file-markdown", "file_type/markdown.svg"),
+    icon_bytes!("file-mermaid", "file_type/mermaid.svg"),
+    icon_bytes!("file-npm", "file_type/npm.svg"),
+    icon_bytes!("file-perl", "file_type/perl.svg"),
+    icon_bytes!("file-php", "file_type/php.svg"),
+    icon_bytes!("file-python", "file_type/python.svg"),
+    icon_bytes!("file-rust", "file_type/rust.svg"),
+    icon_bytes!("file-sql", "file_type/sql.svg"),
+    icon_bytes!("file-terraform", "file_type/terraform.svg"),
+    icon_bytes!("file-typescript", "file_type/typescript.svg"),
+    icon_bytes!("file-wasm", "file_type/wasm.svg"),
+    icon_bytes!("file-zig", "file_type/zig.svg"),
 ];
+
+/// Whether `name` is a canonical icon file registered in the atlas.
+pub fn is_registered(name: &str) -> bool {
+    ICON_FILES.iter().any(|(candidate, _)| *candidate == name)
+}
 
 pub struct IconAtlas {
     #[allow(dead_code)]

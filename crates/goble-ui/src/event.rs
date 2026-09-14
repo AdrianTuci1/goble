@@ -35,6 +35,12 @@ pub enum DispatchedEvent {
         key: String,
         modifiers: ModifiersState,
     },
+    /// The window gained or lost the OS keyboard focus. A terminal can be asked
+    /// to report this to the program that is running (mode 1004), which is how
+    /// a TUI tells its user's absence from their presence.
+    Focus {
+        gained: bool,
+    },
     Scroll {
         delta: crate::geometry::Vector2F,
     },

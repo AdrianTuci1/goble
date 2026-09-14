@@ -7,7 +7,7 @@
 
 use goble_ui::elements::{
     AppContext, Axis, Button, ButtonVariant, Container, CrossAxisAlignment, Divider, EdgeInsets,
-    Element, Fill, Flex, MainAxisSize, Rect, Scrollable, Spacer, Text,
+    Element, Fill, Flex, Icon, MainAxisSize, Rect, Scrollable, Spacer, Text,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -30,7 +30,19 @@ fn build_page(
     let sm = app.theme.spacing_px(SpacingToken::Sm);
 
     let on_back = actions.on_settings_back.clone();
-    let back_button = Button::new(Text::new("← Back").with_theme_color(ColorToken::Text, app).finish())
+    let back_button = Button::new(
+        Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0)
+        .with_child(
+            Icon::new("arrow-left")
+                .with_size(13.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_child(Text::new("Back").with_theme_color(ColorToken::Text, app).finish())
+        .finish(),
+    )
         .with_variant(ButtonVariant::Ghost)
         .with_on_click(move || (on_back.borrow_mut())())
         .finish();
@@ -111,12 +123,13 @@ fn status(app: &AppContext, status: &str) -> (ColorToken, Box<dyn Element>) {
     )
 }
 
-/// Card shell for a single list row.
+/// Shell for a single list row: a square `SurfaceRaised` band, the shape the
+/// transcript's rows and the sidebar's cards use. Shared by the observability
+/// pages and the tasks & workflows overlay, so a record is drawn once.
 fn card(app: &AppContext, content: Box<dyn Element>) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     Container::new(content)
         .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-        .with_corner_radius(app.theme.radius_px())
         .with_padding(EdgeInsets::uniform(sm))
         .finish()
 }
@@ -144,7 +157,7 @@ pub fn build_workflows_page(
     )
 }
 
-fn build_workflow_row(app: &AppContext, wf: &WorkflowEntry) -> Box<dyn Element> {
+pub(crate) fn build_workflow_row(app: &AppContext, wf: &WorkflowEntry) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let (color, status_el) = status(app, if wf.enabled { "enabled" } else { "disabled" });
     let info = Flex::column()
@@ -221,7 +234,7 @@ pub fn build_executions_page(
     )
 }
 
-fn build_execution_row(app: &AppContext, ex: &ExecutionEntry) -> Box<dyn Element> {
+pub(crate) fn build_execution_row(app: &AppContext, ex: &ExecutionEntry) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let (color, status_el) = status(app, &ex.status);
     let info = Flex::column()
@@ -262,7 +275,7 @@ fn build_execution_row(app: &AppContext, ex: &ExecutionEntry) -> Box<dyn Element
     )
 }
 
-fn build_task_row(app: &AppContext, task: &TaskEntry) -> Box<dyn Element> {
+pub(crate) fn build_task_row(app: &AppContext, task: &TaskEntry) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let (color, status_el) = status(app, &task.status);
     let info = Flex::column()

@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::color::ColorU;
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
@@ -27,6 +28,10 @@ pub struct Button {
     state: InteractiveState,
     variant: ButtonVariant,
     disabled: bool,
+    /// The fill's corner radius. `None` uses the theme's radius.
+    corner_radius: Option<f32>,
+    /// The default variant's outline colour. `None` uses `ColorToken::Border`.
+    border_color: Option<ColorU>,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -39,6 +44,8 @@ impl Button {
             state: InteractiveState::default(),
             variant: ButtonVariant::Default,
             disabled: false,
+            corner_radius: None,
+            border_color: None,
             on_click: None,
             size: None,
             origin: None,
@@ -47,6 +54,22 @@ impl Button {
 
     pub fn with_variant(mut self, variant: ButtonVariant) -> Self {
         self.variant = variant;
+        self
+    }
+
+    /// Set the fill's corner radius instead of the theme's. A control inside a
+    /// flat surface passes `0.0` so its fill is a square band.
+    pub fn with_corner_radius(mut self, radius: f32) -> Self {
+        self.corner_radius = Some(radius);
+        self
+    }
+
+    /// Set the default variant's outline instead of the hairline `Border`. A
+    /// control whose label carries the app's own colour passes that colour, so
+    /// the box matches the text it holds rather than fading into the surface.
+    /// The primary and ghost variants have no outline to colour.
+    pub fn with_border_color(mut self, color: impl Into<ColorU>) -> Self {
+        self.border_color = Some(color.into());
         self
     }
 
@@ -101,22 +124,43 @@ impl Element for Button {
         let v_pad = self.vertical_padding(app);
 
         let bounds = rectf(origin.x, origin.y, size.x, size.y);
-        let bg_color = match self.variant {
-            ButtonVariant::Primary => app.theme.color(crate::theme::ColorToken::Accent),
-            ButtonVariant::Ghost | ButtonVariant::Default => {
-                if ctx.hovered(bounds) {
+        let hovered = ctx.hovered(bounds);
+        // A raised fill and a 1px outline: the default button is the app's
+        // secondary control, so it reads as a button on a flat surface instead
+        // of dissolving into it. The ghost variant is the low-emphasis one and
+        // stays a bare fill; the primary carries the accent.
+        let (bg_color, outline) = match self.variant {
+            ButtonVariant::Primary => (app.theme.color(crate::theme::ColorToken::Accent), None),
+            ButtonVariant::Default => (
+                if hovered {
+                    app.theme.color(crate::theme::ColorToken::Hover)
+                } else {
+                    app.theme.color(crate::theme::ColorToken::SurfaceRaised)
+                },
+                Some(
+                    self.border_color
+                        .unwrap_or_else(|| app.theme.color(crate::theme::ColorToken::Border)),
+                ),
+            ),
+            ButtonVariant::Ghost => (
+                if hovered {
                     app.theme.color(crate::theme::ColorToken::Hover)
                 } else {
                     app.theme.color(crate::theme::ColorToken::Surface)
-                }
-            }
+                },
+                None,
+            ),
         };
+        let corner_radius = self.corner_radius.unwrap_or_else(|| app.theme.radius_px());
         if let Some(renderer) = ctx.renderer.as_mut() {
             let rect = crate::geometry::RectF::new(
                 crate::geometry::PointF::new(origin.x, origin.y),
                 crate::geometry::Size2F::new(size.x, size.y),
             );
-            renderer.fill_rounded_rect(rect, bg_color, app.theme.radius_px());
+            renderer.fill_rounded_rect(rect, bg_color, corner_radius);
+            if let Some(outline) = outline {
+                renderer.stroke_rect(rect, outline, 1.0, corner_radius);
+            }
         }
 
         let child_size = self.child.size().unwrap_or(Vector2F::zero());

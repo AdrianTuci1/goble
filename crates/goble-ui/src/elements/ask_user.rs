@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    AppContext, Border, Button, ButtonVariant, Checkbox, Container, CrossAxisAlignment,
-    EdgeInsets, Element, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, PaintContext, Point,
+    AppContext, Button, ButtonVariant, Checkbox, Container, CrossAxisAlignment, EdgeInsets,
+    Element, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, PaintContext, Point,
     SizeConstraint, Text, TextArea,
 };
 use crate::event::DispatchedEvent;
@@ -291,15 +291,14 @@ impl AskUserCard {
             );
         }
 
-        let card = Container::new(column.finish())
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-            .with_border(
-                Border::all(1.0).with_border_fill(Fill::Solid(app.theme.color(ColorToken::Border))),
-            )
+        // A full-width band of rows, matching the sibling command proposal:
+        // no border and no rounded card, so the two agent interruptions read
+        // as the same surface.
+        let band = Container::new(column.finish())
+            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
             .with_padding(EdgeInsets::uniform(md))
-            .with_corner_radius(8.0)
             .finish();
-        self.root = Some(card);
+        self.root = Some(band);
     }
 }
 
@@ -370,6 +369,34 @@ mod tests {
         assert!(size.y > 0.0);
 
         card.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+    }
+
+    #[test]
+    fn the_ask_user_surface_paints_a_band_not_a_bordered_card() {
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = AppContext::default();
+        let mut card: Box<dyn Element> = AskUserCard::new(
+            "Which database should I query?".to_string(),
+            vec!["Postgres".to_string(), "SQLite".to_string()],
+        )
+        .finish();
+        let commands = render_element(&mut card, vec2f(520.0, 800.0), &app);
+
+        // The card used to trace its own bounds with a border; the quick-reply
+        // checkboxes still stroke their boxes, so the assertion is that nothing
+        // strokes the surface's full rectangle.
+        let size = card.size().expect("the surface laid out");
+        let outer_border = commands.iter().any(|command| {
+            matches!(
+                command,
+                RenderCommand::StrokeRect { rect, .. }
+                    if (rect.width() - size.x).abs() < 0.5
+                        && (rect.height() - size.y).abs() < 0.5
+            )
+        });
+        assert!(!outer_border, "the ask-user surface draws no border");
     }
 
     #[test]

@@ -87,12 +87,38 @@ binaries are the supported path; building from source is a developer workflow de
 ### macOS
 
 Download the `.dmg` from the releases page. Separate builds are published for Intel (x86_64) and
-Apple Silicon (aarch64); pick the one matching your machine. Builds produced locally are unsigned, so
-clear the quarantine attribute before the first launch:
+Apple Silicon (aarch64); pick the one matching your machine. Official builds are signed with a
+Developer ID certificate and notarized by Apple, so they open without a Gatekeeper override. A build
+you compile yourself is not signed, and that one needs the quarantine attribute cleared:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Goble.app
 ```
+
+### Verifying a download
+
+Releases are signed, and you can check it rather than trust it:
+
+```sh
+# macOS — expect "Developer ID Application: …", flags=runtime, and source=Developer ID
+codesign -dv --verbose=4 /Applications/Goble.app
+spctl --assess --type exec --verbose=4 /Applications/Goble.app
+xcrun stapler validate Goble-<version>-arm64.dmg
+```
+
+```powershell
+# Windows — expect Status: Valid and a signer name
+Get-AuthenticodeSignature .\GobleSetup.exe | Format-List Status, SignerCertificate
+```
+
+Linux artifacts carry no signature of their own; the updater manifest is signed with ed25519 and
+contains each artifact's SHA-256, which is where integrity is checked. `dist/SHA256SUMS` covers the
+same files.
+
+Release builds refuse to be produced unsigned: if the signing credentials are missing, the build
+fails instead of publishing something users would have to work around. Local test builds are the
+exception, and are made explicitly with `--allow-unsigned`. See
+[`packaging/README.md`](packaging/README.md#signing-and-notarization).
 
 ### Linux
 

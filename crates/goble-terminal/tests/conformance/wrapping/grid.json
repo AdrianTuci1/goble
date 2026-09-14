@@ -1,0 +1,8 @@
+{
+  "rows": ["abcde", "fghij", ""],
+  "cursor": { "line": 1, "column": 4, "visible": true, "shape": "block", "wrap_pending": true },
+  "cells": [
+    { "row": 0, "column": 4, "wrapline": true },
+    { "row": 1, "column": 0, "wrapline": false }
+  ]
+}

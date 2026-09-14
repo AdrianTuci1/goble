@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Entitlements for the hardened runtime of a Developer ID build.
+
+  This file is deliberately almost empty, and that is the point: every
+  entitlement is a hole in the runtime's protections, so each one has to be
+  justified. Goble needs none of them:
+
+    * No com.apple.security.cs.allow-jit — the Rust code and wgpu's Metal backend
+      compile shaders through the GPU driver, not through an in-process JIT.
+    * No com.apple.security.cs.allow-unsigned-executable-memory.
+    * No com.apple.security.cs.disable-library-validation — the app loads no
+      third-party dylibs; Rust links everything statically, and the system
+      frameworks are signed by Apple.
+    * No com.apple.security.get-task-allow — that key only exists to let a
+      debugger attach, and shipping it lets anyone attach.
+
+  Microphone and camera use is declared with NSMicrophoneUsageDescription and
+  NSCameraUsageDescription in Info.plist. Those descriptions, not an
+  entitlement, are what a Developer ID app needs: the App Sandbox entitlements
+  (com.apple.security.device.audio-input) only apply to Mac App Store builds.
+
+  If a future feature needs an entitlement, add it here with the reason next to
+  it. Do not add one to make a warning go away.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict/>
+</plist>

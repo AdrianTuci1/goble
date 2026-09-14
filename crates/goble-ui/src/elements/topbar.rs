@@ -212,6 +212,8 @@ pub struct TopbarButton {
     active: bool,
     disabled: bool,
     button_size: f32,
+    /// The hover/active fill's corner radius. `None` uses half the theme's.
+    corner_radius: Option<f32>,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -225,6 +227,7 @@ impl TopbarButton {
             active: false,
             disabled: false,
             button_size: BUTTON_SIZE,
+            corner_radius: None,
             on_click: None,
             size: None,
             origin: None,
@@ -233,6 +236,13 @@ impl TopbarButton {
 
     pub fn with_size(mut self, size: f32) -> Self {
         self.button_size = size;
+        self
+    }
+
+    /// Set the hover/active fill's corner radius instead of half the theme's. A
+    /// button on a flat surface passes `0.0` so its fill is a square band.
+    pub fn with_corner_radius(mut self, radius: f32) -> Self {
+        self.corner_radius = Some(radius);
         self
     }
 
@@ -267,7 +277,11 @@ impl TopbarButton {
             return;
         };
         if let Some(renderer) = ctx.renderer.as_mut() {
-            renderer.fill_rounded_rect(rect, bg, app.theme.radius_px() / 2.0);
+            renderer.fill_rounded_rect(
+                rect,
+                bg,
+                self.corner_radius.unwrap_or_else(|| app.theme.radius_px() / 2.0),
+            );
         }
     }
 }

@@ -1,10 +1,13 @@
-//! A warp-new style context pill: an icon, a label and a chevron that opens a
-//! tray of choices.
+//! A warp-new style context pill: an icon and a label that open a tray of
+//! choices.
 //!
 //! One control, two homes: the agent keeps its pills in the composer footer at
 //! the bottom of the pane, while a plain pty shows only its working-directory
 //! and branch pills in the pane's topbar. Both build the same element so the
 //! two surfaces cannot drift apart.
+//!
+//! The pill draws no disclosure chevron: the pill itself is the control that
+//! opens the tray, and the whole card is its trigger.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -28,6 +31,9 @@ pub enum PillTraySide {
 }
 
 /// A labelled context pill with an optional choice tray.
+///
+/// The pill is the card the footer control draws: an icon and a label, no
+/// chevron. The tray opens from the pill itself.
 pub struct ContextPill {
     icon: &'static str,
     label: String,
@@ -107,12 +113,6 @@ impl ContextPill {
                     .finish(),
             )
             .with_child(label)
-            .with_child(
-                Icon::new("chevron-down")
-                    .with_size(14.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
             .finish();
         let trigger = Tooltip::new(
             ComposerButton::new(row)
@@ -125,7 +125,11 @@ impl ContextPill {
             PillTraySide::Below => TooltipPosition::Below,
         })
         .finish();
-        if self.items.is_empty() {
+        // A menu the host wired is a menu even before it has rows: a dropdown
+        // whose content is read when it opens (the working directory, the
+        // branch list) has nothing to show while it is closed, and gating the
+        // menu on its rows would leave the pill with no way to open it.
+        if self.on_select.is_none() {
             return trigger;
         }
         let mut menu = PopupMenu::new(trigger, self.items).with_position(match self.tray_side {

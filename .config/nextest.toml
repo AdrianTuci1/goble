@@ -1,0 +1,18 @@
+# cargo-nextest configuration. `cargo nextest run` reads this automatically.
+#
+# The emulator conformance corpus is data-driven: a single test walks every
+# fixture and reports all failures at once. `fail-fast = false` keeps the rest
+# of the target list running so one bad fixture does not hide the others.
+[profile.default]
+fail-fast = false
+
+# A hung or pathological emulator run is killed rather than stalling a CI job
+# until the workflow timeout. Two periods is enough to tell a slow machine from
+# a real hang.
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# The profile CI selects. It inherits the defaults above; named separately so a
+# workflow can pin behaviour without touching local runs.
+[profile.ci]
+inherit = "default"
+fail-fast = false

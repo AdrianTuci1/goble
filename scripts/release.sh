@@ -37,6 +37,10 @@ Options:
   --version VERSION     Override the release version
   --channel NAME        Manifest channel name (default: stable)
   --manifest            Also write dist/channel_versions.json
+  --require-signing     Refuse to produce an unsigned release (default for every
+                        channel except dev; also settable with
+                        GOBLE_REQUIRE_SIGNING=1)
+  --allow-unsigned      Build unsigned on purpose, for a local test release
   --dry-run             Print the plan without building or packaging
   --skip-build          Reuse an existing target/release/$BIN_NAME
   --skip-package        Do not run a packaging script; only (re)write
@@ -54,6 +58,7 @@ Environment:
   GOBLE_VERSION                version, used when --version is absent
   GOBLE_DOWNLOAD_BASE          base URL for the manifest
   GOBLE_UPDATE_SIGNING_KEY     hex Ed25519 seed; signs the manifest channel
+  GOBLE_REQUIRE_SIGNING        1 = a missing signing credential fails the build
   APPLE_SIGNING_IDENTITY       macOS codesign identity
   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   macOS notarization
   WINDOWS_SIGN_CERT_PFX, WINDOWS_SIGN_CERT_PASSWORD,
@@ -63,6 +68,7 @@ Examples:
   scripts/release.sh --version 0.2.0 --manifest
   GOBLE_UPDATE_SIGNING_KEY=\$(cat key.hex) scripts/release.sh --manifest
   scripts/release.sh --dry-run
+  scripts/release.sh --allow-unsigned   # local test build, never a release
 EOF
 }
 
@@ -77,6 +83,7 @@ WRITE_MANIFEST=0
 DRY_RUN=0
 SKIP_BUILD=0
 SKIP_PACKAGE=0
+SIGNING_MODE=""   # "", "require" or "allow"
 OUTDIR="$ROOT_DIR/dist"
 DOWNLOAD_BASE="${GOBLE_DOWNLOAD_BASE:-}"
 UNIVERSAL=0
@@ -87,6 +94,8 @@ while [[ $# -gt 0 ]]; do
         --version)       ARG_VERSION="${2:?--version needs a value}"; shift 2 ;;
         --channel)       CHANNEL="${2:?--channel needs a name}"; shift 2 ;;
         --manifest)      WRITE_MANIFEST=1; shift ;;
+        --require-signing) SIGNING_MODE="require"; shift ;;
+        --allow-unsigned)  SIGNING_MODE="allow"; shift ;;
         --dry-run)       DRY_RUN=1; shift ;;
         --skip-build)    SKIP_BUILD=1; shift ;;
         --skip-package)  SKIP_PACKAGE=1; shift ;;
@@ -149,6 +158,93 @@ if [[ "$PLATFORM" == "windows" ]]; then
     HOST_BINARY="$TARGET_DIR/release/$BIN_NAME.exe"
 else
     HOST_BINARY="$TARGET_DIR/release/$BIN_NAME"
+fi
+
+# --- signing policy ---------------------------------------------------------
+# A release is signed, or it is not a release: Gatekeeper refuses an unsigned
+# macOS download and SmartScreen flags an unsigned Windows installer. So signing
+# is required by default for every channel a user can be on, and `dev` — which
+# by definition means a developer's own machine — is the one that may be
+# unsigned. `--allow-unsigned` is the deliberate way out for a local test build.
+resolve_signing_requirement() {
+    case "$SIGNING_MODE" in
+        require) REQUIRE_SIGNING=1; return ;;
+        allow)   REQUIRE_SIGNING=0; return ;;
+    esac
+    if [[ -n "${GOBLE_REQUIRE_SIGNING:-}" ]]; then
+        [[ "$GOBLE_REQUIRE_SIGNING" == "1" ]] && REQUIRE_SIGNING=1 || REQUIRE_SIGNING=0
+        return
+    fi
+    [[ "$CHANNEL" == "dev" ]] && REQUIRE_SIGNING=0 || REQUIRE_SIGNING=1
+}
+REQUIRE_SIGNING=0
+resolve_signing_requirement
+
+# Check before building anything: discovering a missing certificate after a
+# ten-minute release build helps nobody.
+check_signing_requirements() {
+    [[ "$REQUIRE_SIGNING" -eq 1 ]] || return 0
+
+    local missing=()
+
+    # --skip-package writes checksums (and the manifest) over artifacts another
+    # runner built, so the platform signing credentials belong to that runner.
+    # The manifest key still applies here, because this step is what signs it.
+    if [[ "$SKIP_PACKAGE" -eq 0 ]]; then
+        case "$PLATFORM" in
+            macos)
+                [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]] || missing+=("APPLE_SIGNING_IDENTITY (Developer ID Application certificate)")
+                [[ -n "${APPLE_ID:-}" ]] || missing+=("APPLE_ID")
+                [[ -n "${APPLE_TEAM_ID:-}" ]] || missing+=("APPLE_TEAM_ID")
+                [[ -n "${APPLE_APP_PASSWORD:-}" ]] || missing+=("APPLE_APP_PASSWORD (app-specific password)")
+                ;;
+            windows)
+                if [[ -n "${WINDOWS_SIGN_CERT_THUMBPRINT:-}" ]]; then
+                    :
+                elif [[ -n "${WINDOWS_SIGN_CERT_PFX:-}" && -n "${WINDOWS_SIGN_CERT_PASSWORD:-}" ]]; then
+                    [[ -f "${WINDOWS_SIGN_CERT_PFX}" ]] || die "WINDOWS_SIGN_CERT_PFX points at a missing file: $WINDOWS_SIGN_CERT_PFX"
+                else
+                    missing+=("WINDOWS_SIGN_CERT_PFX + WINDOWS_SIGN_CERT_PASSWORD, or WINDOWS_SIGN_CERT_THUMBPRINT")
+                fi
+                ;;
+        esac
+    fi
+
+    # Linux has no artifact signature of its own: the ed25519 signature over the
+    # update manifest is what authenticates a Linux download, so it is required
+    # on every platform whenever a manifest is written.
+    if [[ "$WRITE_MANIFEST" -eq 1 && -z "${GOBLE_UPDATE_SIGNING_KEY:-}" ]]; then
+        missing+=("GOBLE_UPDATE_SIGNING_KEY (signs the updater manifest; unauthenticated updates on every platform)")
+    fi
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        printf 'error: channel %s must be signed, but the following are not set:\n' "$CHANNEL" >&2
+        local item
+        for item in "${missing[@]}"; do
+            printf '       - %s\n' "$item" >&2
+        done
+        printf '       See packaging/README.md, section Signing, for how to obtain each one.\n' >&2
+        printf '       To build an unsigned artifact on purpose (a test build, never a\n' >&2
+        printf '       release), rerun with --allow-unsigned.\n' >&2
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+            warn "dry run: reporting the missing credentials instead of failing"
+            return 0
+        fi
+        exit 1
+    fi
+}
+
+check_signing_requirements
+if [[ "$REQUIRE_SIGNING" -eq 1 ]]; then
+    export GOBLE_REQUIRE_SIGNING=1
+    log "Signing: required (channel $CHANNEL; --allow-unsigned to override)"
+else
+    unset GOBLE_REQUIRE_SIGNING
+    if [[ "$CHANNEL" == "dev" ]]; then
+        log "Signing: not required (channel dev)"
+    else
+        log "Signing: not required (--allow-unsigned): this is NOT a release artifact"
+    fi
 fi
 
 mkdir -p "$OUTDIR"

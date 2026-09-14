@@ -2,11 +2,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::chat_content::{
-    ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole,
+    ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, ListItem,
 };
+use crate::elements::chat_message_bubble::QuoteRail;
 use crate::elements::{
-    AppContext, Avatar, Chip, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, Fill,
-    Flex, LayoutContext, PaintContext, Point, SizeConstraint, Spacer, Text,
+    terminal_block, AppContext, Avatar, Chip, Container, CrossAxisAlignment, Divider, EdgeInsets,
+    Element, Empty, Fill, Flex, LayoutContext, PaintContext, Point, SizeConstraint, Spacer,
+    TerminalData, TerminalFilter, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -169,25 +171,31 @@ impl GroupChatMessage {
                         lang.clone(),
                         code.clone(),
                         spacing,
-                        radius,
                     ));
                 }
                 ChatFragmentKind::Heading { level, text } => {
                     column = flush_inline(&mut inline_buffer, column);
                     column = column.with_child(self.render_heading(app, *level, text.clone()));
                 }
-                ChatFragmentKind::List { items, ordered } => {
+                ChatFragmentKind::List { items, start } => {
                     column = flush_inline(&mut inline_buffer, column);
-                    column = column.with_child(self.render_list(app, items.clone(), *ordered));
+                    column = column.with_child(self.render_list(app, items, *start));
                 }
-                ChatFragmentKind::BlockQuote(text) => {
+                ChatFragmentKind::BlockQuote(content) => {
                     column = flush_inline(&mut inline_buffer, column);
-                    column = column.with_child(self.render_block_quote(
-                        app,
-                        text.clone(),
-                        spacing,
-                        radius,
-                    ));
+                    column = column.with_child(self.render_block_quote(app, content, spacing));
+                }
+                ChatFragmentKind::Table { header, rows } => {
+                    column = flush_inline(&mut inline_buffer, column);
+                    column = column.with_child(self.render_table(app, header, rows, spacing));
+                }
+                ChatFragmentKind::Rule => {
+                    column = flush_inline(&mut inline_buffer, column);
+                    column = column.with_child(Divider::horizontal().finish());
+                }
+                ChatFragmentKind::Terminal(data) => {
+                    column = flush_inline(&mut inline_buffer, column);
+                    column = column.with_child(self.render_terminal(data));
                 }
                 _ => {
                     inline_buffer.push(self.render_inline_fragment(app, fragment, radius));
@@ -247,6 +255,21 @@ impl GroupChatMessage {
                 })
                 .finish()
             }
+            ChatFragmentKind::Image { alt, url } => {
+                let on_action = self.on_action.clone();
+                let url = url.clone();
+                Chip::new(
+                    Text::new(alt.clone())
+                        .with_theme_color(ColorToken::Accent, app)
+                        .finish(),
+                )
+                .with_on_click(move || {
+                    if let Some(cb) = on_action.as_ref() {
+                        (cb.borrow_mut())(ChatAction::OpenUrl(url.clone()));
+                    }
+                })
+                .finish()
+            }
             ChatFragmentKind::Action { label, payload } => {
                 let on_action = self.on_action.clone();
                 let payload = payload.clone();
@@ -266,13 +289,20 @@ impl GroupChatMessage {
         }
     }
 
+    /// A terminal segment — a command the agent ran and its output — drawn
+    /// through the one terminal-block renderer, the same element the
+    /// transcript's command tool call and terminal mode draw. One block, one
+    /// renderer.
+    fn render_terminal(&self, data: &TerminalData) -> Box<dyn Element> {
+        terminal_block(data, TerminalFilter::default(), None, None)
+    }
+
     fn render_code_block(
         &self,
         app: &AppContext,
         lang: Option<String>,
         code: String,
         padding: f32,
-        radius: f32,
     ) -> Box<dyn Element> {
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -291,10 +321,11 @@ impl GroupChatMessage {
                 .with_font_size(12.0)
                 .finish(),
         );
+        // A fenced block is a band, not a rounded box. The column stretches, so
+        // the band spans the message width.
         Container::new(column.finish())
             .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
             .with_padding(EdgeInsets::uniform(padding / 2.0))
-            .with_corner_radius(radius)
             .finish()
     }
 
@@ -311,18 +342,26 @@ impl GroupChatMessage {
             .finish()
     }
 
-    fn render_list(&self, app: &AppContext, items: Vec<String>, ordered: bool) -> Box<dyn Element> {
+    fn render_list(
+        &self,
+        app: &AppContext,
+        items: &[ListItem],
+        start: Option<u64>,
+    ) -> Box<dyn Element> {
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(2.0);
         for (i, item) in items.iter().enumerate() {
-            let prefix = if ordered {
-                format!("{}. ", i + 1)
-            } else {
-                "• ".to_string()
+            let prefix = match start {
+                Some(first) => format!("{}. ", first + i as u64),
+                None => match item.checked {
+                    Some(true) => "☑ ".to_string(),
+                    Some(false) => "☐ ".to_string(),
+                    None => "• ".to_string(),
+                },
             };
             column = column.with_child(
-                Text::new(format!("{}{}", prefix, item))
+                Text::new(format!("{}{}", prefix, fragment_plain_text(&item.content)))
                     .with_theme_color(ColorToken::Text, app)
                     .finish(),
             );
@@ -333,25 +372,101 @@ impl GroupChatMessage {
     fn render_block_quote(
         &self,
         app: &AppContext,
-        text: String,
+        content: &[ChatFragment],
         padding: f32,
-        radius: f32,
     ) -> Box<dyn Element> {
-        Container::new(
-            Text::new(text)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
-        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-        .with_padding(EdgeInsets::new(
-            padding / 4.0,
-            padding / 2.0,
-            padding / 4.0,
-            padding / 2.0,
-        ))
-        .with_corner_radius(radius)
-        .finish()
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(padding / 4.0);
+        let mut paragraph: Vec<ChatFragment> = Vec::new();
+        let mut paragraphs: Vec<Vec<ChatFragment>> = Vec::new();
+        for fragment in content {
+            if matches!(fragment.kind, ChatFragmentKind::LineBreak) {
+                if !paragraph.is_empty() {
+                    paragraphs.push(std::mem::take(&mut paragraph));
+                }
+            } else {
+                paragraph.push(fragment.clone());
+            }
+        }
+        if !paragraph.is_empty() {
+            paragraphs.push(paragraph);
+        }
+        for paragraph in &paragraphs {
+            column = column.with_child(
+                Text::new(fragment_plain_text(paragraph))
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            );
+        }
+        // A quote is an indent plus a rail, not a rounded box.
+        QuoteRail::new(column.finish(), padding / 2.0).finish()
     }
+
+    fn render_table(
+        &self,
+        app: &AppContext,
+        header: &[String],
+        rows: &[Vec<String>],
+        spacing: f32,
+    ) -> Box<dyn Element> {
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(spacing / 4.0);
+        column = column.with_child(self.render_table_row(app, header, spacing));
+        column = column.with_child(Divider::horizontal().finish());
+        for row in rows {
+            column = column.with_child(self.render_table_row(app, row, spacing));
+        }
+        column.finish()
+    }
+
+    fn render_table_row(
+        &self,
+        app: &AppContext,
+        cells: &[String],
+        spacing: f32,
+    ) -> Box<dyn Element> {
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_spacing(spacing);
+        for cell in cells {
+            row = row.with_child(
+                Text::new(cell.clone())
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_font_size(12.0)
+                    .finish(),
+            );
+        }
+        row.finish()
+    }
+}
+
+/// Concatenate the human-readable text of a nested fragment run, recursing into
+/// blockquotes and lists so their content is not lost.
+fn fragment_plain_text(fragments: &[ChatFragment]) -> String {
+    let mut out = String::new();
+    for fragment in fragments {
+        match &fragment.kind {
+            ChatFragmentKind::Text(t)
+            | ChatFragmentKind::Bold(t)
+            | ChatFragmentKind::Italic(t)
+            | ChatFragmentKind::BoldItalic(t)
+            | ChatFragmentKind::Code(t) => out.push_str(t),
+            ChatFragmentKind::Link { label, .. } => out.push_str(label),
+            ChatFragmentKind::Image { alt, .. } => out.push_str(alt),
+            ChatFragmentKind::BlockQuote(inner) => out.push_str(&fragment_plain_text(inner)),
+            ChatFragmentKind::List { items, .. } => {
+                for item in items {
+                    out.push_str(&fragment_plain_text(&item.content));
+                    out.push(' ');
+                }
+            }
+            ChatFragmentKind::LineBreak => out.push(' '),
+            _ => {}
+        }
+    }
+    out.trim().to_string()
 }
 
 fn role_label(role: ChatRole) -> &'static str {
@@ -417,8 +532,23 @@ impl Element for GroupChatMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elements::{AppContext, LayoutContext};
+    use crate::elements::{AppContext, LayoutContext, TerminalLine, TerminalStatus};
     use crate::geometry::vec2f;
+    use crate::render::{RenderCommand, Renderer};
+
+    /// The drawn text runs as `(text, size)`, so two elements can be compared
+    /// without depending on where each was laid out.
+    fn text_runs(commands: &[RenderCommand]) -> Vec<(String, f32)> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawText {
+                    text, font_size, ..
+                } => Some((text.clone(), *font_size)),
+                _ => None,
+            })
+            .collect()
+    }
 
     #[test]
     fn group_chat_message_layouts_with_header() {
@@ -449,5 +579,151 @@ mod tests {
         );
         assert!(size.x > 0.0);
         assert!(size.y > 0.0);
+    }
+
+    /// R4: a tool-result terminal segment draws through the shared
+    /// `terminal_block` renderer instead of disappearing as `Empty`. The same
+    /// data through the shared renderer paints the same block.
+    #[test]
+    fn terminal_fragment_draws_the_shared_block() {
+        let app = AppContext::default();
+        let data = TerminalData::new(
+            "cargo test",
+            vec![
+                TerminalLine::command("cargo test"),
+                TerminalLine::output("test result: ok. 42 passed"),
+            ],
+        )
+        .with_status(TerminalStatus::Success);
+
+        let message = ChatMessage::new(ChatRole::Tool, vec![ChatFragment::terminal(data.clone())]);
+        let mut msg = GroupChatMessage::new(message).with_show_header(false);
+        msg.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        msg.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx.renderer.take().unwrap().commands().to_vec();
+        let runs = text_runs(&commands);
+
+        let mut shared = terminal_block(&data, TerminalFilter::default(), None, None);
+        let shared_commands =
+            crate::test_util::render_element(&mut shared, vec2f(400.0, 400.0), &app);
+
+        assert_eq!(
+            runs,
+            text_runs(&shared_commands),
+            "the terminal fragment must draw the shared terminal block"
+        );
+        assert!(
+            runs.iter().any(|(text, _)| text == "cargo test"),
+            "the block's command line should be drawn, got {runs:?}"
+        );
+        assert!(
+            runs.iter()
+                .any(|(text, _)| text == "test result: ok. 42 passed"),
+            "the block's output should be drawn, got {runs:?}"
+        );
+    }
+
+    /// H5: a fenced block is a band, not a rounded box; the label survives.
+    #[test]
+    fn code_block_draws_a_band_not_a_rounded_box() {
+        let app = AppContext::default();
+        let message = ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::code_block(
+                Some("rust".to_string()),
+                "let x = 1;",
+            )],
+        );
+        let mut msg = GroupChatMessage::new(message).with_show_header(false);
+        msg.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        msg.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx.renderer.take().unwrap().commands().to_vec();
+
+        let band = app.theme.color(ColorToken::SurfaceRaised);
+        assert!(
+            !commands.iter().any(|c| matches!(
+                c,
+                RenderCommand::FillRect { color, corner_radius, .. }
+                    if *color == band && *corner_radius > 0.0
+            )),
+            "the fence must not be a rounded box, got {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                RenderCommand::FillRect { color, corner_radius, .. }
+                    if *color == band && *corner_radius == 0.0
+            )),
+            "the fence must sit on a flat band, got {commands:?}"
+        );
+        let runs = text_runs(&commands);
+        assert!(
+            runs.iter().any(|(text, _)| text == "rust"),
+            "the fence's language label must survive, got {runs:?}"
+        );
+    }
+
+    /// H5: a blockquote is an indent plus a rail, not a rounded box.
+    #[test]
+    fn block_quote_draws_an_indent_and_a_rail() {
+        let app = AppContext::default();
+        let message = ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::block_quote(vec![ChatFragment::text(
+                "quoted line",
+            )])],
+        );
+        let mut msg = GroupChatMessage::new(message).with_show_header(false);
+        msg.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        msg.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx.renderer.take().unwrap().commands().to_vec();
+
+        let box_bg = app.theme.color(ColorToken::SurfaceRaised);
+        assert!(
+            !commands.iter().any(|c| matches!(
+                c,
+                RenderCommand::FillRect { color, .. } if *color == box_bg
+            )),
+            "a quote must not paint a raised box, got {commands:?}"
+        );
+        let rail = commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if rect.width() == crate::elements::chat_message_bubble::QUOTE_RAIL_WIDTH => {
+                    Some((*color, *corner_radius))
+                }
+                _ => None,
+            })
+            .expect("the quote must paint a rail");
+        assert_eq!(rail.1, 0.0, "the rail is square");
+        assert_eq!(
+            rail.0,
+            app.theme.color(ColorToken::Muted),
+            "the rail is muted"
+        );
+        let runs = text_runs(&commands);
+        assert!(
+            runs.iter().any(|(text, _)| text == "quoted line"),
+            "the quoted text must be drawn, got {runs:?}"
+        );
     }
 }

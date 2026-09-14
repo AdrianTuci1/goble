@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use goble_daemon::{Checkpoint, DaemonPort, ExecutionRecord};
 use goble_daemon_protocol::DaemonEvent;
-use goble_harness_types::{HarnessId, HarnessTurn, SessionId};
+use goble_harness_types::{CommandDecision, HarnessId, HarnessTurn, SessionId};
 
 #[cfg(feature = "remote")]
 use goble_daemon_protocol::{DaemonMessage, DaemonRequest};
@@ -23,6 +23,8 @@ pub trait DaemonClient: Send + Sync {
         response: &str,
         credential: Option<(String, String)>,
     ) -> Result<()>;
+    /// Answer a turn suspended on a command proposal with the user's decision.
+    fn resume_command(&self, session_id: &SessionId, decision: CommandDecision) -> Result<()>;
     fn cancel(&self, session_id: &SessionId) -> Result<()>;
     fn list_harnesses(&self) -> Vec<HarnessId>;
     fn snapshot(&self) -> Vec<ExecutionRecord>;
@@ -71,6 +73,10 @@ impl DaemonClient for InProcessClient {
         credential: Option<(String, String)>,
     ) -> Result<()> {
         self.port.resume(session_id, response, credential)
+    }
+
+    fn resume_command(&self, session_id: &SessionId, decision: CommandDecision) -> Result<()> {
+        self.port.resume_command(session_id, decision)
     }
 
     fn cancel(&self, session_id: &SessionId) -> Result<()> {

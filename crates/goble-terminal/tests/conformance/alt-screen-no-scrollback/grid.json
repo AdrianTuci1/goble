@@ -1,0 +1,10 @@
+{
+  "rows": ["line8", "line9"],
+  "cursor": { "line": 1, "column": 5, "visible": true, "shape": "block", "wrap_pending": false },
+  "alt_screen": true,
+  "history_size": 0,
+  "cells": [
+    { "row": 0, "column": 0, "fg": "default" },
+    { "row": 1, "column": 0, "fg": "default" }
+  ]
+}

@@ -23,6 +23,8 @@ ROOT_DIR="$(cd "$PACKAGING_DIR/.." && pwd)"
 
 # shellcheck source=../version.env
 source "$PACKAGING_DIR/version.env"
+# shellcheck source=../signing.sh
+source "$PACKAGING_DIR/signing.sh"
 
 APP_NAME="${APP_NAME:-Goble}"
 VERSION="${VERSION:-0.0.0}"
@@ -50,6 +52,7 @@ Options:
   --background PATH     Background PNG (default: ${DEFAULT_BG})
   --codesign-identity ID
                         codesign identity (default: \$APPLE_SIGNING_IDENTITY)
+  --entitlements PATH   Entitlements plist (default: macos/entitlements.plist)
   --no-sign             Never sign or notarize, even if secrets are present
   --keep-rw             Keep the intermediate read/write image for debugging
   -h, --help            Show this help
@@ -74,6 +77,7 @@ ARCH_LABEL=""
 VOLUME_NAME=""
 BACKGROUND="$DEFAULT_BG"
 SIGN_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
+ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
 DO_SIGN=1
 KEEP_RW=0
 
@@ -86,6 +90,7 @@ while [[ $# -gt 0 ]]; do
         --volume-name)       VOLUME_NAME="${2:?--volume-name needs a value}"; shift 2 ;;
         --background)        BACKGROUND="${2:?--background needs a path}"; shift 2 ;;
         --codesign-identity) SIGN_IDENTITY="${2:?--codesign-identity needs a value}"; shift 2 ;;
+        --entitlements)      ENTITLEMENTS="${2:?--entitlements needs a path}"; shift 2 ;;
         --no-sign)           DO_SIGN=0; shift ;;
         --keep-rw)           KEEP_RW=1; shift ;;
         -h|--help)           usage; exit 0 ;;
@@ -95,6 +100,18 @@ done
 
 need hdiutil
 [[ "$(uname -s)" == "Darwin" ]] || die "make-dmg.sh only runs on macOS"
+
+# A signed-but-un-notarized DMG is still refused by Gatekeeper on first launch,
+# so for a release both halves are required, and the check happens before any
+# image is built. --no-sign is the deliberate way out.
+if [[ "$DO_SIGN" -eq 0 && "${GOBLE_REQUIRE_SIGNING:-0}" == "1" ]]; then
+    signing_die "--no-sign was passed while GOBLE_REQUIRE_SIGNING=1" \
+        "A release DMG must be signed and notarized; refusing to build one" \
+        "that users cannot open without a Gatekeeper override."
+fi
+if [[ "$DO_SIGN" -eq 1 ]]; then
+    require_macos_signing "$SIGN_IDENTITY"
+fi
 
 APP_PATH="${APP_PATH:-$OUTDIR/$APP_NAME.app}"
 [[ -d "$APP_PATH" ]] || die ".app bundle not found: $APP_PATH
@@ -152,11 +169,17 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # --- sign the app before it is sealed into the image -----------------------
+# Same treatment as make-bundle.sh: hardened runtime, explicit entitlements, no
+# --deep. This runs even when the bundle was already signed, because the bundle
+# gets copied and it costs nothing to seal it with the flags this script knows.
 if [[ "$DO_SIGN" -eq 1 && -n "$SIGN_IDENTITY" ]]; then
     need codesign
+    [[ -f "$ENTITLEMENTS" ]] || die "entitlements file not found: $ENTITLEMENTS"
     log "Codesigning ${APP_NAME}.app"
-    codesign --force --deep --options runtime --timestamp \
+    codesign --force --options runtime --timestamp \
+        --entitlements "$ENTITLEMENTS" \
         --sign "$SIGN_IDENTITY" "$APP_PATH"
+    codesign --verify --strict --verbose=2 "$APP_PATH"
 fi
 
 # --- create and mount the read/write image ---------------------------------
@@ -253,7 +276,18 @@ if [[ "$SIGNED" -eq 1 && -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" \
         --wait
     xcrun stapler staple "$OUT_DMG"
     xcrun stapler validate "$OUT_DMG"
-    log "Notarization and stapling complete"
+
+    # The only check that answers the question a user cares about: would
+    # Gatekeeper let this through? codesign and stapler both pass on artifacts
+    # that Gatekeeper still refuses, so ask Gatekeeper itself.
+    log "Assessing with Gatekeeper (spctl)"
+    if ! spctl --assess --type install --verbose=4 "$OUT_DMG"; then
+        die "Gatekeeper rejected $OUT_DMG even after notarization and stapling"
+    fi
+    if ! spctl --assess --type exec --verbose=4 "$APP_PATH"; then
+        die "Gatekeeper rejected the signed app bundle $APP_PATH"
+    fi
+    log "Notarization, stapling and Gatekeeper assessment complete"
 else
     warn "Shipping DMG UNSIGNED/UNNOTARIZED."
     if [[ "$DO_SIGN" -eq 0 ]]; then

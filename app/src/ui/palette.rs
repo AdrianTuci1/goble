@@ -17,8 +17,12 @@ use goble_ui::elements::{
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
+use goble_ui::elements::SlashMenuItem;
 use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::Dialog;
+
+use super::actions::UiActions;
+use super::snapshot::UiSnapshot;
 
 /// Width of the command palette panel.
 pub const CMD_PALETTE_WIDTH: f32 = 520.0;
@@ -67,6 +71,187 @@ fn filter_commands(commands: &[PaletteCommand], query: &str) -> Vec<usize> {
             }
         })
         .collect()
+}
+
+/// One command a rich input offers when its draft starts with `/`: the name as
+/// it is typed after the slash, what it does, and what running it calls.
+#[derive(Clone)]
+pub struct SlashCommand {
+    pub name: String,
+    pub description: String,
+    pub action: Rc<RefCell<dyn FnMut()>>,
+}
+
+impl SlashCommand {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        action: impl FnMut() + 'static,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            action: Rc::new(RefCell::new(action)),
+        }
+    }
+}
+
+/// The commands a rich input offers when its draft starts with `/`, in the
+/// shape grok-build lists them: a name the draft runs, and what it does. The
+/// list is the session and workspace gestures this input can actually reach —
+/// nothing is offered here that would go nowhere — and one entry per configured
+/// model, written the way grok-build writes `/model <name>`.
+///
+/// The chord that runs a command is deliberately not repeated here: the
+/// instruction strip under the input carries the gestures, and a command is run
+/// from the list itself.
+pub fn slash_commands(state: &UiSnapshot, actions: &UiActions) -> Vec<SlashCommand> {
+    let run = |action: &Rc<RefCell<dyn FnMut()>>| {
+        let act = action.clone();
+        move || (act.borrow_mut())()
+    };
+    let pane_id = state.active_pane_id;
+    let mut commands = vec![
+        SlashCommand::new(
+            "new",
+            "Start a fresh conversation",
+            run(&actions.on_create_submit),
+        ),
+        SlashCommand::new(
+            "clear",
+            "Clear this conversation's transcript",
+            run(&actions.on_clear_transcript),
+        ),
+        SlashCommand::new(
+            "fork",
+            "Branch this conversation into a new one",
+            {
+                let act = actions.on_fork_conversation.clone();
+                move || (act.borrow_mut())(pane_id)
+            },
+        ),
+        SlashCommand::new("stop", "Stop the running turn", run(&actions.on_stop)),
+        SlashCommand::new("shortcuts", "Show every keyboard shortcut", {
+            run(&actions.on_toggle_shortcuts_help)
+        }),
+        SlashCommand::new("settings", "Open settings", run(&actions.on_settings)),
+        SlashCommand::new("space", "Open a new space", run(&actions.on_add_space)),
+        SlashCommand::new("split", "Split this pane to the right", {
+            run(&actions.on_split_right)
+        }),
+        SlashCommand::new("terminal", "Open a new terminal pane", {
+            run(&actions.on_new_terminal)
+        }),
+        SlashCommand::new("close", "Close this pane", run(&actions.on_close_pane)),
+        SlashCommand::new("sidebar", "Toggle the right sidebar", {
+            run(&actions.on_toggle_right_sidebar)
+        }),
+        SlashCommand::new("fullscreen", "Toggle full screen", {
+            run(&actions.on_toggle_fullscreen)
+        }),
+        SlashCommand::new("projects", "Open the project list", run(&actions.on_projects)),
+        SlashCommand::new("scheduled", "Open the scheduled tasks", {
+            run(&actions.on_open_crons)
+        }),
+        SlashCommand::new("tasks", "Open tasks and workflows", {
+            run(&actions.on_toggle_task_workflow)
+        }),
+        SlashCommand::new("workflows", "Open the workflow catalog", {
+            run(&actions.on_workflows)
+        }),
+        SlashCommand::new("mcps", "Open the MCP servers", run(&actions.on_mcps)),
+    ];
+    {
+        // The same toggles Settings carries; either surface flips them, and the
+        // choice persists.
+        let toggle_dark = actions.on_toggle_dark_mode.clone();
+        let dark_mode = state.settings_dark_mode;
+        commands.push(SlashCommand::new(
+            "theme",
+            "Switch between the dark and light theme",
+            move || (toggle_dark.borrow_mut())(!dark_mode),
+        ));
+        let toggle_vim = actions.on_toggle_vim_mode.clone();
+        let vim_mode = state.vim_mode;
+        commands.push(SlashCommand::new(
+            "vim-mode",
+            "Toggle vim-style editing",
+            move || (toggle_vim.borrow_mut())(!vim_mode),
+        ));
+        // grok-build's permission-mode command, applied to the pane that typed
+        // it: running it while it is on turns it back off.
+        let toggle_approve = actions.on_toggle_auto_approve.clone();
+        let auto_approve = state
+            .pane_controls
+            .get(&pane_id)
+            .map(|controls| controls.auto_approve)
+            .unwrap_or(state.auto_approve);
+        commands.push(SlashCommand::new(
+            "always-approve",
+            "Stop asking before running commands",
+            move || (toggle_approve.borrow_mut())(pane_id, !auto_approve),
+        ));
+    }
+    // One entry per configured model: `/model <name>`, so `/` lists them and
+    // the name filters them. A pick applies to the pane that typed it.
+    for name in &state.models {
+        let act = actions.on_model_select.clone();
+        let model = name.clone();
+        commands.push(SlashCommand::new(
+            format!("model {model}"),
+            "Run this pane on another model",
+            move || (act.borrow_mut())(pane_id, model.clone()),
+        ));
+    }
+    commands
+}
+
+/// The commands whose name contains `query`, in order. An empty query matches
+/// every one, so a bare `/` lists the whole set.
+pub fn matching_slash_commands(commands: &[SlashCommand], query: &str) -> Vec<SlashCommand> {
+    let query = query.trim().to_lowercase();
+    commands
+        .iter()
+        .filter(|command| query.is_empty() || command.name.to_lowercase().contains(&query))
+        .cloned()
+        .collect()
+}
+
+/// A command list as the menu draws it: the name and what it does.
+pub fn slash_items(commands: &[SlashCommand]) -> Vec<SlashMenuItem> {
+    commands
+        .iter()
+        .map(|command| {
+            SlashMenuItem::new(command.name.clone(), command.description.clone())
+        })
+        .collect()
+}
+
+/// Run the command at `index` of `commands` and put the menu away. The index is
+/// the row the menu reported, which is a position in the list it was handed.
+pub fn slash_accept(
+    commands: Vec<SlashCommand>,
+    close: Rc<RefCell<dyn FnMut()>>,
+) -> impl FnMut(usize) + 'static {
+    move |index: usize| {
+        if let Some(command) = commands.get(index) {
+            (command.action.borrow_mut())();
+        }
+        (close.borrow_mut())();
+    }
+}
+
+/// The query a slash draft carries: what was typed after the `/`, up to the
+/// first word. The rest of the line is the command's own text, not its name.
+pub fn slash_query(draft: &str) -> Option<String> {
+    let trimmed = draft.trim_start();
+    let rest = trimmed.strip_prefix('/')?;
+    Some(
+        rest.split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string(),
+    )
 }
 
 /// Build the Cmd+K command palette overlay. When `open` is false the overlay
@@ -193,7 +378,7 @@ impl PaletteContent {
         )
         .with_padding(EdgeInsets::uniform(md))
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-        .with_border(app.theme.color(ColorToken::Accent).into())
+        .with_border(app.theme.color(ColorToken::Focus).into())
         .finish();
 
         let mut list = Flex::column()

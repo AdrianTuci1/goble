@@ -35,6 +35,7 @@ flowchart TD
 6. **Secrets/keys** are never printed or committed; reference them by id (vault).
 7. **Say what you did not verify** and why. Honesty over apparent completeness.
 8. **Update the tracker** so the tree stays a live record (this is the resolver's contract).
+9. **A file that has grown too large is split, not appended to.** Past ~800 lines, turn `foo.rs` into a `foo/` directory whose `mod.rs` declares one module per surface (`foo/panes.rs`, `foo/actions.rs`, …), re-exporting the same public items so no call site changes. Splitting is a mechanical move: same code, same visibility, same tests — never a rewrite, and never a place to leave a `TODO`. Do it before adding to the file, not after.
 
 ## When you're unsure
 

@@ -33,6 +33,7 @@ pub enum RenderCommand {
         line_height: f32,
         font_weight: FontWeight,
         font_family: FontFamily,
+        font_italic: bool,
     },
     DrawIcon {
         origin: Vector2F,
@@ -145,6 +146,7 @@ impl Renderer {
             line_height,
             font_weight: FontWeight::Regular,
             font_family: FontFamily::System,
+            font_italic: false,
         });
     }
 
@@ -166,10 +168,12 @@ impl Renderer {
             1.2,
             font_weight,
             FontFamily::System,
+            false,
         )
     }
 
-    /// Draw text with an explicit font family (e.g. `FontFamily::Mono` for terminal output).
+    /// Draw text with an explicit font family (e.g. `FontFamily::Mono` for
+    /// terminal output) and an oblique/italic face.
     pub fn draw_text_with_font(
         &mut self,
         origin: Vector2F,
@@ -180,6 +184,7 @@ impl Renderer {
         line_height: f32,
         font_weight: FontWeight,
         font_family: FontFamily,
+        font_italic: bool,
     ) {
         self.commands.push(RenderCommand::DrawText {
             origin,
@@ -190,6 +195,7 @@ impl Renderer {
             line_height,
             font_weight,
             font_family,
+            font_italic,
         });
     }
 

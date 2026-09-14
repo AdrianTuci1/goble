@@ -120,24 +120,99 @@ PATH or set INNO_SETUP_ISCC to its full path.
 }
 $Iscc = Find-Iscc
 
+# The Windows SDK does not put signtool.exe on PATH, so look in its install
+# directories as well. Only needed when signing is configured.
+function Find-SignTool {
+    $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    $roots = @(
+        (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'),
+        (Join-Path $env:ProgramFiles 'Windows Kits\10\bin')
+    )
+    foreach ($root in $roots) {
+        if (-not $root -or -not (Test-Path $root)) { continue }
+        $found = Get-ChildItem -Path $root -Filter 'signtool.exe' -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($found) { return $found.FullName }
+    }
+    return $null
+}
+
 # --- signing ---------------------------------------------------------------
-function Get-SignToolCommand {
+# One argument list, used twice: directly to sign the application executable,
+# and as an Inno "SignTool" template so Inno signs the setup engine and the
+# uninstaller it generates.
+function Get-SignToolArgs {
     $timestampUrl = if ($env:WINDOWS_SIGN_TIMESTAMP_URL) { $env:WINDOWS_SIGN_TIMESTAMP_URL } else { 'http://timestamp.digicert.com' }
 
     if ($env:WINDOWS_SIGN_CERT_PFX -and $env:WINDOWS_SIGN_CERT_PASSWORD) {
         if (-not (Test-Path $env:WINDOWS_SIGN_CERT_PFX)) {
             throw "WINDOWS_SIGN_CERT_PFX points at a missing file: $($env:WINDOWS_SIGN_CERT_PFX)"
         }
-        return "signtool.exe sign /f `"$($env:WINDOWS_SIGN_CERT_PFX)`" /p `"$($env:WINDOWS_SIGN_CERT_PASSWORD)`" /fd sha256 /tr $timestampUrl /td sha256 `$f"
+        return @('sign', '/f', $env:WINDOWS_SIGN_CERT_PFX, '/p', $env:WINDOWS_SIGN_CERT_PASSWORD,
+                 '/fd', 'sha256', '/tr', $timestampUrl, '/td', 'sha256')
     }
     if ($env:WINDOWS_SIGN_CERT_THUMBPRINT) {
-        return "signtool.exe sign /sha1 $($env:WINDOWS_SIGN_CERT_THUMBPRINT) /fd sha256 /tr $timestampUrl /td sha256 `$f"
+        return @('sign', '/sha1', $env:WINDOWS_SIGN_CERT_THUMBPRINT,
+                 '/fd', 'sha256', '/tr', $timestampUrl, '/td', 'sha256')
     }
     return $null
 }
 
-$signCommand = $null
-if (-not $SkipSign) { $signCommand = Get-SignToolCommand }
+function Get-SignToolCommand {
+    # Not $args: that is a PowerShell automatic variable.
+    $toolArgs = Get-SignToolArgs
+    if (-not $toolArgs) { return $null }
+    # Inno substitutes $f with each file it signs, so the template is a command
+    # line: quote every argument that could contain spaces.
+    $quoted = $toolArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
+    return "$SignToolExe $($quoted -join ' ') `$f"
+}
+
+function Test-SignedFile {
+    param([Parameter(Mandatory)][string]$Path)
+    Write-Step "Verifying signature: $(Split-Path -Leaf $Path)"
+    & $SignToolExe verify /pa /v $Path
+    if ($LASTEXITCODE -ne 0) {
+        throw "signature verification failed for $Path"
+    }
+}
+
+$signArgs = $null
+if (-not $SkipSign) { $signArgs = Get-SignToolArgs }
+
+$SignToolExe = $null
+if ($signArgs) {
+    $SignToolExe = Find-SignTool
+    if (-not $SignToolExe) {
+        throw @"
+WINDOWS_SIGN_* is set but signtool.exe was not found.
+
+Install the Windows SDK (it ships in the "Windows SDK Signing Tools" component)
+or add signtool.exe to PATH.
+"@
+    }
+}
+$signCommand = if ($signArgs) { Get-SignToolCommand } else { $null }
+
+# A release is signed or it is not a release: an unsigned installer is flagged
+# by SmartScreen, and the app it installs would carry no publisher at all.
+$RequireSigning = ($env:GOBLE_REQUIRE_SIGNING -eq '1')
+if (-not $signCommand -and $RequireSigning) {
+    throw @"
+GOBLE_REQUIRE_SIGNING=1 but no Windows signing certificate is configured.
+
+Set WINDOWS_SIGN_CERT_PFX + WINDOWS_SIGN_CERT_PASSWORD (and optionally
+WINDOWS_SIGN_TIMESTAMP_URL), or WINDOWS_SIGN_CERT_THUMBPRINT for a certificate
+already in the user's store. See packaging/README.md, section Signing.
+
+To build an unsigned artifact on purpose, leave GOBLE_REQUIRE_SIGNING unset (or
+set it to 0) and pass -SkipSign.
+"@
+}
 if ($signCommand) {
     Write-Step 'Signing enabled (WINDOWS_SIGN_* is set)'
 } else {
@@ -156,11 +231,27 @@ try {
     $utf8Bom = New-Object System.Text.UTF8Encoding($true)
     [System.IO.File]::WriteAllText((Join-Path $stage 'EULA.txt'), $eula, $utf8Bom)
 
+    # Sign the application executable before it is packaged, so the file users
+    # end up running carries the publisher too, not just the installer around
+    # it. The copy is signed rather than target/release/'s file, so a build
+    # output is never modified in place.
+    $SourceToPackage = $SourceBinary
+    if ($signArgs) {
+        $SourceToPackage = Join-Path $stage (Split-Path -Leaf $SourceBinary)
+        Copy-Item $SourceBinary $SourceToPackage -Force
+        Write-Step "Signing application binary: $(Split-Path -Leaf $SourceToPackage)"
+        & $SignToolExe @signArgs $SourceToPackage
+        if ($LASTEXITCODE -ne 0) {
+            throw "signtool failed to sign $SourceToPackage (exit $LASTEXITCODE)"
+        }
+        Test-SignedFile $SourceToPackage
+    }
+
     $isccArgs = @(
         '/Q'
         "/DMyAppVersion=$Version"
         "/DMyAppName=$AppName"
-        "/DSourceBinary=$SourceBinary"
+        "/DSourceBinary=$SourceToPackage"
         "/DOutDir=$OutDir"
         "/DAppIconPath=$IconPath"
         "/DRepoLicense=$LicensePath"
@@ -188,5 +279,10 @@ $expected = Join-Path $OutDir "$AppName-$Version-win-$Arch-setup.exe"
 if (-not (Test-Path $expected)) {
     throw "ISCC reported success but the expected installer was not found: $expected"
 }
+
+# Inno signs the setup engine and the uninstaller from the /Ssigntool template;
+# check it happened rather than trusting the exit code.
+if ($signArgs) { Test-SignedFile $expected }
+
 $info = Get-Item $expected
 Write-Step ("Installer ready: {0} ({1:N0} bytes)" -f $info.FullName, $info.Length)

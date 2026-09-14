@@ -21,6 +21,10 @@ derivative = "2.2"
 fontdue = "0.9"
 goble-core = { path = "../goble-core" }
 goble-desktop-service = { path = "../goble-desktop-service" }
+# The terminal grid element renders the emulator's cell snapshots, and needs its
+# palette to resolve a cell colour. Keeping the snapshot types here avoids a
+# parallel cell model that would have to be kept in step with the emulator.
+goble-terminal = { path = "../goble-terminal" }
 derive_more = { version = "0.99", features = ["deref", "deref_mut", "from", "into"] }
 euclid = "0.22"
 fontdb = "0.21"
@@ -34,6 +38,12 @@ parking_lot = "0.12"
 pollster = "0.4"
 pulldown-cmark = "0.13"
 resvg = "0.47"
+# Syntax highlighting for code blocks and tool bodies. syntect is built with the
+# pure-Rust `fancy-regex` backend (no Oniguruma / C toolchain); `two-face`
+# supplies bat's grammar set. The theme is ours (`assets/themes`), so no theme
+# or grammar file is vendored from a reference tree.
+syntect = { version = "5.3", default-features = false, features = ["parsing", "dump-load", "plist-load", "regex-fancy"] }
+two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
 rustc-hash = "2.1"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"

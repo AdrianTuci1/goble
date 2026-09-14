@@ -382,3 +382,68 @@ fn refresh_messages_maps_tool_rows_and_evokes() {
         "tool output should be presented as a terminal block"
     );
 }
+
+/// The persisted tool-call carrier survives a re-read: a `running` call and a
+/// `finished` call each surface their status (and the finished one its result),
+/// while a row written by an older build still parses with defaults.
+#[test]
+fn refresh_messages_surfaces_tool_call_status() {
+    use goble_core::harness::ToolCallStatus;
+
+    let (desktop, _dir) = common::desktop_state();
+    let chat_id = desktop
+        .create_chat("Status", None, None)
+        .expect("create chat");
+    let store = desktop.store_clone();
+    store
+        .insert_chat_message(
+            "s1",
+            &chat_id,
+            "assistant",
+            "",
+            Some(r#"[{"id":"c1","name":"ls","arguments":{},"status":"running"}]"#),
+            "2026-08-25T00:00:00Z",
+        )
+        .expect("insert running call");
+    store
+        .insert_chat_message(
+            "s2",
+            &chat_id,
+            "assistant",
+            "",
+            Some(
+                r#"[{"id":"c2","name":"credentials","arguments":{},"status":"finished","result":"ok"}]"#,
+            ),
+            "2026-08-25T00:00:01Z",
+        )
+        .expect("insert finished call");
+    store
+        .insert_chat_message(
+            "s3",
+            &chat_id,
+            "assistant",
+            "",
+            Some(r#"[{"id":"c3","name":"ls","arguments":{}}]"#),
+            "2026-08-25T00:00:02Z",
+        )
+        .expect("insert legacy call");
+
+    let (state, _) = build(&desktop);
+    {
+        let mut s = state.borrow_mut();
+        s.selected_id = Some(chat_id.clone());
+        s.refresh_messages(&desktop);
+    }
+
+    let msgs = &state.borrow().chat_messages;
+    assert_eq!(msgs.len(), 3);
+    assert_eq!(msgs[0].tool_calls[0].status, ToolCallStatus::Running);
+    assert_eq!(msgs[0].tool_calls[0].id, "c1");
+    assert_eq!(msgs[1].tool_calls[0].status, ToolCallStatus::Finished);
+    assert_eq!(msgs[1].tool_calls[0].result.as_deref(), Some("ok"));
+    assert_eq!(
+        msgs[2].tool_calls[0].status,
+        ToolCallStatus::Pending,
+        "a row from an older build parses with the default status"
+    );
+}

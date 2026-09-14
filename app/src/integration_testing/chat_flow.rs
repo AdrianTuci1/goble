@@ -14,7 +14,7 @@ use goble_app::state::UiState;
 use goble_app::ui::{AppTab, UiActions};
 use goble_desktop_service::DesktopState;
 use goble_ui::platform::WindowControl;
-use goble_ui::{ChatFragmentKind, ChatMessage, ChatRole};
+use goble_ui::{ChatFragmentKind, ChatMessage};
 
 /// Concatenate the human-readable text of a message's inline fragments.
 #[allow(dead_code)]
@@ -25,8 +25,7 @@ fn message_text(msg: &ChatMessage) -> String {
             ChatFragmentKind::Text(s)
             | ChatFragmentKind::Bold(s)
             | ChatFragmentKind::Italic(s)
-            | ChatFragmentKind::BoldItalic(s)
-            | ChatFragmentKind::BlockQuote(s) => Some(s.clone()),
+            | ChatFragmentKind::BoldItalic(s) => Some(s.clone()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -46,10 +45,22 @@ fn build(desktop: &Arc<DesktopState>) -> (Rc<RefCell<UiState>>, UiActions) {
     (state, actions)
 }
 
+/// Give the app a runnable model (a provider, a key and a model name), the way
+/// a configured machine has one. Creating a conversation is refused while
+/// nothing could answer it, so the tests that start one configure this first.
+fn configure_model(state: &Rc<RefCell<UiState>>) {
+    let mut s = state.borrow_mut();
+    s.settings_llm_provider = "mock".to_string();
+    s.settings_llm_api_key = "test-key".to_string();
+    s.settings_llm_model = "mock".to_string();
+    s.selected_model = "mock".to_string();
+}
+
 #[test]
 fn create_chat_persists_and_selects() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);
+    configure_model(&state);
 
     assert!(state.borrow().conversations.is_empty());
 
@@ -73,6 +84,7 @@ fn create_chat_persists_and_selects() {
 fn blank_title_creates_default_agent() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);
+    configure_model(&state);
 
     (actions.on_create_change.borrow_mut())("   ".to_string());
     (actions.on_create_submit.borrow_mut())();
@@ -87,7 +99,7 @@ fn blank_title_creates_default_agent() {
 }
 
 #[test]
-fn send_message_appends_and_persists() {
+fn a_prompt_with_no_model_is_never_persisted() {
     let (desktop, _dir) = common::desktop_state();
     let chat_id = desktop
         .create_chat("Demo", None, None)
@@ -97,28 +109,57 @@ fn send_message_appends_and_persists() {
     (actions.on_composer_change.borrow_mut())("Salut!".to_string());
     (actions.on_send_message.borrow_mut())("Salut!".to_string());
 
-    // No key is configured, so the send path keeps the user's message, appends
-    // an honest assistant reply and surfaces the model-key banner overlay.
+    // No key is configured, so nothing can answer this prompt: it is not sent,
+    // not written into the transcript and not persisted — the pane shows the
+    // model-key notice instead, and the composer keeps what was typed.
     {
         let state = state.borrow();
-        assert_eq!(state.composer_draft, "");
-        assert_eq!(state.chat_messages.len(), 2);
-        assert_eq!(state.chat_messages[0].role, ChatRole::User);
-        assert_eq!(state.chat_messages[1].role, ChatRole::Assistant);
+        assert_eq!(state.composer_draft, "Salut!");
+        assert!(
+            state.chat_messages.is_empty(),
+            "an unanswerable prompt writes nothing into the transcript"
+        );
         assert!(
             state.show_llm_key_banner,
-            "no key -> banner overlay should surface"
+            "no key -> the notice band should surface"
         );
+        assert!(!state.agent_busy, "no turn started");
     }
 
     let messages = desktop.list_chat_messages(&chat_id).expect("list messages");
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0].role, "user");
-    assert_eq!(messages[1].role, "assistant");
     assert!(
-        messages[1].content.contains("No model is configured"),
-        "assistant reply should explain the missing model"
+        messages.is_empty(),
+        "nothing should reach the store for a prompt that could not run: {messages:?}"
     );
+}
+
+#[test]
+fn a_prompt_with_no_model_creates_no_conversation() {
+    let (desktop, _dir) = common::desktop_state();
+    let (state, actions) = build(&desktop);
+    assert!(desktop.list_chats().is_empty());
+
+    // Cmd+Enter on a pane with no conversation: with no model to answer it, the
+    // prompt must not leave a conversation behind in the sidebar.
+    (actions.on_cmd_enter.borrow_mut())("Salut!".to_string());
+
+    assert!(
+        desktop.list_chats().is_empty(),
+        "no conversation is created for a prompt that cannot run"
+    );
+    assert!(
+        state.borrow().conversations.is_empty(),
+        "sidebar stays empty"
+    );
+    assert!(state.borrow().show_llm_key_banner);
+
+    // The sidebar's own "New conversation" row is refused for the same reason.
+    (actions.on_create_submit.borrow_mut())();
+    assert!(
+        desktop.list_chats().is_empty(),
+        "the sidebar creates no conversation either"
+    );
+    assert!(state.borrow().show_llm_key_banner);
 }
 
 #[test]
@@ -155,6 +196,7 @@ fn select_tab_switches_views() {
 fn repeated_new_conversation_reuses_the_empty_one() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);
+    configure_model(&state);
 
     // The sidebar "New conversation" row: clicking it repeatedly must not pile
     // up empty conversations while the active pane is already on a fresh one.
@@ -170,6 +212,7 @@ fn repeated_new_conversation_reuses_the_empty_one() {
 fn new_conversation_after_a_message_creates_a_fresh_one() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);
+    configure_model(&state);
 
     (actions.on_create_submit.borrow_mut())();
     let first = state.borrow().selected_id.clone().expect("first conversation");

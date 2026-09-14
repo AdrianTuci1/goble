@@ -143,6 +143,10 @@ fn project_label(entry: &ProjectEntry) -> String {
     if entry.directory.is_empty() {
         entry.project_id.clone()
     } else {
-        format!("{} · {}", entry.directory, entry.project_id)
+        format!(
+            "{} · {}",
+            crate::state::display_path(&entry.directory),
+            entry.project_id
+        )
     }
 }

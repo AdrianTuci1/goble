@@ -170,7 +170,13 @@ impl Element for Flex {
         } else {
             total_main + total_spacing
         };
-        let cross_size = if self.cross_axis_alignment == CrossAxisAlignment::Stretch {
+        // Stretching needs a bounded cross axis: with an unbounded one (a row
+        // measured inside a vertical scroll region, say) there is nothing to
+        // stretch to, so the flex sizes to its content instead of reporting an
+        // infinite cross extent.
+        let cross_size = if self.cross_axis_alignment == CrossAxisAlignment::Stretch
+            && constraint.max.along(cross).is_finite()
+        {
             constraint.max.along(cross)
         } else {
             cross_max

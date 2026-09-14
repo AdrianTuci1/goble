@@ -59,10 +59,11 @@ impl std::fmt::Display for StepId {
 }
 
 /// What causes a workflow to run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Trigger {
     /// Fired by a person (the default).
+    #[default]
     Manual,
     /// Fired on a cron schedule.
     Schedule {
@@ -72,12 +73,6 @@ pub enum Trigger {
     Event {
         event: String,
     },
-}
-
-impl Default for Trigger {
-    fn default() -> Self {
-        Trigger::Manual
-    }
 }
 
 /// One step in a workflow: a named, addressable unit the engine performs.

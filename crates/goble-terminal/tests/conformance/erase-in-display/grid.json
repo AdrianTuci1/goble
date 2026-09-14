@@ -1,0 +1,10 @@
+{
+  "rows": ["AAAAAAAAAA", "BBBB", ""],
+  "cursor": { "line": 1, "column": 4, "visible": true, "shape": "block", "wrap_pending": false },
+  "cells": [
+    { "row": 0, "column": 0, "fg": "default" },
+    { "row": 0, "column": 9, "wrapline": false },
+    { "row": 1, "column": 3, "fg": "default" },
+    { "row": 1, "column": 4, "fg": "default", "bg": "default" }
+  ]
+}

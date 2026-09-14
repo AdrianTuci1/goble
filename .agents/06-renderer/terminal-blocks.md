@@ -222,7 +222,7 @@ Phase B0 is independent of the emulator work and can run in parallel with emulat
 
 ## Tasks
 
-- [ ] Ship bash + zsh integration scripts: `precmd`/`preexec` hooks, DCS hex-JSON encoding, `PS1` save/suppress/restore, `InitShell` + `Bootstrapped` handshake.
+- [x] Ship bash + zsh integration scripts: `precmd`/`preexec` hooks, DCS hex-JSON encoding, `PS1` save/suppress/restore, `InitShell` + `Bootstrapped` handshake — `assets/shell/{bash.sh,zsh.sh,zsh_env.sh}`; the pane spawn points bash at `--rcfile` and zsh at `ZDOTDIR`, and `bash -n`/`zsh -n` plus a decoder test over the scripts' exact bytes pass.
 - [x] Define the hook payload schema (`CommandFinished{exit_code, next_block_id}`, `Precmd{pwd, git, env, rprompt, session_id, honor_ps1}`, `Preexec{command}`) and one decoder — `hooks.rs`: the envelope is `DCS $d <hex(JSON)> ST`, decoded into `HookEvent` by a byte tap that leaves every other byte, foreign `DCS` included, untouched for the parser. An envelope split across two PTY reads still decodes; a malformed, oversized or unknown one is dropped and counted rather than failing the session.
 - [~] Build the `Block` type and `BlockList` with the state machine of §2 and the field set of §3 — the state machine, command/output data, exit code, metadata, timing and the block-level events are in; a height sum-tree is not, and `BlockList::lines` reports the rows in reading order instead.
 - [~] Give each block its own grids (prompt, prompt+command, rprompt, output) with freeze-on-finish — a block owns a command screen and an output screen, each with its own bounded storage, and both freeze when the command finishes; the prompt and rprompt grids wait for prompt hiding.

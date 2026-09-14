@@ -16,10 +16,7 @@ pub fn default_provider_factory(
     if provider.eq_ignore_ascii_case("mock") {
         return Ok(Arc::new(goble_core::llm::MockProvider::new(
             "mock",
-            goble_core::llm::CompletionResponse {
-                content: "ok".to_string(),
-                tool_calls: vec![],
-            },
+            goble_core::llm::CompletionResponse::new("ok", vec![]),
         )));
     }
 
@@ -45,9 +42,6 @@ pub fn provider_from_config(
 pub fn mock_provider_factory() -> Arc<dyn LlmProvider> {
     Arc::new(MockProvider::new(
         "mock",
-        CompletionResponse {
-            content: "ok".to_string(),
-            tool_calls: vec![],
-        },
+        CompletionResponse::new("ok", vec![]),
     ))
 }

@@ -28,6 +28,8 @@ pub mod secret;
 pub mod secret_manager;
 pub mod snapshot;
 pub mod store;
+pub mod subagent;
+pub(crate) mod subagent_run;
 pub mod task;
 pub mod thread;
 pub mod tls;

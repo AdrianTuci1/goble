@@ -1,0 +1,8 @@
+{
+  "rows": ["2222", "3333", "", "4444"],
+  "cursor": { "line": 0, "column": 0, "visible": true, "shape": "block", "wrap_pending": false },
+  "cells": [
+    { "row": 3, "column": 0, "fg": "default" },
+    { "row": 3, "column": 3, "wrapline": false }
+  ]
+}

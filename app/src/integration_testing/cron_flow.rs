@@ -25,8 +25,7 @@ fn message_text(msg: &ChatMessage) -> String {
             ChatFragmentKind::Text(s)
             | ChatFragmentKind::Bold(s)
             | ChatFragmentKind::Italic(s)
-            | ChatFragmentKind::BoldItalic(s)
-            | ChatFragmentKind::BlockQuote(s) => Some(s.clone()),
+            | ChatFragmentKind::BoldItalic(s) => Some(s.clone()),
             _ => None,
         })
         .collect::<Vec<_>>()

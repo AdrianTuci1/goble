@@ -99,9 +99,9 @@ did, but it is a real gap.
 
 | Platform | Artifacts | Notes |
 |---|---|---|
-| macOS | `Goble-<v>-arm64.dmg`, `Goble-<v>-x64.dmg`, `…-universal.dmg` | `hdiutil` disk image with a custom background image and a fixed icon layout; optional Developer ID signing and notarisation |
-| Linux | `Goble-<v>-x86_64.AppImage`, `goble_<v>_amd64.deb`, `Goble-<v>-linux-x86_64.tar.gz` | AppImage, Debian package, and a tarball fallback |
-| Windows | `Goble-<v>-win-x64-setup.exe` | Inno Setup, per-user install, EULA page, a Windows 10 1903 floor (below it ConPTY, and therefore the terminal, cannot start), silent flags documented for the updater |
+| macOS | `Goble-<v>-arm64.dmg`, `Goble-<v>-x64.dmg`, `…-universal.dmg` | `hdiutil` disk image with a custom background image and a fixed icon layout; Developer ID signing, hardened runtime with `macos/entitlements.plist`, notarisation, stapling, and a Gatekeeper assessment |
+| Linux | `Goble-<v>-x86_64.AppImage`, `goble_<v>_amd64.deb`, `Goble-<v>-linux-x86_64.tar.gz` | AppImage, Debian package, and a tarball fallback; integrity comes from the signed manifest, since Linux artifacts carry no signature of their own |
+| Windows | `Goble-<v>-win-x64-setup.exe` | Inno Setup, per-user install, EULA page, a Windows 10 1903 floor (below it ConPTY, and therefore the terminal, cannot start), the app executable signed before packaging and the setup engine and uninstaller signed by Inno, both verified with `signtool`, silent flags documented for the updater |
 
 `scripts/release.sh` builds the app for the host, runs the host's packaging script, writes
 `dist/SHA256SUMS`, and with `--manifest` writes `dist/channel_versions.json`. It sets
@@ -110,8 +110,15 @@ did, but it is a real gap.
 claims to be.
 
 Signing is environment-driven (`APPLE_SIGNING_IDENTITY`, `APPLE_*` for notarisation,
-`WINDOWS_SIGN_*`, `GOBLE_UPDATE_SIGNING_KEY`). Missing secrets degrade to an unsigned artifact with a
-warning; nothing is ever faked, and an unsigned manifest simply has no `signature` field.
+`WINDOWS_SIGN_*`, `GOBLE_UPDATE_SIGNING_KEY`). It is also **required**: `GOBLE_REQUIRE_SIGNING=1`
+makes a missing credential a build failure, and `scripts/release.sh` sets it for every channel except
+`dev`, so a release cannot be published unsigned by accident. A signed release is checked rather than
+assumed — `codesign --verify --strict`, `spctl --assess` on both the DMG and the app,
+`stapler validate`, and `signtool verify` on the Windows app executable and installer. The macOS
+bundle is signed with the hardened runtime and `macos/entitlements.plist`, which is deliberately
+empty and says why; `--deep` is gone, because Apple deprecates it for signing. `--allow-unsigned` is
+the explicit way to build a local test artifact. See `packaging/README.md`, section Signing, for what
+the two certificates cost and how to obtain them.
 
 ## Reference mapping (warp-new)
 
@@ -136,6 +143,14 @@ so there is nothing to learn from it beyond the tag and breadcrumb taxonomy.
 
 ## Remaining work
 
+- [ ] **Obtain the two signing certificates** — an Apple Developer Program membership with a
+      Developer ID Application certificate (99 USD/year) and a Windows OV/EV code-signing certificate
+      — and add them to the repository secrets listed in `packaging/README.md`. Until then no
+      official build can be produced at all, because a release refuses to be unsigned.
+- [ ] **Run one release with the certificates** and confirm the notarisation round trip, the `spctl`
+      assessment, and `signtool verify` on a real artifact. The signing code path is exercised with an
+      ad-hoc signature and the DMG pipeline runs end to end, but nothing downstream of a real
+      certificate has been tried.
 - [ ] Deploy a collector host, set `GOBLE_TELEMETRY_ENDPOINT` for release builds, and confirm an
       end-to-end upload (staging → collector → summary) against the real host.
 - [ ] Generate the release signing key pair, publish the public key, and make `--manifest` sign in CI.

@@ -4,9 +4,12 @@ pub use ask_user::{AskUserCard, AskUserUi};
 pub use avatar::{Avatar, AvatarShape};
 pub use button::{Button, ButtonVariant};
 pub use caption::Caption;
-pub use caret::{caret_beam, CARET_HEIGHT};
-pub use chat_composer::ChatComposer;
-pub use chat_content::{ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, ToolCall};
+pub use caret::{caret, caret_beam, CaretShape, CARET_HEIGHT};
+pub use chat_composer::{ChatComposer, CommandProposalUi};
+pub use chat_content::{
+    tool_fold_key, ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, SubAgentRow,
+    SubAgentRowStatus, ToolCall, ToolDisplayMode,
+};
 pub use chat_header::ChatHeader;
 pub use chat_layout::{ChatLayout, CHAT_RIGHT_SIDEBAR_WIDTH};
 pub use chat_sidebar::{ChatSidebar, RoutineItem, CHAT_SIDEBAR_WIDTH};
@@ -15,29 +18,35 @@ pub use conversation_sidebar::{
     ConversationEntry, ConversationSidebar, CONVERSATION_SIDEBAR_WIDTH,
 };
 pub use dialog::{Dialog, DIALOG_DEFAULT_WIDTH};
+pub use diff::{parse_unified_diff, Diff, DiffLine, DiffLineKind, DiffRow, DiffStats, Hunk};
 pub mod markdown;
-pub use frame_view::{FrameSize, FrameView};
 pub use chat_message_bubble::ChatMessageBubble;
 pub use checkbox::Checkbox;
 pub use chip::Chip;
 pub use clipped::Clipped;
-pub use composer_button::ComposerButton;
-pub use context_pill::{ContextPill, PillTraySide, CONTEXT_PILL_HEIGHT};
 pub use code::Code;
+pub use composer_button::{ComposerButton, COMPOSER_CONTROL_RADIUS};
 pub use connector_card::ConnectorCard;
 pub use constrained_box::ConstrainedBox;
 pub use container::Container;
+pub use context_pill::{ContextPill, PillTraySide, CONTEXT_PILL_HEIGHT};
+pub use conversation_card::{ConversationCard, ConversationCardStatus, CARD_RAIL_WIDTH};
 pub use divider::Divider;
 pub use drawer::{Drawer, DrawerAnchor};
 pub use dropdown_menu::{DropdownItem, DropdownMenu};
 pub use empty::Empty;
 pub use expanded::Expanded;
+pub use file_icon::{file_icon, file_icon_name};
 pub use flex::Flex;
+pub use frame_view::{FrameSize, FrameView};
 pub use header::Header;
 pub use hover_button::HoverButton;
+pub use hover_chip::{HoverChipLayer, HoverChipRegistry};
+pub use hover_row::HoverRow;
 pub use icon::{Icon, IconName};
 pub use icon_button::IconButton;
 pub use inline_text::{resolve_span as resolve_inline_span, InlineText, TextSpan};
+pub use key_handler::KeyHandler;
 pub use label::{Label, LabelSize};
 pub use markdown::parse_markdown;
 pub use modal::Modal;
@@ -53,6 +62,8 @@ pub use search_input::SearchInput;
 pub use select::{Select, SelectOption};
 pub use sheet::{Sheet, SHEET_DEFAULT_WIDTH};
 pub use shell::{ActiveView, SettingsTab, ShellState, ShellView, SidebarMode};
+pub use shortcut_hints::{key_has_icon, ShortcutHint, ShortcutHints};
+pub use slash_menu::{slash_menu_open, SlashMenu, SlashMenuItem, SLASH_MENU_ROWS};
 pub use sidebar::Sidebar;
 pub use sidebar_item::SidebarItem;
 pub use spacer::Spacer;
@@ -61,11 +72,12 @@ pub use stack::Stack;
 pub use switch::Switch;
 pub use tab_bar::{Tab, TabBar};
 pub use terminal_block::{
-    filter_option_labels, TerminalBlock, TerminalData, TerminalFilter, TerminalLine,
-    TerminalLineKind, TerminalStatus,
+    filter_option_labels, terminal_block, TerminalBlock, TerminalBlockPlumbing, TerminalCopyHandler,
+    TerminalData, TerminalFilter, TerminalLine, TerminalLineKind, TerminalMeta, TerminalStatus,
 };
+pub use terminal_grid::{TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT};
 pub use text::Text;
-pub use text_area::TextArea;
+pub use text_area::{LineRuns, TextArea};
 pub use text_input::TextInput;
 pub use thread_list_item::ThreadListItem;
 pub use titlebar::TitleBar;
@@ -73,6 +85,8 @@ pub use toggle_button::ToggleButton;
 pub use toolbar::Toolbar;
 pub use tooltip::{Tooltip, TooltipPosition};
 pub use topbar::{Topbar, TopbarButton};
+pub use turn_status::{TurnActivity, TurnStatus, TurnStatusFooter, WorkKind, WorkKindCount};
+pub use wrap::Wrap;
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -150,8 +164,7 @@ impl PaintContext {
     /// True when the given bounds contain the current pointer. Used at paint
     /// time for hover overlays; returns false when the pointer is outside.
     pub fn hovered(&self, bounds: RectF) -> bool {
-        self.cursor_inside
-            && crate::elements::interactive::contains(bounds, self.cursor_position)
+        self.cursor_inside && crate::elements::interactive::contains(bounds, self.cursor_position)
     }
 }
 
@@ -181,6 +194,15 @@ pub struct AppContext {
     /// loop can adjust it on Cmd+Plus/Minus/0 while each frame reads the value
     /// for the layout constraint and render scale. Clamped to `0.5..=2.0`.
     pub ui_zoom: Rc<RefCell<f32>>,
+    /// The hover chips queued while painting the current frame.
+    ///
+    /// An element that hovers a box over itself (see `Tooltip`) queues it here
+    /// instead of drawing it in its own paint pass, where anything painted after
+    /// that element would cover it, and the root's last-painted layer
+    /// (`HoverChipLayer`) draws the queue. Shared (`Rc`) so the clones the
+    /// platform hands each frame reach the same registry, and drained by that
+    /// layer every frame so a chip cannot survive into a later one.
+    pub hover_chips: Rc<RefCell<hover_chip::HoverChipRegistry>>,
 }
 
 impl Default for AppContext {
@@ -189,6 +211,7 @@ impl Default for AppContext {
             theme: crate::theme::Theme::default(),
             window_control: crate::platform::window::WindowControl::default(),
             ui_zoom: Rc::new(RefCell::new(1.0)),
+            hover_chips: Rc::new(RefCell::new(hover_chip::HoverChipRegistry::default())),
         }
     }
 }
@@ -471,6 +494,15 @@ pub trait Element {
         None
     }
 
+    /// Whether the element has a reason to be redrawn without any new input: a
+    /// live turn, a command still printing, a spinner. The platform keeps the
+    /// frame clock running while anything answers `true` and lets the window
+    /// idle otherwise, so an unchanged screen is not repainted at the display's
+    /// refresh rate.
+    fn wants_animation(&self) -> bool {
+        false
+    }
+
     fn flex_grow(&self) -> Option<f32> {
         None
     }
@@ -536,20 +568,23 @@ pub mod chat_sidebar;
 pub mod checkbox;
 pub mod chip;
 pub mod clipped;
-pub mod composer_button;
-pub mod context_pill;
 pub mod code;
+pub mod composer_button;
 pub mod connector_card;
 pub mod constrained_box;
 pub mod container;
+pub mod context_pill;
+pub mod conversation_card;
 pub mod conversation_list_item;
 pub mod conversation_sidebar;
 pub mod dialog;
+pub mod diff;
 pub mod divider;
 pub mod drawer;
 pub mod dropdown_menu;
 pub mod empty;
 pub mod expanded;
+pub mod file_icon;
 pub mod flex;
 pub mod frame_view;
 pub mod group_chat_message;
@@ -558,10 +593,13 @@ pub use group_chat_message::GroupChatMessage;
 pub use group_chat_message_group::GroupChatMessageGroup;
 pub mod header;
 pub mod hover_button;
+pub mod hover_chip;
+pub mod hover_row;
 pub mod icon;
 pub mod icon_button;
 pub mod inline_text;
 pub mod interactive;
+pub mod key_handler;
 pub mod label;
 pub mod modal;
 pub mod padding;
@@ -576,6 +614,8 @@ pub mod search_input;
 pub mod select;
 pub mod sheet;
 pub mod shell;
+pub mod shortcut_hints;
+pub mod slash_menu;
 pub mod sidebar;
 pub mod sidebar_item;
 pub mod spacer;
@@ -584,6 +624,7 @@ pub mod stack;
 pub mod switch;
 pub mod tab_bar;
 pub mod terminal_block;
+pub mod terminal_grid;
 pub mod text;
 pub mod text_area;
 pub mod text_input;
@@ -593,3 +634,5 @@ pub mod toggle_button;
 pub mod toolbar;
 pub mod tooltip;
 pub mod topbar;
+pub mod turn_status;
+pub mod wrap;

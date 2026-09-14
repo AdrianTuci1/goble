@@ -26,6 +26,9 @@ pub struct ConversationEntry {
     /// The sidebar groups conversations by this value so the Local / Remote
     /// environment selector filters which conversations are shown.
     pub workspace_routing: String,
+    /// The directory the conversation works in, drawn on its card under the
+    /// subject. Empty when the conversation has no directory of its own yet.
+    pub directory: String,
 }
 
 impl Default for ConversationEntry {
@@ -38,6 +41,7 @@ impl Default for ConversationEntry {
             status: ConversationStatus::Default,
             folder: "General".to_string(),
             workspace_routing: "local".to_string(),
+            directory: String::new(),
         }
     }
 }
@@ -57,6 +61,7 @@ impl ConversationEntry {
             status: ConversationStatus::Default,
             folder: "General".to_string(),
             workspace_routing: "local".to_string(),
+            directory: String::new(),
         }
     }
 
@@ -72,6 +77,13 @@ impl ConversationEntry {
 
     pub fn with_workspace_routing(mut self, routing: impl Into<String>) -> Self {
         self.workspace_routing = routing.into();
+        self
+    }
+
+    /// The directory this conversation works in, drawn on its card under the
+    /// subject. Empty draws no row.
+    pub fn with_directory(mut self, directory: impl Into<String>) -> Self {
+        self.directory = directory.into();
         self
     }
 }

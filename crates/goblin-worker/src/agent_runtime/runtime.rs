@@ -83,12 +83,14 @@ impl AgentRuntime {
                 content: system_prompt,
                 tool_calls: None,
                 tool_call_id: None,
+                tool_status: None,
             },
             Message {
                 role: Role::User,
                 content: user_message,
                 tool_calls: None,
                 tool_call_id: None,
+                tool_status: None,
             },
         ];
 
@@ -178,6 +180,7 @@ impl AgentRuntime {
                 content: response.content,
                 tool_calls: Some(response.tool_calls.clone()),
                 tool_call_id: None,
+                tool_status: None,
             });
             for (tool_call_id, content) in tool_results {
                 messages.push(Message {
@@ -185,6 +188,7 @@ impl AgentRuntime {
                     content,
                     tool_calls: None,
                     tool_call_id: Some(tool_call_id),
+                    tool_status: None,
                 });
             }
 
@@ -269,6 +273,7 @@ async fn summarize_if_needed(
         content: format!("Summary of prior work: {}", summary_response.content),
         tool_calls: None,
         tool_call_id: None,
+        tool_status: None,
     };
     messages.push(summary);
     Ok(messages)
@@ -329,10 +334,7 @@ mod tests {
 
         let _provider = Box::new(MockProvider::new(
             "mock",
-            CompletionResponse {
-                content: "ok".into(),
-                tool_calls: step1.clone(),
-            },
+            CompletionResponse::new("ok", step1.clone()),
         ));
 
         // First response is edit_file. After seeing its result, we need a second
@@ -340,14 +342,8 @@ mod tests {
         // response, so we use a custom provider that alternates.
         let provider = Box::new(AlternatingProvider {
             responses: vec![
-                CompletionResponse {
-                    content: "creating file".into(),
-                    tool_calls: step1.clone(),
-                },
-                CompletionResponse {
-                    content: "done".into(),
-                    tool_calls: step2.clone(),
-                },
+                CompletionResponse::new("creating file", step1.clone()),
+                CompletionResponse::new("done", step2.clone()),
             ],
             index: std::sync::atomic::AtomicUsize::new(0),
         });

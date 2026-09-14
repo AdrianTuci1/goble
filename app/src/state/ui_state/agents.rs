@@ -267,6 +267,46 @@ impl UiState {
         }
     }
 
+    /// The background work `pane_id` alone can be charged with, one row per
+    /// item: the tool calls its turn started and has not seen finish, and the
+    /// sub-agent children it spawned that are still running. Empty for a pane
+    /// with nothing in flight, which is the pane header's chip inert state.
+    ///
+    /// The app-wide work is deliberately absent. [`UiState::live_executions`]
+    /// is keyed by trace id and carries no pane, and the scheduled tasks and
+    /// workflows are registered globally, so none of them can be attributed to
+    /// the pane a chip sits in — they stay on the app-level cue.
+    pub fn pane_live_work(&self, pane_id: u64) -> Vec<PaneWorkItem> {
+        let Some(rt) = self.pane_runtime.get(&pane_id) else {
+            return Vec::new();
+        };
+        // The two sources are hash maps, so they are sorted to keep the count
+        // and the tooltip's lines stable frame to frame.
+        let mut calls: Vec<&ToolCall> = rt.in_flight_tools.values().collect();
+        calls.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut children: Vec<&SubAgentRecord> = rt.sub_agents.values().collect();
+        children.sort_by(|a, b| a.row.child_id.cmp(&b.row.child_id));
+        calls
+            .into_iter()
+            .map(|call| PaneWorkItem {
+                kind: PaneWorkKind::Task,
+                description: call.name.clone(),
+            })
+            .chain(
+                children
+                    .into_iter()
+                    .filter(|record| record.row.is_running())
+                    .map(|record| PaneWorkItem {
+                        kind: PaneWorkKind::SubAgent,
+                        description: format!(
+                            "{} · {}",
+                            record.row.subagent_type, record.row.description
+                        ),
+                    }),
+            )
+            .collect()
+    }
+
     /// The live record's row for a child spawned by `pane_id`, if that pane
     /// still holds the record.
     pub(crate) fn live_sub_agent_row(&self, pane_id: u64, child_id: &str) -> Option<SubAgentRow> {

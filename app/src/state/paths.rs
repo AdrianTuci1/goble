@@ -74,9 +74,11 @@ pub fn default_pane_path(project_id: &str, desktop: Option<&DesktopState>) -> St
     current_dir_display()
 }
 
-/// One initial space with a single chat leaf.
+/// One initial space with a single chat leaf. Nobody has named it, so its tab
+/// label is derived from what it holds (an agent with no conversation subject
+/// yet reads [`crate::state::NEW_AGENT_TAB_LABEL`]).
 pub(crate) fn default_spaces() -> Vec<Space> {
-    vec![Space::new("Space 1", Pane::Leaf { id: 1, kind: PaneKind::Chat })]
+    vec![Space::unnamed(Pane::Leaf { id: 1, kind: PaneKind::Chat })]
 }
 
 /// The current working directory, used as the composer's path label.

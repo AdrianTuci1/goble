@@ -8,13 +8,23 @@ use crate::elements::{
     Point, SizeConstraint, Text, TopbarButton,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::{rectf, RectF, Vector2F};
+use crate::geometry::{rectf, vec2f, RectF, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
 
 /// Extra height above and below a card's rows. The card is a full-width band,
 /// so without it the two text rows sit flush against the cards above and below
 /// and the digest reads as one block of text.
 const CARD_EXTRA_HEIGHT: f32 = 4.0;
+
+/// The 3-dot control's box, which is the glyph's own box: what the control
+/// occupies and what the user sees are the same 16 points, so an inset measured
+/// from the control is the gap the dots have to the surface's edge.
+const DOTS_SIZE: f32 = 16.0;
+
+/// Room the row's content keeps clear to the left of the control. A card's text
+/// is measured with no width to wrap against (it is one line, cut at the card's
+/// edge), so the clip is what stops the title short of the dots.
+const DOTS_CLEARANCE: f32 = 6.0;
 
 /// Per-card interaction state that must survive the per-frame element rebuild.
 /// Owned by the app (a map keyed by conversation id) and shared with the card
@@ -54,7 +64,27 @@ pub struct ConversationListItem {
     on_select: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_delete: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_toggle_star: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
-    root: Option<Box<dyn Element>>,
+    /// How far the 3-dot control's trailing edge sits from the card's trailing
+    /// edge, in logical points. The caller subtracts its own padding from the
+    /// gap it wants from the surface's edge: the sidebar passes `5 - 4`, so the
+    /// dots sit 5 pt inside the sidebar's width whatever the card's own inset
+    /// from that edge is.
+    dots_inset: f32,
+    /// The row: the avatar and the conversation's own text, painted clipped
+    /// clear of the control.
+    row: Option<Box<dyn Element>>,
+    /// The card's menu, painted under the row. It is a separate element because
+    /// the row is clipped at the control's gutter and the menu is not: Delete
+    /// reaches the card's trailing edge too.
+    menu: Option<Box<dyn Element>>,
+    /// The 3-dot control, drawn while the card is hovered or its menu is open.
+    /// Held out of the row's flex children on purpose: a child at the end of the
+    /// row is placed after whatever the title measured, and a title wider than
+    /// the card carries the control off the card's trailing edge.
+    dots: Option<Box<dyn Element>>,
+    /// The row's height from the last layout: where the menu starts and what the
+    /// control is centred against.
+    row_height: f32,
     bg: crate::color::ColorU,
     state: InteractiveState,
     size: Option<Vector2F>,
@@ -83,7 +113,11 @@ impl ConversationListItem {
             on_select: None,
             on_delete: None,
             on_toggle_star: None,
-            root: None,
+            dots_inset: 0.0,
+            row: None,
+            menu: None,
+            dots: None,
+            row_height: 0.0,
             bg: crate::color::ColorU::default(),
             state: InteractiveState::default(),
             size: None,
@@ -137,11 +171,23 @@ impl ConversationListItem {
         &self.id
     }
 
-    /// Build the root tree once, reflecting the current hover/menu state. It is
-    /// called from `layout` (which has `app`); it is *not* rebuilt during
+    /// Set how far the 3-dot control sits from the card's trailing edge.
+    ///
+    /// The card does not know the surface it sits on, so a host that wants the
+    /// dots a fixed distance from that surface's own edge passes the surface's
+    /// padding subtracted from that distance. The sidebar is inset by its own
+    /// horizontal padding, so its call is `5.0 - padding` and the dots land 5 pt
+    /// inside the sidebar's width.
+    pub fn with_dots_inset(mut self, inset: f32) -> Self {
+        self.dots_inset = inset.max(0.0);
+        self
+    }
+
+    /// Build the card's elements once, reflecting the current hover/menu state.
+    /// It is called from `layout` (which has `app`); it is *not* rebuilt during
     /// `paint`/`dispatch`, so the sizes computed by `layout` are preserved.
     fn ensure_root(&mut self, app: &AppContext) {
-        if self.root.is_some() {
+        if self.row.is_some() {
             return;
         }
         let spacing = 10.0_f32;
@@ -151,14 +197,16 @@ impl ConversationListItem {
         let hover = ui.hover;
         let menu_open = ui.menu_open;
 
-        let bg = if self.selected {
+        // The band's own colour, which `paint` fills the whole card with (and
+        // the fade blends into): the pointer over the card, the selected
+        // conversation, or the surface the card sits on.
+        self.bg = if self.selected {
             app.theme.color(ColorToken::Selected)
         } else if hover {
             app.theme.color(ColorToken::Hover)
         } else {
             app.theme.color(ColorToken::Surface)
         };
-        self.bg = bg;
 
         let mut subject = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -249,36 +297,27 @@ impl ConversationListItem {
         .with_padding(crate::style::EdgeInsets::new(5.0, 5.0, 5.0, 5.0))
         .finish();
 
-        let mut row = Flex::row()
+        let row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(spacing)
             .with_child(avatar)
             .with_child(Expanded::new(text_column).finish());
 
-        // 3-dot menu, visible on hover or while the delete menu is open.
-        if hover || menu_open {
-            let ui_dots = Rc::clone(&self.ui);
-            let dots = TopbarButton::new(
-                Icon::new("dots-horizontal")
-                    .with_size(16.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_size(26.0)
-            .with_corner_radius(0.0)
-            .with_on_click(move || {
-                let mut ui = ui_dots.borrow_mut();
-                ui.menu_open = !ui.menu_open;
-            })
-            .finish();
-            row = row.with_child(dots);
-        }
-
-        let mut column = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_child(row.finish());
+        // Square: the sidebar is a flat surface, so a card is a full-width band
+        // rather than a rounded widget. The band's fill is painted by `paint` and
+        // not by this container: the row is clipped at the control's gutter while
+        // the band is not, so the two cannot come from one clipped subtree.
+        self.row = Some(
+            Container::new(row.finish())
+                .with_padding(crate::style::EdgeInsets::new(
+                    0.0,
+                    CARD_EXTRA_HEIGHT,
+                    0.0,
+                    CARD_EXTRA_HEIGHT,
+                ))
+                .finish(),
+        );
 
         // The card's own menu, shown as a row under it while open: star the
         // conversation, or delete it.
@@ -290,26 +329,64 @@ impl ConversationListItem {
                 actions = actions.with_child(star);
             }
             actions = actions.with_child(self.delete_button(app));
-            column = column.with_child(
+            self.menu = Some(
                 Container::new(actions.finish())
                     .with_padding(crate::style::EdgeInsets::new(0.0, 0.0, xs, 0.0))
                     .finish(),
             );
         }
 
-        // Square: the sidebar is a flat surface, so a card is a full-width band
-        // rather than a rounded widget.
-        self.root = Some(
-            Container::new(column.finish())
-                .with_background(Fill::Solid(bg))
-                .with_padding(crate::style::EdgeInsets::new(
-                    0.0,
-                    CARD_EXTRA_HEIGHT,
-                    0.0,
-                    CARD_EXTRA_HEIGHT,
-                ))
+        // 3-dot menu, visible on hover or while the delete menu is open.
+        if hover || menu_open {
+            let ui_dots = Rc::clone(&self.ui);
+            self.dots = Some(
+                TopbarButton::new(
+                    Icon::new("dots-horizontal")
+                        .with_size(DOTS_SIZE)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_size(DOTS_SIZE)
+                .with_corner_radius(0.0)
+                .with_on_click(move || {
+                    let mut ui = ui_dots.borrow_mut();
+                    ui.menu_open = !ui.menu_open;
+                })
                 .finish(),
-        );
+            );
+        }
+    }
+
+    /// The 3-dot control's box. It is pinned to the card's trailing edge —
+    /// `dots_inset` in from it — and centred on the row's band, so neither the
+    /// title's width nor the menu's height can move it. `None` while the card
+    /// draws no control.
+    ///
+    /// The arithmetic the sidebar relies on: the card's trailing edge sits on
+    /// the sidebar's own padding, and the control is `dots_inset` further in, so
+    /// `sidebar_padding + dots_inset` is the gap between the dots and the
+    /// sidebar's edge.
+    fn dots_bounds(&self) -> Option<RectF> {
+        let (origin, size) = (self.origin?, self.size?);
+        self.dots.as_ref()?;
+        Some(rectf(
+            origin.x() + size.x - self.dots_inset - DOTS_SIZE,
+            origin.y() + (self.row_height - DOTS_SIZE) / 2.0,
+            DOTS_SIZE,
+            DOTS_SIZE,
+        ))
+    }
+
+    /// The area the row may paint in: the card's width less the control's
+    /// gutter, and the row's own band only, so the menu below it is not clipped
+    /// with the row.
+    fn row_clip(&self, origin: Vector2F, size: Vector2F) -> RectF {
+        rectf(
+            origin.x,
+            origin.y,
+            (size.x - self.dots_inset - DOTS_SIZE - DOTS_CLEARANCE).max(0.0),
+            self.row_height,
+        )
     }
 
     /// The menu's star row, or `None` when the card was given no star action.
@@ -387,42 +464,74 @@ impl Element for ConversationListItem {
         app: &AppContext,
     ) -> Vector2F {
         self.ensure_root(app);
-        let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
+        let row = self.row.as_mut().unwrap().layout(constraint, ctx, app);
+        self.row_height = row.y;
+        let mut size = row;
+        if let Some(menu) = self.menu.as_mut() {
+            size.y += menu.layout(constraint, ctx, app).y;
+        }
+        // The control's box is fixed, so it is laid out tight and placed by
+        // `paint` rather than by any parent's cursor.
+        if let Some(dots) = self.dots.as_mut() {
+            let _ = dots.layout(SizeConstraint::tight(vec2f(DOTS_SIZE, DOTS_SIZE)), ctx, app);
+        }
         self.size = Some(size);
         size
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let Some(size) = self.size else { return };
 
-        // Clip the card content to its own bounds so a long one-line last
-        // message is cut at the card's right edge instead of spilling into the
-        // main area. The fade (drawn after pop) stays unclipped so it can cover
-        // that edge.
-        if let Some(b) = self.size.map(|s| rectf(origin.x, origin.y, s.x, s.y)) {
+        // The card's band, then everything inside it clipped to the card so a
+        // long one-line last message is cut at the card's right edge instead of
+        // spilling into the main area.
+        let card = rectf(origin.x, origin.y, size.x, size.y);
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            renderer.fill_rounded_rect(card, self.bg, 0.0);
+            renderer.clip_rect(card);
+        }
+
+        // The row stops short of the control, so the title is cut before the
+        // dots rather than painted under them. The menu and the control are
+        // painted past that clip — inside the card's own, which keeps them
+        // within the surface they belong to.
+        let clipped_row = self.dots.is_some();
+        if clipped_row {
             if let Some(renderer) = ctx.renderer.as_mut() {
-                renderer.clip_rect(b);
+                renderer.clip_rect(self.row_clip(origin, size));
             }
         }
-        if let Some(root) = self.root.as_mut() {
-            root.paint(origin, ctx, app);
+        if let Some(row) = self.row.as_mut() {
+            row.paint(origin, ctx, app);
+        }
+        if clipped_row {
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                renderer.pop_clip();
+            }
+        }
+        if let Some(menu) = self.menu.as_mut() {
+            menu.paint(vec2f(origin.x, origin.y + self.row_height), ctx, app);
+        }
+        if let Some(bounds) = self.dots_bounds() {
+            if let Some(dots) = self.dots.as_mut() {
+                dots.paint(vec2f(bounds.min_x(), bounds.min_y()), ctx, app);
+            }
         }
         if let Some(renderer) = ctx.renderer.as_mut() {
             renderer.pop_clip();
         }
 
-        // Fade the right edge of the row until the 3-dot menu appears (which
-        // then truncates the text itself). Skip while the menu is open so the
+        // Fade the right edge of the row until the 3-dot menu appears (the row
+        // is then clipped clear of the dots). Skip while the menu is open so the
         // fade never covers the delete button.
         let ui = self.ui.borrow();
         if !ui.hover && !ui.menu_open {
-            if let Some(size) = self.size {
-                let fade_w = 24.0_f32;
-                if size.x > fade_w {
-                    let rect = rectf(origin.x + size.x - fade_w, origin.y, fade_w, size.y);
-                    if let Some(renderer) = ctx.renderer.as_mut() {
-                        renderer.fill_rect_fade_right(rect, self.bg, 0.0);
-                    }
+            let fade_w = 24.0_f32;
+            if size.x > fade_w {
+                let rect = rectf(origin.x + size.x - fade_w, origin.y, fade_w, size.y);
+                if let Some(renderer) = ctx.renderer.as_mut() {
+                    renderer.fill_rect_fade_right(rect, self.bg, 0.0);
                 }
             }
         }
@@ -448,10 +557,21 @@ impl Element for ConversationListItem {
             None => return false,
         };
 
-        // Let the inner 3-dot button (and the delete button) consume the event
-        // first; otherwise the row itself would swallow the click.
-        if let Some(root) = self.root.as_mut() {
-            if root.dispatch_event(event, ctx, app) {
+        // Let the 3-dot control first (it is painted over the row and its
+        // gutter is its own), then the menu's buttons, then the row: otherwise
+        // the card itself would swallow the click.
+        if let Some(dots) = self.dots.as_mut() {
+            if dots.dispatch_event(event, ctx, app) {
+                return true;
+            }
+        }
+        if let Some(menu) = self.menu.as_mut() {
+            if menu.dispatch_event(event, ctx, app) {
+                return true;
+            }
+        }
+        if let Some(row) = self.row.as_mut() {
+            if row.dispatch_event(event, ctx, app) {
                 return true;
             }
         }
@@ -485,6 +605,7 @@ pub fn card_bounds(item: &ConversationListItem) -> Option<RectF> {
 mod tests {
     use super::*;
     use crate::geometry::vec2f;
+    use crate::render::RenderCommand;
 
     #[test]
     fn conversation_list_item_layouts() {
@@ -592,6 +713,119 @@ mod tests {
         let counts = crate::test_util::command_counts(&commands);
         assert_eq!(counts.fill_rect_fade, 1, "idle card should emit a right fade");
         assert!(counts.draw_text > 0, "card should render text");
+    }
+
+    /// The 3-dot control's box and colour, from the icon it paints.
+    fn dots_box(commands: &[RenderCommand]) -> Option<RectF> {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawIcon {
+                name,
+                origin,
+                size,
+                ..
+            } if name == "dots-horizontal" => Some(rectf(origin.x, origin.y, *size, *size)),
+            _ => None,
+        })
+    }
+
+    /// The dots are pinned to the card's trailing edge: a title wider than the
+    /// card — the card's text is one line, measured with nothing to wrap
+    /// against — cannot carry them off it, and the row is clipped clear of them
+    /// so the title cannot paint under them either.
+    #[test]
+    fn the_dots_are_pinned_to_the_trailing_edge_clear_of_the_title() {
+        let app = AppContext::default();
+        let long_title = "A conversation whose subject is far wider than the card it is listed in";
+
+        // An idle card draws no control at all: there is nothing to anchor.
+        let idle = ConversationListItem::new(
+            "c1",
+            long_title,
+            "A long last message",
+            "5 min ago",
+            Rc::new(RefCell::new(AgentCardUi::default())),
+            false,
+        );
+        let mut element: Box<dyn Element> = Box::new(idle);
+        let width = 200.0;
+        let commands = crate::test_util::render_element(&mut element, vec2f(width, 200.0), &app);
+        assert!(dots_box(&commands).is_none(), "an idle card draws no dots");
+        assert!(
+            commands
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::ClipRect(rect) => Some(rect.max_x()),
+                    _ => None,
+                })
+                .all(|max_x| max_x >= width - 0.01),
+            "and needs no gutter clip: the card's own clip is enough"
+        );
+
+        // The hovered card pins its control to its trailing edge, inset by the
+        // gap it was given.
+        let hovered = ConversationListItem::new(
+            "c1",
+            long_title,
+            "A long last message",
+            "5 min ago",
+            Rc::new(RefCell::new(AgentCardUi {
+                hover: true,
+                menu_open: false,
+            })),
+            false,
+        )
+        .with_dots_inset(1.0);
+        let mut element: Box<dyn Element> = Box::new(hovered);
+        let commands = crate::test_util::render_element(&mut element, vec2f(width, 200.0), &app);
+
+        let dots = dots_box(&commands).expect("a hovered card draws its dots");
+        assert_eq!(dots.width(), DOTS_SIZE, "the control's box is the glyph's box");
+        assert_eq!(
+            dots.max_x(),
+            width - 1.0,
+            "the control is inset from the card's own trailing edge: {dots:?}"
+        );
+
+        // The same card with a subject that fits draws its control in the same
+        // place: the title's width is not what positions it.
+        let narrow = ConversationListItem::new(
+            "c1",
+            "Ada",
+            "A long last message",
+            "5 min ago",
+            Rc::new(RefCell::new(AgentCardUi {
+                hover: true,
+                menu_open: false,
+            })),
+            false,
+        )
+        .with_dots_inset(1.0);
+        let mut element: Box<dyn Element> = Box::new(narrow);
+        let commands = crate::test_util::render_element(&mut element, vec2f(width, 200.0), &app);
+        assert_eq!(
+            dots_box(&commands).map(|dots| dots.max_x()),
+            Some(width - 1.0),
+            "a title that fits does not change where the control sits"
+        );
+
+        // The narrowest clip in the frame is the row's, and it stops short of
+        // the control over the control's own band.
+        let row_clip = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::ClipRect(rect) => Some(*rect),
+                _ => None,
+            })
+            .min_by(|a, b| a.max_x().total_cmp(&b.max_x()))
+            .expect("the card paints its content clipped");
+        assert!(
+            row_clip.max_x() <= dots.min_x(),
+            "the row is clipped clear of the dots: {row_clip:?} vs {dots:?}"
+        );
+        assert!(
+            row_clip.min_y() <= dots.min_y() && row_clip.max_y() >= dots.max_y(),
+            "and the clip covers the control's band: {row_clip:?}"
+        );
     }
 
     #[test]

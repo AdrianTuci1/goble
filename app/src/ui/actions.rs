@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use goble_ui::geometry::Vector2F;
 use goble_ui::SettingsPage;
 
 use super::color_picker;
@@ -143,15 +144,19 @@ pub struct UiActions {
     pub on_settings_focus_into_pane: Rc<RefCell<dyn FnMut()>>,
     /// Settings: move the keyboard from the content pane back to the rail.
     pub on_settings_focus_out_of_pane: Rc<RefCell<dyn FnMut()>>,
-    /// Settings: activate the focused pane control — a switch flips, a button
-    /// runs, a text field takes the caret.
+    /// Settings: activate the focused pane control — a switch flips, a stepper
+    /// advances, a list row opens, a text field takes the caret.
     pub on_settings_activate: Rc<RefCell<dyn FnMut()>>,
     /// Settings: adjust the focused pane control by `delta`; only the controls
     /// that hold a discrete value change.
     pub on_settings_adjust: Rc<RefCell<dyn FnMut(i32)>>,
-    /// Settings: take the caret out of the focused text field, which is what
-    /// `Escape` means before it means "back to the rail".
-    pub on_settings_release_field: Rc<RefCell<dyn FnMut()>>,
+    /// Settings: commit the focused text field's edit — `Enter` again — so what
+    /// was typed stays and the caret goes.
+    pub on_settings_commit_field: Rc<RefCell<dyn FnMut()>>,
+    /// Settings: cancel the focused text field's edit, putting back what it
+    /// held when the caret went in. This is what `Escape` means in a field
+    /// before it means "back to the rail"; the sheet stays open.
+    pub on_settings_cancel_field: Rc<RefCell<dyn FnMut()>>,
     /// Settings → Environment: the new-group name field.
     pub on_environment_group_draft_change: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings → Environment: create the group the name field holds.
@@ -201,6 +206,18 @@ pub struct UiActions {
     pub on_toggle_shortcuts_help: Rc<RefCell<dyn FnMut()>>,
     /// Close the keyboard shortcuts panel (its ✕, its backdrop, Escape).
     pub on_close_shortcuts_help: Rc<RefCell<dyn FnMut()>>,
+    /// Append a printable character to the shortcuts panel's filter.
+    pub on_shortcuts_help_type: Rc<RefCell<dyn FnMut(char)>>,
+    /// Delete the filter's last character.
+    pub on_shortcuts_help_backspace: Rc<RefCell<dyn FnMut()>>,
+    /// Empty the panel's filter (Ctrl/Cmd+/, the footer's chord).
+    pub on_shortcuts_help_clear_filter: Rc<RefCell<dyn FnMut()>>,
+    /// Escape inside the panel: empty a non-empty filter first, and only close
+    /// the panel once the filter is already empty.
+    pub on_shortcuts_help_escape: Rc<RefCell<dyn FnMut()>>,
+    /// Step the panel's highlighted row by this many rows, clamped to the rows
+    /// the filter leaves.
+    pub on_shortcuts_help_move: Rc<RefCell<dyn FnMut(i32)>>,
     pub on_toggle_right_sidebar: Rc<RefCell<dyn FnMut()>>,
     /// Toggle the agent/window fullscreen (borderless). Flips app state and
     /// requests the platform window to enter/leave fullscreen.
@@ -270,6 +287,17 @@ pub struct UiActions {
     pub on_pane_drag_move: Rc<RefCell<dyn FnMut(u64, f32)>>,
     /// Finish dragging a split divider.
     pub on_pane_drag_end: Rc<RefCell<dyn FnMut()>>,
+    /// Lift a pane out of its grid: its header was pressed at this position,
+    /// and until the button comes up the pointer carries it toward the tab
+    /// strip, where a release gives it a tab of its own.
+    pub on_pane_lift: Rc<RefCell<dyn FnMut(u64, Vector2F)>>,
+    /// Track the pointer while a pane is lifted, with the tab index the drop
+    /// would land at (`None` while the pointer is off the tab strip).
+    pub on_pane_lift_move: Rc<RefCell<dyn FnMut(Vector2F, Option<usize>)>>,
+    /// Release a lifted pane: `Some(index)` gives it a tab of its own at that
+    /// insertion point, `None` — a release anywhere but the strip — cancels the
+    /// drag with no change to the workspace.
+    pub on_pane_drop: Rc<RefCell<dyn FnMut(Option<usize>)>>,
     /// Delete a conversation/agent card from the list.
     pub on_agent_delete: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: return to the previous view (chat).

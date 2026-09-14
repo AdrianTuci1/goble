@@ -19,6 +19,7 @@ impl Element for RootView {
         self.apply_theme();
         self.rebuild(app);
         let size = self.element.layout(constraint, ctx, app);
+        let _ = self.hover_chips.layout(constraint, ctx, app);
         self.size = Some(size);
         size
     }
@@ -26,6 +27,9 @@ impl Element for RootView {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         self.element.paint(origin, ctx, app);
+        // The chips hovered this frame go last, after the panes and after every
+        // overlay the tree mounted, so nothing the tree painted covers them.
+        self.hover_chips.paint(origin, ctx, app);
     }
 
     fn size(&self) -> Option<Vector2F> {

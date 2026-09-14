@@ -13,6 +13,7 @@ use crate::ai::make_ai_actions;
 use crate::media::make_media_actions;
 use crate::projects::make_projects_actions;
 use crate::screen::make_screen_actions;
+use crate::state::PaneWorkItem;
 use crate::ui::pickers::PARENT_LABEL;
 use crate::ui::{
     build_ui, AiSnapshot, ComposerContext, MediaSnapshot, ProjectsSnapshot, ScreenFrameSnapshot,
@@ -38,6 +39,11 @@ impl RootView {
         // Ensure every pane has a per-pane agent-header 3-dots menu flag before
         // the snapshot is built, so the tray open state is independent per pane.
         self.state.borrow_mut().ensure_agent_menu_flags();
+        // A tab's name comes from what it holds: keep every tab nobody has
+        // renamed labelled by its focused pane (the working directory of a
+        // terminal, the conversation's subject of an agent) before the snapshot
+        // the topbar draws from is taken. A tab the user renamed is untouched.
+        self.state.borrow_mut().refresh_space_labels();
         // Give every rendered pane its own rich-input controls entry before the
         // snapshot is built, so two pty/agent panes never share the composer's
         // buttons.
@@ -195,6 +201,18 @@ impl RootView {
                 }
                 self.file_cache.borrow_mut().read(&wanted)
             };
+            // The pane header's work chip is per pane, where `live_work` above
+            // is app-wide, so it is built from each pane's own runtime. A pane
+            // with nothing in flight gets no entry and draws no chip.
+            let pane_live_work: HashMap<u64, Vec<PaneWorkItem>> = s
+                .pane_runtime
+                .keys()
+                .map(|&pane_id| (pane_id, s.pane_live_work(pane_id)))
+                .filter(|(_, items)| !items.is_empty())
+                .collect();
+            // The editing state sits beside the read it was settled against, so
+            // it is taken in the same breath.
+            let file_buffers = self.file_cache.borrow().buffers();
             UiSnapshot {
                 current_tab: s.current_tab,
                 conversations: s.conversations.clone(),
@@ -217,6 +235,7 @@ impl RootView {
                 agent_busy: s.agent_busy,
                 live_work_count: live_work.work_count(),
                 live_work_phase: live_work.spinner_phase(),
+                pane_live_work,
                 auto_approve: s.auto_approve,
                 right_sidebar_open: s.right_sidebar_open,
                 fullscreen: s.fullscreen,
@@ -229,6 +248,9 @@ impl RootView {
                 crons_open: s.crons_open,
                 task_workflow_open: s.task_workflow_open,
                 shortcuts_help_open: s.shortcuts_help_open,
+                shortcuts_help_filter: s.shortcuts_help_filter.clone(),
+                shortcuts_help_index: s.shortcuts_help_index,
+                shortcuts_help_scroll: s.shortcuts_help_scroll.clone(),
                 crons: s.crons.clone(),
                 workflows: s.workflows.clone(),
                 executions: s.executions.clone(),
@@ -285,6 +307,7 @@ impl RootView {
                 space_hover: s.space_hover,
                 space_press: s.space_press,
                 space_drag: s.space_drag,
+                pane_drag: s.pane_drag.clone(),
                 active_pane_id: s.active_pane_id,
                 dragging_pane_id: s.dragging_pane_id,
                 composer_path: s.composer_path.clone(),
@@ -338,6 +361,7 @@ impl RootView {
                 terminal_run_agent_menu_open: s.terminal_run_agent_menu_open.clone(),
                 file_scroll: s.file_scroll.clone(),
                 pane_files,
+                file_buffers,
             }
         };
         let actions = make_actions(

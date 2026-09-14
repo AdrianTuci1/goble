@@ -64,7 +64,7 @@ fn workflows_tab_renders_real_workflow_and_returns_to_chat() {
     let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
     let texts = draw_texts(&commands);
     assert!(
-        texts.iter().any(|t| t.contains("Space")),
+        texts.iter().any(|t| t.contains("New Agent")),
         "the chat workspace should render its space tab, got {texts:?}"
     );
 }

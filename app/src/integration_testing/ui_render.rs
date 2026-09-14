@@ -405,6 +405,226 @@ fn a_file_view_pane_draws_the_file_it_was_opened_on() {
     );
 }
 
+/// Where the frame draws `text`: the origin of the one command that paints it.
+fn drawn_origin(commands: &[RenderCommand], text: &str) -> Option<goble_ui::Vector2F> {
+    commands.iter().find_map(|command| match command {
+        RenderCommand::DrawText {
+            origin,
+            text: drawn,
+            ..
+        } if drawn == text => Some(*origin),
+        _ => None,
+    })
+}
+
+/// One key press into the tree the last frame built.
+fn press(
+    root: &mut Box<dyn Element>,
+    app: &AppContext,
+    key: &str,
+    modifiers: goble_ui::event::ModifiersState,
+) -> bool {
+    use goble_ui::elements::EventContext;
+    use goble_ui::event::DispatchedEvent;
+
+    let mut ctx = EventContext::default();
+    root.dispatch_event(
+        &DispatchedEvent::KeyDown {
+            key: key.to_string(),
+            modifiers,
+        },
+        &mut ctx,
+        app,
+    )
+}
+
+/// A file the read took whole is editable in its pane: a press in the body
+/// focuses the pane's editor — the beam is drawn where the press landed, in the
+/// focus blue — typing lands in the pane's own text, the pane says the buffer is
+/// unsaved, and Cmd+S writes it back to the file.
+#[test]
+fn a_file_pane_is_typed_into_and_saved() {
+    use goble_ui::elements::caret::CARET_WIDTH;
+    use goble_ui::event::ModifiersState;
+    use goble_ui::theme::ColorToken;
+
+    let (desktop, _dir) = common::desktop_state();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("main.rs");
+    let original = "fn main() {}\nlet x = 1;\n";
+    std::fs::write(&path, original).expect("write the file");
+    let path = path.to_string_lossy().to_string();
+
+    let app = AppContext::default();
+    let view = RootView::new(&app, &desktop, None);
+    {
+        let state = view.state_rc();
+        let mut state = state.borrow_mut();
+        let (space, pane_id) = (state.active_space, state.active_pane_id);
+        state.spaces[space].set_leaf_kind(
+            pane_id,
+            goble_app::ui::PaneKind::File { path: path.clone() },
+        );
+    }
+    let mut root: Box<dyn Element> = Box::new(view);
+    let commands = frame(&mut root, &app);
+
+    // The second line's number is the row's own left edge, so the press below
+    // lands in that line of the buffer. (The pane's press is a down; the release
+    // that follows is nobody's — the beam the next frame draws is the proof the
+    // editor took it.)
+    let row = drawn_origin(&commands, "    2 ").expect("the second line's number is drawn");
+    let _ = click(&mut root, &app, vec2f(row.x + 400.0, row.y + 4.0));
+
+    // The frame after the press draws the field focused, with the beam as the
+    // focus-blue slot the composer's own field uses.
+    let commands = frame(&mut root, &app);
+    let focus = app.theme.color(ColorToken::Focus);
+    let line_box = (12.0 * 1.35f32).ceil();
+    let beam = commands.iter().find_map(|command| match command {
+        RenderCommand::FillRect { rect, color, .. } if *color == focus => Some(*rect),
+        _ => None,
+    });
+    let beam = beam.unwrap_or_else(|| panic!("the focused pane draws its beam: {commands:?}"));
+    assert!(
+        (beam.width() - CARET_WIDTH).abs() < 0.5 && (beam.height() - line_box).abs() < 0.5,
+        "the beam is the editor's own slot: {beam:?}"
+    );
+    assert!(
+        beam.min_y() >= row.y - 1.0 && beam.min_y() < row.y + line_box,
+        "and it sits on the line the press landed on: {beam:?} against {row:?}"
+    );
+
+    // A character typed while the pane is focused reaches the buffer, and the
+    // pane says the buffer is not what the file holds.
+    assert!(
+        press(&mut root, &app, "!", ModifiersState::default()),
+        "the focused editor takes the character"
+    );
+    let commands = frame(&mut root, &app);
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, RenderCommand::DrawText { text, .. } if text == "let x = 1;!")),
+        "the typed character is in the line the beam was on: {:?}",
+        commands
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, RenderCommand::DrawText { text, .. } if text.contains("unsaved changes"))),
+        "and the pane marks the buffer unsaved: {commands:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read"),
+        original,
+        "typing alone writes nothing to the file"
+    );
+
+    // Cmd+S saves it: the file holds the buffer's bytes and the pane says so.
+    let save = ModifiersState {
+        command: true,
+        ..Default::default()
+    };
+    assert!(
+        press(&mut root, &app, "s", save),
+        "the focused pane answers Cmd+S"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read"),
+        "fn main() {}\nlet x = 1;!\n",
+        "the save writes the buffer's bytes, whole"
+    );
+    let commands = frame(&mut root, &app);
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, RenderCommand::DrawText { text, .. } if text.contains("saved"))),
+        "the pane reports the save: {commands:?}"
+    );
+    assert!(
+        !commands.iter().any(
+            |command| matches!(command, RenderCommand::DrawText { text, .. } if text.contains("unsaved changes"))
+        ),
+        "and the unsaved mark is gone"
+    );
+}
+
+/// A file the read did not take whole is read-only in its pane: the pane says
+/// why, and Cmd+S leaves the file exactly as it is — the refusal is the state
+/// machine's, and the pane shows it rather than a file that was written over.
+#[test]
+fn a_file_too_long_to_edit_says_so_and_saves_nothing() {
+    use goble_ui::event::ModifiersState;
+    use goble_ui::theme::ColorToken;
+
+    let (desktop, _dir) = common::desktop_state();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("long.txt");
+    let text: String = (0..2_025).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(&path, &text).expect("write the file");
+    let path = path.to_string_lossy().to_string();
+
+    let app = AppContext::default();
+    let view = RootView::new(&app, &desktop, None);
+    {
+        let state = view.state_rc();
+        let mut state = state.borrow_mut();
+        let (space, pane_id) = (state.active_space, state.active_pane_id);
+        state.spaces[space].set_leaf_kind(
+            pane_id,
+            goble_app::ui::PaneKind::File { path: path.clone() },
+        );
+    }
+    let mut root: Box<dyn Element> = Box::new(view);
+    let commands = frame(&mut root, &app);
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { text, .. } if text.contains("too long to edit")
+        )),
+        "the pane says why the file is not editable: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { text, .. } if text.contains("showing the first")
+        )),
+        "and draws the part of the file it read, as it always did: {commands:?}"
+    );
+
+    let save = ModifiersState {
+        command: true,
+        ..Default::default()
+    };
+    assert!(press(&mut root, &app, "s", save), "the pane answers Cmd+S");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read"),
+        text,
+        "a refused save writes nothing"
+    );
+    let commands = frame(&mut root, &app);
+    let error = app.theme.color(ColorToken::Error);
+    let refusal = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { text, color, .. } if text.contains("Not saved") => {
+                Some((text.clone(), *color))
+            }
+            _ => None,
+        });
+    assert_eq!(
+        refusal.as_ref().map(|(text, _)| text),
+        Some(&"Not saved: this file is too long to edit.".to_string()),
+        "the refusal is said in the pane: {commands:?}"
+    );
+    assert_eq!(
+        refusal.map(|(_, color)| color),
+        Some(error),
+        "and it is drawn as the pane's error, not as ordinary detail"
+    );
+}
+
 #[test]
 fn full_app_renders_inline_key_error() {
     let (desktop, _dir) = common::desktop_state();
@@ -563,6 +783,11 @@ fn topbar_lists_every_workspace() {
     let state_rc = view.state_rc();
     {
         let mut state = state_rc.borrow_mut();
+        // The first tab holds an agent with no conversation subject, so its
+        // label would be derived; name it explicitly — what is under test here
+        // is that every workspace is drawn as its own chip.
+        state.spaces[0].name = "Primary".to_string();
+        state.spaces[0].named = true;
         let id = state.next_pane_id;
         state.next_pane_id += 1;
         state.spaces.push(goble_app::ui::Space::new(
@@ -576,7 +801,7 @@ fn topbar_lists_every_workspace() {
     let mut root: Box<dyn Element> = Box::new(view);
     let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
     assert!(
-        text_index(&commands, "Space 1").is_some(),
+        text_index(&commands, "Primary").is_some(),
         "the current workspace chip is drawn"
     );
     assert!(
@@ -719,7 +944,7 @@ fn the_active_workspace_tab_becomes_the_rename_field() {
         "the inline rename field replaces the label"
     );
     assert!(
-        text_index(&commands, "Space 1").is_none(),
+        text_index(&commands, "New Agent").is_none(),
         "the label is swapped out while renaming"
     );
     assert_eq!(
@@ -730,9 +955,9 @@ fn the_active_workspace_tab_becomes_the_rename_field() {
 }
 
 /// The Settings→Appearance color wheel paints at its own layout origin (the
-/// panel's content column), not at the window origin where it would smear over
-/// the sidebar and the toolbar. The panel itself is the window minus a small
-/// inset, so "inside the panel" means the whole viewport minus that margin.
+/// sheet's content column), not at the window origin where it would smear over
+/// the sidebar and the toolbar. The sheet is a compact panel centered in the
+/// window, so "inside the sheet" means its own band.
 #[test]
 fn settings_color_wheel_paints_inside_the_panel() {
     let (desktop, _dir) = common::desktop_state();
@@ -745,7 +970,10 @@ fn settings_color_wheel_paints_inside_the_panel() {
         state.settings_category = goble_app::ui::SettingsCategory::Appearance;
     }
     let mut root: Box<dyn Element> = Box::new(view);
-    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+    let window = vec2f(1024.0, 768.0);
+    let commands = render_element(&mut root, window, &app);
+    let panel_left = (window.x - goble_app::ui::settings::PANEL_WIDTH) * 0.5;
+    let panel_right = panel_left + goble_app::ui::settings::PANEL_WIDTH;
 
     // The saturation/value square is drawn as a column of fade-right rows.
     let rows: Vec<f32> = commands
@@ -758,16 +986,16 @@ fn settings_color_wheel_paints_inside_the_panel() {
     assert!(!rows.is_empty(), "the appearance pane draws its color wheel");
     for x in rows {
         assert!(
-            x > goble_app::ui::SETTINGS_OVERLAY_INSET,
-            "wheel painted at x={x}, left of the settings panel"
+            x > panel_left,
+            "wheel painted at x={x}, left of the settings sheet"
         );
         assert!(
-            x < 1024.0,
-            "wheel painted at x={x}, outside the window"
+            x < panel_right,
+            "wheel painted at x={x}, right of the settings sheet"
         );
     }
 
-    // The hue ring is one image fill, also inside the inset panel.
+    // The hue ring is one image fill, also inside the sheet.
     let ring = commands.iter().find_map(|c| match c {
         goble_ui::render::RenderCommand::DrawImage { rect, source, .. }
             if source.contains("ring") =>
@@ -778,9 +1006,10 @@ fn settings_color_wheel_paints_inside_the_panel() {
     });
     let ring = ring.expect("the hue ring is drawn as an image");
     assert!(
-        ring.min_x() >= goble_app::ui::SETTINGS_OVERLAY_INSET
-            && ring.max_y() <= 768.0 - goble_app::ui::SETTINGS_OVERLAY_INSET,
-        "the ring stays inside the inset panel, got {ring:?}"
+        ring.min_x() >= panel_left
+            && ring.max_x() <= panel_right
+            && ring.max_y() <= window.y,
+        "the ring stays inside the sheet, got {ring:?}"
     );
 }
 
@@ -809,7 +1038,7 @@ fn shell_body_paints_below_the_toolbar() {
     let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
     let topbar_height = goble_app::ui::shell::TOPBAR_HEIGHT;
 
-    let chip = text_origin(&commands, "Space 1").expect("workspace chip");
+    let chip = text_origin(&commands, "New Agent").expect("workspace chip");
     assert!(
         chip.y < topbar_height,
         "workspace chips paint inside the toolbar (y={})",
@@ -1169,4 +1398,273 @@ fn an_explorer_row_click_opens_the_file_in_a_pane_on_the_right_headed_by_its_nam
         "the pane headed by main.rs at {header_name:?} draws its own type icon \
          (pane {file_pane})"
     );
+}
+
+/// One pointer event through the tree, the way the window's own loop sends it.
+/// A frame is rendered between events (see [`frame`]), which is when the tree is
+/// rebuilt from the state the previous event left behind.
+fn send(
+    root: &mut Box<dyn Element>,
+    app: &AppContext,
+    event: goble_ui::event::DispatchedEvent,
+) -> bool {
+    let mut ctx = goble_ui::elements::EventContext::default();
+    root.dispatch_event(&event, &mut ctx, app)
+}
+
+/// The fill of the active workspace tab: the one raised, full-height surface in
+/// the toolbar band, so a drop aimed at it lands inside the tab strip.
+fn active_tab_rect(
+    commands: &[RenderCommand],
+    app: &AppContext,
+) -> goble_ui::geometry::RectF {
+    let raised = app.theme.color(ColorToken::SurfaceRaised);
+    let topbar_height = goble_app::ui::shell::TOPBAR_HEIGHT;
+    commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == raised
+                    && rect.min_y() == 0.0
+                    && (rect.height() - topbar_height).abs() < 0.01 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the active workspace tab is the filled tab of the strip")
+}
+
+/// Mount the app on one space holding a two-pane split, name the tab, and give
+/// the pane that will leave a session of its own. Returns the root, the state,
+/// the pane that stays and the pane that moves.
+fn split_workspace(
+    app: &AppContext,
+) -> (
+    Box<dyn Element>,
+    Rc<RefCell<UiState>>,
+    Arc<DesktopState>,
+    tempfile::TempDir,
+    u64,
+    u64,
+) {
+    let (desktop, dir) = common::desktop_state();
+    let view = RootView::new(app, &desktop, None);
+    let state_rc = view.state_rc();
+    let (kept, moved) = {
+        let mut state = state_rc.borrow_mut();
+        // No first-run band may sit between the toolbar and the pane header the
+        // drag starts on.
+        state.show_onboarding_tip = false;
+        state.show_llm_key_banner = false;
+        state.show_workspace_choice = false;
+        // A name of the user's own, so the label is not derived from the panes:
+        // exactly this one tab is drawn in the strip.
+        state.spaces[0].name = "Primary".to_string();
+        state.spaces[0].named = true;
+        let moved = state.active_pane_id;
+        // Split needs its own borrow of the id counter: spaces is borrowed too.
+        let mut next_pane_id = state.next_pane_id;
+        let kept = state.spaces[0]
+            .split(moved, goble_app::ui::SplitDir::Horizontal, &mut next_pane_id)
+            .expect("the active pane splits in two");
+        state.next_pane_id = next_pane_id;
+        state.active_pane_id = moved;
+        state.ensure_pane_sessions(None);
+        // The pane that leaves owns a conversation: the move must carry it.
+        state
+            .pane_sessions
+            .get_mut(&moved)
+            .expect("the pane has a session")
+            .conversation_id = "conv-moved".to_string();
+        (kept, moved)
+    };
+    (Box::new(view), state_rc, desktop, dir, kept, moved)
+}
+
+/// R33: a pane dragged by its header onto the tab strip becomes a tab of its
+/// own there — carrying the pane itself, so its session follows it — while the
+/// split it left collapses onto the pane that stayed.
+#[test]
+fn a_pane_dragged_onto_the_tab_strip_becomes_its_own_tab() {
+    use goble_ui::event::DispatchedEvent;
+
+    let app = AppContext::default();
+    let (mut root, state_rc, _desktop, _dir, kept, moved) = split_workspace(&app);
+    let commands = frame(&mut root, &app);
+    let topbar_height = goble_app::ui::shell::TOPBAR_HEIGHT;
+
+    // The handle is the pane's own header: the top band of the pane, where the
+    // header's controls sit — never the body, whose press belongs to the editor.
+    let (dots_x, header_y) =
+        topmost_icon_center(&commands, "dots-horizontal").expect("the pane header's menu control");
+    assert!(
+        header_y > topbar_height,
+        "the handle is the pane's header, below the toolbar (y={header_y})"
+    );
+    let press_at = vec2f(dots_x - 60.0, header_y);
+    assert!(
+        send(
+            &mut root,
+            &app,
+            DispatchedEvent::MouseDown {
+                position: press_at,
+                button: 0,
+            },
+        ),
+        "the pane body takes the press on its header"
+    );
+    {
+        let state = state_rc.borrow();
+        let drag = state.pane_drag.as_ref().expect("the pane is lifted");
+        assert_eq!(drag.pane_id, moved, "the pressed pane is the lifted one");
+        assert_eq!(drag.source_space, 0, "and it comes out of the space on screen");
+        assert_eq!(drag.title, "New Agent", "the ghost is titled after the pane");
+    }
+
+    // The pointer carries it onto the strip: past the center of the only tab
+    // drawn, so the pane lands at the end of the strip.
+    let commands = frame(&mut root, &app);
+    let tab = active_tab_rect(&commands, &app);
+    let drop_at = vec2f(tab.max_x() - 2.0, topbar_height / 2.0);
+    assert!(send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseMove { position: drop_at },
+    ));
+    let commands = frame(&mut root, &app);
+
+    let title = {
+        let state = state_rc.borrow();
+        let drag = state.pane_drag.as_ref().expect("the pane is still lifted");
+        assert_eq!(
+            drag.drop_index,
+            Some(1),
+            "the insertion point is past the only drawn tab"
+        );
+        drag.title.clone()
+    };
+
+    // The drag is drawn while it is in flight: the pane's title on the card that
+    // follows the pointer, and the marker where the pane would land.
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawText { origin, text, .. }
+                if text == &title
+                    && (origin.x - drop_at.x).abs() < 40.0
+                    && (origin.y - drop_at.y).abs() < 40.0
+        )),
+        "the ghost card draws the pane's title at the pointer"
+    );
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::Accent)
+                    && (rect.width() - 2.0).abs() < 0.01
+                    && rect.min_y() == 0.0
+                    && (rect.height() - topbar_height).abs() < 0.01
+        )),
+        "the strip marks the boundary the pane lands on"
+    );
+
+    // Releasing over the strip performs the move.
+    assert!(
+        send(
+            &mut root,
+            &app,
+            DispatchedEvent::MouseUp {
+                position: drop_at,
+                button: 0,
+            },
+        ),
+        "the strip takes the release"
+    );
+
+    let state = state_rc.borrow();
+    assert_eq!(state.spaces.len(), 2, "the pane became a tab of its own");
+    assert!(state.pane_drag.is_none(), "the drag is over");
+    assert_eq!(state.spaces[0].name, "Primary", "the source tab kept its name");
+    assert!(
+        !state.spaces[0].root.contains_leaf(moved),
+        "the moved pane left its old space"
+    );
+    assert_eq!(
+        state.spaces[0].root.leaf_kind(kept),
+        Some(&goble_app::ui::PaneKind::Chat),
+        "the split collapsed onto the pane that stayed"
+    );
+    assert_eq!(
+        state.spaces[1].root.leaf_kind(moved),
+        Some(&goble_app::ui::PaneKind::Chat),
+        "the new tab holds the moved pane itself, by id"
+    );
+    assert_eq!(
+        state
+            .pane_sessions
+            .get(&moved)
+            .map(|s| s.conversation_id.as_str()),
+        Some("conv-moved"),
+        "the pane's own conversation travelled with it"
+    );
+    assert_eq!(state.active_space, 1, "the moved pane's tab is on screen");
+    assert_eq!(state.active_pane_id, moved, "and the moved pane holds the focus");
+}
+
+/// R33: a pane lifted onto the strip and released anywhere else cancels: the
+/// workspace is exactly as it was.
+#[test]
+fn a_pane_lifted_onto_the_strip_is_dropped_off_it_with_no_change() {
+    use goble_ui::event::DispatchedEvent;
+
+    let app = AppContext::default();
+    let (mut root, state_rc, _desktop, _dir, kept, moved) = split_workspace(&app);
+    let commands = frame(&mut root, &app);
+    let (dots_x, header_y) =
+        topmost_icon_center(&commands, "dots-horizontal").expect("the pane header's menu control");
+    let press_at = vec2f(dots_x - 60.0, header_y);
+    send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseDown {
+            position: press_at,
+            button: 0,
+        },
+    );
+
+    // The pointer goes onto the strip and then off it, into the pane body, where
+    // the release happens: no target, no move.
+    let commands = frame(&mut root, &app);
+    let tab = active_tab_rect(&commands, &app);
+    let over_strip = vec2f(tab.max_x() - 2.0, 8.0);
+    send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseMove {
+            position: over_strip,
+        },
+    );
+    let _ = frame(&mut root, &app);
+    let away = vec2f(dots_x - 60.0, header_y + 200.0);
+    send(&mut root, &app, DispatchedEvent::MouseMove { position: away });
+    let _ = frame(&mut root, &app);
+    assert!(send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseUp {
+            position: away,
+            button: 0,
+        },
+    ));
+
+    let state = state_rc.borrow();
+    assert!(state.pane_drag.is_none(), "the drag is over");
+    assert_eq!(state.spaces.len(), 1, "no tab was added");
+    assert_eq!(state.spaces[0].name, "Primary");
+    assert!(
+        state.spaces[0].root.contains_leaf(moved) && state.spaces[0].root.contains_leaf(kept),
+        "both panes are still in the split they were in"
+    );
+    assert_eq!(state.active_space, 0, "nothing was switched");
 }

@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::color::ColorU;
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
@@ -29,6 +30,8 @@ pub struct Button {
     disabled: bool,
     /// The fill's corner radius. `None` uses the theme's radius.
     corner_radius: Option<f32>,
+    /// The default variant's outline colour. `None` uses `ColorToken::Border`.
+    border_color: Option<ColorU>,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -42,6 +45,7 @@ impl Button {
             variant: ButtonVariant::Default,
             disabled: false,
             corner_radius: None,
+            border_color: None,
             on_click: None,
             size: None,
             origin: None,
@@ -57,6 +61,15 @@ impl Button {
     /// flat surface passes `0.0` so its fill is a square band.
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = Some(radius);
+        self
+    }
+
+    /// Set the default variant's outline instead of the hairline `Border`. A
+    /// control whose label carries the app's own colour passes that colour, so
+    /// the box matches the text it holds rather than fading into the surface.
+    /// The primary and ghost variants have no outline to colour.
+    pub fn with_border_color(mut self, color: impl Into<ColorU>) -> Self {
+        self.border_color = Some(color.into());
         self
     }
 
@@ -124,7 +137,10 @@ impl Element for Button {
                 } else {
                     app.theme.color(crate::theme::ColorToken::SurfaceRaised)
                 },
-                Some(app.theme.color(crate::theme::ColorToken::Border)),
+                Some(
+                    self.border_color
+                        .unwrap_or_else(|| app.theme.color(crate::theme::ColorToken::Border)),
+                ),
             ),
             ButtonVariant::Ghost => (
                 if hovered {

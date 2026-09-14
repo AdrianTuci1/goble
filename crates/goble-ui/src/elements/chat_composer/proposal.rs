@@ -214,6 +214,10 @@ impl ChatComposer {
             column = column.with_child(
                 ComposerButton::new(row.finish())
                     .with_height(24.0)
+                    // A candidate is a row of the proposal's own card, not a
+                    // control of the rich input's footer: it keeps the hover
+                    // fill but draws no outline of its own.
+                    .with_outline(false)
                     .with_on_click(move || handles_for_click.select(index))
                     .finish(),
             );

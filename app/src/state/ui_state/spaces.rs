@@ -83,6 +83,10 @@ impl UiState {
 
     /// Rename the active space, persisting the pane layout. A blank name is
     /// ignored so the frame can never be left unnamed.
+    ///
+    /// This is the user's own name: the space is marked named, so the label
+    /// derived from what the tab holds never takes it back, however the pane's
+    /// directory or conversation changes later.
     pub fn rename_active_space(&mut self, name: String, desktop: Option<&DesktopState>) {
         let name = name.trim();
         if name.is_empty() {
@@ -90,9 +94,112 @@ impl UiState {
         }
         if let Some(space) = self.spaces.get_mut(self.active_space) {
             space.name = name.to_string();
+            space.named = true;
         }
         if let Some(desktop) = desktop {
             self.save_panes(desktop);
+        }
+    }
+
+    /// The label the tab at `index` draws: the name the user typed for it, or —
+    /// for a tab nobody has named — what the tab holds, read off its **focused**
+    /// pane.
+    ///
+    /// * A terminal pane names its working directory the way the `~` symbol
+    ///   reads it (`~`, `~/Projects/goble`), the same shortening the composer's
+    ///   working-directory pill uses. A tab opened on another path therefore
+    ///   reads that path.
+    /// * An agent pane names its conversation's subject (the chat's title), or
+    ///   [`NEW_AGENT_TAB_LABEL`] while that conversation has no subject yet.
+    /// * A file view names the file's path.
+    ///
+    /// A tab holding several panes — terminal and agent mixed — reads as its
+    /// focused pane, so the tab names whatever the user is working in; a tab
+    /// that is not on screen (whose own focus is not tracked) reads as its
+    /// first pane.
+    pub fn space_label(&self, index: usize) -> String {
+        let Some(space) = self.spaces.get(index) else {
+            return String::new();
+        };
+        if space.named {
+            return space.name.clone();
+        }
+        let pane_id = self.space_focused_pane(index);
+        match space.leaf_kind(pane_id) {
+            Some(PaneKind::Chat) => self.pane_subject(pane_id),
+            Some(PaneKind::File { path }) => display_path(path),
+            // A terminal pane — and any leaf kind that later appears — names
+            // where it runs.
+            _ => display_path(&self.pane_working_path(pane_id)),
+        }
+    }
+
+    /// The title the ghost card of a lifted pane draws (see
+    /// [`PaneDrag`](crate::state::PaneDrag)): the same naming rule a tab's
+    /// label uses, but read off the pane itself — a split's tab names its
+    /// *focused* pane, and the pane being dragged is often not that one.
+    pub fn pane_title(&self, pane_id: u64) -> String {
+        let kind = self
+            .spaces
+            .iter()
+            .find_map(|space| space.leaf_kind(pane_id).cloned());
+        match kind {
+            Some(PaneKind::Chat) => self.pane_subject(pane_id),
+            Some(PaneKind::File { path }) => display_path(&path),
+            _ => display_path(&self.pane_working_path(pane_id)),
+        }
+    }
+
+    /// Keep every unnamed tab's label honest: it is re-derived from what the tab
+    /// holds now, so a terminal tab that moves to another directory renames
+    /// itself and an agent tab takes its conversation's subject the moment it
+    /// has one. A tab the user renamed is left exactly as they typed it.
+    pub fn refresh_space_labels(&mut self) {
+        for index in 0..self.spaces.len() {
+            if self.spaces[index].named {
+                continue;
+            }
+            let label = self.space_label(index);
+            self.spaces[index].name = label;
+        }
+    }
+
+    /// The pane a tab's label follows: the focused leaf of the active tab, and
+    /// the first leaf of a tab that is not on screen (a background tab's own
+    /// focus is not tracked).
+    fn space_focused_pane(&self, index: usize) -> u64 {
+        let space = &self.spaces[index];
+        if index == self.active_space && space.root.contains_leaf(self.active_pane_id) {
+            self.active_pane_id
+        } else {
+            space.root.first_leaf_id()
+        }
+    }
+
+    /// The directory a pane runs in, falling back to the window's own when the
+    /// pane never got a session (a layout restored or built by hand).
+    fn pane_working_path(&self, pane_id: u64) -> String {
+        self.pane_sessions
+            .get(&pane_id)
+            .map(|session| session.path.clone())
+            .filter(|path| !path.trim().is_empty())
+            .unwrap_or_else(|| self.composer_path.clone())
+    }
+
+    /// The subject a pane's conversation carries: the title the conversation was
+    /// created with, or [`NEW_AGENT_TAB_LABEL`] while it has none — a
+    /// conversation nobody named is titled [`NEW_CONVERSATION_TITLE`], which is a
+    /// placeholder rather than a subject.
+    fn pane_subject(&self, pane_id: u64) -> String {
+        let subject = self
+            .pane_conversation_id(pane_id)
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .map(|c| c.name.trim().to_string())
+            .unwrap_or_default();
+        if subject.is_empty() || subject == NEW_CONVERSATION_TITLE {
+            NEW_AGENT_TAB_LABEL.to_string()
+        } else {
+            subject
         }
     }
 

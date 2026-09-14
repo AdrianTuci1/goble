@@ -25,7 +25,7 @@ pub use checkbox::Checkbox;
 pub use chip::Chip;
 pub use clipped::Clipped;
 pub use code::Code;
-pub use composer_button::ComposerButton;
+pub use composer_button::{ComposerButton, COMPOSER_CONTROL_RADIUS};
 pub use connector_card::ConnectorCard;
 pub use constrained_box::ConstrainedBox;
 pub use container::Container;
@@ -41,6 +41,7 @@ pub use flex::Flex;
 pub use frame_view::{FrameSize, FrameView};
 pub use header::Header;
 pub use hover_button::HoverButton;
+pub use hover_chip::{HoverChipLayer, HoverChipRegistry};
 pub use hover_row::HoverRow;
 pub use icon::{Icon, IconName};
 pub use icon_button::IconButton;
@@ -76,7 +77,7 @@ pub use terminal_block::{
 };
 pub use terminal_grid::{TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT};
 pub use text::Text;
-pub use text_area::TextArea;
+pub use text_area::{LineRuns, TextArea};
 pub use text_input::TextInput;
 pub use thread_list_item::ThreadListItem;
 pub use titlebar::TitleBar;
@@ -193,6 +194,15 @@ pub struct AppContext {
     /// loop can adjust it on Cmd+Plus/Minus/0 while each frame reads the value
     /// for the layout constraint and render scale. Clamped to `0.5..=2.0`.
     pub ui_zoom: Rc<RefCell<f32>>,
+    /// The hover chips queued while painting the current frame.
+    ///
+    /// An element that hovers a box over itself (see `Tooltip`) queues it here
+    /// instead of drawing it in its own paint pass, where anything painted after
+    /// that element would cover it, and the root's last-painted layer
+    /// (`HoverChipLayer`) draws the queue. Shared (`Rc`) so the clones the
+    /// platform hands each frame reach the same registry, and drained by that
+    /// layer every frame so a chip cannot survive into a later one.
+    pub hover_chips: Rc<RefCell<hover_chip::HoverChipRegistry>>,
 }
 
 impl Default for AppContext {
@@ -201,6 +211,7 @@ impl Default for AppContext {
             theme: crate::theme::Theme::default(),
             window_control: crate::platform::window::WindowControl::default(),
             ui_zoom: Rc::new(RefCell::new(1.0)),
+            hover_chips: Rc::new(RefCell::new(hover_chip::HoverChipRegistry::default())),
         }
     }
 }
@@ -582,6 +593,7 @@ pub use group_chat_message::GroupChatMessage;
 pub use group_chat_message_group::GroupChatMessageGroup;
 pub mod header;
 pub mod hover_button;
+pub mod hover_chip;
 pub mod hover_row;
 pub mod icon;
 pub mod icon_button;

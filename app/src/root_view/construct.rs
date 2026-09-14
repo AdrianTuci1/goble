@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_desktop_service::{CollectingEventBus, DesktopState};
-use goble_ui::elements::Empty;
+use goble_ui::elements::{Empty, HoverChipLayer};
 use goble_ui::AppContext;
 
 use crate::ai::AiState;
@@ -49,6 +49,7 @@ impl RootView {
             explorer: Rc::new(RefCell::new(ExplorerCache::default())),
             file_cache: Rc::new(RefCell::new(FileCache::default())),
             actions: None,
+            hover_chips: HoverChipLayer::new(),
             size: None,
             origin: None,
         };

@@ -29,6 +29,7 @@ use goble_ui::EventContext;
 
 mod child_view;
 mod drain;
+mod hover_chip;
 mod nested_child;
 mod sub_agent_events;
 mod topbar;

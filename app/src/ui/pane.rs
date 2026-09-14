@@ -287,10 +287,24 @@ impl Pane {
     }
 }
 
-/// A "space": a named pane tree shown as a tab in the top bar (warp-new style).
+/// A "space": a pane tree shown as a tab in the top bar (warp-new style).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Space {
+    /// The label the tab draws. For a tab the user renamed by hand this is the
+    /// name they typed; otherwise it is the label derived from what the tab
+    /// holds — the focused pane's working directory for a terminal, the
+    /// conversation's subject for an agent — kept current by
+    /// [`crate::state::UiState::refresh_space_labels`].
     pub name: String,
+    /// Whether `name` is the user's own — typed in the tab's inline rename —
+    /// rather than a label derived from the tab's content. This is the one place
+    /// "never named" is told apart from "named by the user": an explicit rename
+    /// wins for good (no later path or conversation change takes it back), and a
+    /// space this flag is false on keeps deriving its label. `#[serde(default)]`
+    /// keeps older persisted layouts parseable: a name saved before this flag
+    /// existed was the `Space N` counter, never a name the user chose.
+    #[serde(default)]
+    pub named: bool,
     pub root: Pane,
     /// The environment medium this space runs on (a [`goble_harness_types::MediumId`]
     /// string). A space created through the topbar "+" menu picks its default
@@ -300,9 +314,24 @@ pub struct Space {
 }
 
 impl Space {
+    /// A space with a fixed name (the user's own, or a fixture's).
     pub fn new(name: impl Into<String>, root: Pane) -> Self {
         Self {
             name: name.into(),
+            named: true,
+            root,
+            medium: "local".to_string(),
+        }
+    }
+
+    /// A space nobody has named: its tab label is derived from what it holds,
+    /// so opening a workspace on a directory names the tab after that directory
+    /// and an agent workspace reads [`crate::state::NEW_AGENT_TAB_LABEL`] until
+    /// its conversation has a subject.
+    pub fn unnamed(root: Pane) -> Self {
+        Self {
+            name: String::new(),
+            named: false,
             root,
             medium: "local".to_string(),
         }

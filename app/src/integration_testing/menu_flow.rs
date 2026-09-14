@@ -81,8 +81,8 @@ fn icon_center(cmds: &[RenderCommand], name: &str) -> Option<(f32, f32)> {
 }
 
 /// Center of the top-most `name` icon drawn (smallest y), so a glyph that also
-/// appears lower in the window (the composer pills reuse `chevron-down`) still
-/// resolves to the toolbar control.
+/// appears lower in the window (an explorer directory row draws the same
+/// `chevron-down`) still resolves to the toolbar control.
 fn topmost_icon_center(cmds: &[RenderCommand], name: &str) -> Option<(f32, f32)> {
     cmds.iter()
         .filter_map(|c| match c {
@@ -263,9 +263,12 @@ fn topbar_environment_menu_opens_a_space_in_that_environment() {
     );
 
     // The tab is drawn in the top strip, above the body, next to the old ones.
+    // The new tab is named after the directory its pane opens in, so the same
+    // string is also drawn by the composer's working-directory pill lower down:
+    // the top-most run is the tab.
     let cmds = render(&mut root, &app);
     let topbar_height = goble_app::ui::shell::TOPBAR_HEIGHT;
-    let (_, tab_y) = text_center(&cmds, &new_name).expect("the new space's tab is drawn");
+    let (_, tab_y) = topmost_text_position(&cmds, &new_name).expect("the new space's tab is drawn");
     assert!(
         tab_y < topbar_height,
         "the new space's tab sits in the top strip (y={tab_y}, bar is {topbar_height} tall)"

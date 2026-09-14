@@ -28,10 +28,17 @@ impl Default for TooltipPosition {
 
 /// Wraps a child and shows a short message box while the pointer hovers it.
 ///
-/// The tooltip is drawn on top of the child and never affects layout. Its
-/// visibility is decided at paint time from the render-time cursor position
-/// (see [`PaintContext::hovered`]), because the element tree is rebuilt every
-/// frame and element-local hover state would be reset before it is drawn.
+/// The chip never affects layout. Its visibility is decided at paint time from
+/// the render-time cursor position (see [`PaintContext::hovered`]), because the
+/// element tree is rebuilt every frame and element-local hover state would be
+/// reset before it is drawn.
+///
+/// A hovered tooltip does not draw its box in its own paint pass — anything
+/// painted after the wrapped child (the pane to the right of a sidebar tab, for
+/// one) would cover it. It queues the box in the frame's hover-chip registry
+/// instead, and the root's last-painted layer
+/// ([`HoverChipLayer`](crate::elements::HoverChipLayer)) draws it above the
+/// whole tree.
 pub struct Tooltip {
     child: Box<dyn Element>,
     message: String,
@@ -119,7 +126,10 @@ impl Element for Tooltip {
             return;
         }
 
-        let panel = match self.panel.as_mut() {
+        // The panel moves to the frame's chip layer, which the root paints after
+        // the whole tree. `layout` built it for this frame; the next rebuild
+        // builds it again.
+        let panel = match self.panel.take() {
             Some(p) => p,
             None => return,
         };
@@ -136,7 +146,7 @@ impl Element for Tooltip {
         }
         .max(0.0);
 
-        panel.paint(vec2f(x, y), ctx, app);
+        app.hover_chips.borrow_mut().push(vec2f(x, y), panel);
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -160,7 +170,7 @@ impl Element for Tooltip {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elements::{Empty, SizeConstraint};
+    use crate::elements::{Empty, HoverChipLayer, SizeConstraint};
     use crate::geometry::vec2f;
     use crate::render::RenderCommand;
 
@@ -168,11 +178,16 @@ mod tests {
         Empty::new().with_size(vec2f(40.0, 32.0)).finish()
     }
 
-    fn painted_commands(
-        tooltip: &mut Tooltip,
-        cursor: Vector2F,
-        cursor_inside: bool,
-    ) -> Vec<RenderCommand> {
+    /// What one frame paints: the commands the tooltip's own paint pass emitted,
+    /// the commands the root's chip layer emitted after it, and how many chips
+    /// the tooltip queued.
+    struct Frame {
+        own: Vec<RenderCommand>,
+        layer: Vec<RenderCommand>,
+        queued: usize,
+    }
+
+    fn paint_frame(tooltip: &mut Tooltip, cursor: Vector2F, cursor_inside: bool) -> Frame {
         let app = AppContext::default();
         tooltip.layout(
             SizeConstraint::loose(vec2f(200.0, 200.0)),
@@ -183,29 +198,78 @@ mod tests {
         paint_ctx.cursor_position = cursor;
         paint_ctx.cursor_inside = cursor_inside;
         tooltip.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
-        paint_ctx.renderer.take().unwrap().commands().to_vec()
+        let queued = app.hover_chips.borrow().len();
+
+        let mut renderer = paint_ctx.renderer.take().expect("renderer");
+        let own = renderer.commands().to_vec();
+        renderer.clear();
+        paint_ctx.renderer = Some(renderer);
+
+        HoverChipLayer::new().paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let layer = paint_ctx
+            .renderer
+            .take()
+            .expect("renderer")
+            .commands()
+            .to_vec();
+        Frame { own, layer, queued }
+    }
+
+    /// The chip's box, as the layer drew it.
+    fn chip_box(frames: &Frame, app: &AppContext) -> Option<crate::geometry::RectF> {
+        let bg = app.theme.color(ColorToken::SurfaceRaised);
+        frames.layer.iter().find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. } if *color == bg => Some(*rect),
+            _ => None,
+        })
     }
 
     #[test]
-    fn tooltip_only_paints_its_panel_when_hovered() {
+    fn tooltip_queues_its_chip_only_while_hovered() {
+        let app = AppContext::default();
+
         let mut tooltip = Tooltip::new(child_box(), "Run");
-        let bg = AppContext::default().theme.color(ColorToken::SurfaceRaised);
+        let idle = paint_frame(&mut tooltip, vec2f(10.0, 10.0), false);
+        assert_eq!(idle.queued, 0, "the pointer outside the window hovers nothing");
+        assert!(chip_box(&idle, &app).is_none(), "no chip is drawn");
 
-        let idle = painted_commands(&mut tooltip, vec2f(10.0, 10.0), false);
+        let hovering = paint_frame(&mut tooltip, vec2f(20.0, 16.0), true);
+        assert_eq!(hovering.queued, 1, "the hovered tooltip queues its box");
+        assert!(chip_box(&hovering, &app).is_some(), "the layer draws the chip");
+    }
+
+    #[test]
+    fn tooltip_never_draws_its_panel_in_its_own_paint_pass() {
+        let app = AppContext::default();
+        let mut tooltip = Tooltip::new(child_box(), "Run");
+        let bg = app.theme.color(ColorToken::SurfaceRaised);
+
+        let hovering = paint_frame(&mut tooltip, vec2f(20.0, 16.0), true);
         assert!(
-            !idle
+            !hovering
+                .own
                 .iter()
                 .any(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == bg)),
-            "tooltip should not paint its panel when the cursor is not inside the window"
+            "anything painted after the child would cover an inline panel, so the \
+             tooltip must only queue it"
         );
+    }
 
-        let hovering = painted_commands(&mut tooltip, vec2f(20.0, 16.0), true);
-        assert!(
-            hovering
-                .iter()
-                .any(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == bg)),
-            "tooltip should paint its panel when the cursor is over the child"
+    #[test]
+    fn tooltip_chip_keeps_its_place_below_the_child() {
+        let app = AppContext::default();
+        let mut tooltip = Tooltip::new(child_box(), "Run");
+        let hovering = paint_frame(&mut tooltip, vec2f(20.0, 16.0), true);
+
+        let rect = chip_box(&hovering, &app).expect("the layer draws the chip");
+        assert_eq!(rect.min_y(), 32.0 + TOOLTIP_GAP, "6 pt under the child");
+        assert_eq!(
+            rect.min_x(),
+            (40.0 - rect.width()) / 2.0,
+            "centered over the child"
         );
+        assert!(rect.width() <= TOOLTIP_MAX_WIDTH);
+        assert!(rect.height() <= 200.0);
     }
 
     #[test]

@@ -108,7 +108,7 @@ impl UiState {
     pub fn settings_select_category(&mut self, category: SettingsCategory) {
         self.settings_category = category;
         self.settings_pane_focus = 0;
-        self.settings_pane_field_active = false;
+        self.settings_clear_field_edit();
     }
 
     /// Step the active category by `delta`, wrapping, and reset the pane's
@@ -140,7 +140,7 @@ impl UiState {
         }
         self.settings_pane_focus =
             (self.settings_pane_focus as i32 + delta).clamp(0, len as i32 - 1) as usize;
-        self.settings_pane_field_active = false;
+        self.settings_clear_field_edit();
     }
 
     /// Move the keyboard into the pane, on its first control. A pane with
@@ -151,18 +151,71 @@ impl UiState {
         }
         self.settings_focus = SettingsFocus::Pane;
         self.settings_pane_focus = 0;
-        self.settings_pane_field_active = false;
+        self.settings_clear_field_edit();
     }
 
     /// Move the keyboard back to the rail.
     pub fn settings_focus_out_of_pane(&mut self) {
         self.settings_focus = SettingsFocus::Rail;
-        self.settings_pane_field_active = false;
+        self.settings_clear_field_edit();
     }
 
-    /// Take the caret out of the focused field, keeping the ring on it. This is
-    /// what `Escape` does before it means "back to the rail".
-    pub fn settings_release_field(&mut self) {
+    /// Leave the caret wherever it is, forgetting the edit it belonged to. What
+    /// the user typed stays in the field — this is the path for a key that
+    /// navigates away, not for `Escape`, which puts the field back.
+    fn settings_clear_field_edit(&mut self) {
+        self.settings_pane_field_active = false;
+        self.settings_field_edit_start = None;
+    }
+
+    /// The text field a control names, if it names one.
+    fn settings_field_mut(&mut self, control: &SettingsControl) -> Option<&mut String> {
+        match control {
+            SettingsControl::EnvironmentGroupName => Some(&mut self.settings_environment_group_draft),
+            SettingsControl::EnvironmentSecretName => {
+                Some(&mut self.settings_environment_secret_name)
+            }
+            SettingsControl::EnvironmentSecretValue => {
+                Some(&mut self.settings_environment_secret_value)
+            }
+            _ => None,
+        }
+    }
+
+    /// `Enter` on a text field: the first press puts the caret in it and
+    /// remembers what it held, the second commits what was typed.
+    pub fn settings_activate_field(&mut self) {
+        let Some(control) = self.settings_focused_control() else {
+            return;
+        };
+        if !control.is_text_field() {
+            return;
+        }
+        if self.settings_pane_field_active {
+            self.settings_commit_field();
+            return;
+        }
+        self.settings_field_edit_start = self
+            .settings_field_mut(&control)
+            .map(|value| value.clone());
+        self.settings_pane_field_active = true;
+    }
+
+    /// Commit the field's text: it stays, the caret goes.
+    pub fn settings_commit_field(&mut self) {
+        self.settings_clear_field_edit();
+    }
+
+    /// `Escape` in a field: put back what it held when the caret went in, so a
+    /// cancelled edit leaves nothing behind, and keep the sheet open.
+    pub fn settings_cancel_field(&mut self) {
+        if let Some(start) = self.settings_field_edit_start.take() {
+            if let Some(control) = self.settings_focused_control() {
+                if let Some(value) = self.settings_field_mut(&control) {
+                    *value = start;
+                }
+            }
+        }
         self.settings_pane_field_active = false;
     }
 
@@ -172,9 +225,7 @@ impl UiState {
     /// to the state: the environment rows and a text field taking the caret.
     pub fn settings_activate_control(&mut self, desktop: Option<&DesktopState>) {
         match self.settings_focused_control() {
-            Some(control) if control.is_text_field() => {
-                self.settings_pane_field_active = true;
-            }
+            Some(control) if control.is_text_field() => self.settings_activate_field(),
             Some(SettingsControl::EnvironmentCreateGroup) => {
                 self.environment_create_group(desktop);
             }

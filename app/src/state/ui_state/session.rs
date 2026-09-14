@@ -37,7 +37,7 @@ impl UiState {
     /// (persisting the conversation), else allocates a synthetic id (mock).
     pub fn bind_pane_new_conversation(&mut self, pane_id: u64, desktop: Option<&DesktopState>) {
         let conversation_id = match desktop {
-            Some(d) => match d.create_chat("New conversation", None, None) {
+            Some(d) => match d.create_chat(NEW_CONVERSATION_TITLE, None, None) {
                 Ok(id) => id,
                 Err(e) => {
                     log::warn!("create_chat for new pane failed: {e}");

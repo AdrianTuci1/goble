@@ -19,6 +19,15 @@ use super::{SidebarView, UiActions, UiSnapshot};
 /// "View all" button.
 const COLLAPSED_CONVERSATIONS: usize = 4;
 
+/// Gap between a conversation card's 3-dot control and the sidebar's own right
+/// edge, in logical points.
+///
+/// The card does not know the sidebar's width or padding, so it is told only how
+/// far in from its *own* trailing edge the control goes; the sidebar's padding
+/// (the `xs` in [`build_sidebar`]) is the rest of the 5 pt. With the default
+/// spacing that is `5.0 - 4.0 = 1.0`.
+const CARD_DOTS_INSET: f32 = 5.0;
+
 /// Extra height on each side of the search field's row: the box is a few pixels
 /// taller than its text so it reads as a field rather than a label.
 pub(crate) const SEARCH_EXTRA_HEIGHT: f32 = 3.0;
@@ -231,7 +240,7 @@ fn agents_view(
         ));
         if !starred_collapsed {
             for entry in &starred {
-                list = list.with_child(conversation_card(state, actions, entry));
+                list = list.with_child(conversation_card(app, state, actions, entry));
             }
         }
     }
@@ -268,12 +277,15 @@ fn agents_view(
             continue;
         }
         for entry in entries {
-            list = list.with_child(conversation_card(state, actions, entry));
+            list = list.with_child(conversation_card(app, state, actions, entry));
         }
     }
 
     // "View all" (collapsed, when there is more to see) / "Show less"
-    // (expanded) — the switch that turns the list into a scrollable one.
+    // (expanded) — the switch that turns the list into a scrollable one. Its
+    // label and its outline both carry the app's text colour: it is the list's
+    // own control, not a raised button, and the surface's hairline border would
+    // leave the label as the only thing visible.
     if shown.len() < visible.len() || state.conversations_expanded {
         let on_toggle = actions.on_toggle_conversations_expanded.clone();
         let label = if state.conversations_expanded {
@@ -282,11 +294,17 @@ fn agents_view(
             format!("View all ({})", visible.len())
         };
         list = list.with_child(
-            Button::new(Text::new(label).with_font_size(11.0).finish())
-                .with_variant(ButtonVariant::Default)
-                .with_corner_radius(0.0)
-                .with_on_click(move || (on_toggle.borrow_mut())())
-                .finish(),
+            Button::new(
+                Text::new(label)
+                    .with_font_size(11.0)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .with_variant(ButtonVariant::Default)
+            .with_border_color(app.theme.color(ColorToken::Text))
+            .with_corner_radius(0.0)
+            .with_on_click(move || (on_toggle.borrow_mut())())
+            .finish(),
         );
     }
 
@@ -363,6 +381,7 @@ fn section_header(
 /// One conversation card. Its menu carries the star toggle, so the section it
 /// belongs to and the card always agree about whether it is starred.
 fn conversation_card(
+    app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
     entry: &ConversationEntry,
@@ -379,6 +398,9 @@ fn conversation_card(
         .get(&entry.id)
         .cloned()
         .unwrap_or_else(|| Rc::new(RefCell::new(AgentCardUi::default())));
+    // The card is inset from the sidebar's edges by the sidebar's own padding,
+    // so the part of the 5 pt that lies inside the card is what is left over.
+    let dots_inset = (CARD_DOTS_INSET - app.theme.spacing_px(SpacingToken::Xs)).max(0.0);
     ConversationListItem::new(
         entry.id.clone(),
         entry.name.clone(),
@@ -390,6 +412,7 @@ fn conversation_card(
     .with_workspace_routing(entry.workspace_routing.clone())
     .with_directory(entry.directory.clone())
     .with_starred(state.starred.iter().any(|id| id == &entry.id))
+    .with_dots_inset(dots_inset)
     .with_on_click(move || (on_select.borrow_mut())(click_id.clone()))
     .with_on_delete(move || (on_delete.borrow_mut())(delete_id.clone()))
     .with_on_toggle_star(move || (on_star.borrow_mut())(star_id.clone()))
@@ -986,6 +1009,296 @@ mod sidebar_surface_tests {
             scroll.borrow().offset(),
             0.0,
             "coming back to the conversations starts at the top"
+        );
+    }
+
+    /// The box a frame painted a card's 3-dot control in: the control's box is
+    /// the glyph's own box, so the icon command is its bounds. It is looked for
+    /// inside the sidebar's own band, because the pane header draws the same
+    /// glyph.
+    fn dots_box(commands: &[RenderCommand], band: f32) -> Option<RectF> {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawIcon {
+                name,
+                origin,
+                size,
+                ..
+            } if name == "dots-horizontal" && origin.x < band => Some(RectF::new(
+                goble_ui::geometry::PointF::new(origin.x, origin.y),
+                goble_ui::geometry::Size2F::new(*size, *size),
+            )),
+            _ => None,
+        })
+    }
+
+    /// A subject wider than any sidebar: the card is a full-width band, so this
+    /// is the title that overflows the row it sits in.
+    const LONG_SUBJECT: &str =
+        "A conversation whose subject is far wider than the sidebar it is listed in";
+
+    /// The sidebar's own frame with every conversation titled [`LONG_SUBJECT`],
+    /// `width` points wide and the list collapsed or expanded.
+    fn long_titled_view(
+        app: &AppContext,
+        desktop: &Arc<DesktopState>,
+        width: f32,
+        expanded: bool,
+    ) -> crate::root_view::RootView {
+        let view = seeded_view(app, desktop);
+        {
+            let state = view.state_rc();
+            let mut s = state.borrow_mut();
+            s.sidebar_width = width;
+            s.conversations_expanded = expanded;
+            s.conversations = (0..5)
+                .map(|index| conversation(&format!("c{index}"), LONG_SUBJECT, "Frontend"))
+                .collect();
+        }
+        view
+    }
+
+    /// A card's dots are hover affordances: a frame of the untouched sidebar
+    /// draws none, the pointer arriving on a card draws that card's, and the
+    /// pointer leaving takes them away again — the hover lives in app state, so
+    /// it has to be cleared, not merely rebuilt.
+    #[test]
+    fn the_cards_dots_follow_the_pointer_on_and_off_the_card() {
+        use goble_ui::event::DispatchedEvent;
+
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let view = seeded_view(&app, &desktop);
+        // One shared card-state cell per conversation, the way
+        // `refresh_conversations` seeds them: the hover lives in that cell, so a
+        // card built without one forgets the pointer when the frame is rebuilt.
+        {
+            let state = view.state_rc();
+            let mut s = state.borrow_mut();
+            for id in ["c1", "c2", "c3", "c4", "c5"] {
+                s.agent_cards
+                    .insert(id.to_string(), Rc::new(RefCell::new(AgentCardUi::default())));
+            }
+        }
+        let mut root: Box<dyn Element> = Box::new(view);
+        let window = vec2f(1024.0, 768.0);
+        let away = vec2f(700.0, 400.0);
+        let paint = |root: &mut Box<dyn Element>, at: goble_ui::geometry::Vector2F| {
+            let _ = root.layout(
+                SizeConstraint::loose(window),
+                &mut LayoutContext::default(),
+                &app,
+            );
+            let mut ctx = PaintContext::new(Renderer::new());
+            ctx.cursor_inside = true;
+            ctx.cursor_position = at;
+            root.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+            ctx.renderer.expect("renderer").commands().to_vec()
+        };
+
+        // The pointer is out over the main pane: no card draws its dots.
+        let idle = paint(&mut root, away);
+        assert!(
+            dots_box(&idle, crate::ui::SIDEBAR_WIDTH).is_none(),
+            "a sidebar no pointer is over draws no dots"
+        );
+
+        // Nor over a row of the sidebar that is not a card: the hover is the
+        // card's own rectangle, not the band's.
+        let on_a_header = idle
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Frontend" && origin.x < crate::ui::SIDEBAR_WIDTH =>
+                {
+                    Some(vec2f(origin.x, origin.y + 3.0))
+                }
+                _ => None,
+            })
+            .expect("the folder header is drawn");
+        let mut ctx = goble_ui::elements::EventContext::default();
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: on_a_header,
+            },
+            &mut ctx,
+            &app,
+        );
+        let on_band = paint(&mut root, on_a_header);
+        assert!(
+            dots_box(&on_band, crate::ui::SIDEBAR_WIDTH).is_none(),
+            "a row that is not a card draws no dots"
+        );
+
+        // Aim at the first card's own subject: the card's bounds are its whole
+        // rectangle, padding included, so a point on its text is on the card.
+        let on_card = idle
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Ada" => {
+                    Some(vec2f(origin.x, origin.y + 3.0))
+                }
+                _ => None,
+            })
+            .expect("the first card's subject is drawn");
+
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove { position: on_card },
+            &mut ctx,
+            &app,
+        );
+        let hovered = paint(&mut root, on_card);
+        let dots = dots_box(&hovered, crate::ui::SIDEBAR_WIDTH)
+            .expect("the card under the pointer draws its dots");
+        assert!(
+            dots.max_x() <= crate::ui::SIDEBAR_WIDTH,
+            "the dots are inside the sidebar: {dots:?}"
+        );
+        // The card's own hover band comes with them: the band is the card's
+        // rectangle, and it covers the dots it just revealed.
+        assert!(
+            hovered.iter().any(|command| match command {
+                RenderCommand::FillRect { rect, color, .. } => {
+                    *color == app.theme.color(ColorToken::Hover)
+                        && rect.min_x() <= dots.min_x()
+                        && dots.max_x() <= rect.max_x()
+                        && rect.min_y() <= dots.min_y()
+                        && dots.max_y() <= rect.max_y()
+                }
+                _ => false,
+            }),
+            "the hovered card paints its band under the dots"
+        );
+
+        // The pointer leaves the sidebar again: the dots go with it.
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove { position: away },
+            &mut ctx,
+            &app,
+        );
+        let left = paint(&mut root, away);
+        assert!(
+            dots_box(&left, crate::ui::SIDEBAR_WIDTH).is_none(),
+            "a card the pointer has left draws no dots"
+        );
+    }
+
+    /// The dots sit inside the sidebar, 5 pt from its own edge, at every sidebar
+    /// width, in the collapsed and the expanded list, and with the card's menu
+    /// open — and a title wider than the card cannot move them: the row's text
+    /// is clipped clear of them.
+    #[test]
+    fn the_cards_dots_stay_five_pt_inside_the_sidebar_at_every_width_and_state() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+
+        for width in [200.0_f32, 300.0, 480.0] {
+            for expanded in [false, true] {
+                for (hover, menu_open) in [(true, false), (true, true)] {
+                    let case = format!(
+                        "width {width}, list expanded {expanded}, menu open {menu_open}"
+                    );
+                    let view = long_titled_view(&app, &desktop, width, expanded);
+                    view.state_rc().borrow_mut().agent_cards.insert(
+                        "c0".to_string(),
+                        Rc::new(RefCell::new(AgentCardUi { hover, menu_open })),
+                    );
+                    let mut root: Box<dyn Element> = Box::new(view);
+                    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+
+                    let dots = dots_box(&commands, width)
+                        .unwrap_or_else(|| panic!("{case}: the hovered card draws its dots"));
+                    assert_eq!(
+                        dots.max_x(),
+                        width - CARD_DOTS_INSET,
+                        "{case}: the dots' right edge is 5 pt inside the sidebar: {dots:?}"
+                    );
+                    assert!(
+                        dots.min_x() >= 0.0,
+                        "{case}: and the control is inside the band: {dots:?}"
+                    );
+
+                    // The title is the widest thing in the row, so the row is
+                    // clipped before the dots: the band's narrowest clip ends at
+                    // or left of the control.
+                    let row_clip = commands
+                        .iter()
+                        .filter_map(|command| match command {
+                            RenderCommand::ClipRect(rect) if rect.max_x() <= width => {
+                                Some(*rect)
+                            }
+                            _ => None,
+                        })
+                        .min_by(|a, b| a.max_x().total_cmp(&b.max_x()))
+                        .unwrap_or_else(|| panic!("{case}: the band is painted clipped"));
+                    assert!(
+                        row_clip.max_x() <= dots.min_x(),
+                        "{case}: the row is clipped clear of the dots, clip {row_clip:?} vs dots {dots:?}"
+                    );
+                    assert!(
+                        row_clip.min_y() <= dots.min_y() && row_clip.max_y() >= dots.max_y(),
+                        "{case}: and that clip covers the control's band: {row_clip:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// "View all (N)" / "Show less" is the list's own control: its label and its
+    /// outline both carry the app's text colour, not the accent or the surface's
+    /// hairline border, so it reads on the surface it sits on.
+    #[test]
+    fn the_view_all_button_draws_its_label_and_border_in_the_text_colour() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let view = seeded_view(&app, &desktop);
+        let mut root: Box<dyn Element> = Box::new(view);
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+
+        let (label_at, label_color) = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText {
+                    text, origin, color, ..
+                } if text == "View all (5)" => Some((*origin, *color)),
+                _ => None,
+            })
+            .expect("the collapsed list offers View all (5)");
+        assert_eq!(
+            label_color,
+            app.theme.color(ColorToken::Text),
+            "the label carries the text colour"
+        );
+
+        let outline = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::StrokeRect { rect, color, .. }
+                    if rect.min_x() <= label_at.x
+                        && label_at.x <= rect.max_x()
+                        && rect.min_y() <= label_at.y
+                        && label_at.y <= rect.max_y() =>
+                {
+                    Some(*color)
+                }
+                _ => None,
+            })
+            .expect("the button draws its outline around its label");
+        assert_eq!(
+            outline,
+            app.theme.color(ColorToken::Text),
+            "and the outline matches the label"
         );
     }
 }

@@ -85,6 +85,36 @@ impl LiveWork {
     }
 }
 
+/// One piece of background work a single pane can be charged with, as the pane
+/// header's work chip counts and lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneWorkItem {
+    pub kind: PaneWorkKind,
+    /// The one line the chip's tooltip shows for the item.
+    pub description: String,
+}
+
+/// What a [`PaneWorkItem`] is, spelled in the chip's tooltip. Durable scheduled
+/// tasks and workflows have no kind here because nothing attributes them to a
+/// pane: they are registered app-wide, so they stay on the app-level cue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneWorkKind {
+    /// A tool call this pane's turn started and has not seen finish.
+    Task,
+    /// A sub-agent child this pane spawned that is still running.
+    SubAgent,
+}
+
+impl PaneWorkKind {
+    /// The kind's word in the chip's tooltip, one per item.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Task => "task",
+            Self::SubAgent => "sub-agent",
+        }
+    }
+}
+
 /// Runtime per-pane state not persisted across restarts: the transcript, the
 /// suspended ask, the queued prompt and the busy flag. Re-read from the store
 /// (keyed by [`PaneSession::conversation_id`]) on every refresh.

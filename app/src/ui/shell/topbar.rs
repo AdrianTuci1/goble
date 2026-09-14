@@ -8,13 +8,23 @@ use goble_ui::elements::{
     Text, TextInput, Tooltip, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
-use goble_ui::geometry::{rectf, vec2f, Vector2F};
+use goble_ui::elements::interactive::contains;
+use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken};
+
+use crate::state::PaneDrag;
 
 use super::super::{MediaActions, MediaSnapshot, UiActions, UiSnapshot};
 
 /// The width of the environment menu's hover tray.
 const ENV_TRAY_WIDTH: f32 = 220.0;
+
+/// The widest the ghost card of a lifted pane grows before its title is
+/// squeezed, and how far its corner sits below/right of the pointer so it never
+/// covers the point the drop is resolved at.
+const GHOST_MAX_WIDTH: f32 = 200.0;
+const GHOST_OFFSET_X: f32 = 12.0;
+const GHOST_OFFSET_Y: f32 = 6.0;
 
 // The general toolbar doubles as the OS titlebar on macOS, so it is a touch
 // shorter and leaves room for the traffic lights on the left. Shared with the
@@ -110,9 +120,18 @@ pub fn build_topbar(
     // the shorter controls center against the tabs and the bar is exactly
     // `TOPBAR_HEIGHT` tall — the height the body reserves below it — with the
     // macOS traffic lights vertically centered inside it.
-    Container::new(row)
+    let bar: Box<dyn Element> = Container::new(row)
         .with_padding(EdgeInsets::new(TOPBAR_TRAFFIC_INSET, 0.0, 0.0, 0.0))
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .finish();
+    // The card a pane being dragged onto the strip carries floats over the whole
+    // bar — tabs, "+ ▾" and the settings icon alike — so it is a second,
+    // zero-sized child of a stack rather than part of the row.
+    goble_ui::elements::Stack::new()
+        .with_children(vec![
+            bar,
+            build_pane_drag_ghost(app, state.pane_drag.as_ref()),
+        ])
         .finish()
 }
 
@@ -170,6 +189,11 @@ fn build_workspace_strip(
     let mut row = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(0.0);
+    // One slot per tab, filled with the rectangle that tab is drawn at while it
+    // paints: the drop an insertion index resolves against (see
+    // [`SpaceDropStrip`]) is read off exactly what the user can see.
+    let tab_rects: Rc<RefCell<Vec<Option<RectF>>>> =
+        Rc::new(RefCell::new(vec![None; state.spaces.len()]));
     for (index, space) in state.spaces.iter().enumerate() {
         // One rule per boundary: it belongs to the tab that follows it, so N
         // tabs draw N-1 lines and no boundary carries two.
@@ -178,20 +202,29 @@ fn build_workspace_strip(
         }
         let active = index == state.active_space;
         if active && state.space_rename_editing {
-            row = row.with_child(build_rename_tab(app, state, actions));
+            let tab = build_rename_tab(app, state, actions);
+            row = row.with_child(Box::new(TabRect::new(tab, index, Rc::clone(&tab_rects))));
         } else {
-            row = row.with_child(build_workspace_chip(
+            let chip = build_workspace_chip(
                 app,
                 actions,
                 index,
                 &space.name,
                 active,
-            ));
+            );
+            row = row.with_child(Box::new(TabRect::new(chip, index, Rc::clone(&tab_rects))));
         }
     }
-    ConstrainedBox::new(row.finish())
+    let strip: Box<dyn Element> = ConstrainedBox::new(row.finish())
         .with_height(TOPBAR_HEIGHT)
-        .finish()
+        .finish();
+    Box::new(SpaceDropStrip::new(
+        strip,
+        state.pane_drag.clone(),
+        tab_rects,
+        actions.on_pane_lift_move.clone(),
+        actions.on_pane_drop.clone(),
+    ))
 }
 
 /// One clickable workspace tab: the name plus an "x" that closes that
@@ -361,14 +394,20 @@ impl Element for WorkspaceChip {
             ctx,
             app,
         );
-        self.close.paint(
-            vec2f(
-                origin.x + Self::h_pad() + child_size.x + Self::close_gap(),
-                origin.y + (size.y - close_size.y).max(0.0) / 2.0,
-            ),
-            ctx,
-            app,
-        );
+        // The close "x" is drawn only while the pointer is over the tab. Its
+        // slot stays reserved in `layout`, so the strip's tabs keep their width
+        // (and their drop targets) instead of shifting under the pointer, and a
+        // tab that is not hovered carries no invisible hit target.
+        if hovered {
+            self.close.paint(
+                vec2f(
+                    origin.x + Self::h_pad() + child_size.x + Self::close_gap(),
+                    origin.y + (size.y - close_size.y).max(0.0) / 2.0,
+                ),
+                ctx,
+                app,
+            );
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -386,8 +425,20 @@ impl Element for WorkspaceChip {
         app: &AppContext,
     ) -> bool {
         // The close "x" gets the event first: it only consumes clicks inside its
-        // own bounds, so clicking the name still selects the workspace.
-        if self.close.dispatch_event(event, ctx, app) {
+        // own bounds, so clicking the name still selects the workspace. It is
+        // shown only while the pointer is over the tab (see `paint`), so it is
+        // offered the pointer only there too — a tab that is not hovered has no
+        // close target to hit.
+        let over_tab = match event {
+            DispatchedEvent::MouseDown { position, .. }
+            | DispatchedEvent::MouseUp { position, .. }
+            | DispatchedEvent::MouseMove { position } => self
+                .bounds()
+                .map(|bounds| contains(bounds, *position))
+                .unwrap_or(false),
+            _ => false,
+        };
+        if over_tab && self.close.dispatch_event(event, ctx, app) {
             return true;
         }
         let bounds = match self.bounds() {
@@ -565,4 +616,319 @@ fn build_environment_tray(
     .with_border(app.theme.color(ColorToken::Border).into())
     .with_corner_radius(6.0)
     .finish()
+}
+
+/// The tab index a pane released at `x` lands before: how many tab centers the
+/// pointer is past, so `0` is left of every tab and `tabs.len()` right of them
+/// all. This is the same count the tab reorder resolves a drag with, and it is
+/// monotonic in `x`, so the marker never oscillates between two tabs around a
+/// midpoint.
+pub(super) fn insertion_index(tabs: &[RectF], x: f32) -> usize {
+    tabs.iter().filter(|tab| x > tab.center().x).count()
+}
+
+/// Where insertion point `index` is marked: on the left edge of the tab it
+/// precedes, and on the right edge of the last tab when the pane lands at the
+/// end of the strip.
+fn insertion_x(tabs: &[RectF], index: usize) -> f32 {
+    match tabs.get(index) {
+        Some(tab) => tab.min_x(),
+        None => tabs.last().map(|tab| tab.max_x()).unwrap_or(0.0),
+    }
+}
+
+/// Records the rectangle a tab was drawn at into the strip's registry while it
+/// paints. Every tab of the strip is wrapped in one — the chip and the inline
+/// rename field alike — so a drop's insertion index always names a position
+/// among all the tabs, never one that is missing from the list.
+struct TabRect {
+    inner: Box<dyn Element>,
+    index: usize,
+    rects: Rc<RefCell<Vec<Option<RectF>>>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl TabRect {
+    fn new(inner: Box<dyn Element>, index: usize, rects: Rc<RefCell<Vec<Option<RectF>>>>) -> Self {
+        Self {
+            inner,
+            index,
+            rects,
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for TabRect {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.inner.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.inner.paint(origin, ctx, app);
+        if let Some(size) = self.size {
+            if let Some(slot) = self.rects.borrow_mut().get_mut(self.index) {
+                *slot = Some(rectf(origin.x, origin.y, size.x, size.y));
+            }
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.inner.dispatch_event(event, ctx, app)
+    }
+}
+
+/// The workspace tab strip as a drop target: a pane lifted out of its grid is
+/// dropped between these tabs and becomes a tab of its own there.
+///
+/// The strip only resolves and reports the drop — the move itself is app
+/// state's (`UiState::drop_pane`) and the ghost card is the bar's — which is
+/// what lets the whole rule be tested without a pointer. It sees pointer events
+/// before the shell body (the bar is layered above it), so while a pane is in
+/// flight the strip holds the pointer; while nothing is in flight it forwards to
+/// its tabs, whose own hit test is what makes a tab click win a press that lands
+/// on a tab.
+struct SpaceDropStrip {
+    inner: Box<dyn Element>,
+    /// The lifted pane, from app state; `None` when nothing is in flight.
+    drag: Option<PaneDrag>,
+    tab_rects: Rc<RefCell<Vec<Option<RectF>>>>,
+    on_drag_move: Rc<RefCell<dyn FnMut(Vector2F, Option<usize>)>>,
+    on_drop: Rc<RefCell<dyn FnMut(Option<usize>)>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl SpaceDropStrip {
+    fn new(
+        inner: Box<dyn Element>,
+        drag: Option<PaneDrag>,
+        tab_rects: Rc<RefCell<Vec<Option<RectF>>>>,
+        on_drag_move: Rc<RefCell<dyn FnMut(Vector2F, Option<usize>)>>,
+        on_drop: Rc<RefCell<dyn FnMut(Option<usize>)>>,
+    ) -> Self {
+        Self {
+            inner,
+            drag,
+            tab_rects,
+            on_drag_move,
+            on_drop,
+            size: None,
+            origin: None,
+        }
+    }
+
+    /// The strip's bounds in window coordinates, known once it has been painted
+    /// (which is also when the tabs' rectangles are written).
+    fn bounds(&self) -> Option<RectF> {
+        let origin = self.origin?;
+        let size = self.size?;
+        Some(rectf(origin.x(), origin.y(), size.x, size.y))
+    }
+
+    /// The tab rectangles as this frame's paint left them, in tab order.
+    fn drawn_tabs(&self) -> Vec<RectF> {
+        self.tab_rects.borrow().iter().flatten().copied().collect()
+    }
+
+    /// The insertion index a release at `position` names, or `None` when the
+    /// pointer is not over the strip: a release there cancels the drag.
+    fn drop_index_at(&self, position: Vector2F) -> Option<usize> {
+        let bounds = self.bounds()?;
+        if !contains(bounds, position) {
+            return None;
+        }
+        Some(insertion_index(&self.drawn_tabs(), position.x))
+    }
+}
+
+impl Element for SpaceDropStrip {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.inner.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.inner.paint(origin, ctx, app);
+        // The tabs painted above, so the registry holds this frame's rectangles.
+        let Some(drag) = self.drag.as_ref() else {
+            return;
+        };
+        if !drag.moved() {
+            return;
+        }
+        let Some(index) = drag.drop_index else {
+            return;
+        };
+        let Some(bounds) = self.bounds() else {
+            return;
+        };
+        let tabs = self.drawn_tabs();
+        if tabs.is_empty() {
+            return;
+        }
+        let Some(renderer) = ctx.renderer.as_mut() else {
+            return;
+        };
+        // The strip lifts while a pane is over it, and the marker names the
+        // boundary the pane lands on.
+        renderer.fill_rect(bounds, app.theme.color(ColorToken::Selected));
+        let x = insertion_x(&tabs, index).clamp(bounds.min_x(), bounds.max_x());
+        renderer.fill_rect(
+            rectf(x - 1.0, bounds.min_y(), 2.0, bounds.height()),
+            app.theme.color(ColorToken::Accent),
+        );
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        if self.drag.is_some() {
+            match event {
+                DispatchedEvent::MouseMove { position } => {
+                    let index = self.drop_index_at(*position);
+                    (self.on_drag_move.borrow_mut())(*position, index);
+                    return true;
+                }
+                DispatchedEvent::MouseUp { position, .. } => {
+                    let index = self.drop_index_at(*position);
+                    (self.on_drop.borrow_mut())(index);
+                    return true;
+                }
+                // A second press while a pane is in flight ends the drag, the
+                // way a release off the strip would, instead of starting a
+                // second lift.
+                DispatchedEvent::MouseDown { .. } => {
+                    (self.on_drop.borrow_mut())(None);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        self.inner.dispatch_event(event, ctx, app)
+    }
+}
+
+/// The card a lifted pane drags under the pointer: the pane's own title on the
+/// raised surface, so the drag reads as carrying that pane. It is zero-sized —
+/// the bar keeps its height — and only draws, at the pointer.
+struct PaneDragGhost {
+    card: Option<Box<dyn Element>>,
+    position: Option<Vector2F>,
+    size: Option<Vector2F>,
+}
+
+impl Element for PaneDragGhost {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        if let Some(card) = self.card.as_mut() {
+            let _ = card.layout(constraint, ctx, app);
+        }
+        self.size = Some(Vector2F::zero());
+        Vector2F::zero()
+    }
+
+    fn paint(&mut self, _origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        let (Some(card), Some(position)) = (self.card.as_mut(), self.position) else {
+            return;
+        };
+        card.paint(
+            position + vec2f(GHOST_OFFSET_X, GHOST_OFFSET_Y),
+            ctx,
+            app,
+        );
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        None
+    }
+
+    fn dispatch_event(
+        &mut self,
+        _event: &DispatchedEvent,
+        _ctx: &mut EventContext,
+        _app: &AppContext,
+    ) -> bool {
+        false
+    }
+}
+
+/// Build the ghost a lifted pane draws, or nothing at all when no pane is in
+/// flight — or when the press has not travelled far enough to be a drag.
+fn build_pane_drag_ghost(app: &AppContext, drag: Option<&PaneDrag>) -> Box<dyn Element> {
+    let moved = drag.map(|drag| drag.moved()).unwrap_or(false);
+    let Some(drag) = drag.filter(|_| moved) else {
+        return Empty::new().with_size(vec2f(0.0, 0.0)).finish();
+    };
+    let pad = app.theme.spacing_px(SpacingToken::Sm);
+    let card: Box<dyn Element> = Container::new(
+        Text::new(drag.title.clone())
+            .with_theme_color(ColorToken::Text, app)
+            .with_font_size(12.0)
+            .with_max_lines(1)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::uniform(pad))
+    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+    .with_border(app.theme.color(ColorToken::Accent).into())
+    .with_corner_radius(6.0)
+    .finish();
+    Box::new(PaneDragGhost {
+        card: Some(
+            ConstrainedBox::new(card)
+                .with_max_width(GHOST_MAX_WIDTH)
+                .finish(),
+        ),
+        position: Some(drag.position),
+        size: None,
+    })
 }

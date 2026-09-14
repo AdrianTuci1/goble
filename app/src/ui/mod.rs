@@ -43,7 +43,7 @@ mod snapshot;
 mod types;
 
 pub use actions::{AiActions, MediaActions, ProjectsActions, ScreenActions, UiActions};
-pub use build::{build_ui, SETTINGS_OVERLAY_INSET};
+pub use build::build_ui;
 pub use pane::{NavDir, Pane, PaneKind, Space, SplitDir};
 pub use snapshot::{
     AiSnapshot, ComposerContext, MediaNode, MediaProject, MediaSession, MediaSnapshot,

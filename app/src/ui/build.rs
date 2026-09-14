@@ -17,11 +17,6 @@ use super::{
     sidebar, task_workflow, vault, CONNECTORS_WIDTH,
 };
 
-/// Margin between the Settings overlay panel and the window edges. The panel
-/// otherwise fills the surface, so the menu reads as the window's own surface
-/// rather than a floating card.
-pub const SETTINGS_OVERLAY_INSET: f32 = 12.0;
-
 /// Build the complete app UI: topbar, sidebar, main content, and the
 /// auxiliary sheets (crons, connectors, vault) stacked on top.
 pub fn build_ui(
@@ -143,14 +138,14 @@ pub fn build_ui(
         .with_on_close(move || (on_close_chat_panel.borrow_mut())())
         .finish();
 
-    // Settings opens as a wide overlay inset a few pixels from the window
-    // edges with a dimmed backdrop, so it reads as a settings menu rather than
-    // a side panel. It is closed via the X, the navbar, the backdrop click or
-    // Escape.
+    // Settings opens as a compact sheet centered over the workspace: a rail of
+    // pages beside the content column, with its own footer naming the keys the
+    // focused region answers. It is closed via the X, the navbar, the backdrop
+    // click or Escape.
     let on_close_settings = actions.on_settings_close.clone();
     let settings_dialog = Dialog::new(settings::build_settings_overlay(app, state, actions))
         .with_open(state.settings_overlay_open)
-        .with_inset(SETTINGS_OVERLAY_INSET)
+        .with_width(settings::PANEL_WIDTH)
         .with_on_close(move || (on_close_settings.borrow_mut())())
         .finish();
 
@@ -158,7 +153,7 @@ pub fn build_ui(
     // shape grok-build's cheatsheet has. Ctrl+. toggles it; it is stacked last
     // (see the stack's children) so it is the top-most overlay while open.
     let on_close_shortcuts = actions.on_close_shortcuts_help.clone();
-    let shortcuts_help_dialog = Dialog::new(shortcuts_help::build_shortcuts_help(app, actions))
+    let shortcuts_help_dialog = Dialog::new(shortcuts_help::build_shortcuts_help(app, state, actions))
         .with_open(state.shortcuts_help_open)
         .with_width(shortcuts_help::SHORTCUTS_PANEL_WIDTH)
         .with_on_close(move || (on_close_shortcuts.borrow_mut())())

@@ -242,11 +242,11 @@ pub(crate) fn build_explorer(
                 .finish(),
         );
 
-        let hint = row.path.clone();
         let on_toggle_dir = on_toggle_dir.clone();
         let on_open_file = on_open_file.clone();
         let is_dir = row.is_dir;
-        let row = HoverRow::new(line.finish())
+        let file_hint = path.clone();
+        let mut row = HoverRow::new(line.finish())
             .with_padding(EdgeInsets::new(8.0, ITEM_PADDING, 8.0, ITEM_PADDING))
             .with_corner_radius(ROW_RADIUS)
             .with_hover_key(state.explorer_hover.clone(), path.clone())
@@ -258,11 +258,15 @@ pub(crate) fn build_explorer(
                 }
             })
             .finish();
-        list = list.with_child(
-            Tooltip::new(row, hint)
+        // Only a file carries the tooltip that names where it lives: a
+        // directory's own row in the tree already says which one it is, and the
+        // chip over it just repeats the indent the eye can follow.
+        if !is_dir {
+            row = Tooltip::new(row, file_hint)
                 .with_position(TooltipPosition::Below)
-                .finish(),
-        );
+                .finish();
+        }
+        list = list.with_child(row);
     }
 
     let mut column = Flex::column()

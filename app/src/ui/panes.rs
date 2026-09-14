@@ -20,6 +20,7 @@ use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::chat;
 use super::file_view;
+use super::shell::TOPBAR_HEIGHT;
 use super::terminal;
 use super::{Pane, PaneKind, SplitDir, UiActions, UiSnapshot};
 
@@ -91,10 +92,16 @@ fn build_pane(
 /// it, while still forwarding the event to the content (so a composer, button,
 /// or terminal keystroke keeps working). This gives mouse-driven pane
 /// navigation: clicking a pane makes it the active split target/highlight.
+///
+/// A press on the pane's header — its own topbar, the top [`TOPBAR_HEIGHT`]
+/// band — also lifts the pane into a drag toward the tab strip. Only the header
+/// is a handle: a press in the body belongs to the editor or the terminal, and
+/// text selection there must not become a pane drag.
 struct PaneBody {
     pane_id: u64,
     content: Box<dyn Element>,
     on_activate: Rc<RefCell<dyn FnMut(u64)>>,
+    on_lift: Rc<RefCell<dyn FnMut(u64, Vector2F)>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -104,11 +111,13 @@ impl PaneBody {
         pane_id: u64,
         content: Box<dyn Element>,
         on_activate: Rc<RefCell<dyn FnMut(u64)>>,
+        on_lift: Rc<RefCell<dyn FnMut(u64, Vector2F)>>,
     ) -> Self {
         Self {
             pane_id,
             content,
             on_activate,
+            on_lift,
             size: None,
             origin: None,
         }
@@ -161,6 +170,20 @@ impl Element for PaneBody {
         if activated {
             (self.on_activate.borrow_mut())(self.pane_id);
         }
+        // A press on the pane's own header starts a lift, so the pane can be
+        // dragged onto the tab strip and become a tab. A header control that
+        // took the press keeps it (its own click wins), and the body below the
+        // header is never a handle.
+        if let DispatchedEvent::MouseDown { position, .. } = event {
+            let on_header = !handled
+                && self
+                    .bounds()
+                    .map(|b| contains(b, *position) && position.y - b.min_y() <= TOPBAR_HEIGHT)
+                    .unwrap_or(false);
+            if on_header {
+                (self.on_lift.borrow_mut())(self.pane_id, *position);
+            }
+        }
         handled || activated
     }
 }
@@ -197,7 +220,8 @@ fn build_leaf(
     // navigation), while child interactions (composer, buttons, terminal keys)
     // still get the event forwarded to them.
     let on_activate = actions.on_pane_activate.clone();
-    let content = Box::new(PaneBody::new(id, content, on_activate));
+    let on_lift = actions.on_pane_lift.clone();
+    let content = Box::new(PaneBody::new(id, content, on_activate, on_lift));
     // Every surface draws the one topbar a pane has, so nothing is stacked
     // above the content here: the agent header is the pane's topbar, and the
     // terminal pane draws it for its shell view too (see `build_terminal`).

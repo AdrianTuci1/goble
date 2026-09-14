@@ -10,7 +10,7 @@ use goble_ui::elements::{
 };
 use goble_ui::{ScrollState, SettingsPage};
 
-use crate::state::PaneControls;
+use crate::state::{PaneControls, PaneDrag, PaneWorkItem};
 use crate::terminal::TerminalRegistry;
 
 use super::color_picker;
@@ -138,6 +138,10 @@ pub struct UiSnapshot {
     /// observed turn start. Zero is the inert state.
     pub live_work_count: usize,
     pub live_work_phase: f32,
+    /// The pane header's work chip, keyed by pane id: the items that pane's own
+    /// background work is made of (its in-flight tool calls and its running
+    /// sub-agent children). A pane with no entry draws no chip at all.
+    pub pane_live_work: HashMap<u64, Vec<PaneWorkItem>>,
     /// Whether the agent auto-approves `ask_user` questions.
     pub auto_approve: bool,
     pub right_sidebar_open: bool,
@@ -170,6 +174,10 @@ pub struct UiSnapshot {
     /// body's highlighted runs. Read while the snapshot is built (never per
     /// frame), so a pane that shows a file reads and highlights it once.
     pub pane_files: HashMap<u64, crate::ui::file_view::FileContent>,
+    /// The editing state of each open file view, keyed by pane id. Shared with
+    /// the read cache that settles it every frame, so the text the pane edits,
+    /// its caret and its unsaved-changes mark outlive the per-frame rebuild.
+    pub file_buffers: HashMap<u64, Rc<RefCell<crate::ui::file_view::FileBuffer>>>,
     pub crons_open: bool,
     /// Whether the tasks & workflows overlay is up. It floats over the
     /// workspace, so the panes stay mounted underneath it.
@@ -177,6 +185,12 @@ pub struct UiSnapshot {
     /// Whether the keyboard shortcuts panel is up (also an overlay over the
     /// workspace, opened with Ctrl+.).
     pub shortcuts_help_open: bool,
+    /// The shortcuts panel's filter text and the row it highlights (an index
+    /// into the rows the filter leaves).
+    pub shortcuts_help_filter: String,
+    pub shortcuts_help_index: usize,
+    /// Scroll offset of the shortcuts panel's list.
+    pub shortcuts_help_scroll: Rc<RefCell<ScrollState>>,
     pub crons: Vec<CronEntry>,
     /// Workflows registered with the embedded daemon (real data).
     pub workflows: Vec<WorkflowEntry>,
@@ -306,6 +320,9 @@ pub struct UiSnapshot {
     pub space_press: Option<usize>,
     /// Space tab currently being dragged (reordering in progress).
     pub space_drag: Option<usize>,
+    /// The pane lifted out of its grid toward the tab strip, if any: the strip
+    /// draws the insertion marker from it and the bar draws its ghost card.
+    pub pane_drag: Option<PaneDrag>,
     /// The focused leaf pane (target for splits/closes, highlighted).
     pub active_pane_id: u64,
     /// The split node currently being dragged, if any.

@@ -1,19 +1,32 @@
 //! One pane-tree state machine: the `UiState` value and its inherent methods.
 //!
 //! The struct's fields are declared here; its methods live one module per
-//! concern ([`refresh`], [`panes`], [`agents`], [`session`], [`settings`],
-//! [`mock`], [`spaces`]) as separate `impl UiState` blocks, which are the same
-//! block to the compiler as one.
+//! concern ([`refresh`], [`pane_move`], [`panes`], [`agents`], [`session`],
+//! [`settings`], [`mock`], [`spaces`]) as separate `impl UiState` blocks, which
+//! are the same block to the compiler as one.
 
 use super::*;
 
 mod agents;
 mod mock;
+mod pane_move;
 mod panes;
 mod refresh;
 mod session;
 mod settings;
 mod spaces;
+
+pub use pane_move::{PaneDrag, PaneMove};
+
+/// The title a conversation gets when it is created without a subject of its
+/// own. It is a placeholder, not a subject: a tab whose agent holds such a
+/// conversation still reads [`NEW_AGENT_TAB_LABEL`].
+pub const NEW_CONVERSATION_TITLE: &str = "New conversation";
+
+/// The label a tab whose pane holds an agent draws while that agent's
+/// conversation has no subject yet. Once the conversation has one, the tab
+/// reads the subject instead (see [`UiState::space_label`]).
+pub const NEW_AGENT_TAB_LABEL: &str = "New Agent";
 
 
 #[derive(Clone)]
@@ -93,6 +106,14 @@ pub struct UiState {
     pub task_workflow_open: bool,
     /// Whether the keyboard shortcuts panel is up.
     pub shortcuts_help_open: bool,
+    /// The shortcuts panel's filter text, and the row it highlights — an index
+    /// into the rows the filter leaves. Both survive the per-frame tree rebuild
+    /// and both reset when the panel is opened.
+    pub shortcuts_help_filter: String,
+    pub shortcuts_help_index: usize,
+    /// Scroll offset of the shortcuts panel's list, so a filtered list keeps
+    /// the place the keyboard scrolled it to across the per-frame rebuild.
+    pub shortcuts_help_scroll: Rc<RefCell<ScrollState>>,
     pub crons: Vec<CronEntry>,
     /// Harness workflows (real daemon workflow store).
     pub workflows: Vec<WorkflowEntry>,
@@ -129,9 +150,13 @@ pub struct UiState {
     /// [`crate::ui::settings::pane_controls`] answers for the active category.
     pub settings_pane_focus: usize,
     /// Whether the focused pane control is a text field that holds the caret.
-    /// While it does, the overlay reserves only `Escape` and every other key
-    /// reaches the field.
+    /// While it does, the overlay reserves `Enter` (commit the edit) and
+    /// `Escape` (cancel it) and every other key reaches the field.
     pub settings_pane_field_active: bool,
+    /// What the focused text field held when the caret was put into it.
+    /// `Enter` commits what was typed and clears this; `Escape` puts the value
+    /// back, so a cancelled edit leaves nothing behind.
+    pub settings_field_edit_start: Option<String>,
     /// Settings → Environment: the persisted groups of secrets and their
     /// entries, reloaded from the store whenever one changes.
     pub settings_environment_groups: Vec<SecretGroup>,
@@ -237,6 +262,13 @@ pub struct UiState {
     /// Whether the topbar workspace frame is in inline-rename mode (entered by
     /// double-clicking the active space's name).
     pub space_rename_editing: bool,
+    /// The last click on the workspace tab strip: which tab, and when. A second
+    /// click on the *same* tab inside the double-click window starts the inline
+    /// rename. App-owned rather than a local of the per-frame actions: the
+    /// element tree — and the callbacks in it — is rebuilt every frame, so a
+    /// cell made with them would forget the first click before the second one
+    /// arrives and the rename could never open.
+    pub space_click_at: Rc<RefCell<Option<(usize, std::time::Instant)>>>,
     /// The in-progress space name while renaming.
     pub space_rename_draft: String,
     /// Whether the rename field holds focus.
@@ -258,6 +290,10 @@ pub struct UiState {
     pub space_press: Option<usize>,
     /// Space tab currently being dragged (reordering in progress).
     pub space_drag: Option<usize>,
+    /// The pane lifted out of its grid toward the topbar's tab strip (dropped
+    /// there, it becomes a tab of its own). Owned here because the element tree
+    /// is rebuilt every frame, so the drag has to survive the rebuild.
+    pub pane_drag: Option<PaneDrag>,
     /// Monotonic id counter so new panes never collision with existing ones.
     pub next_pane_id: u64,
     /// The leaf pane currently focused (target for splits/closes, highlighted).

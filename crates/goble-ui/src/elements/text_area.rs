@@ -1,13 +1,16 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::color::ColorU;
 use crate::elements::{
-    caret, AppContext, CaretShape, Container, CrossAxisAlignment, Element, EventContext, Flex,
-    LayoutContext, PaintContext, Point, SizeConstraint, Text,
+    caret, AppContext, CaretShape, Code, Container, CrossAxisAlignment, Element, Empty,
+    EventContext, Fill, Flex, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint,
+    Text, TextSpan,
 };
 use crate::event::{DispatchedEvent, ModifiersState};
-use crate::geometry::{PointF, Vector2F};
+use crate::geometry::{vec2f, PointF, Vector2F};
 use crate::platform::text_atlas::{measure_text_family, FontWeight};
+use crate::syntax::HighlightedLine;
 use crate::theme::{ColorToken, FontFamily};
 use crate::vim::{Clipboard, VimBuffer, VimOutcome, VimState};
 
@@ -16,6 +19,22 @@ use crate::vim::{Clipboard, VimBuffer, VimOutcome, VimState};
 /// prefixes at the very size they are painted.
 const TEXT_FONT_SIZE: f32 = 12.0;
 const TEXT_LINE_HEIGHT: f32 = 1.2;
+
+/// The syntax runs a multi-line buffer's lines are drawn with.
+///
+/// A run set belongs to the text it was highlighted from, so the host resolves
+/// the mapping itself: per line of the buffer, the run set that still spells
+/// that line. A line with none — one the buffer has changed, or a file whose
+/// type resolved no language at all — is drawn in the plain text colour;
+/// painting a stale set would colour characters the runs were never about.
+#[derive(Clone)]
+pub struct LineRuns {
+    /// The run sets, one per line of the text they were highlighted from.
+    pub lines: Rc<Vec<HighlightedLine>>,
+    /// One entry per line of the buffer, in order: the index in [`Self::lines`]
+    /// of the run set that spells that line, or `None` for a plain line.
+    pub sources: Vec<Option<usize>>,
+}
 
 pub struct TextArea {
     value: String,
@@ -30,6 +49,22 @@ pub struct TextArea {
     caret: Option<Rc<RefCell<usize>>>,
     /// The index used when no shared one was handed over.
     local_caret: usize,
+    /// Whether the field holds a multi-line buffer: the value is drawn one row
+    /// per line, `Up`/`Down` walk lines and `Home`/`End` hold a line's own
+    /// ends. Off by default, so every single-line field is unchanged.
+    multiline: bool,
+    /// How many monospace digits a multi-line row's line number is padded to,
+    /// drawn in the muted colour in front of the text. `0` draws no gutter.
+    line_numbers: usize,
+    /// One line box's height, as a multiple of the font size.
+    line_height: f32,
+    /// The syntax runs the buffer's lines are drawn with, when the host
+    /// resolved them — see [`LineRuns`].
+    line_runs: Option<Rc<LineRuns>>,
+    /// Where a shift-selection began, as a character index; `None` is the
+    /// steady state. Shared with the host the way the caret is, so a selection
+    /// survives the per-frame rebuild.
+    anchor: Option<Rc<RefCell<Option<usize>>>>,
     /// Whether a press outside the field drops its focus. The terminal pane's
     /// rich input keeps it: it is the only place a command can be typed, so a
     /// click on the output above it must not take the keyboard away.
@@ -62,6 +97,11 @@ impl TextArea {
             masked: false,
             caret: None,
             local_caret: 0,
+            multiline: false,
+            line_numbers: 0,
+            line_height: TEXT_LINE_HEIGHT,
+            line_runs: None,
+            anchor: None,
             blur_on_outside_click: true,
             full_width: false,
             vim: None,
@@ -94,6 +134,45 @@ impl TextArea {
     /// per-frame rebuild of the element tree.
     pub fn with_caret(mut self, caret: Rc<RefCell<usize>>) -> Self {
         self.caret = Some(caret);
+        self
+    }
+
+    /// Draw a multi-line buffer: one row per line, with the arrow keys walking
+    /// lines, `Home`/`End` holding the caret's own line's ends, and `Shift`
+    /// with any arrow extending a selection from where the first one started.
+    /// A line longer than the field is not folded; the pane that scrolls it
+    /// cuts it instead, so a line keeps its columns.
+    pub fn with_multiline(mut self, multiline: bool) -> Self {
+        self.multiline = multiline;
+        self
+    }
+
+    /// Pad every multi-line row's line number to `digits` monospace digits and
+    /// draw it, muted, in front of the text; `0` draws none.
+    pub fn with_line_numbers(mut self, digits: usize) -> Self {
+        self.line_numbers = digits;
+        self
+    }
+
+    /// How tall one line box is, as a multiple of the font size. Every row and
+    /// the caret are drawn at it, so a row's height never depends on whether
+    /// the caret is in it.
+    pub fn with_line_height(mut self, line_height: f32) -> Self {
+        self.line_height = line_height;
+        self
+    }
+
+    /// The syntax runs the buffer's lines are drawn with, one entry per line of
+    /// the buffer — see [`LineRuns`].
+    pub fn with_line_runs(mut self, runs: Option<Rc<LineRuns>>) -> Self {
+        self.line_runs = runs;
+        self
+    }
+
+    /// Share the shift-selection's anchor with the host, so a selection
+    /// survives the per-frame rebuild of the element tree.
+    pub fn with_anchor(mut self, anchor: Rc<RefCell<Option<usize>>>) -> Self {
+        self.anchor = Some(anchor);
         self
     }
 
@@ -198,6 +277,10 @@ impl TextArea {
     }
 
     fn rebuild(&mut self, app: &AppContext) {
+        if self.multiline {
+            self.rebuild_multiline(app);
+            return;
+        }
         let empty = self.value.is_empty();
         let display = self.display();
         // An empty field draws its placeholder in the muted colour, so a guide
@@ -246,6 +329,328 @@ impl TextArea {
             }
         }
         self.root = Some(Container::new(row.finish()).finish());
+    }
+
+    /// The multi-line buffer: one row per line, the line's gutter in front of
+    /// its text and the caret inside the line it sits on.
+    ///
+    /// Every row is built from the same pieces — a run-painted [`Code`] per
+    /// segment, and the caret as a beam exactly one line box tall — so all the
+    /// rows are one height and the text below the caret never moves as the
+    /// caret moves.
+    fn rebuild_multiline(&mut self, app: &AppContext) {
+        let chars: Vec<char> = self.value.chars().collect();
+        let caret = self.caret_index();
+        let selection = self.selection();
+        let plain = app.theme.color(ColorToken::Text);
+        let mut column = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Start);
+        let mut start = 0usize;
+        let mut index = 0usize;
+        loop {
+            let end = chars[start..]
+                .iter()
+                .position(|ch| *ch == '\n')
+                .map(|at| start + at)
+                .unwrap_or(chars.len());
+            let line: String = chars[start..end].iter().collect();
+            column = column.with_child(self.line_row(
+                app, index, &line, start, caret, &selection, plain,
+            ));
+            index += 1;
+            if end >= chars.len() {
+                break;
+            }
+            start = end + 1;
+        }
+        self.root = Some(Container::new(column.finish()).finish());
+    }
+
+    /// One line of the buffer: the padded line number, the line's runs cut at
+    /// the caret and at the selection's edges, and the caret where it belongs.
+    ///
+    /// The line's text is the run set the host still maps to it — the syntax
+    /// read's own — or one plain run when the buffer changed the line.
+    #[allow(clippy::too_many_arguments)]
+    fn line_row(
+        &self,
+        app: &AppContext,
+        index: usize,
+        line: &str,
+        start: usize,
+        caret: usize,
+        selection: &Option<std::ops::Range<usize>>,
+        plain: ColorU,
+    ) -> Box<dyn Element> {
+        let length = line.chars().count();
+        let caret_column = (caret >= start && caret <= start + length).then(|| caret - start);
+        // The columns of this line the selection covers, when it covers any.
+        let selected = selection.as_ref().and_then(|selection| {
+            let from = selection.start.max(start);
+            let to = selection.end.min(start + length);
+            (to > from).then(|| (from - start)..(to - start))
+        });
+        let mut cuts = vec![0usize, length];
+        if let Some(column) = caret_column {
+            cuts.push(column);
+        }
+        if let Some(range) = &selected {
+            cuts.push(range.start);
+            cuts.push(range.end);
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+
+        let runs = self.line_runs_for(index, line, plain);
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Start);
+        if self.line_numbers > 0 {
+            let number = TextSpan::plain(format!(
+                "{:>width$} ",
+                index + 1,
+                width = self.line_numbers
+            ))
+            .with_color(app.theme.color(ColorToken::Muted));
+            row = row.with_child(runs_code(self.line_height, vec![number]));
+        }
+        for pair in cuts.windows(2) {
+            let (from, to) = (pair[0], pair[1]);
+            if caret_column == Some(from) {
+                row = row.with_child(self.line_beam(app));
+            }
+            let piece = runs_code(self.line_height, slice_runs(&runs, from, to));
+            let piece: Box<dyn Element> = match &selected {
+                Some(range) if from >= range.start && to <= range.end => Container::new(piece)
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::Selected)))
+                    .finish(),
+                _ => piece,
+            };
+            row = row.with_child(piece);
+        }
+        if caret_column == Some(length) {
+            row = row.with_child(self.line_beam(app));
+        }
+        row.finish()
+    }
+
+    /// The insertion point inside a multi-line row.
+    ///
+    /// The shared beam is a fixed [`caret::CARET_HEIGHT`], which is taller than
+    /// this field's line box; a caret taller than its own row would make the
+    /// caret's line taller than every other one and shift the text under it.
+    fn line_beam(&self, app: &AppContext) -> Box<dyn Element> {
+        Container::new(
+            Empty::new()
+                .with_size(vec2f(caret::CARET_WIDTH, self.line_box()))
+                .finish(),
+        )
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Focus)))
+        .finish()
+    }
+
+    /// One line's height: what every row of a multi-line buffer is drawn at,
+    /// the caret's own row included.
+    fn line_box(&self) -> f32 {
+        (TEXT_FONT_SIZE * self.line_height).ceil()
+    }
+
+    /// The runs the line `index` of the buffer is drawn from: the run set the
+    /// host still maps to it when that set spells the line, or one plain run.
+    fn line_runs_for(&self, index: usize, line: &str, plain: ColorU) -> Vec<TextSpan> {
+        let runs = self.line_runs.as_ref().and_then(|runs| {
+            let source = runs.sources.get(index).copied().flatten()?;
+            let runs = runs.lines.get(source)?;
+            runs_spell(runs, line).then(|| runs.clone())
+        });
+        runs.unwrap_or_else(|| vec![TextSpan::plain(line.to_string()).with_color(plain)])
+    }
+
+    /// The selection the buffer holds: from the anchor to the caret, or `None`
+    /// when nothing is selected.
+    fn selection(&self) -> Option<std::ops::Range<usize>> {
+        let anchor = (*self.anchor.as_ref()?.borrow())?;
+        let caret = self.caret_index();
+        let (start, end) = if anchor <= caret {
+            (anchor, caret)
+        } else {
+            (caret, anchor)
+        };
+        (start != end).then_some(start..end)
+    }
+
+    /// Move the insertion point, starting a selection when `extend` is set —
+    /// from where the caret was when the first `Shift`+arrow arrived — and
+    /// dropping the selection when it is not.
+    fn move_caret(&mut self, index: usize, extend: bool) {
+        if let Some(anchor) = self.anchor.as_ref() {
+            if extend {
+                if anchor.borrow().is_none() {
+                    *anchor.borrow_mut() = Some(self.caret_index());
+                }
+            } else {
+                *anchor.borrow_mut() = None;
+            }
+        }
+        self.set_caret_index(index);
+    }
+
+    /// The index one line up or down from the caret, keeping the column it sits
+    /// in where the line it lands on is long enough.
+    fn vertical_index(&self, chars: &[char], caret: usize, up: bool) -> usize {
+        let (start, end) = line_bounds(chars, caret);
+        let column = caret - start;
+        if up {
+            if start == 0 {
+                return caret;
+            }
+            let (previous_start, previous_end) = line_bounds(chars, start - 1);
+            return (previous_start + column).min(previous_end);
+        }
+        if end >= chars.len() {
+            return caret;
+        }
+        let next_start = end + 1;
+        let (_, next_end) = line_bounds(chars, next_start);
+        (next_start + column).min(next_end)
+    }
+
+    /// One key against a multi-line buffer: `None` when the key is not the
+    /// field's at all, otherwise whether it changed the text (a move reports
+    /// `false`). A key the field does not model is left to the rest of the app,
+    /// so a pane never swallows a shortcut it does not answer.
+    fn multiline_key(&mut self, key: &str, modifiers: &ModifiersState) -> Option<bool> {
+        let chars: Vec<char> = self.value.chars().collect();
+        let caret = self.caret_index();
+        let extend = modifiers.shift;
+        match key {
+            "ArrowLeft" => {
+                let index = match self.selection() {
+                    Some(range) if !extend => range.start,
+                    _ => caret.saturating_sub(1),
+                };
+                self.move_caret(index, extend);
+                Some(false)
+            }
+            "ArrowRight" => {
+                let index = match self.selection() {
+                    Some(range) if !extend => range.end,
+                    _ => (caret + 1).min(chars.len()),
+                };
+                self.move_caret(index, extend);
+                Some(false)
+            }
+            "ArrowUp" | "ArrowDown" => {
+                let index = self.vertical_index(&chars, caret, key == "ArrowUp");
+                self.move_caret(index, extend);
+                Some(false)
+            }
+            "Home" => {
+                let (start, _) = line_bounds(&chars, caret);
+                self.move_caret(start, extend);
+                Some(false)
+            }
+            "End" => {
+                let (_, end) = line_bounds(&chars, caret);
+                self.move_caret(end, extend);
+                Some(false)
+            }
+            "Backspace" => {
+                if self.replace_selection() {
+                    return Some(true);
+                }
+                if caret == 0 {
+                    return Some(false);
+                }
+                remove_char(&mut self.value, caret - 1);
+                self.set_caret_index(caret - 1);
+                Some(true)
+            }
+            "Delete" => {
+                if self.replace_selection() {
+                    return Some(true);
+                }
+                if caret >= chars.len() {
+                    return Some(false);
+                }
+                remove_char(&mut self.value, caret);
+                Some(true)
+            }
+            "Enter" => {
+                if let Some(cb) = self.on_submit.as_ref() {
+                    (cb.borrow_mut())(*modifiers);
+                    return Some(false);
+                }
+                self.replace_selection();
+                let caret = self.caret_index();
+                insert_char(&mut self.value, caret, '\n');
+                self.set_caret_index(caret + 1);
+                Some(true)
+            }
+            _ => {
+                if modifiers.alt || key.len() != 1 {
+                    return None;
+                }
+                self.replace_selection();
+                let caret = self.caret_index();
+                insert_char(&mut self.value, caret, key.chars().next().unwrap());
+                self.set_caret_index(caret + 1);
+                Some(true)
+            }
+        }
+    }
+
+    /// Replace the selected characters with nothing, leaving the caret where
+    /// the selection began — what typing over a selection and a Backspace or
+    /// Delete on one both mean. Reports whether there was a selection.
+    fn replace_selection(&mut self) -> bool {
+        let Some(range) = self.selection() else {
+            return false;
+        };
+        remove_range(&mut self.value, range.start, range.end);
+        self.move_caret(range.start, false);
+        true
+    }
+
+    /// The character index a press at `position` falls on in a multi-line
+    /// buffer: the line the press is in, then the character boundary nearest it
+    /// in that line. A press past the end of a line puts the caret at its end.
+    fn index_at_point(&self, position: Vector2F, left: f32, top: f32) -> usize {
+        let row = (((position.y - top) / self.line_box()).floor().max(0.0)) as usize;
+        let chars: Vec<char> = self.value.chars().collect();
+        let mut start = 0usize;
+        for _ in 0..row {
+            match chars[start..].iter().position(|ch| *ch == '\n') {
+                Some(at) => start = start + at + 1,
+                // Past the last line: the press stays on it.
+                None => break,
+            }
+        }
+        let end = chars[start..]
+            .iter()
+            .position(|ch| *ch == '\n')
+            .map(|at| start + at)
+            .unwrap_or(chars.len());
+        let line: String = chars[start..end].iter().collect();
+        let offset = position.x - left - self.gutter_width();
+        start + index_in(&line, offset, FontFamily::Mono).min(end - start)
+    }
+
+    /// The width a multi-line row's line-number gutter takes, which is what a
+    /// press on that row steps over before it reaches the text.
+    fn gutter_width(&self) -> f32 {
+        if self.line_numbers == 0 {
+            return 0.0;
+        }
+        measure_text_family(
+            &format!("{:>width$} ", 0, width = self.line_numbers),
+            TEXT_FONT_SIZE,
+            self.line_height,
+            f32::INFINITY,
+            FontWeight::Regular,
+            FontFamily::Mono,
+            false,
+        )
+        .x
     }
 
     /// The focused row while a visual selection is live: the text is cut at the
@@ -314,32 +719,10 @@ impl TextArea {
     /// size the text is drawn at. A press past the end of the line puts the beam
     /// at the end, where the next character typed joins on.
     fn index_at_offset(&self, offset: f32) -> usize {
-        if self.value.is_empty() || offset <= 0.0 {
+        if self.value.is_empty() {
             return 0;
         }
-        let mut nearest = (0usize, offset.abs());
-        let mut boundary = String::new();
-        for (index, ch) in self.display().chars().enumerate() {
-            boundary.push(ch);
-            let end = measure_text_family(
-                &boundary,
-                TEXT_FONT_SIZE,
-                TEXT_LINE_HEIGHT,
-                f32::INFINITY,
-                FontWeight::Regular,
-                FontFamily::System,
-                false,
-            )
-            .x;
-            let distance = (end - offset).abs();
-            if distance < nearest.1 {
-                nearest = (index + 1, distance);
-            }
-            if end >= offset {
-                break;
-            }
-        }
-        nearest.0.min(self.value.chars().count())
+        index_in(&self.display(), offset, FontFamily::System).min(self.value.chars().count())
     }
 
     /// Hand one key to the modal engine, writing its buffer back when the engine
@@ -415,6 +798,112 @@ fn remove_char(text: &mut String, index: usize) {
     }
 }
 
+/// Remove the characters `start..end` from `text`.
+fn remove_range(text: &mut String, start: usize, end: usize) {
+    if end <= start {
+        return;
+    }
+    let from = char_offset(text, start);
+    let to = char_offset(text, end);
+    text.replace_range(from..to, "");
+}
+
+/// The characters of the line the `index`-th character sits in: where the line
+/// starts, and the index of the `\n` that ends it (or the end of the buffer).
+fn line_bounds(chars: &[char], index: usize) -> (usize, usize) {
+    let index = index.min(chars.len());
+    let start = chars[..index]
+        .iter()
+        .rposition(|ch| *ch == '\n')
+        .map(|at| at + 1)
+        .unwrap_or(0);
+    let end = chars[index..]
+        .iter()
+        .position(|ch| *ch == '\n')
+        .map(|at| index + at)
+        .unwrap_or(chars.len());
+    (start, end)
+}
+
+/// The character index in `line` that a pointer `offset` pixels from its start
+/// is nearest to. A press past the end of the line puts the index at the end,
+/// where the next character typed joins on.
+fn index_in(line: &str, offset: f32, family: FontFamily) -> usize {
+    if line.is_empty() || offset <= 0.0 {
+        return 0;
+    }
+    let mut nearest = (0usize, offset.abs());
+    let mut boundary = String::new();
+    for (index, ch) in line.chars().enumerate() {
+        boundary.push(ch);
+        let end = measure_text_family(
+            &boundary,
+            TEXT_FONT_SIZE,
+            TEXT_LINE_HEIGHT,
+            f32::INFINITY,
+            FontWeight::Regular,
+            family,
+            false,
+        )
+        .x;
+        let distance = (end - offset).abs();
+        if distance < nearest.1 {
+            nearest = (index + 1, distance);
+        }
+        if end >= offset {
+            break;
+        }
+    }
+    nearest.0
+}
+
+/// Whether the runs spell exactly `line`. A run set belongs to the text it was
+/// highlighted from, so a line the buffer has changed must not be drawn in the
+/// colours of the line that used to be there.
+fn runs_spell(runs: &[TextSpan], line: &str) -> bool {
+    let mut rest = line;
+    for run in runs {
+        match rest.strip_prefix(run.text.as_str()) {
+            Some(tail) => rest = tail,
+            None => return false,
+        }
+    }
+    rest.is_empty()
+}
+
+/// The runs that cover the characters `start..end` of the line they spell.
+fn slice_runs(runs: &[TextSpan], start: usize, end: usize) -> Vec<TextSpan> {
+    let mut pieces = Vec::new();
+    let mut at = 0usize;
+    for run in runs {
+        let length = run.text.chars().count();
+        let from = start.max(at);
+        let to = end.min(at + length);
+        if to > from {
+            let mut piece = run.clone();
+            piece.text = run.text.chars().skip(from - at).take(to - from).collect();
+            pieces.push(piece);
+        }
+        at += length;
+        if at >= end {
+            break;
+        }
+    }
+    pieces
+}
+
+/// One row's piece of text, painted from the runs it is made of by the same
+/// [`Code`] element the file pane draws its read-only lines with. Every row of
+/// a multi-line buffer is built this way — the gutter, the plain lines and the
+/// caret's own line — so all of them are exactly one line box tall.
+fn runs_code(line_height: f32, runs: Vec<TextSpan>) -> Box<dyn Element> {
+    Code::new("")
+        .with_font_size(TEXT_FONT_SIZE)
+        .with_line_height(line_height)
+        .with_highlighted_lines(vec![runs])
+        .finish()
+}
+
 impl Default for TextArea {
     fn default() -> Self {
         Self::new()
@@ -479,9 +968,14 @@ impl Element for TextArea {
                         // The press moves the beam as well as the focus: the
                         // press is turned into the character boundary nearest
                         // it, so the beam lands under the pointer instead of
-                        // staying where the last keystroke left it.
-                        let offset = position.x - bounds.min_x();
-                        self.set_caret_index(self.index_at_offset(offset));
+                        // staying where the last keystroke left it. A press
+                        // drops whatever was selected.
+                        let index = if self.multiline {
+                            self.index_at_point(*position, bounds.min_x(), bounds.min_y())
+                        } else {
+                            self.index_at_offset(position.x - bounds.min_x())
+                        };
+                        self.move_caret(index, false);
                         return true;
                     }
                     if self.blur_on_outside_click {
@@ -506,6 +1000,25 @@ impl Element for TextArea {
                             return true;
                         }
                     }
+                }
+                // A chorded key is a shortcut the field does not model: the
+                // buffer's own handling stops here, so the "s" of Cmd+S saves
+                // the file instead of being typed into it as well.
+                if self.multiline && (modifiers.command || modifiers.ctrl) {
+                    return false;
+                }
+                if self.multiline {
+                    return match self.multiline_key(key, modifiers) {
+                        Some(changed) => {
+                            if changed {
+                                if let Some(cb) = self.on_change.as_ref() {
+                                    (cb.borrow_mut())(self.value.clone());
+                                }
+                            }
+                            true
+                        }
+                        None => false,
+                    };
                 }
                 let caret = self.caret_index();
                 let length = self.value.chars().count();
@@ -1018,5 +1531,237 @@ mod tests {
             )),
             "a blurred field draws no beam: {commands:?}"
         );
+    }
+
+    /// A multi-line field is one row per line of its buffer, with a padded line
+    /// number in front of each and a beam exactly one line box tall, so the rows
+    /// below the caret never move as it moves.
+    #[test]
+    fn a_multiline_field_draws_one_row_per_line_with_its_own_beam() {
+        use crate::elements::caret::CARET_WIDTH;
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = app();
+        let focus = app.theme.color(ColorToken::Focus);
+        let caret = Rc::new(RefCell::new(0));
+        let mut area: Box<dyn Element> = Box::new(
+            TextArea::new()
+                .with_value("fn main() {\n    run();\n}")
+                .with_multiline(true)
+                .with_line_numbers(5)
+                .with_line_height(1.35)
+                .with_caret(Rc::clone(&caret))
+                .with_focused(true),
+        );
+        let commands = render_element(&mut area, vec2f(400.0, 200.0), &app);
+        let line_box = (TEXT_FONT_SIZE * 1.35).ceil();
+        let beam = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. } if *color == focus => Some(*rect),
+                _ => None,
+            })
+            .expect("the focused field paints its beam");
+        assert!(
+            (beam.width() - CARET_WIDTH).abs() < 0.5 && (beam.height() - line_box).abs() < 0.5,
+            "the beam is one line box tall: {beam:?} against {line_box}"
+        );
+        for (line, number) in [
+            ("fn main() {", "    1 "),
+            ("    run();", "    2 "),
+            ("}", "    3 "),
+        ] {
+            assert!(
+                commands.iter().any(
+                    |command| matches!(command, RenderCommand::DrawText { text, .. } if text == line)
+                ),
+                "the line {line:?} is drawn"
+            );
+            assert!(
+                commands.iter().any(
+                    |command| matches!(command, RenderCommand::DrawText { text, .. } if text == number)
+                ),
+                "the line's number {number:?} is drawn"
+            );
+        }
+    }
+
+    /// The keys a multi-line buffer answers: a character lands where the beam
+    /// is, Enter opens a line, Backspace and Delete join one, and the arrows
+    /// walk lines rather than the whole buffer.
+    #[test]
+    fn a_multiline_buffer_takes_characters_enter_and_the_editing_keys() {
+        let app = app();
+        let value = Rc::new(RefCell::new(String::new()));
+        let reported = Rc::clone(&value);
+        let caret = Rc::new(RefCell::new(5));
+        let anchor = Rc::new(RefCell::new(None));
+        let mut area = TextArea::new()
+            .with_value("ab\ncd")
+            .with_multiline(true)
+            .with_focused(true)
+            .with_caret(Rc::clone(&caret))
+            .with_anchor(Rc::clone(&anchor))
+            .with_on_change(move |text| *reported.borrow_mut() = text);
+        let mut event_ctx = EventContext::default();
+        let mut press = |area: &mut TextArea, key: &str| {
+            area.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: key.to_string(),
+                    modifiers: Default::default(),
+                },
+                &mut event_ctx,
+                &app,
+            )
+        };
+
+        press(&mut area, "End");
+        assert_eq!(*caret.borrow(), 5, "End is the end of the caret's own line");
+        press(&mut area, "X");
+        assert_eq!(area.value(), "ab\ncdX", "the character lands at the beam");
+        assert_eq!(*value.borrow(), "ab\ncdX", "and the host is told the text");
+
+        press(&mut area, "Home");
+        assert_eq!(*caret.borrow(), 3, "Home is the start of the caret's own line");
+        press(&mut area, "Enter");
+        assert_eq!(area.value(), "ab\n\ncdX", "Enter opens a line at the beam");
+        assert_eq!(*caret.borrow(), 4, "and the beam leads the new line");
+
+        press(&mut area, "Backspace");
+        assert_eq!(area.value(), "ab\ncdX", "Backspace closes the line again");
+        press(&mut area, "Delete");
+        assert_eq!(area.value(), "ab\ndX", "Delete takes the character after the beam");
+        assert_eq!(*caret.borrow(), 3, "and leaves the beam where it was");
+
+        press(&mut area, "ArrowRight");
+        press(&mut area, "ArrowRight");
+        assert_eq!(*caret.borrow(), 5, "the beam walks to the end of the last line");
+        press(&mut area, "ArrowUp");
+        assert_eq!(*caret.borrow(), 2, "Up lands on the line above, in the same column");
+        press(&mut area, "ArrowDown");
+        assert_eq!(*caret.borrow(), 5, "and Down comes back to the same column");
+    }
+
+    /// Shift+arrows select: the field remembers where the selection began, and
+    /// a key that replaces the selection takes all of it at once.
+    #[test]
+    fn shift_arrows_select_and_a_key_replaces_the_selection() {
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = app();
+        let caret = Rc::new(RefCell::new(4));
+        let anchor = Rc::new(RefCell::new(None));
+        let value = Rc::new(RefCell::new(String::new()));
+        let reported = Rc::clone(&value);
+        let mut area: Box<dyn Element> = Box::new(
+            TextArea::new()
+                .with_value("ab\ncd")
+                .with_multiline(true)
+                .with_focused(true)
+                .with_caret(Rc::clone(&caret))
+                .with_anchor(Rc::clone(&anchor))
+                .with_on_change(move |text| *reported.borrow_mut() = text),
+        );
+        let mut event_ctx = EventContext::default();
+        let shift = ModifiersState {
+            shift: true,
+            ..Default::default()
+        };
+        area.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "ArrowRight".to_string(),
+                modifiers: shift,
+            },
+            &mut event_ctx,
+            &app,
+        );
+        assert_eq!(*caret.borrow(), 5, "the shift-extended beam moves");
+        assert_eq!(*anchor.borrow(), Some(4), "and the selection began where it was");
+
+        let commands = render_element(&mut area, vec2f(400.0, 200.0), &app);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { color, .. }
+                    if *color == app.theme.color(ColorToken::Selected)
+            )),
+            "the selected character is drawn over its band: {commands:?}"
+        );
+
+        // A character typed over a selection replaces all of it.
+        area.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Z".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut event_ctx,
+            &app,
+        );
+        assert_eq!(*value.borrow(), "ab\ncZ", "the selection was replaced");
+        assert_eq!(*anchor.borrow(), None, "and the selection is over");
+    }
+
+    /// A chord is a shortcut, not a character: a key that arrives with the
+    /// command or control key held is left to the app, so Cmd+S saves the file
+    /// instead of typing an `s` into it.
+    #[test]
+    fn a_chorded_key_is_never_typed_into_a_multiline_buffer() {
+        let app = app();
+        let caret = Rc::new(RefCell::new(5));
+        let mut area = TextArea::new()
+            .with_value("ab\ncd")
+            .with_multiline(true)
+            .with_focused(true)
+            .with_caret(caret);
+        let mut event_ctx = EventContext::default();
+        for modifiers in [
+            ModifiersState {
+                command: true,
+                ..Default::default()
+            },
+            ModifiersState {
+                ctrl: true,
+                ..Default::default()
+            },
+        ] {
+            let handled = area.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: "s".to_string(),
+                    modifiers,
+                },
+                &mut event_ctx,
+                &app,
+            );
+            assert!(!handled, "the field leaves the chord to the app");
+            assert_eq!(area.value(), "ab\ncd", "and types nothing");
+        }
+    }
+
+    /// A blurred field is nobody's: it takes no key at all, so a pane that is
+    /// not the focused one never swallows what its neighbour needs.
+    #[test]
+    fn a_blurred_multiline_field_takes_no_key() {
+        let app = app();
+        let mut area = TextArea::new()
+            .with_value("ab\ncd")
+            .with_multiline(true)
+            .with_focused(false);
+        let mut event_ctx = EventContext::default();
+        for key in ["x", "Backspace", "Delete", "Enter", "ArrowLeft", "Home", "End"] {
+            assert!(
+                !area.dispatch_event(
+                    &DispatchedEvent::KeyDown {
+                        key: key.to_string(),
+                        modifiers: Default::default(),
+                    },
+                    &mut event_ctx,
+                    &app,
+                ),
+                "{key} is left to the app"
+            );
+        }
+        assert_eq!(area.value(), "ab\ncd", "and nothing was typed");
     }
 }

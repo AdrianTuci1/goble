@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::{AppContext, Chip, Clipped, ComposerButton, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisSize, Padding, PaintContext, PillTraySide, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Text, TextArea, Tooltip, TooltipPosition, Wrap};
+use crate::elements::{AppContext, Chip, Clipped, ComposerButton, COMPOSER_CONTROL_RADIUS, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisSize, Padding, PaintContext, PillTraySide, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Text, TextArea, Tooltip, TooltipPosition, Wrap};
 use crate::event::{DispatchedEvent, ModifiersState};
 use crate::geometry::{PointF, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
@@ -584,12 +584,6 @@ impl ChatComposer {
                         .with_max_width(DIR_PILL_MAX_WIDTH)
                         .finish(),
                     )
-                    .with_child(
-                        Icon::new("chevron-down")
-                            .with_size(14.0)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .finish(),
-                    )
                     .finish()
             };
             let trigger = Tooltip::new(
@@ -665,12 +659,6 @@ impl ChatComposer {
                         Text::new(label.clone())
                             .with_theme_color(ColorToken::Muted, app)
                             .with_font_size(12.0)
-                            .finish(),
-                    )
-                    .with_child(
-                        Icon::new("chevron-down")
-                            .with_size(14.0)
-                            .with_theme_color(ColorToken::Muted, app)
                             .finish(),
                     )
                     .finish()
@@ -798,6 +786,7 @@ impl ChatComposer {
     fn rebuild(&mut self, app: &AppContext) {
         let sm = app.theme.spacing_px(SpacingToken::Sm);
         let md = app.theme.spacing_px(SpacingToken::Md);
+        let xs = app.theme.spacing_px(SpacingToken::Xs);
 
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -940,12 +929,17 @@ impl ChatComposer {
 
         // The composer card keeps only its gutters/padding; the raised
         // background and 1px border are dropped so the rich input has no gray
-        // inset box behind the textarea and pills.
+        // inset box behind the textarea and pills. Its padding is `md` on every
+        // side — the same inset a message bubble gives its text — so the
+        // editor's text lines up with the conversation's text column.
         let card = Container::new(column.finish())
-            .with_padding(EdgeInsets::new(md, md, md, sm))
-            .with_corner_radius(8.0)
+            .with_padding(EdgeInsets::uniform(md))
+            .with_corner_radius(COMPOSER_CONTROL_RADIUS)
             .finish();
-        self.root = Some(Padding::new(card, EdgeInsets::new(md, sm, md, md)).finish());
+        // The input's own margin is the transcript rows' margin (`xs`), so the
+        // block sits as close to the pane's edges as the conversation does
+        // instead of floating in a gutter of its own.
+        self.root = Some(Padding::new(card, EdgeInsets::uniform(xs)).finish());
     }
 }
 

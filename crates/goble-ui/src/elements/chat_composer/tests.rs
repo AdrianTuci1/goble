@@ -6,6 +6,7 @@ use crate::elements::Element;
 use crate::elements::LayoutContext;
 use crate::elements::PopupMenuItem;
 use crate::elements::SizeConstraint;
+use crate::elements::COMPOSER_CONTROL_RADIUS;
 use crate::event::DispatchedEvent;
 use crate::event::ModifiersState;
 use crate::geometry::vec2f;
@@ -123,13 +124,42 @@ fn composer_puts_every_control_in_the_footer_below_the_editor() {
     // The account button is gone from the rich input.
     assert!(icon_y("user").is_none(), "no account icon in the rich input");
 
-    // Each pill draws a surface + a 1px border.
-    // Rich-input pills are flat (no gray inset box), so no borders are drawn.
-    let strokes = commands
+    // Every control in the row is a card: the directory pill, attach, the model
+    // and stop each outline their own box in the theme's grey, at the theme's
+    // corner radius, and none of them fills it while the pointer is away.
+    let borders: Vec<(crate::color::ColorU, f32, f32)> = commands
         .iter()
-        .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
-        .count();
-    assert_eq!(strokes, 0, "expected flat pills without border boxes, got {strokes}");
+        .filter_map(|c| match c {
+            RenderCommand::StrokeRect {
+                color,
+                width,
+                corner_radius,
+                ..
+            } => Some((*color, *width, *corner_radius)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        borders.len(),
+        4,
+        "the directory pill, attach, the model and stop are four cards, got {borders:?}"
+    );
+    for (color, width, radius) in &borders {
+        assert_eq!(
+            *color,
+            app.theme.color(ColorToken::Border),
+            "a card is outlined in the theme's grey"
+        );
+        assert_eq!(*width, 1.0, "the outline is 1px");
+        assert_eq!(*radius, COMPOSER_CONTROL_RADIUS, "at the input's own corner radius");
+    }
+    assert!(
+        !commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::FillRect { color, .. } if *color == app.theme.color(ColorToken::Hover)
+        )),
+        "a card draws no fill until the pointer is over it: {commands:?}"
+    );
 }
 
 #[test]
@@ -187,12 +217,141 @@ fn composer_renders_harness_dir_branch_pills() {
         assert!(icons.iter().any(|n| n == expected), "missing icon {expected}");
     }
 
-    // Rich-input pills are flat (no gray inset box), so no borders are drawn.
-    let strokes = commands
+    // The harness, directory and branch pills are three cards: each outlines
+    // its own box in the theme's grey, at the theme's corner radius.
+    let borders: Vec<(crate::color::ColorU, f32, f32)> = commands
         .iter()
-        .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
-        .count();
-    assert_eq!(strokes, 0, "expected flat pills without border boxes, got {strokes}");
+        .filter_map(|c| match c {
+            RenderCommand::StrokeRect {
+                color,
+                width,
+                corner_radius,
+                ..
+            } => Some((*color, *width, *corner_radius)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(borders.len(), 3, "one card per pill, got {borders:?}");
+    for (color, width, radius) in &borders {
+        assert_eq!(
+            *color,
+            app.theme.color(ColorToken::Border),
+            "a card is outlined in the theme's grey"
+        );
+        assert_eq!(*width, 1.0, "the outline is 1px");
+        assert_eq!(*radius, COMPOSER_CONTROL_RADIUS, "at the input's own corner radius");
+    }
+}
+
+/// A rich-input control is a card: the row's own box outlined in the theme's
+/// grey border while the pointer is away, and the theme's hover fill once the
+/// pointer is over it. The outline is all it draws at rest.
+#[test]
+fn a_rich_input_control_is_a_card_that_fills_on_hover() {
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let border = app.theme.color(ColorToken::Border);
+    let hover = app.theme.color(ColorToken::Hover);
+    let mut composer = ChatComposer::new().with_path_label("~/Projects/goble");
+
+    let rest = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0)).1;
+    let card = card_of(&rest, "folder");
+    let (color, width, radius) = rest
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::StrokeRect {
+                rect,
+                color,
+                width,
+                corner_radius,
+            } if *rect == card => Some((*color, *width, *corner_radius)),
+            _ => None,
+        })
+        .expect("the directory pill outlines its own box");
+    assert_eq!(color, border, "the card's outline is the theme's grey");
+    assert_eq!(width, 1.0, "the outline is 1px");
+    assert_eq!(radius, COMPOSER_CONTROL_RADIUS, "at the input's own corner radius");
+    assert!(
+        !rest.iter().any(|c| matches!(
+            c,
+            RenderCommand::FillRect { color, .. } if *color == hover
+        )),
+        "a card fills only under the pointer: {rest:?}"
+    );
+
+    // The pointer onto the card: the same box fills with the hover grey, inside
+    // the outline that is still drawn around it.
+    let cursor = vec2f(
+        (card.min_x() + card.max_x()) / 2.0,
+        (card.min_y() + card.max_y()) / 2.0,
+    );
+    let over = paint_composer_with_pointer(&app, &mut composer, vec2f(600.0, 500.0), Some(cursor));
+    assert!(
+        over.iter().any(|c| matches!(
+            c,
+            RenderCommand::FillRect { rect, color, corner_radius }
+                if *rect == card && *color == hover && *corner_radius == COMPOSER_CONTROL_RADIUS
+        )),
+        "the pointer over the card fills it with the hover grey: {over:?}"
+    );
+}
+
+/// The rich input's controls carry no drop-down chevron: the card itself is the
+/// trigger, and the tray still opens from a click on it. Each control is still
+/// drawn by its own glyph — only the chevron is gone.
+#[test]
+fn the_rich_input_controls_draw_no_drop_down_chevron() {
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let mut composer = ChatComposer::new()
+        .with_harness_label("grok build")
+        .with_path_label("~/Projects/goble")
+        .with_branch_label("main")
+        .with_model_label("gpt-4o")
+        .with_on_attach(|| {})
+        .with_harness_menu(
+            vec![PopupMenuItem::new("grok build")],
+            Rc::new(RefCell::new(false)),
+            |_| {},
+        )
+        .with_dir_menu(
+            vec![PopupMenuItem::new("~/Projects/goble")],
+            Rc::new(RefCell::new(false)),
+            |_| {},
+        )
+        .with_branch_menu(
+            vec![PopupMenuItem::new("main")],
+            Rc::new(RefCell::new(false)),
+            |_| {},
+        )
+        .with_model_menu(
+            vec![PopupMenuItem::new("gpt-4o")],
+            Rc::new(RefCell::new(false)),
+            |_| {},
+        );
+
+    let commands = paint_composer_in(&app, &mut composer, vec2f(760.0, 500.0)).1;
+    let mut icons: Vec<String> = commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    icons.sort();
+    assert_eq!(
+        icons,
+        [
+            "agentmode",  // the harness pill
+            "folder",     // the working-directory pill
+            "git-branch", // the branch pill
+            "plus",       // attach
+            "sparkle",    // the model
+        ],
+        "every control draws its own glyph and none of them a chevron"
+    );
 }
 
 #[test]
@@ -289,6 +448,61 @@ fn paint_composer_in(
         .map(|r| r.commands().to_vec())
         .unwrap_or_default();
     (size, commands)
+}
+
+/// The same, with the pointer at `cursor` for the frame that paints: the tree
+/// is rebuilt every frame, so an element reads the cursor at paint (see
+/// `views::chat_view::tests`). `None` puts the pointer outside the window.
+fn paint_composer_with_pointer(
+    app: &AppContext,
+    composer: &mut ChatComposer,
+    window: crate::geometry::Vector2F,
+    cursor: Option<crate::geometry::Vector2F>,
+) -> Vec<crate::render::RenderCommand> {
+    let _ = composer.layout(
+        SizeConstraint::loose(window),
+        &mut LayoutContext::default(),
+        app,
+    );
+    let mut paint_ctx = crate::elements::PaintContext::new(crate::render::Renderer::new());
+    if let Some(position) = cursor {
+        paint_ctx.cursor_inside = true;
+        paint_ctx.cursor_position = position;
+    }
+    composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
+    paint_ctx
+        .renderer
+        .take()
+        .map(|r| r.commands().to_vec())
+        .unwrap_or_default()
+}
+
+/// The box the control that drew `icon` outlines: the border around the icon's
+/// own origin. Every rich-input control is a card of its own, so the border
+/// that encloses the glyph is the control's.
+fn card_of(commands: &[crate::render::RenderCommand], icon: &str) -> crate::geometry::RectF {
+    use crate::render::RenderCommand;
+    let origin = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::DrawIcon { origin, name, .. } if name == icon => Some(*origin),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the {icon} control is drawn"));
+    commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::StrokeRect { rect, .. }
+                if rect.min_x() <= origin.x
+                    && origin.x <= rect.max_x()
+                    && rect.min_y() <= origin.y
+                    && origin.y <= rect.max_y() =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the {icon} control outlines its own box"))
 }
 
 /// Dispatch a key the way the window does.

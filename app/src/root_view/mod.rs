@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_desktop_service::{CollectingEventBus, DesktopState};
-use goble_ui::elements::Element;
+use goble_ui::elements::{Element, HoverChipLayer};
 use goble_ui::platform::WindowControl;
 use goble_ui::{AppContext, Point, Vector2F};
 
@@ -75,6 +75,11 @@ pub struct RootView {
     /// The callbacks built on the last rebuild; kept here so the root can
     /// dispatch global keyboard shortcuts (split/space) before the tree does.
     actions: Option<UiActions>,
+    /// The chips hovered this frame, drawn after the whole element tree (see
+    /// [`Element::paint`]). It is the last thing the window paints, so a chip is
+    /// never covered by the pane to the right of the element it belongs to, nor
+    /// by an open overlay.
+    hover_chips: HoverChipLayer,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }

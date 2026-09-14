@@ -324,8 +324,9 @@ mod tests {
         }
         // The workspace is still mounted underneath: the pane's own composer and
         // the space tab are drawn alongside the panel, so the overlay covers the
-        // workspace instead of replacing it.
-        assert!(drawn(&commands, "Space 1"), "the workspace stays mounted");
+        // workspace instead of replacing it. (The tab holds an agent with no
+        // conversation subject yet, so it reads "New Agent".)
+        assert!(drawn(&commands, "New Agent"), "the workspace stays mounted");
         assert!(
             drawn(&commands, "Ask anything..."),
             "the pane's composer stays mounted under the overlay"

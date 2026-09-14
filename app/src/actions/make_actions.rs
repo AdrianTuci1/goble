@@ -8,10 +8,11 @@ use goble_core::workflow::WorkflowId;
 use goble_desktop_service::DesktopState;
 use goble_terminal::blocks::BlockView;
 use goble_ui::platform::WindowControl;
+use goble_ui::geometry::Vector2F;
 use goble_ui::{ChatMessage, ChatRole, ConversationEntry, SettingsPage};
 
 use crate::media::MediaState;
-use crate::state::{default_pane_path, routing_to_str, UiState};
+use crate::state::{default_pane_path, routing_to_str, UiState, NEW_CONVERSATION_TITLE};
 use crate::terminal::{classify_input, InputClass};
 use crate::ui::{
     AppTab, CronEntry, NavDir, Pane, PaneKind, SettingsCategory, SettingsControl, SidebarView,
@@ -53,10 +54,6 @@ pub fn make_actions(
     let on_space_rename_cancel = Rc::clone(&state);
     let desktop_space_rename_focus = desktop.clone();
     let desktop_space_rename_commit = desktop.clone();
-    // Timestamp of the last workspace-frame click, for double-click detection
-    // (the frame has no dropdown; a second click within the window starts the
-    // inline rename).
-    let workspace_click_at = Rc::new(RefCell::new(None::<std::time::Instant>));
     let on_select_conversation = Rc::clone(&state);
     let on_select_tab = Rc::clone(&state);
     let on_composer_change = Rc::clone(&state);
@@ -97,8 +94,8 @@ pub fn make_actions(
     let on_settings_focus_into_pane = Rc::clone(&state);
     let on_settings_focus_out_of_pane = Rc::clone(&state);
     let on_settings_activate = Rc::clone(&state);
-    let on_settings_adjust = Rc::clone(&state);
-    let on_settings_release_field = Rc::clone(&state);
+    let on_settings_commit_field = Rc::clone(&state);
+    let on_settings_cancel_field = Rc::clone(&state);
     let on_environment_group_draft_change = Rc::clone(&state);
     let on_environment_create_group = Rc::clone(&state);
     let on_environment_open_group = Rc::clone(&state);
@@ -131,6 +128,11 @@ pub fn make_actions(
     let on_close_task_workflow = Rc::clone(&state);
     let on_toggle_shortcuts_help = Rc::clone(&state);
     let on_close_shortcuts_help = Rc::clone(&state);
+    let on_shortcuts_help_type = Rc::clone(&state);
+    let on_shortcuts_help_backspace = Rc::clone(&state);
+    let on_shortcuts_help_clear_filter = Rc::clone(&state);
+    let on_shortcuts_help_escape = Rc::clone(&state);
+    let on_shortcuts_help_move = Rc::clone(&state);
     let on_toggle_right_sidebar = Rc::clone(&state);
     let on_toggle_fullscreen = Rc::clone(&state);
     let on_clear_transcript = Rc::clone(&state);
@@ -163,6 +165,9 @@ pub fn make_actions(
     let on_pane_drag_start = Rc::clone(&state);
     let on_pane_drag_move = Rc::clone(&state);
     let on_pane_drag_end = Rc::clone(&state);
+    let on_pane_lift = Rc::clone(&state);
+    let on_pane_lift_move = Rc::clone(&state);
+    let on_pane_drop = Rc::clone(&state);
     let on_agent_delete = Rc::clone(&state);
     let on_settings_back = Rc::clone(&state);
     let on_settings_navigate = Rc::clone(&state);
@@ -239,6 +244,7 @@ pub fn make_actions(
     let desktop_pane_activate = desktop.clone();
     let desktop_pane_navigate = desktop.clone();
     let desktop_pane_drag = desktop.clone();
+    let desktop_pane_drop = desktop.clone();
     let desktop_agent_delete = desktop.clone();
     let media_send = Rc::clone(&media);
     let media_cmd_enter = Rc::clone(&media);
@@ -354,6 +360,32 @@ pub fn make_actions(
             // shortcut and menubar use, so the settings control reflects 1:1.
             *ui_zoom_font.borrow_mut() = state.settings_font_size;
         }));
+    // The focused row's own value step, shared by the arrow keys and by `Enter`
+    // on a row that holds one (a stepper advances, the channel column moves on).
+    // The steppers run through the actions that own their bounds and, for the
+    // font, the shared zoom cell; the rest belongs to the state.
+    let action_settings_step: Rc<RefCell<dyn FnMut(i32)>> = {
+        let step_state = Rc::clone(&state);
+        let on_speed = action_set_scroll_speed.clone();
+        let on_font = action_set_font_size.clone();
+        Rc::new(RefCell::new(move |delta: i32| {
+            // Read the focused control into a local first: the arms below run
+            // the actions that own the value, and those borrow the same state,
+            // so the match must not hold a borrow of its own.
+            let control = step_state.borrow().settings_focused_control();
+            match control {
+                Some(SettingsControl::ScrollSpeed) => {
+                    let next = step_state.borrow().settings_scroll_speed + delta;
+                    (on_speed.borrow_mut())(next);
+                }
+                Some(SettingsControl::FontSize) => {
+                    let next = step_state.borrow().settings_font_size + delta as f32 * 0.1;
+                    (on_font.borrow_mut())(next);
+                }
+                _ => step_state.borrow_mut().settings_adjust_control(delta),
+            }
+        }))
+    };
 
     UiActions {
         on_search_change: Rc::new(RefCell::new(move |value: String| {
@@ -402,8 +434,10 @@ pub fn make_actions(
             }
             let title = if state.new_conversation_draft.trim().is_empty() {
                 // The sidebar's "New conversation" row has no text field, so a
-                // blank draft means the user clicked it directly: create a default.
-                "New conversation".to_string()
+                // blank draft means the user clicked it directly: create a
+                // conversation nobody has named, which is a placeholder title
+                // rather than a subject (a tab holding it reads "New Agent").
+                NEW_CONVERSATION_TITLE.to_string()
             } else {
                 state.new_conversation_draft.trim().to_string()
             };
@@ -1004,16 +1038,23 @@ pub fn make_actions(
                 return;
             }
             let now = std::time::Instant::now();
-            let double = workspace_click_at
+            // The click lives in app state, not in a local of this frame's
+            // actions: a cell rebuilt every frame would be back to `None` by the
+            // second click, and the rename would never open. It names the tab
+            // too, so clicking two different tabs quickly is not a double click.
+            let click = state.space_click_at.clone();
+            let double = click
                 .borrow()
-                .map(|t| now.duration_since(t).as_millis() < 400)
+                .map(|(tab, at)| tab == index && now.duration_since(at).as_millis() < 400)
                 .unwrap_or(false);
-            *workspace_click_at.borrow_mut() = if double { None } else { Some(now) };
+            *click.borrow_mut() = if double { None } else { Some((index, now)) };
             if double {
-                // Second click on a chip: rename that workspace inline.
+                // Second click on a chip: rename that workspace inline. The
+                // field opens on the label the tab draws now — the derived one
+                // for a tab nobody has named — so the user edits what they see.
                 state.active_space = index;
                 state.active_pane_id = state.spaces[index].root.first_leaf_id();
-                state.space_rename_draft = state.spaces[index].name.clone();
+                state.space_rename_draft = state.space_label(index);
                 state.space_rename_editing = true;
                 state.space_rename_focused = true;
                 return;
@@ -1092,6 +1133,7 @@ pub fn make_actions(
             let on_vim = action_toggle_vim_mode.clone();
             let on_route = action_choose_workspace.clone();
             let on_reload = action_reload_model_config.clone();
+            let on_step = action_settings_step.clone();
             let desktop_activate = desktop.clone();
             move || {
                 let control = activate_state.borrow().settings_focused_control();
@@ -1109,6 +1151,10 @@ pub fn make_actions(
                     Some(SettingsControl::ThemeChannel(target)) => {
                         (on_theme.borrow_mut())(target);
                     }
+                    // A stepper advances: the same step the arrow keys take.
+                    Some(SettingsControl::ScrollSpeed) | Some(SettingsControl::FontSize) => {
+                        (on_step.borrow_mut())(1);
+                    }
                     Some(SettingsControl::AutoApprove) => {
                         let (pane, next) = {
                             let state = activate_state.borrow();
@@ -1123,7 +1169,7 @@ pub fn make_actions(
                     Some(SettingsControl::Route(routing)) => (on_route.borrow_mut())(routing),
                     Some(SettingsControl::ReloadModels) => (on_reload.borrow_mut())(),
                     // Everything else belongs to the state: the environment
-                    // rows, and a text field taking the caret.
+                    // rows, and a text field taking the caret or committing it.
                     _ => activate_state
                         .borrow_mut()
                         .settings_activate_control(desktop_activate.as_deref()),
@@ -1131,32 +1177,14 @@ pub fn make_actions(
             }
         })),
         on_settings_adjust: Rc::new(RefCell::new({
-            let adjust_state = Rc::clone(&on_settings_adjust);
-            let on_speed = action_set_scroll_speed.clone();
-            let on_font = action_set_font_size.clone();
-            move |delta: i32| {
-                // Read the focused control into a local first: the arms below
-                // run the actions that own the value, and those borrow the same
-                // state, so the match must not hold a borrow of its own.
-                let control = adjust_state.borrow().settings_focused_control();
-                match control {
-                    // The steppers run through the actions that already own
-                    // their bounds and, for the font, the shared zoom cell.
-                    Some(SettingsControl::ScrollSpeed) => {
-                        let next = adjust_state.borrow().settings_scroll_speed + delta;
-                        (on_speed.borrow_mut())(next);
-                    }
-                    Some(SettingsControl::FontSize) => {
-                        let next =
-                            adjust_state.borrow().settings_font_size + delta as f32 * 0.1;
-                        (on_font.borrow_mut())(next);
-                    }
-                    _ => adjust_state.borrow_mut().settings_adjust_control(delta),
-                }
-            }
+            let step = action_settings_step.clone();
+            move |delta: i32| (step.borrow_mut())(delta)
         })),
-        on_settings_release_field: Rc::new(RefCell::new(move || {
-            on_settings_release_field.borrow_mut().settings_release_field();
+        on_settings_commit_field: Rc::new(RefCell::new(move || {
+            on_settings_commit_field.borrow_mut().settings_commit_field();
+        })),
+        on_settings_cancel_field: Rc::new(RefCell::new(move || {
+            on_settings_cancel_field.borrow_mut().settings_cancel_field();
         })),
         on_environment_group_draft_change: Rc::new(RefCell::new(move |value: String| {
             on_environment_group_draft_change
@@ -1268,10 +1296,54 @@ pub fn make_actions(
         })),
         on_toggle_shortcuts_help: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_shortcuts_help.borrow_mut();
-            state.shortcuts_help_open = !state.shortcuts_help_open;
+            let opening = !state.shortcuts_help_open;
+            state.shortcuts_help_open = opening;
+            if opening {
+                // The panel opens on the whole table: the last filter, the last
+                // highlight and the list's scroll position do not outlive it.
+                state.shortcuts_help_filter.clear();
+                state.shortcuts_help_index = 0;
+                state.shortcuts_help_scroll.borrow_mut().reset();
+            }
         })),
         on_close_shortcuts_help: Rc::new(RefCell::new(move || {
             on_close_shortcuts_help.borrow_mut().shortcuts_help_open = false;
+        })),
+        on_shortcuts_help_type: Rc::new(RefCell::new(move |ch: char| {
+            let mut state = on_shortcuts_help_type.borrow_mut();
+            state.shortcuts_help_filter.push(ch);
+            // A narrower list starts at its first row.
+            state.shortcuts_help_index = 0;
+        })),
+        on_shortcuts_help_backspace: Rc::new(RefCell::new(move || {
+            let mut state = on_shortcuts_help_backspace.borrow_mut();
+            state.shortcuts_help_filter.pop();
+            state.shortcuts_help_index = 0;
+        })),
+        on_shortcuts_help_clear_filter: Rc::new(RefCell::new(move || {
+            let mut state = on_shortcuts_help_clear_filter.borrow_mut();
+            state.shortcuts_help_filter.clear();
+            state.shortcuts_help_index = 0;
+        })),
+        on_shortcuts_help_escape: Rc::new(RefCell::new(move || {
+            let mut state = on_shortcuts_help_escape.borrow_mut();
+            if state.shortcuts_help_filter.is_empty() {
+                state.shortcuts_help_open = false;
+            } else {
+                state.shortcuts_help_filter.clear();
+                state.shortcuts_help_index = 0;
+            }
+        })),
+        on_shortcuts_help_move: Rc::new(RefCell::new(move |step: i32| {
+            let mut state = on_shortcuts_help_move.borrow_mut();
+            // The rows the current filter leaves are the list the highlight
+            // moves through, so it can never point at a hidden row.
+            let rows = crate::ui::shortcuts_help::visible_row_count(&state.shortcuts_help_filter);
+            state.shortcuts_help_index = if rows == 0 {
+                0
+            } else {
+                (state.shortcuts_help_index as i32 + step).clamp(0, rows as i32 - 1) as usize
+            };
         })),
         on_toggle_right_sidebar: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_right_sidebar.borrow_mut();
@@ -1532,14 +1604,15 @@ pub fn make_actions(
             if state.spaces.is_empty() {
                 let id = state.next_pane_id;
                 state.next_pane_id += 1;
-                state.spaces.push(Space::new(
-                    "Space 1",
-                    Pane::Leaf { id, kind: PaneKind::Chat },
-                ));
+                // Nobody named this space: its tab label is derived from what it
+                // holds, so it reads the agent label until its conversation has
+                // a subject of its own.
+                state.spaces.push(Space::unnamed(Pane::Leaf { id, kind: PaneKind::Chat }));
                 state.active_space = 0;
                 state.active_pane_id = id;
                 ensure_pane_hover(&mut state, id);
                 state.bind_pane_new_conversation(id, desktop_close_space.as_deref());
+                state.refresh_space_labels();
                 state.sync_active_view();
                 if let Some(desktop) = &desktop_close_space {
                     state.refresh_messages(desktop);
@@ -1567,13 +1640,11 @@ pub fn make_actions(
             let routing = crate::media::medium_routing(&medium_id);
             let id = state.next_pane_id;
             state.next_pane_id += 1;
-            let count = state.spaces.len() + 1;
+            // An unnamed space: its tab derives its label from what it holds —
+            // here the working directory the pane opens in.
             state.spaces.push(
-                Space::new(
-                    format!("Space {count}"),
-                    Pane::Leaf { id, kind: PaneKind::Terminal },
-                )
-                .with_medium(medium_id.clone()),
+                Space::unnamed(Pane::Leaf { id, kind: PaneKind::Terminal })
+                    .with_medium(medium_id.clone()),
             );
             state.active_space = state.spaces.len() - 1;
             state.active_pane_id = id;
@@ -1586,6 +1657,7 @@ pub fn make_actions(
             let project_id = media_add_space.borrow().default_project_for_medium(&medium_id);
             let path = default_pane_path(&project_id, desktop_add_space.as_deref());
             state.set_active_pane_path(path);
+            state.refresh_space_labels();
             state.sync_active_view();
             if let Some(desktop) = &desktop_add_space {
                 state.save_panes(desktop);
@@ -1599,13 +1671,9 @@ pub fn make_actions(
             let routing = crate::media::medium_routing(&medium_id);
             let id = state.next_pane_id;
             state.next_pane_id += 1;
-            let count = state.spaces.len() + 1;
             state.spaces.push(
-                Space::new(
-                    format!("Space {count}"),
-                    Pane::Leaf { id, kind: PaneKind::Terminal },
-                )
-                .with_medium(medium_id.clone()),
+                Space::unnamed(Pane::Leaf { id, kind: PaneKind::Terminal })
+                    .with_medium(medium_id.clone()),
             );
             state.active_space = state.spaces.len() - 1;
             state.active_pane_id = id;
@@ -1620,6 +1688,7 @@ pub fn make_actions(
                 media_add_space_with_medium.borrow().default_project_for_medium(&medium_id);
             let path = default_pane_path(&project_id, desktop_add_space_with_medium.as_deref());
             state.set_active_pane_path(path);
+            state.refresh_space_labels();
             state.sync_active_view();
             if let Some(desktop) = &desktop_add_space_with_medium {
                 state.save_panes(desktop);
@@ -1715,6 +1784,38 @@ pub fn make_actions(
             let mut state = on_pane_drag_end.borrow_mut();
             state.dragging_pane_id = None;
             if let Some(desktop) = &desktop_pane_drag {
+                state.save_panes(desktop);
+            }
+        })),
+        on_pane_lift: Rc::new(RefCell::new(move |pane_id: u64, position: Vector2F| {
+            on_pane_lift.borrow_mut().begin_pane_lift(pane_id, position);
+        })),
+        on_pane_lift_move: Rc::new(RefCell::new(
+            move |position: Vector2F, drop_index: Option<usize>| {
+                on_pane_lift_move
+                    .borrow_mut()
+                    .drag_pane_to(position, drop_index);
+            },
+        )),
+        // Drop the lifted pane on the tab strip: it becomes a tab of its own
+        // there, carrying the pane itself (its id and its kind, so its PTY, its
+        // conversation and its file follow it). The space it left collapses
+        // onto its surviving pane, is consumed when it held nothing else, or —
+        // the last one — resets to a fresh empty chat pane exactly as closing
+        // it would, so the window is never left without a tab.
+        on_pane_drop: Rc::new(RefCell::new(move |drop_index: Option<usize>| {
+            let mut state = on_pane_drop.borrow_mut();
+            let Some(moved) = state.drop_pane(drop_index) else {
+                return;
+            };
+            if let Some(fresh) = moved.reset_pane {
+                ensure_pane_hover(&mut state, fresh);
+                state.bind_pane_new_conversation(fresh, desktop_pane_drop.as_deref());
+            }
+            state.refresh_space_labels();
+            state.sync_active_view();
+            if let Some(desktop) = &desktop_pane_drop {
+                state.refresh_messages(desktop);
                 state.save_panes(desktop);
             }
         })),

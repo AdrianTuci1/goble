@@ -48,6 +48,10 @@ pub struct ChatView {
     quick_actions: Vec<(String, Rc<RefCell<dyn FnMut() + 'static>>)>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_cmd_enter: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    /// Cmd/Ctrl+Alt+Enter in the composer: route the conversation to the cloud
+    /// medium and submit the draft (warp-new's `⌘⌥⏎`). The host owns what
+    /// "cloud" means, so the view only reports the chord.
+    on_send_to_cloud: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_action: Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
     /// App-owned per-block filter state, keyed by a terminal block's content
     /// key; shared down to each `ChatMessageBubble` so the filter tray's open
@@ -178,6 +182,7 @@ impl ChatView {
             quick_actions: Vec::new(),
             on_send: None,
             on_cmd_enter: None,
+            on_send_to_cloud: None,
             on_action: None,
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
             reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),

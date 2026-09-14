@@ -163,7 +163,7 @@ fn composer_puts_every_control_in_the_footer_below_the_editor() {
 }
 
 #[test]
-fn composer_renders_harness_dir_branch_pills() {
+fn composer_renders_dir_and_branch_pills_without_the_environment_pill() {
     use crate::elements::PaintContext;
     use crate::render::{RenderCommand, Renderer};
 
@@ -211,14 +211,24 @@ fn composer_renders_harness_dir_branch_pills() {
             _ => None,
         })
         .collect();
-    // `computer` renders the agentmode glyph; folder + git-branch are the
-    // new atlas entries.
-    for expected in ["agentmode", "folder", "git-branch"] {
+    // folder + git-branch are the two context pills the rich input still draws.
+    for expected in ["folder", "git-branch"] {
         assert!(icons.iter().any(|n| n == expected), "missing icon {expected}");
     }
+    // The environment pill (`computer` -> the agentmode glyph) is gone, even
+    // though the host still sets its label and its menu.
+    assert!(
+        !icons.iter().any(|n| n == "agentmode"),
+        "the environment pill is not drawn: {icons:?}"
+    );
+    assert!(
+        !drawn_texts(&commands).iter().any(|t| t == "grok build"),
+        "and its label is not drawn either: {:?}",
+        drawn_texts(&commands)
+    );
 
-    // The harness, directory and branch pills are three cards: each outlines
-    // its own box in the theme's grey, at the theme's corner radius.
+    // The directory and branch pills are two cards: each outlines its own box
+    // in the theme's grey, at the theme's corner radius.
     let borders: Vec<(crate::color::ColorU, f32, f32)> = commands
         .iter()
         .filter_map(|c| match c {
@@ -231,7 +241,7 @@ fn composer_renders_harness_dir_branch_pills() {
             _ => None,
         })
         .collect();
-    assert_eq!(borders.len(), 3, "one card per pill, got {borders:?}");
+    assert_eq!(borders.len(), 2, "one card per pill, got {borders:?}");
     for (color, width, radius) in &borders {
         assert_eq!(
             *color,
@@ -344,13 +354,17 @@ fn the_rich_input_controls_draw_no_drop_down_chevron() {
     assert_eq!(
         icons,
         [
-            "agentmode",  // the harness pill
             "folder",     // the working-directory pill
             "git-branch", // the branch pill
             "plus",       // attach
             "sparkle",    // the model
         ],
-        "every control draws its own glyph and none of them a chevron"
+        "every control draws its own glyph and none of them a chevron, \
+         the environment pill included"
+    );
+    assert!(
+        !icons.iter().any(|name| name == "agentmode"),
+        "the environment pill is gone from the rich input"
     );
 }
 
@@ -362,11 +376,11 @@ fn composer_context_menu_opens_and_paints_panel() {
     let app = AppContext::default();
     let open = Rc::new(RefCell::new(true));
     let mut composer = ChatComposer::new()
-        .with_harness_label("grok build")
-        .with_harness_menu(
+        .with_path_label("/work/project")
+        .with_dir_menu(
             vec![
-                PopupMenuItem::new("grok build"),
-                PopupMenuItem::new("claude"),
+                PopupMenuItem::new("/work/project"),
+                PopupMenuItem::new("/work/other"),
             ],
             open,
             |_| {},
@@ -782,7 +796,6 @@ fn the_footer_wraps_instead_of_overflowing_the_input() {
     let app = AppContext::default();
     let composer = || {
         ChatComposer::new()
-            .with_harness_label("grok build")
             .with_path_label("~/Projects/goble")
             .with_branch_label("main")
             .with_model_label("gpt-4o")
@@ -922,4 +935,144 @@ fn the_focused_editor_shows_the_focus_blue_caret() {
         )),
         "a blurred composer draws no caret: {commands:?}"
     );
+}
+
+/// The rich input hugs its own rows: the card's vertical padding is `xs` and
+/// the block carries no vertical margin, so the first content row is `xs` under
+/// the composer's top edge and the last one is `xs` above its bottom edge —
+/// about 4pt where it used to be `md` + `xs`, 16pt. The horizontal stays `md`
+/// on the card, so the editor's text keeps the conversation's text column.
+#[test]
+fn the_rich_input_keeps_only_xs_above_and_below_its_rows() {
+    use crate::render::RenderCommand;
+    use crate::theme::SpacingToken;
+
+    let app = AppContext::default();
+    let xs = app.theme.spacing_px(SpacingToken::Xs);
+    // The context row rides above the editor here, so the first card drawn is
+    // the top row and the model card is the bottom one. The composer paints
+    // from its own origin: its top edge is 0 and its bottom edge is `size.y`.
+    let mut composer = ChatComposer::new()
+        .with_context_above_editor(true)
+        .with_path_label("~/Projects/goble")
+        .with_model_label("gpt-4o")
+        .with_on_select_model(|| {});
+    let (size, commands) = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0));
+
+    let cards: Vec<crate::geometry::RectF> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::StrokeRect { rect, .. } => Some(*rect),
+            _ => None,
+        })
+        .collect();
+    let top = cards
+        .iter()
+        .map(|rect| rect.min_y())
+        .fold(f32::INFINITY, f32::min);
+    let bottom = cards
+        .iter()
+        .map(|rect| rect.max_y())
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    assert!(
+        (top - xs).abs() < 0.5,
+        "the first row is {xs} under the composer's top edge, got {top}"
+    );
+    assert!(
+        (size.y - bottom - xs).abs() < 0.5,
+        "the last row is {xs} above the composer's bottom edge, got {} of {}",
+        size.y - bottom,
+        size.y
+    );
+}
+
+/// `⌘⌥⏎` is the cloud gesture (warp-new's `CMD+ALT+ENTER`): the host's own
+/// callback fires with the draft, and the ordinary send path — what a plain
+/// `↵` takes — is left alone.
+#[test]
+fn the_cloud_chord_submits_to_the_cloud_and_plain_enter_still_sends() {
+    let app = AppContext::default();
+
+    // A plain Enter sends the draft the usual way and never routes it to the
+    // cloud, even on a composer that carries both callbacks.
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let sent_cb = sent.clone();
+    let cloud_for_plain = Rc::new(RefCell::new(Vec::new()));
+    let cloud_for_plain_cb = cloud_for_plain.clone();
+    let mut plain = ChatComposer::new()
+        .with_focused(true)
+        .with_value("a local turn")
+        .with_on_send(move |text| sent_cb.borrow_mut().push(text))
+        .with_on_send_to_cloud(move |text| cloud_for_plain_cb.borrow_mut().push(text));
+    paint_composer(&app, &mut plain);
+    let _ = press(&mut plain, &app, "Enter");
+    assert_eq!(*sent.borrow(), vec!["a local turn".to_string()]);
+    assert!(
+        cloud_for_plain.borrow().is_empty(),
+        "a plain Enter is not the cloud chord"
+    );
+    assert_eq!(plain.value(), "", "the submitted draft is spent");
+
+    // Command/Ctrl+Alt+Enter is the cloud chord, in both spellings the OS
+    // sends (command on macOS, ctrl elsewhere).
+    for modifiers in [
+        ModifiersState {
+            alt: true,
+            command: true,
+            ..Default::default()
+        },
+        ModifiersState {
+            alt: true,
+            ctrl: true,
+            ..Default::default()
+        },
+    ] {
+        let cloud = Rc::new(RefCell::new(Vec::new()));
+        let cloud_cb = cloud.clone();
+        let local = Rc::new(RefCell::new(Vec::new()));
+        let local_cb = local.clone();
+        let mut composer = ChatComposer::new()
+            .with_focused(true)
+            .with_value("ship it")
+            .with_on_send(move |text| local_cb.borrow_mut().push(text))
+            .with_on_send_to_cloud(move |text| cloud_cb.borrow_mut().push(text));
+        paint_composer(&app, &mut composer);
+
+        let handled = composer.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Enter".to_string(),
+                modifiers,
+            },
+            &mut crate::elements::EventContext::default(),
+            &app,
+        );
+        assert!(handled, "the cloud chord belongs to the composer");
+        assert_eq!(*cloud.borrow(), vec!["ship it".to_string()]);
+        assert!(local.borrow().is_empty(), "the cloud chord is not a local send");
+        assert_eq!(composer.value(), "", "the submitted draft is spent");
+    }
+
+    // Shift is not part of the gesture, so the editor keeps the key.
+    let cloud = Rc::new(RefCell::new(Vec::new()));
+    let cloud_cb = cloud.clone();
+    let mut shifted = ChatComposer::new()
+        .with_focused(true)
+        .with_value("typed")
+        .with_on_send_to_cloud(move |text| cloud_cb.borrow_mut().push(text));
+    paint_composer(&app, &mut shifted);
+    let _ = shifted.dispatch_event(
+        &DispatchedEvent::KeyDown {
+            key: "Enter".to_string(),
+            modifiers: ModifiersState {
+                alt: true,
+                command: true,
+                shift: true,
+                ..Default::default()
+            },
+        },
+        &mut crate::elements::EventContext::default(),
+        &app,
+    );
+    assert!(cloud.borrow().is_empty(), "⌘⌥⇧↵ is not the cloud chord");
 }

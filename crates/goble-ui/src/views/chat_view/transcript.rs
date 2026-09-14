@@ -591,8 +591,10 @@ impl ChatView {
         let composer_value_for_change = self.composer_value.clone();
         let composer_value = self.composer_value.clone();
         let composer_value_cmd = self.composer_value.clone();
+        let composer_value_cloud = self.composer_value.clone();
         let on_send = self.on_send.clone();
         let on_cmd_enter = self.on_cmd_enter.clone();
+        let on_send_to_cloud = self.on_send_to_cloud.clone();
         let on_composer_change = self.on_composer_change.clone();
         let mut composer = ChatComposer::new()
             .with_value(current_value)
@@ -622,6 +624,12 @@ impl ChatView {
             .with_on_cmd_enter(move |text| {
                 *composer_value_cmd.borrow_mut() = String::new();
                 if let Some(cb) = on_cmd_enter.as_ref() {
+                    (cb.borrow_mut())(text);
+                }
+            })
+            .with_on_send_to_cloud(move |text| {
+                *composer_value_cloud.borrow_mut() = String::new();
+                if let Some(cb) = on_send_to_cloud.as_ref() {
                     (cb.borrow_mut())(text);
                 }
             });
@@ -742,8 +750,12 @@ impl ChatView {
                 let md = app.theme.spacing_px(SpacingToken::Md);
                 let sm = app.theme.spacing_px(SpacingToken::Sm);
                 let strip = ShortcutHints::new(self.composer_hints.clone()).finish(app);
+                // The strip's caps sit a few points under the transcript's last
+                // row: the gestures belong to the input below them, and the gap
+                // is what reads them as the input's own row rather than as the
+                // conversation's tail.
                 column = column.with_child(
-                    Padding::new(strip, EdgeInsets::new(md, 0.0, md, sm)).finish(),
+                    Padding::new(strip, EdgeInsets::new(md, 4.0, md, sm)).finish(),
                 );
             }
             column = column.with_child(Divider::horizontal().finish());

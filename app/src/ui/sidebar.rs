@@ -122,7 +122,8 @@ fn view_toolbelt(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> B
 
 /// The agents view: the conversation search box, then "new conversation", then
 /// the conversation cards — the starred ones pinned at the top, the rest grouped
-/// into collapsible folders.
+/// into collapsible folders. A starred conversation is listed once: the folders
+/// hold the ones that are not pinned.
 fn agents_view(
     app: &AppContext,
     state: &UiSnapshot,
@@ -185,6 +186,18 @@ fn agents_view(
     // starred ones and the folders below.
     let on_toggle_section = actions.on_toggle_section.clone();
 
+    // Starred: the conversations the user pinned, pinned above the folders,
+    // whichever environment they belong to. The pinned ones are this section's
+    // and no one else's — the folder groups below list what is left — so a
+    // starred conversation is listed once, where the user put it.
+    let starred: Vec<&ConversationEntry> = state
+        .conversations
+        .iter()
+        .filter(|entry| state.starred.iter().any(|id| id == &entry.id))
+        .collect();
+    let is_starred =
+        |entry: &ConversationEntry| starred.iter().any(|pinned| pinned.id == entry.id);
+
     // Show only the conversations that belong to the selected environment
     // (Local / Remote). Each conversation carries its `workspace_routing`
     // (`"local"` / `"remote"`); the selected medium maps to one of those via
@@ -194,7 +207,7 @@ fn agents_view(
     let visible: Vec<&ConversationEntry> = state
         .conversations
         .iter()
-        .filter(|entry| entry.workspace_routing == routing)
+        .filter(|entry| entry.workspace_routing == routing && !is_starred(entry))
         .collect();
 
     // Collapsed, the list is a short digest: a few cards plus a "View all"
@@ -223,11 +236,6 @@ fn agents_view(
     // Starred: the conversations the user pinned, above the folders, whichever
     // environment they belong to. A section with nothing in it is not drawn at
     // all: there is nothing to collapse.
-    let starred: Vec<&ConversationEntry> = state
-        .conversations
-        .iter()
-        .filter(|entry| state.starred.iter().any(|id| id == &entry.id))
-        .collect();
     let starred_collapsed = state.collapsed_sections.iter().any(|key| key == STARRED_SECTION);
     if !starred.is_empty() {
         list = list.with_child(section_header(
@@ -245,7 +253,10 @@ fn agents_view(
         }
     }
 
-    if visible.is_empty() {
+    // The empty state belongs to the whole list, not to the folders alone:
+    // pinned conversations are listed here too, so a list that is entirely
+    // starred has content and says nothing.
+    if visible.is_empty() && starred.is_empty() {
         let empty_label = if state.conversations.is_empty() {
             "No conversations yet. Create one to begin."
         } else {
@@ -496,9 +507,30 @@ mod sidebar_surface_tests {
     }
 
     /// The sidebar draws no rounded fill, no separator rule and no magnifier,
-    /// and it does draw the runs that make those assertions mean something.
-    fn assert_the_band_is_flat(commands: &[RenderCommand], case: &str) {
+    /// and it does draw the runs that make those assertions mean something. The
+    /// one card that rounds its corners is the tray an open 3-dot control hangs
+    /// beside itself — the card the rich input's controls open, so the two
+    /// trays are one surface — and it exists only while that tray is open
+    /// (`tray_open`).
+    fn assert_the_band_is_flat(commands: &[RenderCommand], case: &str, tray_open: bool) {
         let band = crate::ui::SIDEBAR_WIDTH;
+
+        // The tray's own rows: a rounded fill that holds one of them is the
+        // tray's card and not a row that went back to being a widget.
+        let tray_rows = ["Star", "Delete agent"];
+        let holds_a_tray_row = |rect: &RectF| {
+            tray_open
+                && commands.iter().any(|other| match other {
+                    RenderCommand::DrawText { text, origin, .. } => {
+                        tray_rows.contains(&text.as_str())
+                            && rect.min_x() <= origin.x
+                            && origin.x <= rect.max_x()
+                            && rect.min_y() <= origin.y
+                            && origin.y <= rect.max_y()
+                    }
+                    _ => false,
+                })
+        };
 
         let rounded: Vec<String> = commands
             .iter()
@@ -512,7 +544,7 @@ mod sidebar_surface_tests {
                     rect,
                     corner_radius,
                     ..
-                } if in_band(*rect) && *corner_radius > 0.0 => {
+                } if in_band(*rect) && *corner_radius > 0.0 && !holds_a_tray_row(rect) => {
                     Some(format!("fill {rect:?} radius {corner_radius}"))
                 }
                 _ => None,
@@ -523,6 +555,25 @@ mod sidebar_surface_tests {
             "{case}: the sidebar draws no rounded fill, got {}",
             rounded.join(", ")
         );
+        // The tray itself is drawn, and drawn rounded: the rule above is not
+        // passing because the band happens to be empty.
+        if tray_open {
+            let tray_fills = commands
+                .iter()
+                .filter(|command| match command {
+                    RenderCommand::FillRect {
+                        rect,
+                        corner_radius,
+                        ..
+                    } => in_band(*rect) && *corner_radius > 0.0 && holds_a_tray_row(rect),
+                    _ => false,
+                })
+                .count();
+            assert!(
+                tray_fills > 0,
+                "{case}: the open tray is the band's rounded card"
+            );
+        }
 
         let rules: Vec<String> = commands
             .iter()
@@ -623,7 +674,7 @@ mod sidebar_surface_tests {
             let mut root: Box<dyn Element> = Box::new(view);
             let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
             let case = format!("card hovered {hovered_card}, create hovered {hovered_create}");
-            assert_the_band_is_flat(&commands, &case);
+            assert_the_band_is_flat(&commands, &case, hovered_card);
         }
     }
 
@@ -1299,6 +1350,281 @@ mod sidebar_surface_tests {
             outline,
             app.theme.color(ColorToken::Text),
             "and the outline matches the label"
+        );
+    }
+
+    /// Lay the mounted root out and paint it with the pointer at `at`, the way
+    /// the window's own redraw does: hover is read at paint time.
+    fn frame_at(
+        root: &mut Box<dyn Element>,
+        app: &AppContext,
+        at: goble_ui::geometry::Vector2F,
+    ) -> Vec<RenderCommand> {
+        let _ = root.layout(
+            SizeConstraint::loose(vec2f(1024.0, 768.0)),
+            &mut LayoutContext::default(),
+            app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = at;
+        root.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        ctx.renderer.expect("renderer").commands().to_vec()
+    }
+
+    /// A point on the sidebar band's run of `text`, a few points into its box so
+    /// it lands on the control rather than on the run's own top-left corner.
+    fn on_band_text(commands: &[RenderCommand], text: &str) -> goble_ui::geometry::Vector2F {
+        let origin = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText {
+                    text: run, origin, ..
+                } if run == text && origin.x < crate::ui::SIDEBAR_WIDTH => Some(*origin),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{text:?} is drawn in the sidebar's band"));
+        vec2f(origin.x + 3.0, origin.y + 3.0)
+    }
+
+    /// Where the sidebar's band painted each run of `text`, in paint order. A
+    /// box the frame draws twice (the tray, once inside its card and once as the
+    /// frame's last layer) has two entries, and the last one is the visible one.
+    fn band_runs(commands: &[RenderCommand], text: &str) -> Vec<usize> {
+        commands
+            .iter()
+            .enumerate()
+            .filter(|(_, command)| {
+                matches!(command, RenderCommand::DrawText { text: run, origin, .. }
+                    if run == text && origin.x < crate::ui::SIDEBAR_WIDTH)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// A pinned conversation is listed once, under Starred: the folder groups
+    /// below hold what is left. A list that is entirely pinned is not empty, so
+    /// it says nothing about an empty environment either.
+    #[test]
+    fn a_starred_conversation_is_listed_under_starred_only() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+
+        let view = seeded_view(&app, &desktop);
+        view.state_rc()
+            .borrow_mut()
+            .starred_conversations
+            .insert("c1".to_string());
+        let mut root: Box<dyn Element> = Box::new(view);
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        let drawn = drawn_text(&commands);
+        assert_eq!(
+            drawn.iter().filter(|text| *text == "Ada").count(),
+            1,
+            "the pinned card is listed once: {drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|text| text == "Starred"),
+            "under the Starred header: {drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|text| text == "Frontend"),
+            "and its folder still lists the cards that are not pinned: {drawn:?}"
+        );
+
+        // Every conversation pinned: there is content, so the environment's
+        // empty state is not what the user reads.
+        let view = seeded_view(&app, &desktop);
+        {
+            let state = view.state_rc();
+            let mut s = state.borrow_mut();
+            s.conversations.truncate(1);
+            s.starred_conversations.insert("c1".to_string());
+        }
+        let mut root: Box<dyn Element> = Box::new(view);
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        let drawn = drawn_text(&commands);
+        assert!(
+            drawn.iter().any(|text| text == "Ada"),
+            "the pinned conversation is drawn: {drawn:?}"
+        );
+        assert!(
+            !drawn.iter().any(|text| text.contains("No conversations")),
+            "an all-pinned list has content: {drawn:?}"
+        );
+    }
+
+    /// The card's tray opens as a card of its own anchored to the 3-dot control
+    /// — below it and trailing it — rather than as rows under the card. It is
+    /// drawn by the frame's last layer, so the cards listed after this one
+    /// cannot cover it; a pointer on it is still on the card's own surface; and
+    /// its rows act on the conversation the way they promise.
+    #[test]
+    fn the_cards_tray_hangs_from_its_control_above_the_cards_after_it() {
+        use goble_ui::event::DispatchedEvent;
+
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let view = seeded_view(&app, &desktop);
+        let state = view.state_rc();
+        {
+            let mut s = state.borrow_mut();
+            for id in ["c1", "c2", "c3", "c4", "c5"] {
+                s.agent_cards
+                    .insert(id.to_string(), Rc::new(RefCell::new(AgentCardUi::default())));
+            }
+        }
+        let mut root: Box<dyn Element> = Box::new(view);
+        let mut ctx = goble_ui::elements::EventContext::default();
+        let away = vec2f(700.0, 400.0);
+
+        // The pointer arrives on the first card, and its control appears.
+        let on_card = on_band_text(&frame_at(&mut root, &app, away), "Ada");
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove { position: on_card },
+            &mut ctx,
+            &app,
+        );
+        let hovered = frame_at(&mut root, &app, on_card);
+        let dots = dots_box(&hovered, crate::ui::SIDEBAR_WIDTH)
+            .expect("the card under the pointer draws its dots");
+
+        // A release on the control opens the tray.
+        let on_dots = vec2f(
+            dots.min_x() + dots.width() / 2.0,
+            dots.min_y() + dots.height() / 2.0,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: on_dots,
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+        let open = frame_at(&mut root, &app, on_dots);
+
+        let star_row = on_band_text(&open, "Star");
+        let delete_row = on_band_text(&open, "Delete agent");
+        assert!(delete_row.y > star_row.y, "star is the tray's first row");
+
+        // The tray's own card, around its rows.
+        let tray = open
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                    ..
+                } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                    && *corner_radius > 0.0
+                    && rect.min_x() <= star_row.x
+                    && star_row.x <= rect.max_x()
+                    && rect.min_y() <= star_row.y
+                    && star_row.y <= rect.max_y() =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the tray is a card of its own around its rows");
+        assert!(
+            tray.min_y() > dots.max_y(),
+            "the tray hangs below the control: tray {tray:?} vs dots {dots:?}"
+        );
+        assert!(
+            (tray.max_x() - dots.max_x()).abs() < 0.01,
+            "its trailing edge is the control's: tray {tray:?} vs dots {dots:?}"
+        );
+        assert!(
+            tray.max_x() <= crate::ui::SIDEBAR_WIDTH,
+            "and the tray stays inside the sidebar: {tray:?}"
+        );
+
+        // The cards painted after this one cannot cover it: the tray's own runs
+        // come after them.
+        let next_card = band_runs(&open, "Coder");
+        let next_card = *next_card.first().expect("the next card is drawn");
+        let star_runs = band_runs(&open, "Star");
+        assert!(
+            *star_runs.last().expect("the tray's star row is drawn") > next_card,
+            "the tray is drawn after the cards that follow it: {star_runs:?} vs {next_card}"
+        );
+
+        // The pointer walks off the card's bottom edge into the tray's strip:
+        // the strip is the tray's, so the tray is still open when the pointer
+        // arrives at the row. The strip is the few points between the card's
+        // bottom and the tray's own top, so its middle is a couple of points
+        // above the tray.
+        let crossing = vec2f(tray.min_x() + tray.width() / 2.0, tray.min_y() - 2.0);
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: crossing,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(
+            state.borrow().agent_cards["c1"].borrow().menu_open,
+            "the strip between the card and its tray keeps the tray open"
+        );
+
+        // The pointer moves onto the tray: it is the control's own surface, so
+        // the tray stays — even though it lies outside the card's own band.
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: delete_row,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(
+            state.borrow().agent_cards["c1"].borrow().menu_open,
+            "a pointer on the tray does not put it away"
+        );
+        let still_open = frame_at(&mut root, &app, delete_row);
+        assert!(
+            !band_runs(&still_open, "Delete agent").is_empty(),
+            "and the next frame still draws the tray"
+        );
+
+        // Its first row acts: a press and release on Star stars the
+        // conversation, which is also what puts the tray away.
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: star_row,
+            },
+            &mut ctx,
+            &app,
+        );
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: star_row,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: star_row,
+                button: 0,
+            },
+        ] {
+            root.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert!(
+            state.borrow().starred_conversations.contains("c1"),
+            "the tray's star row stars the conversation"
+        );
+        assert!(
+            !state.borrow().agent_cards["c1"].borrow().menu_open,
+            "and starring puts the tray away"
         );
     }
 }

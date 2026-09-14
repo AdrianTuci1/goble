@@ -64,6 +64,7 @@ pub fn make_actions(
     let on_send_message = Rc::clone(&state);
     let on_run_shell_command = Rc::clone(&state);
     let on_cmd_enter = Rc::clone(&state);
+    let on_send_to_cloud = Rc::clone(&state);
     let on_attach = Rc::clone(&state);
     let on_voice = Rc::clone(&state);
     let on_model_select = Rc::clone(&state);
@@ -202,6 +203,7 @@ pub fn make_actions(
     let desktop_select = desktop.clone();
     let desktop_send = desktop.clone();
     let desktop_cmd_enter = desktop.clone();
+    let desktop_send_to_cloud = desktop.clone();
     let desktop_stop = desktop.clone();
     let desktop_answer = desktop.clone();
     let desktop_skip = desktop.clone();
@@ -248,6 +250,7 @@ pub fn make_actions(
     let desktop_agent_delete = desktop.clone();
     let media_send = Rc::clone(&media);
     let media_cmd_enter = Rc::clone(&media);
+    let media_send_to_cloud = Rc::clone(&media);
     let media_send_queued = Rc::clone(&media);
     let media_split_right = Rc::clone(&media);
     let media_split_down = Rc::clone(&media);
@@ -604,6 +607,46 @@ pub fn make_actions(
                 &mut state,
                 desktop_cmd_enter.as_ref(),
                 &media_cmd_enter,
+                &text,
+                pane_id,
+            );
+        })),
+        // Cmd/Ctrl+Alt+Enter (warp-new's `⌘⌥⏎`): "send to cloud" is the routing
+        // choice plus the ordinary submit. The conversation is pointed at the
+        // cloud medium — the same write `on_choose_workspace` makes — and the
+        // draft runs through the shared send path. There is no remote transport
+        // in this tree, so nothing here reports a remote run as if it happened:
+        // the routing is the whole gesture.
+        on_send_to_cloud: Rc::new(RefCell::new(move |text: String| {
+            let mut state = on_send_to_cloud.borrow_mut();
+            let pane_id = state.active_pane_id;
+            // Nothing typed is nothing to route: the composer's chord fires
+            // either way, and an empty draft is the host's no-op (the same rule
+            // `on_cmd_enter` keeps).
+            if text.trim().is_empty() {
+                return;
+            }
+            state.workspace_routing = Some(WorkspaceRouting::Remote);
+            if state.can_run_agent_turn(pane_id) && state.pane_conversation_id(pane_id).is_none() {
+                state.bind_pane_new_conversation(pane_id, desktop_send_to_cloud.as_deref());
+            }
+            // Persist the choice on the conversation the turn will run on, so
+            // it survives a restart and is tracked per conversation.
+            if let (Some(desktop), Some(chat_id)) = (
+                &desktop_send_to_cloud,
+                state.pane_conversation_id(pane_id),
+            ) {
+                if let Err(e) = desktop.set_chat_workspace_routing(
+                    &chat_id,
+                    Some(routing_to_str(WorkspaceRouting::Remote)),
+                ) {
+                    log::warn!("set_chat_workspace_routing failed: {e}");
+                }
+            }
+            send_agent_prompt(
+                &mut state,
+                desktop_send_to_cloud.as_ref(),
+                &media_send_to_cloud,
                 &text,
                 pane_id,
             );

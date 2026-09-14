@@ -117,8 +117,8 @@ fn text_positions(cmds: &[RenderCommand], text: &str) -> Vec<(f32, f32)> {
 }
 
 /// The top-most place `text` was drawn (smallest y), so a label the pane's
-/// composer also carries (the environment pill) still resolves to the topbar
-/// surface above it.
+/// composer also carries (the working-directory pill) still resolves to the
+/// topbar surface above it.
 fn topmost_text_position(cmds: &[RenderCommand], text: &str) -> Option<(f32, f32)> {
     text_positions(cmds, text)
         .into_iter()
@@ -342,18 +342,18 @@ fn hovering_an_environment_row_offers_make_default_in_a_tray() {
         "the menu closes once the choice is made"
     );
 
-    // The choice shows where it was made: the composer's environment pill reads
-    // the environment that is now the default, and the tray is gone with the
-    // menu that showed it.
+    // The choice shows where it was made: the tray is gone with the menu that
+    // showed it, and the composer no longer carries an environment pill to read
+    // the default back — the choice is the state asserted above.
     let cmds = render(&mut root, &app);
     assert!(
         text_center(&cmds, "Make default").is_none(),
         "the tray closes with the menu"
     );
-    assert_eq!(
-        text_positions(&cmds, "Remote (xrdp)").len(),
-        1,
-        "the environment pill now reads the environment that is the default"
+    assert!(
+        text_positions(&cmds, "Remote (xrdp)").is_empty(),
+        "the composer draws no environment pill any more: {:?}",
+        text_positions(&cmds, "Remote (xrdp)")
     );
 }
 
@@ -425,8 +425,8 @@ fn agent_header_3_dots_opens_menu() {
 /// Mount a `ChatComposer` that carries a `PopupMenu` pill, click the pill's
 /// trigger icon, and assert the app-owned open flag flips.
 ///
-/// This is the rich-input regression: the model, directory, branch and harness
-/// pills all share the same dispatch path (`ChatComposer` → `self.root` →
+/// This is the rich-input regression: the model, directory and branch pills
+/// all share the same dispatch path (`ChatComposer` → `self.root` →
 /// `Padding`), so proving each one opens proves the `Padding`/`PopupMenu`
 /// wiring the topbar swallow bug used to break.
 fn assert_composer_pill_opens(mut composer: Box<dyn Element>, trigger_icon: &str, open: Rc<RefCell<bool>>) {
@@ -519,23 +519,37 @@ fn composer_branch_pill_opens_menu() {
 }
 
 #[test]
-fn composer_harness_pill_opens_menu() {
+fn the_composer_harness_pill_is_gone() {
     let open = Rc::new(RefCell::new(false));
-    let open_menu = open.clone();
-    let composer = ChatComposer::new()
+    let mut composer = ChatComposer::new()
         .with_harness_label("Local")
         .with_harness_menu(
             vec![
                 PopupMenuItem::new("Local"),
                 PopupMenuItem::new("Remote"),
             ],
-            open_menu,
+            open.clone(),
             |_| {},
         )
         .finish();
-    // The composer harness pill uses the "computer" glyph, which renders as the
-    // registered "agentmode" asset (they share a glyph in `icon.rs`).
-    assert_composer_pill_opens(composer, "agentmode", open);
+    let app = AppContext::default();
+    let _ = composer.layout(
+        SizeConstraint::loose(vec2f(600.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let renderer = Renderer::new();
+    let mut paint_ctx = PaintContext::new(renderer);
+    composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let cmds = paint_ctx.renderer.take().map(|r| r.commands().to_vec()).unwrap_or_default();
+
+    // The environment (harness) pill is no longer drawn: its glyph is absent
+    // and the host's menu stays shut even though it was still wired.
+    assert!(
+        icon_center(&cmds, "agentmode").is_none(),
+        "the composer draws no environment pill: {cmds:?}"
+    );
+    assert!(!*open.borrow(), "and there is no trigger left to open its menu");
 }
 
 /// The rich input carries no account button any more. The pills around its

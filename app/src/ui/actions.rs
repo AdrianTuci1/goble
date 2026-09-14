@@ -26,6 +26,9 @@ pub struct UiActions {
     /// agent conversation (warp-new behavior), binding the pane to a fresh
     /// conversation before the turn.
     pub on_cmd_enter: Rc<RefCell<dyn FnMut(String)>>,
+    /// Cmd/Ctrl+Alt+Enter in a chat composer: route the conversation to the
+    /// cloud medium and submit the draft (warp-new's `⌘⌥⏎`).
+    pub on_send_to_cloud: Rc<RefCell<dyn FnMut(String)>>,
     /// Move the active pane's slash-command menu selection to another row.
     pub on_slash_move: Rc<RefCell<dyn FnMut(usize)>>,
     /// Put the slash-command menu away after a command ran: the draft it was

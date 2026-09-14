@@ -9,14 +9,38 @@
 //! [`HoverChipLayer`] — the last thing the root paints — draws the queued boxes
 //! and empties the registry.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
 use crate::geometry::Vector2F;
+
+/// What a queued chip draws: a box the queuer hands over, or a box it keeps a
+/// handle on.
+///
+/// The owned form is what a `Tooltip` queues — it has nothing more to do with
+/// the box once it is drawn. The shared form is for a panel that stays
+/// interactive: its owner keeps the same `Rc` to lay it out and to dispatch
+/// clicks into it, while the layer draws it above everything.
+enum ChipPanel {
+    Owned(Box<dyn Element>),
+    Shared(Rc<RefCell<Box<dyn Element>>>),
+}
+
+impl ChipPanel {
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        match self {
+            ChipPanel::Owned(panel) => panel.paint(origin, ctx, app),
+            ChipPanel::Shared(panel) => panel.borrow_mut().paint(origin, ctx, app),
+        }
+    }
+}
 
 /// One chip queued for this frame: the box to draw and where its top-left
 /// corner sits, in window coordinates.
 struct HoverChip {
     origin: Vector2F,
-    panel: Box<dyn Element>,
+    panel: ChipPanel,
 }
 
 /// The chips queued while painting the current frame.
@@ -34,7 +58,20 @@ impl HoverChipRegistry {
     /// at `origin` in window coordinates. `panel` is laid out by its owner; the
     /// layer only draws it.
     pub fn push(&mut self, origin: Vector2F, panel: Box<dyn Element>) {
-        self.chips.push(HoverChip { origin, panel });
+        self.chips.push(HoverChip {
+            origin,
+            panel: ChipPanel::Owned(panel),
+        });
+    }
+
+    /// Queue a panel the owner keeps: the layer draws it above every other
+    /// element, and the owner keeps the same handle to lay it out and to
+    /// dispatch events into it (the layer draws, it does not dispatch).
+    pub fn push_shared(&mut self, origin: Vector2F, panel: Rc<RefCell<Box<dyn Element>>>) {
+        self.chips.push(HoverChip {
+            origin,
+            panel: ChipPanel::Shared(panel),
+        });
     }
 
     /// How many chips this frame queued. Zero on a frame that hovered nothing.

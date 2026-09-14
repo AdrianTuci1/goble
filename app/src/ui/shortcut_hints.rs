@@ -3,11 +3,13 @@
 //! The vocabulary is grok-build's: its TUI draws a contextual shortcuts bar
 //! (`views/shortcuts_bar.rs`, fed by `views/agent.rs::build_hints`) and the
 //! entries below are that prompt-focused set, worded as grok-build words it —
-//! "send", "shell", "tasks". The list is the GUI's own, though: a hint is kept
-//! only where this app binds the chord it names, so the strip never promises a
-//! key nothing answers. grok-build's "newline", "mode", "cancel", "yolo",
-//! "todos", "queue", "sessions", "stash" and "multiline" have no binding here
-//! and are therefore not shown.
+//! "send", "tasks". The list is the GUI's own, though: a hint is kept only
+//! where this app binds the chord it names, so the strip never promises a key
+//! nothing answers. grok-build's "shell" (`!`), "new conversation" (`⌘↵`) and
+//! "commands" (`⌘K`) are not shown: the agent input no longer promises those
+//! gestures, and warp-new's cloud gesture (`⌘⌥↵`) takes their place. Its
+//! "newline", "mode", "cancel", "yolo", "todos", "sessions", "stash" and
+//! "multiline" have no binding here either.
 //!
 //! The shape the strip draws (a cap per key, then the name) is warp-new's
 //! shortcuts view; see [`goble_ui::elements::ShortcutHints`].
@@ -23,11 +25,10 @@ use goble_ui::elements::ShortcutHint;
 pub(crate) fn agent_rich_input_hints(agent_busy: bool) -> Vec<ShortcutHint> {
     vec![
         ShortcutHint::new(&["↵"], if agent_busy { "queue" } else { "send" }),
-        ShortcutHint::new(&["⌘", "↵"], "new conversation"),
-        // grok-build's BashMode: a leading `!` forces a shell command instead of
-        // a prompt. The composer classifies the draft the same way.
-        ShortcutHint::new(&["!"], "shell"),
-        ShortcutHint::new(&["⌘", "K"], "commands"),
+        // warp-new's cloud gesture: `⌘⌥⏎` submits the draft to the cloud agent
+        // instead of the local one (its `ENTER_CLOUD_AGENT_VIEW_...` chord,
+        // worded "submit to cloud agent").
+        ShortcutHint::new(&["⌘", "⌥", "↵"], "send to cloud"),
         ShortcutHint::new(&["⌘", "⇧", "W"], "tasks"),
     ]
 }
@@ -36,25 +37,19 @@ pub(crate) fn agent_rich_input_hints(agent_busy: bool) -> Vec<ShortcutHint> {
 mod tests {
     use super::*;
 
-    /// Every hint names a chord the app really binds: `⌘K` and `⌘⇧W` are the
-    /// workspace's two global chords, `↵` and `⌘↵` are the composer's own, and
-    /// `!` is the shell prefix the composer classifies.
+    /// Every hint names a chord the app really binds: `⌘⇧W` is the workspace's
+    /// own chord, while `↵` and `⌘⌥↵` are the composer's.
     #[test]
     fn the_hints_are_the_gui_s_own_bindings() {
         let idle = agent_rich_input_hints(false);
         let labels: Vec<&str> = idle.iter().map(|hint| hint.label()).collect();
-        assert_eq!(
-            labels,
-            vec!["send", "new conversation", "shell", "commands", "tasks"]
-        );
+        assert_eq!(labels, vec!["send", "send to cloud", "tasks"]);
         let caps: Vec<Vec<String>> = idle.iter().map(|hint| hint.keys().to_vec()).collect();
         assert_eq!(
             caps,
             vec![
                 vec!["↵".to_string()],
-                vec!["⌘".to_string(), "↵".to_string()],
-                vec!["!".to_string()],
-                vec!["⌘".to_string(), "K".to_string()],
+                vec!["⌘".to_string(), "⌥".to_string(), "↵".to_string()],
                 vec!["⌘".to_string(), "⇧".to_string(), "W".to_string()],
             ]
         );
@@ -177,7 +172,7 @@ mod rich_input_tests {
         let editor = *placeholder.first().expect("the rich input is drawn");
         let case = "idle";
 
-        for label in ["send", "new conversation", "shell", "commands", "tasks"] {
+        for label in ["send", "send to cloud", "tasks"] {
             above(&commands, label, editor, case);
         }
         // Every key of every chord has its own cap on the strip's own line. A
@@ -191,16 +186,16 @@ mod rich_input_tests {
                 _ => None,
             })
             .collect();
-        for key in ["W", "!"] {
+        for key in ["W"] {
             above(&commands, key, editor, case);
         }
-        for icon in ["key-command", "key-shift", "key-return"] {
+        for icon in ["key-command", "key-option", "key-return", "key-shift"] {
             assert!(
                 drawn_icons.contains(&icon),
                 "{case}: the {icon} cap is drawn"
             );
         }
-        for symbol in ["⌘", "⇧", "↵"] {
+        for symbol in ["⌘", "⇧", "↵", "⌥"] {
             assert!(
                 lines_of(&commands, symbol).is_empty(),
                 "{case}: {symbol:?} is never drawn as a character"
@@ -209,7 +204,7 @@ mod rich_input_tests {
 
         // The separator is the input's top edge, under the strip: the nearest
         // rule under the instructions, not a heading far above them.
-        let strip_bottom = ["send", "new conversation", "shell", "commands", "tasks"]
+        let strip_bottom = ["send", "send to cloud", "tasks"]
             .iter()
             .flat_map(|label| lines_of(&commands, label))
             .fold(f32::NEG_INFINITY, f32::max);
@@ -256,10 +251,10 @@ mod rich_input_tests {
         );
         let queue = lines_of(&commands, "queue");
         assert!(!queue.is_empty(), "{case}: the queue hint replaced it");
-        for label in ["new conversation", "shell", "commands", "tasks"] {
+        for label in ["send to cloud", "tasks"] {
             above(&commands, label, editor, case);
         }
-        let running_strip_bottom = ["queue", "new conversation", "shell", "commands", "tasks"]
+        let running_strip_bottom = ["queue", "send to cloud", "tasks"]
             .iter()
             .flat_map(|label| lines_of(&commands, label))
             .fold(f32::NEG_INFINITY, f32::max);

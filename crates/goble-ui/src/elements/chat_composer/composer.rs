@@ -82,6 +82,10 @@ pub struct ChatComposer {
     /// host decides what "new conversation" means; the composer only reports
     /// the keybinding.
     on_cmd_enter: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    /// Cmd/Ctrl+Alt+Enter submit: hand the draft to the cloud agent
+    /// (warp-new's `⌘⌥⏎`). The host owns what "cloud" means — the routing
+    /// choice and the transport — so the composer only reports the chord.
+    on_send_to_cloud: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_attach: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_select_model: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_select_key: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -130,6 +134,7 @@ impl ChatComposer {
             on_change: None,
             on_send: None,
             on_cmd_enter: None,
+            on_send_to_cloud: None,
             on_attach: None,
             on_select_model: None,
             on_select_key: None,
@@ -191,14 +196,16 @@ impl ChatComposer {
     }
 
     /// Label for the warp-new "harness" context pill (the agent/harness the
-    /// current turn runs on). Shown as the left-most pill in the footer.
+    /// current turn runs on). Kept for the hosts that still set it: the rich
+    /// input no longer draws an environment control.
     pub fn with_harness_label(mut self, label: impl Into<String>) -> Self {
         self.harness_label = Some(label.into());
         self
     }
 
     /// Set the harness dropdown: items, the app-owned `open` flag, and a
-    /// select callback (same contract as `with_model_menu`).
+    /// select callback (same contract as `with_model_menu`). No longer drawn;
+    /// see [`Self::with_harness_label`].
     pub fn with_harness_menu<F: FnMut(usize) + 'static>(
         mut self,
         items: Vec<PopupMenuItem>,
@@ -337,6 +344,30 @@ impl ChatComposer {
         }
     }
 
+    /// Cmd/Ctrl+Alt+Enter submits the draft to the cloud agent (warp-new's
+    /// `⌘⌥⏎`). Taken before the editor sees it, like the menu's keys: the chord
+    /// belongs to the host, which owns the routing the cloud means. Shift is
+    /// not part of the gesture, and a host that wired no callback keeps the key.
+    fn handle_send_to_cloud_key(&mut self, event: &DispatchedEvent) -> bool {
+        let DispatchedEvent::KeyDown { key, modifiers } = event else {
+            return false;
+        };
+        if key != "Enter"
+            || modifiers.shift
+            || !modifiers.alt
+            || !(modifiers.command || modifiers.ctrl)
+        {
+            return false;
+        }
+        let Some(cb) = self.on_send_to_cloud.clone() else {
+            return false;
+        };
+        let text = self.value.borrow().clone();
+        (cb.borrow_mut())(text);
+        *self.value.borrow_mut() = String::new();
+        true
+    }
+
     pub fn with_focused(mut self, focused: bool) -> Self {
         self.focused = focused;
         self
@@ -403,6 +434,13 @@ impl ChatComposer {
     /// Cmd/Ctrl+Enter submits the draft as a NEW agent conversation (warp-new).
     pub fn with_on_cmd_enter<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
         self.on_cmd_enter = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Cmd/Ctrl+Alt+Enter submits the draft to the cloud agent (warp-new's
+    /// `⌘⌥⏎`). The host routes the conversation and runs the turn.
+    pub fn with_on_send_to_cloud<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
+        self.on_send_to_cloud = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -543,19 +581,12 @@ impl ChatComposer {
     /// drawn only when the surface set it, so a terminal composer that sets
     /// only the directory and the branch shows exactly those two, and a
     /// composer with no context at all contributes nothing.
+    ///
+    /// The harness (environment) pill is not among them any more: the rich
+    /// input names where the draft runs through the working directory and the
+    /// branch alone.
     fn context_children(&self, app: &AppContext) -> Vec<Box<dyn Element>> {
         let mut children: Vec<Box<dyn Element>> = Vec::new();
-        if let Some(label) = self.harness_label.clone() {
-            children.push(self.context_pill(
-                app,
-                "computer",
-                &label,
-                &self.harness_menu_items,
-                self.harness_menu_open.clone(),
-                &self.on_select_harness_item,
-                "Select environment",
-            ));
-        }
         if let Some(path) = self.path_label.clone() {
             // The directory pill is capped rather than flex-grown: a long path
             // ellipsizes inside the pill and the row's pills stay left-aligned
@@ -929,17 +960,20 @@ impl ChatComposer {
 
         // The composer card keeps only its gutters/padding; the raised
         // background and 1px border are dropped so the rich input has no gray
-        // inset box behind the textarea and pills. Its padding is `md` on every
-        // side — the same inset a message bubble gives its text — so the
-        // editor's text lines up with the conversation's text column.
+        // inset box behind the textarea and pills. Its horizontal padding is
+        // `md` — the same inset a message bubble gives its text — so the
+        // editor's text lines up with the conversation's text column, while the
+        // vertical is `xs`: the rows hug the card instead of floating in a
+        // gutter of their own.
         let card = Container::new(column.finish())
-            .with_padding(EdgeInsets::uniform(md))
+            .with_padding(EdgeInsets::new(md, xs, md, xs))
             .with_corner_radius(COMPOSER_CONTROL_RADIUS)
             .finish();
-        // The input's own margin is the transcript rows' margin (`xs`), so the
-        // block sits as close to the pane's edges as the conversation does
-        // instead of floating in a gutter of its own.
-        self.root = Some(Padding::new(card, EdgeInsets::uniform(xs)).finish());
+        // The input's own horizontal margin is the transcript rows' margin
+        // (`xs`), so the block sits as close to the pane's side edges as the
+        // conversation does; it carries no vertical margin of its own, so the
+        // rows are only `xs` from the top and bottom of the block.
+        self.root = Some(Padding::new(card, EdgeInsets::new(xs, 0.0, xs, 0.0)).finish());
     }
 }
 
@@ -981,6 +1015,9 @@ impl Element for ChatComposer {
         ctx: &mut crate::elements::EventContext,
         app: &AppContext,
     ) -> bool {
+        if self.handle_send_to_cloud_key(event) {
+            return true;
+        }
         if self.handle_proposal_key(event) {
             return true;
         }

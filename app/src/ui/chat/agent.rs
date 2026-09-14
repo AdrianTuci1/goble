@@ -151,6 +151,7 @@ pub fn build_agent_chat(
     let on_slash_close = actions.on_slash_close.clone();
     let on_slash_dismiss = actions.on_slash_dismiss.clone();
     let on_cmd_enter = actions.on_cmd_enter.clone();
+    let on_send_to_cloud = actions.on_send_to_cloud.clone();
 
     // Model dropdown: one item per available model; the current one is marked
     // selected. Selecting an item maps the index back to a model name.
@@ -273,7 +274,9 @@ pub fn build_agent_chat(
             }
         })
         .with_on_send(move |text| (on_send_message.borrow_mut())(text))
-        .with_composer_on_cmd_enter(move |text| (on_cmd_enter.borrow_mut())(text));
+        .with_composer_on_cmd_enter(move |text| (on_cmd_enter.borrow_mut())(text))
+        // `⌘⌥↵`: the same submit, routed to the cloud medium.
+        .with_composer_on_send_to_cloud(move |text| (on_send_to_cloud.borrow_mut())(text));
 
     // Modal (vim) editing of the agent composer, when the user turned it on.
     if state.vim_mode {

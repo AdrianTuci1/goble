@@ -249,6 +249,39 @@ fn cmd_enter_appends_to_the_pane_conversation() {
     assert_eq!(msgs[1].role, "assistant");
 }
 
+/// Send to cloud (`⌘⌥↵`) is a routing choice plus the submit: the pane's
+/// conversation is pointed at the cloud medium and the draft runs through the
+/// ordinary send path. There is no remote transport in this tree, so the test
+/// asserts the routing the app chose, not a remote run.
+#[test]
+fn send_to_cloud_routes_the_conversation_remote() {
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+    let initial = desktop.create_chat("Initial", None, None).expect("create chat");
+    state
+        .borrow_mut()
+        .bind_active_pane_conversation(initial.clone(), Some(&desktop));
+    let conv = state
+        .borrow()
+        .pane_conversation_id(1)
+        .expect("pane 1 has a conversation");
+
+    (actions.on_send_to_cloud.borrow_mut())("ship it".to_string());
+
+    assert_eq!(
+        state.borrow().workspace_routing,
+        Some(WorkspaceRouting::Remote),
+        "the pane routes its next turn to the cloud"
+    );
+    assert_eq!(
+        desktop
+            .get_chat_workspace_routing(&conv)
+            .expect("read the conversation's routing"),
+        Some("remote".to_string()),
+        "and the choice is persisted on the conversation"
+    );
+}
+
 #[test]
 fn closing_a_space_removes_its_sessions_and_reindexes_active() {
     let (desktop, _dir) = desktop_state();

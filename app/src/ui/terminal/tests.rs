@@ -517,7 +517,7 @@ use goble_ui::theme::FontFamily;
             );
         }
         assert!(
-            pane_has(&chat_runs, "send") && pane_has(&chat_runs, "shell"),
+            pane_has(&chat_runs, "send") && pane_has(&chat_runs, "send to cloud"),
             "the chat pane draws its own instructions: {chat_runs:?}"
         );
 

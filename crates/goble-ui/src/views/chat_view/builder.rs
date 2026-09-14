@@ -82,6 +82,16 @@ impl ChatView {
         self
     }
 
+    /// Cmd/Ctrl+Alt+Enter in the composer submits the draft to the cloud agent
+    /// (warp-new's `⌘⌥⏎`). The host routes the conversation and runs the turn.
+    pub fn with_composer_on_send_to_cloud<F: FnMut(String) + 'static>(
+        mut self,
+        callback: F,
+    ) -> Self {
+        self.on_send_to_cloud = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     pub fn with_on_action<F: FnMut(ChatAction) + 'static>(mut self, callback: F) -> Self {
         self.on_action = Some(Rc::new(RefCell::new(callback)));
         self

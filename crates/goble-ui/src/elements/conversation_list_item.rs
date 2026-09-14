@@ -3,9 +3,9 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, Element, EventContext,
-    Expanded, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext,
-    Point, SizeConstraint, Text, TopbarButton,
+    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, EdgeInsets, Element,
+    EventContext, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize,
+    PaintContext, Point, SizeConstraint, Text, TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -25,6 +25,18 @@ const DOTS_SIZE: f32 = 16.0;
 /// is measured with no width to wrap against (it is one line, cut at the card's
 /// edge), so the clip is what stops the title short of the dots.
 const DOTS_CLEARANCE: f32 = 6.0;
+
+/// The widest the card's tray grows before its rows' own width is what it takes.
+const TRAY_MAX_WIDTH: f32 = 168.0;
+
+/// How far the tray's top sits below the card the control is on.
+const TRAY_GAP: f32 = 4.0;
+
+/// The tray's own corner radius, inset and hairline: the card is the same one
+/// the rich input's controls open beside themselves, so the two trays read as
+/// one surface (see `PopupMenu`).
+const TRAY_RADIUS: f32 = 6.0;
+const TRAY_PADDING: f32 = 8.0;
 
 /// Per-card interaction state that must survive the per-frame element rebuild.
 /// Owned by the app (a map keyed by conversation id) and shared with the card
@@ -73,10 +85,15 @@ pub struct ConversationListItem {
     /// The row: the avatar and the conversation's own text, painted clipped
     /// clear of the control.
     row: Option<Box<dyn Element>>,
-    /// The card's menu, painted under the row. It is a separate element because
-    /// the row is clipped at the control's gutter and the menu is not: Delete
-    /// reaches the card's trailing edge too.
-    menu: Option<Box<dyn Element>>,
+    /// The card's tray: star/unstar and delete, in a card of its own anchored to
+    /// the 3-dot control. Held as a shared handle because the frame's last paint
+    /// layer draws it (so the cards painted after this one cannot cover it)
+    /// while this element keeps the same handle to lay it out and to dispatch
+    /// clicks into it.
+    menu: Option<Rc<RefCell<Box<dyn Element>>>>,
+    /// The tray's size from the last layout: what its anchored position is
+    /// computed from.
+    menu_size: Option<Vector2F>,
     /// The 3-dot control, drawn while the card is hovered or its menu is open.
     /// Held out of the row's flex children on purpose: a child at the end of the
     /// row is placed after whatever the title measured, and a title wider than
@@ -116,6 +133,7 @@ impl ConversationListItem {
             dots_inset: 0.0,
             row: None,
             menu: None,
+            menu_size: None,
             dots: None,
             row_height: 0.0,
             bg: crate::color::ColorU::default(),
@@ -319,21 +337,26 @@ impl ConversationListItem {
                 .finish(),
         );
 
-        // The card's own menu, shown as a row under it while open: star the
-        // conversation, or delete it.
+        // The card's own tray: star the conversation or delete it, in a card
+        // anchored to the 3-dot control rather than in rows under the row — the
+        // buttons open their own trays beside themselves the same way. It is
+        // laid out here and placed by `paint`, so it takes no room in the list
+        // and opening it does not push the cards below it down.
         if menu_open {
-            let mut actions = Flex::row()
-                .with_main_axis_alignment(MainAxisAlignment::End)
+            let mut rows = Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Start)
                 .with_spacing(xs);
             if let Some(star) = self.star_button(app) {
-                actions = actions.with_child(star);
+                rows = rows.with_child(star);
             }
-            actions = actions.with_child(self.delete_button(app));
-            self.menu = Some(
-                Container::new(actions.finish())
-                    .with_padding(crate::style::EdgeInsets::new(0.0, 0.0, xs, 0.0))
-                    .finish(),
-            );
+            rows = rows.with_child(self.delete_button(app));
+            let tray = Container::new(rows.finish())
+                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+                .with_border(app.theme.color(ColorToken::Border).into())
+                .with_corner_radius(TRAY_RADIUS)
+                .with_padding(EdgeInsets::uniform(TRAY_PADDING))
+                .finish();
+            self.menu = Some(Rc::new(RefCell::new(tray)));
         }
 
         // 3-dot menu, visible on hover or while the delete menu is open.
@@ -375,6 +398,73 @@ impl ConversationListItem {
             DOTS_SIZE,
             DOTS_SIZE,
         ))
+    }
+
+    /// The tray's box: hung from the 3-dot control it belongs to — its trailing
+    /// edge on the control's, its own top `TRAY_GAP` under the card's bottom
+    /// edge so it covers none of the card's own text — and clamped to the card's
+    /// edges, so a tray wider than the card still starts inside the surface the
+    /// card sits on. `None` until the tray has been laid out.
+    fn menu_bounds(&self) -> Option<RectF> {
+        let (origin, size) = (self.origin?, self.size?);
+        let menu_size = self.menu_size?;
+        self.menu.as_ref()?;
+        let dots = self.dots_bounds()?;
+        let left = origin.x();
+        let right = (origin.x() + size.x - menu_size.x).max(left);
+        let x = (dots.max_x() - menu_size.x).clamp(left, right);
+        Some(rectf(
+            x,
+            origin.y() + size.y + TRAY_GAP,
+            menu_size.x,
+            menu_size.y,
+        ))
+    }
+
+    /// Whether `position` is on the tray's surface — the tray's own box and the
+    /// `TRAY_GAP`-tall strip between it and the card. The tray hangs a few
+    /// points under the card, so a pointer walking from the control down to the
+    /// tray crosses that strip: without it the card would read the crossing as
+    /// the pointer leaving and put the tray away before it arrived.
+    fn pointer_on_menu(&self, position: Vector2F) -> bool {
+        let (Some(bounds), Some(origin), Some(size)) =
+            (self.menu_bounds(), self.origin, self.size)
+        else {
+            return false;
+        };
+        contains(
+            rectf(
+                bounds.min_x(),
+                origin.y() + size.y,
+                bounds.width(),
+                bounds.height() + TRAY_GAP,
+            ),
+            position,
+        )
+    }
+
+    /// The pointer's position on a mouse event, or `None` for the events that
+    /// carry no pointer (keys, focus, scroll).
+    fn pointer_position(event: &DispatchedEvent) -> Option<Vector2F> {
+        match event {
+            DispatchedEvent::MouseDown { position, .. }
+            | DispatchedEvent::MouseUp { position, .. }
+            | DispatchedEvent::MouseMove { position } => Some(*position),
+            _ => None,
+        }
+    }
+
+    /// Whether the tray's own rows are the ones the event is for. The tray is
+    /// anchored below the row and so lies outside the card's own band: gating on
+    /// it is what keeps a press on the tray from reaching the row behind it (and
+    /// keeps a pointer move on the tray from reading as a pointer that left the
+    /// card). A non-pointer event is the tray's to answer: it holds the only
+    /// focusable rows of the two.
+    fn menu_takes_event(&self, event: &DispatchedEvent) -> bool {
+        match Self::pointer_position(event) {
+            None => true,
+            Some(position) => self.pointer_on_menu(position),
+        }
     }
 
     /// The area the row may paint in: the card's width less the control's
@@ -466,9 +556,15 @@ impl Element for ConversationListItem {
         self.ensure_root(app);
         let row = self.row.as_mut().unwrap().layout(constraint, ctx, app);
         self.row_height = row.y;
-        let mut size = row;
-        if let Some(menu) = self.menu.as_mut() {
-            size.y += menu.layout(constraint, ctx, app).y;
+        // The card is the row: the tray is anchored to the control and takes no
+        // room, so opening it never moves the cards around it.
+        let size = row;
+        self.menu_size = None;
+        if let Some(menu) = self.menu.as_ref() {
+            let menu_size = menu
+                .borrow_mut()
+                .layout(SizeConstraint::loose(vec2f(TRAY_MAX_WIDTH, 400.0)), ctx, app);
+            self.menu_size = Some(menu_size);
         }
         // The control's box is fixed, so it is laid out tight and placed by
         // `paint` rather than by any parent's cursor.
@@ -510,9 +606,6 @@ impl Element for ConversationListItem {
                 renderer.pop_clip();
             }
         }
-        if let Some(menu) = self.menu.as_mut() {
-            menu.paint(vec2f(origin.x, origin.y + self.row_height), ctx, app);
-        }
         if let Some(bounds) = self.dots_bounds() {
             if let Some(dots) = self.dots.as_mut() {
                 dots.paint(vec2f(bounds.min_x(), bounds.min_y()), ctx, app);
@@ -520,6 +613,21 @@ impl Element for ConversationListItem {
         }
         if let Some(renderer) = ctx.renderer.as_mut() {
             renderer.pop_clip();
+        }
+
+        // The tray, in its own card below the control. It is painted here so a
+        // caller that paints the card alone still draws its tray, and queued
+        // into the frame's last paint layer with the same element so the cards
+        // painted after this one cannot cover it: the two paints are the same
+        // card at the same place, and the second one is the frame's last.
+        if let Some(bounds) = self.menu_bounds() {
+            if let Some(menu) = self.menu.as_ref() {
+                let at = vec2f(bounds.min_x(), bounds.min_y());
+                menu.borrow_mut().paint(at, ctx, app);
+                app.hover_chips
+                    .borrow_mut()
+                    .push_shared(at, Rc::clone(menu));
+            }
         }
 
         // Fade the right edge of the row until the 3-dot menu appears (the row
@@ -558,15 +666,17 @@ impl Element for ConversationListItem {
         };
 
         // Let the 3-dot control first (it is painted over the row and its
-        // gutter is its own), then the menu's buttons, then the row: otherwise
-        // the card itself would swallow the click.
+        // gutter is its own), then the tray's rows, then the row: otherwise the
+        // card itself would swallow the click. The tray is anchored outside the
+        // card's band, so only the events that land on it go to it.
         if let Some(dots) = self.dots.as_mut() {
             if dots.dispatch_event(event, ctx, app) {
                 return true;
             }
         }
+        let takes_menu = self.menu_takes_event(event);
         if let Some(menu) = self.menu.as_mut() {
-            if menu.dispatch_event(event, ctx, app) {
+            if takes_menu && menu.borrow_mut().dispatch_event(event, ctx, app) {
                 return true;
             }
         }
@@ -577,7 +687,10 @@ impl Element for ConversationListItem {
         }
 
         if let DispatchedEvent::MouseMove { position } = event {
-            let inside = contains(bounds, *position);
+            // A pointer on the tray is still on the card: the tray is the
+            // control's own surface, and reading it as "left the card" would put
+            // the tray away as soon as the pointer reached it.
+            let inside = contains(bounds, *position) || self.menu_takes_event(event);
             let mut ui = self.ui.borrow_mut();
             ui.hover = inside;
             if !inside {
@@ -828,6 +941,10 @@ mod tests {
         );
     }
 
+    /// The hovered card draws its 3-dot control, and an open menu draws its
+    /// actions in a card of its own: hung under the card rather than in rows
+    /// inside it, and inside the card's own width so the tray stays on the
+    /// surface the card sits on.
     #[test]
     fn hover_renders_dots_and_menu_renders_delete() {
         let app = AppContext::default();
@@ -854,6 +971,43 @@ mod tests {
         });
         assert!(has_dots, "hover/menu card should render the 3-dot icon");
         assert!(has_delete, "open menu should render a 'Delete agent' action");
+
+        let card = element.size().expect("the card is laid out");
+        let delete_row = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Delete agent" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the delete row is drawn");
+        let tray = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    corner_radius,
+                    ..
+                } if *corner_radius > 0.0
+                    && rect.min_x() <= delete_row.x
+                    && delete_row.x <= rect.max_x()
+                    && rect.min_y() <= delete_row.y
+                    && delete_row.y <= rect.max_y() =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the tray is a card of its own around its rows");
+        assert!(
+            tray.min_y() >= card.y,
+            "the tray hangs under the card, not in rows inside it: {tray:?} vs card {card:?}"
+        );
+        assert!(
+            tray.max_x() <= card.x,
+            "and the tray stays inside the card's width: {tray:?} vs card {card:?}"
+        );
     }
 
     /// The card's menu carries the star toggle, and clicking it stars the

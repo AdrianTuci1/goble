@@ -58,5 +58,11 @@ jobs:
           workspaces: |
             . -> target
 
+      # shell_integration.rs runs each integration script in its own shell — one
+      # test per shell — so bash and zsh both have to be on PATH. The ubuntu
+      # image ships bash only.
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
       - name: Run the terminal emulator conformance suite
         run: cargo nextest run -p goble-terminal --profile ci

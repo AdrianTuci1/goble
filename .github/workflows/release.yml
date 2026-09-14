@@ -139,6 +139,10 @@ jobs:
             label: Windows x86_64
             platform: windows
             arch: x64
+    env:
+      # `secrets` cannot be read in a step's `if`, so the certificate's presence
+      # is hoisted here as a flag and the import step tests that instead.
+      APPLE_SIGNING_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -202,7 +206,7 @@ jobs:
 
       # --- macOS --------------------------------------------------------------
       - name: Import Apple signing certificate
-        if: matrix.platform == 'macos' && secrets.APPLE_CERTIFICATE_P12 != ''
+        if: matrix.platform == 'macos' && env.APPLE_SIGNING_CONFIGURED == 'true'
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}

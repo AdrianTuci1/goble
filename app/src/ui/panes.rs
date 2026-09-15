@@ -11,11 +11,11 @@ use std::rc::Rc;
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     AppContext, Axis, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Expanded,
-    Fill, Flex, HoverButton, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint,
-    SplitNode, Text,
+    Fill, Flex, HoverButton, Icon, LayoutContext, MainAxisSize, PaintContext, Point,
+    SizeConstraint, SplitNode, Stack, Text,
 };
 use goble_ui::event::DispatchedEvent;
-use goble_ui::geometry::{rectf, Vector2F};
+use goble_ui::geometry::{rectf, vec2f, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::chat;
@@ -24,6 +24,13 @@ use super::settings;
 use super::shell::TOPBAR_HEIGHT;
 use super::terminal;
 use super::{Pane, PaneKind, SplitDir, UiActions, UiSnapshot};
+
+/// The corner mark the focused pane carries, and the room its own topbar leaves
+/// for it. warp-new draws the same mark in the same corner
+/// (`add_active_pane_indicator_to_stack`): an accent right triangle filling the
+/// pane's top-left, which is how the pane the keyboard is in reads at a glance
+/// even where nothing else in the bar changes.
+pub(crate) const FOCUS_MARKER_SIZE: f32 = 16.0;
 
 /// Build the active space's pane tree as the main chat content.
 ///
@@ -226,9 +233,7 @@ fn build_leaf(
         // The settings tab's surface: the rail, the page and the footer, with
         // the page the leaf carries. It composes with the tree like any other
         // pane — it can be split, walked to and closed.
-        PaneKind::Settings { page } => {
-            settings::build_settings_pane(app, state, actions, page)
-        }
+        PaneKind::Settings { page } => settings::build_settings_pane(app, state, actions, id, page),
         // A file view is read-only: no composer, no shell, just the file the
         // pane was opened on.
         PaneKind::File { path } => file_view::build_file_view(app, state, actions, id, &path),
@@ -267,9 +272,23 @@ fn build_leaf(
     } else {
         ColorToken::Border
     };
-    Container::new(column.finish())
+    let pane = Container::new(column.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
         .with_border(app.theme.color(border_color).into())
+        .finish();
+    if !active {
+        return pane;
+    }
+    // The focused pane's mark: the accent triangle sits in the pane's own
+    // top-left corner, which is where the pane the keyboard is in is read from.
+    // The pane's bar starts past it (see `chat::build_agent_header`).
+    let marker = Icon::new("upper-left-triangle")
+        .with_size(FOCUS_MARKER_SIZE)
+        .with_theme_color(ColorToken::Accent, app)
+        .finish();
+    Stack::new()
+        .with_children(vec![pane])
+        .with_overlay(marker, vec2f(0.0, 0.0))
         .finish()
 }
 

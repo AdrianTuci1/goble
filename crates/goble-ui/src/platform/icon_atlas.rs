@@ -22,6 +22,7 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("close", "close.svg"),
     icon_bytes!("minimize-01", "minimize-01.svg"),
     icon_bytes!("maximize-01", "maximize-01.svg"),
+    icon_bytes!("upper-left-triangle", "upper-left-triangle.svg"),
     icon_bytes!("menu-01", "menu-01.svg"),
     icon_bytes!("search", "search.svg"),
     icon_bytes!("bell", "bell.svg"),
@@ -406,6 +407,35 @@ mod tests {
         assert!(
             img.0.iter().any(|&a| a > 0),
             "and it renders opaque pixels"
+        );
+    }
+
+    /// The focused pane's corner mark has to reach the pane's own edges: the
+    /// atlas scales a glyph to the cell and paints only its alpha, so a mark
+    /// that did not fill its box would leave a gap between the corner and the
+    /// pane's top and left borders. The shape is the corner right triangle —
+    /// full top edge, full left edge, nothing at the opposite corner — which is
+    /// what warp-new's active-pane indicator is.
+    #[test]
+    fn the_focus_marker_fills_its_box_and_leaves_the_opposite_corner_empty() {
+        let (_, bytes) = ICON_FILES
+            .iter()
+            .find(|(name, _)| *name == "upper-left-triangle")
+            .expect("the focus marker is registered");
+        let (alpha, width, height) = rasterize_icon(bytes).expect("the marker rasterizes");
+        assert_eq!(
+            (width, height),
+            (CELL_SIZE as u32, CELL_SIZE as u32),
+            "a square glyph scales to the whole cell"
+        );
+        let at = |x: u32, y: u32| alpha[(y * width + x) as usize];
+        assert!(at(0, 0) > 0, "the mark covers the corner it sits in");
+        assert!(at(width - 1, 0) > 0, "and runs the pane's whole top edge");
+        assert!(at(0, height - 1) > 0, "and the pane's whole left edge");
+        assert_eq!(
+            at(width - 1, height - 1),
+            0,
+            "while the diagonal leaves the opposite corner empty"
         );
     }
 

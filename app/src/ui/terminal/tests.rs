@@ -1134,6 +1134,58 @@ use std::collections::HashMap;
         );
     }
 
+    /// The focused pane's corner mark is drawn over the left end of the pane's
+    /// own bar, so the bar starts past it. The harness's "esc for terminal" hint
+    /// leads that bar, and without the room the mark leaves it would sit under
+    /// the mark and read as one glyph with it.
+    #[test]
+    fn the_harness_hint_starts_past_the_focus_mark() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        // One frame first: the bar takes the keys once it is on screen.
+        let _ = pane_runs(&mut root, &app);
+        // Cmd+Enter is what opens the pane's harness, and the open harness is
+        // the only view whose bar leads with the hint.
+        for ch in "explain".chars() {
+            assert!(press(&mut root, &app, &ch.to_string()));
+        }
+        let cmd_enter = key(
+            "Enter",
+            ModifiersState {
+                command: true,
+                ..ModifiersState::default()
+            },
+        );
+        let mut ctx = EventContext::default();
+        assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
+        assert!(
+            state.borrow().pane_controls(1).harness_mode,
+            "the harness is open, so its bar is the one on screen"
+        );
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+
+        let (mark, mark_size) = commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::DrawIcon {
+                    origin, name, size, ..
+                } if name == "upper-left-triangle" => Some((*origin, *size)),
+                _ => None,
+            })
+            .expect("the focused pane draws its corner mark");
+        let esc = commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::DrawText { origin, text, .. } if text == "esc" => Some(*origin),
+                _ => None,
+            })
+            .expect("the harness bar leads with the esc hint");
+        assert!(
+            esc.x >= mark.x + mark_size,
+            "the hint starts past the mark: esc at {esc:?}, mark at {mark:?} sized {mark_size}"
+        );
+    }
+
     /// R6: the app's conversation card is A8's `ConversationCard` element, not
     /// a private bordered container. It paints its status rail and no border.
     #[test]

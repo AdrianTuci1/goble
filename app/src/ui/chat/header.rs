@@ -47,6 +47,13 @@ pub(crate) fn build_agent_header(
     // height as the general topbar and the terminal pane header (36px on
     // macOS) instead of hugging its tallest control.
     let v_pad = ((super::super::shell::TOPBAR_HEIGHT - HEADER_CONTROL_HEIGHT) / 2.0).max(0.0);
+    // The focused pane's corner mark is drawn over the left end of this bar, so
+    // the bar starts past it — the mark is the pane's, the bar is what it opens.
+    let marker_inset = if state.active_pane_id == pane_id {
+        super::super::panes::FOCUS_MARKER_SIZE
+    } else {
+        0.0
+    };
 
     // The pane's expand control: it grows this pane over the whole panes space,
     // and the control it becomes — drawn as the retract icon — puts the pane
@@ -121,7 +128,7 @@ pub(crate) fn build_agent_header(
 
     Container::new(row)
     .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-    .with_padding(EdgeInsets::new(0.0, v_pad, 0.0, v_pad))
+    .with_padding(EdgeInsets::new(marker_inset, v_pad, 0.0, v_pad))
     .finish()
 }
 
@@ -366,6 +373,23 @@ mod tests {
             .unwrap_or_else(|| panic!("the window draws a {name} icon"))
     }
 
+    /// The focused pane's corner marks, with where each starts. Drawn in the
+    /// accent colour, so an inactive pane's bar cannot contribute one.
+    fn focus_markers(cmds: &[RenderCommand], app: &AppContext) -> Vec<Vector2F> {
+        let accent = app.theme.color(ColorToken::Accent);
+        cmds.iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon {
+                    origin,
+                    name,
+                    color,
+                    ..
+                } if name == "upper-left-triangle" && *color == accent => Some(*origin),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Every text the header band draws, with where it starts.
     fn header_texts(cmds: &[RenderCommand], bar_y: f32) -> Vec<(String, Vector2F)> {
         cmds.iter()
@@ -506,6 +530,73 @@ mod tests {
         assert!(
             expand.0 < topmost_icon(&cmds, "x-close").0,
             "the expand control sits left of the close X: {expand:?}"
+        );
+    }
+
+    /// The focused pane carries an accent mark in its own top-left corner, and
+    /// it is the only pane that does: warp-new draws the indicator into the
+    /// active pane's header stack, so the mark is read at the corner the pane
+    /// starts from and it walks with the focus rather than sitting on the space.
+    #[test]
+    fn the_focused_pane_carries_the_accent_mark_in_its_own_corner() {
+        let app = AppContext::default();
+        let (mut root, state, _desktop, _dir) = split_root();
+        let _ = frame(&mut root, &app, None);
+        let cmds = frame(&mut root, &app, None);
+        assert_eq!(
+            state.borrow().active_pane_id,
+            7,
+            "the split starts on the left pane"
+        );
+
+        let bar_y = pane_bar_y(&cmds);
+        let bar_xs: Vec<f32> = pane_bars(&cmds, bar_y).iter().map(|bar| bar.x).collect();
+        let left_bar = bar_xs.iter().cloned().fold(f32::INFINITY, f32::min);
+        let marks = focus_markers(&cmds, &app);
+        assert_eq!(
+            marks.len(),
+            1,
+            "one pane holds the focus, so one mark is drawn: {marks:?}"
+        );
+        assert!(
+            marks[0].x < left_bar && marks[0].y < bar_y,
+            "the mark is in the focused pane's own top-left corner, left of and \
+             above the bar it opens: {:?} against the bars at {bar_xs:?} on {bar_y}",
+            marks[0]
+        );
+
+        // The focus walking right takes the mark with it: the right pane is the
+        // active session then, and the left pane's bar carries nothing.
+        let _ = frame(&mut root, &app, None);
+        let mut ctx = EventContext::default();
+        root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "ArrowRight".to_string(),
+                modifiers: ModifiersState {
+                    ctrl: true,
+                    ..ModifiersState::default()
+                },
+            },
+            &mut ctx,
+            &app,
+        );
+        assert_eq!(
+            state.borrow().active_pane_id,
+            8,
+            "the focus walked to the pane on the right"
+        );
+        let cmds = frame(&mut root, &app, None);
+        let moved = focus_markers(&cmds, &app);
+        assert_eq!(
+            moved.len(),
+            1,
+            "and the mark is still one, now the right pane's: {moved:?}"
+        );
+        assert!(
+            moved[0].x > marks[0].x,
+            "the mark moved to the pane the focus moved to: {:?} was {:?}",
+            moved[0],
+            marks[0]
         );
     }
 

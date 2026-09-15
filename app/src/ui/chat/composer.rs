@@ -160,6 +160,7 @@ pub(crate) fn build_terminal_composer(
                 }
             },
         );
+        composer = composer.with_dir_menu_scroll(context.dir_menu_scroll.clone());
         if !context.branch_label.is_empty() {
             let branch_ids = context.branch_ids.clone();
             let on_select_branch = actions.on_select_branch.clone();

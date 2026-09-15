@@ -82,7 +82,8 @@ fn link_fragment_becomes_interactive_action() {
         "a link inside a paragraph must be one live action target carrying its URL"
     );
 
-    let prose = run_origin(&commands, "see");
+    // The prose run keeps the space that separates it from the link.
+    let prose = run_origin(&commands, "see ");
     click_at(&mut bubble, &app, prose + vec2f(2.0, 4.0));
     assert_eq!(
         fired.borrow().len(),

@@ -3,8 +3,9 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Fill, Flex, Icon,
-    LayoutContext, PaintContext, Point, SizeConstraint, Text,
+    AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
+    EventContext, Fill, Flex, Icon, LayoutContext, PaintContext, Point, ScrollState, Scrollable,
+    SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, PointF, RectF, Size2F, Vector2F};
@@ -13,6 +14,13 @@ use crate::theme::{ColorToken, SpacingToken};
 const POPUP_MAX_WIDTH: f32 = 220.0;
 const POPUP_ITEM_HEIGHT: f32 = 32.0;
 const POPUP_ITEM_SPACING: f32 = 2.0;
+/// How many rows a capped panel draws before its list scrolls.
+///
+/// Rows are the natural unit: a row is a fixed [`POPUP_ITEM_HEIGHT`] with
+/// [`POPUP_ITEM_SPACING`] between rows, so eight rows are 270 px — a panel that
+/// still fits over the input in a short window, while showing every row of an
+/// ordinary directory. Longer lists scroll instead of running off the pane.
+pub const MENU_MAX_VISIBLE_ROWS: usize = 8;
 const POPUP_GAP: f32 = 6.0;
 /// The gap between the hovered row and its tray (warp-new's action sidecar).
 const TRAY_GAP: f32 = 4.0;
@@ -82,6 +90,40 @@ struct HoverTray {
     build: Rc<dyn Fn(usize, &AppContext) -> Option<Box<dyn Element>>>,
 }
 
+/// A capped panel's scroll offset and the row the offset was last moved to
+/// reveal.
+///
+/// The tree is rebuilt every frame, so the app owns one of these — like the
+/// menu's open flag — and hands it to [`PopupMenu::with_panel_scroll`]. The
+/// revealed row is remembered beside the offset, for the same reason and so
+/// that a wheel scroll away from the highlighted row is not undone by the next
+/// frame's reveal: only a *change* of the highlighted row moves the offset.
+#[derive(Clone, Debug, Default)]
+pub struct PanelScroll {
+    offset: Rc<RefCell<ScrollState>>,
+    revealed: Rc<RefCell<Option<usize>>>,
+}
+
+impl PanelScroll {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The offset the [`Scrollable`] inside the panel reads and writes.
+    pub fn state(&self) -> Rc<RefCell<ScrollState>> {
+        Rc::clone(&self.offset)
+    }
+
+    /// The row the offset was last moved to reveal, if any.
+    pub fn revealed(&self) -> Option<usize> {
+        *self.revealed.borrow()
+    }
+
+    fn mark_revealed(&self, index: usize) {
+        *self.revealed.borrow_mut() = Some(index);
+    }
+}
+
 /// A trigger that opens a floating item menu.
 ///
 /// The open flag is app-owned (`Rc<RefCell<bool>>`) so it survives the
@@ -103,6 +145,11 @@ pub struct PopupMenu {
     panel: Option<Box<dyn Element>>,
     panel_size: Option<Vector2F>,
     panel_origin: Vector2F,
+    /// How many rows the panel draws before its list scrolls. `None` leaves the
+    /// panel at its natural height — every row, the way it has always been — so
+    /// a menu that never asked for a cap is drawn exactly as before.
+    max_visible_rows: Option<usize>,
+    panel_scroll: PanelScroll,
     tray: Option<Box<dyn Element>>,
     tray_size: Option<Vector2F>,
     tray_origin: Vector2F,
@@ -124,6 +171,8 @@ impl PopupMenu {
             panel: None,
             panel_size: None,
             panel_origin: Vector2F::zero(),
+            max_visible_rows: None,
+            panel_scroll: PanelScroll::default(),
             tray: None,
             tray_size: None,
             tray_origin: Vector2F::zero(),
@@ -134,6 +183,23 @@ impl PopupMenu {
 
     pub fn with_open(mut self, open: Rc<RefCell<bool>>) -> Self {
         self.open = open;
+        self
+    }
+
+    /// Cap the panel's row list at `rows` rows ([`MENU_MAX_VISIBLE_ROWS`] is the
+    /// value the app's directory menu uses): a longer list scrolls inside that
+    /// height instead of growing past the pane it opens into.
+    pub fn with_max_visible_rows(mut self, rows: usize) -> Self {
+        self.max_visible_rows = Some(rows);
+        self
+    }
+
+    /// Share the panel's scroll offset with the app, so it survives the
+    /// per-frame rebuild (the open flag is app-owned for the same reason, as is
+    /// the hovered row). Without one a capped panel still scrolls, but opens at
+    /// the top again on the frame after the wheel moved it.
+    pub fn with_panel_scroll(mut self, scroll: PanelScroll) -> Self {
+        self.panel_scroll = scroll;
         self
     }
 
@@ -199,16 +265,35 @@ impl PopupMenu {
         ))
     }
 
+    /// The panel's scroll offset: zero for a panel with no cap, which draws
+    /// every row from the top.
+    fn scroll_offset(&self) -> f32 {
+        if self.max_visible_rows.is_some() {
+            self.panel_scroll.state().borrow().offset()
+        } else {
+            0.0
+        }
+    }
+
     /// The bounds of item `index`'s row, in window coordinates. Rows are a
     /// fixed height with a fixed spacing between them, so a row's rect follows
-    /// from the panel's geometry without asking the row element.
+    /// from the panel's geometry without asking the row element. A capped panel
+    /// draws its rows shifted by the scroll offset and clipped to the window, so
+    /// a row scrolled out of sight has no bounds: nothing hangs from it and the
+    /// pointer cannot hover it.
     fn row_bounds(&self, index: usize, app: &AppContext) -> Option<RectF> {
         let origin = self.origin?;
         let panel_size = self.panel_size?;
         let pad = Self::panel_padding(app);
         let x = origin.x() + self.panel_origin.x + pad;
-        let y =
-            origin.y() + self.panel_origin.y + pad + index as f32 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING);
+        let top = pad + index as f32 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING) - self.scroll_offset();
+        if self.max_visible_rows.is_some() {
+            let window = (panel_size.y - pad * 2.0).max(0.0);
+            if top + POPUP_ITEM_HEIGHT <= 0.0 || top >= window {
+                return None;
+            }
+        }
+        let y = origin.y() + self.panel_origin.y + top;
         Some(RectF::new(
             PointF::new(x, y),
             Size2F::new((panel_size.x - pad * 2.0).max(0.0), POPUP_ITEM_HEIGHT),
@@ -242,7 +327,8 @@ impl PopupMenu {
         let pad = Self::panel_padding(app);
         // Menu-relative, like `panel_origin`: the tray hangs from the hovered
         // row's top edge and sits just past the panel's trailing edge.
-        let row_top = self.panel_origin.y + pad + index as f32 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING);
+        let row_top = self.panel_origin.y + pad + index as f32 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING)
+            - self.scroll_offset();
         let panel_right = self.panel_origin.x + panel_size.x;
 
         let mut tray = content;
@@ -336,12 +422,68 @@ impl PopupMenu {
             .finish();
             column = column.with_child(row);
         }
-        Container::new(column.finish())
+        // A capped panel is a viewport over the rows — the cap, or the whole
+        // list when that is shorter, so a three-row directory does not leave
+        // five rows of empty panel in the tray.
+        let content: Box<dyn Element> = match self.max_visible_rows {
+            Some(max_rows) => {
+                let visible = max_rows.max(1).min(self.items.len().max(1)) as f32;
+                let height = visible * POPUP_ITEM_HEIGHT + (visible - 1.0) * POPUP_ITEM_SPACING;
+                ConstrainedBox::new(
+                    Scrollable::new(column.finish(), Axis::Vertical)
+                        .with_state(self.panel_scroll.state())
+                        .finish(),
+                )
+                .with_max_height(height)
+                .finish()
+            }
+            None => column.finish(),
+        };
+        Container::new(content)
             .with_padding(EdgeInsets::uniform(sm))
             .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
             .with_border(app.theme.color(ColorToken::Border).into())
             .with_corner_radius(6.0)
             .finish()
+    }
+
+    /// Bring the highlighted row into the panel's window when the panel is
+    /// capped and the highlight has moved — the keyboard half of a scrollable
+    /// tray. Called from `layout`, after the viewport has been measured.
+    ///
+    /// Only a change of row moves the offset, so the wheel keeps whatever the
+    /// user scrolled to, and an open menu still shows the row it is on.
+    fn reveal_highlighted_row(&mut self) {
+        if self.max_visible_rows.is_none() {
+            return;
+        }
+        let Some(index) = self.items.iter().position(|item| item.selected) else {
+            return;
+        };
+        if self.panel_scroll.revealed() == Some(index) {
+            return;
+        }
+        let state = self.panel_scroll.state();
+        let (offset, viewport) = {
+            let state = state.borrow();
+            (state.offset(), state.viewport())
+        };
+        // Nothing has measured the viewport yet: leave the row for the next
+        // layout rather than marking it revealed against a zero-height window.
+        if viewport <= 0.0 {
+            return;
+        }
+        let top = index as f32 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING);
+        let bottom = top + POPUP_ITEM_HEIGHT;
+        let wanted = if top < offset {
+            top
+        } else if bottom > offset + viewport {
+            bottom - viewport
+        } else {
+            offset
+        };
+        state.borrow_mut().scroll_by(wanted - offset);
+        self.panel_scroll.mark_revealed(index);
     }
 }
 
@@ -408,6 +550,7 @@ impl Element for PopupMenu {
                 }
             };
             self.panel_origin = vec2f(x, y);
+            self.reveal_highlighted_row();
         }
         self.build_tray(constraint, ctx, app);
         trigger_size
@@ -445,6 +588,16 @@ impl Element for PopupMenu {
         };
 
         if *self.open.borrow() {
+            // A wheel carries no position to hit-test with, so it goes to the
+            // panel and is taken by whichever region was under the pointer at
+            // the last paint — the row list of a capped tray.
+            if matches!(event, DispatchedEvent::Scroll { .. }) {
+                return self
+                    .panel
+                    .as_mut()
+                    .map(|panel| panel.dispatch_event(event, ctx, app))
+                    .unwrap_or(false);
+            }
             // The tray is drawn beside the panel, so it sits outside the panel's
             // own bounds: route events there first, and consume them so a click
             // on the tray's controls neither closes the menu nor falls through
@@ -1000,6 +1153,174 @@ mod tests {
         assert!(
             next_frame.tray.is_some(),
             "the rebuilt menu still draws the tray for the row under the pointer"
+        );
+    }
+
+    /// The height of a tray capped at [`MENU_MAX_VISIBLE_ROWS`] rows.
+    fn cap_height() -> f32 {
+        let rows = MENU_MAX_VISIBLE_ROWS as f32;
+        rows * POPUP_ITEM_HEIGHT + (rows - 1.0) * POPUP_ITEM_SPACING
+    }
+
+    /// A capped tray of `count` directory rows, the way the rich input's
+    /// working-directory menu asks for one. `highlighted` is the row the app
+    /// marks as the one the keyboard is on.
+    fn directory_menu(
+        count: usize,
+        highlighted: Option<usize>,
+        scroll: &PanelScroll,
+    ) -> PopupMenu {
+        let items = (0..count)
+            .map(|i| {
+                let item = PopupMenuItem::new(format!("dir-{i:02}"));
+                if highlighted == Some(i) {
+                    item.selected()
+                } else {
+                    item
+                }
+            })
+            .collect();
+        PopupMenu::new(trigger(), items)
+            .with_open(Rc::new(RefCell::new(true)))
+            .with_max_visible_rows(MENU_MAX_VISIBLE_ROWS)
+            .with_panel_scroll(scroll.clone())
+    }
+
+    /// A directory with more entries than the cap draws a window of the cap's
+    /// height, clutched to its rows, instead of a panel taller than the pane.
+    #[test]
+    fn a_directory_with_more_rows_than_the_cap_draws_a_window_of_the_cap() {
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = AppContext::default();
+        let size = vec2f(600.0, 700.0);
+        let mut menu = directory_menu(20, Some(0), &PanelScroll::new());
+        let _ = menu.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), &app);
+        menu.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+
+        let panel = menu.panel_size.expect("the panel is built");
+        let expected = cap_height() + PopupMenu::panel_padding(&app) * 2.0;
+        assert!(
+            (panel.y - expected).abs() < 0.01,
+            "twenty rows are drawn in an eight-row window: panel {} px, expected {expected}",
+            panel.y
+        );
+        let shown: Vec<usize> = (0..20).filter(|i| menu.row_bounds(*i, &app).is_some()).collect();
+        assert_eq!(
+            shown,
+            (0..MENU_MAX_VISIBLE_ROWS).collect::<Vec<usize>>(),
+            "only the rows inside the window have bounds"
+        );
+
+        let mut element = directory_menu(20, Some(0), &PanelScroll::new()).finish();
+        let commands = render_element(&mut element, size, &app);
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, RenderCommand::ClipRect { .. })),
+            "and the window clips the rows it cannot show: {commands:?}"
+        );
+    }
+
+    /// A wheel over the tray moves its rows, and the offset is the app's cell,
+    /// so the next frame's rebuild does not throw it away.
+    #[test]
+    fn a_wheel_over_the_tray_scrolls_its_rows() {
+        let app = AppContext::default();
+        let size = vec2f(600.0, 700.0);
+        let scroll = PanelScroll::new();
+        let state = scroll.state();
+        let mut menu = directory_menu(20, Some(0), &scroll);
+        let _ = menu.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), &app);
+
+        // A wheel carries no position to hit-test with, so the region that was
+        // under the pointer at the last paint takes it: paint with the pointer
+        // over the panel's rows.
+        menu.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+        let panel = menu.panel_bounds().expect("the panel has bounds");
+        let mut paint_ctx = PaintContext::default();
+        paint_ctx.cursor_position = vec2f(panel.min_x() + 10.0, panel.min_y() + 10.0);
+        paint_ctx.cursor_inside = true;
+        menu.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+
+        let row = menu.row_bounds(3, &app).expect("row three is in the window");
+        let mut ctx = EventContext::default();
+        assert!(
+            menu.dispatch_event(
+                &DispatchedEvent::Scroll { delta: vec2f(0.0, -40.0) },
+                &mut ctx,
+                &app
+            ),
+            "the tray takes the wheel over its rows"
+        );
+        assert_eq!(state.borrow().offset(), 40.0, "the content moved up by 40 px");
+
+        // The rows are drawn shifted by the offset they moved, and the ones
+        // that left the window are no longer in it.
+        menu.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+        let moved = menu.row_bounds(3, &app).expect("row three is still in the window");
+        assert!(
+            (row.min_y() - moved.min_y() - 40.0).abs() < 0.01,
+            "the rows shifted by the offset: {} -> {}",
+            row.min_y(),
+            moved.min_y()
+        );
+        assert!(
+            menu.row_bounds(0, &app).is_none(),
+            "and the first row scrolled out of the window"
+        );
+
+        // The app rebuilds the tree every frame, and the highlighted row has not
+        // moved, so the wheel's offset is kept rather than scrolled back.
+        let mut next_frame = directory_menu(20, Some(0), &scroll);
+        let _ = next_frame.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), &app);
+        assert_eq!(
+            state.borrow().offset(),
+            40.0,
+            "the next frame keeps the wheel's offset"
+        );
+    }
+
+    /// The keyboard half: a highlight moved below the window is brought into it,
+    /// and moving it back up brings the earlier row back.
+    #[test]
+    fn moving_the_highlight_below_the_window_brings_it_into_view() {
+        let app = AppContext::default();
+        let size = vec2f(600.0, 700.0);
+        let scroll = PanelScroll::new();
+        let state = scroll.state();
+        let mut menu = directory_menu(20, Some(0), &scroll);
+        let _ = menu.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), &app);
+        assert_eq!(state.borrow().offset(), 0.0, "the first row opens at the top");
+
+        // The app moves its highlight down the list and rebuilds the tree, the
+        // way a host that answered ArrowDown does.
+        let mut menu = directory_menu(20, Some(15), &scroll);
+        let _ = menu.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), &app);
+        let (offset, viewport) = {
+            let state = state.borrow();
+            (state.offset(), state.viewport())
+        };
+        assert_eq!(viewport, cap_height(), "the window is the cap's height");
+        let top = 15.0 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING);
+        assert!(offset > 0.0, "the window moved down to reach the row");
+        assert!(
+            offset <= top && offset + viewport >= top + POPUP_ITEM_HEIGHT,
+            "and holds the whole highlighted row: offset {offset}, window {viewport}, row at {top}"
+        );
+
+        // Moving back up brings the earlier row into the window again.
+        let mut menu = directory_menu(20, Some(2), &scroll);
+        let _ = menu.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), &app);
+        let (offset, viewport) = {
+            let state = state.borrow();
+            (state.offset(), state.viewport())
+        };
+        let top = 2.0 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING);
+        assert!(
+            offset <= top && offset + viewport >= top + POPUP_ITEM_HEIGHT,
+            "row two is inside the window: offset {offset}, window {viewport}"
         );
     }
 }

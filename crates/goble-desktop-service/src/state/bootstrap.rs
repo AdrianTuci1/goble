@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -82,7 +82,9 @@ impl DesktopState {
         let store = Store::open(home.store_path())?;
         let thread_store = ThreadStore::new(home.threads_dir())?;
         let state = Self::new(store, thread_store);
-        state.reload_config(&home.config_path());
+        state.set_environment_path(home.environment_path());
+        state.set_config_path(home.config_path());
+        let _ = state.reload_config(&home.config_path());
         let _ = state.load_from_store();
         // Make the reversibility ledger durable: persist settled checkpoints to
         // SQLite and seed the daemon's ledgers from anything persisted before, so
@@ -117,12 +119,34 @@ impl DesktopState {
         Ok(state)
     }
 
-    /// Load `~/.goble/config.toml` into memory on startup; a missing or malformed
-    /// file leaves the in-memory config at its default.
-    pub fn reload_config(&self, path: &Path) {
-        if let Ok(toml) = fs::read_to_string(path) {
-            if let Ok(config) = goble_core::config::GobleConfig::from_toml(&toml) {
+    /// Load `~/.goble/config.toml` into memory. A missing file leaves the
+    /// in-memory config as it is; a file that is not TOML at all is logged and
+    /// reported, and the running config is kept — a bad edit must not wipe the
+    /// models the app is configured with. A section that does not parse costs
+    /// only itself; the sections around it are kept.
+    pub fn reload_config(&self, path: &Path) -> anyhow::Result<()> {
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                log::error!("cannot read {}: {e}", path.display());
+                return Err(anyhow::Error::new(e).context(format!("read {}", path.display())));
+            }
+        };
+        match goble_core::config::GobleConfig::load_toml(&text) {
+            Ok((config, problems)) => {
+                for problem in &problems {
+                    log::error!("{}: {problem}", path.display());
+                }
                 *self.config.lock() = config;
+                Ok(())
+            }
+            Err(e) => {
+                log::error!(
+                    "{} is not valid TOML, keeping the running config: {e}",
+                    path.display()
+                );
+                Err(e)
             }
         }
     }
@@ -132,13 +156,36 @@ impl DesktopState {
         self.config.lock().clone()
     }
 
-    /// Persist the config to `~/.goble/config.toml` and update the in-memory copy.
+    /// Persist the config to this state's `config.toml` and update the in-memory
+    /// copy. A legacy `[llm]` section is folded into `[model.*]` / `[models]`
+    /// here, so every save writes the adopted schema.
+    ///
+    /// A state built with [`DesktopState::new`] has no home, so this refuses
+    /// rather than guessing one: a save is what a running app does, and a state
+    /// whose home nobody named is a test or a tool that must say where it writes.
     pub fn save_config(&self, config: &goble_core::config::GobleConfig) -> anyhow::Result<()> {
-        let home = goble_core::app_home::GobleHome::locate()?;
+        let Some(path) = self.config_path() else {
+            anyhow::bail!(
+                "this state has no config path: pin one with `set_config_path` (the running app gets it from `open_default`)"
+            );
+        };
+        let mut config = config.clone();
+        config.absorb_legacy();
         let toml = config.to_toml()?;
-        fs::write(home.config_path(), toml).context("write config.toml")?;
-        *self.config.lock() = config.clone();
+        fs::write(&path, toml).with_context(|| format!("write {}", path.display()))?;
+        *self.config.lock() = config;
         Ok(())
+    }
+
+    /// The `config.toml` this state saves to, or `None` when it was built
+    /// without a home.
+    pub fn config_path(&self) -> Option<PathBuf> {
+        self.config_path.lock().clone()
+    }
+
+    /// Point the config accessors at `path` instead of `~/.goble/config.toml`.
+    pub fn set_config_path(&self, path: impl Into<PathBuf>) {
+        *self.config_path.lock() = Some(path.into());
     }
 
     pub fn new(store: Store, thread_store: ThreadStore) -> Arc<Self> {
@@ -183,6 +230,8 @@ impl DesktopState {
             cluster_identity: Mutex::new(None),
             thread_store: Arc::new(thread_store),
             config: parking_lot::Mutex::new(goble_core::config::GobleConfig::default()),
+            config_path: Mutex::new(None),
+            environment: Mutex::new(super::environment::EnvironmentCache::default()),
             daemon_state,
             daemon,
             translator_spawned: Arc::new(std::sync::atomic::AtomicBool::new(false)),

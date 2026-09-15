@@ -44,8 +44,10 @@ struct Entry {
     is_dir: bool,
 }
 
-/// The children of `dir`: directories first, then files, each alphabetical, with
-/// hidden entries left out.
+/// The children of `dir`: directories first, then files, each alphabetical. A
+/// name that starts with a dot is listed like any other. Nothing is named here
+/// to leave out, because a directory is read only when it is opened: a tree as
+/// large as `.git` costs one row until the user expands it.
 fn children(dir: &str) -> Vec<Entry> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -53,9 +55,6 @@ fn children(dir: &str) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') {
-            continue;
-        }
         let path = entry.path();
         out.push(Entry {
             name,
@@ -364,21 +363,110 @@ mod tests {
         assert!(!rows[0].is_dir);
     }
 
+    /// A directory that cannot be read is a tree with nothing in it, not a
+    /// failure. (Kept from `a_hidden_entry_is_not_a_row_and_an_unreadable_directory_shows_nothing`,
+    /// whose other half — hidden entries are left out — no longer holds.)
     #[test]
-    fn a_hidden_entry_is_not_a_row_and_an_unreadable_directory_shows_nothing() {
-        let home = tempfile::tempdir().expect("temp home");
-        std::fs::create_dir(home.path().join(".git")).unwrap();
-        std::fs::write(home.path().join(".gitignore"), "target").unwrap();
-
+    fn an_unreadable_directory_shows_nothing() {
         let mut cache = ExplorerCache::default();
-        let rows = cache.rows(&home.path().to_string_lossy(), &HashSet::new(), true);
-        assert!(rows.is_empty(), "hidden entries are left out: {rows:?}");
-
         assert!(
             cache
                 .rows("/definitely/not/a/directory", &HashSet::new(), true)
                 .is_empty(),
             "a directory that cannot be read shows nothing rather than a failure"
+        );
+    }
+
+    /// A name that starts with a dot is a row like any other: a dot directory is
+    /// a directory the tree opens, a dot file is a file it opens, and both keep
+    /// the listing's order — directories first, then files, each case-insensitive
+    /// alphabetical. `.git` is in the list too: the walk reads one level at a
+    /// time, so naming it to hide it would buy nothing the lazy read has not
+    /// already.
+    #[test]
+    fn a_hidden_directory_and_a_hidden_file_are_rows_like_any_other() {
+        let home = tempfile::tempdir().expect("temp home");
+        for dir in [".config", ".git", "src", "Zed"] {
+            std::fs::create_dir(home.path().join(dir)).unwrap();
+        }
+        for file in [".gitignore", "Cargo.toml", "notes.md"] {
+            std::fs::write(home.path().join(file), "").unwrap();
+        }
+
+        let mut cache = ExplorerCache::default();
+        let rows = cache.rows(&home.path().to_string_lossy(), &HashSet::new(), true);
+        let drawn: Vec<(&str, bool)> = rows
+            .iter()
+            .map(|row| (row.name.as_str(), row.is_dir))
+            .collect();
+        assert_eq!(
+            drawn,
+            vec![
+                (".config", true),
+                (".git", true),
+                ("src", true),
+                ("Zed", true),
+                (".gitignore", false),
+                ("Cargo.toml", false),
+                ("notes.md", false),
+            ],
+            "hidden entries are listed in the tree's own order"
+        );
+        assert!(rows.iter().all(|row| row.depth == 0));
+    }
+
+    /// A dot file draws an icon the atlas has. `.gitignore` has one dot, so its
+    /// whole name reads as an extension no type matches: a plain document, not
+    /// the fallback cross an unregistered icon name would draw.
+    #[test]
+    fn a_hidden_name_draws_a_registered_icon() {
+        for name in [".gitignore", ".env", ".config", ".eslintrc.json", ".hidden"] {
+            let icon = file_icon_name(name);
+            assert!(
+                goble_ui::platform::icon_atlas::is_registered(icon),
+                "{name} draws {icon}, which is not in the icon atlas"
+            );
+        }
+        assert_eq!(file_icon_name(".gitignore"), "file", "an absent extension");
+        assert_eq!(file_icon_name(".eslintrc.json"), "file-json", "a dot name has a type too");
+    }
+
+    /// A hidden directory opens and closes like any other: its children are the
+    /// rows under it while it is expanded, and gone once it is not.
+    #[test]
+    fn expanding_a_hidden_directory_draws_its_children_under_it() {
+        let home = tempfile::tempdir().expect("temp home");
+        std::fs::create_dir_all(home.path().join(".config").join("goble")).unwrap();
+        std::fs::write(home.path().join(".config").join("config.toml"), "x = 1").unwrap();
+        std::fs::write(home.path().join(".gitignore"), "target").unwrap();
+        let root = home.path().to_string_lossy().to_string();
+
+        let mut cache = ExplorerCache::default();
+        let mut expanded = HashSet::new();
+        expanded.insert(home.path().join(".config").to_string_lossy().to_string());
+        let rows = cache.rows(&root, &expanded, true);
+        let drawn: Vec<(String, usize)> = rows
+            .iter()
+            .map(|row| (row.name.clone(), row.depth))
+            .collect();
+        assert_eq!(
+            drawn,
+            vec![
+                (".config".to_string(), 0),
+                ("goble".to_string(), 1),
+                ("config.toml".to_string(), 1),
+                (".gitignore".to_string(), 0),
+            ]
+        );
+        assert!(rows[0].is_dir && rows[0].expanded, "the open dot directory says so");
+
+        expanded.clear();
+        let rows = cache.rows(&root, &expanded, true);
+        let drawn: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(
+            drawn,
+            vec![".config", ".gitignore"],
+            "the closed directory hides its children"
         );
     }
 

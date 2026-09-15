@@ -8,7 +8,7 @@ use crate::elements::{
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::platform::text_atlas::{measure_text_family, FontWeight};
+use crate::platform::text_atlas::{advance_width, measure_text_family, FontWeight};
 use crate::theme::{ColorToken, FontFamily};
 
 const DEFAULT_FONT_SIZE: f32 = 12.0;
@@ -136,6 +136,10 @@ impl InlineText {
     /// non-whitespace, plus the whitespace that follows it. The run carries the
     /// index of the span it came from, so the style is read once and each unit
     /// stays cheap to hold.
+    ///
+    /// Every whitespace character becomes a space: the rasterizer breaks a run
+    /// on a hard line break it finds in it, at a place the flow that placed the
+    /// run never accounted for.
     fn atoms(&self) -> Vec<(usize, String, bool)> {
         let mut atoms = Vec::new();
         for (index, span) in self.spans.iter().enumerate() {
@@ -147,7 +151,7 @@ impl InlineText {
                     atoms.push((index, std::mem::take(&mut run), run_is_space));
                 }
                 run_is_space = is_space;
-                run.push(if character == '\t' { ' ' } else { character });
+                run.push(if is_space { ' ' } else { character });
             }
             if !run.is_empty() {
                 atoms.push((index, run, run_is_space));
@@ -155,37 +159,6 @@ impl InlineText {
         }
         atoms
     }
-}
-
-/// The advance width of a run of whitespace, which is what the words around it
-/// are separated by.
-///
-/// The measurement reports the extent of a run's glyphs, and whitespace draws
-/// none of its own, so a lone space measures as nothing. A sentinel is put after
-/// the run and its own advance removed, which reads the space the text after it
-/// is shifted by.
-fn whitespace_advance(run: &str, font_size: f32, line_height: f32, span: &TextSpan) -> f32 {
-    let sentinel = measure_text_family(
-        "x",
-        font_size,
-        line_height,
-        f32::INFINITY,
-        span.weight,
-        span.family,
-        span.italic,
-    )
-    .x;
-    let with_run = measure_text_family(
-        &format!("{run}x"),
-        font_size,
-        line_height,
-        f32::INFINITY,
-        span.weight,
-        span.family,
-        span.italic,
-    )
-    .x;
-    (with_run - sentinel).max(0.0)
 }
 
 /// Both runs are drawn the same way, so a line of them is one drawn run.
@@ -203,11 +176,18 @@ fn same_style(a: &TextSpan, b: &TextSpan) -> bool {
         }
 }
 
-/// The width a drawn run is given: the space left on its line. A run is placed
-/// where its own measurement says it fits, so the point of slack keeps it from
-/// being re-wrapped inside a width that rounds a fraction short of it.
+/// The wrap width a drawn run is given: the space left on its line.
 fn drawn_width(max_width: f32, cursor_x: f32) -> f32 {
-    (max_width - cursor_x).max(1.0) + 1.0
+    max_width - cursor_x
+}
+
+/// The wrap width of a run the flow has already decided fits on its line: as
+/// [`drawn_width`], but never less than the run's own advance. fontdue breaks a
+/// run whose advances overrun the width it was given, and it breaks on the sum
+/// of the rounded advances, so a width a fraction of a pixel short of that sum
+/// drops the run's last word onto a line the flow never reserved for it.
+fn drawn_run_width(max_width: f32, cursor_x: f32, advance: f32) -> f32 {
+    drawn_width(max_width, cursor_x).max(advance)
 }
 
 /// Add a run to the flow, appending it to the previous run when the two are
@@ -221,7 +201,9 @@ fn push_chunk(placed: &mut Vec<PlacedSpan>, chunk: PlacedSpan, max_width: f32) {
         if adjacent && same_style(&last.span, &chunk.span) {
             last.span.text.push_str(&chunk.span.text);
             last.width += chunk.width;
-            last.max_width = drawn_width(max_width, last.x);
+            // The merged run is as wide as the advances it now holds, which is
+            // what its own wrap width has to cover.
+            last.max_width = drawn_run_width(max_width, last.x, last.width);
             return;
         }
     }
@@ -269,22 +251,17 @@ impl Element for InlineText {
         // the paragraph a second, narrow column beside it.
         for (index, text, is_space) in self.atoms() {
             let span = self.spans[index].clone();
-            // A run of whitespace draws no glyph, so its width is read from the
-            // advance it pushes the next run by, not from the measurement.
-            let width = if is_space {
-                whitespace_advance(&text, self.font_size, self.line_height, &span)
-            } else {
-                measure_text_family(
-                    &text,
-                    self.font_size,
-                    self.line_height,
-                    f32::INFINITY,
-                    span.weight,
-                    span.family,
-                    span.italic,
-                )
-                .x
-            };
+            // The advance, not the measurement: the measurement is the extent
+            // of the ink, which is a side bearing narrower than the room the
+            // run takes up, and the renderer lays the run out by its advances.
+            // Whitespace above all measures as nothing at all.
+            let width = advance_width(
+                &text,
+                self.font_size,
+                span.weight,
+                span.family,
+                span.italic,
+            );
 
             if is_space {
                 pending_space = Some((index, text, width));
@@ -292,6 +269,10 @@ impl Element for InlineText {
             }
 
             let gap = pending_space.as_ref().map(|(_, _, w)| *w).unwrap_or(0.0);
+            // A single word wider than the paragraph is drawn wrapped inside it,
+            // and the flow restarts under the lines that word took. What it then
+            // occupies is those lines, not the one width it asked for.
+            let over_wide = width > max_width;
             if line_has_word && cursor_x + gap + width > max_width {
                 // Break to a new line and drop the space that was held back.
                 cursor_y += line_h;
@@ -300,7 +281,10 @@ impl Element for InlineText {
             }
 
             if let Some((space_index, space_text, space_width)) = pending_space.take() {
-                if cursor_x + space_width <= max_width {
+                // The space in front of an over-wide word is dropped: that word
+                // is drawn wrapped inside the full width and starts at the left
+                // edge, so a space before it would only shift its wrap.
+                if !over_wide && cursor_x + space_width <= max_width {
                     let mut space_span = self.spans[space_index].clone();
                     space_span.text = space_text;
                     push_chunk(
@@ -308,7 +292,7 @@ impl Element for InlineText {
                         PlacedSpan {
                             x: cursor_x,
                             y: cursor_y,
-                            max_width: drawn_width(max_width, cursor_x),
+                            max_width: drawn_run_width(max_width, cursor_x, space_width),
                             width: space_width,
                             span: space_span,
                             state: InteractiveState::default(),
@@ -319,10 +303,7 @@ impl Element for InlineText {
                 }
             }
 
-            // A single word wider than the paragraph is drawn wrapped inside it,
-            // and the flow restarts under the lines that word took. What it then
-            // occupies is those lines, not the one width it asked for.
-            let over_wide = width > max_width;
+            let advance = width;
             let (width, height) = if over_wide {
                 let wrapped = measure_text_family(
                     &text,
@@ -335,7 +316,15 @@ impl Element for InlineText {
                 );
                 (wrapped.x, wrapped.y)
             } else {
-                (width, line_h)
+                (advance, line_h)
+            };
+            // A run the flow placed whole on its line is given at least its own
+            // advance; the over-wide one is given the space left on the line,
+            // which is narrower than its advance because it is to break there.
+            let run_width = if over_wide {
+                drawn_width(max_width, cursor_x)
+            } else {
+                drawn_run_width(max_width, cursor_x, advance)
             };
             let mut word_span = span;
             word_span.text = text;
@@ -344,7 +333,7 @@ impl Element for InlineText {
                 PlacedSpan {
                     x: cursor_x,
                     y: cursor_y,
-                    max_width: drawn_width(max_width, cursor_x),
+                    max_width: run_width,
                     width,
                     span: word_span,
                     state: InteractiveState::default(),
@@ -501,6 +490,155 @@ pub fn resolve_span(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::RenderCommand;
+
+    /// Lay the spans out at `width` and paint them, returning the box and the
+    /// commands: what the paragraph reserves and what it actually draws.
+    fn painted(width: f32, spans: Vec<TextSpan>) -> (Vector2F, Vec<RenderCommand>) {
+        let app = AppContext::default();
+        let mut element: Box<dyn Element> = Box::new(InlineText::new(spans).with_font_size(12.0));
+        let commands = crate::test_util::render_element(&mut element, vec2f(width, 4000.0), &app);
+        let size = element.size().expect("the paragraph lays out");
+        (size, commands)
+    }
+
+    /// Every drawn run of `commands`, as (origin, text, size, line height, wrap
+    /// width).
+    fn drawn_runs(commands: &[RenderCommand]) -> Vec<(Vector2F, String, f32, f32, f32)> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText {
+                    origin,
+                    text,
+                    font_size,
+                    line_height,
+                    max_width,
+                    ..
+                } => Some((*origin, text.clone(), *font_size, *line_height, *max_width)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The space between two runs of different style is drawn, and the run after
+    /// it starts one advance past the run before: budgeting by the measured ink
+    /// instead leaves every following word a bearing too close.
+    #[test]
+    fn inline_text_keeps_the_spaces_between_runs() {
+        let (_, commands) = painted(
+            400.0,
+            vec![
+                TextSpan::plain("see "),
+                TextSpan::plain("Goble").with_weight(FontWeight::Bold),
+                TextSpan::plain(" for details"),
+            ],
+        );
+        let runs = drawn_runs(&commands);
+        let drawn: String = runs.iter().map(|(_, text, ..)| text.as_str()).collect();
+        assert_eq!(
+            drawn, "see Goble for details",
+            "the spaces between the runs are part of the paragraph"
+        );
+        let (origin, ..) = runs
+            .iter()
+            .find(|(_, text, ..)| text == "Goble")
+            .expect("the bold run is drawn");
+        assert_eq!(
+            origin.x,
+            advance_width("see ", 12.0, FontWeight::Regular, FontFamily::System, false),
+            "the bold run starts where the plain run's advance ends"
+        );
+    }
+
+    /// A run of several spaces is a run of several spaces: nothing collapses it
+    /// to one, and nothing drops it.
+    #[test]
+    fn inline_text_keeps_a_run_of_spaces() {
+        let (_, commands) = painted(400.0, vec![TextSpan::plain("a  b   c")]);
+        let runs = drawn_runs(&commands);
+        let drawn: String = runs.iter().map(|(_, text, ..)| text.as_str()).collect();
+        assert_eq!(drawn, "a  b   c");
+        assert_eq!(
+            runs.len(),
+            1,
+            "one style draws as one run, got {runs:?}"
+        );
+        let (origin, _, _, _, max_width) = runs[0];
+        assert_eq!(origin.x, 0.0);
+        assert!(
+            max_width >= advance_width("a  b   c", 12.0, FontWeight::Regular, FontFamily::System, false),
+            "the run is given room for every space it holds, got {max_width}"
+        );
+    }
+
+    /// No drawn run may leave the paragraph's box: each is measured at the width
+    /// it is drawn at, so a run the flow placed on one line stays on that line
+    /// instead of wrapping inside its own quad and spilling over the line below.
+    #[test]
+    fn inline_text_draws_every_run_inside_the_paragraph() {
+        let paragraph = "The agent wrote a long paragraph of prose that has to reflow on every resize and it keeps going";
+        for width in [120.0_f32, 200.0, 240.0, 300.0, 360.0] {
+            let (size, commands) = painted(width, vec![TextSpan::plain(paragraph)]);
+            let runs = drawn_runs(&commands);
+            assert!(!runs.is_empty(), "the paragraph draws at {width}");
+            for (origin, text, font_size, line_height, max_width) in &runs {
+                let drawn = measure_text_family(
+                    text,
+                    *font_size,
+                    *line_height,
+                    *max_width,
+                    FontWeight::Regular,
+                    FontFamily::System,
+                    false,
+                );
+                assert!(
+                    origin.x + drawn.x <= width + 0.5,
+                    "the run {text:?} at x={} is drawn past the {width} wide paragraph, ends at {}",
+                    origin.x,
+                    origin.x + drawn.x
+                );
+                assert!(
+                    origin.y + font_size * line_height <= size.y + 0.5,
+                    "the run {text:?} at y={} is placed past the paragraph's {} of lines",
+                    origin.y,
+                    size.y
+                );
+                assert!(
+                    drawn.y <= (font_size * line_height).ceil() + 0.5,
+                    "the run {text:?} is drawn over more than its one line box: {}",
+                    drawn.y
+                );
+            }
+        }
+    }
+
+    /// A narrower constraint re-wraps the paragraph, and the run widths it draws
+    /// with come down with it.
+    #[test]
+    fn inline_text_rewraps_and_narrows_when_the_constraint_shrinks() {
+        let spans = || vec![TextSpan::plain("one two three four five six seven eight nine")];
+        let (wide_size, wide_commands) = painted(400.0, spans());
+        let (narrow_size, narrow_commands) = painted(150.0, spans());
+        let widest = |commands: &[RenderCommand]| {
+            drawn_runs(commands)
+                .iter()
+                .map(|(_, _, _, _, max_width)| *max_width)
+                .fold(0.0_f32, f32::max)
+        };
+        assert!(
+            narrow_size.y > wide_size.y,
+            "the paragraph takes more lines at 150 than at 400"
+        );
+        assert!(
+            widest(&narrow_commands) <= 150.0 + 0.5,
+            "no run is drawn with room past the narrower constraint"
+        );
+        assert!(
+            widest(&wide_commands) > widest(&narrow_commands),
+            "the drawn runs come down with the constraint"
+        );
+    }
 
     #[test]
     fn inline_text_layouts_non_zero() {

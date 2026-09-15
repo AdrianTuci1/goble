@@ -106,6 +106,9 @@ pub(crate) fn build_agent_error(
         .with_child(
             Button::new(Text::new("Edit API keys").finish())
                 .with_variant(ButtonVariant::Primary)
+                // The band is a square strip, so its own button is square too
+                // rather than wearing the theme's radius in the middle of it.
+                .with_corner_radius(0.0)
                 .with_on_click(move || (on_config.borrow_mut())())
                 .finish(),
         )
@@ -240,6 +243,40 @@ mod error_notice_tests {
             band_radius,
             Some(0.0),
             "the error notice band has no corner radius"
+        );
+    }
+
+    /// The band's button is square. It sits inside the band, and this app's
+    /// flat idiom has no corner radius on a control there, so the button asks
+    /// for `0.0` instead of the theme's radius — the fix is the control's own,
+    /// not every `Button`'s.
+    #[test]
+    fn the_edit_api_keys_button_is_square() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(UiState::mock()));
+        let actions = crate::actions::make_actions(
+            state,
+            None,
+            Rc::new(RefCell::new(MediaState::mock())),
+            WindowControl::default(),
+            Rc::new(RefCell::new(1.0)),
+        );
+
+        let mut notice = build_agent_error(&app, &actions, "No API key configured");
+        let commands = render_element(&mut notice, vec2f(600.0, 200.0), &app);
+        let accent = app.theme.color(ColorToken::Accent);
+        let radius = commands.iter().find_map(|command| match command {
+            RenderCommand::FillRect {
+                color,
+                corner_radius,
+                ..
+            } if *color == accent => Some(*corner_radius),
+            _ => None,
+        });
+        assert_eq!(
+            radius,
+            Some(0.0),
+            "the button's accent fill is square: {commands:?}"
         );
     }
 

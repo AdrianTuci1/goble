@@ -399,7 +399,6 @@ fn app_root() -> (
         let mut s = state.borrow_mut();
         s.show_workspace_choice = false;
         s.show_llm_key_banner = false;
-        s.settings_overlay_open = false;
         s.right_sidebar_open = false;
     }
     (Box::new(view), state, desktop, dir)
@@ -744,4 +743,202 @@ fn the_drop_index_counts_the_drawn_tab_centers_left_of_the_pointer() {
         "just left of the strip is still before every tab"
     );
     assert_eq!(insertion_index(&[], 42.0), 0, "no tabs, no other place to go");
+}
+
+/// Ctrl+Tab, the chord that walks the tab strip forwards.
+fn ctrl_tab() -> ModifiersState {
+    ModifiersState {
+        ctrl: true,
+        ..Default::default()
+    }
+}
+
+/// Ctrl+Shift+Tab, the same walk backwards.
+fn ctrl_shift_tab() -> ModifiersState {
+    ModifiersState {
+        ctrl: true,
+        shift: true,
+        ..Default::default()
+    }
+}
+
+/// One key with modifiers through the whole app tree, after a frame — so the
+/// handlers exist and the tree was built from the last frame's state.
+fn press_chord(
+    root: &mut Box<dyn Element>,
+    app: &AppContext,
+    name: &str,
+    modifiers: ModifiersState,
+) -> bool {
+    let _ = root.layout(
+        SizeConstraint::loose(window()),
+        &mut LayoutContext::default(),
+        app,
+    );
+    let mut paint_ctx = PaintContext::default();
+    root.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
+    let mut ctx = EventContext::default();
+    root.dispatch_event(
+        &DispatchedEvent::KeyDown {
+            key: name.to_string(),
+            modifiers,
+        },
+        &mut ctx,
+        app,
+    )
+}
+
+/// `tabs` tabs, the first one on screen. The first tab is a split whose *second*
+/// leaf holds the keyboard, so the tab it comes back to proves the switch lands
+/// on the arriving tab's **first** leaf and not on the pane it left behind.
+fn workspace_of_tabs(state: &Rc<RefCell<UiState>>, tabs: usize) {
+    let mut spaces = vec![Space::unnamed(Pane::Split {
+        id: 9,
+        dir: SplitDir::Horizontal,
+        ratio: 0.5,
+        first: Box::new(Pane::Leaf {
+            id: 1,
+            kind: PaneKind::Terminal,
+        }),
+        second: Box::new(Pane::Leaf {
+            id: 2,
+            kind: PaneKind::Chat,
+        }),
+    })];
+    for i in 0..tabs.saturating_sub(1) {
+        spaces.push(Space::unnamed(Pane::Leaf {
+            id: 3 + i as u64,
+            kind: PaneKind::Terminal,
+        }));
+    }
+    let mut s = state.borrow_mut();
+    s.spaces = spaces;
+    s.active_space = 0;
+    s.active_pane_id = 2;
+}
+
+/// Ctrl+Tab walks the tab strip in the order it draws — tabs 1, 2, 3 — wraps
+/// from the last tab to the first, and takes the keyboard to the arriving tab's
+/// first leaf. A bare Tab is not the chord.
+#[test]
+fn ctrl_tab_walks_the_tab_strip_and_wraps_at_the_last_tab() {
+    let app = AppContext::default();
+    let (mut root, state, desktop, _dir) = app_root();
+    workspace_of_tabs(&state, 3);
+
+    assert!(press_chord(&mut root, &app, "Tab", ctrl_tab()), "Ctrl+Tab is consumed");
+    assert_eq!(state.borrow().active_space, 1, "the next tab is the second one");
+    assert_eq!(
+        state.borrow().active_pane_id,
+        3,
+        "the keyboard lands on the arriving tab's first leaf"
+    );
+    let saved = desktop.get_ui_panes().expect("the switch is persisted");
+    assert!(
+        saved.contains("\"active_space\":1"),
+        "the tab the switch landed on is what was saved: {saved}"
+    );
+
+    assert!(press_chord(&mut root, &app, "Tab", ctrl_tab()));
+    assert_eq!(state.borrow().active_space, 2, "and on to the third");
+
+    assert!(press_chord(&mut root, &app, "Tab", ctrl_tab()));
+    assert_eq!(state.borrow().active_space, 0, "the last tab's next tab is the first");
+    assert_eq!(
+        state.borrow().active_pane_id,
+        1,
+        "the wrapped-to tab hands the keyboard to its first leaf, not the pane it left"
+    );
+
+    press_chord(&mut root, &app, "Tab", ModifiersState::none());
+    assert_eq!(state.borrow().active_space, 0, "a bare Tab is not the chord");
+}
+
+/// Ctrl+Shift+Tab walks the same strip backwards and wraps from the first tab to
+/// the last.
+#[test]
+fn ctrl_shift_tab_walks_the_tab_strip_backwards_and_wraps_at_the_first_tab() {
+    let app = AppContext::default();
+    let (mut root, state, _desktop, _dir) = app_root();
+    workspace_of_tabs(&state, 3);
+
+    assert!(
+        press_chord(&mut root, &app, "Tab", ctrl_shift_tab()),
+        "Ctrl+Shift+Tab is consumed"
+    );
+    assert_eq!(
+        state.borrow().active_space,
+        2,
+        "the first tab's previous tab is the last"
+    );
+    assert_eq!(state.borrow().active_pane_id, 4, "its own first leaf takes the keyboard");
+
+    assert!(press_chord(&mut root, &app, "Tab", ctrl_shift_tab()));
+    assert_eq!(state.borrow().active_space, 1, "and on back to the second");
+
+    assert!(press_chord(&mut root, &app, "Tab", ctrl_shift_tab()));
+    assert_eq!(state.borrow().active_space, 0, "then the first");
+    assert_eq!(
+        state.borrow().active_pane_id,
+        1,
+        "the wrapped-to tab's first leaf takes the keyboard"
+    );
+}
+
+/// One tab has nowhere to walk to: the chord is answered but nothing moves — not
+/// the active space, not the keyboard, and not the persisted layout, which a
+/// switch that did not happen must not rewrite.
+#[test]
+fn ctrl_tab_does_not_move_a_one_tab_workspace() {
+    let app = AppContext::default();
+    let (mut root, state, desktop, _dir) = app_root();
+    // The layout the store already holds. A switch would replace it; a no-op
+    // leaves it exactly as it is.
+    let written = "{\"spaces\":[],\"active_space\":2,\"active_pane_id\":7,\"pane_sessions\":{}}";
+    desktop.set_ui_panes(written).expect("seed the persisted layout");
+    let pane = state.borrow().active_pane_id;
+    assert_eq!(state.borrow().spaces.len(), 1, "one tab to start");
+
+    for modifiers in [ctrl_tab(), ctrl_shift_tab()] {
+        assert!(
+            press_chord(&mut root, &app, "Tab", modifiers),
+            "the chord is still answered"
+        );
+        assert_eq!(state.borrow().spaces.len(), 1, "no tab appears");
+        assert_eq!(state.borrow().active_space, 0, "the one tab stays on screen");
+        assert_eq!(state.borrow().active_pane_id, pane, "and keeps the keyboard");
+    }
+    assert_eq!(
+        desktop.get_ui_panes().as_deref(),
+        Some(written),
+        "a switch that did not happen writes no layout"
+    );
+}
+
+/// Arriving on the settings tab with the chord hands the keyboard to that tab's
+/// rail: the page it was left on must not keep the keys the switch just took.
+#[test]
+fn ctrl_tab_onto_the_settings_tab_puts_the_keyboard_in_its_rail() {
+    let app = AppContext::default();
+    let (mut root, state, _desktop, _dir) = app_root();
+    state.borrow_mut().open_settings_tab(None);
+    let settings_tab = state.borrow().active_space;
+
+    // The page holds the keyboard, as it does after Tab from the rail, and the
+    // chord steps off the tab and back onto it.
+    state.borrow_mut().settings_focus_into_pane();
+    assert_eq!(
+        state.borrow().settings_focus,
+        crate::ui::SettingsFocus::Pane,
+        "the page holds the keyboard to start"
+    );
+    assert!(press_chord(&mut root, &app, "Tab", ctrl_shift_tab()));
+    assert_ne!(state.borrow().active_space, settings_tab, "the chord left the settings tab");
+    assert!(press_chord(&mut root, &app, "Tab", ctrl_tab()));
+    assert_eq!(state.borrow().active_space, settings_tab, "and came back to it");
+    assert_eq!(
+        state.borrow().settings_focus,
+        crate::ui::SettingsFocus::Rail,
+        "the arriving tab's rail takes the keyboard"
+    );
 }

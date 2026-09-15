@@ -13,7 +13,7 @@ use super::palette::PaletteCommand;
 use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, ScreenSnapshot, UiSnapshot};
 use super::types::AppTab;
 use super::{
-    chat, connectors, crons, media, model_form, palette, screen, settings, shell, shortcuts_help,
+    chat, connectors, crons, media, model_form, palette, screen, shell, shortcuts_help,
     sidebar, task_workflow, vault, CONNECTORS_WIDTH,
 };
 
@@ -96,14 +96,15 @@ pub fn build_ui(
         .with_on_close(move || (on_close_crons.borrow_mut())())
         .finish();
 
-    // The tasks & workflows overlay: the durable tasks, the daemon's execution
-    // ledger and the registered workflows, over the workspace rather than in
-    // place of it. Cmd/Ctrl+Shift+W toggles it; its ✕ and the backdrop close it.
+    // The workflow-runs overlay: the daemon's workflows as runs, over the
+    // workspace rather than in place of it, and floating with a margin on every
+    // side so it reads as a panel rather than a sidebar. Cmd/Ctrl+Shift+W
+    // toggles it; its ✕, Escape and the backdrop close it.
     let on_close_task_workflow = actions.on_close_task_workflow.clone();
-    let task_workflow_sheet =
-        Sheet::new(task_workflow::build_task_workflow_overlay(app, state, actions))
-            .with_expanded(state.task_workflow_open)
-            .with_width(SHEET_DEFAULT_WIDTH)
+    let task_workflow_dialog =
+        Dialog::new(task_workflow::build_task_workflow_overlay(app, state, actions))
+            .with_open(state.task_workflow_open)
+            .with_inset(task_workflow::OVERLAY_MARGIN)
             .with_on_close(move || (on_close_task_workflow.borrow_mut())())
             .finish();
 
@@ -138,16 +139,9 @@ pub fn build_ui(
         .with_on_close(move || (on_close_chat_panel.borrow_mut())())
         .finish();
 
-    // Settings opens as a compact sheet centered over the workspace: a rail of
-    // pages beside the content column, with its own footer naming the keys the
-    // focused region answers. It is closed via the X, the navbar, the backdrop
-    // click or Escape.
-    let on_close_settings = actions.on_settings_close.clone();
-    let settings_dialog = Dialog::new(settings::build_settings_overlay(app, state, actions))
-        .with_open(state.settings_overlay_open)
-        .with_width(settings::PANEL_WIDTH)
-        .with_on_close(move || (on_close_settings.borrow_mut())())
-        .finish();
+    // Settings is not a sheet: it is a tab — a space whose root is a settings
+    // leaf — so its surface is drawn by the pane tree with the other tabs, and
+    // it is closed by its tab's ✕ (see `UiState::open_settings_tab`).
 
     // The keyboard shortcuts panel: a centered sheet over the workspace, the
     // shape grok-build's cheatsheet has. Ctrl+. toggles it; it is stacked last
@@ -167,12 +161,11 @@ pub fn build_ui(
         // reason. Sheets and dialogs below stay above the toolbar.
         topbar,
         crons_sheet,
-        task_workflow_sheet,
+        task_workflow_dialog,
         connectors_sheet,
         vault_sheet,
         screen_sheet,
         chat_panel_sheet,
-        settings_dialog,
         // The shortcuts panel goes last: Ctrl+. is a global chord, so wherever
         // the keyboard is, the panel it opens is the top-most surface and the
         // first to see Escape and a backdrop click.
@@ -220,7 +213,7 @@ pub fn build_ui(
         })
     };
     let mut command_list: Vec<PaletteCommand> = vec![
-        run(&actions.on_add_space).with_label("New space", "Cmd+Shift+N"),
+        run(&actions.on_add_space).with_label("New space", "⌘N"),
         run(&actions.on_split_right).with_label("Split right", "Ctrl/Cmd+Space"),
         run(&actions.on_split_down).with_label("Split down", "Cmd+Shift+D"),
         run(&actions.on_new_terminal).with_label("New terminal", "Cmd+Shift+T"),
@@ -229,7 +222,7 @@ pub fn build_ui(
         run(&actions.on_settings).with_label("Open settings", ""),
         run(&actions.on_projects).with_label("Open projects", ""),
         run(&actions.on_open_crons).with_label("Open scheduled tasks", ""),
-        run(&actions.on_toggle_task_workflow).with_label("Tasks & workflows", ""),
+        run(&actions.on_toggle_task_workflow).with_label("Workflow runs", ""),
         run(&actions.on_toggle_right_sidebar).with_label("Toggle right sidebar", ""),
     ];
     {
@@ -238,6 +231,15 @@ pub fn build_ui(
         let close = close_palette.clone();
         command_list.push(PaletteCommand::new("Toggle dark mode", "", move || {
             (toggle_dark.borrow_mut())(!dark_mode);
+            (close.borrow_mut())();
+        }));
+    }
+    {
+        // The chord takes a direction, so it cannot go through `run`.
+        let switch_space = actions.on_switch_space.clone();
+        let close = close_palette.clone();
+        command_list.push(PaletteCommand::new("Next space", "Ctrl+Tab", move || {
+            (switch_space.borrow_mut())(1);
             (close.borrow_mut())();
         }));
     }

@@ -95,6 +95,51 @@ use super::*;
         assert!(state.pane_controls.contains_key(&2));
     }
 
+    /// The copy the views draw names the model the pane's turns would run, and
+    /// reads `not configured` when nothing resolves: a blank control would say
+    /// nothing at all exactly while the pane cannot run a turn — the state the
+    /// notice band is there to explain. The pane's own value stays as it was,
+    /// because the label is the view's, not a choice the pane made.
+    #[test]
+    fn the_model_control_reads_not_configured_while_nothing_is() {
+        let mut state = UiState::mock();
+        state.selected_model = String::new();
+        state.settings_llm_model = String::new();
+        state.ensure_pane_controls();
+
+        assert_eq!(
+            state.pane_controls_snapshot().get(&1).map(|c| c.model.clone()),
+            Some(MODEL_NOT_CONFIGURED.to_string()),
+            "nothing is configured, so the control says so"
+        );
+        assert_eq!(
+            state.pane_controls(1).model,
+            "",
+            "the pane's own value is untouched"
+        );
+
+        // The window-global selection, then the configured default, resolve
+        // through the pane exactly as its turn would.
+        state.selected_model = "goble-agent".to_string();
+        assert_eq!(
+            state.pane_controls_snapshot().get(&1).map(|c| c.model.clone()),
+            Some("goble-agent".to_string())
+        );
+        state.selected_model = String::new();
+        state.settings_llm_model = "gpt-4o".to_string();
+        assert_eq!(
+            state.pane_controls_snapshot().get(&1).map(|c| c.model.clone()),
+            Some("gpt-4o".to_string())
+        );
+
+        // A model the pane chose itself is what its control already showed.
+        state.pane_controls_mut(1).model = "m1".to_string();
+        assert_eq!(
+            state.pane_controls_snapshot().get(&1).map(|c| c.model.clone()),
+            Some("m1".to_string())
+        );
+    }
+
     #[test]
     fn refresh_reparses_only_the_changed_message() {
         let dir = tempfile::tempdir().expect("create temp thread store dir");

@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
-    AskUserUi, CommandProposalUi, Element, PopupMenuItem, ScrollState, ShortcutHint, SlashMenuItem,
-    TerminalFilter, TurnStatus,
+    AskUserUi, CommandProposalUi, Element, PanelScroll, PopupMenuItem, ScrollState, ShortcutHint,
+    SlashMenuItem, TerminalFilter, TurnStatus,
 };
 use crate::vim::{Clipboard, VimState};
 use goble_core::harness::CommandDecision;
@@ -232,6 +232,14 @@ impl ChatView {
         self
     }
 
+    /// The files the rich input carries: one chip per file over the editor. The
+    /// app owns the list (the attach control's picker writes it), so it is
+    /// handed down every frame like the draft itself.
+    pub fn with_composer_attachments(mut self, attachments: Vec<String>) -> Self {
+        self.composer_attachments = attachments;
+        self
+    }
+
     pub fn with_composer_harness_label(mut self, label: impl Into<String>) -> Self {
         self.composer_harness_label = Some(label.into());
         self
@@ -286,15 +294,19 @@ impl ChatView {
         self
     }
 
-    /// Set the composer's model dropdown (items, app-owned open flag, select callback).
+    /// Set the composer's model list (items, app-owned open flag, app-owned
+    /// selected row, select callback). The view draws the list over the input,
+    /// in the slot the command list takes (see `transcript::ChatView::model_menu`).
     pub fn with_composer_model_menu<F: FnMut(usize) + 'static>(
         mut self,
         items: Vec<PopupMenuItem>,
         open: Rc<RefCell<bool>>,
+        index: Rc<RefCell<usize>>,
         callback: F,
     ) -> Self {
         self.composer_model_items = items;
         self.composer_model_menu_open = open;
+        self.composer_model_index = index;
         self.on_select_model_item = Some(Rc::new(RefCell::new(callback)));
         self
     }
@@ -322,6 +334,14 @@ impl ChatView {
         self.composer_dir_items = items;
         self.composer_dir_menu_open = open;
         self.on_select_dir_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Share the composer's directory tray scroll offset with the app, so a
+    /// directory with more rows than the tray's cap keeps the position the wheel
+    /// left it at across the per-frame rebuild.
+    pub fn with_composer_dir_menu_scroll(mut self, scroll: PanelScroll) -> Self {
+        self.composer_dir_menu_scroll = scroll;
         self
     }
 

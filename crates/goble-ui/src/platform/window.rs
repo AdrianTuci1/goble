@@ -93,6 +93,11 @@ pub fn run_with_root(
     root: Box<dyn Element>,
     app_context: Rc<RefCell<AppContext>>,
 ) -> anyhow::Result<()> {
+    // macOS: the application menu entry is titled from the process name, so it
+    // has to be right before AppKit exists to build the menu bar.
+    #[cfg(target_os = "macos")]
+    crate::platform::mac::menus::prepare_app_name();
+
     let event_loop = EventLoop::new()?;
     let mut app = App {
         window: None,

@@ -1,16 +1,25 @@
-//! Settings: a compact sheet centered over the workspace, a rail of pages
-//! beside the content column of the page the rail has selected. The pages are
-//! the grok-build categories (Appearance, Mouse, Editor & Input, Agent &
-//! Approval, Environment, Models, Advanced), each a flat list of rows: a muted
+//! Settings: the body of the settings tab — a rail of pages beside the content
+//! column of the page the rail has selected. The tab is an ordinary space whose
+//! root is a leaf of kind `PaneKind::Settings` (see [`build_settings_pane`]),
+//! so it is drawn inside a pane like any other surface and closed by its tab's
+//! ✕. The pages are the grok-build categories (Appearance, Mouse, Editor &
+//! Input, Agent & Approval, Environment) plus the two this app adds
+//! (Connections, Models) and Advanced, each a flat list of rows: a muted
 //! heading per group, one row per setting with the label on the left and the
 //! value or the control on the right, and a rule between the rows. There are no
-//! cards — the sheet is one surface, like the keyboard-shortcuts panel.
+//! cards — the page is one surface, like the keyboard-shortcuts panel.
 //! Model configuration is done by editing the global `~/.goble/config.toml`;
-//! this sheet only lists the resulting models and offers a reload.
+//! this page only lists the resulting models and offers a reload. Connections
+//! is the same shape over `~/.ssh`: it lists what that directory already
+//! records, and goble neither writes it nor connects.
+//!
+//! **What this build cannot do.** Nothing here opens a session over SSH:
+//! activating a connection row names the target and stops there, and no key
+//! material is read or drawn — only paths and names.
 //!
 //! # Keyboard model
 //!
-//! The whole sheet is operable from the keyboard. There are **two focus
+//! The whole page is operable from the keyboard. There are **two focus
 //! regions** — the rail and the content pane — and the keyboard is in exactly
 //! one of them. `UiState::settings_focus` says which,
 //! `UiState::settings_pane_focus` says which pane row the keyboard is on, and
@@ -27,19 +36,22 @@
 //! | a stepper (scroll speed, font size) | advances it one step, as `Right` does |
 //! | a single-choice row (Local/Remote, a theme channel) | selects the named choice |
 //! | a list row (an environment group, a secret) | opens it |
-//! | a text field | puts the caret in it; `Enter` again commits, `Esc` cancels the edit and keeps the sheet open |
+//! | a connection row (Connections) | selects it and names it — it does not connect |
+//! | a text field | puts the caret in it; `Enter` again commits, `Esc` cancels the edit and stays on the row |
 //! | a button row (create, save, reload) | runs it |
 //!
-//! `Esc` steps back one level and only closes the sheet from the rail:
-//! out of a field (cancelling that edit), then out of the pane, then closed.
-//! The footer under the pane names the keys the focused row answers right now
-//! ([`footer_hints`]), so the behaviour is discoverable without a mouse.
+//! `Esc` steps back one level: out of a field (cancelling that edit), then out
+//! of the pane. From the rail it does nothing — a tab is not a transient
+//! surface, and closing it would throw the panel layout away; the tab's ✕ and a
+//! split's `⌘W` are how it closes. The footer under the page names the keys the
+//! focused region answers right now ([`footer_hints`]), so the behaviour is
+//! discoverable without a mouse.
 //!
-//! Modifier-held keys are never the sheet's: `Ctrl`/`Cmd`/`Alt` plus an arrow
+//! Modifier-held keys are never the page's: `Ctrl`/`Cmd`/`Alt` plus an arrow
 //! is the app's pane navigation (`RootView::dispatch_event`), so those fall
 //! through untouched, exactly as they did before — and the window-level chords
 //! (`⌘K`, `⌘⇧W`, …) are answered by the root view before the tree is
-//! dispatched, so they keep working while the sheet is up.
+//! dispatched, so they keep working while the tab is up.
 //!
 //! | Key | Rail | Pane |
 //! | --- | --- | --- |
@@ -47,14 +59,14 @@
 //! | `Right` | into the pane, on its first row | adjust the focused row forward if it holds a discrete value; otherwise nothing |
 //! | `Left` | nothing (the rail is the leftmost region) | adjust the focused row back if it holds a discrete value; otherwise back to the rail |
 //! | `Enter` / `Tab` / `Space` | into the pane | activate the focused row, per the table above |
-//! | `Esc` | close the sheet | back to the rail (or cancel a field edit first) |
+//! | `Esc` | nothing | back to the rail (or cancel a field edit first) |
 //!
-//! Opening the sheet starts in the rail, and changing the page resets the
+//! Opening the tab starts in the rail, and changing the page resets the
 //! pane's focus to that page's first row.
 //!
 //! **Text fields.** A field only *holds the caret* once Enter has put it there;
 //! until then it is just the focused row, drawn with the ring. While a field
-//! holds the caret the sheet reserves `Enter` (commit) and `Escape` (cancel) —
+//! holds the caret the page reserves `Enter` (commit) and `Escape` (cancel) —
 //! everything else, printable keys, `Space` and `Backspace` included, must
 //! reach the field — so a field the user typed into is never a trap.
 //!
@@ -85,24 +97,12 @@ use super::{
     SettingsCategory, SettingsControl, SettingsFocus, UiActions, UiSnapshot, WorkspaceRouting,
 };
 
-/// Width of the sheet. A rail plus a content column wide enough for the longest
-/// row it draws (the Environment hint, a model name with its mark, the color
-/// wheel beside its label), and no wider: a setting's value should sit a glance
-/// away from its label rather than at the far edge of a full-width window.
-pub const PANEL_WIDTH: f32 = 640.0;
-
-/// Height of the sheet at the default window size. The dialog caps the panel
-/// below 90% of the viewport, so a shorter window (or a larger `ui_zoom`, which
-/// shrinks the logical viewport) makes the sheet shorter rather than clipping
-/// it; whichever is smaller wins and the content scrolls inside it.
-pub const PANEL_HEIGHT: f32 = 520.0;
-
 /// Width of the page rail: the widest page label (`Agent & Approval`) plus the
 /// row's own padding, so no label wraps.
 pub(crate) const NAV_WIDTH: f32 = 148.0;
 
 /// The rule between the rail and the content column: one hairline, counted in
-/// the sheet's own arithmetic (`NAV_WIDTH + 1 + paddings + content`).
+/// the pane's own arithmetic (`NAV_WIDTH + 1 + paddings + content`).
 pub(crate) const RULE_WIDTH: f32 = 1.0;
 
 /// The focus order of one category's pane: every interactive row it draws, in
@@ -111,10 +111,15 @@ pub(crate) const RULE_WIDTH: f32 = 1.0;
 /// This is the one list both sides agree on — the pane walks it while building
 /// its rows, and the keyboard resolves the focused index through it — so the
 /// two cannot drift.
+///
+/// `groups`/`open_group` are the Environment page's rows and `ssh` the
+/// Connections page's cached `~/.ssh` read; which of them a category uses is
+/// the category's own business.
 pub fn pane_controls(
     category: SettingsCategory,
     groups: &[SecretGroup],
     open_group: Option<&str>,
+    ssh: Option<&goble_core::ssh_hosts::SshHosts>,
 ) -> Vec<SettingsControl> {
     use SettingsControl::*;
     match category {
@@ -136,6 +141,17 @@ pub fn pane_controls(
         // Nothing in Advanced is interactive: the pane reports the SSH and
         // config-file state and nothing else.
         SettingsCategory::Advanced => Vec::new(),
+        // One row per concrete host, in the order the reader sorted them, and
+        // the reload row last. The key files are read-only rows: they name a
+        // path and whether it exists, and there is nothing to activate.
+        SettingsCategory::Connections => {
+            let mut controls = Vec::new();
+            if let Some(ssh) = ssh {
+                controls.extend(ssh.hosts.iter().map(|h| SshHost(h.alias.clone())));
+            }
+            controls.push(ReloadSshHosts);
+            controls
+        }
         SettingsCategory::Environment => {
             let mut controls = vec![EnvironmentGroupName, EnvironmentCreateGroup];
             for group in groups {
@@ -219,17 +235,27 @@ fn focus_ring(app: &AppContext, element: Box<dyn Element>, focused: bool) -> Box
         .finish()
 }
 
-/// Build the whole settings sheet (title bar + page rail + content pane +
-/// footer).
-pub fn build_settings_overlay(
+/// Build the settings tab's body: its header band, the page rail beside the
+/// content column of the page the rail has selected, and the footer naming the
+/// keys the focused region answers.
+///
+/// The body fills the pane it is mounted in. The pane draws the surface and the
+/// border, so the body has no geometry of its own beyond the rail's fixed
+/// width; `page` is the page the pane carries, so two settings panes in one
+/// layout each draw their own.
+pub fn build_settings_pane(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
+    page: SettingsCategory,
 ) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let md = app.theme.spacing_px(SpacingToken::Md);
 
-    let on_close = actions.on_settings_close.clone();
+    // The pane's own topbar: the title, and the ✕ that closes the tab this pane
+    // lives in — the same path the tab's own ✕ takes.
+    let on_close = actions.on_close_space.clone();
+    let close_space = state.active_space;
     let header = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -249,7 +275,7 @@ pub fn build_settings_overlay(
                     .finish(),
             )
             .with_size(24.0)
-            .with_on_click(move || (on_close.borrow_mut())())
+            .with_on_click(move || (on_close.borrow_mut())(close_space))
             .finish(),
         )
         .finish();
@@ -257,16 +283,14 @@ pub fn build_settings_overlay(
         .with_padding(EdgeInsets::new(sm, md, sm, md))
         .finish();
 
-    let nav = build_nav(app, state, actions);
-    let pane = build_pane(app, state, actions);
+    let nav = build_nav(app, state, actions, page);
+    let pane = build_pane(app, state, actions, page);
 
     // The rail keeps its own fixed width; the page takes the rest, scrolling
-    // inside what the header and the footer leave. The row is sized to the
-    // sheet (`MainAxisSize::Max`) so the stretched page is bounded: an
-    // unbounded page would lay its rows out at their intrinsic width, and the
-    // spacer that holds a value right would collapse to nothing. The sheet's
-    // own width is the dialog's (see `PANEL_WIDTH`), so the content column is
-    // exactly `PANEL_WIDTH - NAV_WIDTH - rule - the pane's padding`.
+    // inside what the header and the footer leave. The row is sized to the pane
+    // (`MainAxisSize::Max`) so the stretched page is bounded: an unbounded page
+    // would lay its rows out at their intrinsic width, and the spacer that
+    // holds a value right would collapse to nothing.
     let body = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_main_axis_alignment(MainAxisAlignment::Start)
@@ -298,20 +322,18 @@ pub fn build_settings_overlay(
         .with_child(Divider::horizontal().finish())
         .with_child(Expanded::new(body.finish()).finish())
         .with_child(Divider::horizontal().finish())
-        .with_child(build_footer(app, state));
+        .with_child(build_footer(app, state, page));
 
+    // The page is the pane's own `Bg` so the rail's `Surface` band reads as a
+    // rail; the pane's border is the pane's, not the body's.
     let panel = Container::new(column.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-        .with_border(Border::all(RULE_WIDTH).with_border_color(app.theme.color(ColorToken::Border)))
-        .finish();
-    let panel = ConstrainedBox::new(panel)
-        .with_max_height(PANEL_HEIGHT)
         .finish();
 
-    // The sheet sees every key before its children do. Modified keys are the
-    // app's (pane navigation above all), so they are never the sheet's, and the
+    // The page sees every key before its children do. Modified keys are the
+    // app's (pane navigation above all), so they are never the page's, and the
     // window-level chords are answered by `RootView::dispatch_event` before the
-    // tree is dispatched at all. Which of the remaining keys the sheet keeps
+    // tree is dispatched at all. Which of the remaining keys the page keeps
     // depends on where the keyboard is — see the module comment; the short of
     // it is that a field holding the caret keeps `Enter` (commit) and `Escape`
     // (cancel) and lets everything else through to the field.
@@ -322,13 +344,13 @@ pub fn build_settings_overlay(
     let on_adjust = actions.on_settings_adjust.clone();
     let on_commit_field = actions.on_settings_commit_field.clone();
     let on_cancel_field = actions.on_settings_cancel_field.clone();
-    let on_escape = actions.on_settings_close.clone();
     let focus = state.settings_focus;
     let field_active = state.settings_pane_field_active;
     let focused_control = pane_controls(
-        state.settings_category,
+        page,
         &state.settings_environment_groups,
         state.settings_environment_open_group.as_deref(),
+        state.settings_ssh_hosts.as_ref(),
     )
     .get(state.settings_pane_focus)
     .cloned();
@@ -337,7 +359,7 @@ pub fn build_settings_overlay(
             return false;
         }
         if field_active {
-            // Only `Enter` and `Escape` are the sheet's while a field holds the
+            // Only `Enter` and `Escape` are the page's while a field holds the
             // caret; letters, `Space` and `Backspace` go to the field.
             match key {
                 "Enter" => (on_commit_field.borrow_mut())(),
@@ -350,10 +372,11 @@ pub fn build_settings_overlay(
             .as_ref()
             .is_some_and(SettingsControl::has_discrete_values);
         match (focus, key) {
-            (_, "Escape") => match focus {
-                SettingsFocus::Rail => (on_escape.borrow_mut())(),
-                SettingsFocus::Pane => (on_out_of_pane.borrow_mut())(),
-            },
+            // `Esc` from the rail does nothing: the settings tab is a space,
+            // not a transient surface, so the key falls through to the tree
+            // (where nothing in a settings pane wants it) and the tab stays.
+            (SettingsFocus::Rail, "Escape") => return false,
+            (SettingsFocus::Pane, "Escape") => (on_out_of_pane.borrow_mut())(),
             (_, "ArrowUp") => (on_step.borrow_mut())(-1),
             (_, "ArrowDown") => (on_step.borrow_mut())(1),
             // `Left` walks back out of the pane unless the focused row has a
@@ -384,17 +407,18 @@ pub fn build_settings_overlay(
     .finish()
 }
 
-/// The sheet's footer: the keys the focused region answers right now, drawn as
-/// the composer's own key caps. It is the only place the sheet's key map is
+/// The pane's footer: the keys the focused region answers right now, drawn as
+/// the composer's own key caps. It is the only place the page's key map is
 /// written down for the reader, so it is built from [`footer_hints`] — the same
 /// list the tests read.
-fn build_footer(app: &AppContext, state: &UiSnapshot) -> Box<dyn Element> {
+fn build_footer(app: &AppContext, state: &UiSnapshot, page: SettingsCategory) -> Box<dyn Element> {
     let md = app.theme.spacing_px(SpacingToken::Md);
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let control = pane_controls(
-        state.settings_category,
+        page,
         &state.settings_environment_groups,
         state.settings_environment_open_group.as_deref(),
+        state.settings_ssh_hosts.as_ref(),
     )
     .get(state.settings_pane_focus)
     .cloned();
@@ -410,8 +434,10 @@ fn build_footer(app: &AppContext, state: &UiSnapshot) -> Box<dyn Element> {
 
 /// What the footer says right now: the keys the focused region answers.
 ///
-/// One list, read by the drawn footer and by the tests, so what the sheet
-/// promises on screen is what the key handler does.
+/// One list, read by the drawn footer and by the tests, so what the page
+/// promises on screen is what the key handler does. The rail names only the
+/// keys it answers: `Esc` is not one of them, because from the rail it does
+/// nothing (the tab is not a transient surface).
 pub(crate) fn footer_hints(
     focus: SettingsFocus,
     control: Option<&SettingsControl>,
@@ -421,11 +447,10 @@ pub(crate) fn footer_hints(
         SettingsFocus::Rail => vec![
             ShortcutHint::new(&["↑", "↓"], "page"),
             ShortcutHint::new(&["↵"], "open the page"),
-            ShortcutHint::new(&["Esc"], "close"),
         ],
         SettingsFocus::Pane => {
             // A field with the caret is the one row whose keys are not the
-            // sheet's own: the footer says what the two reserved keys do.
+            // page's own: the footer says what the two reserved keys do.
             if field_active {
                 return vec![
                     ShortcutHint::new(&["↵"], "commit"),
@@ -451,6 +476,11 @@ pub(crate) fn footer_hints(
                 }
                 Some(SettingsControl::EnvironmentGroup(_)) => {
                     hints.push(ShortcutHint::new(&["↵"], "open"));
+                }
+                // A connection row is read-only by nature: `Enter` names the
+                // target, and nothing about it connects.
+                Some(SettingsControl::SshHost(_)) => {
+                    hints.push(ShortcutHint::new(&["↵"], "select"));
                 }
                 // The remaining rows are buttons and fields/entries: Enter
                 // runs the one and opens the other.
@@ -481,6 +511,7 @@ fn build_nav(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
+    page: SettingsCategory,
 ) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
 
@@ -493,7 +524,7 @@ fn build_nav(
             col = col.with_child(Divider::horizontal().finish());
         }
         let on_select = actions.on_settings_category.clone();
-        let selected = cat == state.settings_category;
+        let selected = cat == page;
         let label = Text::new(cat.label())
             .with_theme_color(
                 if selected { ColorToken::Text } else { ColorToken::Muted },
@@ -523,30 +554,33 @@ fn build_nav(
         .finish()
 }
 
-/// Content pane for the active category.
+/// Content pane for the page the pane carries.
 fn build_pane(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
+    page: SettingsCategory,
 ) -> Box<dyn Element> {
-    match state.settings_category {
-        SettingsCategory::Appearance => build_appearance(app, state, actions),
-        SettingsCategory::Mouse => build_mouse(app, state, actions),
-        SettingsCategory::EditorInput => build_editor(app, state, actions),
-        SettingsCategory::AgentApproval => build_agent(app, state, actions),
-        SettingsCategory::Environment => build_environment(app, state, actions),
-        SettingsCategory::Models => build_models(app, state, actions),
+    match page {
+        SettingsCategory::Appearance => build_appearance(app, state, actions, page),
+        SettingsCategory::Mouse => build_mouse(app, state, actions, page),
+        SettingsCategory::EditorInput => build_editor(app, state, actions, page),
+        SettingsCategory::AgentApproval => build_agent(app, state, actions, page),
+        SettingsCategory::Environment => build_environment(app, state, actions, page),
+        SettingsCategory::Connections => build_connections(app, state, actions, page),
+        SettingsCategory::Models => build_models(app, state, actions, page),
         SettingsCategory::Advanced => build_advanced(app, state, actions),
     }
 }
 
-/// The pane's focus order for the category the overlay is showing, ready to be
-/// walked while the pane is built.
-fn order_for(state: &UiSnapshot) -> Vec<SettingsControl> {
+/// The pane's focus order for `page`, ready to be walked while the pane is
+/// built.
+fn order_for(state: &UiSnapshot, page: SettingsCategory) -> Vec<SettingsControl> {
     pane_controls(
-        state.settings_category,
+        page,
         &state.settings_environment_groups,
         state.settings_environment_open_group.as_deref(),
+        state.settings_ssh_hosts.as_ref(),
     )
 }
 
@@ -695,10 +729,11 @@ fn build_appearance(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
+    page: SettingsCategory,
 ) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
 
-    let controls = order_for(state);
+    let controls = order_for(state, page);
     let mut order = FocusOrder::new(state, &controls);
 
     let mut col = Flex::column()
@@ -834,8 +869,13 @@ fn effective_theme_color(
     app.theme.color(token)
 }
 
-fn build_mouse(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    let controls = order_for(state);
+fn build_mouse(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    page: SettingsCategory,
+) -> Box<dyn Element> {
+    let controls = order_for(state, page);
     let mut order = FocusOrder::new(state, &controls);
 
     let on_dec = {
@@ -877,8 +917,13 @@ fn build_mouse(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box
     Container::new(rows).finish()
 }
 
-fn build_editor(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    let controls = order_for(state);
+fn build_editor(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    page: SettingsCategory,
+) -> Box<dyn Element> {
+    let controls = order_for(state, page);
     let mut order = FocusOrder::new(state, &controls);
 
     let on_dec = {
@@ -918,8 +963,13 @@ fn build_editor(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
     Container::new(rows).finish()
 }
 
-fn build_agent(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    let controls = order_for(state);
+fn build_agent(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    page: SettingsCategory,
+) -> Box<dyn Element> {
+    let controls = order_for(state, page);
     let mut order = FocusOrder::new(state, &controls);
 
     let on_local = actions.on_choose_workspace.clone();
@@ -1016,6 +1066,7 @@ fn build_environment(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
+    page: SettingsCategory,
 ) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let groups = &state.settings_environment_groups;
@@ -1023,7 +1074,7 @@ fn build_environment(
         .settings_environment_open_group
         .as_deref()
         .and_then(|id| groups.iter().find(|g| g.id == id));
-    let controls = order_for(state);
+    let controls = order_for(state, page);
     let mut order = FocusOrder::new(state, &controls);
 
     let mut col = Flex::column()
@@ -1201,7 +1252,7 @@ fn build_group_row(
     let on_open = actions.on_environment_open_group.clone();
     let id = group.id.clone();
     // The group's name on the left, what it holds on the right, exactly like
-    // the other rows of the sheet; its trash control sits beside the row.
+    // the other rows of the page; its trash control sits beside the row.
     let row = HoverRow::new(
         Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
@@ -1309,19 +1360,206 @@ fn icon_button(
     .finish()
 }
 
-fn build_models(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    let sm = app.theme.spacing_px(SpacingToken::Sm);
-    let controls = order_for(state);
+/// Settings → Connections: what `~/.ssh` already records on this machine.
+///
+/// Read-only, and the read is not this function's: the pane draws the cache app
+/// state holds, which is filled when the page is shown and by the reload row.
+/// One row per concrete `Host` block and one per key file, a muted line per
+/// finding, and a count — never a guess — for hashed `known_hosts` entries.
+/// Activating a connection row selects it and names its target: nothing here
+/// connects, and nothing here draws key material, only paths and names.
+fn build_connections(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    page: SettingsCategory,
+) -> Box<dyn Element> {
+    let controls = order_for(state, page);
     let mut order = FocusOrder::new(state, &controls);
 
     let mut col = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min)
-        .with_child(heading(app, "Models from ~/.goble/config.toml"));
+        .with_child(heading(app, "Connections from ~/.ssh"))
+        .with_child(note(
+            app,
+            "Enter selects a connection and names its target. This build opens no session over \
+             SSH, so selecting only records it. Only names and paths are read — never key \
+             contents, and hosts an Include would pull in are not listed.",
+        ));
+
+    col = col.with_child(rule());
+    match state.settings_ssh_hosts.as_ref() {
+        None => {
+            col = col.with_child(note(
+                app,
+                "No home directory to read ~/.ssh from on this machine.",
+            ));
+        }
+        Some(ssh) => {
+            if let Some(host) = state
+                .settings_ssh_selected
+                .as_deref()
+                .and_then(|alias| ssh.hosts.iter().find(|h| h.alias == alias))
+            {
+                col = col.with_child(note(
+                    app,
+                    &format!("Selected {} — {}", host.alias, host.target()),
+                ));
+            }
+            for finding in &ssh.findings {
+                col = col.with_child(note(app, &finding.message()));
+            }
+            if !ssh.hosts.is_empty() {
+                col = col.with_child(heading(app, "Hosts"));
+                let selected = state.settings_ssh_selected.as_deref();
+                for host in &ssh.hosts {
+                    col = col.with_child(rule());
+                    let focused = order.take(SettingsControl::SshHost(host.alias.clone()));
+                    col = col.with_child(connection_row(
+                        app,
+                        host,
+                        selected == Some(host.alias.as_str()),
+                        focused,
+                        actions,
+                    ));
+                }
+            }
+            if !ssh.key_files.is_empty() {
+                col = col.with_child(rule());
+                col = col.with_child(heading(app, "Key files"));
+                // Read-only: a key file has nothing to activate, so it takes no
+                // focus slot (the same rule as a row of the Models list).
+                for key in &ssh.key_files {
+                    col = col.with_child(setting_row(
+                        app,
+                        &key.name,
+                        Text::new(if key.exists { "exists" } else { "missing" })
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_size(11.0)
+                            .with_max_lines(1)
+                            .finish(),
+                        false,
+                    ));
+                }
+            }
+            if ssh.hashed_known_hosts > 0 {
+                col = col.with_child(rule());
+                col = col.with_child(note(
+                    app,
+                    &format!(
+                        "{} known_hosts entries are hashed — their names are not in the file, so they are counted, not guessed.",
+                        ssh.hashed_known_hosts
+                    ),
+                ));
+            }
+        }
+    }
+
+    let reload_focused = order.take(SettingsControl::ReloadSshHosts);
+    let on_reload = actions.on_reload_ssh_hosts.clone();
+    let reload = Button::new(Text::new("Reload from ~/.ssh").finish())
+        .with_variant(ButtonVariant::Primary)
+        .with_on_click(move || (on_reload.borrow_mut())())
+        .finish();
+    col = col.with_child(rule());
+    col = col.with_child(action_row(app, reload, reload_focused));
+
+    order.finish();
+    Container::new(col.finish()).finish()
+}
+
+/// One connection: its alias, the target `user@hostname:port`, the key the
+/// block names and whether this machine has used the host. The row itself is
+/// the hit target, so a click does what `Enter` does.
+fn connection_row(
+    app: &AppContext,
+    host: &goble_core::ssh_hosts::SshHost,
+    selected: bool,
+    focused: bool,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(
+            Text::new(host.alias.clone())
+                .with_theme_color(ColorToken::Text, app)
+                .with_font_size(12.0)
+                .with_max_lines(1)
+                .finish(),
+        )
+        .with_child(Spacer::new().finish())
+        .with_child(
+            Text::new(host.target())
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(11.0)
+                .with_max_lines(1)
+                .finish(),
+        );
+    // The key the block names, by its name: the file is never opened.
+    if let Some(key) = host.identity_files.first() {
+        row = row.with_child(
+            Text::new(key.clone())
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(11.0)
+                .with_max_lines(1)
+                .finish(),
+        );
+    }
+    row = row.with_child(
+        Text::new(if host.known { "known" } else { "not used yet" })
+            .with_theme_color(ColorToken::Muted, app)
+            .with_font_size(11.0)
+            .with_max_lines(1)
+            .finish(),
+    );
+
+    let on_select = actions.on_ssh_select_host.clone();
+    let alias = host.alias.clone();
+    let row = HoverRow::new(row.finish())
+        .with_selected(selected)
+        .with_padding(EdgeInsets::uniform(sm))
+        .with_on_click(move || (on_select.borrow_mut())(alias.clone()))
+        .finish();
+    Container::new(focus_ring(app, row, focused))
+        .with_padding(EdgeInsets::new(0.0, sm, 0.0, sm))
+        .finish()
+}
+
+/// A muted line of prose: a heading's hint, or one of the findings the
+/// Connections page draws. Not a control, so it takes no focus slot.
+fn note(app: &AppContext, text: &str) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    Container::new(
+        Text::new(text)
+            .with_theme_color(ColorToken::Muted, app)
+            .with_font_size(11.0)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::uniform(sm))
+    .finish()
+}
+
+fn build_models(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    page: SettingsCategory,
+) -> Box<dyn Element> {    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let controls = order_for(state, page);
+    let mut order = FocusOrder::new(state, &controls);
+
+    let mut col = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_child(heading(app, "Models from ~/.goble/config.toml ([model.<slug>])"));
     if state.models.is_empty() {
         col = col.with_child(
             Container::new(
-                Text::new("No models configured yet. Add one to the config file and reload.")
+                Text::new("No models configured yet. Add a [model.<slug>] table to the config file and reload.")
                     .with_theme_color(ColorToken::Muted, app)
                     .with_font_size(11.0)
                     .finish(),
@@ -1365,23 +1603,11 @@ fn build_models(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
 
 fn build_advanced(app: &AppContext, _state: &UiSnapshot, _actions: &UiActions) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
-    let ssh = ssh_configured();
 
     let col = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min)
         .with_child(heading(app, "Machine"))
-        .with_child(setting_row(
-            app,
-            "SSH keys",
-            Text::new(if ssh { "configured" } else { "none found" })
-                .with_theme_color(ColorToken::Muted, app)
-                .with_font_size(11.0)
-                .with_max_lines(1)
-                .finish(),
-            false,
-        ))
-        .with_child(rule())
         .with_child(setting_row(
             app,
             "Config file",
@@ -1395,7 +1621,7 @@ fn build_advanced(app: &AppContext, _state: &UiSnapshot, _actions: &UiActions) -
         .with_child(rule())
         .with_child(
             Container::new(
-                Text::new("This page only reports: the keys live in ~/.ssh and the config in ~/.goble/config.toml. Nothing here is a control, so the pane takes no keyboard focus.")
+                Text::new("This page only reports: the config lives in ~/.goble/config.toml and the SSH connections under ~/.ssh are on the Connections page. Nothing here is a control, so the pane takes no keyboard focus.")
                     .with_theme_color(ColorToken::Muted, app)
                     .with_font_size(11.0)
                     .finish(),
@@ -1405,20 +1631,4 @@ fn build_advanced(app: &AppContext, _state: &UiSnapshot, _actions: &UiActions) -
         )
         .finish();
     Container::new(col).finish()
-}
-
-/// Whether a private key exists under `~/.ssh` (e.g. `id_*`).
-fn ssh_configured() -> bool {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default();
-    let ssh = std::path::Path::new(&home).join(".ssh");
-    std::fs::read_dir(&ssh)
-        .map(|entries| {
-            entries.filter_map(|e| e.ok()).any(|entry| {
-                let name = entry.file_name().to_string_lossy().to_string();
-                name.starts_with("id_")
-            })
-        })
-        .unwrap_or(false)
 }

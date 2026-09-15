@@ -6,6 +6,7 @@ use goble_core::store::Store;
 
 use super::*;
 
+mod environment;
 mod service;
 mod turns;
 
@@ -15,7 +16,30 @@ fn tmp_state() -> (tempfile::TempDir, Arc<DesktopState>) {
         Store::open_in_memory().unwrap(),
         crate::thread_store::ThreadStore::new(dir.path()).unwrap(),
     );
+    // The environment file is a temp file too, so no test reads or writes the
+    // real `~/.goble`.
+    state.set_environment_path(dir.path().join("environment.toml"));
     (dir, state)
+}
+
+/// A state with the store kept alongside it, for a test that has to seed the
+/// store's `secret_groups` tables before the first read (the migration), and the
+/// path of the environment file the state reads and writes.
+fn tmp_state_with_environment_file() -> (
+    tempfile::TempDir,
+    Arc<DesktopState>,
+    Store,
+    std::path::PathBuf,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("environment.toml");
+    let store = Store::open_in_memory().unwrap();
+    let state = DesktopState::new(
+        store.clone(),
+        crate::thread_store::ThreadStore::new(dir.path()).unwrap(),
+    );
+    state.set_environment_path(&file);
+    (dir, state, store, file)
 }
 
 /// A scripted internal harness whose first execution step plans one

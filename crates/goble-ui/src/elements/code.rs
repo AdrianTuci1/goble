@@ -1,7 +1,7 @@
 use crate::color::ColorU;
 use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
 use crate::geometry::{vec2f, Vector2F};
-use crate::platform::text_atlas::{measure_text_family, FontWeight};
+use crate::platform::text_atlas::{advance_width, measure_text_family, FontWeight};
 use crate::theme::{ColorToken, FontFamily};
 
 const DEFAULT_FONT_SIZE: f32 = 12.0;
@@ -30,6 +30,10 @@ pub struct Code {
     inline: bool,
     wrap: bool,
     highlighted: Option<Vec<crate::syntax::HighlightedLine>>,
+    /// The width the body was last measured against, when it wraps. Drawing
+    /// breaks a line at a different width than the measurement did, so the
+    /// drawn block follows this number and not the measured size.
+    wrap_width: f32,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -47,6 +51,7 @@ impl Code {
             // Code is pre-formatted: wrapping it would break indentation.
             wrap: false,
             highlighted: None,
+            wrap_width: f32::INFINITY,
             size: None,
             origin: None,
         }
@@ -186,21 +191,22 @@ impl Element for Code {
             size.x = size.x.max(label_size.x);
             size.y += label_size.y + LANGUAGE_GAP;
         }
+        self.wrap_width = max_width;
         self.size = Some(size);
         size
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        let Some(size) = self.size else { return };
+        if self.size.is_none() {
+            return;
+        }
         let Some(renderer) = ctx.renderer.as_mut() else {
             return;
         };
-        let max_width = if self.wrap {
-            size.x + 1.0
-        } else {
-            f32::INFINITY
-        };
+        // The drawing wrap width is the one the layout measured at, so the drawn
+        // lines break where the box was sized to break.
+        let max_width = self.wrap_width;
         let mut y = origin.y;
         if let Some(label) = self.label() {
             if let Some(label_size) = self.label_size(max_width) {
@@ -224,15 +230,10 @@ impl Element for Code {
                 let line_y = y + index as f32 * line_height;
                 let mut x = origin.x;
                 for run in runs {
-                    let run_size = measure_text_family(
-                        &run.text,
-                        self.font_size,
-                        self.line_height,
-                        f32::INFINITY,
-                        run.weight,
-                        FontFamily::Mono,
-                        run.italic,
-                    );
+                    // The runs are placed by their advances, not by their ink:
+                    // the renderer advances the glyphs inside a run by the same
+                    // amount, so a run placed a bearing narrower than its own
+                    // advance would overlap the run before it.
                     renderer.draw_text_with_font(
                         vec2f(x, line_y),
                         run.text.clone(),
@@ -244,7 +245,13 @@ impl Element for Code {
                         FontFamily::Mono,
                         run.italic,
                     );
-                    x += run_size.x;
+                    x += advance_width(
+                        &run.text,
+                        self.font_size,
+                        run.weight,
+                        FontFamily::Mono,
+                        run.italic,
+                    );
                 }
             }
             return;
@@ -274,6 +281,9 @@ impl Element for Code {
 /// Measure highlighted lines: the widest line's runs summed, one line height per
 /// line. The runs are mono, so this matches the plain measurement of the same
 /// characters while keeping the size consistent with the per-line painting.
+///
+/// The runs are summed by their advances: that is how far apart the painting
+/// places them, and the ink is a bearing short of it.
 fn measure_highlighted_lines(
     lines: &[crate::syntax::HighlightedLine],
     font_size: f32,
@@ -284,16 +294,13 @@ fn measure_highlighted_lines(
         let line_width: f32 = runs
             .iter()
             .map(|run| {
-                measure_text_family(
+                advance_width(
                     &run.text,
                     font_size,
-                    line_height,
-                    f32::INFINITY,
                     run.weight,
                     FontFamily::Mono,
                     run.italic,
                 )
-                .x
             })
             .sum();
         width = width.max(line_width);

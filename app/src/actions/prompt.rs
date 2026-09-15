@@ -101,6 +101,9 @@ pub(super) fn send_agent_prompt(
     if pane_id == state.active_pane_id {
         state.set_active_pane_draft(String::new());
     }
+    // The attachments described the draft that was just sent, so they go with
+    // it: the next draft starts with no chips.
+    state.pane_attachments.remove(&pane_id);
     state.agent_busy = ran_turn;
     ran_turn
 }

@@ -36,8 +36,22 @@ impl UiState {
     /// shares a transcript with another pane. Uses the store when available
     /// (persisting the conversation), else allocates a synthetic id (mock).
     pub fn bind_pane_new_conversation(&mut self, pane_id: u64, desktop: Option<&DesktopState>) {
+        self.bind_pane_new_conversation_titled(pane_id, NEW_CONVERSATION_TITLE, desktop);
+    }
+
+    /// Bind `pane_id` to a brand-new conversation created under `title`.
+    ///
+    /// The sidebar's "New conversation" row carries a typed subject when it has
+    /// one, so the conversation the tab opens is created under that name rather
+    /// than gaining the placeholder and being renamed later.
+    pub fn bind_pane_new_conversation_titled(
+        &mut self,
+        pane_id: u64,
+        title: &str,
+        desktop: Option<&DesktopState>,
+    ) {
         let conversation_id = match desktop {
-            Some(d) => match d.create_chat(NEW_CONVERSATION_TITLE, None, None) {
+            Some(d) => match d.create_chat(title, None, None) {
                 Ok(id) => id,
                 Err(e) => {
                     log::warn!("create_chat for new pane failed: {e}");
@@ -154,7 +168,11 @@ impl UiState {
     }
 
     /// Set the active pane's working directory label and the global active view.
+    ///
+    /// A deliberate write of the pane's directory, like [`Self::set_pane_path`]:
+    /// it retires what the pane's shell has reported so far.
     pub fn set_active_pane_path(&mut self, path: String) {
+        self.retire_reported_cwd(self.active_pane_id);
         if let Some(session) = self.pane_sessions.get_mut(&self.active_pane_id) {
             session.path = path.clone();
         } else {
@@ -211,6 +229,7 @@ impl UiState {
                     messages: rt.map(|r| r.messages.clone()).unwrap_or_default(),
                     composer_draft: session.draft.clone(),
                     composer_path: session.path.clone(),
+                    composer_attachments: self.pane_attachments(*pane_id),
                     pending_ask: rt.and_then(|r| r.pending_ask.clone()),
                     pending_command: rt.and_then(|r| r.pending_command.clone()),
                     command_selection: rt
@@ -271,6 +290,29 @@ impl UiState {
         })
     }
 
+    /// The per-pane controls as the views draw them: the model control carries
+    /// the model the pane's turns would actually run, and reads
+    /// [`MODEL_NOT_CONFIGURED`] when nothing resolves. An empty control would
+    /// say nothing at all exactly while the pane cannot run a turn, which is the
+    /// state the notice band exists to explain.
+    ///
+    /// A copy: a label the view needs is not a choice the pane made.
+    pub fn pane_controls_snapshot(&self) -> HashMap<u64, PaneControls> {
+        let mut out = self.pane_controls.clone();
+        for (pane_id, controls) in out.iter_mut() {
+            if !controls.model.trim().is_empty() {
+                continue;
+            }
+            let resolved = self.pane_agent_model(*pane_id);
+            controls.model = if resolved.trim().is_empty() {
+                MODEL_NOT_CONFIGURED.to_string()
+            } else {
+                resolved
+            };
+        }
+        out
+    }
+
     /// Ensure every rendered leaf pane has a controls entry, so the composer
     /// always reads a stable per-pane value rather than the window globals.
     pub fn ensure_pane_controls(&mut self) {
@@ -310,9 +352,24 @@ impl UiState {
         }
     }
 
+    /// Retire what `pane_id`'s shell has reported so far: the app has just set
+    /// that pane's directory itself — and told the shell to move there — so a
+    /// report made before the write is not where the pane is going.
+    fn retire_reported_cwd(&self, pane_id: u64) {
+        if let Some(session) = self.terminal.borrow_mut().sessions.get_mut(&pane_id) {
+            session.retire_reported_cwds();
+        }
+    }
+
     /// Set one pane's working directory and branch pill without touching the
     /// window globals unless it is the active pane.
+    ///
+    /// The pane's own shell retires what it has reported so far: the app is the
+    /// one deciding where the pane is, and a report made before that decision —
+    /// a `cd` still in flight, or the directory a shell was started in — cannot
+    /// take it back.
     pub fn set_pane_path(&mut self, pane_id: u64, path: String) {
+        self.retire_reported_cwd(pane_id);
         let branch = current_branch(&path);
         match self.pane_sessions.get_mut(&pane_id) {
             Some(session) => session.path = path.clone(),
@@ -336,6 +393,36 @@ impl UiState {
         if pane_id == self.active_pane_id {
             self.composer_path = path;
             self.composer_branch = branch;
+        }
+    }
+
+    /// Follow the working directory each pane's own shell reports.
+    ///
+    /// `cd` prints nothing, so a prompt that moved to another directory is
+    /// visible only on the shell-integration channel the pane's pty carries (the
+    /// hooks and OSC 7), never in the output. The rich input's directory pill
+    /// draws the pane's session path, so the report is what keeps it honest.
+    ///
+    /// Only a move is adopted. The session decides what counts as one: a report
+    /// it has already offered says nothing new, and the directory a shell was
+    /// started in is where the shell was put rather than a move — so a pane
+    /// opened at a chosen directory keeps it while its shell starts elsewhere.
+    pub fn adopt_reported_cwds(&mut self) {
+        let moves: Vec<(u64, String)> = {
+            let mut terminal = self.terminal.borrow_mut();
+            terminal
+                .sessions
+                .iter_mut()
+                .filter_map(|(pane_id, session)| {
+                    session.take_cwd_move().map(|path| (*pane_id, path))
+                })
+                .collect()
+        };
+        for (pane_id, path) in moves {
+            if self.pane_sessions.get(&pane_id).map(|s| s.path.as_str()) == Some(path.as_str()) {
+                continue;
+            }
+            self.set_pane_path(pane_id, path);
         }
     }
 

@@ -74,12 +74,13 @@ impl TextInput {
 
     fn rebuild(&mut self, app: &AppContext) {
         let padding = app.theme.spacing_px(SpacingToken::Md);
-        let display = if self.value.is_empty() && !self.placeholder.is_empty() {
+        let empty = self.value.is_empty();
+        let display = if empty && !self.placeholder.is_empty() {
             self.placeholder.clone()
         } else {
             self.value.clone()
         };
-        let color = if self.value.is_empty() {
+        let color = if empty {
             ColorToken::Muted
         } else {
             ColorToken::Text
@@ -88,11 +89,16 @@ impl TextInput {
             .with_theme_color(color, app)
             .with_max_lines(1)
             .finish();
-        // A focused field shows the insertion beam right after the text (and at
-        // the left edge while the value is still empty).
+        // A focused field shows its insertion beam in front of the text while
+        // the field is empty — over the placeholder's first character, where the
+        // user's own text starts — and after it once there is a value. The beam
+        // takes no room in the row, so neither position moves the text.
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        if self.focused && empty {
+            row = row.with_child(caret_beam(app));
+        }
         row = row.with_child(text);
-        if self.focused {
+        if self.focused && !empty {
             row = row.with_child(caret_beam(app));
         }
         let mut container = Container::new(row.finish())
@@ -199,6 +205,133 @@ impl Element for TextInput {
 mod tests {
     use super::*;
     use crate::geometry::vec2f;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    /// The rect of the insertion beam `commands` paint: the one fill in the
+    /// focus blue that is a caret across.
+    fn caret_rect(commands: &[RenderCommand], app: &AppContext) -> crate::geometry::RectF {
+        use crate::elements::caret::{CARET_HEIGHT, CARET_WIDTH};
+
+        let focus = app.theme.color(ColorToken::Focus);
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == focus
+                        && (rect.width() - CARET_WIDTH).abs() < 0.5
+                        && (rect.height() - CARET_HEIGHT).abs() < 0.5 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the focused field draws its beam: {commands:?}"))
+    }
+
+    /// The command that draws the run `text`, from which the field's own
+    /// position for it is read.
+    fn drawn_run<'a>(commands: &'a [RenderCommand], text: &str) -> &'a RenderCommand {
+        commands
+            .iter()
+            .find(|command| {
+                matches!(command, RenderCommand::DrawText { text: drawn, .. } if drawn == text)
+            })
+            .unwrap_or_else(|| panic!("the run {text:?} is drawn: {commands:?}"))
+    }
+
+    /// The width the row spends on `drawn`: a text box is as wide as its own
+    /// ink, measured at the size and the wrap width the command carries.
+    fn run_width(drawn: &RenderCommand) -> f32 {
+        use crate::platform::text_atlas::measure_text_family;
+
+        let RenderCommand::DrawText {
+            text,
+            font_size,
+            line_height,
+            max_width,
+            font_weight,
+            font_family,
+            ..
+        } = drawn
+        else {
+            panic!("a drawn run is a text command: {drawn:?}");
+        };
+        measure_text_family(
+            text,
+            *font_size,
+            *line_height,
+            *max_width,
+            *font_weight,
+            *font_family,
+            false,
+        )
+        .x
+    }
+
+    /// A focused, empty field draws its beam over the first character of the
+    /// placeholder, the way the rich input does: the guide stands where the
+    /// user's own text starts, and the beam asks the row for no room, so the
+    /// guide keeps its place and its muted colour under it.
+    #[test]
+    fn an_empty_focused_field_puts_its_beam_on_the_placeholder() {
+        let app = AppContext::default();
+        let mut field: Box<dyn Element> = Box::new(
+            TextInput::new()
+                .with_placeholder("New group name")
+                .with_focused(true),
+        );
+        let commands = render_element(&mut field, vec2f(200.0, 40.0), &app);
+        let beam = caret_rect(&commands, &app);
+        let RenderCommand::DrawText { origin, color, .. } = drawn_run(&commands, "New group name")
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            *color,
+            app.theme.color(ColorToken::Muted),
+            "the placeholder is still the muted guide: {commands:?}"
+        );
+        assert!(
+            (beam.min_x() - origin.x).abs() < 0.5,
+            "the beam sits on the first character of the placeholder, got x={} against {}",
+            beam.min_x(),
+            origin.x
+        );
+    }
+
+    /// A field with a value in it is unchanged in shape: the whole value is
+    /// drawn and the beam trails it at the pen, where the next character lands.
+    #[test]
+    fn a_field_with_a_value_keeps_its_beam_at_the_end_of_the_text() {
+        let app = AppContext::default();
+        let mut field: Box<dyn Element> = Box::new(
+            TextInput::new()
+                .with_value("hi")
+                .with_placeholder("New group name")
+                .with_focused(true),
+        );
+        let commands = render_element(&mut field, vec2f(200.0, 40.0), &app);
+        let beam = caret_rect(&commands, &app);
+
+        let value = drawn_run(&commands, "hi");
+        let RenderCommand::DrawText { origin, .. } = value else {
+            unreachable!()
+        };
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text == "New group name"
+            )),
+            "a field with a value draws no placeholder: {commands:?}"
+        );
+        assert!(
+            (beam.min_x() - (origin.x + run_width(value))).abs() < 0.5,
+            "the beam trails the value at the pen, got x={} against {}",
+            beam.min_x(),
+            origin.x + run_width(value)
+        );
+    }
 
     #[test]
     fn text_input_accepts_text() {

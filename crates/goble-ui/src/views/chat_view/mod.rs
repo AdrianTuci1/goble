@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
-    AskUserUi, CommandProposalUi, Element, Point, PopupMenuItem, ScrollState, ShortcutHint, SlashMenuItem,
+    AskUserUi, CommandProposalUi, Element, PanelScroll, Point, PopupMenuItem, ScrollState, ShortcutHint, SlashMenuItem,
     TerminalFilter, TurnStatus,
 };
 use crate::geometry::Vector2F;
@@ -93,6 +93,10 @@ pub struct ChatView {
     composer_focused: bool,
     composer_model_label: Option<String>,
     composer_path: Option<String>,
+    /// The files the rich input carries: the attach control adds the path the
+    /// system picker returned, and the composer draws one chip per file over
+    /// the editor.
+    composer_attachments: Vec<String>,
     composer_stop_visible: bool,
     /// The instruction strip the pane draws over the separator above its input:
     /// the gestures this pane's input answers, as key caps and names. Empty
@@ -110,14 +114,20 @@ pub struct ChatView {
     on_voice: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_select_model: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_stop: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    /// The models the composer's model control lists, its app-owned open flag
+    /// and chosen row, and the select callback. The view draws the list in the
+    /// slot the command list takes over the input; the composer routes the keys
+    /// that take a row from it.
     composer_model_items: Vec<PopupMenuItem>,
     composer_model_menu_open: Rc<RefCell<bool>>,
+    composer_model_index: Rc<RefCell<usize>>,
     on_select_model_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     composer_harness_items: Vec<PopupMenuItem>,
     composer_harness_menu_open: Rc<RefCell<bool>>,
     on_select_harness_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     composer_dir_items: Vec<PopupMenuItem>,
     composer_dir_menu_open: Rc<RefCell<bool>>,
+    composer_dir_menu_scroll: PanelScroll,
     on_select_dir_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     composer_branch_items: Vec<PopupMenuItem>,
     composer_branch_menu_open: Rc<RefCell<bool>>,
@@ -202,6 +212,7 @@ impl ChatView {
             composer_focused: false,
             composer_model_label: None,
             composer_path: None,
+            composer_attachments: Vec::new(),
             composer_stop_visible: false,
             composer_hints: Vec::new(),
             turn_status: TurnStatus::Idle,
@@ -213,6 +224,7 @@ impl ChatView {
             on_stop: None,
             composer_model_items: Vec::new(),
             composer_model_menu_open: Rc::new(RefCell::new(false)),
+            composer_model_index: Rc::new(RefCell::new(0)),
             on_select_model_item: None,
             composer_harness_label: None,
             composer_branch_label: None,
@@ -221,6 +233,7 @@ impl ChatView {
             on_select_harness_item: None,
             composer_dir_items: Vec::new(),
             composer_dir_menu_open: Rc::new(RefCell::new(false)),
+            composer_dir_menu_scroll: PanelScroll::default(),
             on_select_dir_item: None,
             composer_branch_items: Vec::new(),
             composer_branch_menu_open: Rc::new(RefCell::new(false)),

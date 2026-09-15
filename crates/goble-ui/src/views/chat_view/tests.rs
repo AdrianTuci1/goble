@@ -2,7 +2,7 @@ use super::*;
 use crate::elements::chat_content::{ChatFragment, ChatRole};
 use crate::elements::{AppContext, LayoutContext, SizeConstraint};
 use crate::geometry::vec2f;
-use crate::theme::ColorToken;
+use crate::theme::{ColorToken, SpacingToken};
 
 #[test]
 fn chat_view_layouts_with_messages() {
@@ -1072,3 +1072,334 @@ fn the_composer_hints_sit_over_the_separator_and_only_when_given() {
     );
 }
 
+/// The strip sits *low* over the input it names: the block is pinned to the
+/// input under it, so what decides the caps' height over the separator is the
+/// inset beneath them — a gap of `sm` above them would instead push the whole
+/// block up and leave the caps where they were.
+#[test]
+fn the_strip_sits_lower_than_its_own_spacing_over_the_input() {
+    use crate::elements::ShortcutHint;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let width = 600.0;
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::text("Hi")],
+    )];
+    let mut view = ChatView::new()
+        .with_messages(messages)
+        .with_composer_hints(vec![
+            ShortcutHint::new(&["⌘", "K"], "commands"),
+            ShortcutHint::new(&["⌘", "⇧", "W"], "tasks"),
+        ])
+        .finish();
+    let commands = render_element(&mut view, vec2f(width, 520.0), &app);
+
+    // The pane-wide rules this frame drew.
+    let rules: Vec<f32> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, .. }
+                if rect.height() <= 2.0 && rect.width() >= width - 0.5 =>
+            {
+                Some(rect.min_y())
+            }
+            _ => None,
+        })
+        .collect();
+    let strip = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text == "commands" => Some(origin.y),
+            _ => None,
+        })
+        .expect("the strip is drawn");
+    let separator = rules
+        .iter()
+        .copied()
+        .filter(|y| *y > strip)
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        separator.is_finite(),
+        "the input draws its separator under the strip (strip {strip}, rules {rules:?})"
+    );
+    // The strip's caps: the small square boxes over the separator, the flat
+    // bordered key caps the strip draws. The block's own content edge is their
+    // bottom, because the caps are its tallest row.
+    let caps: Vec<crate::geometry::RectF> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::StrokeRect { rect, corner_radius, .. }
+                if *corner_radius == 0.0
+                    && rect.height() < 20.0
+                    && rect.max_y() <= separator =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .collect();
+    let caps_bottom = caps
+        .iter()
+        .map(|rect| rect.max_y())
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        caps_bottom.is_finite(),
+        "the strip draws its key caps (strip {strip}, separator {separator}, caps {caps:?})"
+    );
+    let gap = separator - caps_bottom;
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let md = app.theme.spacing_px(SpacingToken::Md);
+    let rise = super::transcript::STRIP_RISE;
+    // The column's own gap above the separator (`md`) plus the inset under the
+    // caps, which is `STRIP_RISE` less than the block's `sm`.
+    let expected = md + (sm - rise);
+    assert!(
+        (gap - expected).abs() < 0.5,
+        "the caps sit {expected} px over the separator — the column's md plus the \
+         strip's own `sm - STRIP_RISE` — six points lower than the block's own \
+         `sm` inset put them: gap {gap}, strip {strip}, separator {separator}, \
+         caps {caps:?}, rules {rules:?}"
+    );
+    assert!(gap > 0.0, "and stay over it: {gap}");
+}
+
+
+/// The models the model control opens are drawn exactly where the draft's
+/// commands are: one band in the one slot over the whole input block, above the
+/// pane's instruction strip. Both are the host's to draw, so which one is up is
+/// the composer's open flags, and the slot does not move between them.
+#[test]
+fn the_model_band_opens_over_the_strip_like_the_command_list() {
+    use crate::elements::{PopupMenuItem, ShortcutHint, SlashMenuItem};
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let app = AppContext::default();
+    let width = 600.0;
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::text("Hi")],
+    )];
+    let hints = vec![ShortcutHint::new(&["⌘", "K"], "commands")];
+    let models = vec![
+        PopupMenuItem::new("gpt-4o").selected(),
+        PopupMenuItem::new("o3-mini"),
+    ];
+    let commands = vec![
+        SlashMenuItem::new("help", "List the commands"),
+        SlashMenuItem::new("clear", "Clear the transcript"),
+    ];
+    let line_of = |commands: &[RenderCommand], needle: &str| -> f32 {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == needle => Some(origin.y),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{needle:?} is drawn"))
+    };
+
+    // Closed, the model list is nowhere on the frame: its rows are not drawn.
+    let open = Rc::new(RefCell::new(false));
+    let index = Rc::new(RefCell::new(0));
+    let build = |open: Rc<RefCell<bool>>, index: Rc<RefCell<usize>>| {
+        ChatView::new()
+            .with_messages(messages.clone())
+            .with_composer_hints(hints.clone())
+            .with_composer_value("hi")
+            .with_composer_model_label("gpt-4o")
+            .with_composer_model_menu(models.clone(), open, index, |_| {})
+    };
+    let mut closed = build(open.clone(), index.clone()).finish();
+    let frame = render_element(&mut closed, vec2f(width, 520.0), &app);
+    assert!(
+        !frame.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { text, .. } if text == "o3-mini"
+        )),
+        "a closed model list draws no rows: {frame:?}"
+    );
+
+    // Open: the rows are above the strip, which is above the input's separator
+    // and its editor.
+    *open.borrow_mut() = true;
+    let mut opened = build(open.clone(), index.clone()).finish();
+    let frame = render_element(&mut opened, vec2f(width, 520.0), &app);
+    let model_row = line_of(&frame, "o3-mini");
+    let strip = line_of(&frame, "commands");
+    // The draft the composer was handed, drawn by the editor under the strip.
+    let editor = line_of(&frame, "hi");
+    let separator = frame
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, .. }
+                if rect.height() <= 2.0 && rect.width() >= width - 0.5 =>
+            {
+                Some(rect.min_y())
+            }
+            _ => None,
+        })
+        // The input's separator is the rule just under the strip.
+        .filter(|y| *y > strip)
+        .fold(f32::INFINITY, f32::min);
+    assert!(separator.is_finite(), "the input draws its separator");
+    assert!(
+        model_row < strip,
+        "the list opens above the strip, not under the input: {model_row} against {strip}"
+    );
+    assert!(
+        strip < separator && separator < editor,
+        "and the strip keeps its place over the separator and the editor: \
+         {strip} {separator} {editor}"
+    );
+
+    // The same view with a command draft: the command list is the band on the
+    // frame, and it starts exactly where the model list did — one slot, not two
+    // placements that happen to look alike.
+    let dismissed = Rc::new(RefCell::new(false));
+    let mut commanded = ChatView::new()
+        .with_messages(messages)
+        .with_composer_hints(hints)
+        .with_composer_value("/")
+        .with_composer_model_label("gpt-4o")
+        .with_composer_model_menu(models, open.clone(), index, |_| {})
+        .with_composer_slash_menu(commands, Rc::new(RefCell::new(0)), dismissed)
+        .finish();
+    let frame = render_element(&mut commanded, vec2f(width, 520.0), &app);
+    let command_row = line_of(&frame, "/clear");
+    assert!(
+        (command_row - model_row).abs() < 0.5,
+        "the two bands share one slot: command row at {command_row}, model row at {model_row}"
+    );
+}
+
+/// The files the app hands the view draw as chips over the editor, above the
+/// draft they belong to: what the attach control's picker returned is visible
+/// where it was attached, and a view handed none draws no chip row.
+#[test]
+fn the_attachments_draw_as_chips_over_the_editor() {
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let width = 600.0;
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::text("Hi")],
+    )];
+    let line_of = |commands: &[RenderCommand], needle: &str| -> Option<f32> {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText { text, origin, .. } if text == needle => Some(origin.y),
+            _ => None,
+        })
+    };
+
+    let mut bare = ChatView::new().with_messages(messages.clone()).finish();
+    let frame = render_element(&mut bare, vec2f(width, 520.0), &app);
+    assert!(
+        line_of(&frame, "/tmp/notes.md").is_none(),
+        "a view handed no attachments draws no chip: {frame:?}"
+    );
+
+    let mut attached = ChatView::new()
+        .with_messages(messages)
+        .with_composer_attachments(vec!["/tmp/notes.md".to_string()])
+        .finish();
+    let frame = render_element(&mut attached, vec2f(width, 520.0), &app);
+    let chip = line_of(&frame, "/tmp/notes.md").expect("the attachment is drawn");
+    let editor = line_of(&frame, "Ask anything...").expect("the editor is drawn");
+    assert!(
+        chip < editor,
+        "the chip is over the editor it belongs to: {chip} against {editor}"
+    );
+}
+
+/// The whole-transcript filter is a real bar, not an always-on tray: it draws
+/// nothing while it is down, and raising it shows the query field, names what it
+/// filters and counts the terminal lines the query keeps.
+#[test]
+fn the_transcript_filter_bar_stays_down_until_it_is_raised() {
+    use crate::elements::{TerminalData, TerminalFilter, TerminalLine};
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let width = 600.0;
+    let filter = TerminalFilter::default();
+    let block = TerminalData {
+        title: "printf hi".to_string(),
+        lines: vec![
+            TerminalLine::command("printf hi"),
+            TerminalLine::output("alpha line"),
+            TerminalLine::output("beta line"),
+        ],
+        status: None,
+        meta: None,
+    };
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::terminal(block)],
+    )];
+    let mut view = ChatView::new()
+        .with_messages(messages)
+        .with_global_terminal_filter(Some(filter.clone()))
+        .finish();
+
+    let texts = |commands: &[RenderCommand]| -> Vec<String> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let down = render_element(&mut view, vec2f(width, 520.0), &app);
+    assert!(
+        !texts(&down).iter().any(|t| t == "Filter terminal output"),
+        "a filter that is down draws no bar: {:?}",
+        texts(&down)
+    );
+    assert!(
+        texts(&down).iter().any(|t| t == "alpha line")
+            && texts(&down).iter().any(|t| t == "beta line"),
+        "the block draws its whole output: {:?}",
+        texts(&down)
+    );
+
+    filter.open_bar();
+    let up = render_element(&mut view, vec2f(width, 520.0), &app);
+    let drawn = texts(&up);
+    assert!(
+        drawn.iter().any(|t| t == "Filter terminal output"),
+        "a raised filter draws its field: {drawn:?}"
+    );
+    assert!(
+        drawn.iter().any(|t| t == "3 of 3"),
+        "an empty query keeps every line the block carries: {drawn:?}"
+    );
+
+    // Typing narrows the transcript: the count follows the query, and the lines
+    // the query drops are not drawn at all.
+    filter.set_query("beta");
+    let typed = render_element(&mut view, vec2f(width, 520.0), &app);
+    let drawn = texts(&typed);
+    assert!(
+        drawn.iter().any(|t| t == "1 of 3"),
+        "the count follows the query: {drawn:?}"
+    );
+    assert!(
+        drawn.iter().any(|t| t == "beta line"),
+        "the kept line stays drawn: {drawn:?}"
+    );
+    assert!(
+        !drawn.iter().any(|t| t == "alpha line"),
+        "the dropped line is not drawn: {drawn:?}"
+    );
+}

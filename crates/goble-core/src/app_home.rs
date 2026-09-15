@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 
 use crate::config::GobleConfig;
 use crate::docs;
+use crate::environment::EnvironmentFile;
 use crate::principal::PrincipalId;
 
 /// Directories that every user's home has, regardless of whether their workspace
@@ -43,6 +44,26 @@ const WORKSPACE_DIRS: &[&str] = &[
     "workflows",
 ];
 
+/// The header a seeded `config.toml` carries: the layout is grok's, and the
+/// commented block is the shape a model entry takes.
+const CONFIG_HEADER: &str = "\
+# goble configuration. The layout is grok's (~/.grok/config.toml): one
+# [model.<slug>] table per model, the default selection under [models], MCP
+# servers under [mcp_servers.<name>]. Every key is optional.
+#
+# [models]
+# default = \"deepseek\"
+#
+# [model.deepseek]
+# model = \"deepseek-flash\"
+# name = \"Deepseek-V4-Flash\"
+# base_url = \"https://api.deepseek.com\"
+# api_key = \"sk-...\"
+# max_completion_tokens = 16384
+# context_window = 256000
+
+";
+
 /// Goble's per-machine workspace home directory. The home mirrors the `~/.grok`
 /// layout so a machine/VM/cluster — which is one workspace — has a single hidden
 /// folder holding config, docs, bundled tooling, sessions, worktrees, logs and
@@ -80,6 +101,11 @@ impl GobleHome {
         self.root.join("config.toml")
     }
 
+    /// The environment groups Settings -> Environment reads and writes.
+    pub fn environment_path(&self) -> PathBuf {
+        self.root.join("environment.toml")
+    }
+
     pub fn threads_dir(&self) -> PathBuf {
         self.root.join("threads")
     }
@@ -101,6 +127,7 @@ impl GobleHome {
                 .with_context(|| format!("create home base dir {d}"))?;
         }
         self.seed_config_if_missing()?;
+        self.seed_environment_if_missing()?;
         self.seed_file_if_missing("README.md", "# Goble home\n\nUser home on this machine. Mirrors the `~/.grok` structure.\n")?;
         self.seed_file_if_missing(
             "version.json",
@@ -133,8 +160,17 @@ impl GobleHome {
         if path.exists() {
             return Ok(());
         }
-        let toml = GobleConfig::default().to_toml()?;
+        let toml = format!("{CONFIG_HEADER}{}", GobleConfig::default().to_toml()?);
         fs::write(&path, toml).context("write default config.toml")?;
+        Ok(())
+    }
+
+    fn seed_environment_if_missing(&self) -> Result<()> {
+        let path = self.environment_path();
+        if path.exists() {
+            return Ok(());
+        }
+        crate::environment::save(&path, &EnvironmentFile::new()).context("write environment.toml")?;
         Ok(())
     }
 
@@ -187,10 +223,15 @@ mod tests {
         assert!(home.root().join("principal_id").exists());
         assert!(home.root().join("auth.json").exists());
 
-        // Config round-trips from the seeded TOML.
+        // Config round-trips from the seeded TOML, which is the grok layout: a
+        // model catalog under `[model.<slug>]` and goble's own `[theme]`, with no
+        // `version` or `[llm]` section.
         let toml = fs::read_to_string(home.config_path()).unwrap();
         let parsed = GobleConfig::from_toml(&toml).unwrap();
-        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed, GobleConfig::default());
+        assert!(toml.contains("[theme]"));
+        assert!(!toml.contains("[llm]"));
+        assert!(!toml.contains("version"));
     }
 
     #[test]
@@ -230,6 +271,32 @@ mod tests {
         home.ensure().unwrap();
         let toml = fs::read_to_string(home.config_path()).unwrap();
         assert!(toml.contains("version = 99"));
+    }
+
+    #[test]
+    fn ensure_base_seeds_environment_with_the_header() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = GobleHome::at(tmp.path().to_path_buf());
+        home.ensure_base().unwrap();
+
+        let path = home.environment_path();
+        assert_eq!(path.file_name().unwrap(), "environment.toml");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(crate::environment::ENVIRONMENT_HEADER));
+        assert!(crate::environment::load_toml(&text).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ensure_base_does_not_touch_an_existing_environment_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = GobleHome::at(tmp.path().to_path_buf());
+        home.ensure_base().unwrap();
+
+        let mine = "[groups.mine]\nKEEP = \"yes\"\n";
+        fs::write(home.environment_path(), mine).unwrap();
+        home.ensure_base().unwrap();
+
+        assert_eq!(fs::read_to_string(home.environment_path()).unwrap(), mine);
     }
 
     #[test]

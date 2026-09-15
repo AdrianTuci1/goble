@@ -10,6 +10,12 @@
 //! terminal that opened it and comes back on the next launch with the same file
 //! open.
 //!
+//! A frame that changes nothing still rebuilds the tree, and every line of a file
+//! is an element of it, so the read-only body draws only the lines the pane's own
+//! viewport can show and stands the rest in as spacers of the height they would
+//! take. The read body keeps the whole file's scroll range, and a file of
+//! [`MAX_LINES`] lines costs what a screenful of them costs.
+//!
 //! A file the read took whole is editable: the pane draws it as a multi-line
 //! field over an editor buffer, and Cmd/Ctrl+S writes that buffer back to the
 //! file. A file the read did not take whole stays read-only — writing the part
@@ -23,10 +29,10 @@ use std::rc::Rc;
 use std::time::SystemTime;
 
 use goble_ui::elements::{
-    file_icon_name, AppContext, Axis, Code, Container, CrossAxisAlignment, EdgeInsets, Element,
-    Empty, EventContext, Expanded, Fill, Flex, Icon, LayoutContext, LineRuns, MainAxisSize,
-    PaintContext, Point, Scrollable, SizeConstraint, Spacer, Stack, Text, TextArea, Tooltip,
-    TooltipPosition,
+    file_icon_name, AppContext, Axis, Code, ConstrainedBox, Container, CrossAxisAlignment,
+    EdgeInsets, Element, Empty, EventContext, Expanded, Fill, Flex, Icon, LayoutContext, LineRuns,
+    MainAxisSize, PaintContext, Point, Scrollable, SizeConstraint, Spacer, Stack, Text, TextArea,
+    Tooltip, TooltipPosition,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
@@ -50,6 +56,19 @@ const GUTTER_DIGITS: usize = 5;
 /// The size the file's own lines are drawn at, and their line box.
 const LINE_FONT_SIZE: f32 = 12.0;
 const LINE_HEIGHT: f32 = 1.35;
+/// One line's box: what a row of the body is laid out at, and so what a spacer
+/// standing in for a line the pane is not drawing has to take. A highlighted
+/// row's `Code` measures `ceil(LINE_FONT_SIZE * LINE_HEIGHT)` and a plain row's
+/// `Text` measures that line box unrounded, so the plain body is held to this
+/// height — one row of either kind measures exactly this, which a test pins.
+const LINE_BOX: f32 = 17.0;
+/// How many lines the read-only body draws before the pane has reported a
+/// viewport to size itself against. The first frame has no measurement, so it
+/// draws a screenful for the tallest pane; the frame after draws what fits.
+const FIRST_FRAME_LINES: usize = 64;
+/// The rows a window keeps beyond the viewport, so a pane scrolled to a line
+/// that is not its first still fills, top and bottom.
+const WINDOW_SLACK: usize = 4;
 
 /// What a file view draws for one file.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -365,7 +384,6 @@ pub struct FileBuffer {
     /// Whether the file was written since the last settle, so the cache entry
     /// read before the write is dropped and the file re-read.
     written: bool,
-    focused: bool,
     caret: Rc<RefCell<usize>>,
     anchor: Rc<RefCell<Option<usize>>>,
     /// The last failure, drawn in the pane until the next save. A write that
@@ -412,7 +430,6 @@ impl FileBuffer {
             stamp: content.stamp,
             read_only,
             written: false,
-            focused: false,
             caret: Rc::new(RefCell::new(0)),
             anchor: Rc::new(RefCell::new(None)),
             error: None,
@@ -437,10 +454,6 @@ impl FileBuffer {
 
     pub fn anchor(&self) -> Rc<RefCell<Option<usize>>> {
         Rc::clone(&self.anchor)
-    }
-
-    pub fn focused(&self) -> bool {
-        self.focused
     }
 
     pub fn stamp(&self) -> Option<FileStamp> {
@@ -495,10 +508,6 @@ impl FileBuffer {
         // The last save's report describes the text this keystroke just
         // replaced; the dirty marker says where the buffer stands now.
         self.status = None;
-    }
-
-    pub fn set_focused(&mut self, focused: bool) {
-        self.focused = focused;
     }
 
     /// Write the buffer to its file. Refuses on a read-only buffer — the caps
@@ -670,6 +679,16 @@ pub(crate) fn build_file_view(
     }
 }
 
+/// The last component of a path: what a pane and its tab call the file, and the
+/// stem [`file_icon_name`] reads its type from. A path with no component of its
+/// own (a root, or one that ends in `..`) is its own name.
+pub(crate) fn file_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string())
+}
+
 /// The file's name and how much of it is shown, with the full path on the name's
 /// own hover. `detail` is what the buffer (or the read body) says about the
 /// file, `read_only` why the pane will not edit it.
@@ -679,10 +698,7 @@ fn title_row(
     detail: Option<&str>,
     read_only: Option<&str>,
 ) -> Box<dyn Element> {
-    let name = Path::new(path)
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string());
+    let name = file_name(path);
     let name_text = Text::new(name.clone())
         .with_font_size(13.0)
         .with_theme_color(ColorToken::Text, app)
@@ -740,20 +756,21 @@ fn band(app: &AppContext, text: &str, color: ColorToken) -> Box<dyn Element> {
 /// The text is the buffer's own, not the read's lines: an edit is what the pane
 /// shows, and a frame that shows the file instead would throw it away on screen
 /// while the buffer still held it.
+///
+/// The field holds the keyboard exactly while its pane is the active one, the
+/// gate the pane's Cmd/Ctrl+S already reads: a file opened from the explorer is
+/// the active pane from its first frame, so the caret is in the file and a
+/// keystroke lands in the buffer without a press first — a file pane beside a
+/// terminal takes nothing while the terminal is the active pane.
 fn editor_view(
     state: &UiSnapshot,
     pane_id: u64,
     buffer: &Rc<RefCell<FileBuffer>>,
     runs: Option<&Rc<Vec<HighlightedLine>>>,
 ) -> Box<dyn Element> {
-    let (value, focused, caret, anchor) = {
+    let (value, caret, anchor) = {
         let buffer = buffer.borrow();
-        (
-            buffer.text().to_string(),
-            buffer.focused(),
-            buffer.caret(),
-            buffer.anchor(),
-        )
+        (buffer.text().to_string(), buffer.caret(), buffer.anchor())
     };
     // The runs belong to the text they were highlighted from, one set per line
     // of the file as it was read. The buffer's lines are mapped onto them in
@@ -772,10 +789,6 @@ fn editor_view(
         let buffer = Rc::clone(buffer);
         move |text: String| buffer.borrow_mut().set_text(text)
     };
-    let on_focus_change = {
-        let buffer = Rc::clone(buffer);
-        move |focused: bool| buffer.borrow_mut().set_focused(focused)
-    };
     let field = TextArea::new()
         .with_value(value)
         .with_multiline(true)
@@ -786,13 +799,16 @@ fn editor_view(
         .with_full_width(true)
         // The pane is the keyboard's owner only while it is the active one: a
         // file pane beside a terminal must not take the keys the terminal needs.
-        .with_focused(state.active_pane_id == pane_id && focused)
+        .with_focused(state.active_pane_id == pane_id)
         .with_caret(caret)
         .with_anchor(anchor)
         .with_line_runs(runs)
-        .with_on_change(on_change)
-        .with_on_focus_change(on_focus_change);
+        .with_on_change(on_change);
     let scroll = state.file_scroll.get(&pane_id).cloned().unwrap_or_default();
+    // The field is handed the same scroll state the region around it is: a
+    // buffer of as many lines as the pane will open is laid out a screenful at a
+    // time, and the caret is brought into view when it moves off that window.
+    let field = field.with_scroll_state(Rc::clone(&scroll));
     Scrollable::new(field.finish(), Axis::Vertical)
         .with_state(scroll)
         .finish()
@@ -873,8 +889,51 @@ impl Element for FileKeys {
     }
 }
 
-/// The file's lines: one row per line, a padded line number then the text, in
-/// the pane's own scroll offset so a long file scrolls and keeps its place.
+/// The lines of `pane_id`'s view the frame draws: the ones its own scroll
+/// viewport can show, and no more.
+///
+/// Every line of the body is an element of the frame and the tree is rebuilt
+/// every frame, so a body that draws all [`MAX_LINES`] of a long file costs a
+/// full layout of every one of them on every frame, whatever changed — the
+/// cache saves the read and the highlight and nothing else. The pane's own
+/// viewport is what bounds it. The lines outside the window are not dropped:
+/// [`lines_view`] stands them in with spacers of the same height, so the offset
+/// the pane keeps still means the same line and the scroll range is still the
+/// whole file's.
+///
+/// The pane has no viewport to read before its first layout, so that frame draws
+/// [`FIRST_FRAME_LINES`] lines plus the window's slack; the frame after draws
+/// what fits.
+fn drawn_window(state: &UiSnapshot, pane_id: u64, lines: usize) -> std::ops::Range<usize> {
+    let (offset, viewport) = match state.file_scroll.get(&pane_id) {
+        Some(scroll) => {
+            let scroll = scroll.borrow();
+            (scroll.offset(), scroll.viewport())
+        }
+        None => (0.0, 0.0),
+    };
+    let first = ((offset / LINE_BOX).floor().max(0.0) as usize).min(lines.saturating_sub(1));
+    let rows = if viewport > 0.0 {
+        (viewport / LINE_BOX).ceil() as usize
+    } else {
+        FIRST_FRAME_LINES
+    };
+    first..(first + rows + WINDOW_SLACK).min(lines)
+}
+
+/// The room `lines` rows take in the body without any of them being drawn, so
+/// the content the viewport measures is the whole file's height.
+fn filler(lines: usize) -> Box<dyn Element> {
+    Empty::new()
+        .with_size(Vector2F::new(0.0, lines as f32 * LINE_BOX))
+        .finish()
+}
+
+/// The file's lines: one row per line the pane can show, a padded line number
+/// then the text, in the pane's own scroll offset so a long file scrolls and
+/// keeps its place. The lines above and below the window are spacers of their
+/// own height, so what the body measures — and so what the pane scrolls
+/// through — is the whole file.
 ///
 /// `runs` are the lines already highlighted for the file's type, one entry per
 /// line, or `None` when the type did not resolve — a line without runs of its
@@ -887,14 +946,22 @@ fn lines_view(
     runs: Option<&Rc<Vec<HighlightedLine>>>,
     total: usize,
 ) -> Box<dyn Element> {
+    let window = drawn_window(state, pane_id, lines.len());
     let mut list = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-    for (index, line) in lines.iter().enumerate() {
+    if window.start > 0 {
+        list = list.with_child(filler(window.start));
+    }
+    for index in window.clone() {
+        let line = &lines[index];
         let runs = runs
             .and_then(|runs| runs.get(index))
             .filter(|runs| !runs.is_empty());
         list = list.with_child(line_row(app, index + 1, line, runs));
+    }
+    if window.end < lines.len() {
+        list = list.with_child(filler(lines.len() - window.end));
     }
     if total > lines.len() {
         list = list.with_child(note(
@@ -941,6 +1008,11 @@ fn line_row(
             .with_max_lines(1)
             .finish(),
     };
+    // `Code` rounds a line box up to a whole pixel and `Text` does not, so a
+    // plain line would advance a fraction short of a highlighted one and walk
+    // the drawn rows off the fillers they are counted in. The body is held to
+    // the one line box the pane counts in, whatever it is drawn with.
+    let text: Box<dyn Element> = ConstrainedBox::new(text).with_height(LINE_BOX).finish();
     Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_child(
@@ -1434,6 +1506,402 @@ mod tests {
             fs::read_to_string(&path).expect("read"),
             "changed\n",
             "and the file holds the buffer"
+        );
+    }
+
+    /// A file pane is typeable from the frame it opens in, with no press first.
+    ///
+    /// The explorer opens a file by splitting a pane off the one that asked and
+    /// making the new pane the space's active one, and the editor field's focus
+    /// follows exactly that gate — the same one the pane's Cmd/Ctrl+S reads.
+    /// While the field was focused only by a press inside it, a pane that had
+    /// just been opened took no keystroke at all: its first Cmd/Ctrl+S "saved" a
+    /// buffer nobody had typed into, and the file kept its old bytes.
+    #[test]
+    fn a_freshly_opened_file_pane_takes_typing_and_saves_it() {
+        use crate::root_view::RootView;
+        use crate::ui::{PaneKind, SplitDir};
+        use goble_core::store::Store;
+        use goble_desktop_service::{DesktopState, ThreadStore};
+        use goble_ui::elements::{EventContext, LayoutContext, PaintContext, SizeConstraint};
+        use goble_ui::event::ModifiersState;
+        use goble_ui::geometry::vec2f;
+        use goble_ui::render::{RenderCommand, Renderer};
+        use std::sync::Arc as StdArc;
+
+        let store_dir = tempfile::tempdir().expect("thread store dir");
+        let desktop = StdArc::new(DesktopState::new(
+            Store::open_in_memory().expect("store"),
+            ThreadStore::new(store_dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("notes.txt");
+        let original = "alpha\nbeta\n";
+        fs::write(&path, original).expect("write");
+        let path = path.to_string_lossy().to_string();
+
+        let view = RootView::new(&app, &desktop, None);
+        {
+            let state = view.state_rc();
+            let mut state = state.borrow_mut();
+            state.show_workspace_choice = false;
+            state.show_llm_key_banner = false;
+            state.show_onboarding_tip = false;
+            state.right_sidebar_open = false;
+            let (space, pane) = (state.active_space, state.active_pane_id);
+            let mut next = state.next_pane_id;
+            let new_id = state.spaces[space]
+                .split_with_kind(
+                    pane,
+                    SplitDir::Horizontal,
+                    &mut next,
+                    PaneKind::File { path: path.clone() },
+                )
+                .expect("a file pane splits off the pane that asked for it");
+            state.next_pane_id = next;
+            state.active_pane_id = new_id;
+            state.sync_active_view();
+        }
+        let mut root: Box<dyn Element> = Box::new(view);
+        let frame = |root: &mut Box<dyn Element>| -> Vec<RenderCommand> {
+            let _ = root.layout(
+                SizeConstraint::loose(vec2f(1024.0, 768.0)),
+                &mut LayoutContext::default(),
+                &app,
+            );
+            let mut ctx = PaintContext::new(Renderer::new());
+            root.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+            ctx.renderer
+                .take()
+                .map(|renderer| renderer.commands().to_vec())
+                .unwrap_or_default()
+        };
+        let _ = frame(&mut root);
+
+        // No press anywhere: the pane is the space's active pane, which is all
+        // the field's focus and the save chord read.
+        let mut ctx = EventContext::default();
+        assert!(
+            root.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: "!".to_string(),
+                    modifiers: ModifiersState::default(),
+                },
+                &mut ctx,
+                &app,
+            ),
+            "the pane the explorer just opened takes a keystroke"
+        );
+        let commands = frame(&mut root);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text.contains('!')
+            )),
+            "and the character is in the file the pane is showing: {commands:?}"
+        );
+
+        assert!(
+            root.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: "s".to_string(),
+                    modifiers: ModifiersState {
+                        command: true,
+                        ..Default::default()
+                    },
+                },
+                &mut ctx,
+                &app,
+            ),
+            "Cmd+S is the pane's own chord"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("read"),
+            "!alpha\nbeta\n",
+            "and the save writes the buffer the pane was typing into, whole"
+        );
+
+        // A save the pane made is not a change from outside: the frame after it
+        // drops the read that predates the write, and the frame after that
+        // re-reads what was written, so the pane never calls its own save a
+        // change under the edit it just made.
+        let _ = frame(&mut root);
+        let after_save = frame(&mut root);
+        assert!(
+            !after_save.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text.contains("changed on disk")
+            )),
+            "the pane does not report its own save as a write from outside: {after_save:?}"
+        );
+    }
+
+    /// Every line of the body is an element of the frame and the tree is rebuilt
+    /// every frame, so a body that draws a long file in full lays out every line
+    /// of it on every frame, whatever changed. The read-only body draws the
+    /// lines the pane's own viewport can show: the first frame, which has no
+    /// viewport measured yet, draws a screenful, and the frame after draws
+    /// exactly what fits plus the window's slack. The lines it leaves out are
+    /// spacers of their own height, so the body still measures the whole file
+    /// and the pane still scrolls through all of it.
+    ///
+    /// Both of the body's row kinds are measured, on a pane tall enough that a
+    /// row of the wrong pitch would fall short of the bottom of it: `.txt`
+    /// resolves to Plain Text and draws a line as runs, `.zzz` resolves to
+    /// nothing and draws it plain.
+    #[test]
+    fn a_long_file_draws_only_the_lines_its_viewport_shows() {
+        let app = AppContext::default();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let lines = MAX_LINES + 1_000;
+
+        for name in ["long.txt", "long.zzz"] {
+            let path = dir.path().join(name);
+            let text: String = (0..lines)
+                .map(|i| format!("let value_{i} = compute({i});\n"))
+                .collect();
+            fs::write(&path, &text).expect("write");
+            let path = path.to_string_lossy().to_string();
+
+            let (drawn, pitch, last_bottom, body_bottom, viewport, max_offset) =
+                long_file_body(&app, &path);
+
+            assert_eq!(
+                drawn,
+                (viewport / LINE_BOX).ceil() as usize + WINDOW_SLACK,
+                "{name}: the frames with a viewport draw its own lines and the window's \
+                 slack, {} rows in {viewport} points",
+                (viewport / LINE_BOX).ceil() as usize + WINDOW_SLACK
+            );
+            assert_eq!(
+                pitch, LINE_BOX,
+                "{name}: a drawn row advances by one line box"
+            );
+            assert!(
+                last_bottom >= body_bottom,
+                "{name}: the rows the pane draws reach the bottom of its viewport: \
+                 {last_bottom} against {body_bottom}"
+            );
+            assert!(
+                max_offset >= MAX_LINES as f32 * LINE_BOX - viewport,
+                "{name}: the lines the pane is not drawing still hold their height, so \
+                 the body scrolls through every line the read took: {max_offset} against \
+                 {} points of file",
+                MAX_LINES as f32 * LINE_BOX - viewport
+            );
+        }
+    }
+
+    /// A file pane showing `path`, drawn at a window tall enough that the rows
+    /// its body draws have to reach the bottom of it. Returns the second frame's
+    /// commands — the first has no viewport to size a window against — and what
+    /// the pane's own region measured.
+    fn pane_frames(
+        app: &AppContext,
+        path: &str,
+    ) -> (Vec<goble_ui::render::RenderCommand>, f32, f32) {
+        use crate::root_view::RootView;
+        use crate::ui::PaneKind;
+        use goble_core::store::Store;
+        use goble_desktop_service::{DesktopState, ThreadStore};
+        use goble_ui::elements::{LayoutContext, PaintContext, SizeConstraint};
+        use goble_ui::geometry::vec2f;
+        use goble_ui::render::{RenderCommand, Renderer};
+        use std::sync::Arc as StdArc;
+
+        let store_dir = tempfile::tempdir().expect("thread store dir");
+        let desktop = StdArc::new(DesktopState::new(
+            Store::open_in_memory().expect("store"),
+            ThreadStore::new(store_dir.path()).expect("thread store"),
+        ));
+        let view = RootView::new(app, &desktop, None);
+        let pane_id = {
+            let state = view.state_rc();
+            let mut state = state.borrow_mut();
+            state.show_workspace_choice = false;
+            state.show_llm_key_banner = false;
+            state.show_onboarding_tip = false;
+            state.right_sidebar_open = false;
+            let (space, pane) = (state.active_space, state.active_pane_id);
+            state.spaces[space].set_leaf_kind(
+                pane,
+                PaneKind::File {
+                    path: path.to_string(),
+                },
+            );
+            pane
+        };
+        let state = view.state_rc();
+        let mut root: Box<dyn Element> = Box::new(view);
+        let mut frame = || -> Vec<RenderCommand> {
+            let _ = root.layout(
+                SizeConstraint::loose(vec2f(1024.0, 2400.0)),
+                &mut LayoutContext::default(),
+                app,
+            );
+            let mut ctx = PaintContext::new(Renderer::new());
+            root.paint(vec2f(0.0, 0.0), &mut ctx, app);
+            ctx.renderer
+                .take()
+                .map(|renderer| renderer.commands().to_vec())
+                .unwrap_or_default()
+        };
+        // The first frame has no viewport to size the window against; the one
+        // after draws what the pane can show.
+        let _ = frame();
+        let commands = frame();
+
+        let scroll = state
+            .borrow()
+            .file_scroll
+            .get(&pane_id)
+            .cloned()
+            .expect("the pane's viewport was measured");
+        let (viewport, max_offset) = {
+            let scroll = scroll.borrow();
+            (scroll.viewport(), scroll.max_offset())
+        };
+        assert!(viewport > 0.0, "the pane measured a viewport");
+        (commands, viewport, max_offset)
+    }
+
+    /// The line numbers the pane drew in its gutter, in order.
+    fn gutter_numbers(commands: &[goble_ui::render::RenderCommand]) -> Vec<usize> {
+        use goble_ui::render::RenderCommand;
+
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => {
+                    // The gutter is right-aligned, so a small number carries
+                    // leading spaces that `parse` would reject.
+                    let padded = text.strip_suffix(' ')?;
+                    (padded.len() == GUTTER_DIGITS
+                        && padded.trim().chars().all(|ch| ch.is_ascii_digit()))
+                    .then(|| padded.trim().parse().ok())?
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A file pane showing `path`, at a window tall enough that the rows it
+    /// draws have to reach the bottom of it. Returns what the read-only body
+    /// drew — how many lines, the pitch its rows advance by, and where the last
+    /// of them ends — the bottom of the region they are clipped to, and what
+    /// that region measured.
+    fn long_file_body(
+        app: &AppContext,
+        path: &str,
+    ) -> (usize, f32, f32, f32, f32, f32) {
+        use goble_ui::geometry::PointF;
+        use goble_ui::render::RenderCommand;
+
+        let (commands, viewport, max_offset) = pane_frames(app, path);
+
+        let origins: Vec<Vector2F> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text.starts_with("let value_") => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .collect();
+        let pitch = origins[1].y - origins[0].y;
+        let last_bottom = origins.last().expect("the file's lines are drawn").y + pitch;
+        let body = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::ClipRect(rect)
+                    if rect.contains(PointF::new(origins[0].x, origins[0].y)) =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the body is clipped to the pane's viewport");
+        (
+            origins.len(),
+            pitch,
+            last_bottom,
+            body.max_y(),
+            viewport,
+            max_offset,
+        )
+    }
+
+    /// The editing body is windowed the way the read-only one is: a file the
+    /// pane opens for editing draws the rows its own viewport can show, not the
+    /// whole buffer, while the buffer still stands at its full height. Without
+    /// the window a long file costs a layout of every one of its lines on every
+    /// frame, which is what the read-only body already avoids.
+    #[test]
+    fn an_editable_file_draws_only_the_lines_its_viewport_shows() {
+        let app = AppContext::default();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let lines = MAX_LINES - 100;
+        let path = dir.path().join("editable.rs");
+        let text: String = (0..lines)
+            .map(|i| format!("let value_{i} = compute({i});\n"))
+            .collect();
+        fs::write(&path, &text).expect("write");
+        let path = path.to_string_lossy().to_string();
+        assert!(
+            read_only_reason(&read(&path)).is_none(),
+            "the pane opens this file for editing"
+        );
+
+        let (commands, viewport, max_offset) = pane_frames(&app, &path);
+        let drawn = gutter_numbers(&commands);
+        let rows = (viewport / LINE_BOX).ceil() as usize;
+        assert_eq!(
+            drawn.len(),
+            rows + WINDOW_SLACK,
+            "the editing pane draws its own rows and the window's slack, {rows} \
+             rows in {viewport} points"
+        );
+        assert_eq!(drawn[0], 1, "and opens at the buffer's first line");
+        assert!(
+            *drawn.last().expect("rows are drawn") < lines,
+            "the buffer's last line is outside the window: {} rows drawn",
+            drawn.len()
+        );
+        assert_eq!(
+            max_offset,
+            // The buffer holds the file verbatim, newline at its end and all,
+            // so it has a last line past the last newline.
+            (lines + 1) as f32 * LINE_BOX - viewport,
+            "the rows outside the window stand in at their own height, so the \
+             buffer still scrolls through all of itself"
+        );
+    }
+
+    /// Every row of the read-only body is one [`LINE_BOX`] tall, whether its line
+    /// was highlighted or drawn plain. The body's spacers and its offset→line
+    /// arithmetic are counted in that box, so a plain row that advanced a
+    /// fraction short of a highlighted one would walk the drawn rows off the
+    /// fillers they stand on and leave the bottom of a tall pane blank.
+    #[test]
+    fn a_plain_row_and_a_highlighted_row_are_one_line_box_tall() {
+        let app = AppContext::default();
+        let line = "let value = compute(1);";
+        let runs = highlight(&[line.to_string()], "a.rs").expect("rust resolves");
+        let constraint = SizeConstraint::loose(Vector2F::new(600.0, 400.0));
+        let mut ctx = LayoutContext::default();
+
+        let mut plain = line_row(&app, 1, line, None);
+        let mut highlighted = line_row(&app, 1, line, Some(&runs[0]));
+        assert_eq!(
+            plain.layout(constraint, &mut ctx, &app).y,
+            LINE_BOX,
+            "a line drawn plain takes one line box"
+        );
+        assert_eq!(
+            highlighted.layout(constraint, &mut ctx, &app).y,
+            LINE_BOX,
+            "and a highlighted line takes the same one"
         );
     }
 }

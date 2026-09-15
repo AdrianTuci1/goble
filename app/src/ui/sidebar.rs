@@ -190,10 +190,15 @@ fn agents_view(
     // whichever environment they belong to. The pinned ones are this section's
     // and no one else's — the folder groups below list what is left — so a
     // starred conversation is listed once, where the user put it.
+    //
+    // A conversation the agent has not answered yet is not listed at all: it is
+    // a tab the user opened and typed into, not a thread with anything in it.
+    // The rule is on the entry ([`ConversationEntry::has_agent_reply`]) and
+    // applies to both sections, so neither can list what the other hides.
     let starred: Vec<&ConversationEntry> = state
         .conversations
         .iter()
-        .filter(|entry| state.starred.iter().any(|id| id == &entry.id))
+        .filter(|entry| entry.has_agent_reply && state.starred.iter().any(|id| id == &entry.id))
         .collect();
     let is_starred =
         |entry: &ConversationEntry| starred.iter().any(|pinned| pinned.id == entry.id);
@@ -207,7 +212,9 @@ fn agents_view(
     let visible: Vec<&ConversationEntry> = state
         .conversations
         .iter()
-        .filter(|entry| entry.workspace_routing == routing && !is_starred(entry))
+        .filter(|entry| {
+            entry.has_agent_reply && entry.workspace_routing == routing && !is_starred(entry)
+        })
         .collect();
 
     // Collapsed, the list is a short digest: a few cards plus a "View all"
@@ -257,10 +264,18 @@ fn agents_view(
     // pinned conversations are listed here too, so a list that is entirely
     // starred has content and says nothing.
     if visible.is_empty() && starred.is_empty() {
-        let empty_label = if state.conversations.is_empty() {
-            "No conversations yet. Create one to begin."
-        } else {
+        // The list is empty for one of two reasons, and they read differently:
+        // nothing worth listing exists yet (no conversation, or none the agent
+        // has answered), or the ones that do exist belong to another
+        // environment.
+        let any_listable = state
+            .conversations
+            .iter()
+            .any(|entry| entry.has_agent_reply);
+        let empty_label = if any_listable {
             "No conversations for this environment."
+        } else {
+            "No conversations yet. Create one to begin."
         };
         list = list.with_child(
             Container::new(
@@ -477,6 +492,23 @@ mod sidebar_surface_tests {
             .collect()
     }
 
+    /// Every run the sidebar's list drew: left of the workspace and below the
+    /// topbar, which names the active tab's conversation at the same x.
+    fn sidebar_list_text(commands: &[RenderCommand]) -> Vec<String> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if origin.x < crate::ui::SIDEBAR_WIDTH
+                        && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// A root view with the overlays and banners off and five conversations, the
     /// way the sidebar's own tests seed it.
     fn seeded_view(app: &AppContext, desktop: &Arc<DesktopState>) -> crate::root_view::RootView {
@@ -486,7 +518,6 @@ mod sidebar_surface_tests {
             let mut s = state.borrow_mut();
             s.show_workspace_choice = false;
             s.show_llm_key_banner = false;
-            s.settings_overlay_open = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
             s.conversations = vec![
@@ -649,7 +680,6 @@ mod sidebar_surface_tests {
                 let mut s = state.borrow_mut();
                 s.show_workspace_choice = false;
                 s.show_llm_key_banner = false;
-                s.settings_overlay_open = false;
                 s.right_sidebar_open = false;
                 s.crons_open = false;
                 s.conversations = vec![
@@ -699,7 +729,6 @@ mod sidebar_surface_tests {
             let mut s = state.borrow_mut();
             s.show_workspace_choice = false;
             s.show_llm_key_banner = false;
-            s.settings_overlay_open = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
             // Expanded, so every row is in the scrollable region (collapsed is
@@ -953,7 +982,6 @@ mod sidebar_surface_tests {
             let mut s = state.borrow_mut();
             s.show_workspace_choice = false;
             s.show_llm_key_banner = false;
-            s.settings_overlay_open = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
             // Expanded, and long enough to overflow the band, so there is
@@ -1455,6 +1483,141 @@ mod sidebar_surface_tests {
         assert!(
             !drawn.iter().any(|text| text.contains("No conversations")),
             "an all-pinned list has content: {drawn:?}"
+        );
+    }
+
+    /// A conversation nobody has answered is a place to type rather than
+    /// history, so the sidebar lists it only once the agent has produced
+    /// something in it: an assistant reply or a tool result.
+    #[test]
+    fn a_conversation_the_agent_has_not_answered_is_not_listed() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+
+        let asked = desktop
+            .create_chat("Only asked", None, None)
+            .expect("a conversation with an unanswered prompt");
+        desktop
+            .add_chat_message(&asked, "user", "salut")
+            .expect("the user's prompt");
+        let answered = desktop
+            .create_chat("Answered", None, None)
+            .expect("a conversation the agent answered");
+        desktop
+            .add_chat_message(&answered, "user", "salut")
+            .expect("the user's prompt");
+        desktop
+            .add_chat_message(&answered, "assistant", "Bine ai venit!")
+            .expect("the agent's reply");
+        let tooled = desktop
+            .create_chat("Tooled", None, None)
+            .expect("a conversation a tool ran in");
+        desktop
+            .add_chat_message(&tooled, "tool", "call_1\nfile.txt")
+            .expect("a tool result");
+
+        let view = RootView::new(&app, &desktop, None);
+        {
+            let state = view.state_rc();
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.refresh_conversations(&desktop);
+        }
+        let mut root: Box<dyn Element> = Box::new(view);
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        let drawn = sidebar_list_text(&commands);
+        assert!(
+            drawn.iter().any(|text| text == "Answered"),
+            "the answered conversation is listed: {drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|text| text == "Tooled"),
+            "a conversation a tool has run in is listed: {drawn:?}"
+        );
+        assert!(
+            !drawn.iter().any(|text| text == "Only asked"),
+            "a conversation nobody has answered is left out: {drawn:?}"
+        );
+    }
+
+    /// The list is empty for one of two reasons and they read differently: no
+    /// conversation has been answered yet, or the ones that have belong to
+    /// another environment. An unanswered conversation is the first, not the
+    /// second — it is not a conversation this environment lacks.
+    #[test]
+    fn an_unanswered_conversation_leaves_the_first_empty_state() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+
+        let asked = desktop
+            .create_chat("Only asked", None, None)
+            .expect("a conversation with an unanswered prompt");
+        desktop
+            .add_chat_message(&asked, "user", "salut")
+            .expect("the user's prompt");
+
+        let app = AppContext::default();
+        let view = RootView::new(&app, &desktop, None);
+        let state = view.state_rc();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.refresh_conversations(&desktop);
+        }
+        let mut root: Box<dyn Element> = Box::new(view);
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        let drawn = sidebar_list_text(&commands);
+        assert!(
+            !drawn
+                .iter()
+                .any(|text| text == "No conversations for this environment."),
+            "an unanswered conversation is not one this environment lacks: {drawn:?}"
+        );
+        assert!(
+            drawn
+                .iter()
+                .any(|text| text == "No conversations yet. Create one to begin."),
+            "the list has nothing to show yet: {drawn:?}"
+        );
+
+        // An answered conversation that belongs to the other environment is
+        // the second reason: the list holds something, elsewhere.
+        let elsewhere = desktop
+            .create_chat("Elsewhere", None, None)
+            .expect("a conversation in another environment");
+        desktop
+            .add_chat_message(&elsewhere, "assistant", "Bine ai venit!")
+            .expect("the agent's reply");
+        desktop
+            .set_chat_workspace_routing(&elsewhere, Some("remote"))
+            .expect("a remote environment");
+        state.borrow_mut().refresh_conversations(&desktop);
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        let drawn = sidebar_list_text(&commands);
+        assert!(
+            drawn
+                .iter()
+                .any(|text| text == "No conversations for this environment."),
+            "the answered conversation belongs to the other environment: {drawn:?}"
+        );
+        assert!(
+            !drawn
+                .iter()
+                .any(|text| text == "No conversations yet. Create one to begin."),
+            "and the list is not untouched: {drawn:?}"
         );
     }
 

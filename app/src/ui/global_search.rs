@@ -41,6 +41,21 @@ const MAX_FILE_BYTES: u64 = 1 << 20;
 /// previous query at once, large enough that the check costs nothing.
 const CANCEL_CHECK_FILES: usize = 32;
 
+/// The height a matched line's row lays out to: an 11pt line in a row padded
+/// 2pt above and below.
+const LINE_ROW_HEIGHT: f32 = 11.0 * 1.2 + 4.0;
+/// The height a file's own row lays out to: a 12pt name beside a 14pt icon,
+/// whichever is taller, in the same padding.
+const FILE_ROW_HEIGHT: f32 = 12.0 * 1.2 + 4.0;
+/// Rows drawn on the frame that first shows the list, before the region has
+/// been laid out once and has no viewport to window against.
+const FIRST_FRAME_ROWS: usize = 64;
+/// Rows drawn past the ones the viewport holds, so a row the band cuts in half
+/// is drawn rather than left blank.
+const WINDOW_SLACK: usize = 4;
+/// The gap the list puts between two rows.
+const ROW_SPACING: f32 = 1.0;
+
 /// Directories the in-process search never descends into. ripgrep skips these
 /// through the ignore files; without it they are named here, because they hold
 /// more files than everything the user cares about put together.
@@ -457,6 +472,116 @@ fn file_name(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
 }
 
+/// One row of the result: a file's own row naming it under its icon, or a
+/// matched line indented under the file's, the line number then the text.
+fn result_row(app: &AppContext, row: &SearchRow, actions: &UiActions) -> Box<dyn Element> {
+    let mut line = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0);
+    match row.line {
+        // A file's own row names it, with the icon of what it is.
+        None => {
+            line = line
+                .with_child(
+                    Icon::new(file_icon_name(&row.name))
+                        .with_size(14.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_child(
+                    Text::new(row.name.clone())
+                        .with_theme_color(ColorToken::Text, app)
+                        .with_font_size(12.0)
+                        .with_max_lines(1)
+                        .finish(),
+                );
+        }
+        // A matched line, indented under it: the line number, then the text.
+        Some(number) => {
+            line = line
+                .with_child(
+                    // A blank column of the file row's icon width, so a
+                    // matched line's number lines up under the file's name.
+                    // `ConstrainedBox` reports its child's size, and an
+                    // `Empty` ignores a constraint, so the width has to be
+                    // the empty element's own.
+                    Empty::new().with_size(vec2f(14.0, 0.0)).finish(),
+                )
+                .with_child(
+                    Text::new(format!("{number}"))
+                        .with_theme_color(ColorToken::Muted, app)
+                        .with_font_size(11.0)
+                        .finish(),
+                )
+                .with_child(
+                    Text::new(row.text.clone())
+                        .with_theme_color(ColorToken::Muted, app)
+                        .with_font_size(11.0)
+                        .with_max_lines(1)
+                        .finish(),
+                );
+        }
+    }
+    let path = row.path.clone();
+    let on_open = actions.on_explorer_file_click.clone();
+    HoverRow::new(line.finish())
+        .with_padding(EdgeInsets::new(0.0, 2.0, 0.0, 2.0))
+        .with_on_click(move || (on_open.borrow_mut())(path.clone()))
+        .finish()
+}
+
+/// How tall a row lays out to. The rows are not all one height — a file's own
+/// row is taller than the matched lines under it — so the window walks these
+/// rather than a single pitch, and the heights have to be the rows' own: a
+/// `row_heights_are_the_rows_they_stand_in_for` test lays the rows out and
+/// holds them to these.
+fn row_height(row: &SearchRow) -> f32 {
+    if row.line.is_none() {
+        FILE_ROW_HEIGHT
+    } else {
+        LINE_ROW_HEIGHT
+    }
+}
+
+/// The rows the band holds. Every row is an element that measures its own line
+/// while the tree is laid out, so a frame that builds all of them costs the
+/// frame the whole result — a full one is 2200 rows — and every wheel event
+/// asks for a frame. The rows outside the window are stood in by a spacer of
+/// their own height instead, so what the region measures, and so the offset the
+/// user scrolled to, is still the whole result's.
+fn drawn_window(state: &UiSnapshot, rows: &[SearchRow]) -> std::ops::Range<usize> {
+    let (offset, viewport) = {
+        let scroll = state.global_search_scroll.borrow();
+        (scroll.offset(), scroll.viewport())
+    };
+    // The window opens at the row the offset lands in, so the rows above it are
+    // the ones the offset already scrolled past. The gap between rows counts
+    // with them: the offset is measured over the list's own height.
+    let mut first = 0;
+    let mut above = 0.0;
+    while first + 1 < rows.len() && above + row_height(&rows[first]) + ROW_SPACING <= offset {
+        above += row_height(&rows[first]) + ROW_SPACING;
+        first += 1;
+    }
+    // No row is shorter than a matched line's, so this many covers the band.
+    let held = if viewport > 0.0 {
+        (viewport / LINE_ROW_HEIGHT).ceil() as usize
+    } else {
+        FIRST_FRAME_ROWS
+    };
+    first..(first + held + WINDOW_SLACK).min(rows.len())
+}
+
+/// The room `rows` take with none of them drawn, so the region still measures
+/// the whole result's height and its scroll range is unchanged. The gap the
+/// list puts between two rows counts with them: without it the content would
+/// fall short by one gap per row the frame is not drawing.
+fn filler(rows: &[SearchRow]) -> Box<dyn Element> {
+    let height = rows.iter().map(row_height).sum::<f32>()
+        + ROW_SPACING * rows.len().saturating_sub(1) as f32;
+    Empty::new().with_size(vec2f(0.0, height)).finish()
+}
+
 /// The search view: the query field, then what it found — one row per file, one
 /// row per matching line under it.
 pub(crate) fn build_search(
@@ -502,65 +627,24 @@ pub(crate) fn build_search(
         )
     };
 
+    // The list is the whole result's, but only the rows the band holds are
+    // drawn: every row is an element, and one of them measures its own line at
+    // the width the row's layout gives it, so a frame that draws all of them
+    // costs the frame a walk of every matched line — a full result set is 2200
+    // rows, and the frame that costs is the frame every wheel event asks for.
+    let rows = &state.global_search_rows;
+    let window = drawn_window(state, rows);
     let mut list = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(1.0);
-    for row in &state.global_search_rows {
-        let mut line = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(4.0);
-        match row.line {
-            // A file's own row names it, with the icon of what it is.
-            None => {
-                line = line
-                    .with_child(
-                        Icon::new(file_icon_name(&row.name))
-                            .with_size(14.0)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .finish(),
-                    )
-                    .with_child(
-                        Text::new(row.name.clone())
-                            .with_theme_color(ColorToken::Text, app)
-                            .with_font_size(12.0)
-                            .with_max_lines(1)
-                            .finish(),
-                    );
-            }
-            // A matched line, indented under it: the line number, then the text.
-            Some(number) => {
-                line = line
-                    .with_child(
-                        // A blank column of the file row's icon width, so a
-                        // matched line's number lines up under the file's name.
-                        // `ConstrainedBox` reports its child's size, and an
-                        // `Empty` ignores a constraint, so the width has to be
-                        // the empty element's own.
-                        Empty::new().with_size(vec2f(14.0, 0.0)).finish(),
-                    )
-                    .with_child(
-                        Text::new(format!("{number}"))
-                            .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(11.0)
-                            .finish(),
-                    )
-                    .with_child(
-                        Text::new(row.text.clone())
-                            .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(11.0)
-                            .with_max_lines(1)
-                            .finish(),
-                    );
-            }
-        }
-        let path = row.path.clone();
-        let on_open = actions.on_explorer_file_click.clone();
-        list = list.with_child(
-            HoverRow::new(line.finish())
-                .with_padding(EdgeInsets::new(0.0, 2.0, 0.0, 2.0))
-                .with_on_click(move || (on_open.borrow_mut())(path.clone()))
-                .finish(),
-        );
+        .with_spacing(ROW_SPACING);
+    if window.start > 0 {
+        list = list.with_child(filler(&rows[..window.start]));
+    }
+    for row in &rows[window.clone()] {
+        list = list.with_child(result_row(app, row, actions));
+    }
+    if window.end < rows.len() {
+        list = list.with_child(filler(&rows[window.end..]));
     }
 
     let mut column = Flex::column()
@@ -764,6 +848,533 @@ mod tests {
         assert!(
             !error.contains("ripgrep"),
             "a missing ripgrep is not a search failure: {error:?}"
+        );
+    }
+}
+
+/// The search results are a real scroll region: the wheel over the band moves
+/// the list, and the offset it moved to survives the per-frame rebuild.
+#[cfg(test)]
+mod sidebar_scroll_tests {
+    use super::*;
+    use crate::root_view::RootView;
+    use crate::ui::SidebarView;
+    use goble_core::store::Store;
+    use goble_desktop_service::{DesktopState, ThreadStore};
+    use goble_ui::elements::{EventContext, LayoutContext, PaintContext, SizeConstraint};
+    use goble_ui::event::DispatchedEvent;
+    use goble_ui::geometry::Vector2F;
+    use goble_ui::render::{RenderCommand, Renderer};
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    /// What the worker produces for `files` files, each with `lines` matched
+    /// lines under its own row.
+    fn result_rows(files: usize, lines: usize) -> Vec<SearchRow> {
+        let mut rows = Vec::new();
+        for file in 0..files {
+            let path = format!("/tmp/project/src/file_{file}.rs");
+            rows.push(SearchRow {
+                path: path.clone(),
+                name: format!("file_{file}.rs"),
+                line: None,
+                text: String::new(),
+            });
+            for line in 0..lines {
+                rows.push(SearchRow {
+                    path: path.clone(),
+                    name: String::new(),
+                    line: Some(line as u32 + 1),
+                    text: format!("needle here on line {line}"),
+                });
+            }
+        }
+        rows
+    }
+
+    /// A root view showing the sidebar's Search view over `rows`, with the
+    /// banners and overlays off so the band is what is on screen.
+    fn searching_view(
+        app: &AppContext,
+        desktop: &Arc<DesktopState>,
+        rows: Vec<SearchRow>,
+    ) -> RootView {
+        let view = RootView::new(app, desktop, None);
+        {
+            let state = view.state_rc();
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.sidebar_view = SidebarView::Search;
+            s.global_search_query = "needle".to_string();
+            s.global_search_searched = true;
+            s.global_search_rows = rows;
+        }
+        view
+    }
+
+    /// A wheel event carries no position: it is attributed by the last paint,
+    /// so the pointer has to be over the band while the tree is painted.
+    const OVER_THE_BAND_Y: f32 = 400.0;
+
+    fn paint(root: &mut Box<dyn Element>, app: &AppContext, cursor: Vector2F) -> Vec<RenderCommand> {
+        let window = vec2f(1024.0, 768.0);
+        let _ = root.layout(
+            SizeConstraint::loose(window),
+            &mut LayoutContext::default(),
+            app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = cursor;
+        root.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        ctx.renderer.expect("renderer").commands().to_vec()
+    }
+
+    /// The y every text the frame drew in the band was drawn at, by the text
+    /// itself, for the texts the frame drew exactly once: a row's own name, not
+    /// the line numbers every row repeats.
+    fn rows_by_text(commands: &[RenderCommand]) -> std::collections::HashMap<String, f32> {
+        let mut drawn = std::collections::HashMap::new();
+        let mut repeated = std::collections::HashSet::new();
+        for command in commands {
+            if let RenderCommand::DrawText { text, origin, .. } = command {
+                if origin.x < crate::ui::SIDEBAR_WIDTH {
+                    if drawn.insert(text.clone(), origin.y).is_some() {
+                        repeated.insert(text.clone());
+                    }
+                }
+            }
+        }
+        for text in repeated {
+            drawn.remove(&text);
+        }
+        drawn
+    }
+
+    /// How far up the second frame drew a row the first frame also drew, taken
+    /// over the rows both frames drew: a wheel that moved the offset moved them
+    /// all by the same amount.
+    fn shift_of_a_drawn_row(before: &[RenderCommand], after: &[RenderCommand]) -> Option<f32> {
+        let (before, after) = (rows_by_text(before), rows_by_text(after));
+        before
+            .iter()
+            .filter_map(|(text, was)| after.get(text).map(|now| was - now))
+            .fold(None, |worst: Option<f32>, shift| {
+                Some(worst.map_or(shift, |worst| worst.max(shift)))
+            })
+    }
+
+    /// A search that found more than the band holds scrolls under the wheel.
+    #[test]
+    fn the_search_results_scroll_under_the_wheel() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let view = searching_view(&app, &desktop, result_rows(40, 3));
+        let state = view.state_rc();
+
+        let mut root: Box<dyn Element> = Box::new(view);
+        let over_the_band = vec2f(crate::ui::SIDEBAR_WIDTH / 2.0, OVER_THE_BAND_Y);
+        let before = paint(&mut root, &app, over_the_band);
+
+        let scroll = state.borrow().global_search_scroll.clone();
+        assert!(
+            scroll.borrow().max_offset() > 0.0,
+            "the found rows overflow the band: {:?}",
+            scroll.borrow().max_offset()
+        );
+        assert_eq!(scroll.borrow().offset(), 0.0, "it opens at the top");
+
+        let mut ctx = EventContext::default();
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: over_the_band,
+            },
+            &mut ctx,
+            &app,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::Scroll {
+                delta: vec2f(0.0, -40.0),
+            },
+            &mut ctx,
+            &app,
+        );
+        let scrolled = scroll.borrow().offset();
+        assert!(
+            scrolled > 0.0,
+            "the wheel moves the content up and carries the offset on: {scrolled}"
+        );
+
+        // The tree is rebuilt every frame; the offset lives in app state, and
+        // the rows are drawn shifted by it.
+        let after = paint(&mut root, &app, over_the_band);
+        assert_eq!(
+            scroll.borrow().offset(),
+            scrolled,
+            "the offset survives the rebuild"
+        );
+        // A row of the list that both frames drew moved up by exactly the
+        // offset: the frame the wheel asked for is the list the user scrolled.
+        let shift = shift_of_a_drawn_row(&before, &after).expect("both frames drew a row");
+        assert!(
+            shift > 1.0 && (shift - scrolled).abs() < 1.0,
+            "the drawn rows moved up by {shift}, not by the offset {scrolled}"
+        );
+    }
+
+    /// The path the user walks: the tab opens the search view, the field takes a
+    /// query, the worker answers, and the wheel over the answer moves it.
+    #[test]
+    fn the_results_of_a_typed_query_scroll_under_the_wheel() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let home = tempfile::tempdir().expect("temp working directory");
+        // More than the band holds, so the answer has somewhere to scroll to.
+        for file in 0..30 {
+            std::fs::write(
+                home.path().join(format!("notes_{file}.md")),
+                "a needle in the haystack\n".repeat(40),
+            )
+            .unwrap();
+        }
+
+        let view = RootView::new(&app, &desktop, None);
+        {
+            let state = view.state_rc();
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.set_active_pane_path(home.path().to_string_lossy().to_string());
+            // Entering the view rewinds its list, as the toolbelt's tab does.
+            s.sidebar_view = SidebarView::Search;
+            s.global_search_scroll.borrow_mut().reset();
+            s.global_search_focused = true;
+        }
+        let state = view.state_rc();
+
+        let mut root: Box<dyn Element> = Box::new(view);
+        let over_the_band = vec2f(crate::ui::SIDEBAR_WIDTH / 2.0, OVER_THE_BAND_Y);
+        paint(&mut root, &app, over_the_band);
+
+        for key in ["n", "e", "e", "d", "l", "e"] {
+            let mut ctx = EventContext::default();
+            root.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: key.to_string(),
+                    modifiers: Default::default(),
+                },
+                &mut ctx,
+                &app,
+            );
+        }
+        assert_eq!(
+            state.borrow().global_search_query,
+            "needle",
+            "the field takes the query"
+        );
+
+        // Collect the walk the way the frame loop does.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !state.borrow().global_search_searched {
+            assert!(std::time::Instant::now() < deadline, "the walk answers");
+            paint(&mut root, &app, over_the_band);
+        }
+        let found = state.borrow().global_search_rows.len();
+        assert!(found > 0, "the query matches the file");
+        let before = paint(&mut root, &app, over_the_band);
+
+        let scroll = state.borrow().global_search_scroll.clone();
+        assert!(
+            scroll.borrow().max_offset() > 0.0,
+            "{found} rows overflow the band: {:?}",
+            scroll.borrow().max_offset()
+        );
+
+        let mut ctx = EventContext::default();
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: over_the_band,
+            },
+            &mut ctx,
+            &app,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::Scroll {
+                delta: vec2f(0.0, -40.0),
+            },
+            &mut ctx,
+            &app,
+        );
+        let scrolled = scroll.borrow().offset();
+        assert!(
+            scrolled > 0.0,
+            "the wheel carries the results' offset on: {scrolled}"
+        );
+        let after = paint(&mut root, &app, over_the_band);
+        assert_eq!(
+            scroll.borrow().offset(),
+            scrolled,
+            "the offset survives the rebuild"
+        );
+        // A row of the list that both frames drew moved up by exactly the
+        // offset: the frame the wheel asked for is the list the user scrolled.
+        let shift = shift_of_a_drawn_row(&before, &after).expect("both frames drew a row");
+        assert!(
+            shift > 1.0 && (shift - scrolled).abs() < 1.0,
+            "the drawn rows moved up by {shift}, not by the offset {scrolled}"
+        );
+    }
+
+    /// The app's own actions, the way the frame loop builds them, over a state
+    /// of their own: a test that lays rows out needs no whole view.
+    fn row_actions(desktop: &Arc<DesktopState>) -> UiActions {
+        use crate::actions::make_actions;
+        use crate::media::MediaState;
+        use crate::state::UiState;
+        let state = Rc::new(RefCell::new(UiState::from_desktop(desktop)));
+        make_actions(
+            state,
+            Some(Arc::clone(desktop)),
+            Rc::new(RefCell::new(MediaState::mock())),
+            goble_ui::platform::WindowControl::default(),
+            Rc::new(RefCell::new(1.0)),
+        )
+    }
+
+    /// The heights the window walks are the heights the rows themselves lay out
+    /// to: the rows outside the window are stood in by a spacer of these, and a
+    /// spacer that is off by a pixel drifts the whole list.
+    #[test]
+    fn row_heights_are_the_rows_they_stand_in_for() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let actions = row_actions(&desktop);
+        for (row, height) in [
+            (
+                SearchRow {
+                    path: "/tmp/project/src/main.rs".to_string(),
+                    name: "main.rs".to_string(),
+                    line: None,
+                    text: String::new(),
+                },
+                FILE_ROW_HEIGHT,
+            ),
+            (
+                SearchRow {
+                    path: "/tmp/project/src/main.rs".to_string(),
+                    name: String::new(),
+                    line: Some(12),
+                    text: "let needle = search_in_process(root, query, cancelled);".to_string(),
+                },
+                LINE_ROW_HEIGHT,
+            ),
+        ] {
+            let mut element = result_row(&app, &row, &actions);
+            let size = element.layout(
+                SizeConstraint::new(
+                    vec2f(0.0, 0.0),
+                    vec2f(crate::ui::SIDEBAR_WIDTH, f32::INFINITY),
+                ),
+                &mut LayoutContext::default(),
+                &app,
+            );
+            assert_eq!(
+                size.y, height,
+                "the row for {:?} lays out to {height}, not {}",
+                row.line, size.y
+            );
+        }
+    }
+
+    /// The windowed list measures what the whole list measures: the rows the
+    /// frame does not draw are stood in by a spacer of their own height, so the
+    /// offset still means the row it was scrolled to and the range is still the
+    /// whole result's.
+    #[test]
+    fn the_window_keeps_the_whole_results_scroll_range() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let actions = row_actions(&desktop);
+        // The walk's own cap: 200 files of 10 matched lines each, nearly all of
+        // them outside the window, so the spacers carry the result's height.
+        let rows = measured_rows(200, 10, 400);
+        let view = searching_view(&app, &desktop, rows.clone());
+        let state = view.state_rc();
+        let mut root: Box<dyn Element> = Box::new(view);
+        let over_the_band = vec2f(crate::ui::SIDEBAR_WIDTH / 2.0, OVER_THE_BAND_Y);
+        let top = paint(&mut root, &app, over_the_band);
+
+        // The same rows as one list, every row of them drawn.
+        let mut whole = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(ROW_SPACING);
+        for row in &rows {
+            whole = whole.with_child(result_row(&app, row, &actions));
+        }
+        let height = whole.finish().layout(
+            SizeConstraint::new(vec2f(0.0, 0.0), vec2f(crate::ui::SIDEBAR_WIDTH, f32::INFINITY)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let scroll_state = state.borrow().global_search_scroll.clone();
+        let scroll = scroll_state.borrow();
+        assert!(
+            (scroll.max_offset() + scroll.viewport() - height.y).abs() < 1.0,
+            "the windowed list measures {} where the whole list measures {}",
+            scroll.max_offset() + scroll.viewport(),
+            height.y
+        );
+        let viewport = scroll.viewport();
+        drop(scroll);
+
+        // The end of the list: the file it ends with is the one the band shows
+        // once the wheel has carried the offset as far as it goes.
+        let opened_at = *rows_by_text(&top)
+            .get("module_0.rs")
+            .expect("the list opens at its first file");
+        let mut ctx = EventContext::default();
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: over_the_band,
+            },
+            &mut ctx,
+            &app,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::Scroll {
+                delta: vec2f(0.0, -1_000_000.0),
+            },
+            &mut ctx,
+            &app,
+        );
+        let end = paint(&mut root, &app, over_the_band);
+        let drawn = rows_by_text(&end);
+        let last = drawn
+            .get("module_199.rs")
+            .expect("the list ends at its last file");
+        assert!(
+            *last > opened_at - 2.0 && *last < opened_at + viewport,
+            "the last file is drawn inside the band: {last} against {opened_at}..{}",
+            opened_at + viewport
+        );
+    }
+
+    /// A result set the way the walk produces it: files of `per_file` matched
+    /// lines each, the line text a real source line of `line_chars` characters.
+    fn measured_rows(files: usize, per_file: usize, line_chars: usize) -> Vec<SearchRow> {
+        let mut rows = Vec::new();
+        for file in 0..files {
+            let path = format!("/tmp/project/src/module_{file}.rs");
+            rows.push(SearchRow {
+                path: path.clone(),
+                name: format!("module_{file}.rs"),
+                line: None,
+                text: String::new(),
+            });
+            for line in 0..per_file {
+                let text = format!(
+                    "            let needle_{file}_{line} = search_in_process(root, query, cancelled); // a source line"
+                );
+                rows.push(SearchRow {
+                    path: path.clone(),
+                    name: String::new(),
+                    line: Some(line as u32 + 1),
+                    text: text.chars().take(line_chars).collect(),
+                });
+            }
+        }
+        rows
+    }
+
+    /// `ATLAS_SIZE` of `crates/goble-ui/src/platform/text_atlas/atlas.rs`, in
+    /// pixels: the room the frame's text runs have to fit together, since a run
+    /// that does not fit is dropped and the atlas is cleared and refilled when
+    /// it runs out.
+    const ATLAS_PIXELS: f32 = 2048.0 * 2048.0;
+
+    /// What one frame's text runs cost the atlas, in pixels.
+    fn text_pixels(commands: &[RenderCommand]) -> f32 {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText {
+                    text, font_size, ..
+                } => {
+                    let measured =
+                        goble_ui::elements::text::measure_text(text, *font_size, 1.2, f32::INFINITY);
+                    Some(measured.x * measured.y)
+                }
+                _ => None,
+            })
+            .sum()
+    }
+
+    /// The rows the frame drew, as the file each belongs to.
+    fn drawn_file_rows(commands: &[RenderCommand]) -> Vec<&String> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text.starts_with("module_") && origin.x < crate::ui::SIDEBAR_WIDTH =>
+                {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A frame draws what the band shows, whatever the result set holds: the
+    /// rest of the list is stood in as spacers, so the frame's cost — and the
+    /// text the renderer's atlas has to hold — does not grow with the number of
+    /// rows the user cannot see.
+    #[test]
+    fn a_long_result_set_draws_only_the_rows_the_band_shows() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        // The walk's own caps: 200 files of 10 matched lines each.
+        let view = searching_view(&app, &desktop, measured_rows(200, 10, 400));
+        let state = view.state_rc();
+        let mut root: Box<dyn Element> = Box::new(view);
+        let over_the_band = vec2f(crate::ui::SIDEBAR_WIDTH / 2.0, OVER_THE_BAND_Y);
+        let commands = paint(&mut root, &app, over_the_band);
+
+        let viewport = state.borrow().global_search_scroll.borrow().viewport();
+        let band_rows = (viewport / LINE_ROW_HEIGHT).ceil() as usize;
+        let drawn = drawn_file_rows(&commands).len();
+        assert!(
+            drawn <= band_rows + WINDOW_SLACK + 1,
+            "the frame drew {drawn} of the 200 files' rows in a band of {band_rows}"
+        );
+        let pixels = text_pixels(&commands);
+        assert!(
+            pixels <= ATLAS_PIXELS,
+            "one frame's text needs {pixels} px of an atlas that holds {ATLAS_PIXELS}"
         );
     }
 }

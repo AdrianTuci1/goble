@@ -108,7 +108,7 @@ pub fn display_path(path: &str) -> String {
 
 /// The user's home directory, from the environment (the process may run without
 /// a passwd lookup; `HOME` on Unix, `USERPROFILE` on Windows).
-fn home_directory() -> Option<String> {
+pub(crate) fn home_directory() -> Option<String> {
     for key in ["HOME", "USERPROFILE"] {
         if let Ok(value) = std::env::var(key) {
             let value = value.trim_end_matches('/');

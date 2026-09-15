@@ -131,9 +131,7 @@ pub struct UiActions {
     pub on_space_rename_commit: Rc<RefCell<dyn FnMut()>>,
     /// Cancel the inline space rename without changing the name.
     pub on_space_rename_cancel: Rc<RefCell<dyn FnMut()>>,
-    /// Settings: close the Settings overlay.
-    pub on_settings_close: Rc<RefCell<dyn FnMut()>>,
-    /// Settings: switch the active settings category.
+    /// Settings: switch the page the settings tab shows.
     pub on_settings_category: Rc<RefCell<dyn FnMut(SettingsCategory)>>,
     /// Settings: step the active category by `delta` (with wraparound). The
     /// arrow-key path, which must advance from the live category rather than
@@ -187,6 +185,11 @@ pub struct UiActions {
     pub on_set_font_size: Rc<RefCell<dyn FnMut(f32)>>,
     /// Models: reload the model list from the global config file.
     pub on_reload_model_config: Rc<RefCell<dyn FnMut()>>,
+    /// Connections: re-read `~/.ssh` and replace the cached read.
+    pub on_reload_ssh_hosts: Rc<RefCell<dyn FnMut()>>,
+    /// Connections: select a connection by alias (the row's own click). It
+    /// names a target and connects nothing.
+    pub on_ssh_select_host: Rc<RefCell<dyn FnMut(String)>>,
     pub on_projects: Rc<RefCell<dyn FnMut()>>,
     /// Navigate to the harness workflows page (topbar button).
     pub on_workflows: Rc<RefCell<dyn FnMut()>>,
@@ -201,9 +204,9 @@ pub struct UiActions {
     pub on_plugins: Rc<RefCell<dyn FnMut()>>,
     pub on_open_crons: Rc<RefCell<dyn FnMut()>>,
     pub on_close_crons: Rc<RefCell<dyn FnMut()>>,
-    /// Toggle the tasks & workflows overlay (a panel over the workspace).
+    /// Toggle the workflow-runs overlay (a panel floating over the workspace).
     pub on_toggle_task_workflow: Rc<RefCell<dyn FnMut()>>,
-    /// Close the tasks & workflows overlay (its ✕, its backdrop).
+    /// Close the workflow-runs overlay (its ✕, its backdrop).
     pub on_close_task_workflow: Rc<RefCell<dyn FnMut()>>,
     /// Toggle the keyboard shortcuts panel (Ctrl+.).
     pub on_toggle_shortcuts_help: Rc<RefCell<dyn FnMut()>>,
@@ -255,6 +258,9 @@ pub struct UiActions {
     pub on_launch_tui_agent: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Switch the active space by index.
     pub on_select_space: Rc<RefCell<dyn FnMut(usize)>>,
+    /// Move the active space `delta` tabs along the strip (Ctrl+Tab /
+    /// Ctrl+Shift+Tab), wrapping at both ends.
+    pub on_switch_space: Rc<RefCell<dyn FnMut(i32)>>,
     /// Add a new space (single chat pane) and make it active.
     pub on_add_space: Rc<RefCell<dyn FnMut()>>,
     /// Close the space (tab) at `index`. The last remaining space is never

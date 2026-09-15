@@ -93,22 +93,24 @@ pub(super) fn ensure_pane_hover(state: &mut UiState, pane_id: u64) {
 /// shows as the way back to it. The caller decides the pane's kind: the harness
 /// only has a terminal to return to when the pane is a terminal leaf.
 ///
-/// That new conversation needs a model behind it: with no runnable one the pane
-/// keeps the view it had and the notice band names what is missing, rather than
-/// opening an agent view on a thread nothing could ever answer.
+/// Switching to the agent view never depends on a model being runnable: the
+/// view opens, the pane gets a conversation to draw if it had none, and the
+/// transcript's notice band names the missing key or model. Refusing the switch
+/// instead left the pane on its shell with nothing to say why the chord (or the
+/// sidebar's "New conversation" row, which lands here) did nothing.
 pub(super) fn open_pane_harness(
     state: &mut UiState,
     pane_id: u64,
     desktop: Option<&Arc<DesktopState>>,
 ) {
-    if !state.pane_owns_conversation(pane_id) && !state.can_run_agent_turn(pane_id) {
-        state.show_llm_key_banner = true;
-        return;
-    }
     state.pane_controls_mut(pane_id).harness_mode = true;
     if !state.pane_owns_conversation(pane_id) {
         state.bind_pane_new_conversation(pane_id, desktop.map(|d| d.as_ref()));
     }
+    // The band is the agent view's own report, so it follows whatever the pane
+    // can run right now — set before the view switches so the first frame drawn
+    // already carries it.
+    state.show_llm_key_banner = !state.can_run_agent_turn(pane_id);
     if let Some(conversation_id) = state.pane_conversation_id(pane_id) {
         let label = state.conversation_name(&conversation_id);
         state.enter_agent_view(pane_id, &conversation_id, &label);

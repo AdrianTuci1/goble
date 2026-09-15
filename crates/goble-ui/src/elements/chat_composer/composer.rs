@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::{AppContext, Chip, Clipped, ComposerButton, COMPOSER_CONTROL_RADIUS, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisSize, Padding, PaintContext, PillTraySide, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Text, TextArea, Tooltip, TooltipPosition, Wrap};
+use crate::elements::{AppContext, Chip, Clipped, ComposerButton, COMPOSER_CONTROL_RADIUS, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisSize, Padding, PanelScroll, PaintContext, PillTraySide, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Text, TextArea, Tooltip, TooltipPosition, Wrap, MENU_MAX_VISIBLE_ROWS};
 use crate::event::{DispatchedEvent, ModifiersState};
 use crate::geometry::{PointF, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
@@ -12,6 +12,12 @@ use super::proposal::CommandProposalUi;
 /// Cap for the working-directory pill's label. A long path ellipsizes inside the
 /// pill instead of pushing the other context pills across the row.
 const DIR_PILL_MAX_WIDTH: f32 = 280.0;
+
+/// What the model control reads when the pane has no model configured: the
+/// turn would run on nothing, so naming a model there would be a claim nobody
+/// made. The host's own resolved label says the same thing (its model value is
+/// empty until a model is configured), and this covers the label it passes.
+pub const MODEL_NOT_CONFIGURED: &str = "not configured";
 
 pub struct ChatComposer {
     pub(super) value: Rc<RefCell<String>>,
@@ -63,6 +69,11 @@ pub struct ChatComposer {
     on_select_harness_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     dir_menu_items: Vec<PopupMenuItem>,
     dir_menu_open: Rc<RefCell<bool>>,
+    /// The directory tray's scroll offset, owned by the app for the same reason
+    /// its open flag is: the tray is capped at [`MENU_MAX_VISIBLE_ROWS`] rows, so
+    /// a deep directory scrolls, and the per-frame rebuild would otherwise put
+    /// it back at the top.
+    dir_menu_scroll: PanelScroll,
     on_select_dir_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     branch_label: Option<String>,
     branch_menu_items: Vec<PopupMenuItem>,
@@ -99,6 +110,11 @@ pub struct ChatComposer {
     model_menu_items: Vec<PopupMenuItem>,
     model_menu_open: Rc<RefCell<bool>>,
     on_select_model_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    /// The row the model band has chosen, host-owned like the open flag: the
+    /// composer is rebuilt every frame, so an index kept inside it would reset
+    /// on every one of them. Shared with the model menu when the host wires
+    /// one, so the highlight survives between frames.
+    model_index: Rc<RefCell<usize>>,
     /// Modal (vim) editing for the editor, when the host turned it on. The
     /// state lives with the host (the element is rebuilt every frame) and the
     /// footer draws the mode badge from it.
@@ -148,6 +164,7 @@ impl ChatComposer {
             model_menu_items: Vec::new(),
             model_menu_open: Rc::new(RefCell::new(false)),
             on_select_model_item: None,
+            model_index: Rc::new(RefCell::new(0)),
             vim: None,
             clipboard: None,
             harness_label: None,
@@ -156,6 +173,7 @@ impl ChatComposer {
             on_select_harness_item: None,
             dir_menu_items: Vec::new(),
             dir_menu_open: Rc::new(RefCell::new(false)),
+            dir_menu_scroll: PanelScroll::default(),
             on_select_dir_item: None,
             branch_label: None,
             branch_menu_items: Vec::new(),
@@ -231,6 +249,14 @@ impl ChatComposer {
         self
     }
 
+    /// Share the directory tray's scroll offset with the app, so a tray taller
+    /// than its cap (`MENU_MAX_VISIBLE_ROWS` rows) keeps the position the wheel
+    /// left it at across the per-frame rebuild.
+    pub fn with_dir_menu_scroll(mut self, scroll: PanelScroll) -> Self {
+        self.dir_menu_scroll = scroll;
+        self
+    }
+
     /// Label for the git-branch context pill.
     pub fn with_branch_label(mut self, label: impl Into<String>) -> Self {
         self.branch_label = Some(label.into());
@@ -284,6 +310,75 @@ impl ChatComposer {
     pub fn with_on_slash_dismiss<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_slash_dismiss = Some(Rc::new(RefCell::new(callback)));
         self
+    }
+
+    /// Whether the draft's own command list is the band the input shows: the
+    /// draft is a command and Escape has not put its list away. Both bands are
+    /// the host's to draw in that one slot, and both the host and this composer
+    /// read this predicate, so the two can never be up together (see `rebuild`).
+    fn slash_band_open(&self) -> bool {
+        self.slash_enabled
+            && crate::elements::slash_menu_open(
+                &self.value.borrow(),
+                *self.slash_dismissed.borrow(),
+            )
+    }
+
+    /// The keys that pick from the models, taken before the editor sees them:
+    /// Up/Down move the selection, Enter or Tab runs it, Escape puts the list
+    /// away. The list itself is the host's, drawn in the slot the command list
+    /// takes over the input; what the composer keeps of it is the key routing,
+    /// because the editor owns the keyboard.
+    ///
+    /// The command list takes the keys while it is up: the two bands share one
+    /// slot over the input, and the draft's own list is the one that holds it.
+    fn handle_model_key(&mut self, event: &DispatchedEvent) -> bool {
+        if !*self.model_menu_open.borrow()
+            || self.on_select_model_item.is_none()
+            || self.slash_band_open()
+        {
+            return false;
+        }
+        let DispatchedEvent::KeyDown { key, modifiers } = event else {
+            return false;
+        };
+        match key.as_str() {
+            "ArrowDown" | "ArrowUp" => {
+                let len = self.model_menu_items.len();
+                if len == 0 {
+                    return true;
+                }
+                let selected = (*self.model_index.borrow()).min(len - 1);
+                let target = if key == "ArrowDown" {
+                    (selected + 1).min(len - 1)
+                } else {
+                    selected.saturating_sub(1)
+                };
+                *self.model_index.borrow_mut() = target;
+                true
+            }
+            // Cmd/Ctrl+Enter is the host's own gesture (a new conversation), so
+            // it falls through to the editor even with the band up.
+            "Enter" | "Tab" if !modifiers.command && !modifiers.ctrl && !modifiers.shift => {
+                let len = self.model_menu_items.len();
+                let selected = if len == 0 {
+                    0
+                } else {
+                    (*self.model_index.borrow()).min(len - 1)
+                };
+                let Some(cb) = self.on_select_model_item.clone() else {
+                    return false;
+                };
+                *self.model_menu_open.borrow_mut() = false;
+                (cb.borrow_mut())(selected);
+                true
+            }
+            "Escape" => {
+                *self.model_menu_open.borrow_mut() = false;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The keys that pick from the slash menu, taken before the editor sees
@@ -494,8 +589,12 @@ impl ChatComposer {
         self
     }
 
-    /// Set the model dropdown: `items` to show, the app-owned `open` flag (so
+    /// Set the model menu: `items` to show, the app-owned `open` flag (so
     /// open state survives the per-frame rebuild), and a select callback.
+    ///
+    /// The host draws the models as it draws the slash-command list: one
+    /// full-width band over the input, in the same slot, opened by the control
+    /// here and taken with Up/Down, Enter or Tab, Escape or a click on a row.
     pub fn with_model_menu<F: FnMut(usize) + 'static>(
         mut self,
         items: Vec<PopupMenuItem>,
@@ -505,6 +604,15 @@ impl ChatComposer {
         self.model_menu_items = items;
         self.model_menu_open = open;
         self.on_select_model_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Share the model list's chosen row with the host, so the highlight
+    /// survives the per-frame rebuild the way the open flag does. A host that
+    /// wires no cell keeps the selection inside the composer, which shows the
+    /// row the pointer is on but cannot hold the keyboard's own move.
+    pub fn with_model_menu_index(mut self, index: Rc<RefCell<usize>>) -> Self {
+        self.model_index = index;
         self
     }
 
@@ -631,6 +739,8 @@ impl ChatComposer {
                 PopupMenu::new(trigger, self.dir_menu_items.clone())
                     .with_open(self.dir_menu_open.clone())
                     .with_position(PopupMenuPosition::Above)
+                    .with_max_visible_rows(MENU_MAX_VISIBLE_ROWS)
+                    .with_panel_scroll(self.dir_menu_scroll.clone())
                     .with_on_select(move |idx| (cb.borrow_mut())(idx))
                     .finish()
             } else {
@@ -668,6 +778,68 @@ impl ChatComposer {
         children
     }
 
+    /// The model control: the model the draft runs on, which opens the list of
+    /// the models this pane can run.
+    ///
+    /// The control is the label alone. It named the model in words, and the
+    /// icon it carried beside them read as decoration on a value: what the
+    /// control does is already said by the list it opens. A pane with no model
+    /// configured reads [`MODEL_NOT_CONFIGURED`] rather than a model name, so
+    /// the control never claims a turn would run on something nobody chose.
+    fn model_control(&self, app: &AppContext, label: String) -> Box<dyn Element> {
+        let text = if label.trim().is_empty() {
+            MODEL_NOT_CONFIGURED.to_string()
+        } else {
+            label
+        };
+        let button = ComposerButton::new(
+            Text::new(text)
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(12.0)
+                .finish(),
+        )
+        .with_height(28.0);
+        let button = match self.on_select_model_item.clone() {
+            // The list is the host's, drawn over the whole input block; the
+            // control opens and closes it, so a second press on the control
+            // puts it away the way Escape does.
+            Some(_) => {
+                let open = self.model_menu_open.clone();
+                let index = self.model_index.clone();
+                let dismissed = self.slash_dismissed.clone();
+                let selected = self
+                    .model_menu_items
+                    .iter()
+                    .position(|item| item.selected)
+                    .unwrap_or(0);
+                button
+                    .with_on_click(move || {
+                        let mut open = open.borrow_mut();
+                        if !*open {
+                            // The band opens on the model in force, so Enter
+                            // takes the model the pane already runs.
+                            *index.borrow_mut() = selected;
+                            // One band at a time: opening the models puts the
+                            // draft's command list away the way Escape does, so
+                            // the keys that follow belong to this band alone.
+                            *dismissed.borrow_mut() = true;
+                        }
+                        *open = !*open;
+                    })
+                    .finish()
+            }
+            // A host that wired only the plain callback keeps a control that
+            // hands the press on, with no list to draw.
+            None => match self.on_select_model.clone() {
+                Some(cb) => button.with_on_click(move || (cb.borrow_mut())()).finish(),
+                None => button.finish(),
+            },
+        };
+        Tooltip::new(button, "Select model")
+            .with_position(TooltipPosition::Above)
+            .finish()
+    }
+
     /// The action controls, left to right: the model the draft runs on, stop
     /// while a turn streams, and the modal-editing badge. A plain shell command
     /// runs no model, so a terminal composer contributes nothing here.
@@ -676,49 +848,7 @@ impl ChatComposer {
         let has_stop = self.stop_visible && self.on_stop.is_some();
         let badge = self.vim.as_ref().map(|vim| self.mode_badge(app, vim));
         if let Some(label) = self.model_label.clone() {
-            let model_child = || {
-                Flex::row()
-                    .with_spacing(6.0)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_child(
-                        Icon::new("sparkle")
-                            .with_size(14.0)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .finish(),
-                    )
-                    .with_child(
-                        Text::new(label.clone())
-                            .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(12.0)
-                            .finish(),
-                    )
-                    .finish()
-            };
-            if !self.model_menu_items.is_empty() {
-                let trigger = Tooltip::new(
-                    ComposerButton::new(model_child()).with_height(28.0).finish(),
-                    "Select model",
-                )
-                .with_position(TooltipPosition::Above)
-                .finish();
-                let mut menu = PopupMenu::new(trigger, self.model_menu_items.clone())
-                    .with_open(self.model_menu_open.clone())
-                    .with_position(PopupMenuPosition::Above);
-                if let Some(cb) = self.on_select_model_item.clone() {
-                    menu = menu.with_on_select(move |idx| (cb.borrow_mut())(idx));
-                }
-                children.push(menu.finish());
-            } else if let Some(cb) = self.on_select_model.clone() {
-                let model = ComposerButton::new(model_child())
-                    .with_height(28.0)
-                    .with_on_click(move || (cb.borrow_mut())())
-                    .finish();
-                children.push(
-                    Tooltip::new(model, "Select model")
-                        .with_position(TooltipPosition::Above)
-                        .finish(),
-                );
-            }
+            children.push(self.model_control(app, label));
         }
         if has_stop {
             if let Some(cb) = self.on_stop.clone() {
@@ -889,10 +1019,10 @@ impl ChatComposer {
             }
         }
 
-        // The slash-command menu is not drawn here: the host puts it over the
-        // whole input block (its own width), above the instruction strip. What
-        // the composer keeps of it is the key routing — see
-        // `handle_slash_key`.
+        // Neither band is drawn here: the host puts them over the whole input
+        // block (its own width), above the instruction strip. What the composer
+        // keeps of them is the key routing — see `handle_slash_key` and
+        // `handle_model_key`.
 
         // The textarea fills the whole composer width and is visually part of
         // the rich-input bar (no separate box).
@@ -973,7 +1103,16 @@ impl ChatComposer {
         // (`xs`), so the block sits as close to the pane's side edges as the
         // conversation does; it carries no vertical margin of its own, so the
         // rows are only `xs` from the top and bottom of the block.
-        self.root = Some(Padding::new(card, EdgeInsets::new(xs, 0.0, xs, 0.0)).finish());
+        let card = Padding::new(card, EdgeInsets::new(xs, 0.0, xs, 0.0)).finish();
+        // The two bands share one slot over the input, and both are the host's
+        // to draw (the command list and the model list, in that order): while
+        // the draft is a command that list holds the slot, so the model band is
+        // put away rather than drawn beside it — and does not come back when the
+        // draft stops being one, because the user never opened it again.
+        if self.slash_band_open() {
+            *self.model_menu_open.borrow_mut() = false;
+        }
+        self.root = Some(card);
     }
 }
 
@@ -1019,6 +1158,11 @@ impl Element for ChatComposer {
             return true;
         }
         if self.handle_proposal_key(event) {
+            return true;
+        }
+        // The model band is over the input and holds the keys that take a row
+        // from it while it is up.
+        if self.handle_model_key(event) {
             return true;
         }
         // While the menu is up it owns the keys that pick from it: the editor

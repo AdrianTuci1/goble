@@ -1,11 +1,11 @@
 //! Routing the pane's keys and pointer events to the pty and its own scrollback.
 
 use goble_terminal::{KeyEncoder, MouseAction, TermMode};
-use goble_ui::Element;
-use goble_ui::elements::TerminalGrid;
 use goble_ui::elements::interactive::contains;
+use goble_ui::elements::TerminalGrid;
 use goble_ui::event::ModifiersState;
 use goble_ui::geometry::Vector2F;
+use goble_ui::Element;
 
 use crate::terminal::{
     classify_key, mouse_report, update_input_mirror, TerminalKeyAction, TerminalMode,
@@ -118,6 +118,54 @@ impl TerminalView {
             session.write(&bytes);
         }
         true
+    }
+
+    /// Whether the running program owns the screen. A full-screen program paints
+    /// its own layout, so the pane draws no block list and offers no filter to
+    /// type into.
+    fn program_owns_screen(&self) -> bool {
+        self.terminal.borrow().program_owns_screen(self.pane_id)
+    }
+
+    /// Whether the pane's whole-output filter bar holds the caret.
+    pub(super) fn filter_field_focused(&self) -> bool {
+        self.plumbing
+            .global_filter()
+            .is_some_and(|filter| *filter.focused.borrow())
+    }
+
+    /// The pane's own filter keys, handed the key before the tree so the rich
+    /// input cannot swallow them. `true` when the pane took the key:
+    ///
+    /// * Cmd/Ctrl+F shows or hides the whole-output filter bar over every block
+    ///   the pane draws — the general filter.
+    /// * Cmd/Ctrl+Shift+F shows or hides the filter bar of the block under the
+    ///   pointer — warp's per-block filter, the same chord it uses.
+    /// * Escape puts the whole-output filter away and restores the output.
+    pub(super) fn handle_filter_key(&mut self, key: &str, modifiers: ModifiersState) -> bool {
+        if key == "Escape" {
+            let Some(filter) = self.plumbing.global_filter() else {
+                return false;
+            };
+            if !filter.is_open() {
+                return false;
+            }
+            filter.close_bar();
+            return true;
+        }
+        let cmd = modifiers.ctrl || modifiers.command;
+        if !cmd || modifiers.alt || !key.eq_ignore_ascii_case("f") {
+            return false;
+        }
+        // A full-screen program owns the screen, so there is no block list to
+        // filter and no bar to show.
+        if self.program_owns_screen() {
+            return false;
+        }
+        if modifiers.shift {
+            return self.plumbing.toggle_hovered_filter();
+        }
+        self.plumbing.toggle_global_filter()
     }
 
     pub(super) fn handle_key(&mut self, key: &str, modifiers: ModifiersState) -> bool {

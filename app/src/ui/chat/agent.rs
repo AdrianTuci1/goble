@@ -169,6 +169,7 @@ pub fn build_agent_chat(
     let on_model_select = actions.on_model_select.clone();
     let models_for_select = state.models.clone();
     let model_menu_open = controls.model_menu_open.clone();
+    let model_index = controls.model_index.clone();
 
     // Append the live terminal blocks this pane's conversation owns, so a
     // command run from the agent input (`!cmd`) shows where it ran.
@@ -232,6 +233,7 @@ pub fn build_agent_chat(
         .with_pane_active(active)
         .with_composer_path(crate::state::display_path(&session.composer_path))
         .with_composer_model_label(controls.model.clone())
+        .with_composer_attachments(session.composer_attachments.clone())
         .with_composer_stop_visible(session.agent_busy)
         // The instructions the composer draws above its editor: grok-build's
         // own hints, as this GUI binds them.
@@ -268,7 +270,7 @@ pub fn build_agent_chat(
         .with_screen_link(session.screen_link.clone())
         .with_on_open_screen_link(move |uri| (on_open_screen_link.borrow_mut())(uri))
         .with_on_close_inline_screen(move || (on_close_inline_screen.borrow_mut())())
-        .with_composer_model_menu(model_items, model_menu_open, move |index| {
+        .with_composer_model_menu(model_items, model_menu_open, model_index, move |index| {
             if let Some(name) = models_for_select.get(index) {
                 (on_model_select.borrow_mut())(pane_id, name.clone());
             }
@@ -332,7 +334,8 @@ pub fn build_agent_chat(
                         (on_select_dir.borrow_mut())(pane_id, id.clone());
                     }
                 },
-            );
+            )
+            .with_composer_dir_menu_scroll(context.dir_menu_scroll.clone());
         if !context.branch_label.is_empty() {
             let branch_ids = context.branch_ids.clone();
             chat = chat
@@ -872,7 +875,6 @@ mod agent_pill_tests {
             let mut s = state.borrow_mut();
             s.show_workspace_choice = false;
             s.show_llm_key_banner = false;
-            s.settings_overlay_open = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
             s.active_pane_id = 1;

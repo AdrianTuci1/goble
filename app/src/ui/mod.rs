@@ -54,6 +54,7 @@ pub use types::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, HarnessKind,
     LlmFormField, McpSearchEntry, McpServerEntry, SearchRow, SettingsCategory, SettingsControl,
     SettingsFocus, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry,
+    WorkflowStepEntry,
     WorkspaceRouting,
 };
 

@@ -38,6 +38,7 @@ impl UiState {
             model_menu_open: Rc::new(RefCell::new(false)),
             harness_menu_open: Rc::new(RefCell::new(false)),
             dir_menu_open: Rc::new(RefCell::new(false)),
+            dir_menu_scroll: PanelScroll::default(),
             branch_menu_open: Rc::new(RefCell::new(false)),
             composer_branch: current_branch(&current_dir_display()),
             agent_name: "Goble Agent".to_string(),
@@ -53,6 +54,8 @@ impl UiState {
             terminal_global_filters: HashMap::new(),
             crons_open: false,
             task_workflow_open: false,
+            task_workflow_selected: Rc::new(RefCell::new(0)),
+            task_workflow_phase: Rc::new(RefCell::new(0)),
             shortcuts_help_open: false,
             shortcuts_help_filter: String::new(),
             shortcuts_help_index: 0,
@@ -77,8 +80,6 @@ impl UiState {
             settings_cluster_configured: false,
             settings_authorized_keys: Vec::new(),
             settings_vault_unlocked: false,
-            settings_overlay_open: false,
-            settings_category: SettingsCategory::Appearance,
             settings_focus: SettingsFocus::Rail,
             settings_pane_focus: 0,
             settings_pane_field_active: false,
@@ -89,6 +90,10 @@ impl UiState {
             settings_environment_secret_name: String::new(),
             settings_environment_secret_value: String::new(),
             settings_environment_editing: None,
+            settings_ssh_hosts: None,
+            settings_ssh_read: false,
+            settings_ssh_home: None,
+            settings_ssh_selected: None,
             settings_invert_scroll: false,
             settings_scroll_speed: 50,
             settings_font_size: 1.0,
@@ -157,6 +162,7 @@ impl UiState {
             pane_controls: HashMap::new(),
             pane_chat_scroll: HashMap::new(),
             pane_usage_open: HashMap::new(),
+            pane_attachments: HashMap::new(),
             pane_terminal_scroll: HashMap::new(),
             file_scroll: HashMap::new(),
             terminal: Rc::new(RefCell::new(TerminalRegistry::default())),
@@ -219,6 +225,15 @@ impl UiState {
             .map(|wf| WorkflowEntry {
                 id: wf.id,
                 name: wf.name,
+                description: wf.description,
+                steps: wf
+                    .steps
+                    .into_iter()
+                    .map(|step| WorkflowStepEntry {
+                        name: step.name,
+                        agent_id: step.agent_id.0,
+                    })
+                    .collect(),
                 trigger: trigger_label(&wf.trigger),
                 enabled: wf.enabled,
                 created_at: time_ago(&wf.created_at),
@@ -369,15 +384,22 @@ impl UiState {
         self.conversations = chats
             .iter()
             .map(|c| {
-                let last = desktop
-                    .list_chat_messages(&c.id)
-                    .ok()
-                    .and_then(|msgs| {
-                        msgs.last()
-                            .map(|m| m.content.clone())
-                            .filter(|s| !s.trim().is_empty())
-                    })
+                // One read of the conversation's messages answers both what its
+                // card previews and whether the agent has said anything in it.
+                let messages = desktop.list_chat_messages(&c.id).unwrap_or_default();
+                let last = messages
+                    .last()
+                    .map(|m| m.content.clone())
+                    .filter(|s| !s.trim().is_empty())
                     .unwrap_or_else(|| "New conversation".to_string());
+                // An assistant delta is written the moment the model starts
+                // answering and a tool result the moment one runs, so this
+                // turns true as soon as the conversation stops being a place
+                // the user typed into and becomes one the agent answered. The
+                // roles are the store's own strings; `system` is neither.
+                let has_agent_reply = messages
+                    .iter()
+                    .any(|m| m.role == "assistant" || m.role == "tool");
                 ConversationEntry::new(c.id.clone(), c.title.clone(), last, time_ago(&c.updated_at))
                     .with_workspace_routing(
                         c.workspace_routing
@@ -387,6 +409,7 @@ impl UiState {
                     // The directory the conversation works in, drawn on its
                     // card under the subject.
                     .with_directory(c.working_dir.clone().unwrap_or_default())
+                    .with_has_agent_reply(has_agent_reply)
             })
             .collect();
         // Keep one shared card-state entry per conversation id so hover / the

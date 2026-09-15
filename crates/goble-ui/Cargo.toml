@@ -65,6 +65,11 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std", "alloc", "NSApplication", "NSMenu", "NSMenuItem", "NSResponder", "NSControl",
     "NSEvent", "NSScreen", "NSWindow", "NSRunningApplication", "objc2-core-foundation",
+    # The attach control's open panel (`NSOpenPanel`, an `NSSavePanel`/`NSPanel`).
+    "NSOpenPanel", "NSSavePanel", "NSPanel",
+    # The dock icon placeholder: `NSImage` from embedded PNG bytes, which also
+    # pulls in the `NSData`/`NSBundle` features the menu's name lookup needs.
+    "NSImage",
 ] }
 
 [dev-dependencies]

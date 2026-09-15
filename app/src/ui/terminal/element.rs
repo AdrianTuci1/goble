@@ -8,8 +8,8 @@ use goble_ui::elements::{
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
 
-use super::TerminalView;
 use super::mouse_button;
+use super::TerminalView;
 
 impl Element for TerminalView {
     fn layout(
@@ -153,6 +153,22 @@ impl Element for TerminalView {
                 // Only the active terminal pane receives keystrokes; a background
                 // pane must not steal them from the active pane.
                 if !self.active {
+                    return false;
+                }
+                // The pane's filter keys are handled before the tree, the way the
+                // app's own global chords are: the rich input is this pane's
+                // typing surface, so a chord the pane means for itself must not
+                // be typed into it.
+                if self.handle_filter_key(key, *modifiers) {
+                    return true;
+                }
+                // While the filter bar's field holds the caret, the keys belong
+                // to the tree, where that field sits ahead of the composer. It
+                // is the pane's typing surface for as long as it is up.
+                if self.filter_field_focused() {
+                    if let Some(root) = self.root.as_mut() {
+                        return root.dispatch_event(event, ctx, app);
+                    }
                     return false;
                 }
                 // While the shared bar holds the keyboard its editor gets the

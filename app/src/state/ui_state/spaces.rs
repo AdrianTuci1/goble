@@ -164,6 +164,104 @@ impl UiState {
         }
     }
 
+    /// The settings tab: the space index and the leaf id of the **first**
+    /// settings leaf in traversal order, wherever it sits in the layout.
+    ///
+    /// The lookup is by leaf kind, never by name or id: closing the tab and
+    /// lifting the pane into another space both change an id, and the tab can
+    /// be renamed like any other, so only the kind is stable. A layout that
+    /// somehow holds two settings leaves answers with the first and is left
+    /// exactly as it is — silently rewriting the user's layout on load would be
+    /// the worse failure.
+    pub fn settings_pane(&self) -> Option<(usize, u64)> {
+        self.spaces
+            .iter()
+            .enumerate()
+            .find_map(|(index, space)| space.settings_leaf().map(|id| (index, id)))
+    }
+
+    /// The page the settings tab shows. The page rides in the leaf, so the rail
+    /// and the pane cannot drift apart and the page comes back with the pane.
+    /// A layout with no settings leaf has no page: `Appearance`.
+    pub fn settings_page(&self) -> SettingsCategory {
+        match self
+            .settings_pane()
+            .and_then(|(space, id)| self.spaces[space].leaf_kind(id))
+        {
+            Some(PaneKind::Settings { page }) => *page,
+            _ => SettingsCategory::Appearance,
+        }
+    }
+
+    /// Point the settings tab's leaf at another page, so the page travels with
+    /// the pane.
+    pub fn settings_set_page(&mut self, page: SettingsCategory) {
+        let Some((space, id)) = self.settings_pane() else {
+            return;
+        };
+        self.spaces[space].set_leaf_kind(id, PaneKind::Settings { page });
+    }
+
+    /// Open the settings tab, or bring the one that already exists to the
+    /// front. At most one is ever created: the lookup is by kind, so pressing
+    /// the button again lands on the same tab however it is renamed.
+    pub fn open_settings_tab(&mut self, desktop: Option<&DesktopState>) {
+        // The strip is drawn in `AppTab::Chat` only, so a press from another
+        // mode comes back to it — otherwise the tab it opened would sit off
+        // screen and nothing would appear to have happened.
+        self.current_tab = AppTab::Chat;
+        if let Some((space, id)) = self.settings_pane() {
+            if self.active_space == space && self.active_pane_id == id {
+                // Already the pane the keyboard is in: nothing at all, not
+                // even a save.
+                return;
+            }
+            self.active_space = space;
+            self.active_pane_id = id;
+            self.focus_settings_pane();
+            self.sync_active_view();
+            if let Some(desktop) = desktop {
+                self.save_panes(desktop);
+            }
+            return;
+        }
+        let id = self.next_pane_id;
+        self.next_pane_id += 1;
+        self.spaces.push(Space::new(
+            "Settings",
+            Pane::Leaf {
+                id,
+                kind: PaneKind::Settings {
+                    page: SettingsCategory::Appearance,
+                },
+            },
+        ));
+        self.active_space = self.spaces.len() - 1;
+        self.active_pane_id = id;
+        self.focus_settings_pane();
+        // The pane has no session of its own (nothing in it runs a command), so
+        // the per-pane flags its body reads are seeded the way a restored
+        // tree's are.
+        self.pane_hover
+            .entry(id)
+            .or_insert_with(|| Rc::new(RefCell::new(false)));
+        self.ensure_pane_controls();
+        self.refresh_space_labels();
+        self.sync_active_view();
+        if let Some(desktop) = desktop {
+            self.save_panes(desktop);
+        }
+    }
+
+    /// Put the keyboard at the settings tab's rail, on its first row, with no
+    /// field holding the caret — the state it opens in.
+    fn focus_settings_pane(&mut self) {
+        self.settings_focus = SettingsFocus::Rail;
+        self.settings_pane_focus = 0;
+        self.settings_pane_field_active = false;
+        self.settings_field_edit_start = None;
+    }
+
     /// The pane a tab's label follows: the focused leaf of the active tab, and
     /// the first leaf of a tab that is not on screen (a background tab's own
     /// focus is not tracked).
@@ -201,6 +299,36 @@ impl UiState {
         } else {
             subject
         }
+    }
+
+    /// Move the active space `delta` tabs along the strip (Ctrl+Tab /
+    /// Ctrl+Shift+Tab), wrapping at both ends: the last tab's next tab is the
+    /// first, the first tab's previous is the last. One tab has nowhere to go,
+    /// so nothing is touched — the layout is not rewritten for a switch that
+    /// did not happen.
+    ///
+    /// The keyboard lands on the target tab's first leaf, the pane
+    /// `on_select_space` focuses — or on the settings rail when that leaf is the
+    /// settings pane, whose body would otherwise keep the keys the switch just
+    /// took. Returns whether the active space moved.
+    pub fn switch_space(&mut self, delta: i32) -> bool {
+        let len = self.spaces.len();
+        if len <= 1 {
+            return false;
+        }
+        let target = (self.active_space as i32 + delta).rem_euclid(len as i32) as usize;
+        if target == self.active_space {
+            return false;
+        }
+        self.active_space = target;
+        self.active_pane_id = self.spaces[target].root.first_leaf_id();
+        if matches!(
+            self.spaces[target].leaf_kind(self.active_pane_id),
+            Some(PaneKind::Settings { .. })
+        ) {
+            self.focus_settings_pane();
+        }
+        true
     }
 
     /// Move the space at `from` to index `to`, keeping the active space the

@@ -162,3 +162,46 @@ use super::*;
             "and the pane is back at the shell, showing the new conversation"
         );
     }
+
+    /// A settings tab comes back as itself: the leaf is part of the persisted
+    /// layout, so the tab reopens on the page it was on rather than on the
+    /// default one.
+    #[test]
+    fn a_restored_settings_tab_reopens_on_the_page_it_was_on() {
+        let dir = tempfile::tempdir().expect("create temp thread store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("open in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("open thread store"),
+        );
+
+        let mut saved = UiState::mock();
+        saved.open_settings_tab(Some(&desktop));
+        saved.settings_set_page(SettingsCategory::Environment);
+        assert!(
+            saved.settings_pane().is_some(),
+            "the press opened a settings tab"
+        );
+        saved.save_panes(&desktop);
+
+        let mut restored = UiState::mock();
+        restored.restore_panes(&desktop);
+        let (space, id) = restored
+            .settings_pane()
+            .expect("the settings tab is restored");
+        assert_eq!(
+            restored.spaces[space].leaf_kind(id),
+            Some(&PaneKind::Settings {
+                page: SettingsCategory::Environment
+            }),
+            "the page travels with the pane: it is part of the leaf, not a second copy"
+        );
+        assert_eq!(
+            restored
+                .spaces
+                .iter()
+                .filter(|space| space.settings_leaf().is_some())
+                .count(),
+            1,
+            "and the single-instance rule survives the round trip"
+        );
+    }

@@ -290,6 +290,44 @@ mod tests {
         );
     }
 
+    /// `with_corner_radius` reaches the fill **and** the outline: a control
+    /// that asks to be square is square all the way to its border, which is
+    /// what a button inside a square band needs.
+    #[test]
+    fn a_requested_radius_reaches_the_fill_and_the_border() {
+        use crate::render::Renderer;
+
+        let app = AppContext::default();
+        let mut button = Button::new(Empty::new().with_size(vec2f(80.0, 32.0)).finish())
+            .with_corner_radius(0.0)
+            .with_on_click(|| {});
+        button.layout(
+            SizeConstraint::loose(vec2f(200.0, 200.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        button.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        let commands = ctx
+            .renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default();
+
+        let fill = commands.iter().find_map(|command| match command {
+            crate::render::RenderCommand::FillRect { corner_radius, .. } => Some(*corner_radius),
+            _ => None,
+        });
+        let stroke = commands.iter().find_map(|command| match command {
+            crate::render::RenderCommand::StrokeRect { corner_radius, .. } => {
+                Some(*corner_radius)
+            }
+            _ => None,
+        });
+        assert_eq!(fill, Some(0.0), "the fill is square: {commands:?}");
+        assert_eq!(stroke, Some(0.0), "and so is the outline: {commands:?}");
+    }
+
     #[test]
     fn disabled_button_ignores_events() {
         let clicked = Rc::new(RefCell::new(false));

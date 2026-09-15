@@ -343,7 +343,19 @@ impl<'a> MarkdownParser<'a> {
     }
 
     fn flush(&mut self, out: &mut Vec<ChatFragment>) {
-        if let Some(fragment) = take_pending(&mut self.pending) {
+        // Whitespace that leads a block is dropped: it would indent the first
+        // line. Whitespace anywhere else is the space between two runs of
+        // different style, and dropping it draws those runs joined together.
+        //
+        // A block starts at the head of the list and after the line break that
+        // separates it from the block above, so a run that opens the second
+        // block is as much of an indent as one that opens the first.
+        let leads_block = out.is_empty()
+            || matches!(
+                out.last().map(|fragment| &fragment.kind),
+                Some(ChatFragmentKind::LineBreak)
+            );
+        if let Some(fragment) = take_pending(&mut self.pending, leads_block) {
             out.push(fragment);
         }
     }
@@ -382,12 +394,9 @@ fn append_text(
     italic_count: usize,
     link_url: Option<&str>,
 ) {
-    // Ignore leading pure-whitespace text when nothing is pending so that
-    // spaces between differently-styled fragments do not become standalone
-    // Text fragments.
-    if pending.text.is_empty() && text.trim().is_empty() {
-        return;
-    }
+    // The run's style is the one in force where the run starts. A run that
+    // starts in whitespace therefore stays plain, which is what the space
+    // between two styled words is.
     if pending.text.is_empty() {
         pending.bold = bold_count > 0;
         pending.italic = italic_count > 0;
@@ -396,9 +405,14 @@ fn append_text(
     pending.text.push_str(text);
 }
 
-fn take_pending(pending: &mut PendingText) -> Option<ChatFragment> {
-    let text = std::mem::take(&mut pending.text).trim().to_string();
-    let fragment = if text.is_empty() {
+/// The buffered run as a fragment, or `None` when there is nothing to draw.
+///
+/// The text is taken verbatim: the space between two runs of different style
+/// belongs to one of them, and trimming it here draws those runs joined.
+/// `leading` says the run opens a block, where whitespace is only an indent.
+fn take_pending(pending: &mut PendingText, leading: bool) -> Option<ChatFragment> {
+    let text = std::mem::take(&mut pending.text);
+    let fragment = if text.is_empty() || (leading && text.trim().is_empty()) {
         None
     } else if let Some(url) = pending.link_url.take() {
         Some(ChatFragment::link(text, url))
@@ -467,12 +481,177 @@ mod tests {
         );
     }
 
+    /// Every space of a paragraph is drawn. A run of text around a styled run is
+    /// what carries the space between the two words, and trimming it away draws
+    /// them joined: "foobarbaz".
+    #[test]
+    fn keeps_the_spaces_around_a_styled_run() {
+        assert_eq!(
+            parse_markdown("foo **bar** baz"),
+            vec![
+                ChatFragment::text("foo "),
+                ChatFragment::bold("bar"),
+                ChatFragment::text(" baz"),
+            ]
+        );
+        assert_eq!(
+            parse_markdown("**a** **b**"),
+            vec![
+                ChatFragment::bold("a"),
+                ChatFragment::text(" "),
+                ChatFragment::bold("b"),
+            ]
+        );
+        assert_eq!(
+            parse_markdown("a *b* c"),
+            vec![
+                ChatFragment::text("a "),
+                ChatFragment::italic("b"),
+                ChatFragment::text(" c"),
+            ]
+        );
+        assert_eq!(
+            parse_markdown("**a**  b"),
+            vec![
+                ChatFragment::bold("a"),
+                ChatFragment::text("  b"),
+            ]
+        );
+        assert_eq!(
+            parse_markdown("one `code` two"),
+            vec![
+                ChatFragment::text("one "),
+                ChatFragment::code("code"),
+                ChatFragment::text(" two"),
+            ]
+        );
+    }
+
+    /// The same space is what separates the words of a heading, which is built
+    /// by concatenating the runs it was parsed into.
+    #[test]
+    fn a_heading_keeps_the_spaces_between_its_runs() {
+        assert_eq!(
+            parse_markdown("# head **bold** tail"),
+            vec![ChatFragment::heading(1, "head bold tail")]
+        );
+    }
+
+    /// A run of several spaces is kept as it was written.
+    #[test]
+    fn keeps_a_run_of_spaces() {
+        assert_eq!(
+            parse_markdown("a  b   c"),
+            vec![ChatFragment::text("a  b   c")]
+        );
+    }
+
+    /// The space at the head or the tail of a paragraph is not content: it would
+    /// indent the first line or trail off the last one.
+    #[test]
+    fn drops_the_whitespace_around_a_paragraph() {
+        assert_eq!(parse_markdown("  hello  "), vec![ChatFragment::text("hello")]);
+        assert_eq!(
+            parse_markdown("one\n\ntwo"),
+            vec![
+                ChatFragment::text("one"),
+                ChatFragment::line_break(),
+                ChatFragment::text("two"),
+            ]
+        );
+    }
+
+    /// The whitespace rule on its own: a run that opens a block is dropped, a
+    /// run inside a block is the space between two runs and is kept.
+    #[test]
+    fn a_run_that_opens_a_block_is_dropped_and_one_inside_it_is_kept() {
+        let mut parser = MarkdownParser::new(Vec::new());
+        parser.push_text(" ");
+        let mut opening = Vec::new();
+        parser.flush(&mut opening);
+        assert!(
+            opening.is_empty(),
+            "a run that opens the message is not an indent, got {opening:?}"
+        );
+
+        parser.push_text(" ");
+        let mut after_break = vec![ChatFragment::line_break()];
+        parser.flush(&mut after_break);
+        assert_eq!(
+            after_break,
+            vec![ChatFragment::line_break()],
+            "a run that opens a later block is not an indent either"
+        );
+
+        parser.push_text(" ");
+        let mut inside = vec![ChatFragment::text("one")];
+        parser.flush(&mut inside);
+        assert_eq!(
+            inside,
+            vec![ChatFragment::text("one"), ChatFragment::text(" ")],
+            "a run inside a block is the space before the run that follows it"
+        );
+    }
+
+    /// No block of a message opens with whitespace: an indent at the head of the
+    /// first line is not something the source asked for, and the runs that do
+    /// carry the spaces between words keep them.
+    #[test]
+    fn no_block_of_a_message_opens_with_whitespace() {
+        for input in [
+            "one\n\n  **two** three",
+            "# head\n\n **two** three",
+            "- item\n\n **two** three",
+            "> quote\n\n **two** three",
+            "one\n\n *two* three",
+            "one\n\n\n\n  **two** three",
+        ] {
+            let fragments = parse_markdown(input);
+            let opens_with_whitespace = fragments.iter().enumerate().any(|(index, fragment)| {
+                let opens_a_block = index == 0
+                    || matches!(
+                        fragments[index - 1].kind,
+                        ChatFragmentKind::LineBreak
+                    );
+                opens_a_block
+                    && match &fragment.kind {
+                        ChatFragmentKind::Text(text) => text.starts_with(char::is_whitespace),
+                        _ => false,
+                    }
+            });
+            assert!(
+                !opens_with_whitespace,
+                "{input:?} opens a block with whitespace: {fragments:?}"
+            );
+            // The words of the later block are still separated from each other.
+            let drawn: String = fragments
+                .iter()
+                .filter_map(|fragment| match &fragment.kind {
+                    ChatFragmentKind::Text(text)
+                    | ChatFragmentKind::Bold(text)
+                    | ChatFragmentKind::Italic(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                drawn.contains("two three"),
+                "{input:?} keeps the space inside the block, got {drawn:?}"
+            );
+        }
+    }
+
     #[test]
     fn parses_bold_and_italic() {
         let fragments = parse_markdown("**bold** _italic_");
+        // The space between the two runs is kept: without it the paragraph
+        // reads "bolditalic".
         assert_eq!(
             fragments,
-            vec![ChatFragment::bold("bold"), ChatFragment::italic("italic"),]
+            vec![
+                ChatFragment::bold("bold"),
+                ChatFragment::text(" "),
+                ChatFragment::italic("italic"),
+            ]
         );
     }
 
@@ -491,9 +670,9 @@ mod tests {
         assert_eq!(
             fragments,
             vec![
-                ChatFragment::text("see"),
+                ChatFragment::text("see "),
                 ChatFragment::link("Goble", "https://goble.dev"),
-                ChatFragment::text("for details"),
+                ChatFragment::text(" for details"),
             ]
         );
     }
@@ -513,7 +692,7 @@ mod tests {
         assert_eq!(
             fragments,
             vec![
-                ChatFragment::link("plain", "https://goble.dev"),
+                ChatFragment::link("plain ", "https://goble.dev"),
                 ChatFragment::link("bold", "https://goble.dev"),
             ]
         );
@@ -536,7 +715,7 @@ mod tests {
         let fragments = parse_markdown("run `cargo build`");
         assert_eq!(
             fragments,
-            vec![ChatFragment::text("run"), ChatFragment::code("cargo build"),]
+            vec![ChatFragment::text("run "), ChatFragment::code("cargo build"),]
         );
     }
 
@@ -594,7 +773,7 @@ mod tests {
                 vec![
                     ListItem::new(vec![ChatFragment::bold("one")]),
                     ListItem::new(vec![
-                        ChatFragment::text("plain"),
+                        ChatFragment::text("plain "),
                         ChatFragment::bold("bold"),
                     ]),
                 ],
@@ -716,3 +895,6 @@ mod tests {
         );
     }
 }
+
+
+

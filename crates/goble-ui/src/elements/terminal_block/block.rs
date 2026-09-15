@@ -1,34 +1,46 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::{AppContext, Clipped, ConstrainedBox, CrossAxisAlignment, Divider, Element, Flex, Icon, InlineText, LayoutContext, MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, SizeConstraint, Spacer, Text, TextSpan, TopbarButton};
+use super::data::{TerminalData, TerminalMeta, TerminalStatus};
+use super::filter::{terminal_filter_bar, TerminalCopyHandler, TerminalFilter, FILTER_BUTTON_SIZE};
+use super::line::{TerminalLine, TerminalLineKind};
+use crate::color::ColorU;
+use crate::elements::{
+    AppContext, Clipped, ConstrainedBox, CrossAxisAlignment, Divider, Element, Flex, Icon,
+    InlineText, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point,
+    SizeConstraint, Spacer, Text, TextSpan, TopbarButton,
+};
 use crate::event::DispatchedEvent;
-use crate::geometry::Vector2F;
+use crate::geometry::{rectf, Vector2F};
 use crate::platform::text_atlas::{measure_text_family, FontWeight};
 use crate::theme::{ColorToken, FontFamily};
-use super::data::{TerminalData, TerminalMeta, TerminalStatus};
-use super::filter::{FILTERS, TerminalCopyHandler, TerminalFilter};
-use super::line::{TerminalLine, TerminalLineKind};
 
 const FONT_SIZE: f32 = 13.0;
 
 const LINE_HEIGHT: f32 = 1.4;
 
-const HEADER_FONT_SIZE: f32 = 12.0;
+/// Widest the header's prompt row is allowed to draw before it ellipsizes, so a
+/// deep working directory never pushes the block's controls off its edge.
+const PROMPT_MAX_WIDTH: f32 = 420.0;
 
-/// Font size of the header's context labels (working directory, branch,
-/// duration) — smaller than the block's title so the context reads as a note on
-/// the command rather than as the command.
-const META_FONT_SIZE: f32 = 11.0;
+/// The widest a block's filter bar draws; narrow blocks give it what they have.
+const FILTER_BAR_MAX_WIDTH: f32 = 380.0;
 
-/// Widest a single context label is allowed to draw before it ellipsizes.
-const META_MAX_WIDTH: f32 = 240.0;
+/// How far a failure tints the whole block, over the pane's own background.
+const FAILURE_WASH_ALPHA: u8 = 22;
+
+/// The pole a running or failed block stands on its left edge (warp-new's flag
+/// pole), in px.
+const FLAG_POLE_WIDTH: f32 = 3.0;
 
 pub(crate) const HEADER_SPACING: f32 = 8.0;
 
 pub(crate) const BUTTON_SIZE: f32 = 24.0;
 
 const PROMPT_PREFIX: &str = "❯ ";
+
+/// The block filter bar's field, named the way warp names it.
+const FILTER_PLACEHOLDER: &str = "Filter block output";
 
 /// Build the one terminal block element.
 ///
@@ -56,10 +68,12 @@ pub fn terminal_block(
         .finish()
 }
 
-/// A terminal-style command block matching warp's layout: a single header row
-/// with the command identity on the left and copy + filter controls on the
-/// right (no icon, no literal status label — state is shown by colour), plus
-/// monospaced command/output lines.
+/// A terminal-style command block matching warp's layout: one mono prompt row
+/// (the block's identity and the context it ran in) with the copy and filter
+/// controls shown while the pointer is over the block, a filter bar over the
+/// block's own output, and monospaced command/output lines. A running block
+/// stands an accent pole on its left edge and a failed one washes the block and
+/// stands the pole in the error colour.
 pub struct TerminalBlock {
     title: String,
     lines: Vec<TerminalLine>,
@@ -124,14 +138,16 @@ impl TerminalBlock {
         self
     }
 
-    /// Attach the app-owned per-block filter state (open flag + selected index).
+    /// Attach the app-owned per-block filter state: the bar's open flag, the
+    /// query typed into it and the line kinds it keeps.
     pub fn with_filter(mut self, filter: TerminalFilter) -> Self {
         self.filter = filter;
         self
     }
 
-    /// Attach an optional whole-transcript filter. A line is shown only if it
-    /// matches this global filter *and* the block's own filter.
+    /// Attach an optional whole-surface filter (a pane's own terminal, or the
+    /// transcript's). A line is shown only if it matches this filter *and* the
+    /// block's own.
     pub fn with_global_filter(mut self, filter: Option<TerminalFilter>) -> Self {
         self.global_filter = filter;
         self
@@ -194,33 +210,25 @@ impl TerminalBlock {
             .finish()
     }
 
-    fn filter_matches(selected: usize, kind: TerminalLineKind) -> bool {
-        FILTERS
-            .get(selected)
-            .map(|(_, pred)| pred(kind))
-            .unwrap_or(true)
-    }
-
-    /// Whether a line passes both the block's own filter and, if present, the
-    /// whole-transcript filter.
+    /// Whether a line passes the block's own filter and, if one is wired, the
+    /// whole-surface filter: only a line both keep is drawn.
     fn line_shown(
-        block_selected: usize,
-        global_selected: Option<usize>,
-        kind: TerminalLineKind,
+        block: &TerminalFilter,
+        global: Option<&TerminalFilter>,
+        line: &TerminalLine,
     ) -> bool {
-        let block_ok = Self::filter_matches(block_selected, kind);
-        let global_ok = global_selected.map_or(true, |g| Self::filter_matches(g, kind));
-        block_ok && global_ok
+        block.matches(line.kind, &line.text)
+            && global.map_or(true, |g| g.matches(line.kind, &line.text))
     }
 
-    /// Colour for the block identity in the header, conveying state without a
-    /// literal label: accent while running, error colour on failure, muted
-    /// otherwise.
-    const fn title_color(status: Option<TerminalStatus>) -> ColorToken {
+    /// The pole a block stands on its left edge: the accent one while its
+    /// command runs, the error one once it failed. `None` for a block that is
+    /// neither, which is drawn with no mark of its own.
+    const fn status_pole(status: Option<TerminalStatus>) -> Option<ColorToken> {
         match status {
-            Some(TerminalStatus::Running) => ColorToken::Accent,
-            Some(TerminalStatus::Error) => ColorToken::Error,
-            _ => ColorToken::Muted,
+            Some(TerminalStatus::Running) => Some(ColorToken::Accent),
+            Some(TerminalStatus::Error) => Some(ColorToken::Error),
+            _ => None,
         }
     }
 
@@ -242,44 +250,47 @@ impl TerminalBlock {
             .fold(0.0, f32::max)
     }
 
-    /// The labels the header's left-hand group is made of, in draw order: the
-    /// block's title, then the context it carries. An empty title is left out,
-    /// so a section whose header is only context draws only that.
-    fn header_labels(&self) -> Vec<String> {
-        let mut labels = Vec::new();
+    /// The header's prompt row: the block's identity and the context it carries
+    /// (working directory, branch, duration), one string the way a shell prompt
+    /// writes them. An empty title and no context leaves the row empty, which a
+    /// block with nothing to say above its command draws.
+    fn prompt_label(&self) -> String {
+        let mut parts = Vec::new();
         if !self.title.is_empty() {
-            labels.push(self.title.clone());
+            parts.push(self.title.clone());
         }
         if let Some(meta) = &self.meta {
-            labels.extend(meta.labels());
+            parts.extend(meta.labels());
         }
-        labels
+        parts.join(" ")
     }
 
-    /// One header label. The block's own title carries the status colour; the
-    /// context labels stay muted, since they describe the command rather than
-    /// report on it. A context label is capped so a deep path ellipsizes
-    /// instead of pushing the header's controls off the block.
-    fn header_label(&self, label: &str, is_title: bool, app: &AppContext) -> Box<dyn Element> {
-        let text = Text::new(label.to_string())
-            .with_theme_color(
-                if is_title {
-                    Self::title_color(self.status)
-                } else {
-                    ColorToken::Muted
-                },
-                app,
-            )
-            .with_font_size(if is_title { HEADER_FONT_SIZE } else { META_FONT_SIZE })
+    /// The prompt row drawn: one mono label in the muted colour, clipped at
+    /// [`PROMPT_MAX_WIDTH`] so a deep path ellipsizes instead of pushing the
+    /// block's controls off the edge. The block's state is not in this label:
+    /// a failure is the wash and the pole under it.
+    fn prompt_element(&self, app: &AppContext) -> Box<dyn Element> {
+        let text = Text::new(self.prompt_label())
+            .with_theme_color(ColorToken::Muted, app)
+            .with_font_size(FONT_SIZE)
+            .with_line_height(LINE_HEIGHT)
             .with_font_family(FontFamily::Mono)
             .with_max_lines(1)
             .finish();
-        if is_title {
-            return text;
-        }
         ConstrainedBox::new(Clipped::new(text).finish())
-            .with_max_width(META_MAX_WIDTH)
+            .with_max_width(PROMPT_MAX_WIDTH)
             .finish()
+    }
+
+    /// How many of the block's lines the block's own filter keeps, and how many
+    /// it has — the count beside its filter bar's field.
+    fn filter_counts(&self) -> (usize, usize) {
+        let matched = self
+            .lines
+            .iter()
+            .filter(|line| self.filter.matches(line.kind, &line.text))
+            .count();
+        (matched, self.lines.len())
     }
 
     fn full_text(&self) -> String {
@@ -294,85 +305,87 @@ impl TerminalBlock {
         let sm = app.theme.spacing_px(crate::theme::SpacingToken::Sm);
         let muted = ColorToken::Muted;
 
-        // Header: warp-style command-block header. The label group (the block's
-        // title and the context it carries) is content-sized but the row is
-        // flex-grown so the Spacer pushes the copy/filter controls to the right
-        // edge. There is no leading icon and no literal status label — the block
-        // identity carries the state colour.
-        let labels = self.header_labels();
-        let title = self.title.clone();
+        // Header: warp's block header. One mono prompt row carries the block's
+        // identity and the context it ran in, and the row is flex-grown so the
+        // Spacer pushes the controls to the trailing edge. The controls are the
+        // block's own, so they show only while the pointer is over the block (or
+        // while the filter bar they open is up); state is not in the label — a
+        // failure is drawn under the block by `paint`.
         let mut header = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(HEADER_SPACING);
-        for label in &labels {
-            let is_title = *label == title;
-            let element = self.header_label(label, is_title, app);
-            header = header.with_child(element);
-        }
-        header = header.with_child(Spacer::new().finish());
+            .with_spacing(HEADER_SPACING)
+            .with_child(self.prompt_element(app))
+            .with_child(Spacer::new().finish());
 
-        // Copy button: passes the block's display text to the app's copy handler.
-        let on_copy = self.on_copy.clone();
-        let copy_text = self.full_text();
-        let copy_button = TopbarButton::new(
-            Icon::new("copy")
-                .with_size(14.0)
-                .with_theme_color(muted, app)
-                .finish(),
-        )
-        .with_size(BUTTON_SIZE)
-        .with_on_click(move || {
-            if let Some(cb) = on_copy.as_ref() {
-                (cb.borrow_mut())(copy_text.clone());
-            }
-        })
-        .finish();
-        header = header.with_child(copy_button);
-
-        // Filter button: opens the filter tray selecting which line kinds show.
-        let filter = self.filter.clone();
-        let selected = *filter.selected.borrow();
-        let filter_items = FILTERS
-            .iter()
-            .enumerate()
-            .map(|(i, (label, _))| {
-                let mut item = PopupMenuItem::new(*label);
-                if i == selected {
-                    item = item.selected();
+        let controls_shown = self.filter.is_hovered() || self.filter.is_open();
+        if controls_shown {
+            // Copy button: passes the block's display text to the app's copy
+            // handler.
+            let on_copy = self.on_copy.clone();
+            let copy_text = self.full_text();
+            let copy_button = TopbarButton::new(
+                Icon::new("copy")
+                    .with_size(14.0)
+                    .with_theme_color(muted, app)
+                    .finish(),
+            )
+            .with_size(BUTTON_SIZE)
+            .with_on_click(move || {
+                if let Some(cb) = on_copy.as_ref() {
+                    (cb.borrow_mut())(copy_text.clone());
                 }
-                item
-            })
-            .collect::<Vec<_>>();
-        let filter_trigger = TopbarButton::new(
-            Icon::new("sliders")
-                .with_size(14.0)
-                .with_theme_color(muted, app)
-                .finish(),
-        )
-        .with_size(BUTTON_SIZE)
-        .finish();
-        let filter_for_select = filter.clone();
-        let filter_menu = PopupMenu::new(filter_trigger, filter_items)
-            .with_open(filter.open.clone())
-            .with_position(PopupMenuPosition::Below)
-            .with_on_select(move |idx| {
-                *filter_for_select.selected.borrow_mut() = idx;
             })
             .finish();
-        header = header.with_child(filter_menu);
+            header = header.with_child(copy_button);
 
-        // Body: mono lines filtered by the selected filter. The lines are
-        // stretched to the resolved block width so a too-long line wraps at the
-        // block edge rather than overflowing the card.
-        let global_selected = self.global_filter.as_ref().map(|g| *g.selected.borrow());
+            // Filter button: shows the block's filter bar under the header.
+            let filter = self.filter.clone();
+            let filter_open = filter.is_open();
+            let filter_for_toggle = filter.clone();
+            let filter_button = TopbarButton::new(
+                Icon::new("sliders")
+                    .with_size(14.0)
+                    .with_theme_color(muted, app)
+                    .finish(),
+            )
+            .with_size(FILTER_BUTTON_SIZE)
+            .with_active(filter_open)
+            .with_on_click(move || filter_for_toggle.toggle_bar())
+            .finish();
+            header = header.with_child(filter_button);
+        }
+        let header = header.finish();
+
+        // Filter bar: the query field over this block's own output, hung under
+        // the header's trailing edge — where the control that opened it sits.
+        let bar: Option<Box<dyn Element>> = self.filter.is_open().then(|| {
+            let (matched, total) = self.filter_counts();
+            let content =
+                terminal_filter_bar(&self.filter, FILTER_PLACEHOLDER, matched, total, app);
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_main_axis_alignment(MainAxisAlignment::End)
+                .with_child(
+                    ConstrainedBox::new(content)
+                        .with_max_width(FILTER_BAR_MAX_WIDTH)
+                        .finish(),
+                )
+                .finish()
+        });
+
+        // Body: mono lines the block's own filter keeps and, if one is wired,
+        // the whole-surface filter too. The lines are stretched to the resolved
+        // block width so a too-long line wraps at the block edge rather than
+        // overflowing the card.
+        let global = self.global_filter.clone();
         let mut body = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(sm / 2.0);
         for line in self
             .lines
             .iter()
-            .filter(|l| Self::line_shown(selected, global_selected, l.kind))
+            .filter(|line| Self::line_shown(&self.filter, global.as_ref(), line))
         {
             let color = Self::color_token(line);
             if line.kind == TerminalLineKind::Command {
@@ -398,43 +411,58 @@ impl TerminalBlock {
         // no border and no corner. The block is drawn at the full width it is
         // given (see `layout`), the way a command reads in a terminal rather
         // than in a panel floating over one.
-        self.root = Some(
-            Flex::column()
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_spacing(sm)
-                .with_child(Divider::horizontal().finish())
-                .with_child(header.finish())
-                .with_child(body.finish())
-                .finish(),
-        );
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(sm)
+            .with_child(Divider::horizontal().finish())
+            .with_child(header);
+        if let Some(bar) = bar {
+            column = column.with_child(bar);
+        }
+        self.root = Some(column.with_child(body.finish()).finish());
+    }
+
+    /// The block's own state, drawn under its content (warp-new's failing
+    /// block): a failure washes the whole block in the error colour and stands
+    /// a pole on its left edge, and a running command keeps the pole in the
+    /// accent colour. A finished, successful block draws neither.
+    fn paint_status(&self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        let Some(token) = Self::status_pole(self.status) else {
+            return;
+        };
+        let Some(size) = self.size else {
+            return;
+        };
+        let color = app.theme.color(token);
+        let Some(renderer) = ctx.renderer.as_mut() else {
+            return;
+        };
+        if self.status == Some(TerminalStatus::Error) {
+            renderer.fill_rect(
+                rectf(origin.x, origin.y, size.x, size.y),
+                ColorU::new(color.r, color.g, color.b, FAILURE_WASH_ALPHA),
+            );
+        }
+        renderer.fill_rect(rectf(origin.x, origin.y, FLAG_POLE_WIDTH, size.y), color);
     }
 
     fn resolve_width(&self, max_text_width: f32) -> f32 {
         let content_w = self.content_width(max_text_width);
-        let title = self.title.clone();
-        // Conservative minimum for the header (its labels + copy + filter and
-        // their spacing) so the right-aligned buttons never clip. The Spacer is
-        // flexible (min 0), so only the labels and the two buttons count, plus
-        // one gap per label and two more around the spacer.
-        let labels = self.header_labels();
-        let labels_w: f32 = labels
-            .iter()
-            .map(|label| {
-                let is_title = *label == title;
-                measure_text_family(
-                    label,
-                    if is_title { HEADER_FONT_SIZE } else { META_FONT_SIZE },
-                    1.2,
-                    if is_title { max_text_width } else { META_MAX_WIDTH },
-                    FontWeight::Regular,
-                    FontFamily::Mono,
-                    false,
-                )
-                .x
-            })
-            .sum();
-        let header_min =
-            labels_w + (labels.len() as f32 + 2.0) * HEADER_SPACING + 2.0 * BUTTON_SIZE;
+        // Conservative minimum for the header (its prompt row, the copy and
+        // filter controls and their spacing) so the right-aligned controls never
+        // clip. The Spacer is flexible (min 0), so only the row and the two
+        // buttons count, plus a gap per item and two more around the spacer.
+        let prompt_w = measure_text_family(
+            &self.prompt_label(),
+            FONT_SIZE,
+            LINE_HEIGHT,
+            PROMPT_MAX_WIDTH.min(max_text_width),
+            FontWeight::Regular,
+            FontFamily::Mono,
+            false,
+        )
+        .x;
+        let header_min = prompt_w + 4.0 * HEADER_SPACING + 2.0 * BUTTON_SIZE;
         content_w.max(header_min).max(0.0)
     }
 }
@@ -466,6 +494,7 @@ impl Element for TerminalBlock {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.paint_status(origin, ctx, app);
         if let Some(root) = self.root.as_mut() {
             root.paint(origin, ctx, app);
         }
@@ -485,6 +514,26 @@ impl Element for TerminalBlock {
         ctx: &mut crate::elements::EventContext,
         app: &AppContext,
     ) -> bool {
+        match event {
+            // Whether the pointer is over the block decides whether its controls
+            // are drawn. The flag is app-owned, so it is written here and read by
+            // the next frame's build.
+            DispatchedEvent::MouseMove { position } => {
+                let inside = self
+                    .bounds()
+                    .map(|bounds| crate::elements::interactive::contains(bounds, *position))
+                    .unwrap_or(false);
+                self.filter.set_hovered(inside);
+            }
+            // Escape puts the block's output back and takes the bar away with it.
+            DispatchedEvent::KeyDown { key, .. } => {
+                if key == "Escape" && self.filter.is_open() {
+                    self.filter.close_bar();
+                    return true;
+                }
+            }
+            _ => {}
+        }
         self.root
             .as_mut()
             .map(|root| root.dispatch_event(event, ctx, app))

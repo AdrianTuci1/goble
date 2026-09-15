@@ -6,10 +6,11 @@ use std::rc::Rc;
 
 use goble_terminal::blocks::BlockView;
 use goble_terminal::Palette;
+use goble_ui::elements::terminal_block::terminal_filter_bar;
 use goble_ui::elements::{
     AppContext, Axis, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded,
     Fill, Flex, MainAxisAlignment, MainAxisSize, Scrollable, SizeConstraint, Stack,
-    TerminalBlockPlumbing, TerminalGrid, Text,
+    TerminalBlockPlumbing, TerminalFilter, TerminalGrid, Text,
 };
 use goble_ui::geometry::Vector2F;
 use goble_ui::theme::{ColorToken, FontFamily, SpacingToken};
@@ -17,10 +18,10 @@ use goble_ui::theme::{ColorToken, FontFamily, SpacingToken};
 use crate::terminal::{TerminalMode, TerminalRegistry};
 use crate::ui::chat;
 
-use super::TerminalView;
 use super::blocks::section_data;
-use super::cards::{CardProbe, build_card};
+use super::cards::{build_card, CardProbe};
 use super::grid::GridProbe;
+use super::TerminalView;
 use super::{FONT_SIZE, LINE_HEIGHT};
 
 /// Build the terminal pane content for `pane_id`.
@@ -77,13 +78,24 @@ pub fn build_terminal(
     // agent view draws — without the `esc`, which is only the way back *from*
     // the harness.
     let header = chat::build_agent_header(app, state, actions, pane_id, false);
+    // Whether the pane's whole-output filter bar holds the caret (see the input
+    // rule below).
+    let filter_typing = state
+        .terminal_global_filters
+        .get(&pane_id)
+        .is_some_and(|filter| *filter.focused.borrow());
     // The rich input is this pane's only typing surface: it holds the keyboard
     // whenever the pane is active and the screen still belongs to the shell. A
     // full-screen program (a TUI agent, or anything in the alternate screen)
     // takes the keys themselves, which is the native-first rule the pane
     // already follows for a claimed TUI agent.
+    //
+    // While the pane's filter bar is up and holding the caret, that field is the
+    // typing surface instead: the composer is built unfocused, so exactly one
+    // surface draws a caret, and the keys are routed into the tree, where the
+    // bar sits ahead of the composer.
     let owner = state.terminal.borrow();
-    let bar_focused = active && !owner.program_owns_screen(pane_id);
+    let bar_focused = active && !owner.program_owns_screen(pane_id) && !filter_typing;
     let bar = chat::build_terminal_composer(state, actions, pane_id, bar_focused);
     drop(owner);
     let shell = TerminalView::new(
@@ -135,6 +147,33 @@ pub fn build_terminal(
         .finish()
 }
 
+/// How many lines the pane's whole-output filter keeps, and how many lines the
+/// pane's blocks carry — what its bar counts. A conversation card draws no
+/// lines, so it contributes nothing.
+fn filter_line_counts(
+    blocks: &[crate::emulator::VisibleBlock],
+    filter: &TerminalFilter,
+) -> (usize, usize) {
+    let mut matched = 0;
+    let mut total = 0;
+    for block in blocks {
+        let Some(data) = section_data(block) else {
+            continue;
+        };
+        total += data.lines.len();
+        matched += data
+            .lines
+            .iter()
+            .filter(|line| filter.matches(line.kind, &line.text))
+            .count();
+    }
+    (matched, total)
+}
+
+/// The pane's whole-output filter bar's field, named the way the transcript's
+/// filter row names it.
+const TERMINAL_FILTER_PLACEHOLDER: &str = "Filter terminal output";
+
 /// The terminal palette: the app's own text, background and caret colours over
 /// the standard sixteen, so a shell in a pane matches the window it is in.
 fn terminal_palette(app: &AppContext) -> Palette {
@@ -178,11 +217,7 @@ impl TerminalView {
             geometry: Rc::new(RefCell::new(None)),
             cards: Rc::new(RefCell::new(Vec::new())),
             scroll: Rc::new(RefCell::new(goble_ui::ScrollState::following())),
-            plumbing: TerminalBlockPlumbing::new(
-                Rc::new(RefCell::new(HashMap::new())),
-                None,
-                None,
-            ),
+            plumbing: TerminalBlockPlumbing::new(Rc::new(RefCell::new(HashMap::new())), None, None),
             pressed: None,
             last_cell: None,
             pointer: None,
@@ -263,6 +298,24 @@ impl TerminalView {
         let mut column = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+
+        // The pane's whole-output filter (Cmd+F): one bar over every block the
+        // pane draws, counting what its query keeps among them. It is the same
+        // surface a block's own filter bar is, so the query is typed and edited
+        // the same way in both. A full-screen program owns its screen, so it has
+        // no blocks to filter.
+        if !screen.alt_screen {
+            if let Some(filter) = self.plumbing.global_filter().filter(|f| f.is_open()) {
+                let (matched, total) = filter_line_counts(&blocks, &filter);
+                column = column.with_child(terminal_filter_bar(
+                    &filter,
+                    TERMINAL_FILTER_PLACEHOLDER,
+                    matched,
+                    total,
+                    app,
+                ));
+            }
+        }
 
         // When the pane is hosting a real TUI agent, mark it so the user knows
         // goble kept the agent's native input (native-first). The badge is the

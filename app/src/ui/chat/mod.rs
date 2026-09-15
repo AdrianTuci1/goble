@@ -53,6 +53,7 @@ fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneChatSnapshot {
             messages: state.chat_messages.clone(),
             composer_draft: state.composer_draft.clone(),
             composer_path: state.composer_path.clone(),
+            composer_attachments: Vec::new(),
             pending_ask: state.pending_ask.clone(),
             pending_command: None,
             command_selection: Rc::new(RefCell::new(0)),

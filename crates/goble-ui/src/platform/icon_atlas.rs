@@ -371,6 +371,44 @@ mod tests {
         assert_eq!(found, 2, "expected both new context-pill icons");
     }
 
+    /// The explorer's tab drew the reference tool's *prohibition* banner: the
+    /// asset behind `folder-closed` was a 24×24 red (`#FF0000`) folder with a
+    /// slash through it. The tab's icon is the closed folder itself — one
+    /// filled path in the same 16×14 box the file set's own `folder.svg` draws
+    /// in, which is what the atlas's silhouette and the element's recolour
+    /// both need.
+    #[test]
+    fn the_closed_folder_is_a_monochrome_folder_glyph() {
+        let (_, bytes) = ICON_FILES
+            .iter()
+            .find(|(name, _)| *name == "folder-closed")
+            .expect("the closed folder is registered");
+        let svg = std::str::from_utf8(bytes).expect("the asset is UTF-8");
+        assert_eq!(
+            svg.matches("<path").count(),
+            1,
+            "one path, as every glyph of the family: {svg}"
+        );
+        assert!(
+            !svg.to_ascii_lowercase().contains("#ff0000"),
+            "a banner red is not this glyph: {svg}"
+        );
+        assert!(
+            svg.contains(r#"fill="black""#) && !svg.contains(r#"fill="white""#),
+            "monochrome in the family's fill: {svg}"
+        );
+        assert!(
+            svg.contains(r#"viewBox="0 0 16 14""#),
+            "the file set's own box: {svg}"
+        );
+
+        let img = rasterize_icon(bytes).expect("the closed folder rasterizes");
+        assert!(
+            img.0.iter().any(|&a| a > 0),
+            "and it renders opaque pixels"
+        );
+    }
+
     #[test]
     fn conversation_icons_rasterize() {
         let mut found = 0;

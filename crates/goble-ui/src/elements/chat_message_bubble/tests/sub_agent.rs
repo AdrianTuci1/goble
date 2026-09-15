@@ -352,37 +352,62 @@ fn status_affordance_reflects_the_persisted_status() {
 }
 
 /// A `role="tool"` result row still renders as its terminal block; the tool
-/// call no longer adds a card beside it.
+/// call adds no card beside it. The block's own controls are drawn only while
+/// the pointer is over them, so the row at rest is its output alone.
 #[test]
 fn tool_result_block_still_renders_for_a_tool_row() {
-    let app = AppContext::default();
-    let mut bubble = ChatMessageBubble::new(
-        ChatRole::Tool,
-        vec![ChatFragment::terminal(TerminalData::new(
-            "call_1",
-            vec![TerminalLine::output("file.txt")],
-        ))],
-    );
-    let size = bubble.layout(
-        SizeConstraint::loose(vec2f(400.0, 400.0)),
-        &mut LayoutContext::default(),
-        &app,
-    );
-    assert!(size.x > 0.0);
-    assert!(size.y > 0.0);
+    use crate::elements::TerminalFilter;
 
-    let mut paint_ctx = PaintContext::new(Renderer::new());
-    bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
-    let commands = paint_ctx
-        .renderer
-        .take()
-        .map(|r| r.commands().to_vec())
-        .unwrap_or_default();
-    let copy_icons = commands
-        .iter()
-        .filter(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name == "copy"))
-        .count();
-    assert!(copy_icons >= 1, "expected a terminal block copy control");
+    let app = AppContext::default();
+    let data = TerminalData::new("call_1", vec![TerminalLine::output("file.txt")]);
+    let filters: Rc<RefCell<HashMap<String, TerminalFilter>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let hovered = filters.borrow_mut().entry(data.filter_key()).or_default().clone();
+    hovered.set_hovered(true);
+
+    let paint = |bubble: &mut ChatMessageBubble| {
+        bubble.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        paint_ctx
+            .renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default()
+    };
+    let copy_icons = |commands: &[RenderCommand]| {
+        commands
+            .iter()
+            .filter(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name == "copy"))
+            .count()
+    };
+
+    let mut resting = ChatMessageBubble::new(
+        ChatRole::Tool,
+        vec![ChatFragment::terminal(data.clone())],
+    );
+    let commands = paint(&mut resting);
+    assert_eq!(
+        copy_icons(&commands),
+        0,
+        "a block whose pointer is elsewhere draws no controls"
+    );
+    assert!(
+        drawn_texts(&commands).iter().any(|t| t == "file.txt"),
+        "but its output is drawn all the same"
+    );
+
+    let mut bubble = ChatMessageBubble::new(ChatRole::Tool, vec![ChatFragment::terminal(data)])
+        .with_terminal_filters(filters);
+    let commands = paint(&mut bubble);
+    assert!(
+        copy_icons(&commands) >= 1,
+        "expected a terminal block copy control under the pointer"
+    );
     let text = drawn_texts(&commands);
     assert!(
         text.iter().any(|t| t == "call_1"),

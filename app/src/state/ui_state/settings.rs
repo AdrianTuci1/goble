@@ -77,19 +77,22 @@ impl UiState {
         *self.llm_dialog_focus.borrow_mut() = None;
     }
 
-    // ---- The overlay's two-region keyboard model ---------------------------
+    // ---- The settings tab's two-region keyboard model ----------------------
     //
     // The rail and the content pane are the two regions; `settings_focus` says
     // which holds the keyboard, `settings_pane_focus` which pane control it is
     // on. `app/src/ui/settings.rs` documents the key map and draws the ring.
+    // The page the pane shows is not a field of its own: it rides in the
+    // settings leaf (see [`UiState::settings_page`]).
 
-    /// The pane's focus order for the active category, from the same rules the
-    /// pane draws its rows with.
+    /// The pane's focus order for the page the settings pane shows, from the
+    /// same rules the pane draws its rows with.
     pub fn settings_pane_controls(&self) -> Vec<SettingsControl> {
         crate::ui::settings::pane_controls(
-            self.settings_category,
+            self.settings_page(),
             &self.settings_environment_groups,
             self.settings_environment_open_group.as_deref(),
+            self.settings_ssh_hosts.as_ref(),
         )
     }
 
@@ -104,9 +107,10 @@ impl UiState {
     }
 
     /// Select a category from the rail and reset the pane's focus to that
-    /// pane's first control: the keys that got here belong to the rail.
+    /// pane's first control: the keys that got here belong to the rail. The
+    /// page is written into the settings leaf, so it travels with the pane.
     pub fn settings_select_category(&mut self, category: SettingsCategory) {
-        self.settings_category = category;
+        self.settings_set_page(category);
         self.settings_pane_focus = 0;
         self.settings_clear_field_edit();
     }
@@ -119,7 +123,7 @@ impl UiState {
         if count == 0 {
             return;
         }
-        let pos = all.iter().position(|c| *c == self.settings_category).unwrap_or(0) as i32;
+        let pos = all.iter().position(|c| *c == self.settings_page()).unwrap_or(0) as i32;
         self.settings_select_category(all[(pos + delta).rem_euclid(count) as usize]);
     }
 
@@ -222,7 +226,8 @@ impl UiState {
     /// Activate the focused pane control. The controls whose behaviour already
     /// exists as an action (the switches, the routing choice, the model reload)
     /// are dispatched there by the action layer; this is the half that belongs
-    /// to the state: the environment rows and a text field taking the caret.
+    /// to the state: the environment rows, the SSH connection rows and a text
+    /// field taking the caret.
     pub fn settings_activate_control(&mut self, desktop: Option<&DesktopState>) {
         match self.settings_focused_control() {
             Some(control) if control.is_text_field() => self.settings_activate_field(),
@@ -240,6 +245,11 @@ impl UiState {
             Some(SettingsControl::EnvironmentDeleteSecret(id)) => {
                 self.environment_delete_secret(&id, desktop);
             }
+            // Enter on a connection names it and stops there: this build opens
+            // no session over SSH, so the row is the source of a target rather
+            // than a thing that connects.
+            Some(SettingsControl::SshHost(alias)) => self.ssh_select_host(&alias),
+            Some(SettingsControl::ReloadSshHosts) => self.reload_ssh_hosts(),
             _ => {}
         }
     }
@@ -400,5 +410,65 @@ impl UiState {
             }
             Err(e) => log::warn!("save_environment_secret failed: {e}"),
         }
+    }
+
+    // ---- Settings -> Connections -------------------------------------------
+
+    /// Read `~/.ssh` if the Connections page is showing and the cache is still
+    /// empty. Called once per frame from the rebuild, before the snapshot is
+    /// taken, so the page never reads the directory while it draws and a frame
+    /// that changes nothing reads nothing.
+    pub fn ensure_ssh_hosts(&mut self) {
+        if self.settings_page() != SettingsCategory::Connections || self.settings_ssh_read {
+            return;
+        }
+        self.reload_ssh_hosts();
+    }
+
+    /// Re-read `~/.ssh` and replace the cache. The read is a plain function of
+    /// the home directory, so the page and the action layer share this one path.
+    pub fn reload_ssh_hosts(&mut self) {
+        self.settings_ssh_read = true;
+        self.settings_ssh_hosts = self
+            .ssh_home()
+            .map(|home| goble_core::ssh_hosts::read_ssh_hosts(&home));
+        // A host that is no longer in the config cannot stay selected: the row
+        // the keyboard would be on is gone.
+        let selected = self.settings_ssh_selected.take();
+        if let Some(alias) = selected {
+            if self
+                .settings_ssh_hosts
+                .as_ref()
+                .is_some_and(|ssh| ssh.hosts.iter().any(|h| h.alias == alias))
+            {
+                self.settings_ssh_selected = Some(alias);
+            }
+        }
+        // Re-reading can shorten the pane's order: keep the focused slot inside
+        // it instead of leaving it past the end.
+        let len = self.settings_pane_controls().len();
+        if len > 0 {
+            self.settings_pane_focus = self.settings_pane_focus.min(len - 1);
+        }
+    }
+
+    /// Select a connection by alias: `Enter` names it for whatever consumes the
+    /// target next. Nothing connects — this build opens no session over SSH.
+    pub fn ssh_select_host(&mut self, alias: &str) {
+        let known = self
+            .settings_ssh_hosts
+            .as_ref()
+            .is_some_and(|ssh| ssh.hosts.iter().any(|h| h.alias == alias));
+        if known {
+            self.settings_ssh_selected = Some(alias.to_string());
+        }
+    }
+
+    /// The home directory `~/.ssh` is read under: the injected one when there is
+    /// one, else the user's own.
+    fn ssh_home(&self) -> Option<std::path::PathBuf> {
+        self.settings_ssh_home
+            .clone()
+            .or_else(|| crate::state::paths::home_directory().map(std::path::PathBuf::from))
     }
 }

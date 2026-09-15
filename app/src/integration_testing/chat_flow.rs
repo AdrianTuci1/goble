@@ -134,32 +134,60 @@ fn a_prompt_with_no_model_is_never_persisted() {
 }
 
 #[test]
-fn a_prompt_with_no_model_creates_no_conversation() {
+fn a_prompt_with_no_model_opens_the_agent_view_and_persists_no_message() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);
     assert!(desktop.list_chats().is_empty());
 
-    // Cmd+Enter on a pane with no conversation: with no model to answer it, the
-    // prompt must not leave a conversation behind in the sidebar.
+    // Cmd+Enter at a pane is the composer's two calls: the harness switch first,
+    // then the prompt. With no runnable model the switch still happens — the
+    // view needs a conversation to draw, so one is bound — while the prompt
+    // nothing can answer is not sent and writes nothing into the store.
+    let pane_id = state.borrow().active_pane_id;
+    (actions.on_set_pane_harness_mode.borrow_mut())(pane_id, true);
     (actions.on_cmd_enter.borrow_mut())("Salut!".to_string());
 
+    let conversation = {
+        let s = state.borrow();
+        assert!(
+            s.show_llm_key_banner,
+            "no key -> the notice band is what reports the missing model"
+        );
+        assert_eq!(s.llm_notice_heading(), "No API key configured");
+        assert!(
+            s.pane_controls(pane_id).harness_mode,
+            "the pane is in terminal + agent mode"
+        );
+        assert!(
+            matches!(
+                s.pane_view(pane_id),
+                goble_terminal::blocks::BlockView::Agent { .. }
+            ),
+            "the pane shows the agent view"
+        );
+        s.pane_conversation_id(pane_id)
+            .expect("the agent view has a conversation to draw")
+    };
     assert!(
-        desktop.list_chats().is_empty(),
-        "no conversation is created for a prompt that cannot run"
+        desktop
+            .list_chat_messages(&conversation)
+            .expect("list messages")
+            .is_empty(),
+        "a prompt that cannot run writes nothing into its conversation"
     );
-    assert!(
-        state.borrow().conversations.is_empty(),
-        "sidebar stays empty"
-    );
-    assert!(state.borrow().show_llm_key_banner);
 
-    // The sidebar's own "New conversation" row is refused for the same reason.
+    // The sidebar's own "New conversation" row opens a tab of its own and binds
+    // a fresh conversation there: the band, not a refusal, is what reports the
+    // missing model.
+    let before = state.borrow().spaces.len();
     (actions.on_create_submit.borrow_mut())();
+    let s = state.borrow();
+    assert_eq!(s.spaces.len(), before + 1, "the row opens a new tab");
     assert!(
-        desktop.list_chats().is_empty(),
-        "the sidebar creates no conversation either"
+        s.pane_owns_conversation(s.active_pane_id),
+        "the new tab's pane owns a conversation"
     );
-    assert!(state.borrow().show_llm_key_banner);
+    assert!(s.show_llm_key_banner);
 }
 
 #[test]
@@ -188,24 +216,39 @@ fn select_tab_switches_views() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);
 
-    (actions.on_select_tab.borrow_mut())(AppTab::Settings);
-    assert_eq!(state.borrow().current_tab, AppTab::Settings);
+    (actions.on_select_tab.borrow_mut())(AppTab::Projects);
+    assert_eq!(state.borrow().current_tab, AppTab::Projects);
 }
 
 #[test]
-fn repeated_new_conversation_reuses_the_empty_one() {
+fn repeated_new_conversation_opens_a_tab_each_time() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);
     configure_model(&state);
+    let tabs_before = state.borrow().spaces.len();
 
-    // The sidebar "New conversation" row: clicking it repeatedly must not pile
-    // up empty conversations while the active pane is already on a fresh one.
+    // The sidebar "New conversation" row opens a tab of its own every time: it
+    // neither refuses nor reuses the conversation already on screen, so three
+    // clicks are three tabs with three conversations.
     (actions.on_create_submit.borrow_mut())();
     (actions.on_create_submit.borrow_mut())();
     (actions.on_create_submit.borrow_mut())();
 
-    assert_eq!(state.borrow().conversations.len(), 1);
-    assert_eq!(desktop.list_chats().len(), 1);
+    let s = state.borrow();
+    assert_eq!(
+        s.spaces.len(),
+        tabs_before + 3,
+        "each click appends one space"
+    );
+    assert_eq!(s.conversations.len(), 3, "each tab has its own conversation");
+    assert_eq!(desktop.list_chats().len(), 3);
+    let ids: std::collections::HashSet<String> = s
+        .pane_sessions
+        .values()
+        .map(|session| session.conversation_id.clone())
+        .filter(|id| !id.is_empty())
+        .collect();
+    assert_eq!(ids.len(), 3, "the tabs never share a transcript");
 }
 
 #[test]
@@ -220,7 +263,8 @@ fn new_conversation_after_a_message_creates_a_fresh_one() {
         .add_chat_message(&first, "user", "salut")
         .expect("add a message");
 
-    // The pane's conversation now has content, so a new click opens a new one.
+    // The pane's conversation now has content, and the click opens a tab of its
+    // own with a conversation that is not the one it holds.
     (actions.on_create_submit.borrow_mut())();
     assert_eq!(desktop.list_chats().len(), 2);
     assert_ne!(state.borrow().selected_id.as_deref(), Some(first.as_str()));

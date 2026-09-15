@@ -1,3 +1,5 @@
+use super::SettingsCategory;
+
 /// Which kind of content a pane hosts.
 ///
 /// Not `Copy`: a file view carries the file it shows, so the pane survives a
@@ -9,6 +11,10 @@ pub enum PaneKind {
     /// A read-only view of one file, opened from the explorer tree or a search
     /// result.
     File { path: String },
+    /// The settings surface: the page rail, the page and the footer. The page
+    /// the pane shows rides in the leaf, so it comes back with the pane and
+    /// travels with it when the pane is lifted into another space.
+    Settings { page: SettingsCategory },
 }
 
 /// Which way a pane tree splits.
@@ -101,6 +107,26 @@ impl Pane {
 
     fn is_leaf(&self, target: u64) -> bool {
         matches!(self, Pane::Leaf { id, .. } if *id == target)
+    }
+
+    /// The first leaf of kind [`PaneKind::Settings`] under this pane, in
+    /// traversal order. The settings tab is found by kind — never by name or
+    /// id — so closing the tab or lifting the pane into another space cannot
+    /// make a remembered id stale, and a rename cannot hide the tab that
+    /// exists. A layout that somehow holds two settings leaves answers with
+    /// the first of them, which is what "one settings tab" means for reading;
+    /// nothing rewrites the layout to make it so.
+    pub fn settings_leaf(&self) -> Option<u64> {
+        match self {
+            Pane::Leaf {
+                id,
+                kind: PaneKind::Settings { .. },
+            } => Some(*id),
+            Pane::Leaf { .. } => None,
+            Pane::Split { first, second, .. } => {
+                first.settings_leaf().or_else(|| second.settings_leaf())
+            }
+        }
     }
 
     /// The kind of the leaf `target`, if this subtree has it.
@@ -385,6 +411,11 @@ impl Space {
     /// The kind of the leaf `target` (see [`Pane::leaf_kind`]).
     pub fn leaf_kind(&self, target: u64) -> Option<&PaneKind> {
         self.root.leaf_kind(target)
+    }
+
+    /// The first settings leaf in this space's tree (see [`Pane::settings_leaf`]).
+    pub fn settings_leaf(&self) -> Option<u64> {
+        self.root.settings_leaf()
     }
 
     /// Point the leaf `target` at different content (see [`Pane::set_leaf_kind`]).

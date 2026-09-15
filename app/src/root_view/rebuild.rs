@@ -39,6 +39,11 @@ impl RootView {
         // Ensure every pane has a per-pane agent-header 3-dots menu flag before
         // the snapshot is built, so the tray open state is independent per pane.
         self.state.borrow_mut().ensure_agent_menu_flags();
+        // Follow what every pane's own shell reports as its working directory
+        // before anything reads a path: the rich input's directory pill, the tab
+        // label that derives from it and the explorer all draw from the pane's
+        // session, and a `cd` at the pane's prompt moves all three.
+        self.state.borrow_mut().adopt_reported_cwds();
         // A tab's name comes from what it holds: keep every tab nobody has
         // renamed labelled by its focused pane (the working directory of a
         // terminal, the conversation's subject of an agent) before the snapshot
@@ -48,6 +53,10 @@ impl RootView {
         // snapshot is built, so two pty/agent panes never share the composer's
         // buttons.
         self.state.borrow_mut().ensure_pane_controls();
+        // The Connections page's `~/.ssh` read is cached in app state, like the
+        // picker and explorer caches beside it: it is refilled when the page is
+        // shown (or by its reload row) and never while the page draws.
+        self.state.borrow_mut().ensure_ssh_hosts();
         // The composer's left pill is the window-wide environment (medium) every
         // pane shares; the other two pills describe one pane's own shell and are
         // filled in per pane below, from that pane's working directory.
@@ -76,6 +85,7 @@ impl RootView {
                 harness_items,
                 harness_menu_open: state_s.harness_menu_open.clone(),
                 dir_menu_open: state_s.dir_menu_open.clone(),
+                dir_menu_scroll: state_s.dir_menu_scroll.clone(),
                 dir_ids: Vec::new(),
                 dir_items: Vec::new(),
                 branch_label: String::new(),
@@ -138,6 +148,7 @@ impl RootView {
                         ctx.harness_menu_open = controls.harness_menu_open.clone();
 
                         ctx.dir_menu_open = controls.dir_menu_open.clone();
+                        ctx.dir_menu_scroll = controls.dir_menu_scroll.clone();
                         let dir_rows =
                             pickers.directories(&cwd, *controls.dir_menu_open.borrow());
                         ctx.dir_ids = dir_rows.iter().map(|row| row.path.clone()).collect();
@@ -247,6 +258,8 @@ impl RootView {
                 pane_terminal_scroll: s.pane_terminal_scroll.clone(),
                 crons_open: s.crons_open,
                 task_workflow_open: s.task_workflow_open,
+                task_workflow_selected: s.task_workflow_selected.clone(),
+                task_workflow_phase: s.task_workflow_phase.clone(),
                 shortcuts_help_open: s.shortcuts_help_open,
                 shortcuts_help_filter: s.shortcuts_help_filter.clone(),
                 shortcuts_help_index: s.shortcuts_help_index,
@@ -271,8 +284,7 @@ impl RootView {
                 settings_cluster_configured: s.settings_cluster_configured,
                 settings_authorized_keys: s.settings_authorized_keys.clone(),
                 settings_vault_unlocked: s.settings_vault_unlocked,
-                settings_overlay_open: s.settings_overlay_open,
-                settings_category: s.settings_category,
+                settings_category: s.settings_page(),
                 settings_focus: s.settings_focus,
                 settings_pane_focus: s.settings_pane_focus,
                 settings_pane_field_active: s.settings_pane_field_active,
@@ -282,6 +294,8 @@ impl RootView {
                 settings_environment_secret_name: s.settings_environment_secret_name.clone(),
                 settings_environment_secret_value: s.settings_environment_secret_value.clone(),
                 settings_environment_editing: s.settings_environment_editing.clone(),
+                settings_ssh_hosts: s.settings_ssh_hosts.clone(),
+                settings_ssh_selected: s.settings_ssh_selected.clone(),
                 settings_invert_scroll: s.settings_invert_scroll,
                 settings_scroll_speed: s.settings_scroll_speed,
                 settings_font_size: s.settings_font_size,
@@ -314,7 +328,7 @@ impl RootView {
                 composer_context,
                 pane_hover: s.pane_hover.clone(),
                 pane_chat,
-                pane_controls: s.pane_controls.clone(),
+                pane_controls: s.pane_controls_snapshot(),
                 terminal: s.terminal.clone(),
                 sidebar_width: s.sidebar_width,
                 sidebar_dragging: s.sidebar_dragging,
@@ -473,6 +487,18 @@ impl RootView {
             commands.insert("toggle_right_sidebar".into(), actions.on_toggle_right_sidebar.clone());
             commands.insert("open_settings".into(), actions.on_settings.clone());
             commands.insert("copy".into(), actions.on_copy.clone());
+            // The Window menu's tab-strip items. The action takes a direction,
+            // so each menu command gets its own no-argument wrapper.
+            let next_space = actions.on_switch_space.clone();
+            commands.insert(
+                "next_space".into(),
+                Rc::new(RefCell::new(move || (next_space.borrow_mut())(1))),
+            );
+            let previous_space = actions.on_switch_space.clone();
+            commands.insert(
+                "previous_space".into(),
+                Rc::new(RefCell::new(move || (previous_space.borrow_mut())(-1))),
+            );
             *self.window_control.commands.borrow_mut() = commands;
         }
         self.actions = Some(actions);

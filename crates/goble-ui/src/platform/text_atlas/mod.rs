@@ -13,5 +13,6 @@ mod tests;
 
 pub use atlas::{AtlasEntry, TextAtlas};
 pub use fonts::{
-    font_covers, measure_text, measure_text_family, mono_advance, FontWeight, TextMetrics,
+    advance_width, font_covers, measure_text, measure_text_family, mono_advance, FontWeight,
+    TextMetrics,
 };

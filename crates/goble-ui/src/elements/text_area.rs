@@ -3,12 +3,12 @@ use std::rc::Rc;
 
 use crate::color::ColorU;
 use crate::elements::{
-    caret, AppContext, CaretShape, Code, Container, CrossAxisAlignment, Element, Empty,
-    EventContext, Fill, Flex, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint,
-    Text, TextSpan,
+    caret, vec2f, AppContext, CaretShape, Code, ConstrainedBox, Container, CrossAxisAlignment,
+    Element, Empty, EventContext, Fill, Flex, LayoutContext, MainAxisSize, PaintContext, Point,
+    ScrollState, SizeConstraint, Text, TextSpan,
 };
 use crate::event::{DispatchedEvent, ModifiersState};
-use crate::geometry::{vec2f, PointF, Vector2F};
+use crate::geometry::{PointF, Vector2F};
 use crate::platform::text_atlas::{measure_text_family, FontWeight};
 use crate::syntax::HighlightedLine;
 use crate::theme::{ColorToken, FontFamily};
@@ -19,6 +19,15 @@ use crate::vim::{Clipboard, VimBuffer, VimOutcome, VimState};
 /// prefixes at the very size they are painted.
 const TEXT_FONT_SIZE: f32 = 12.0;
 const TEXT_LINE_HEIGHT: f32 = 1.2;
+
+/// How many rows a windowed multi-line buffer draws before its region has
+/// reported a viewport to size itself against. The first frame has no
+/// measurement, so it draws a screenful for the tallest pane; the frame after
+/// draws what fits.
+const FIRST_FRAME_ROWS: usize = 64;
+/// The rows a window keeps beyond the region's viewport, so a buffer scrolled to
+/// a line that is not its first still fills, top and bottom.
+const WINDOW_SLACK: usize = 4;
 
 /// The syntax runs a multi-line buffer's lines are drawn with.
 ///
@@ -58,6 +67,12 @@ pub struct TextArea {
     line_numbers: usize,
     /// One line box's height, as a multiple of the font size.
     line_height: f32,
+    /// The region the host scrolls this buffer in, when it put the field in one.
+    /// The buffer then lays out only the rows that region's viewport can show,
+    /// and stands the rest in as spacers (see [`TextArea::drawn_rows`]). `None`
+    /// — every single-line field, and every multi-line field the host draws
+    /// whole — lays out every row, as before.
+    scroll: Option<Rc<RefCell<ScrollState>>>,
     /// The syntax runs the buffer's lines are drawn with, when the host
     /// resolved them — see [`LineRuns`].
     line_runs: Option<Rc<LineRuns>>,
@@ -100,6 +115,7 @@ impl TextArea {
             multiline: false,
             line_numbers: 0,
             line_height: TEXT_LINE_HEIGHT,
+            scroll: None,
             line_runs: None,
             anchor: None,
             blur_on_outside_click: true,
@@ -159,6 +175,19 @@ impl TextArea {
     /// the caret is in it.
     pub fn with_line_height(mut self, line_height: f32) -> Self {
         self.line_height = line_height;
+        self
+    }
+
+    /// The region the host scrolls this buffer in — the same [`ScrollState`] the
+    /// [`Scrollable`](crate::elements::Scrollable) around the field was given.
+    ///
+    /// A multi-line buffer handed one draws only the rows that region's viewport
+    /// can show and stands the rest in as spacers of the same height, so the
+    /// text costs a screenful per frame instead of the whole buffer — the region
+    /// keeps the whole buffer's scroll range, and the caret is brought into view
+    /// when it moves off it. A buffer without one is drawn whole.
+    pub fn with_scroll_state(mut self, scroll: Rc<RefCell<ScrollState>>) -> Self {
+        self.scroll = Some(scroll);
         self
     }
 
@@ -322,9 +351,13 @@ impl TextArea {
                 None => {
                     let (before, after) = split_at_char(&display, at);
                     row = row
-                        .with_child(Text::new(before).with_theme_color(color, app).finish())
+                        .with_child(text_run(app, before, color))
                         .with_child(caret(app, shape, under))
-                        .with_child(Text::new(after).with_theme_color(color, app).finish());
+                        .with_child(
+                            Text::new(after_the_caret(shape, under, &after))
+                                .with_theme_color(color, app)
+                                .finish(),
+                        );
                 }
             }
         }
@@ -338,14 +371,23 @@ impl TextArea {
     /// segment, and the caret as a beam exactly one line box tall — so all the
     /// rows are one height and the text below the caret never moves as the
     /// caret moves.
+    ///
+    /// Only the rows [`TextArea::drawn_rows`] gives are built; the rest of the
+    /// buffer is two spacers, so the content the host's region measures is still
+    /// the whole buffer's.
     fn rebuild_multiline(&mut self, app: &AppContext) {
         let chars: Vec<char> = self.value.chars().collect();
         let caret = self.caret_index();
         let selection = self.selection();
         let plain = app.theme.color(ColorToken::Text);
+        let lines = self.value.matches('\n').count() + 1;
+        let window = self.drawn_rows(lines);
         let mut column = Flex::column()
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Start);
+        if window.start > 0 {
+            column = column.with_child(row_spacer(window.start, self.line_box()));
+        }
         let mut start = 0usize;
         let mut index = 0usize;
         loop {
@@ -354,17 +396,91 @@ impl TextArea {
                 .position(|ch| *ch == '\n')
                 .map(|at| start + at)
                 .unwrap_or(chars.len());
-            let line: String = chars[start..end].iter().collect();
-            column = column.with_child(self.line_row(
-                app, index, &line, start, caret, &selection, plain,
-            ));
+            if index >= window.start && index < window.end {
+                let line: String = chars[start..end].iter().collect();
+                column = column.with_child(self.line_row(
+                    app, index, &line, start, caret, &selection, plain,
+                ));
+            }
             index += 1;
             if end >= chars.len() {
                 break;
             }
             start = end + 1;
         }
+        if window.end < lines {
+            column = column.with_child(row_spacer(lines - window.end, self.line_box()));
+        }
         self.root = Some(Container::new(column.finish()).finish());
+    }
+
+    /// The rows of the buffer this frame lays out.
+    ///
+    /// Every line of a multi-line buffer is an element of the frame and the tree
+    /// is rebuilt every frame, so a buffer that draws all of itself lays out
+    /// every line of it on every frame, whatever changed — a two-thousand-line
+    /// file costs a two-thousand-row layout per frame to show forty of them.
+    /// When the host put the field in a scroll region ([`Self::with_scroll_state`]),
+    /// the region's own viewport bounds the window; without one the whole buffer
+    /// is the window.
+    ///
+    /// The rows outside it are not dropped: [`Self::rebuild_multiline`] stands
+    /// them in as spacers of the same height, so the offset the host keeps still
+    /// means the same line and the scroll range is still the whole buffer's.
+    fn drawn_rows(&self, lines: usize) -> std::ops::Range<usize> {
+        let Some(scroll) = self.scroll.as_ref() else {
+            return 0..lines;
+        };
+        let (offset, viewport) = {
+            let scroll = scroll.borrow();
+            (scroll.offset(), scroll.viewport())
+        };
+        let line_box = self.line_box();
+        let first = ((offset / line_box).floor().max(0.0) as usize).min(lines.saturating_sub(1));
+        let rows = if viewport > 0.0 {
+            (viewport / line_box).ceil() as usize
+        } else {
+            FIRST_FRAME_ROWS
+        };
+        first..(first + rows + WINDOW_SLACK).min(lines)
+    }
+
+    /// Bring the row the caret sits on into the field's own viewport, when the
+    /// host put the field in a scroll region.
+    ///
+    /// Called when the caret moves rather than on every frame: a buffer scrolled
+    /// by hand must not be pulled back to a caret the user left behind. A caret
+    /// already inside the window is left where it is, so a move within the pane
+    /// scrolls nothing.
+    fn reveal_caret(&self) {
+        let Some(scroll) = self.scroll.as_ref() else {
+            return;
+        };
+        let (offset, viewport) = {
+            let scroll = scroll.borrow();
+            (scroll.offset(), scroll.viewport())
+        };
+        if viewport <= 0.0 {
+            return;
+        }
+        let line_box = self.line_box();
+        let caret = self.caret_index();
+        let line = self
+            .value
+            .chars()
+            .take(caret)
+            .filter(|ch| *ch == '\n')
+            .count();
+        let first = (offset / line_box).floor().max(0.0) as usize;
+        let rows = (viewport / line_box).ceil() as usize;
+        let target = if line < first {
+            line as f32 * line_box
+        } else if line >= first + rows {
+            (line + 1) as f32 * line_box - viewport
+        } else {
+            return;
+        };
+        scroll.borrow_mut().scroll_by(target - offset);
     }
 
     /// One line of the buffer: the padded line number, the line's runs cut at
@@ -438,14 +554,9 @@ impl TextArea {
     /// The shared beam is a fixed [`caret::CARET_HEIGHT`], which is taller than
     /// this field's line box; a caret taller than its own row would make the
     /// caret's line taller than every other one and shift the text under it.
+    /// The bar takes no advance, so the row's own text keeps its columns.
     fn line_beam(&self, app: &AppContext) -> Box<dyn Element> {
-        Container::new(
-            Empty::new()
-                .with_size(vec2f(caret::CARET_WIDTH, self.line_box()))
-                .finish(),
-        )
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Focus)))
-        .finish()
+        caret::caret_bar(app, self.line_box())
     }
 
     /// One line's height: what every row of a multi-line buffer is drawn at,
@@ -673,14 +784,26 @@ impl TextArea {
         bounds.sort_unstable();
         bounds.dedup();
         for pair in bounds.windows(2) {
-            let (start, end) = (pair[0], pair[1]);
+            let (mut start, end) = (pair[0], pair[1]);
             if start == at {
                 row = row.with_child(caret(app, shape, under));
+                // A block or an underline caret carries the character it covers
+                // (see `caret_covers_character`), and its cell takes that
+                // character's own advance: the segment after the caret starts
+                // past it, so the character is not drawn a second time and the
+                // row is not a cell wider than the text.
+                if caret::caret_covers_character(shape, under) {
+                    start += 1;
+                }
             }
             if end > start {
                 let segment = split_at_char(display, start).1;
                 let segment = split_at_char(&segment, end - start).0;
-                let text = Text::new(segment).with_theme_color(color, app).finish();
+                // Every segment is a run of its own, so each one starts where
+                // the pen of the one before it stopped: the caret takes no room
+                // and a run measures its ink, which would pull the covered
+                // characters out from under the selection background.
+                let text = text_run(app, segment, color);
                 let text = if start >= selected.start && end <= selected.end {
                     Container::new(text)
                         .with_background(crate::elements::Fill::Solid(app.theme.color(ColorToken::Selected)))
@@ -757,8 +880,18 @@ impl TextArea {
             }
             VimOutcome::Passthrough | VimOutcome::Consumed => {}
         }
+        self.reveal_caret();
         outcome
     }
+}
+
+/// The room `rows` rows take in a windowed buffer without any of them being laid
+/// out: what a line the buffer is not drawing stands in as, so the content its
+/// scroll region measures is still the whole buffer's height.
+fn row_spacer(rows: usize, line_box: f32) -> Box<dyn Element> {
+    Empty::new()
+        .with_size(vec2f(0.0, rows as f32 * line_box))
+        .finish()
 }
 
 /// The caret shape a vim mode draws: a bar where typing inserts, a block where
@@ -783,6 +916,56 @@ fn char_offset(text: &str, index: usize) -> usize {
 fn split_at_char(text: &str, index: usize) -> (String, String) {
     let offset = char_offset(text, index);
     (text[..offset].to_string(), text[offset..].to_string())
+}
+
+/// The text the row draws after the caret. A bar takes no room and covers
+/// nothing, so it is the text from the caret on; a block or an underline caret
+/// draws the character it covers inside its own cell, which takes that
+/// character's advance, so the run after it starts past that character and the
+/// character is drawn exactly once.
+fn after_the_caret(shape: CaretShape, under: Option<char>, after: &str) -> String {
+    if caret::caret_covers_character(shape, under) {
+        split_at_char(after, 1).1
+    } else {
+        after.to_string()
+    }
+}
+
+/// A probe glyph wide enough that a run measured with it spans the pen.
+const PEN_PROBE: &str = "W";
+
+/// Where the pen is after `text`: how far past its own origin the character
+/// drawn next starts.
+///
+/// A run reports the extent of its ink, which is a side bearing short of the
+/// pen — and a whole space short when the run ends in whitespace, which has no
+/// ink at all. The field cuts the line into runs around the caret, so each cut
+/// has to be placed at the pen: measuring the distance the probe glyph moves
+/// when it is drawn after `text` gives it, whatever the text ends with.
+fn pen_width(text: &str) -> f32 {
+    let measured = |value: &str| {
+        measure_text_family(
+            value,
+            TEXT_FONT_SIZE,
+            TEXT_LINE_HEIGHT,
+            f32::INFINITY,
+            FontWeight::Regular,
+            FontFamily::System,
+            false,
+        )
+        .x
+    };
+    (measured(&format!("{text}{PEN_PROBE}")) - measured(PEN_PROBE)).max(0.0)
+}
+
+/// One run of the field's text, laid out at the width its pen reaches rather
+/// than at what it measures: a row that is cut into runs around the caret has
+/// to place each one after a cut where the text's own columns put it.
+fn text_run(app: &AppContext, text: String, color: ColorToken) -> Box<dyn Element> {
+    let width = pen_width(&text);
+    ConstrainedBox::new(Text::new(text).with_theme_color(color, app).finish())
+        .with_min_width(width)
+        .finish()
 }
 
 fn insert_char(text: &mut String, index: usize, ch: char) {
@@ -976,6 +1159,7 @@ impl Element for TextArea {
                             self.index_at_offset(position.x - bounds.min_x())
                         };
                         self.move_caret(index, false);
+                        self.reveal_caret();
                         return true;
                     }
                     if self.blur_on_outside_click {
@@ -1010,6 +1194,7 @@ impl Element for TextArea {
                 if self.multiline {
                     return match self.multiline_key(key, modifiers) {
                         Some(changed) => {
+                            self.reveal_caret();
                             if changed {
                                 if let Some(cb) = self.on_change.as_ref() {
                                     (cb.borrow_mut())(self.value.clone());
@@ -1497,6 +1682,217 @@ mod tests {
         );
     }
 
+    /// The beam adds nothing to the line it sits in: the text after it is drawn
+    /// where the pen of the text before it stops, so the letters keep their
+    /// places as the caret moves along the line — and the bar is painted over
+    /// the character it reaches, before that character is drawn, so what it
+    /// covers stays legible on the focus fill.
+    #[test]
+    fn the_beam_takes_no_room_and_stays_under_the_letter_it_reaches() {
+        use crate::elements::caret::CARET_WIDTH;
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = app();
+        let focus = app.theme.color(ColorToken::Focus);
+        let caret = Rc::new(RefCell::new(3));
+        let mut area: Box<dyn Element> = Box::new(
+            TextArea::new()
+                .with_value("abcdef")
+                .with_focused(true)
+                .with_caret(Rc::clone(&caret)),
+        );
+        let commands = render_element(&mut area, vec2f(200.0, 40.0), &app);
+
+        let before = pen_width("abc");
+        let beam_at = commands
+            .iter()
+            .position(|command| {
+                matches!(command, RenderCommand::FillRect { color, .. } if *color == focus)
+            })
+            .expect("the focused field paints its beam");
+        let beam = match &commands[beam_at] {
+            RenderCommand::FillRect { rect, .. } => *rect,
+            _ => unreachable!(),
+        };
+        let (tail_at, tail) = commands
+            .iter()
+            .enumerate()
+            .find_map(|(index, command)| match command {
+                RenderCommand::DrawText { origin, text, .. } if text == "def" => {
+                    Some((index, *origin))
+                }
+                _ => None,
+            })
+            .expect("the text after the beam is drawn");
+        assert!(
+            (beam.min_x() - before).abs() < 1.0,
+            "the beam starts where the characters before it end: {before} against {}",
+            beam.min_x()
+        );
+        assert!(
+            (tail.x - beam.min_x()).abs() < 1.0,
+            "the text after the beam starts on the beam: {} against {}",
+            tail.x,
+            beam.min_x()
+        );
+        // The bar is thicker than the beam it replaces, reaches over the
+        // character after it, and is painted before that character is drawn.
+        assert!(
+            (beam.width() - CARET_WIDTH).abs() < 0.5 && CARET_WIDTH > 3.0,
+            "the bar is a thick one: {beam:?}"
+        );
+        assert!(
+            tail.x < beam.max_x(),
+            "the bar reaches over the character after it: {beam:?} against {tail:?}"
+        );
+        assert!(
+            beam_at < tail_at,
+            "the bar is painted before the character it covers, so the letter stays drawn"
+        );
+    }
+
+    /// Where the caret is does not change where the letters are: the run after
+    /// it starts at the pen of the run before it at every index, a prefix that
+    /// ends in a space included — a space has no ink, so a row that placed the
+    /// run after the caret by what the prefix measures would pull the rest of
+    /// the line a space to the left whenever the caret sat after one.
+    #[test]
+    fn the_text_keeps_its_columns_wherever_the_caret_sits() {
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = app();
+        // (caret, prefix, the run the row draws after the caret)
+        let cases = [(0usize, "", "ab cd"), (1, "a", "b cd"), (2, "ab", " cd"), (3, "ab ", "cd")];
+        for (at, prefix, tail) in cases {
+            let caret = Rc::new(RefCell::new(at));
+            let mut area: Box<dyn Element> = Box::new(
+                TextArea::new()
+                    .with_value("ab cd")
+                    .with_focused(true)
+                    .with_caret(Rc::clone(&caret)),
+            );
+            let commands = render_element(&mut area, vec2f(200.0, 40.0), &app);
+            let (origin, drawn) = commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText { origin, text, .. } if text == tail => {
+                        Some((*origin, text.clone()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the run after the caret ({tail:?}) is drawn"));
+            assert_eq!(drawn, tail);
+            assert!(
+                (origin.x - pen_width(prefix)).abs() < 0.5,
+                "the run after the caret at {at} starts where the pen is: {} against {}",
+                origin.x,
+                pen_width(prefix)
+            );
+            // The caret cuts the line into runs without changing what it says.
+            let said: String = commands
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(said, "ab cd", "the caret at {at} leaves the text alone");
+        }
+    }
+
+    /// A block caret on a space is a cell the space's own advance wide: a space
+    /// has no ink to measure, so a cell sized by what the character draws would
+    /// vanish and pull the characters after it across the line.
+    #[test]
+    fn the_block_caret_on_a_space_covers_it_and_keeps_the_columns() {
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = app();
+        let focus = app.theme.color(ColorToken::Focus);
+        let caret = Rc::new(RefCell::new(0));
+        let vim = Rc::new(RefCell::new(VimState::new()));
+        let mut area: Box<dyn Element> = Box::new(
+            TextArea::new()
+                .with_value("a b")
+                .with_focused(true)
+                .with_caret(Rc::clone(&caret))
+                .with_vim(vim.clone()),
+        );
+        area.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut EventContext::default(),
+            &app,
+        );
+        assert_eq!(vim.borrow().mode(), crate::vim::VimMode::Normal);
+        // Normal mode holds the block over the character under the caret; the
+        // space between the two letters is the one that has no ink.
+        *caret.borrow_mut() = 1;
+
+        // Where the pen stops, measured on the font: the distance the probe
+        // glyph moves when it is drawn after the text.
+        let pen = |text: &str| {
+            measure_text_family(
+                &format!("{text}W"),
+                TEXT_FONT_SIZE,
+                TEXT_LINE_HEIGHT,
+                f32::INFINITY,
+                FontWeight::Regular,
+                FontFamily::System,
+                false,
+            )
+            .x - measure_text_family(
+                "W",
+                TEXT_FONT_SIZE,
+                TEXT_LINE_HEIGHT,
+                f32::INFINITY,
+                FontWeight::Regular,
+                FontFamily::System,
+                false,
+            )
+            .x
+        };
+        let space = pen("a ") - pen("a");
+        assert!(space > 0.0, "a space advances the pen: {space}");
+
+        let commands = render_element(&mut area, vec2f(200.0, 40.0), &app);
+        let cell = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. } if *color == focus => Some(*rect),
+                _ => None,
+            })
+            .expect("the block caret is a filled cell");
+        assert!(
+            (cell.min_x() - pen("a")).abs() < 1.0,
+            "the cell starts where the space does: {} against {}",
+            cell.min_x(),
+            pen("a")
+        );
+        assert!(
+            (cell.width() - space).abs() < 1.0,
+            "the cell is the space's own advance ({space}): {cell:?}"
+        );
+        let tail = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { origin, text, .. } if text == "b" => Some(*origin),
+                _ => None,
+            })
+            .expect("the character after the space is drawn");
+        assert!(
+            (tail.x - cell.max_x()).abs() < 1.0,
+            "the text after the caret starts where its cell ends: {} against {}",
+            tail.x,
+            cell.max_x()
+        );
+    }
+
     /// The beam is the focus blue — the colour the reference's editor cursor
     /// carries — and a blurred field draws no beam at all.
     #[test]
@@ -1763,5 +2159,207 @@ mod tests {
             );
         }
         assert_eq!(area.value(), "ab\ncd", "and nothing was typed");
+    }
+    /// A multi-line buffer the host put in a scroll region, as a file pane does:
+    /// the field and the region share one `ScrollState`, and the buffer is
+    /// `lines` lines long.
+    fn windowed_field(
+        lines: usize,
+        caret: Rc<RefCell<usize>>,
+    ) -> (Box<dyn Element>, Rc<RefCell<ScrollState>>) {
+        use crate::elements::{Axis, Scrollable};
+
+        let value: String = (0..lines).map(|line| format!("line {line}\n")).collect();
+        let scroll = Rc::new(RefCell::new(ScrollState::default()));
+        let field = TextArea::new()
+            .with_value(value)
+            .with_multiline(true)
+            .with_line_numbers(5)
+            .with_line_height(1.35)
+            .with_min_height(0.0)
+            .with_focused(true)
+            .with_caret(caret)
+            .with_scroll_state(Rc::clone(&scroll));
+        (
+            Box::new(
+                Scrollable::new(field.finish(), Axis::Vertical).with_state(Rc::clone(&scroll)),
+            ),
+            scroll,
+        )
+    }
+
+    /// One frame of `root`, as the commands it drew.
+    fn frame_of(
+        root: &mut Box<dyn Element>,
+        app: &AppContext,
+        size: Vector2F,
+    ) -> Vec<crate::render::RenderCommand> {
+        let _ = root.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), app);
+        let mut ctx = PaintContext::new(crate::render::Renderer::new());
+        root.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        ctx.renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// The line numbers the frame drew in the gutter, in order.
+    fn drawn_line_numbers(commands: &[crate::render::RenderCommand]) -> Vec<usize> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                crate::render::RenderCommand::DrawText { text, .. } => {
+                    let padded = text.strip_suffix(' ')?;
+                    // The gutter is right-aligned, so a small number carries
+                    // leading spaces that `parse` would reject.
+                    (padded.len() == 5 && padded.trim().chars().all(|ch| ch.is_ascii_digit()))
+                        .then(|| padded.trim().parse().ok())?
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A multi-line buffer is laid out at most a screenful at a time: a buffer of
+    /// two thousand lines costs the rows the field's own region can show, not the
+    /// whole buffer, while the region still measures the whole buffer's height —
+    /// the lines outside the window stand in as spacers.
+    #[test]
+    fn a_windowed_buffer_lays_out_only_the_rows_its_viewport_shows() {
+        let app = app();
+        let lines = 2_000usize;
+        let caret = Rc::new(RefCell::new(0));
+        let (mut root, scroll) = windowed_field(lines, caret);
+        let size = vec2f(600.0, 2_000.0);
+        let line_box = (TEXT_FONT_SIZE * 1.35).ceil();
+
+        // The first frame has no viewport measured yet, so it draws a screenful.
+        let first = frame_of(&mut root, &app, size);
+        assert_eq!(
+            drawn_line_numbers(&first).len(),
+            FIRST_FRAME_ROWS + WINDOW_SLACK,
+            "the frame with no viewport yet draws a screenful, not the buffer"
+        );
+
+        let second = frame_of(&mut root, &app, size);
+        let drawn = drawn_line_numbers(&second);
+        let (viewport, max_offset) = {
+            let scroll = scroll.borrow();
+            (scroll.viewport(), scroll.max_offset())
+        };
+        assert!(viewport > 0.0, "the region measured a viewport");
+        let rows = (viewport / line_box).ceil() as usize;
+        assert_eq!(
+            drawn.len(),
+            rows + WINDOW_SLACK,
+            "the frame with a viewport draws its own rows and the window's slack, \
+             {rows} rows in {viewport} points"
+        );
+        assert_eq!(drawn[0], 1, "and starts at the top of the buffer");
+        // The buffer's value ends in a newline, so it has one more line than it
+        // has newlines: a last, empty one.
+        let scroll_range = (lines + 1) as f32 * line_box - viewport;
+        assert_eq!(
+            max_offset,
+            scroll_range,
+            "the rows outside the window stand in at their own height, so the region \
+             still scrolls through the whole buffer"
+        );
+    }
+
+    /// The caret is brought into view when it moves off the window — and only
+    /// then: a buffer scrolled by hand keeps the place the user put it, even
+    /// though the caret is left outside the window.
+    #[test]
+    fn the_caret_is_brought_into_view_only_when_it_moves_off_the_window() {
+        let app = app();
+        let lines = 2_000usize;
+        let value: String = (0..lines).map(|line| format!("line {line}\n")).collect();
+        // The first character of the line 1_500 of the buffer.
+        let far = value
+            .match_indices('\n')
+            .nth(1_499)
+            .map(|(offset, _)| offset + 1)
+            .expect("the buffer has that many lines");
+        let caret = Rc::new(RefCell::new(far));
+        let (mut root, scroll) = windowed_field(lines, Rc::clone(&caret));
+        let size = vec2f(600.0, 2_000.0);
+        let line_box = (TEXT_FONT_SIZE * 1.35).ceil();
+
+        let _ = frame_of(&mut root, &app, size);
+        let commands = frame_of(&mut root, &app, size);
+        let drawn = drawn_line_numbers(&commands);
+        assert_eq!(drawn[0], 1, "the buffer opens at its first line");
+        assert!(
+            !drawn.contains(&1_501),
+            "and the caret's own row is outside the window: {drawn:?}"
+        );
+        assert_eq!(scroll.borrow().offset(), 0.0, "nothing scrolled it");
+
+        // A key that moves the caret brings its row into the window.
+        let mut ctx = EventContext::default();
+        assert!(root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "ArrowUp".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        ));
+        let commands = frame_of(&mut root, &app, size);
+        let drawn = drawn_line_numbers(&commands);
+        assert!(
+            drawn.contains(&1_501),
+            "the caret's row is in the window after the move: {drawn:?}"
+        );
+        let (offset, viewport) = {
+            let scroll = scroll.borrow();
+            (scroll.offset(), scroll.viewport())
+        };
+        let rows = (viewport / line_box).ceil() as usize;
+        let first = (offset / line_box).floor() as usize;
+        assert!(
+            (1_499..1_500).all(|line| line >= first && line < first + rows),
+            "the caret's own row 1500 sits inside the rows the pane shows: \
+             {first}..{} against the caret's line",
+            first + rows
+        );
+        assert!(
+            drawn[0] > 1,
+            "the window followed the caret down the buffer: {drawn:?}"
+        );
+        let moved = caret.borrow().to_owned();
+        assert!(
+            value[moved..].starts_with("line 1499\n"),
+            "and the key moved the caret to the head of the line above"
+        );
+
+        // A move inside the window scrolls nothing.
+        let before = scroll.borrow().offset();
+        assert!(root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "ArrowUp".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        ));
+        assert_eq!(
+            scroll.borrow().offset(),
+            before,
+            "a move within the window leaves the region where it was"
+        );
+
+        // Scrolling the buffer by hand is not undone by the caret it leaves
+        // outside the window.
+        scroll.borrow_mut().reset();
+        let _ = frame_of(&mut root, &app, size);
+        let commands = frame_of(&mut root, &app, size);
+        assert_eq!(scroll.borrow().offset(), 0.0, "the buffer is back at its top");
+        assert_eq!(
+            drawn_line_numbers(&commands)[0],
+            1,
+            "and the window is drawn from the top again"
+        );
     }
 }

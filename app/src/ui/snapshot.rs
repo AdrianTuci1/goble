@@ -6,7 +6,8 @@ use std::sync::Arc;
 use goble_harness_types::MediumKind;
 use goble_core::store::SecretGroup;
 use goble_ui::elements::{
-    AgentCardUi, ChatMessage as UiChatMessage, ConversationEntry, PopupMenuItem, TerminalFilter,
+    AgentCardUi, ChatMessage as UiChatMessage, ConversationEntry, PanelScroll, PopupMenuItem,
+    TerminalFilter,
 };
 use goble_ui::{ScrollState, SettingsPage};
 
@@ -45,6 +46,9 @@ pub struct PaneChatSnapshot {
     pub messages: Vec<UiChatMessage>,
     pub composer_draft: String,
     pub composer_path: String,
+    /// The files this pane's rich input carries (the attach control added
+    /// them), drawn as chips over the editor.
+    pub composer_attachments: Vec<String>,
     pub pending_ask: Option<goble_ui::AskUserUi>,
     /// A command the harness suspended on for approval, rendered by the
     /// composer's proposal card (A5).
@@ -96,6 +100,9 @@ pub struct ComposerContext {
     pub dir_ids: Vec<String>,
     pub dir_items: Vec<PopupMenuItem>,
     pub dir_menu_open: Rc<RefCell<bool>>,
+    /// The directory tray's scroll offset, shared with the app so a tray longer
+    /// than its row cap keeps its position across the per-frame rebuild.
+    pub dir_menu_scroll: PanelScroll,
     pub branch_label: String,
     pub branch_ids: Vec<String>,
     pub branch_items: Vec<PopupMenuItem>,
@@ -179,9 +186,14 @@ pub struct UiSnapshot {
     /// its caret and its unsaved-changes mark outlive the per-frame rebuild.
     pub file_buffers: HashMap<u64, Rc<RefCell<crate::ui::file_view::FileBuffer>>>,
     pub crons_open: bool,
-    /// Whether the tasks & workflows overlay is up. It floats over the
-    /// workspace, so the panes stay mounted underneath it.
+    /// Whether the workflow-runs overlay is up. It floats over the workspace, so
+    /// the panes stay mounted underneath it.
     pub task_workflow_open: bool,
+    /// The run the overlay's list has selected, and the phase selected inside
+    /// that run's detail. Shared with app state so the choice outlives the
+    /// per-frame rebuild.
+    pub task_workflow_selected: Rc<RefCell<usize>>,
+    pub task_workflow_phase: Rc<RefCell<usize>>,
     /// Whether the keyboard shortcuts panel is up (also an overlay over the
     /// workspace, opened with Ctrl+.).
     pub shortcuts_help_open: bool,
@@ -216,9 +228,10 @@ pub struct UiSnapshot {
     pub settings_cluster_configured: bool,
     pub settings_authorized_keys: Vec<(String, String, String)>,
     pub settings_vault_unlocked: bool,
-    pub settings_overlay_open: bool,
+    /// The page the settings tab shows, read off its leaf.
     pub settings_category: SettingsCategory,
-    /// The overlay's two-region keyboard focus, and the pane control it is on.
+    /// The settings tab's two-region keyboard focus, and the pane control it is
+    /// on.
     pub settings_focus: SettingsFocus,
     pub settings_pane_focus: usize,
     /// Whether the focused pane control is a text field holding the caret.
@@ -232,6 +245,11 @@ pub struct UiSnapshot {
     pub settings_environment_secret_name: String,
     pub settings_environment_secret_value: String,
     pub settings_environment_editing: Option<String>,
+    /// Settings → Connections: the `~/.ssh` read and the host alias the page
+    /// has selected. The read is cached in app state — the page draws it, it
+    /// never reads the directory itself.
+    pub settings_ssh_hosts: Option<goble_core::ssh_hosts::SshHosts>,
+    pub settings_ssh_selected: Option<String>,
     pub settings_invert_scroll: bool,
     pub settings_scroll_speed: i32,
     pub settings_font_size: f32,

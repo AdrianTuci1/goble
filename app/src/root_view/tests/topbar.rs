@@ -19,7 +19,6 @@ use super::*;
             let mut s = state.borrow_mut();
             s.show_workspace_choice = false;
             s.show_llm_key_banner = false;
-            s.settings_overlay_open = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
         }

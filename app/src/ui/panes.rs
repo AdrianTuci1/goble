@@ -20,6 +20,7 @@ use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::chat;
 use super::file_view;
+use super::settings;
 use super::shell::TOPBAR_HEIGHT;
 use super::terminal;
 use super::{Pane, PaneKind, SplitDir, UiActions, UiSnapshot};
@@ -198,6 +199,12 @@ fn build_leaf(
     let active = state.active_pane_id == id;
     let content = match kind {
         PaneKind::Chat => chat::build_agent_chat(app, state, actions, id, active, None),
+        // The settings tab's surface: the rail, the page and the footer, with
+        // the page the leaf carries. It composes with the tree like any other
+        // pane — it can be split, walked to and closed.
+        PaneKind::Settings { page } => {
+            settings::build_settings_pane(app, state, actions, page)
+        }
         // A file view is read-only: no composer, no shell, just the file the
         // pane was opened on.
         PaneKind::File { path } => file_view::build_file_view(app, state, actions, id, &path),

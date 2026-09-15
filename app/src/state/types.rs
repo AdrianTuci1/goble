@@ -395,8 +395,16 @@ pub struct PaneControls {
     /// terminal.
     pub view: BlockView,
     pub model_menu_open: Rc<RefCell<bool>>,
+    /// The row this pane's model menu has selected. App-owned like the caret
+    /// and the slash menu's row: the composer element is rebuilt every frame,
+    /// and the highlight the arrows move has to survive that.
+    pub model_index: Rc<RefCell<usize>>,
     pub harness_menu_open: Rc<RefCell<bool>>,
     pub dir_menu_open: Rc<RefCell<bool>>,
+    /// This pane's directory tray scroll offset. The tray is capped at
+    /// `MENU_MAX_VISIBLE_ROWS` rows, and the tree is rebuilt every frame, so the
+    /// offset the wheel left has to live here to survive it.
+    pub dir_menu_scroll: PanelScroll,
     pub branch_menu_open: Rc<RefCell<bool>>,
     /// Where this pane's rich input draws its insertion beam, as a character
     /// index into the draft. App-owned because the composer element is rebuilt
@@ -428,8 +436,10 @@ impl PaneControls {
             harness_mode: false,
             view: BlockView::Terminal,
             model_menu_open: Rc::new(RefCell::new(false)),
+            model_index: Rc::new(RefCell::new(0)),
             harness_menu_open: Rc::new(RefCell::new(false)),
             dir_menu_open: Rc::new(RefCell::new(false)),
+            dir_menu_scroll: PanelScroll::default(),
             branch_menu_open: Rc::new(RefCell::new(false)),
             caret: Rc::new(RefCell::new(0)),
             vim: Rc::new(RefCell::new(VimState::new())),

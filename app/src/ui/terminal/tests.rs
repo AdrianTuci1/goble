@@ -3,10 +3,12 @@ use super::cards::build_card;
 use crate::emulator::{AgentViewCard, VisibleBlock};
 use crate::terminal::{TerminalRegistry, TerminalSession};
 use goble_ui::elements::{
-    AppContext, EventContext, TerminalData, TerminalGrid, TerminalStatus, Text,
+    AppContext, EventContext, TerminalBlockPlumbing, TerminalData, TerminalGrid, TerminalStatus,
+    Text,
 };
 use goble_ui::event::{DispatchedEvent, ModifiersState};
 use goble_ui::theme::FontFamily;
+use std::collections::HashMap;
 
     use super::*;
     use crate::emulator::Emulator;
@@ -252,7 +254,10 @@ use goble_ui::theme::FontFamily;
     /// so a still-running command is painted as running and a failure is the
     /// exit code. (This replaces the assertion that used to run through the
     /// deleted pty-only agent view `TerminalView::build_agent_view`; the
-    /// behaviour it encoded is the same, on the surface that survives.)
+    /// behaviour it encoded is the same, on the surface that survives. It read
+    /// the status off the block's title colour, which warp's failing block does
+    /// not use: the status is now the block's own pole — accent while running,
+    /// error on failure — and the failure's wash, so that is what it asserts.)
     #[test]
     fn a_command_block_is_drawn_from_its_lifecycle_not_a_guess() {
         use goble_terminal::{BlockId, BlockOwner, BlockState};
@@ -286,39 +291,39 @@ use goble_ui::theme::FontFamily;
 
         // The drawn block, built the way the transcript builds it: the block's
         // own status, through the one shared renderer.
-        let color_of = |block: &VisibleBlock| {
-            let data = TerminalData::for_command(
-                block.command.clone(),
-                &block.output,
-                block_status(block),
-            );
-            text_runs(&paint(
+        let marks_of = |block: &VisibleBlock| {
+            let data =
+                TerminalData::for_command(block.command.clone(), &block.output, block_status(block));
+            status_marks(&paint(
                 terminal_block(&data, TerminalFilter::default(), None, None),
                 &app,
             ))
-            .into_iter()
-            .find(|(text, ..)| text == &block.command)
-            .map(|(_, color, ..)| color)
         };
+        for (block, what) in [
+            (&running, "a still-running block"),
+            (&background, "a promoted-to-background block"),
+        ] {
+            assert_eq!(
+                marks_of(block).0,
+                Some(app.theme.color(ColorToken::Accent)),
+                "{what} stands an accent pole, not a success"
+            );
+            assert!(!marks_of(block).1, "{what} is not washed as a failure");
+        }
         assert_eq!(
-            color_of(&running),
-            Some(app.theme.color(ColorToken::Accent)),
-            "a still-running block is drawn as running, not as a success"
+            marks_of(&done).0,
+            None,
+            "a finished zero-exit block draws no pole"
         );
+        assert!(!marks_of(&done).1, "and no failure wash");
         assert_eq!(
-            color_of(&background),
-            Some(app.theme.color(ColorToken::Accent)),
-            "a promoted-to-background block is still not a success"
-        );
-        assert_eq!(
-            color_of(&done),
-            Some(app.theme.color(ColorToken::Muted)),
-            "a finished zero-exit block draws the muted resting title"
-        );
-        assert_eq!(
-            color_of(&failed),
+            marks_of(&failed).0,
             Some(app.theme.color(ColorToken::Error)),
-            "a finished non-zero-exit block is an error"
+            "a finished non-zero-exit block stands the error pole"
+        );
+        assert!(
+            marks_of(&failed).1,
+            "and washes the block in the error colour"
         );
     }
 
@@ -379,7 +384,6 @@ use goble_ui::theme::FontFamily;
             let mut s = state.borrow_mut();
             s.show_workspace_choice = false;
             s.show_llm_key_banner = false;
-            s.settings_overlay_open = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
             s.spaces = vec![Space::new(
@@ -419,7 +423,6 @@ use goble_ui::theme::FontFamily;
             let mut s = state.borrow_mut();
             s.show_workspace_choice = false;
             s.show_llm_key_banner = false;
-            s.settings_overlay_open = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
             s.terminal
@@ -539,9 +542,9 @@ use goble_ui::theme::FontFamily;
             "the bar has a separator over it (hint at {hint})"
         );
         assert!(
-            separator < hint,
-            "the shell's instruction is inside the input, under its separator ({separator} against {hint})"
-        );
+                separator < hint,
+                "the shell's instruction is inside the input, under its separator ({separator} against {hint})"
+            );
     }
 
     /// The directory pill's menu is a window onto the machine: while it is open
@@ -751,8 +754,7 @@ use goble_ui::theme::FontFamily;
                 .insert(1, TerminalSession::with_emulator(emulator));
             // The dots' open flag is app-owned state; a click on the trigger
             // flips it, so opening it here is what that click leaves behind.
-            s.agent_header_menus
-                .insert(1, Rc::new(RefCell::new(true)));
+            s.agent_header_menus.insert(1, Rc::new(RefCell::new(true)));
         }
 
         let window = vec2f(1024.0, 768.0);
@@ -788,11 +790,11 @@ use goble_ui::theme::FontFamily;
             "the pane paints the shell's output: {painted:?}"
         );
         let output_index = commands
-            .iter()
-            .rposition(|command| {
-                matches!(command, RenderCommand::DrawText { text, .. } if text.chars().count() == 1)
-            })
-            .expect("the pane paints the shell's output");
+                .iter()
+                .rposition(|command| {
+                    matches!(command, RenderCommand::DrawText { text, .. } if text.chars().count() == 1)
+                })
+                .expect("the pane paints the shell's output");
         let bar_index = commands
             .iter()
             .position(|command| {
@@ -803,15 +805,15 @@ use goble_ui::theme::FontFamily;
             })
             .expect("the pane paints its rich input");
         let tray_text_index = commands
-            .iter()
-            .position(|command| {
-                matches!(command, RenderCommand::DrawText { text, .. } if text == "Clear transcript")
-            })
-            .expect("the open tray paints its items");
+                .iter()
+                .position(|command| {
+                    matches!(command, RenderCommand::DrawText { text, .. } if text == "Clear transcript")
+                })
+                .expect("the open tray paints its items");
         assert!(
-            panel_index > output_index && panel_index > bar_index,
-            "the tray paints after the pane's own content: panel {panel_index}, output {output_index}, bar {bar_index}"
-        );
+                panel_index > output_index && panel_index > bar_index,
+                "the tray paints after the pane's own content: panel {panel_index}, output {output_index}, bar {bar_index}"
+            );
         assert!(
             panel_index < tray_text_index,
             "the panel's items paint on its own surface: panel {panel_index}, items {tray_text_index}"
@@ -827,7 +829,10 @@ use goble_ui::theme::FontFamily;
             panel.max_x() <= window.x - 32.0 && panel.max_y() <= window.y,
             "the tray stops short of the window's right edge: {panel:?}"
         );
-        assert!(panel.min_y() >= 0.0, "the tray is inside the window: {panel:?}");
+        assert!(
+            panel.min_y() >= 0.0,
+            "the tray is inside the window: {panel:?}"
+        );
     }
 
     /// R5: the bar is the pane's only typing surface. An active shell pane hands
@@ -874,7 +879,10 @@ use goble_ui::theme::FontFamily;
             root.dispatch_event(&click, &mut ctx, &app),
             "the click lands on the bar"
         );
-        assert!(press(&mut root, &app, "s"), "the editor still holds the keys");
+        assert!(
+            press(&mut root, &app, "s"),
+            "the editor still holds the keys"
+        );
 
         // And a click on the shell's own grid is not a way to type either: the
         // editor keeps the keys, so the click cannot become terminal input.
@@ -900,11 +908,12 @@ use goble_ui::theme::FontFamily;
         );
     }
 
-    /// No runnable model: Cmd+Enter at the shell's bar opens nothing. No
-    /// conversation is created — the sidebar must not gain a row for a turn that
-    /// never happened — the pane stays on its shell and the bar keeps the draft.
+    /// No runnable model: Cmd+Enter at the shell's bar still opens the agent
+    /// view. The view needs a transcript to draw, so a conversation is bound —
+    /// but nothing is sent into it, and the notice band is what names the
+    /// missing model. The bar keeps the draft, since no turn can take it.
     #[test]
-    fn a_prompt_with_no_model_creates_no_conversation() {
+    fn a_prompt_with_no_model_still_opens_the_agent_view() {
         let app = AppContext::default();
         let (mut root, state, _dir) = shell_root();
         let _ = pane_runs(&mut root, &app);
@@ -925,22 +934,69 @@ use goble_ui::theme::FontFamily;
 
         let s = state.borrow();
         assert!(
-            s.pane_conversation_id(1).is_none(),
-            "no conversation was bound without a model to answer it"
+            s.pane_controls(1).harness_mode,
+            "the switch to terminal + agent works with no model configured"
         );
+        let conversation_id = s
+            .pane_conversation_id(1)
+            .expect("the agent view has a conversation of its own to draw");
         assert_eq!(
             s.pane_view(1),
-            BlockView::Terminal,
-            "the pane stays on its shell"
+            BlockView::Agent { conversation_id },
+            "the pane shows the agent view"
         );
         assert!(
             s.show_llm_key_banner,
             "the notice band names the missing model"
         );
+        assert_eq!(s.llm_notice_heading(), "No API key configured");
         assert_eq!(
             s.pane_sessions.get(&1).unwrap().draft,
             typed,
             "the bar keeps what was typed"
+        );
+    }
+
+    /// A `cd` typed at the pane's own prompt prints nothing, so the move reaches
+    /// the rich input on the shell-integration channel alone: the prompt that
+    /// followed reports its directory, the frame's pump reads it into the pane's
+    /// session, and the directory pill — which draws that session's path —
+    /// follows on the frame after. Nothing reads the typed line or the output.
+    #[test]
+    fn a_reported_cwd_reaches_the_panes_directory_pill() {
+        use goble_terminal::hooks::{encode_hook, PrecmdValue};
+        use goble_terminal::HookEvent;
+
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        {
+            // The hook the shell sends at the prompt that followed its `cd`,
+            // already in the session the pane draws from.
+            let mut emulator = Emulator::new(80, 24);
+            emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
+                pwd: Some("/b".to_string()),
+                ..Default::default()
+            })));
+            let s = state.borrow_mut();
+            s.terminal
+                .borrow_mut()
+                .sessions
+                .insert(1, TerminalSession::with_emulator(emulator));
+        }
+
+        // The first frame's pump is where the session reads the report; the frame
+        // after it is where the pane's snapshot is built from what it read.
+        let _ = pane_runs(&mut root, &app);
+        let runs = pane_runs(&mut root, &app);
+
+        assert_eq!(
+            state.borrow().composer_path,
+            "/b",
+            "the pane's directory followed its own shell"
+        );
+        assert!(
+            pane_has(&runs, "/b"),
+            "the rich input's directory pill draws it: {runs:?}"
         );
     }
 
@@ -1090,8 +1146,7 @@ use goble_ui::theme::FontFamily;
             .iter()
             .find_map(|c| match c {
                 RenderCommand::FillRect { rect, .. }
-                    if rect.width() == CARD_RAIL_WIDTH
-                        && rect.min_x() >= crate::ui::SIDEBAR_WIDTH =>
+                    if rect.width() == CARD_RAIL_WIDTH && rect.min_x() >= crate::ui::SIDEBAR_WIDTH =>
                 {
                     Some(*rect)
                 }
@@ -1148,9 +1203,11 @@ use goble_ui::theme::FontFamily;
         );
     }
 
-    /// R3/B3: a terminal command is a section of its own, with the directory it
-    /// ran in and how long it took on the section's top line (warp-new's block
-    /// label), and the command itself drawn once, on the section's `❯` line.
+    /// R3/B3: a terminal command is a section of its own, headed by warp-new's
+    /// block label — one mono prompt row carrying the directory it ran in, the
+    /// branch and how long it took — with the command itself drawn once, on the
+    /// section's `❯` line. (This replaces the assertion that each part was its
+    /// own label: the header is one prompt row now, so it asserts that row.)
     #[test]
     fn a_command_is_drawn_as_a_section_with_its_directory_and_duration() {
         use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PrecmdValue, PreexecValue};
@@ -1187,19 +1244,25 @@ use goble_ui::theme::FontFamily;
         }
 
         let runs = pane_runs(&mut root, &app);
+        let prompt = runs
+            .iter()
+            .map(|(text, _)| text.clone())
+            .find(|text| text.starts_with("~/Projects/goble"))
+            .unwrap_or_else(|| panic!("the section header is one prompt row: {runs:?}"));
         assert!(
-            pane_has(&runs, "~/Projects/goble"),
-            "the section header names the directory it ran in: {runs:?}"
+            prompt.contains("git:(main)"),
+            "the prompt row names the branch it ran on: {prompt:?}"
         );
         assert!(
-            pane_has(&runs, "git:(main)"),
-            "the section header names the branch: {runs:?}"
+            prompt.ends_with("s)") && prompt.contains(" ("),
+            "the prompt row carries the command's duration in parentheses: {prompt:?}"
         );
-        assert!(
-            runs.iter()
-                .any(|(text, _)| text.starts_with('(') && text.ends_with("s)")),
-            "the section header carries the command's duration: {runs:?}"
-        );
+        for separate in ["~/Projects/goble", "git:(main)"] {
+            assert!(
+                !pane_has(&runs, separate),
+                "the prompt row is one row, not a label per part, but {separate} was drawn alone: {runs:?}"
+            );
+        }
         assert!(
             runs.iter().any(|(text, _)| text.contains("cargo")),
             "the section draws the command: {runs:?}"
@@ -1225,6 +1288,306 @@ use goble_ui::theme::FontFamily;
 
         assert_eq!(duration_text(Duration::from_millis(1240)), "(1.240s)");
         assert_eq!(duration_text(Duration::from_millis(68_920)), "(1m 8.92s)");
-        assert_eq!(duration_text(Duration::from_secs(3 * 3600 + 4 * 60 + 12)), "(3h 4m 12s)");
+        assert_eq!(
+            duration_text(Duration::from_secs(3 * 3600 + 4 * 60 + 12)),
+            "(3h 4m 12s)"
+        );
     }
 
+    /// Every drawn text, in draw order.
+    fn texts(commands: &[RenderCommand]) -> Vec<String> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The block's own status marks as `(pole colour, washed)`: the pole a block
+    /// stands on its left edge and whether the whole block is tinted under its
+    /// content. A block that is neither running nor failed draws neither.
+    fn status_marks(commands: &[RenderCommand]) -> (Option<ColorU>, bool) {
+        let mut pole = None;
+        let mut wash = false;
+        for command in commands {
+            if let RenderCommand::FillRect { rect, color, .. } = command {
+                if (rect.width() - 3.0).abs() < 0.01 {
+                    pole = Some(*color);
+                } else if rect.width() > 500.0 && rect.height() > 20.0 {
+                    wash = true;
+                }
+            }
+        }
+        (pole, wash)
+    }
+
+    /// The session a pane draws a section from: one command that ran and printed
+    /// `output`, delimited by the shell-integration hooks a real shell sends, so
+    /// the pane's block list has a section with a lifecycle of its own.
+    fn session_that_ran(command: &str, output: &str) -> TerminalSession {
+        use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PreexecValue};
+        use goble_terminal::HookEvent;
+
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+            command: Some(command.to_string()),
+        })));
+        emulator.feed(format!("{command}\r\n{output}\r\n").as_bytes());
+        emulator.feed(&encode_hook(&HookEvent::CommandFinished(
+            CommandFinishedValue {
+                exit_code: 0,
+                ..Default::default()
+            },
+        )));
+        TerminalSession::with_emulator(emulator)
+    }
+
+    /// A pane's own view over one session, drawing through `plumbing` — the
+    /// app's own per-block filter map and this pane's whole-output filter. The
+    /// registry comes back with it, so a test can read what reached the shell.
+    fn view_over(
+        session: TerminalSession,
+        pane_id: u64,
+        plumbing: TerminalBlockPlumbing,
+    ) -> (TerminalView, Rc<RefCell<TerminalRegistry>>) {
+        let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
+        terminal.borrow_mut().sessions.insert(pane_id, session);
+        let view = TerminalView::new(
+            Rc::clone(&terminal),
+            pane_id,
+            "/tmp".to_string(),
+            true,
+            BlockView::Terminal,
+            // The shell's own state: the rich input holds the keyboard.
+            true,
+            Text::new("bar").finish(),
+            Rc::new(RefCell::new(|_: u64| {})),
+            Rc::new(RefCell::new(|_: u64, _: String| {})),
+            Rc::new(RefCell::new(|_: u64, _: bool| {})),
+            Rc::new(RefCell::new(|_: u64, _: String| {})),
+        )
+        .with_block_plumbing(plumbing);
+        (view, terminal)
+    }
+
+    /// The `n of m` a filter bar draws, as the pair it names.
+    fn count_pair(text: &str) -> (usize, usize) {
+        let (matched, total) = text.split_once(" of ").expect("a count reads '<n> of <n>'");
+        (
+            matched.parse().expect("matches"),
+            total.parse().expect("total"),
+        )
+    }
+
+    fn block_filters() -> Rc<RefCell<HashMap<String, TerminalFilter>>> {
+        Rc::new(RefCell::new(HashMap::new()))
+    }
+
+    /// C: Cmd+F opens the pane's whole-output filter — one bar over every block
+    /// the pane draws, with a real field the keys go into — and what is typed
+    /// narrows the output of them all.
+    #[test]
+    fn cmd_f_opens_the_panes_whole_output_filter_and_its_query_narrows_the_output() {
+        let app = AppContext::default();
+        let global = TerminalFilter::default();
+        let (pane, terminal) = view_over(
+            session_that_ran("printf hi", "alpha line\r\nbeta line"),
+            7,
+            TerminalBlockPlumbing::new(block_filters(), Some(global.clone()), None),
+        );
+        let mut pane: Box<dyn Element> = Box::new(pane);
+        let mut ctx = EventContext::default();
+        let window = vec2f(900.0, 500.0);
+
+        let closed = texts(&render_element(&mut pane, window, &app));
+        assert!(
+            !closed.iter().any(|t| t == "Filter terminal output"),
+            "a closed filter draws no bar: {closed:?}"
+        );
+        assert!(
+            closed.iter().any(|t| t == "alpha line") && closed.iter().any(|t| t == "beta line"),
+            "the pane draws its block's whole output: {closed:?}"
+        );
+
+        // Cmd+F: the pane takes the chord before the tree, so the composer it
+        // hands the keys to cannot swallow it.
+        let cmd_f = key(
+            "f",
+            ModifiersState {
+                command: true,
+                ..ModifiersState::default()
+            },
+        );
+        assert!(
+            pane.dispatch_event(&cmd_f, &mut ctx, &app),
+            "the pane takes Cmd+F"
+        );
+        assert!(global.is_open(), "Cmd+F shows the whole-output filter");
+        assert!(
+            *global.focused.borrow(),
+            "and puts the caret in its field, which is what types into it"
+        );
+
+        let open = texts(&render_element(&mut pane, window, &app));
+        assert!(
+            open.iter().any(|t| t == "Filter terminal output"),
+            "the bar names what it filters: {open:?}"
+        );
+        let count = |drawn: &[String]| {
+            drawn
+                .iter()
+                .find(|t| t.contains(" of "))
+                .cloned()
+                .expect("the bar counts the lines it filters")
+        };
+        let before = count(&open);
+        let (matched_before, total) = count_pair(&before);
+        assert_eq!(
+            matched_before, total,
+            "an empty query keeps every line the pane's blocks carry"
+        );
+        assert!(total > 1, "the pane's block carries more than one line");
+
+        // Typing goes into the bar's field — the pane routes the keys into the
+        // tree while that field holds the caret — never to the shell.
+        for ch in ["b", "e", "t", "a"] {
+            assert!(
+                pane.dispatch_event(&key(ch, ModifiersState::none()), &mut ctx, &app),
+                "the bar's field takes the keystroke {ch:?}"
+            );
+        }
+        assert_eq!(global.query.borrow().as_str(), "beta");
+        assert_eq!(
+            terminal.borrow().input(7),
+            "",
+            "the shell never receives a keystroke meant for the filter"
+        );
+
+        let narrowed = texts(&render_element(&mut pane, window, &app));
+        assert!(
+            narrowed.iter().any(|t| t == "beta line"),
+            "the matching line is drawn: {narrowed:?}"
+        );
+        assert!(
+            !narrowed.iter().any(|t| t == "alpha line"),
+            "every block's non-matching lines are hidden: {narrowed:?}"
+        );
+        let (matched_after, total_after) = count_pair(&count(&narrowed));
+        assert_eq!(
+            total_after, total,
+            "the count still measures the whole output"
+        );
+        assert_eq!(matched_after, 1, "and counts what the query left");
+    }
+
+    /// C: each pane reads its own whole-output filter, so a query typed in one
+    /// pane leaves its sibling's output alone.
+    #[test]
+    fn a_general_filter_in_one_pane_leaves_another_panes_output_alone() {
+        let app = AppContext::default();
+        let filters = block_filters();
+        let mine = TerminalFilter::default();
+        mine.set_query("beta");
+        let (mine_pane, _mine_terminal) = view_over(
+            session_that_ran("printf hi", "alpha line\r\nbeta line"),
+            7,
+            TerminalBlockPlumbing::new(filters.clone(), Some(mine), None),
+        );
+        let (theirs_pane, _theirs_terminal) = view_over(
+            session_that_ran("printf hi", "alpha line\r\nbeta line"),
+            8,
+            TerminalBlockPlumbing::new(filters, Some(TerminalFilter::default()), None),
+        );
+        let mut mine_pane: Box<dyn Element> = Box::new(mine_pane);
+        let mut theirs_pane: Box<dyn Element> = Box::new(theirs_pane);
+
+        let window = vec2f(900.0, 500.0);
+        let mine_drawn = texts(&render_element(&mut mine_pane, window, &app));
+        assert!(
+            mine_drawn.iter().any(|t| t == "beta line")
+                && !mine_drawn.iter().any(|t| t == "alpha line"),
+            "the queried pane keeps only its matching lines: {mine_drawn:?}"
+        );
+        let theirs_drawn = texts(&render_element(&mut theirs_pane, window, &app));
+        assert!(
+            theirs_drawn.iter().any(|t| t == "alpha line")
+                && theirs_drawn.iter().any(|t| t == "beta line"),
+            "the sibling pane draws every line: {theirs_drawn:?}"
+        );
+    }
+
+    /// B: Cmd+Shift+F (warp's per-block chord) opens the filter of the block the
+    /// pointer is over, and the bar's field takes what is typed into it.
+    #[test]
+    fn cmd_shift_f_opens_the_filter_of_the_block_under_the_pointer() {
+        let app = AppContext::default();
+        let plumbing = TerminalBlockPlumbing::new(block_filters(), None, None);
+        let (pane, _terminal) = view_over(
+            session_that_ran("printf hi", "alpha line\r\nbeta line"),
+            7,
+            plumbing.clone(),
+        );
+        let mut pane: Box<dyn Element> = Box::new(pane);
+        let window = vec2f(900.0, 500.0);
+        let mut ctx = EventContext::default();
+        let chord = key(
+            "f",
+            ModifiersState {
+                command: true,
+                shift: true,
+                ..ModifiersState::default()
+            },
+        );
+
+        // With the pointer off every block there is nothing to filter.
+        let commands = render_element(&mut pane, window, &app);
+        pane.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: vec2f(450.0, 4.0),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(plumbing.hovered_filter().is_none());
+        pane.dispatch_event(&chord, &mut ctx, &app);
+        assert!(
+            plumbing.hovered_filter().is_none(),
+            "a chord with no block under the pointer opens nothing"
+        );
+
+        // Over the block: the chord opens that block's own filter bar.
+        let at = commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::DrawText { origin, text, .. } if text == "beta line" => Some(*origin),
+                _ => None,
+            })
+            .expect("the pane draws its block's output");
+        pane.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: vec2f(at.x + 2.0, at.y + 4.0),
+            },
+            &mut ctx,
+            &app,
+        );
+        let block = plumbing
+            .hovered_filter()
+            .expect("the pointer is over the block");
+        assert!(
+            pane.dispatch_event(&chord, &mut ctx, &app),
+            "the pane takes Cmd+Shift+F"
+        );
+        assert!(
+            block.is_open(),
+            "the chord shows the filter of the block under the pointer"
+        );
+
+        let drawn = texts(&render_element(&mut pane, window, &app));
+        assert!(
+            drawn.iter().any(|t| t == "Filter block output"),
+            "the block's own bar is drawn with its placeholder: {drawn:?}"
+        );
+    }

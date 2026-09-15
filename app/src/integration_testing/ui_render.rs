@@ -955,9 +955,9 @@ fn the_active_workspace_tab_becomes_the_rename_field() {
 }
 
 /// The Settings→Appearance color wheel paints at its own layout origin (the
-/// sheet's content column), not at the window origin where it would smear over
-/// the sidebar and the toolbar. The sheet is a compact panel centered in the
-/// window, so "inside the sheet" means its own band.
+/// settings pane's content column), not at the window origin where it would
+/// smear over the sidebar and the toolbar. The settings tab is a pane of the
+/// main column, so "inside the pane" means the band right of the sidebar.
 #[test]
 fn settings_color_wheel_paints_inside_the_panel() {
     let (desktop, _dir) = common::desktop_state();
@@ -966,14 +966,16 @@ fn settings_color_wheel_paints_inside_the_panel() {
     let state_rc = view.state_rc();
     {
         let mut state = state_rc.borrow_mut();
-        state.settings_overlay_open = true;
-        state.settings_category = goble_app::ui::SettingsCategory::Appearance;
+        state.show_workspace_choice = false;
+        state.show_llm_key_banner = false;
+        state.open_settings_tab(Some(&desktop));
+        state.settings_set_page(goble_app::ui::SettingsCategory::Appearance);
     }
     let mut root: Box<dyn Element> = Box::new(view);
     let window = vec2f(1024.0, 768.0);
     let commands = render_element(&mut root, window, &app);
-    let panel_left = (window.x - goble_app::ui::settings::PANEL_WIDTH) * 0.5;
-    let panel_right = panel_left + goble_app::ui::settings::PANEL_WIDTH;
+    let pane_left = goble_app::ui::SIDEBAR_WIDTH;
+    let pane_right = window.x;
 
     // The saturation/value square is drawn as a column of fade-right rows.
     let rows: Vec<f32> = commands
@@ -986,16 +988,16 @@ fn settings_color_wheel_paints_inside_the_panel() {
     assert!(!rows.is_empty(), "the appearance pane draws its color wheel");
     for x in rows {
         assert!(
-            x > panel_left,
-            "wheel painted at x={x}, left of the settings sheet"
+            x > pane_left,
+            "wheel painted at x={x}, left of the settings pane"
         );
         assert!(
-            x < panel_right,
-            "wheel painted at x={x}, right of the settings sheet"
+            x < pane_right,
+            "wheel painted at x={x}, right of the settings pane"
         );
     }
 
-    // The hue ring is one image fill, also inside the sheet.
+    // The hue ring is one image fill, also inside the pane.
     let ring = commands.iter().find_map(|c| match c {
         goble_ui::render::RenderCommand::DrawImage { rect, source, .. }
             if source.contains("ring") =>
@@ -1006,10 +1008,8 @@ fn settings_color_wheel_paints_inside_the_panel() {
     });
     let ring = ring.expect("the hue ring is drawn as an image");
     assert!(
-        ring.min_x() >= panel_left
-            && ring.max_x() <= panel_right
-            && ring.max_y() <= window.y,
-        "the ring stays inside the sheet, got {ring:?}"
+        ring.min_x() >= pane_left && ring.max_x() <= pane_right && ring.max_y() <= window.y,
+        "the ring stays inside the pane, got {ring:?}"
     );
 }
 

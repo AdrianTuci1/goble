@@ -73,7 +73,6 @@ use super::*;
             // No overlay may sit above the transcript and swallow the input.
             s.show_workspace_choice = false;
             s.show_llm_key_banner = false;
-            s.settings_overlay_open = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
             s.pane_sessions

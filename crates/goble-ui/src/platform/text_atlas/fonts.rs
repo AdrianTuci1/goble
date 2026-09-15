@@ -89,6 +89,50 @@ pub fn measure_text_family(
     crate::geometry::vec2f(width, height)
 }
 
+/// The advance width of a single-line run: how far past its own origin the next
+/// character would start.
+///
+/// [`measure_text_family`] reports the ink extent, which is what a box around a
+/// run needs, but a flow that packs runs onto a line has to budget the
+/// advances: fontdue breaks a line when `current_pos + ceil(advance)` exceeds
+/// the width it was given, and the ink extent is a side bearing short of that.
+/// Packing by the ink extent therefore leaves runs that the renderer breaks
+/// again inside the run, which moves a word down a line.
+///
+/// The sum is taken the way fontdue's own layout takes it, so `text` fits a
+/// `max_width` of exactly this value and no less.
+pub fn advance_width(
+    text: &str,
+    font_size: f32,
+    weight: FontWeight,
+    family: FontFamily,
+    italic: bool,
+) -> f32 {
+    let Some(font_set) = font_set() else {
+        return text.chars().count() as f32 * font_size * 0.6;
+    };
+    let font = font_set.select(weight, family, italic);
+    let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
+    layout.reset(&fontdue::layout::LayoutSettings::default());
+    layout.append(&[font.clone()], &fontdue::layout::TextStyle::new(text, font_size, 0));
+    layout
+        .glyphs()
+        .iter()
+        .map(|glyph| {
+            // A control character is laid out with no advance by fontdue; every
+            // other glyph advances by its own, rounded up to a whole pixel.
+            if glyph.char_data.is_control() {
+                0.0
+            } else {
+                font.metrics_indexed(glyph.key.glyph_index, glyph.key.px)
+                    .advance_width
+                    .ceil()
+                    .max(0.0)
+            }
+        })
+        .sum()
+}
+
 /// Whether the bundled face that draws `text` covers every character in it.
 ///
 /// The fonts are bundled (Roboto for prose, Hack for the terminal), so a
@@ -269,9 +313,15 @@ fn load_bundled_font(
     fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
 }
 
+/// Rasterize a run into an atlas bitmap.
+///
+/// The size and the wrap width are the exact values the element measured with
+/// (in physical pixels), not rounded ones: a run rasterized at a size or a
+/// width the measurement never used can break its lines somewhere else and
+/// produce a block taller than the box it was measured into.
 pub(super) fn rasterize_text(
     text: &str,
-    font_size: u32,
+    font_size: f32,
     weight: FontWeight,
     mono: bool,
     italic: bool,
@@ -297,10 +347,7 @@ pub(super) fn rasterize_text(
         line_height,
         ..Default::default()
     });
-    layout.append(
-        fonts,
-        &fontdue::layout::TextStyle::new(text, font_size as f32, 0),
-    );
+    layout.append(fonts, &fontdue::layout::TextStyle::new(text, font_size, 0));
 
     let glyphs = layout.glyphs();
     // The quad spans the block's line box, so the drawn ink lands exactly where
@@ -309,7 +356,7 @@ pub(super) fn rasterize_text(
     let line_box_height = layout
         .height()
         .ceil()
-        .max(font_size as f32 * line_height)
+        .max(font_size * line_height)
         .ceil();
 
     if glyphs.is_empty() {

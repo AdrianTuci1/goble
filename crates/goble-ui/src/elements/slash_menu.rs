@@ -1,17 +1,17 @@
-//! The rich input's slash-command menu: the commands the draft can run, listed
-//! as a full-width band directly above the input the way grok-build lists them.
+//! The rich input's full-width bands: the commands the draft can run, and the
+//! models a pane's turns can run, listed directly above the input the way
+//! grok-build lists them.
 //!
-//! It is not an overlay and it does not take the keyboard: the editor keeps the
-//! caret and the draft stays the query, so the list narrows as the user types
-//! after the `/`. The composer routes the keys that pick from the list — Up and
-//! Down to move, Enter or Tab to run the selection, Escape to put the list away
-//! — and this element draws what it was given and reports what the pointer
-//! chose.
+//! They are not overlays and they do not take the keyboard: the editor keeps the
+//! caret and the draft stays the query, so the command list narrows as the user
+//! types after the `/`. The composer routes the keys that take a row — Up and
+//! Down to move, Enter or Tab to take the selection, Escape to put the list away
+//! — and a band draws what it was given and reports what the pointer chose.
 //!
-//! Each row is the command as it is typed and what it does; the chord that runs
-//! it is not repeated here (the instruction strip under the input carries the
-//! gestures). The band is square and spans the input's whole width: it reads as
-//! the top of the input block, not as a floating card over it.
+//! A band is square and spans the input's whole width: it reads as the top of
+//! the input block, not as a floating card over it. Both menus are the same band
+//! ([`MenuBand`]), so the two can never drift apart in their geometry or in how
+//! a row answers the pointer.
 //!
 //! Self-drawn rather than composed from children: every row has the same fixed
 //! height, so the panel's own geometry is the hit-test geometry, and the row
@@ -23,7 +23,8 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
+    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, PopupMenuItem,
+    SizeConstraint,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, RectF, Vector2F};
@@ -82,76 +83,92 @@ impl SlashMenuItem {
     }
 }
 
-/// One drawn row: the item it shows, where it sits relative to the band's
+/// One row of a band: what it reads, the muted second column beside it (empty
+/// draws none), and whether it is the value in force — which reads in the
+/// accent colour, the way a popup menu marks the item it is on.
+struct BandRow {
+    label: String,
+    description: String,
+    current: bool,
+}
+
+/// One drawn row: the row it shows, where it sits relative to the band's
 /// origin, and its own pointer state.
-struct Row {
-    item: usize,
+struct DrawnRow {
+    row: usize,
     rect: RectF,
     state: InteractiveState,
 }
 
-pub struct SlashMenu {
-    items: Vec<SlashMenuItem>,
+/// A band: the rows it draws, the window around the selection, and the
+/// callbacks a row reports to.
+///
+/// Both menus are this element — see the module docs — so the geometry, the hit
+/// testing and the paint live here once.
+struct MenuBand {
+    rows: Vec<BandRow>,
+    /// What a band with no rows at all says.
+    empty_text: &'static str,
     /// The chosen row, host-owned: the element is rebuilt every frame, so an
     /// index kept inside it would reset on every one of them.
     index: Rc<RefCell<usize>>,
     on_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
-    rows: Vec<Row>,
-    /// The width the command names occupy, so the descriptions line up.
+    drawn: Vec<DrawnRow>,
+    /// The width the row labels occupy, so the second column lines up.
     name_column: f32,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
-impl SlashMenu {
-    pub fn new(items: Vec<SlashMenuItem>, index: Rc<RefCell<usize>>) -> Self {
+impl MenuBand {
+    fn new(rows: Vec<BandRow>, empty_text: &'static str, index: Rc<RefCell<usize>>) -> Self {
         Self {
-            items,
+            rows,
+            empty_text,
             index,
             on_move: None,
             on_accept: None,
-            rows: Vec::new(),
+            drawn: Vec::new(),
             name_column: 0.0,
             size: None,
             origin: None,
         }
     }
 
-    /// Fired when the pointer moves onto a row, so the highlight follows it.
-    pub fn with_on_move<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
-        self.on_move = Some(Rc::new(RefCell::new(callback)));
+    /// Fired when the selection moves (arrow keys, or the pointer onto a row).
+    fn with_on_move(mut self, callback: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>) -> Self {
+        self.on_move = callback;
         self
     }
 
-    /// Fired when a row is clicked: the host runs that command.
-    pub fn with_on_accept<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
-        self.on_accept = Some(Rc::new(RefCell::new(callback)));
+    fn with_on_accept(mut self, callback: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>) -> Self {
+        self.on_accept = callback;
         self
     }
 
-    /// The selection, clamped to the items this menu was given.
+    /// The selection, clamped to the rows this band was given.
     fn selection(&self) -> Option<usize> {
-        if self.items.is_empty() {
+        if self.rows.is_empty() {
             return None;
         }
-        Some((*self.index.borrow()).min(self.items.len() - 1))
+        Some((*self.index.borrow()).min(self.rows.len() - 1))
     }
 
-    /// How many rows are drawn: the items, capped at [`SLASH_MENU_ROWS`].
+    /// How many rows are drawn: the rows, capped at [`SLASH_MENU_ROWS`].
     fn visible_rows(&self) -> usize {
-        self.items.len().min(SLASH_MENU_ROWS)
+        self.rows.len().min(SLASH_MENU_ROWS)
     }
 
-    /// The first item drawn: the window that keeps the selection visible.
+    /// The first row drawn: the window that keeps the selection visible.
     fn window_start(&self) -> usize {
         let visible = self.visible_rows();
-        if self.items.len() <= visible {
+        if self.rows.len() <= visible {
             return 0;
         }
         match self.selection() {
             Some(selected) if selected >= visible => {
-                (selected + 1 - visible).min(self.items.len() - visible)
+                (selected + 1 - visible).min(self.rows.len() - visible)
             }
             _ => 0,
         }
@@ -188,7 +205,7 @@ impl SlashMenu {
 
     /// The drawn row a pointer position falls in.
     fn row_at(&self, position: Vector2F) -> Option<usize> {
-        self.rows
+        self.drawn
             .iter()
             .position(|row| contains(self.absolute(row.rect), position))
     }
@@ -200,19 +217,19 @@ impl SlashMenu {
             return;
         };
         let hovered = self
-            .rows
+            .drawn
             .iter()
             .find(|row| ctx.hovered(self.absolute(row.rect)))
-            .map(|row| row.item);
-        if let Some(item) = hovered {
-            if self.selection() != Some(item) {
-                (on_move.borrow_mut())(item);
+            .map(|row| row.row);
+        if let Some(row) = hovered {
+            if self.selection() != Some(row) {
+                (on_move.borrow_mut())(row);
             }
         }
     }
 }
 
-impl Element for SlashMenu {
+impl Element for MenuBand {
     fn layout(
         &mut self,
         constraint: SizeConstraint,
@@ -225,21 +242,21 @@ impl Element for SlashMenu {
             FALLBACK_WIDTH
         };
         let first = self.window_start();
-        self.rows = (0..self.visible_rows())
-            .map(|position| Row {
-                item: first + position,
+        self.drawn = (0..self.visible_rows())
+            .map(|position| DrawnRow {
+                row: first + position,
                 rect: Self::row_rect(position, width),
                 state: InteractiveState::default(),
             })
             .collect();
 
-        // The descriptions start in one column, so the list reads down the page
-        // rather than stepping right with every command name.
-        let widest = self.rows.iter().fold(0.0f32, |widest, row| {
-            let item = &self.items[row.item];
+        // The second column starts in one place, so the list reads down the page
+        // rather than stepping right with every row's label.
+        let widest = self.drawn.iter().fold(0.0f32, |widest, row| {
+            let label = &self.rows[row.row].label;
             widest.max(
                 measure_text_family(
-                    &item.typed(),
+                    label,
                     NAME_FONT_SIZE,
                     LINE_HEIGHT,
                     f32::INFINITY,
@@ -250,9 +267,7 @@ impl Element for SlashMenu {
                 .x,
             )
         });
-        self.name_column = ROW_INSET
-            + widest
-            + DESCRIPTION_GAP;
+        self.name_column = ROW_INSET + widest + DESCRIPTION_GAP;
         self.name_column = self
             .name_column
             .min(width * NAME_COLUMN_SHARE + ROW_INSET + DESCRIPTION_GAP);
@@ -278,14 +293,14 @@ impl Element for SlashMenu {
         renderer.fill_rect(panel, app.theme.color(ColorToken::SurfaceRaised));
         renderer.stroke_rect(panel, app.theme.color(ColorToken::Border), 1.0, 0.0);
 
-        if self.items.is_empty() {
+        if self.rows.is_empty() {
             let row = rectf(panel.min_x(), panel.min_y(), panel.width(), ROW_HEIGHT);
             renderer.draw_text(
                 Vector2F::new(
                     row.min_x() + ROW_INSET,
                     row.min_y() + Self::line_offset(NAME_FONT_SIZE),
                 ),
-                "No matching commands",
+                self.empty_text,
                 NAME_FONT_SIZE,
                 app.theme.color(ColorToken::Muted),
                 (row.width() - ROW_INSET * 2.0).max(0.0),
@@ -295,32 +310,38 @@ impl Element for SlashMenu {
         }
 
         let selected = self.selection();
-        for row in &self.rows {
-            let bounds = self.absolute(row.rect);
-            if selected == Some(row.item) {
+        for drawn in &self.drawn {
+            let bounds = self.absolute(drawn.rect);
+            if selected == Some(drawn.row) {
                 renderer.fill_rect(bounds, app.theme.color(ColorToken::Selected));
             }
-            let item = &self.items[row.item];
+            let row = &self.rows[drawn.row];
+            // The value in force keeps its own colour, so the list says which
+            // row the input already holds as well as which one is chosen.
             renderer.draw_text(
                 Vector2F::new(
                     bounds.min_x() + ROW_INSET,
                     bounds.min_y() + Self::line_offset(NAME_FONT_SIZE),
                 ),
-                item.typed(),
+                row.label.clone(),
                 NAME_FONT_SIZE,
-                app.theme.color(ColorToken::Text),
-                // The name keeps its own column: a name too long for it is
-                // truncated rather than run over the description.
+                app.theme.color(if row.current {
+                    ColorToken::Accent
+                } else {
+                    ColorToken::Text
+                }),
+                // The label keeps its own column: a label too long for it is
+                // truncated rather than run over the second column.
                 (self.name_column - ROW_INSET - DESCRIPTION_GAP).max(0.0),
                 LINE_HEIGHT,
             );
-            if !item.description.is_empty() && self.name_column < bounds.width() {
+            if !row.description.is_empty() && self.name_column < bounds.width() {
                 renderer.draw_text(
                     Vector2F::new(
                         bounds.min_x() + self.name_column,
                         bounds.min_y() + Self::line_offset(DESCRIPTION_FONT_SIZE),
                     ),
-                    item.description.clone(),
+                    row.description.clone(),
                     DESCRIPTION_FONT_SIZE,
                     app.theme.color(ColorToken::Muted),
                     (bounds.width() - self.name_column - ROW_INSET).max(0.0),
@@ -353,13 +374,13 @@ impl Element for SlashMenu {
         let Some(row_index) = self.row_at(position) else {
             return false;
         };
-        let item = self.rows[row_index].item;
-        let bounds = self.absolute(self.rows[row_index].rect);
+        let row = self.drawn[row_index].row;
+        let bounds = self.absolute(self.drawn[row_index].rect);
 
         if matches!(event, DispatchedEvent::MouseMove { .. }) {
             if let Some(on_move) = self.on_move.clone() {
-                if self.selection() != Some(item) {
-                    (on_move.borrow_mut())(item);
+                if self.selection() != Some(row) {
+                    (on_move.borrow_mut())(row);
                 }
             }
             return false;
@@ -368,16 +389,220 @@ impl Element for SlashMenu {
         let on_accept = self.on_accept.clone();
         let mut accept = move || {
             if let Some(cb) = on_accept.as_ref() {
-                (cb.borrow_mut())(item);
+                (cb.borrow_mut())(row);
             }
         };
         handle_mouse_event(
-            &mut self.rows[row_index].state,
+            &mut self.drawn[row_index].state,
             event,
             bounds,
             ctx,
             &mut accept,
         )
+    }
+}
+
+/// The slash-command list: the commands the draft can run, drawn over the input
+/// block the host owns, above the editor.
+pub struct SlashMenu {
+    items: Vec<SlashMenuItem>,
+    index: Rc<RefCell<usize>>,
+    on_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    on_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    band: Option<MenuBand>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl SlashMenu {
+    pub fn new(items: Vec<SlashMenuItem>, index: Rc<RefCell<usize>>) -> Self {
+        Self {
+            items,
+            index,
+            on_move: None,
+            on_accept: None,
+            band: None,
+            size: None,
+            origin: None,
+        }
+    }
+
+    /// Fired when the selection moves (arrow keys, or the pointer onto a row).
+    pub fn with_on_move<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
+        self.on_move = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Fired when a row is clicked: the host runs that command.
+    pub fn with_on_accept<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
+        self.on_accept = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// The band this menu draws: the commands as they are typed, and not one of
+    /// them in force — a draft is not one of the commands until it is run.
+    fn band(&self) -> MenuBand {
+        MenuBand::new(
+            self.items
+                .iter()
+                .map(|item| BandRow {
+                    label: item.typed(),
+                    description: item.description.clone(),
+                    current: false,
+                })
+                .collect(),
+            "No matching commands",
+            self.index.clone(),
+        )
+        .with_on_move(self.on_move.clone())
+        .with_on_accept(self.on_accept.clone())
+    }
+}
+
+impl Element for SlashMenu {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let mut band = self.band();
+        let size = band.layout(constraint, ctx, app);
+        self.band = Some(band);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        if let Some(band) = self.band.as_mut() {
+            band.paint(origin, ctx, app);
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.band
+            .as_mut()
+            .map(|band| band.dispatch_event(event, ctx, app))
+            .unwrap_or(false)
+    }
+}
+
+/// The models a pane's turns can run, drawn as the same band the slash commands
+/// use: what the model control opens, over the input's own width.
+///
+/// A row is the model's own name — the id the turn is run with — and the model
+/// the pane runs now reads in the accent colour, so the list says where the
+/// selection already is. The row of the model in force is where the composer
+/// opens the selection, so Enter takes the model the pane already has.
+pub struct ModelMenu {
+    items: Vec<PopupMenuItem>,
+    index: Rc<RefCell<usize>>,
+    on_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    on_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    band: Option<MenuBand>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl ModelMenu {
+    pub fn new(items: Vec<PopupMenuItem>, index: Rc<RefCell<usize>>) -> Self {
+        Self {
+            items,
+            index,
+            on_move: None,
+            on_accept: None,
+            band: None,
+            size: None,
+            origin: None,
+        }
+    }
+
+    /// Fired when the selection moves (arrow keys, or the pointer onto a row).
+    pub fn with_on_move<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
+        self.on_move = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Fired when a row is taken: the host runs the pane's turns on that model.
+    pub fn with_on_accept<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
+        self.on_accept = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    fn band(&self) -> MenuBand {
+        MenuBand::new(
+            self.items
+                .iter()
+                .map(|item| BandRow {
+                    label: item.label.clone(),
+                    // A model is a name and nothing else: the second column
+                    // belongs to the command list, which has to say what
+                    // running a command does.
+                    description: String::new(),
+                    current: item.selected,
+                })
+                .collect(),
+            "No models configured",
+            self.index.clone(),
+        )
+        .with_on_move(self.on_move.clone())
+        .with_on_accept(self.on_accept.clone())
+    }
+}
+
+impl Element for ModelMenu {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let mut band = self.band();
+        let size = band.layout(constraint, ctx, app);
+        self.band = Some(band);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        if let Some(band) = self.band.as_mut() {
+            band.paint(origin, ctx, app);
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.band
+            .as_mut()
+            .map(|band| band.dispatch_event(event, ctx, app))
+            .unwrap_or(false)
     }
 }
 
@@ -394,7 +619,14 @@ mod tests {
         ]
     }
 
-    fn drawn_texts(menu: &mut SlashMenu, app: &AppContext) -> Vec<String> {
+    fn models() -> Vec<PopupMenuItem> {
+        vec![
+            PopupMenuItem::new("gpt-4o"),
+            PopupMenuItem::new("o3-mini").selected(),
+        ]
+    }
+
+    fn drawn(menu: &mut dyn Element, app: &AppContext) -> Vec<RenderCommand> {
         menu.layout(
             SizeConstraint::loose(vec2f(640.0, 400.0)),
             &mut LayoutContext::default(),
@@ -406,6 +638,10 @@ mod tests {
             .take()
             .map(|renderer| renderer.commands().to_vec())
             .unwrap_or_default()
+    }
+
+    fn drawn_texts(menu: &mut SlashMenu, app: &AppContext) -> Vec<String> {
+        drawn(menu, app)
             .into_iter()
             .filter_map(|command| match command {
                 RenderCommand::DrawText { text, .. } => Some(text),
@@ -466,6 +702,65 @@ mod tests {
         assert!(
             texts.iter().any(|text| text == "No matching commands"),
             "got {texts:?}"
+        );
+    }
+
+    /// The model menu is the same band over the same width, one row per model,
+    /// with the model the pane runs now reading in the accent colour.
+    #[test]
+    fn the_model_menu_lists_the_models_in_the_same_band() {
+        let app = AppContext::default();
+        let mut menu = ModelMenu::new(models(), Rc::new(RefCell::new(0)));
+        let size = menu.layout(
+            SizeConstraint::loose(vec2f(640.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert_eq!(size.x, 640.0, "the band spans the input's own width");
+
+        let mut ctx = PaintContext::new(Renderer::new());
+        menu.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        let commands = ctx
+            .renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default();
+        let labels: Vec<String> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(labels.iter().any(|text| text == "gpt-4o"), "got {labels:?}");
+        assert!(labels.iter().any(|text| text == "o3-mini"), "got {labels:?}");
+        let accent = commands.iter().any(|command| {
+            matches!(
+                command,
+                RenderCommand::DrawText { text, color, .. }
+                    if text == "o3-mini" && *color == app.theme.color(ColorToken::Accent)
+            )
+        });
+        assert!(accent, "the model in force reads in the accent colour");
+    }
+
+    /// A model menu with nothing to offer says so, the way the command list
+    /// does.
+    #[test]
+    fn a_model_menu_without_models_says_so() {
+        let app = AppContext::default();
+        let mut menu = ModelMenu::new(Vec::new(), Rc::new(RefCell::new(0)));
+        let commands = drawn(&mut menu, &app);
+        let labels: Vec<String> = commands
+            .into_iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            labels.iter().any(|text| text == "No models configured"),
+            "got {labels:?}"
         );
     }
 }

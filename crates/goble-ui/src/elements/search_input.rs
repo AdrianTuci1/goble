@@ -99,12 +99,13 @@ impl SearchInput {
         };
         let padding = app.theme.spacing_px(token);
         let gap = app.theme.spacing_px(SpacingToken::Sm);
-        let display = if self.value.is_empty() && !self.placeholder.is_empty() {
+        let empty = self.value.is_empty();
+        let display = if empty && !self.placeholder.is_empty() {
             self.placeholder.clone()
         } else {
             self.value.clone()
         };
-        let color = if self.value.is_empty() {
+        let color = if empty {
             ColorToken::Muted
         } else {
             ColorToken::Text
@@ -116,6 +117,24 @@ impl SearchInput {
             .with_theme_color(color, app)
             .with_max_lines(1)
             .finish();
+        // The run and the beam that belongs to it, packed without the row's own
+        // spacing: a beam asks the row for no room, so it is only on the
+        // character it belongs to when nothing stands between them. The group
+        // takes the rest of the row, so the run is measured at the width the
+        // field gives it whether or not the beam is in front of it. While the
+        // field is empty the beam leads the placeholder — the guide stands
+        // where the user's own text starts — and once there is a value it
+        // trails it, at the pen the next character lands on.
+        let mut run = crate::elements::Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center);
+        if self.focused && empty {
+            run = run.with_child(caret_beam(app));
+        }
+        run = run.with_child(text);
+        if self.focused && !empty {
+            run = run.with_child(caret_beam(app));
+        }
         // Fill the available width so the box has equal margins on both sides
         // when placed in a stretched column (e.g. the sidebar).
         let mut row = crate::elements::Flex::row()
@@ -125,10 +144,7 @@ impl SearchInput {
         if self.icon {
             row = row.with_child(icon);
         }
-        row = row.with_child(text);
-        if self.focused {
-            row = row.with_child(caret_beam(app));
-        }
+        row = row.with_child(run.finish());
         let row = row.finish();
         let v_pad = padding + self.extra_height;
         let mut container = Container::new(row)
@@ -248,6 +264,153 @@ mod tests {
         );
         let commands = render_element(&mut element, vec2f(240.0, 200.0), &app);
         (element.size().expect("the field lays out"), commands)
+    }
+
+    /// The rect of the insertion beam `commands` paint: the one fill in the
+    /// focus blue that is a caret across.
+    fn caret_rect(commands: &[RenderCommand], app: &AppContext) -> crate::geometry::RectF {
+        use crate::elements::caret::{CARET_HEIGHT, CARET_WIDTH};
+
+        let focus = app.theme.color(ColorToken::Focus);
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == focus
+                        && (rect.width() - CARET_WIDTH).abs() < 0.5
+                        && (rect.height() - CARET_HEIGHT).abs() < 0.5 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the focused field draws its beam: {commands:?}"))
+    }
+
+    /// The command that draws the run `text`, from which the field's own
+    /// position for it is read.
+    fn drawn_run<'a>(commands: &'a [RenderCommand], text: &str) -> &'a RenderCommand {
+        commands
+            .iter()
+            .find(|command| {
+                matches!(command, RenderCommand::DrawText { text: drawn, .. } if drawn == text)
+            })
+            .unwrap_or_else(|| panic!("the run {text:?} is drawn: {commands:?}"))
+    }
+
+    /// The width the row spends on `drawn`: a text box is as wide as its own
+    /// ink, measured at the size and the wrap width the command carries.
+    fn run_width(drawn: &RenderCommand) -> f32 {
+        use crate::platform::text_atlas::measure_text_family;
+
+        let RenderCommand::DrawText {
+            text,
+            font_size,
+            line_height,
+            max_width,
+            font_weight,
+            font_family,
+            ..
+        } = drawn
+        else {
+            panic!("a drawn run is a text command: {drawn:?}");
+        };
+        measure_text_family(
+            text,
+            *font_size,
+            *line_height,
+            *max_width,
+            *font_weight,
+            *font_family,
+            false,
+        )
+        .x
+    }
+
+    /// The field the conversations sidebar builds: compact, no magnifier, and a
+    /// placeholder standing in for a value nobody has typed yet.
+    fn sidebar_field(focused: bool) -> Box<dyn Element> {
+        Box::new(
+            SearchInput::new()
+                .with_placeholder("Search")
+                .with_compact(true)
+                .with_icon(false)
+                .with_extra_height(3.0)
+                .with_focused(focused),
+        )
+    }
+
+    /// A focused, empty search field draws its beam over the first character of
+    /// the placeholder, the way the rich input does: the guide stands where the
+    /// user's own text starts, and the beam asks the row for no room, so the
+    /// guide keeps its place and its muted colour under it.
+    #[test]
+    fn an_empty_focused_field_puts_its_beam_on_the_placeholder() {
+        let app = AppContext::default();
+        let muted = app.theme.color(ColorToken::Muted);
+
+        for (what, guide_text, mut field) in [
+            ("the sidebar field", "Search", sidebar_field(true)),
+            (
+                "the field with its magnifier",
+                "Search in files",
+                Box::new(
+                    SearchInput::new()
+                        .with_placeholder("Search in files")
+                        .with_focused(true),
+                ) as Box<dyn Element>,
+            ),
+        ] {
+            let commands = render_element(&mut field, vec2f(240.0, 200.0), &app);
+            let beam = caret_rect(&commands, &app);
+            let RenderCommand::DrawText { origin, color, .. } = drawn_run(&commands, guide_text)
+            else {
+                unreachable!()
+            };
+            assert_eq!(
+                *color, muted,
+                "{what} keeps its placeholder muted: {commands:?}"
+            );
+            assert!(
+                (beam.min_x() - origin.x).abs() < 0.5,
+                "{what} draws its beam on the first character of {guide_text:?}, got x={} against {}",
+                beam.min_x(),
+                origin.x
+            );
+        }
+    }
+
+    /// A field with a value in it is unchanged in shape: the whole value is
+    /// drawn and the beam trails it at the pen, where the next character lands.
+    #[test]
+    fn a_field_with_a_value_keeps_its_beam_at_the_end_of_the_text() {
+        let app = AppContext::default();
+        let mut field: Box<dyn Element> = Box::new(
+            SearchInput::new()
+                .with_value("hi")
+                .with_placeholder("Search")
+                .with_focused(true),
+        );
+        let commands = render_element(&mut field, vec2f(240.0, 200.0), &app);
+        let beam = caret_rect(&commands, &app);
+
+        let value = drawn_run(&commands, "hi");
+        let RenderCommand::DrawText { origin, .. } = value else {
+            unreachable!()
+        };
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text == "Search"
+            )),
+            "a field with a value draws no placeholder: {commands:?}"
+        );
+        assert!(
+            (beam.min_x() - (origin.x + run_width(value))).abs() < 0.5,
+            "the beam trails the value at the pen, got x={} against {}",
+            beam.min_x(),
+            origin.x + run_width(value)
+        );
     }
 
     #[test]

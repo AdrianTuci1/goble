@@ -6,6 +6,7 @@ use std::sync::Arc;
 use goble_core::store::Store;
 use goble_desktop_service::DesktopState;
 use goble_desktop_service::ThreadStore;
+use goble_terminal::blocks::BlockView;
 use goble_ui::platform::WindowControl;
 
 use crate::media::MediaState;
@@ -226,8 +227,10 @@ fn send_routes_to_active_pane_conversation() {
 fn cmd_enter_appends_to_the_pane_conversation() {
     let (desktop, _dir) = desktop_state();
     let (state, actions, _media) = build(&desktop);
-    // Bind pane 1 to an initial conversation so Cmd/Ctrl+Enter has a thread
-    // to append to instead of starting a brand-new one each send.
+    // Bind pane 1 to an initial conversation: the pane owns it, so Cmd/Ctrl+Enter
+    // appends to the thread the user is on instead of starting another one. (A
+    // pane that owns *no* conversation starts one — see
+    // `cmd_enter_opens_a_new_conversation_instead_of_adopting_the_selected_one`.)
     let initial = desktop.create_chat("Initial", None, None).expect("create chat");
     state
         .borrow_mut()
@@ -241,12 +244,64 @@ fn cmd_enter_appends_to_the_pane_conversation() {
     (actions.on_cmd_enter.borrow_mut())("hello from cmd+enter".to_string());
 
     let conv = state.borrow().pane_conversation_id(1).unwrap();
-    assert_eq!(conv, initial, "Cmd+Enter reuses the pane's conversation");
+    assert_eq!(conv, initial, "Cmd+Enter reuses the pane's own conversation");
     wait_for_messages(&desktop, &conv, 2);
     let msgs = desktop.list_chat_messages(&conv).expect("list conv");
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].role, "user");
     assert_eq!(msgs[1].role, "assistant");
+}
+
+/// Cmd/Ctrl+Enter opens a conversation *for the pane* when the pane owns none,
+/// even though `pane_conversation_id` would answer with the sidebar's previously
+/// selected conversation: the initial pane shows that one (`refresh` seeds the
+/// selection from the store), and showing it is not owning it. Sending the
+/// gesture into it would continue the conversation that was active before
+/// instead of starting the one the user asked for.
+#[test]
+fn cmd_enter_opens_a_new_conversation_instead_of_adopting_the_selected_one() {
+    let (desktop, _dir) = desktop_state();
+    // The conversation the sidebar has active when the app starts: a returning
+    // run lands here with the pane owning nothing.
+    let previous = desktop.create_chat("Previous", None, None).expect("create chat");
+    let (state, actions, _media) = build(&desktop);
+    {
+        let s = state.borrow();
+        assert!(
+            !s.pane_owns_conversation(1),
+            "pane 1 owns no conversation of its own"
+        );
+        assert_eq!(
+            s.pane_conversation_id(1).as_deref(),
+            Some(previous.as_str()),
+            "and the fallback is the previously active conversation"
+        );
+    }
+
+    let rt = configured(&state);
+    let _guard = rt.enter();
+    (actions.on_cmd_enter.borrow_mut())("a fresh start".to_string());
+
+    let opened = state
+        .borrow()
+        .pane_conversation_id(1)
+        .expect("the pane owns a conversation now");
+    assert_ne!(
+        opened, previous,
+        "Cmd+Enter opens a conversation of the pane's own"
+    );
+    wait_for_messages(&desktop, &opened, 2);
+    let msgs = desktop.list_chat_messages(&opened).expect("list the new conversation");
+    assert_eq!(msgs.len(), 2, "the turn ran in the conversation it opened");
+    assert_eq!(msgs[0].role, "user");
+    assert_eq!(
+        desktop
+            .list_chat_messages(&previous)
+            .expect("list the previously active conversation")
+            .len(),
+        0,
+        "the conversation that was active before stays untouched"
+    );
 }
 
 /// Send to cloud (`⌘⌥↵`) is a routing choice plus the submit: the pane's
@@ -280,6 +335,75 @@ fn send_to_cloud_routes_the_conversation_remote() {
         Some("remote".to_string()),
         "and the choice is persisted on the conversation"
     );
+}
+
+/// The sidebar's "New conversation" row (and the palette's entry, which runs the
+/// same action) opens a tab of its own: one new space holding one terminal leaf,
+/// in terminal + agent mode over a conversation of its own, focused. Clicking it
+/// again opens another, so the row never disturbs the tab the user is in.
+#[test]
+fn new_conversation_opens_a_tab_in_terminal_and_agent_mode() {
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+    let spaces_before = state.borrow().spaces.len();
+
+    (actions.on_create_submit.borrow_mut())();
+
+    let first_pane;
+    {
+        let s = state.borrow();
+        assert_eq!(
+            s.spaces.len(),
+            spaces_before + 1,
+            "the row appends exactly one space"
+        );
+        assert_eq!(
+            s.active_space,
+            s.spaces.len() - 1,
+            "the new tab is the one on screen"
+        );
+        first_pane = s.active_pane_id;
+        let space = s.spaces.last().expect("the new space");
+        assert!(
+            matches!(space.root, Pane::Leaf { id, kind: PaneKind::Terminal } if id == first_pane),
+            "the tab's pane is one terminal leaf"
+        );
+        assert!(
+            s.pane_controls(first_pane).harness_mode,
+            "the pane is in terminal + agent mode"
+        );
+        assert!(
+            s.pane_owns_conversation(first_pane),
+            "the pane is bound to a conversation of its own"
+        );
+        assert!(
+            matches!(s.pane_view(first_pane), BlockView::Agent { .. }),
+            "the tab opens on the agent view"
+        );
+    }
+    let first_conversation = state
+        .borrow()
+        .pane_conversation_id(first_pane)
+        .expect("the binding is a real conversation id");
+    assert!(
+        desktop.list_chats().iter().any(|c| c.id == first_conversation),
+        "the conversation was persisted, so the sidebar can list it"
+    );
+
+    // A second click is another tab with another conversation, never a reuse of
+    // the one on screen.
+    (actions.on_create_submit.borrow_mut())();
+    let s = state.borrow();
+    assert_eq!(s.spaces.len(), spaces_before + 2, "one more tab");
+    assert_ne!(s.active_pane_id, first_pane, "the new tab's pane has focus");
+    let second_conversation = s
+        .pane_conversation_id(s.active_pane_id)
+        .expect("the second tab's pane owns a conversation");
+    assert_ne!(
+        second_conversation, first_conversation,
+        "each tab opens its own conversation"
+    );
+    assert!(s.pane_controls(s.active_pane_id).harness_mode);
 }
 
 #[test]
@@ -545,7 +669,7 @@ fn terminal_command_appends_to_the_pane_conversation() {
     assert_ne!(term_conv, chat_id);
 
     // Cmd+Enter in the terminal keeps the turn on the terminal pane's own
-    // conversation; it does NOT create a brand-new conversation.
+    // conversation (the pane owns one); it does NOT create a brand-new one.
     let rt = configured(&state);
     let _guard = rt.enter();
     (actions.on_terminal_command.borrow_mut())(term_pane, "run me as an agent".to_string());
@@ -557,7 +681,7 @@ fn terminal_command_appends_to_the_pane_conversation() {
         .unwrap()
         .conversation_id
         .clone();
-    assert_eq!(conv, term_conv, "Cmd+Enter reuses the terminal pane's conversation");
+    assert_eq!(conv, term_conv, "Cmd+Enter reuses the terminal pane's own conversation");
     wait_for_messages(&desktop, &conv, 2);
     let term_msgs = desktop.list_chat_messages(&conv).expect("list terminal conv");
     assert_eq!(term_msgs.len(), 2);
@@ -694,5 +818,49 @@ fn stop_drops_the_pending_approval() {
     assert!(
         rt.command_selection.is_none(),
         "stop drops the approval's selected candidate"
+    );
+}
+
+/// The attach control opens the system's own file picker: the click reports no
+/// message of its own, and a picker that answers with nothing (cancelled, or a
+/// thread/platform that has none) attaches nothing. The path a picker does
+/// return becomes an attachment of the pane's own rich input.
+#[test]
+fn the_attach_control_opens_the_file_picker_and_writes_no_message() {
+    let (desktop, _dir) = desktop_state();
+    let chat_id = desktop.create_chat("Initial", None, None).expect("create chat");
+    let (state, actions, _media) = build(&desktop);
+    state
+        .borrow_mut()
+        .bind_active_pane_conversation(chat_id.clone(), Some(&desktop));
+
+    (actions.on_attach.borrow_mut())();
+
+    assert!(
+        state.borrow().chat_messages.is_empty(),
+        "the click writes no message of its own into the transcript"
+    );
+    assert_eq!(
+        desktop.list_chat_messages(&chat_id).expect("list conv").len(),
+        0,
+        "and nothing lands in the conversation"
+    );
+    assert!(
+        state.borrow().pane_attachments(1).is_empty(),
+        "no path was picked, so nothing is attached"
+    );
+
+    // What a picker hands back is an attachment of the pane that asked for it,
+    // and one file attached twice is one chip.
+    state
+        .borrow_mut()
+        .attach_pane_file(1, "/tmp/notes.md".to_string());
+    state
+        .borrow_mut()
+        .attach_pane_file(1, "/tmp/notes.md".to_string());
+    assert_eq!(
+        state.borrow().pane_attachments(1),
+        vec!["/tmp/notes.md".to_string()],
+        "the picked path is the pane's attachment, counted once"
     );
 }

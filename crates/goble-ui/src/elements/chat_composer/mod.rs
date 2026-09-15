@@ -11,4 +11,8 @@ mod proposal;
 mod tests;
 
 pub use composer::ChatComposer;
+/// The words the model control reads while no model is configured. The element
+/// that draws the label owns them; the app re-exports this constant rather than
+/// keeping a copy that could drift.
+pub use composer::MODEL_NOT_CONFIGURED;
 pub use proposal::CommandProposalUi;

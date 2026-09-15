@@ -26,6 +26,43 @@ impl TerminalSession {
         self.cwd.as_deref()
     }
 
+    /// Record a directory the shell reported. A directory a shell starts in is
+    /// where it was put, not somewhere it moved to, so it is retired as soon as
+    /// it arrives and never offered as a move. A session with no shell behind it
+    /// has no start of its own, so what it reports is all the app has.
+    pub(super) fn record_reported_cwd(&mut self, path: String, start: bool) {
+        if start && self.spawned {
+            self.cwd_handed = Some(path.clone());
+        }
+        self.cwd = Some(path);
+    }
+
+    /// The directory the shell is in that the app has not been offered yet, when
+    /// that report is a move.
+    ///
+    /// `None` while the shell says nothing new. A report the app has already
+    /// been offered is not a move either: a `cd` the app itself typed — a
+    /// directory picked from the pill's own menu — is still in flight, and the
+    /// report the shell made before it says nothing about where the pane is
+    /// going.
+    pub fn take_cwd_move(&mut self) -> Option<String> {
+        let reported = self.cwd.clone()?;
+        if self.cwd_handed.as_deref() == Some(reported.as_str()) {
+            return None;
+        }
+        self.cwd_handed = Some(reported.clone());
+        Some(reported)
+    }
+
+    /// Retire every directory the shell has reported so far: the app has just
+    /// set this pane's directory itself, so an older report is not where the
+    /// pane is going. The shell's own report of the move follows it.
+    pub fn retire_reported_cwds(&mut self) {
+        if let Some(reported) = self.cwd.as_deref() {
+            self.cwd_handed = Some(reported.to_string());
+        }
+    }
+
     /// The blocks a view draws for this session, oldest first.
     ///
     /// The terminal view is the shell's own history — the agent's commands are

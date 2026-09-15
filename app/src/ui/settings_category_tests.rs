@@ -10,10 +10,15 @@ use goble_ui::render::RenderCommand;
 
 use super::*;
 
+/// The seven grok-build pages keep their labels and their order: they are still
+/// exactly what the rail names once the page this app adds is taken out of it.
 #[test]
 fn categories_match_grok_build_labels() {
-    assert_eq!(SettingsCategory::ALL.len(), 7);
-    let labels: Vec<&str> = SettingsCategory::ALL.iter().map(|c| c.label()).collect();
+    let labels: Vec<&str> = SettingsCategory::ALL
+        .iter()
+        .filter(|c| **c != SettingsCategory::Connections)
+        .map(|c| c.label())
+        .collect();
     assert_eq!(
         labels,
         vec![
@@ -28,7 +33,24 @@ fn categories_match_grok_build_labels() {
     );
 }
 
-/// A whole app tree with the Settings overlay open, plus its live state.
+/// Connections is the page between them: it sits directly after Environment,
+/// where the machine's own SSH state belongs, and nothing before it moved.
+#[test]
+fn connections_sits_after_environment() {
+    let labels: Vec<&str> = SettingsCategory::ALL.iter().map(|c| c.label()).collect();
+    let at = labels
+        .iter()
+        .position(|label| *label == "Connections")
+        .expect("the Connections page is in the rail");
+    assert_eq!(labels[at - 1], "Environment");
+    assert_eq!(
+        labels[..at],
+        ["Appearance", "Mouse", "Editor & Input", "Agent & Approval", "Environment"]
+    );
+    assert_eq!(&labels[at..], ["Connections", "Models", "Advanced"]);
+}
+
+/// A whole app tree with the settings tab open, plus its live state.
 fn settings_root(
     category: SettingsCategory,
 ) -> (
@@ -43,6 +65,11 @@ fn settings_root(
 /// The same tree, with the service handle kept: the tests that assert what was
 /// persisted (a switch in the store, a group of secrets in the store) need to
 /// read the store back rather than the pane's own view of it.
+///
+/// The tab is opened through `open_settings_tab` — the app's own entry point —
+/// so the tests drive the real path, and then pointed at the page they are
+/// about. The sidebar is hidden, so the settings pane is the whole main column
+/// and its geometry is the window's.
 fn settings_root_with_desktop(
     category: SettingsCategory,
 ) -> (
@@ -60,6 +87,10 @@ fn settings_root_with_desktop(
         Store::open_in_memory().expect("in-memory store"),
         ThreadStore::new(dir.path()).expect("thread store"),
     );
+    // The Environment page's groups live in `~/.goble/environment.toml`, so the
+    // page reads and writes a file: point it inside the test's own directory
+    // rather than at the user's real home.
+    desktop.set_environment_path(dir.path().join("environment.toml"));
     let root = RootView::new(&AppContext::default(), &desktop, None);
     let state = root.state_rc();
     {
@@ -68,8 +99,9 @@ fn settings_root_with_desktop(
         s.show_llm_key_banner = false;
         s.right_sidebar_open = false;
         s.crons_open = false;
-        s.settings_overlay_open = true;
-        s.settings_select_category(category);
+        s.sidebar_visible = false;
+        s.open_settings_tab(Some(&desktop));
+        s.settings_set_page(category);
     }
     (Box::new(root) as Box<dyn Element>, state, dir, desktop)
 }
@@ -91,8 +123,8 @@ fn chord(name: &str, modifiers: ModifiersState) -> DispatchedEvent {
 
 /// Dispatch one key through the whole app tree, after a frame, so a handler
 /// that captured state when the tree was built sees the last key's effect (and
-/// the overlay knows its own origin, which it learns while painting). The
-/// running app rebuilds and repaints between events the same way.
+/// the pane knows its own origin, which it learns while painting). The running
+/// app rebuilds and repaints between events the same way.
 fn press(root: &mut Box<dyn Element>, app: &AppContext, name: &str) -> bool {
     press_event(root, app, &key(name))
 }
@@ -112,33 +144,54 @@ fn press_event(
 }
 
 #[test]
-fn the_arrow_keys_move_the_category_and_escape_closes() {
+fn the_arrow_keys_move_the_page_and_escape_leaves_the_tab_open() {
     let app = AppContext::default();
     let (mut root, state, _dir) = settings_root(SettingsCategory::Appearance);
 
     assert!(press(&mut root, &app, "ArrowDown"));
-    assert_eq!(state.borrow().settings_category, SettingsCategory::Mouse);
+    assert_eq!(state.borrow().settings_page(), SettingsCategory::Mouse);
     press(&mut root, &app, "ArrowDown");
-    assert_eq!(state.borrow().settings_category, SettingsCategory::EditorInput);
+    assert_eq!(state.borrow().settings_page(), SettingsCategory::EditorInput);
     press(&mut root, &app, "ArrowUp");
-    assert_eq!(state.borrow().settings_category, SettingsCategory::Mouse);
+    assert_eq!(state.borrow().settings_page(), SettingsCategory::Mouse);
 
-    // Stepping up from the first category wraps to the last and back.
-    state.borrow_mut().settings_category = SettingsCategory::Appearance;
+    // The page is not a copy that can drift: the rail moved the pane's own
+    // leaf, so the page travels with the pane.
+    {
+        let s = state.borrow();
+        let (space, id) = s.settings_pane().expect("the tab is open");
+        assert_eq!(
+            s.spaces[space].leaf_kind(id),
+            Some(&PaneKind::Settings {
+                page: SettingsCategory::Mouse
+            })
+        );
+    }
+
+    // Stepping up from the first page wraps to the last and back.
+    state.borrow_mut().settings_set_page(SettingsCategory::Appearance);
     press(&mut root, &app, "ArrowUp");
-    assert_eq!(state.borrow().settings_category, SettingsCategory::Advanced);
+    assert_eq!(state.borrow().settings_page(), SettingsCategory::Advanced);
     press(&mut root, &app, "ArrowDown");
-    assert_eq!(state.borrow().settings_category, SettingsCategory::Appearance);
+    assert_eq!(state.borrow().settings_page(), SettingsCategory::Appearance);
 
-    assert!(state.borrow().settings_overlay_open, "the overlay is open");
-    assert!(press(&mut root, &app, "Escape"));
-    assert!(!state.borrow().settings_overlay_open, "Escape closes it");
+    // `Esc` from the rail is not the tab's key: it falls through the tree and
+    // the tab is left exactly as it was.
+    let before = state.borrow().spaces.len();
+    assert!(
+        !press(&mut root, &app, "Escape"),
+        "the rail lets Esc through"
+    );
+    let s = state.borrow();
+    assert_eq!(s.spaces.len(), before, "the tab is still open");
+    assert!(s.settings_pane().is_some());
+    assert_eq!(s.current_tab, AppTab::Chat);
 }
 
 /// A modified arrow is a pane-navigation shortcut (Ctrl/Cmd+Arrow), not a
-/// settings navigation key, so the overlay must let it through.
+/// settings navigation key, so the page must let it through.
 #[test]
-fn a_modified_arrow_does_not_move_the_category() {
+fn a_modified_arrow_does_not_move_the_page() {
     let app = AppContext::default();
     let (mut root, state, _dir) = settings_root(SettingsCategory::Mouse);
     let mut ctx = EventContext::default();
@@ -154,24 +207,260 @@ fn a_modified_arrow_does_not_move_the_category() {
         &app,
     );
     assert_eq!(
-        state.borrow().settings_category,
+        state.borrow().settings_page(),
         SettingsCategory::Mouse,
         "Cmd+Arrow belongs to pane navigation"
     );
 }
 
-/// The sheet is compact, not a window-sized surface: `PANEL_WIDTH` ×
-/// `PANEL_HEIGHT` over the middle of the window, smaller in a shorter window
-/// (the dialog caps the panel below 90% of the viewport) rather than clipped by
-/// it. Widths are arithmetic: the rail's own fixed width, the rule beside it,
-/// the pane's padding, and the scroll viewport, which takes the height left
-/// between the header and the footer — 640 = 148 rail + 1 rule + 2×12 padding +
-/// 467 of content for the width, and a 406.8 px viewport inside the 520 px
-/// panel for the height. Checked at the 1280×800 default, at 1024×768, at the
-/// 640×400 logical viewport the largest zoom (2.0) leaves, and in a narrow
-/// 560×400 window, where the sheet is clamped to the window's own width.
+/// The app's own actions over the same live state the tree reads, so a test can
+/// press a control the way the app does (`on_settings`, a tab's ✕) as well as
+/// dispatch a key.
+fn actions_for(
+    state: &Rc<RefCell<crate::state::UiState>>,
+    desktop: &std::sync::Arc<goble_desktop_service::DesktopState>,
+) -> crate::ui::UiActions {
+    use crate::media::MediaState;
+    use goble_ui::platform::WindowControl;
+    crate::actions::make_actions(
+        Rc::clone(state),
+        Some(std::sync::Arc::clone(desktop)),
+        Rc::new(RefCell::new(MediaState::mock())),
+        WindowControl::default(),
+        Rc::new(RefCell::new(1.0)),
+    )
+}
+
+// ---- The settings tab: one space whose root is a settings leaf -------------
+
+/// A layout whose space holds a settings leaf draws the rail's page labels and
+/// the rows of the page, inside the pane the tab is.
 #[test]
-fn the_sheet_is_a_compact_sheet_whose_width_adds_up() {
+fn a_settings_leaf_draws_the_rail_and_the_page() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, _state, _dir) = settings_root(SettingsCategory::Mouse);
+    let commands = frame(&mut root, &app, window);
+
+    for page in SettingsCategory::ALL {
+        assert!(
+            pane_text(&commands, page.label()).is_some(),
+            "the rail draws {:?}",
+            page.label()
+        );
+    }
+    assert!(
+        pane_text(&commands, "Invert scroll").is_some(),
+        "the page draws its own rows"
+    );
+    assert!(pane_text(&commands, "Scroll speed").is_some());
+    assert!(
+        !pane_text(&commands, "Font size").is_some(),
+        "and only the selected page's"
+    );
+    // The tab itself is an ordinary entry in the strip.
+    assert!(drawn(&commands, "Settings"), "the tab is in the strip");
+}
+
+/// Pressing Settings twice never opens a second tab, and it does not even move
+/// the keyboard: the second press lands on the settings leaf that is already
+/// the active pane.
+#[test]
+fn pressing_settings_twice_keeps_one_tab() {
+    let app = AppContext::default();
+    let (mut root, state, _dir, desktop) = settings_root_with_desktop(SettingsCategory::Mouse);
+    let actions = actions_for(&state, &desktop);
+    let _ = frame(&mut root, &app, vec2f(1024.0, 768.0));
+    let spaces = state.borrow().spaces.len();
+    let (space, pane) = state.borrow().settings_pane().expect("the tab is open");
+
+    (actions.on_settings.borrow_mut())();
+    {
+        let s = state.borrow();
+        assert_eq!(s.spaces.len(), spaces, "no second tab");
+        assert_eq!(s.active_space, space, "and the same space stays active");
+        assert_eq!(s.active_pane_id, pane, "on the same pane");
+        assert_eq!(
+            s.settings_page(),
+            SettingsCategory::Mouse,
+            "on the page it was left on"
+        );
+    }
+
+    // A third press changes nothing either.
+    (actions.on_settings.borrow_mut())();
+    let s = state.borrow();
+    assert_eq!(s.spaces.len(), spaces);
+    assert_eq!(s.active_space, space);
+    assert_eq!(s.active_pane_id, pane);
+}
+
+/// With the settings tab in a background space, the press switches to that
+/// space — and to the chat mode the strip is drawn in when the app was
+/// elsewhere, so the tab it brings forward is one the user can see.
+#[test]
+fn a_settings_tab_in_a_background_space_is_brought_to_the_front() {
+    let app = AppContext::default();
+    let (mut root, state, _dir, desktop) = settings_root_with_desktop(SettingsCategory::Models);
+    let actions = actions_for(&state, &desktop);
+    let _ = frame(&mut root, &app, vec2f(1024.0, 768.0));
+    let (space, pane) = state.borrow().settings_pane().expect("the tab is open");
+
+    // Leave the tab: another space is active and the app is in another mode.
+    {
+        let mut s = state.borrow_mut();
+        s.active_space = 0;
+        s.active_pane_id = s.spaces[0].root.first_leaf_id();
+        s.current_tab = AppTab::Projects;
+        s.sync_active_view();
+    }
+
+    (actions.on_settings.borrow_mut())();
+    let s = state.borrow();
+    assert_eq!(s.current_tab, AppTab::Chat, "the strip is drawn in Chat");
+    assert_eq!(s.active_space, space, "the space holding the tab is active");
+    assert_eq!(s.active_pane_id, pane, "with the settings leaf focused");
+    assert_eq!(
+        s.settings_page(),
+        SettingsCategory::Models,
+        "on the page it was left on"
+    );
+    assert_eq!(s.settings_focus, SettingsFocus::Rail, "ready for the arrows");
+}
+
+/// Closing the tab takes its space with it, so the next press opens exactly one
+/// new one.
+#[test]
+fn after_the_tab_is_closed_the_press_adds_exactly_one_space() {
+    let app = AppContext::default();
+    let (mut root, state, _dir, desktop) = settings_root_with_desktop(SettingsCategory::Mouse);
+    let actions = actions_for(&state, &desktop);
+    let _ = frame(&mut root, &app, vec2f(1024.0, 768.0));
+    let (space, _) = state.borrow().settings_pane().expect("the tab is open");
+
+    (actions.on_close_space.borrow_mut())(space);
+    assert!(
+        state.borrow().settings_pane().is_none(),
+        "closing the tab closes the space"
+    );
+
+    let before = state.borrow().spaces.len();
+    (actions.on_settings.borrow_mut())();
+    let s = state.borrow();
+    assert_eq!(s.spaces.len(), before + 1, "one new tab, not two");
+    let (space, pane) = s.settings_pane().expect("the settings tab is back");
+    assert_eq!(s.active_space, space);
+    assert_eq!(s.active_pane_id, pane);
+}
+
+/// A layout that somehow holds two settings leaves focuses the first and
+/// normalises nothing: both panes draw, each on its own page, and the second is
+/// left exactly where the user put it.
+#[test]
+fn a_layout_with_two_settings_leaves_focuses_the_first_and_normalises_nothing() {
+    let app = AppContext::default();
+    let (mut root, state, _dir, desktop) = settings_root_with_desktop(SettingsCategory::Mouse);
+    let actions = actions_for(&state, &desktop);
+
+    // A hand-built layout: the settings space's root becomes a split of two
+    // settings leaves, the first on Appearance and the second still active.
+    let (space, first) = state.borrow().settings_pane().expect("the tab is open");
+    let second = {
+        let mut s = state.borrow_mut();
+        let second = s.next_pane_id;
+        let split = second + 1;
+        s.next_pane_id += 2;
+        s.spaces[space].root = Pane::Split {
+            id: split,
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            first: Box::new(Pane::Leaf {
+                id: first,
+                kind: PaneKind::Settings {
+                    page: SettingsCategory::Appearance,
+                },
+            }),
+            second: Box::new(Pane::Leaf {
+                id: second,
+                kind: PaneKind::Settings {
+                    page: SettingsCategory::Mouse,
+                },
+            }),
+        };
+        s.active_pane_id = second;
+        second
+    };
+
+    (actions.on_settings.borrow_mut())();
+    {
+        let s = state.borrow();
+        assert_eq!(s.settings_pane(), Some((space, first)), "the first leaf wins");
+        assert_eq!(s.active_pane_id, first, "and it takes the keyboard");
+        assert_eq!(
+            s.settings_page(),
+            SettingsCategory::Appearance,
+            "the page is the first leaf's"
+        );
+    }
+
+    // Nothing was normalised: the split still holds both leaves.
+    {
+        let s = state.borrow();
+        match &s.spaces[space].root {
+            Pane::Split { first: a, second: b, .. } => {
+                assert!(matches!(
+                    **a,
+                    Pane::Leaf { kind: PaneKind::Settings { page: SettingsCategory::Appearance }, .. }
+                ));
+                assert!(matches!(
+                    **b,
+                    Pane::Leaf {
+                        id,
+                        kind: PaneKind::Settings { page: SettingsCategory::Mouse }
+                    } if id == second
+                ));
+            }
+            other => panic!("the hand-built layout was rewritten: {other:?}"),
+        }
+    }
+
+    // And both panes draw, each on the page its own leaf carries.
+    let commands = frame(&mut root, &app, vec2f(1024.0, 768.0));
+    let count = |text: &str| {
+        commands
+            .iter()
+            .filter(|c| matches!(c, RenderCommand::DrawText { text: run, .. } if run == text))
+            .count()
+    };
+    assert_eq!(count("Dark mode"), 1, "the first pane draws Appearance");
+    assert_eq!(count("Invert scroll"), 1, "the second draws Mouse");
+    // Each pane carries its own "Settings" title; the strip still draws one tab
+    // for the space, its label above the panes.
+    let tabs = commands
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Settings" && origin.y < crate::ui::shell::TOPBAR_HEIGHT
+            )
+        })
+        .count();
+    assert_eq!(tabs, 1, "and the strip still holds one tab");
+}
+
+/// The settings body fills its pane: the rail keeps its own fixed width hard
+/// against the pane's left edge, the rule sits beside it, and the page scrolls
+/// in the viewport the header band and the footer leave. Widths are
+/// arithmetic: `NAV_WIDTH` rail + 1 rule + 2×12 padding + the rest of the pane
+/// for the viewport; its height is the pane's minus the two fixed bands, which
+/// are the pane's own furniture (the header's padding and title row, the
+/// footer's hint line, each closed by a rule) and do not shrink when the window
+/// does. Checked at the 1280×800 default, at 1024×768, at the 640×400 logical
+/// viewport the largest zoom (2.0) leaves, and in a narrow 560×400 window.
+#[test]
+fn the_settings_body_fills_the_pane() {
+    use crate::ui::settings::{NAV_WIDTH, RULE_WIDTH};
     use goble_ui::theme::SpacingToken;
 
     let app = AppContext::default();
@@ -188,104 +477,66 @@ fn the_sheet_is_a_compact_sheet_whose_width_adds_up() {
         vec2f(560.0, 400.0),
     ] {
         let commands = frame(&mut root, &app, window);
-        let width = crate::ui::settings::PANEL_WIDTH.min(window.x);
-        // The dialog caps the panel at 90% of the viewport.
-        let height = crate::ui::settings::PANEL_HEIGHT.min(window.y * 0.9);
-        // The sheet's own surface, at exactly those bounds and centered: the
-        // app's root surface spans the window, so this fill is the sheet's.
-        let panel = bg_fills(&commands, &app)
-            .into_iter()
-            .find(|rect| {
-                rect.width() == width
-                    && rect.height() == height
-                    && rect.min_x() == (window.x - width) * 0.5
-                    && rect.min_y() == (window.y - height) * 0.5
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "no sheet of {width}x{height} centered in {window:?}: {:?}",
-                    bg_fills(&commands, &app)
-                )
-            });
+        // The pane's own surface: the band the settings body paints inside the
+        // pane, told apart from the window's background by being shorter than
+        // it (the sidebar is hidden, so the pane is the whole main column).
+        let panel = pane_panel(&commands, &app, window);
+        assert_eq!(panel.min_x(), 0.0, "the settings pane is the main column");
+        assert_eq!(panel.width(), window.x, "and as wide as the window");
+        assert_eq!(
+            panel.max_y(),
+            window.y,
+            "and it reaches the window's bottom"
+        );
 
-        // The rail draws at its own fixed width, hard against the sheet's left
-        // edge. In a narrow window the sheet reaches the window's left edge, so
-        // the rail is told apart from the workspace surface under it by the
-        // sheet's own band of height.
-        let nav = commands
-            .iter()
-            .find_map(|c| match c {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == app.theme.color(goble_ui::theme::ColorToken::Surface)
-                        && rect.min_x() == panel.min_x()
-                        && rect.min_y() >= panel.min_y()
-                        && rect.max_y() <= panel.max_y() =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .expect("the rail paints its own background");
-        assert_eq!(nav.width(), crate::ui::settings::NAV_WIDTH);
+        // The rail draws at its own fixed width, hard against the pane's left
+        // edge.
+        let nav = rail_fill(&commands, &app, panel).expect("the rail paints its own background");
+        assert_eq!(nav.width(), NAV_WIDTH);
+        assert_eq!(nav.min_x(), panel.min_x());
 
-        // The page scrolls in a clipped viewport: nav + rule + the pane's
-        // padding + the viewport is the sheet's width, and the viewport's band
+        // The page scrolls in a clipped viewport: rail + rule + the page's
+        // padding + the viewport is the pane's width, and the viewport's band
         // sits below the header and above the footer.
-        let clip = commands
-            .iter()
-            .rev()
-            .find_map(|c| match c {
-                RenderCommand::ClipRect(rect)
-                    if rect.min_x() >= panel.min_x() && rect.max_x() <= panel.max_x() =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("no clip inside {panel:?}"));
+        let clip = clip_in_panel(&commands, &app, window);
         assert_eq!(
             clip.min_x(),
-            panel.min_x() + crate::ui::settings::NAV_WIDTH + crate::ui::settings::RULE_WIDTH + md,
-            "the viewport starts after the rail, the rule and the pane's padding"
+            nav.max_x() + RULE_WIDTH + md,
+            "the viewport starts after the rail, the rule and the page's padding"
         );
         assert_eq!(
             clip.width(),
-            width - crate::ui::settings::NAV_WIDTH - crate::ui::settings::RULE_WIDTH - md * 2.0,
-            "nav + rule + paddings + viewport is the sheet's width"
+            panel.width() - NAV_WIDTH - RULE_WIDTH - md * 2.0,
+            "rail + rule + paddings + viewport is the pane's width"
         );
         // The viewport takes exactly the height the two fixed bands leave, and
-        // those bands are the sheet's own furniture (the header's padding and
+        // those bands are the pane's own furniture (the header's padding and
         // title row, the footer's hint line, each closed by a rule): they do
-        // not shrink when the sheet is capped in a short window.
+        // not shrink when the pane does.
         let header_band = clip.min_y() - panel.min_y();
         let footer_band = panel.max_y() - clip.max_y();
         assert!(
-            header_band > 0.0 && footer_band > 0.0 && header_band + footer_band < height,
+            header_band > 0.0 && footer_band > 0.0 && header_band + footer_band < panel.height(),
             "the header and the footer leave the viewport a positive height: \
-             {header_band} + {footer_band} in {height}"
+             {header_band} + {footer_band} in {}",
+            panel.height()
         );
         match bands {
             None => bands = Some((header_band, footer_band)),
             Some(seen) => assert_eq!(
                 (header_band, footer_band),
                 seen,
-                "the header and footer bands are fixed while the sheet resizes"
+                "the header and footer bands are fixed while the pane resizes"
             ),
         }
         assert_eq!(
             clip.height(),
-            height - header_band - footer_band,
+            panel.height() - header_band - footer_band,
             "the viewport takes the height the header and the footer leave"
         );
-        // Both fixed bands are drawn: the header above the viewport and the
-        // footer's hints below it.
-        let header = commands
-            .iter()
-            .find_map(|c| match c {
-                RenderCommand::DrawText { origin, text, .. } if text == "Settings" => Some(*origin),
-                _ => None,
-            })
-            .expect("the sheet draws its title");
+        // Both fixed bands are drawn: the pane's own header above the viewport
+        // and the footer's hints below it.
+        let header = pane_text(&commands, "Settings").expect("the pane draws its title");
         assert!(
             header.y < clip.min_y(),
             "the header is above the viewport: {header:?}"
@@ -301,18 +552,19 @@ fn the_sheet_is_a_compact_sheet_whose_width_adds_up() {
     }
 }
 
-/// The sheet's own keys take precedence over the workspace while it is open,
-/// and the window-level chords are the window's: `⌘K` and `⌘⇧W` still answer,
-/// a plain `Enter` reaches the sheet and nothing under it.
+/// The settings tab's own keys answer while it is up, and the window-level
+/// chords are the window's: `⌘K` and `⌘⇧W` still answer, a plain `Enter`
+/// reaches the page and nothing under it, and the tab stays open throughout.
 #[test]
-fn the_window_chords_still_answer_while_the_sheet_is_open() {
+fn the_window_chords_still_answer_while_the_settings_tab_is_open() {
     let app = AppContext::default();
     let (mut root, state, _dir) = settings_root(SettingsCategory::Mouse);
+    let spaces = state.borrow().spaces.len();
 
-    // Enter is the sheet's: it moves the keyboard into the pane rather than
-    // reaching the composer underneath.
+    // Enter is the page's: it moves the keyboard into the pane rather than
+    // reaching a composer underneath.
     let before = state.borrow().settings_pane_focus;
-    assert!(press(&mut root, &app, "Enter"), "the sheet consumes Enter");
+    assert!(press(&mut root, &app, "Enter"), "the page consumes Enter");
     assert_eq!(state.borrow().settings_focus, SettingsFocus::Pane);
     assert_eq!(state.borrow().settings_pane_focus, before);
     assert!(!state.borrow().command_palette_open);
@@ -324,7 +576,7 @@ fn the_window_chords_still_answer_while_the_sheet_is_open() {
     assert!(press_event(&mut root, &app, &chord("k", command)));
     assert!(
         state.borrow().command_palette_open,
-        "⌘K opens the palette over the sheet"
+        "⌘K opens the palette over the settings tab"
     );
     press_event(&mut root, &app, &chord("k", command));
 
@@ -336,13 +588,49 @@ fn the_window_chords_still_answer_while_the_sheet_is_open() {
     assert!(press_event(&mut root, &app, &chord("w", shift_command)));
     assert!(
         state.borrow().task_workflow_open,
-        "⌘⇧W opens the tasks & workflows overlay while the sheet is up"
+        "⌘⇧W opens the tasks & workflows overlay while the settings tab is up"
     );
-    assert!(state.borrow().settings_overlay_open, "and the sheet stays open");
+    let s = state.borrow();
+    assert_eq!(s.spaces.len(), spaces, "and the settings tab stays open");
+    assert!(s.settings_pane().is_some());
+}
+
+/// The settings pane, told apart from the window's own background: the `Bg`
+/// band the settings body paints inside it, shorter than the window.
+fn pane_panel(commands: &[RenderCommand], app: &AppContext, window: Vector2F) -> RectF {
+    bg_fills(commands, app)
+        .into_iter()
+        .find(|rect| rect.min_x() == 0.0 && rect.height() < window.y - 0.5)
+        .unwrap_or_else(|| {
+            panic!(
+                "the settings body paints its pane in {window:?}: {:?}",
+                bg_fills(commands, app)
+            )
+        })
+}
+
+/// The rail's own background inside the pane: the `Surface` band at the pane's
+/// own fixed width, hard against the pane's left edge. The pane paints
+/// `Surface` behind everything as well, so the width is what tells them apart.
+fn rail_fill(commands: &[RenderCommand], app: &AppContext, panel: RectF) -> Option<RectF> {
+    use crate::ui::settings::NAV_WIDTH;
+    let surface = app.theme.color(goble_ui::theme::ColorToken::Surface);
+    commands.iter().find_map(|c| match c {
+        RenderCommand::FillRect { rect, color, .. }
+            if *color == surface
+                && rect.min_x() == panel.min_x()
+                && (rect.width() - NAV_WIDTH).abs() < 0.01
+                && rect.min_y() >= panel.min_y()
+                && rect.max_y() <= panel.max_y() =>
+        {
+            Some(*rect)
+        }
+        _ => None,
+    })
 }
 
 /// Lay out and paint one frame, returning its render commands. A frame has to
-/// happen before a dispatch: the overlay learns its own origin while painting.
+/// happen before a dispatch: the pane learns its own origin while painting.
 fn frame(root: &mut Box<dyn Element>, app: &AppContext, window: Vector2F) -> Vec<RenderCommand> {
     let constraint = SizeConstraint::loose(window);
     let _ = root.layout(constraint, &mut LayoutContext::default(), app);
@@ -458,9 +746,9 @@ fn clicking_a_swatch_retargets_the_wheel() {
 }
 
 
-// ---- The overlay's two-region keyboard model -------------------------------
+// ---- The settings tab's two-region keyboard model --------------------------
 
-/// The rail's arrows still move the category; `Right` moves the keyboard into
+/// The rail's arrows still move the page; `Right` moves the keyboard into
 /// the pane, where the arrows move between the controls the pane drew, and
 /// `Left` walks back out.
 #[test]
@@ -468,9 +756,9 @@ fn the_arrows_move_the_region_that_holds_the_keyboard() {
     let app = AppContext::default();
     let (mut root, state, _dir) = settings_root(SettingsCategory::Mouse);
 
-    // The rail, as before: Down/Up step the category.
+    // The rail, as before: Down/Up step the page.
     assert!(press(&mut root, &app, "ArrowDown"));
-    assert_eq!(state.borrow().settings_category, SettingsCategory::EditorInput);
+    assert_eq!(state.borrow().settings_page(), SettingsCategory::EditorInput);
     state.borrow_mut().settings_select_category(SettingsCategory::Mouse);
 
     // Right moves into the pane, onto its first control.
@@ -485,15 +773,15 @@ fn the_arrows_move_the_region_that_holds_the_keyboard() {
         );
     }
 
-    // Down steps the pane's own order and leaves the category alone.
+    // Down steps the pane's own order and leaves the page alone.
     press(&mut root, &app, "ArrowDown");
     {
         let s = state.borrow();
         assert_eq!(s.settings_focused_control(), Some(SettingsControl::ScrollSpeed));
         assert_eq!(
-            s.settings_category,
+            s.settings_page(),
             SettingsCategory::Mouse,
-            "the pane's arrows do not move the category"
+            "the pane's arrows do not move the page"
         );
     }
 
@@ -509,9 +797,9 @@ fn the_arrows_move_the_region_that_holds_the_keyboard() {
     // The switch holds no discrete value, so Left is "back to the rail".
     press(&mut root, &app, "ArrowLeft");
     assert_eq!(state.borrow().settings_focus, SettingsFocus::Rail);
-    assert!(state.borrow().settings_overlay_open, "the overlay stayed open");
+    assert!(state.borrow().settings_pane().is_some(), "the tab stayed open");
 
-    // Tab goes back in, and a category change resets the pane's focus.
+    // Tab goes back in, and a page change resets the pane's focus.
     press(&mut root, &app, "Tab");
     press(&mut root, &app, "ArrowDown");
     assert_eq!(state.borrow().settings_pane_focus, 1);
@@ -519,7 +807,7 @@ fn the_arrows_move_the_region_that_holds_the_keyboard() {
     assert_eq!(
         state.borrow().settings_pane_focus,
         0,
-        "a new category starts the pane's focus at its first control"
+        "a new page starts the pane's focus at its first control"
     );
 }
 
@@ -567,7 +855,7 @@ fn left_and_right_adjust_the_focused_stepper() {
         SettingsFocus::Pane,
         "an adjustable control keeps the keyboard in the pane"
     );
-    assert_eq!(state.borrow().settings_category, SettingsCategory::Mouse);
+    assert_eq!(state.borrow().settings_page(), SettingsCategory::Mouse);
 
     // The switch above it has no discrete value, so Right does nothing to it
     // (Left there returns to the rail, asserted in the test above).
@@ -582,11 +870,12 @@ fn left_and_right_adjust_the_focused_stepper() {
     assert_eq!(state.borrow().settings_focus, SettingsFocus::Pane);
 }
 
-/// `Escape` steps out one level at a time, and a field the user typed into is
-/// reachable and leaveable: it takes the caret on Enter, keeps every printable
-/// key (Space included), cancels on Escape, and commits on a second Enter.
+/// `Enter` on a field puts the caret in it, a second `Enter` commits what was
+/// typed, and `Esc` puts back what the field held — the edit half of the
+/// contract. A field the user typed into keeps every printable key, `Space`
+/// included.
 #[test]
-fn a_pane_text_field_takes_the_caret_and_escape_steps_back_out() {
+fn a_pane_text_field_takes_the_caret_and_escape_puts_the_value_back() {
     let app = AppContext::default();
     let (mut root, state, _dir) = settings_root(SettingsCategory::Environment);
 
@@ -598,7 +887,7 @@ fn a_pane_text_field_takes_the_caret_and_escape_steps_back_out() {
     assert!(!state.borrow().settings_pane_field_active, "no caret yet");
 
     // Enter puts the caret in the field, and typing reaches it — including
-    // Space, which is the sheet's own key outside a field.
+    // Space, which is the page's own key outside a field.
     press(&mut root, &app, "Enter");
     assert!(state.borrow().settings_pane_field_active);
     for c in ["p", "r", "o", "d"] {
@@ -608,7 +897,7 @@ fn a_pane_text_field_takes_the_caret_and_escape_steps_back_out() {
     assert_eq!(state.borrow().settings_environment_group_draft, "prod ");
 
     // Escape cancels the edit: what the field held when the caret went in is
-    // put back, the caret goes, and the sheet stays open on the same row.
+    // put back, the caret goes, and the tab stays open on the same row.
     press(&mut root, &app, "Escape");
     assert!(!state.borrow().settings_pane_field_active);
     assert!(
@@ -620,7 +909,7 @@ fn a_pane_text_field_takes_the_caret_and_escape_steps_back_out() {
         state.borrow().settings_focused_control(),
         Some(SettingsControl::EnvironmentGroupName)
     );
-    assert!(state.borrow().settings_overlay_open);
+    assert!(state.borrow().settings_pane().is_some(), "the tab is still open");
 
     // Enter again edits, and a second Enter commits: what was typed stays.
     press(&mut root, &app, "Enter");
@@ -636,15 +925,17 @@ fn a_pane_text_field_takes_the_caret_and_escape_steps_back_out() {
         SettingsFocus::Pane,
         "committing keeps the keyboard on the row"
     );
-    assert!(state.borrow().settings_overlay_open);
+    assert!(state.borrow().settings_pane().is_some());
 
-    // Then Escape steps back out: the pane, the rail, and the sheet.
+    // Then Escape steps back out to the rail — and stops there: from the rail
+    // the key is not the tab's, so the tab stays open.
     press(&mut root, &app, "Escape");
     assert_eq!(state.borrow().settings_focus, SettingsFocus::Rail);
-    assert!(state.borrow().settings_overlay_open);
-
-    press(&mut root, &app, "Escape");
-    assert!(!state.borrow().settings_overlay_open, "and then it closes");
+    let spaces = state.borrow().spaces.len();
+    assert!(!press(&mut root, &app, "Escape"));
+    let s = state.borrow();
+    assert_eq!(s.spaces.len(), spaces, "the tab does not close on Esc");
+    assert!(s.settings_pane().is_some());
 }
 
 /// `Enter` is what a row does: a stepper advances one step (the same step
@@ -691,7 +982,7 @@ fn enter_advances_a_stepper_and_selects_a_choice() {
     );
 }
 
-/// The footer is the sheet's key map, drawn: each zone and each kind of row
+/// The footer is the page's key map, drawn: each region and each kind of row
 /// answers with its own words, and the drawn line is that list.
 #[test]
 fn the_footer_says_what_the_focused_row_answers() {
@@ -700,8 +991,9 @@ fn the_footer_says_what_the_focused_row_answers() {
     let words = |hints: &[goble_ui::elements::ShortcutHint]| -> Vec<String> {
         hints.iter().map(|hint| hint.label().to_string()).collect()
     };
+    // The rail names only what it answers: `Esc` is not its key any more.
     let rail = footer_hints(SettingsFocus::Rail, None, false);
-    assert_eq!(words(&rail), vec!["page", "open the page", "close"]);
+    assert_eq!(words(&rail), vec!["page", "open the page"]);
 
     let toggle = footer_hints(
         SettingsFocus::Pane,
@@ -727,7 +1019,7 @@ fn the_footer_says_what_the_focused_row_answers() {
     );
     assert_eq!(words(&field), vec!["row", "edit", "back"]);
 
-    // While the caret is in a field only the two reserved keys are the sheet's.
+    // While the caret is in a field only the two reserved keys are the page's.
     let editing = footer_hints(
         SettingsFocus::Pane,
         Some(&SettingsControl::EnvironmentGroupName),
@@ -750,7 +1042,8 @@ fn the_footer_says_what_the_focused_row_answers() {
     assert_eq!(words(&wheel), vec!["row", "back"]);
 
     // And the drawn footer follows the keyboard: the rail's words while the
-    // rail holds it, the switch's once the pane does.
+    // rail holds it — with no `Esc` cap among them, because the rail answers no
+    // `Esc` — and the switch's once the pane does.
     let app = AppContext::default();
     let window = vec2f(1024.0, 768.0);
     let (mut root, state, _dir) = settings_root(SettingsCategory::Mouse);
@@ -758,7 +1051,11 @@ fn the_footer_says_what_the_focused_row_answers() {
     for label in words(&rail) {
         assert!(drawn(&commands, &label), "the footer says {label:?}");
     }
-    assert!(drawn(&commands, "Esc"), "the Esc cap is drawn");
+    let footer = footer_text(&commands, &app, window);
+    assert!(
+        !footer.iter().any(|run| run == "Esc"),
+        "the rail promises no Esc: {footer:?}"
+    );
     assert!(
         commands
             .iter()
@@ -774,6 +1071,8 @@ fn the_footer_says_what_the_focused_row_answers() {
         !drawn(&commands, "open the page"),
         "the rail's words are gone once the pane has the keyboard"
     );
+    // The pane's own `Esc` is drawn: it is the "back" key there.
+    assert!(drawn(&commands, "Esc"));
 }
 
 /// A page's focus order is the order it draws its rows in: stepping the pane's
@@ -817,10 +1116,12 @@ fn the_focus_order_walks_down_the_rows_the_page_draws() {
     }
 }
 
-/// A page taller than the viewport still scrolls inside the sheet: the wheel
+/// A page taller than the viewport still scrolls inside the pane: the wheel
 /// over the pane moves the content under a viewport that does not move.
 #[test]
-fn a_long_page_scrolls_inside_the_sheet() {
+fn a_long_page_scrolls_inside_the_pane() {
+    use crate::ui::settings::NAV_WIDTH;
+
     let app = AppContext::default();
     let window = vec2f(1024.0, 768.0);
     let (mut root, state, _dir, _desktop) = settings_root_with_desktop(SettingsCategory::Mouse);
@@ -833,8 +1134,8 @@ fn a_long_page_scrolls_inside_the_sheet() {
 
     let (mut root, state, _dir, desktop) =
         settings_root_with_desktop(SettingsCategory::Environment);
-    // Enough groups that the page outruns the ~413 px the header and the footer
-    // leave of the sheet at this window.
+    // Enough groups that the page outruns the height the header and the footer
+    // leave of the pane at this window.
     let names = [
         "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
         "lambda", "mu", "nu", "xi",
@@ -850,12 +1151,7 @@ fn a_long_page_scrolls_inside_the_sheet() {
 
     // The pointer sits over the page's viewport for the frame that precedes the
     // wheel: the region remembers where the pointer was while painting.
-    let at = vec2f(
-            (window.x - crate::ui::settings::PANEL_WIDTH) * 0.5
-                + crate::ui::settings::NAV_WIDTH
-                + 40.0,
-        300.0,
-    );
+    let at = vec2f(NAV_WIDTH + 40.0, 300.0);
     let commands = frame_at(&mut root, &app, window, at);
     let before = text_y(&commands, "New group").expect("the page draws its rows");
     let max = state.borrow().settings_scroll.borrow().max_offset();
@@ -888,18 +1184,18 @@ fn a_long_page_scrolls_inside_the_sheet() {
 }
 
 /// The mouse keeps its paths: the rail's rows select a page, a switch flips, a
-/// stepper's `+` steps, and the backdrop closes the sheet.
+/// stepper's `+` steps, and the pane's own ✕ closes the tab.
 #[test]
-fn the_sheet_still_answers_the_mouse() {
+fn the_settings_tab_still_answers_the_mouse() {
     let app = AppContext::default();
     let window = vec2f(1024.0, 768.0);
     let (mut root, state, _dir) = settings_root(SettingsCategory::Mouse);
     let commands = frame(&mut root, &app, window);
 
     // A rail row: the label is inside the row's hit target.
-    let models = pane_text(&commands, "Models", window).expect("the rail draws its pages");
+    let models = pane_text(&commands, "Models").expect("the rail draws its pages");
     click(&mut root, &app, models + vec2f(2.0, 2.0));
-    assert_eq!(state.borrow().settings_category, SettingsCategory::Models);
+    assert_eq!(state.borrow().settings_page(), SettingsCategory::Models);
 
     // A switch: the 44x24 track in the content pane.
     state.borrow_mut().settings_select_category(SettingsCategory::Mouse);
@@ -909,14 +1205,29 @@ fn the_sheet_still_answers_the_mouse() {
     assert!(state.borrow().settings_invert_scroll, "the switch flipped");
 
     // A stepper: its `+`.
-    let plus = pane_text(&commands, "+", window).expect("the stepper draws its buttons");
+    let plus = pane_text(&commands, "+").expect("the stepper draws its buttons");
     let before = state.borrow().settings_scroll_speed;
     click(&mut root, &app, plus + vec2f(2.0, 2.0));
     assert_eq!(state.borrow().settings_scroll_speed, before + 1);
 
-    // The backdrop, outside the sheet.
-    click(&mut root, &app, vec2f(8.0, 400.0));
-    assert!(!state.borrow().settings_overlay_open, "the backdrop closes it");
+    // The pane's own ✕: the close control in the pane's header band, below the
+    // strip (whose tabs carry an ✕ of their own at the top of the window).
+    let spaces = state.borrow().spaces.len();
+    let close = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::DrawIcon { origin, name, size, .. }
+                if name == "x-close" && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+            {
+                Some(*origin + vec2f(size * 0.5, size * 0.5))
+            }
+            _ => None,
+        })
+        .expect("the settings pane draws its close control");
+    click(&mut root, &app, close);
+    let s = state.borrow();
+    assert!(s.settings_pane().is_none(), "the ✕ closed the settings tab");
+    assert_eq!(s.spaces.len(), spaces - 1, "and it took its space with it");
 }
 
 /// One click: the down/up pair a `Button` and a `HoverRow` both complete on.
@@ -948,13 +1259,27 @@ fn drawn_text(commands: &[RenderCommand], text: &str) -> Option<Vector2F> {
     })
 }
 
-/// The origin of a run of text drawn inside the sheet, where a label on the
-/// page and a label on the rail cannot be confused with the workspace's own.
-fn pane_text(commands: &[RenderCommand], text: &str, window: Vector2F) -> Option<Vector2F> {
-    let panel_left = (window.x - crate::ui::settings::PANEL_WIDTH) * 0.5;
+/// The runs the footer draws: everything painted below the page's viewport.
+fn footer_text(commands: &[RenderCommand], app: &AppContext, window: Vector2F) -> Vec<String> {
+    let clip = clip_in_panel(commands, app, window);
+    commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawText { origin, text, .. } if origin.y > clip.max_y() => {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The origin of a run of text drawn inside the settings pane — below the
+/// topbar band the strip draws in, where a label on the page or on the rail
+/// cannot be confused with a tab's own.
+fn pane_text(commands: &[RenderCommand], text: &str) -> Option<Vector2F> {
     commands.iter().find_map(|c| match c {
         RenderCommand::DrawText { origin, text: run, .. }
-            if run == text && origin.x >= panel_left =>
+            if run == text && origin.y > PANE_TOP =>
         {
             Some(*origin)
         }
@@ -967,8 +1292,9 @@ fn text_y(commands: &[RenderCommand], text: &str) -> Option<f32> {
     drawn_text(commands, text).map(|origin| origin.y)
 }
 
-/// The focused row's ring: the sheet's only `ColorToken::Focus` stroke in its
-/// content column, painted last because the sheet is the top-most surface.
+/// The focused row's ring: the page column's only `ColorToken::Focus` stroke.
+/// The threshold keeps a rail row's own ring out of it, and every ring is
+/// right of the rail by construction.
 fn focused_row_ring(commands: &[RenderCommand], app: &AppContext, window: Vector2F) -> RectF {
     let focus = app.theme.color(goble_ui::theme::ColorToken::Focus);
     commands
@@ -985,10 +1311,10 @@ fn focused_row_ring(commands: &[RenderCommand], app: &AppContext, window: Vector
         .expect("the focused row wears the focus ring")
 }
 
-/// The page's scroll viewport: the clip band the sheet draws inside its own
+/// The page's scroll viewport: the clip band the pane draws inside its own
 /// bounds.
 fn clip_in_panel(commands: &[RenderCommand], app: &AppContext, window: Vector2F) -> RectF {
-    let panel = sheet_panel(commands, app, window);
+    let panel = pane_panel(commands, app, window);
     commands
         .iter()
         .rev()
@@ -1015,33 +1341,15 @@ fn bg_fills(commands: &[RenderCommand], app: &AppContext) -> Vec<RectF> {
         .collect()
 }
 
-/// The sheet's own background: the `Bg` fill the dialog centers at
-/// `PANEL_WIDTH` x `PANEL_HEIGHT`, the height capped at 90% of the viewport and
-/// the width at the viewport's own.
-fn sheet_panel(commands: &[RenderCommand], app: &AppContext, window: Vector2F) -> RectF {
-    let width = crate::ui::settings::PANEL_WIDTH.min(window.x);
-    let height = crate::ui::settings::PANEL_HEIGHT.min(window.y * 0.9);
-    bg_fills(commands, app)
-        .into_iter()
-        .find(|rect| {
-            rect.width() == width
-                && rect.height() == height
-                && rect.min_x() == (window.x - width) * 0.5
-                && rect.min_y() == (window.y - height) * 0.5
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "no sheet of {width}x{height} centered in {window:?}: {:?}",
-                bg_fills(commands, app)
-            )
-        })
-}
+/// The top of the settings pane: below the topbar's own band, which is all the
+/// strip and the toolbar draw in. The harness hides the sidebar, so the pane is
+/// the whole main column.
+const PANE_TOP: f32 = crate::ui::shell::TOPBAR_HEIGHT;
 
-/// The x of the content column's left edge.
-fn pane_left(window: Vector2F) -> f32 {
-    (window.x - crate::ui::settings::PANEL_WIDTH) * 0.5
-        + crate::ui::settings::NAV_WIDTH
-        + crate::ui::settings::RULE_WIDTH
+/// The x of the page column's left edge: the pane's own left edge (the window's,
+/// with the sidebar hidden) plus the rail and the rule beside it.
+fn pane_left(_window: Vector2F) -> f32 {
+    crate::ui::settings::NAV_WIDTH + crate::ui::settings::RULE_WIDTH
 }
 
 /// The switch's 44x24 track, the only one inside the page.
@@ -1251,5 +1559,472 @@ fn the_environment_rows_answer_the_mouse_as_well_as_the_keys() {
         state.borrow().settings_environment_open_group.as_deref(),
         Some(group.id.as_str()),
         "the click opened the group"
+    );
+}
+
+// ---- Settings -> Connections ----------------------------------------------
+
+/// Two concrete blocks, one of them in `known_hosts` and one of them naming a
+/// key that is not on disk, so a test can tell a known host from an unused one
+/// and an existing key from a missing one.
+const TWO_HOSTS: &str = "\
+Host web
+    HostName web.example.com
+    User deploy
+    Port 2222
+    IdentityFile ~/.ssh/id_web
+
+Host db
+    HostName db.example.com
+    User admin
+    Port 5432
+    IdentityFile ~/.ssh/id_db
+";
+
+/// A settings tab on the Connections page reading a fixture `~/.ssh` under a
+/// temp home. The state is pointed at the fixture before the first frame — the
+/// frame that shows the page is the one that reads it — so the user's real home
+/// is never touched.
+fn connections_root(
+    files: &[(&str, &str)],
+) -> (
+    Box<dyn Element>,
+    Rc<RefCell<crate::state::UiState>>,
+    tempfile::TempDir,
+) {
+    let (root, state, dir) = settings_root(SettingsCategory::Connections);
+    for (rel, contents) in files {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().expect("the fixture file has a parent"))
+            .expect("fixture dir");
+        std::fs::write(path, contents).expect("fixture file");
+    }
+    state.borrow_mut().settings_ssh_home = Some(dir.path().to_path_buf());
+    (root, state, dir)
+}
+
+/// Every run of text a frame paints.
+fn drawn_runs(commands: &[RenderCommand]) -> Vec<String> {
+    commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether any run of text the frame paints contains `needle`. A long line is
+/// one run of text, so a needle that spans words is found where the page drew
+/// it.
+fn any_run_contains(commands: &[RenderCommand], needle: &str) -> bool {
+    drawn_runs(commands).iter().any(|run| run.contains(needle))
+}
+
+/// Whether the run of text is painted muted, the way the page's own prose and
+/// its findings are.
+fn muted_text(commands: &[RenderCommand], app: &AppContext, text: &str) -> bool {
+    let muted = app.theme.color(goble_ui::theme::ColorToken::Muted);
+    commands.iter().any(|c| {
+        matches!(c, RenderCommand::DrawText { text: run, color, .. } if run == text && *color == muted)
+    })
+}
+
+/// One row per concrete host, with the target `user@hostname:port` a connection
+/// needs to be chosen, the key the block names, and whether this machine has
+/// used the host — plus one row per key file, by name and existence.
+#[test]
+fn the_connections_page_draws_a_row_per_host_with_its_target_and_key() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir) = connections_root(&[
+        (".ssh/config", TWO_HOSTS),
+        (
+            ".ssh/id_web",
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nKEYMATERIAL\n",
+        ),
+        (".ssh/known_hosts", "web.example.com ssh-ed25519 AAAA\n"),
+    ]);
+    let commands = frame(&mut root, &app, window);
+
+    {
+        let s = state.borrow();
+        let ssh = s.settings_ssh_hosts.as_ref().expect("the page read it");
+        assert_eq!(
+            ssh.hosts.iter().map(|h| h.alias.as_str()).collect::<Vec<_>>(),
+            vec!["db", "web"],
+            "one row per concrete block, sorted by alias"
+        );
+        assert!(ssh.findings.is_empty(), "two hosts were found");
+    }
+
+    for text in [
+        "web",
+        "deploy@web.example.com:2222",
+        "~/.ssh/id_web",
+        "db",
+        "admin@db.example.com:5432",
+        "~/.ssh/id_db",
+    ] {
+        assert!(drawn(&commands, text), "the host rows draw {text:?}");
+    }
+    // `web.example.com` is in `known_hosts`; `db.example.com` is not.
+    assert!(drawn(&commands, "known"));
+    assert!(drawn(&commands, "not used yet"));
+
+    // One row per key file: the `id_*` file that is there, and the key the `db`
+    // block names, which is not.
+    assert!(drawn(&commands, "id_web"));
+    assert!(drawn(&commands, "exists"));
+    assert!(drawn(&commands, "missing"));
+
+    // The page's own words: `Enter` names a target, it does not connect.
+    assert!(any_run_contains(&commands, "Enter selects a connection"));
+    assert!(any_run_contains(&commands, "never key contents"));
+}
+
+/// `Host *`, `Host !x`, a `Match` block and an `Include` are rules, not
+/// connections: they draw no row, and neither do the keywords they carry.
+#[test]
+fn wildcard_negated_match_and_include_blocks_draw_no_rows() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir) = connections_root(&[(
+        ".ssh/config",
+        "\
+Include ~/.ssh/conf.d/*
+
+Host *
+    ServerAliveInterval 60
+
+Host !prod
+    User nobody
+
+Host *.internal
+    User ops
+
+Match host *.internal
+    HostName ignored.example.com
+    User ignored-user
+
+Host real
+    HostName real.example.com
+    User me
+",
+    )]);
+    let commands = frame(&mut root, &app, window);
+
+    {
+        let s = state.borrow();
+        let ssh = s.settings_ssh_hosts.as_ref().expect("the page read it");
+        assert_eq!(
+            ssh.hosts.iter().map(|h| h.alias.as_str()).collect::<Vec<_>>(),
+            vec!["real"],
+            "only the concrete block is a connection"
+        );
+    }
+    assert!(drawn(&commands, "real"));
+    assert!(drawn(&commands, "me@real.example.com:22"));
+    for absent in [
+        "!prod",
+        "*.internal",
+        "ignored.example.com",
+        "ignored-user",
+        "nobody",
+        "ops",
+        "ServerAliveInterval",
+        "Include ~/.ssh",
+    ] {
+        assert!(
+            !any_run_contains(&commands, absent),
+            "{absent:?} is a rule, and rules draw no row"
+        );
+    }
+}
+
+/// When `~/.ssh` is not there, has no `config`, or holds only rules, the page
+/// draws the finding as a muted line naming what is missing and the path — a
+/// normal machine state, not an error and not an empty page.
+#[test]
+fn the_missing_directory_and_config_less_cases_draw_their_muted_lines() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+
+    // No `~/.ssh` at all.
+    let (mut root, state, dir) = connections_root(&[]);
+    let commands = frame(&mut root, &app, window);
+    {
+        let s = state.borrow();
+        let ssh = s.settings_ssh_hosts.as_ref().expect("the page read it");
+        assert_eq!(ssh.findings.len(), 1);
+        let line = ssh.findings[0].message();
+        assert!(
+            line.contains(&dir.path().join(".ssh").display().to_string()),
+            "the line names the path: {line}"
+        );
+        assert!(
+            muted_text(&commands, &app, &line),
+            "the finding draws as a muted line: {line}"
+        );
+    }
+    // Not an empty page: the reload row is there, and it is the focus order.
+    assert!(drawn(&commands, "Reload from ~/.ssh"));
+    assert_eq!(
+        state.borrow().settings_pane_controls(),
+        vec![SettingsControl::ReloadSshHosts]
+    );
+
+    // The directory exists with no `config`: its own line, and the keys.
+    let (mut root, state, dir) = connections_root(&[(".ssh/id_ed25519", "KEY\n")]);
+    let commands = frame(&mut root, &app, window);
+    {
+        let s = state.borrow();
+        let ssh = s.settings_ssh_hosts.as_ref().expect("the page read it");
+        assert_eq!(ssh.findings.len(), 1);
+        let line = ssh.findings[0].message();
+        assert!(
+            line.contains(&dir.path().join(".ssh/config").display().to_string()),
+            "the line names the config path: {line}"
+        );
+        assert!(muted_text(&commands, &app, &line));
+    }
+    assert!(drawn(&commands, "id_ed25519"));
+    assert!(drawn(&commands, "exists"));
+
+    // A config that declares no concrete host.
+    let (mut root, state, _dir) = connections_root(&[(".ssh/config", "Host *\n    User root\n")]);
+    let commands = frame(&mut root, &app, window);
+    let s = state.borrow();
+    let ssh = s.settings_ssh_hosts.as_ref().expect("the page read it");
+    assert_eq!(ssh.findings.len(), 1);
+    let line = ssh.findings[0].message();
+    assert!(
+        line.contains("no concrete host"),
+        "the line says what is missing: {line}"
+    );
+    assert!(muted_text(&commands, &app, &line));
+}
+
+/// A `known_hosts` holding only hashed entries reports a count: those names are
+/// not in the file, and the page does not guess them.
+#[test]
+fn hashed_known_hosts_is_reported_as_a_count_not_names() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir) = connections_root(&[
+        (
+            ".ssh/config",
+            "Host box\n    HostName box.example.com\n    User me\n",
+        ),
+        (
+            ".ssh/known_hosts",
+            "|1|AAA=|BBB= ssh-ed25519 KEYONE\n|1|CCC=|DDD= ssh-rsa KEYTWO\n",
+        ),
+    ]);
+    let commands = frame(&mut root, &app, window);
+
+    assert!(
+        any_run_contains(&commands, "2 known_hosts entries are hashed"),
+        "the count is what is drawn"
+    );
+    {
+        let s = state.borrow();
+        let ssh = s.settings_ssh_hosts.as_ref().expect("the page read it");
+        assert_eq!(ssh.hashed_known_hosts, 2);
+        assert!(
+            ssh.hosts.iter().all(|h| !h.known),
+            "a hashed entry cannot make a host known"
+        );
+    }
+    // The host is not marked from the file, and nothing of the file is drawn.
+    assert!(!drawn(&commands, "known"));
+    assert!(drawn(&commands, "not used yet"));
+    for absent in ["AAA=", "BBB=", "CCC=", "KEYONE", "KEYTWO"] {
+        assert!(
+            !any_run_contains(&commands, absent),
+            "{absent:?} is not a name this page can read"
+        );
+    }
+}
+
+/// No key material reaches the screen: not a key's contents, not a passphrase,
+/// not a `ProxyJump` command — paths and names only.
+#[test]
+fn no_drawn_text_carries_key_material() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, _state, _dir) = connections_root(&[
+        (
+            ".ssh/config",
+            "\
+Host secret
+    HostName secret.example.com
+    User me
+    IdentityFile ~/.ssh/id_secret
+    ProxyJump jump.example.com
+",
+        ),
+        (
+            ".ssh/id_secret",
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETMATERIAL\n-----END OPENSSH PRIVATE KEY-----\n",
+        ),
+        (".ssh/id_other", "SECRETMATERIAL\n"),
+    ]);
+    let commands = frame(&mut root, &app, window);
+
+    for absent in [
+        "SECRETMATERIAL",
+        "BEGIN OPENSSH",
+        "PRIVATE KEY",
+        "jump.example.com",
+    ] {
+        assert!(
+            !any_run_contains(&commands, absent),
+            "{absent:?} is key material or a jump command, and is never drawn"
+        );
+    }
+    // The key is on the page as a name and a path, and nothing more.
+    assert!(drawn(&commands, "~/.ssh/id_secret"));
+    assert!(drawn(&commands, "id_secret"));
+}
+
+/// The page's rows are its focus order, drawn in that order, and `Enter` on a
+/// connection row selects it and names it. It connects nothing: no space, no
+/// pane and no terminal session is created.
+#[test]
+fn the_connection_rows_are_focusable_in_order_and_enter_selects() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir) = connections_root(&[(".ssh/config", TWO_HOSTS)]);
+    frame(&mut root, &app, window);
+
+    let controls = state.borrow().settings_pane_controls();
+    assert_eq!(
+        controls,
+        vec![
+            SettingsControl::SshHost("db".to_string()),
+            SettingsControl::SshHost("web".to_string()),
+            SettingsControl::ReloadSshHosts,
+        ],
+        "the hosts in the reader's order, then the reload row"
+    );
+
+    let mut previous: Option<(f32, f32)> = None;
+    for slot in 0..controls.len() {
+        {
+            let mut s = state.borrow_mut();
+            s.settings_focus = SettingsFocus::Pane;
+            s.settings_pane_focus = slot;
+        }
+        let commands = frame(&mut root, &app, window);
+        let ring = focused_row_ring(&commands, &app, window);
+        if let Some((previous_y, previous_x)) = previous {
+            assert!(
+                ring.min_y() > previous_y || (ring.min_y() == previous_y && ring.min_x() > previous_x),
+                "{:?} is drawn after the row before it",
+                controls[slot]
+            );
+        }
+        previous = Some((ring.min_y(), ring.min_x()));
+    }
+
+    // The footer names what the row does, and it is not "connect".
+    {
+        let mut s = state.borrow_mut();
+        s.settings_focus = SettingsFocus::Pane;
+        s.settings_pane_focus = 0;
+    }
+    let commands = frame(&mut root, &app, window);
+    assert!(drawn(&commands, "select"), "the row's own verb");
+    assert!(!drawn(&commands, "connect"), "no row offers a connection");
+    assert!(
+        any_run_contains(&commands, "This build opens no session over SSH"),
+        "and the page says so in its own words"
+    );
+
+    let spaces = state.borrow().spaces.len();
+    press(&mut root, &app, "Enter");
+    let commands = frame(&mut root, &app, window);
+    assert_eq!(
+        state.borrow().settings_ssh_selected.as_deref(),
+        Some("db"),
+        "the row is selected"
+    );
+    assert!(
+        any_run_contains(&commands, "Selected db — admin@db.example.com:5432"),
+        "and it is named on the page"
+    );
+    {
+        let s = state.borrow();
+        assert_eq!(s.spaces.len(), spaces, "no tab was opened");
+        assert!(
+            s.terminal.borrow().sessions.is_empty(),
+            "and no session was opened over SSH"
+        );
+    }
+
+    // The row itself is the hit target: a click selects what `Enter` selects.
+    let at = pane_text(&commands, "web").expect("the web row is drawn");
+    click(&mut root, &app, at + vec2f(2.0, 2.0));
+    assert_eq!(state.borrow().settings_ssh_selected.as_deref(), Some("web"));
+}
+
+/// The directory is read once, when the page is shown, and again when the
+/// reload row runs: a frame that changes nothing reads nothing.
+#[test]
+fn the_reload_row_re_reads_the_directory() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, dir) = connections_root(&[(
+        ".ssh/config",
+        "Host one\n    HostName one.example.com\n    User me\n",
+    )]);
+    let commands = frame(&mut root, &app, window);
+    assert!(drawn(&commands, "me@one.example.com:22"));
+
+    // The file grows under the page. The next frame still shows the cached
+    // read: the page does not re-read the directory while it draws.
+    std::fs::write(
+        dir.path().join(".ssh/config"),
+        "\
+Host one
+    HostName one.example.com
+    User me
+
+Host two
+    HostName two.example.com
+    User me
+",
+    )
+    .expect("rewrite the fixture config");
+    let commands = frame(&mut root, &app, window);
+    assert!(
+        !any_run_contains(&commands, "two.example.com"),
+        "no read happens for a frame that changed nothing"
+    );
+
+    // The reload row re-reads it.
+    {
+        let mut s = state.borrow_mut();
+        s.settings_focus = SettingsFocus::Pane;
+        s.settings_pane_focus = 1;
+    }
+    assert_eq!(
+        state.borrow().settings_focused_control(),
+        Some(SettingsControl::ReloadSshHosts)
+    );
+    press(&mut root, &app, "Enter");
+    let commands = frame(&mut root, &app, window);
+    assert!(drawn(&commands, "two"));
+    assert!(drawn(&commands, "me@two.example.com:22"));
+    assert_eq!(
+        state
+            .borrow()
+            .settings_ssh_hosts
+            .as_ref()
+            .expect("the reload read it")
+            .hosts
+            .len(),
+        2
     );
 }

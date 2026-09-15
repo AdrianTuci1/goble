@@ -33,6 +33,15 @@ pub mod fallback {
 
     use crate::geometry::Vector2F;
 
+    /// Open the platform's file picker and return the path the user chose.
+    ///
+    /// A target with no native picker opens none, so the caller adds nothing:
+    /// this is the whole feature on macOS (see `mac::pick_file`), and an
+    /// explicit "no file chosen" everywhere else.
+    pub fn pick_file() -> Option<String> {
+        None
+    }
+
     pub fn default_font_family() -> &'static str {
         "system-ui"
     }

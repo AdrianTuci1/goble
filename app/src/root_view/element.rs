@@ -1,5 +1,7 @@
 //! The [`Element`] impl: layout, paint, size and the global shortcuts.
 
+use goble_terminal::blocks::BlockView;
+use goble_ui::elements::terminal_block::toggle_terminal_filter;
 use goble_ui::event::DispatchedEvent;
 use goble_ui::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint, Vector2F,
@@ -95,7 +97,7 @@ impl Element for RootView {
                     (actions.on_new_terminal.borrow_mut())();
                     return true;
                 }
-                // Cmd/Ctrl+Shift+W toggles the tasks & workflows overlay: the
+                // Cmd/Ctrl+Shift+W toggles the workflow-runs overlay: the
                 // workspace stays mounted, the panel floats over it.
                 if has_ctrl_cmd && modifiers.shift && key.eq_ignore_ascii_case("w") {
                     (actions.on_toggle_task_workflow.borrow_mut())();
@@ -103,6 +105,34 @@ impl Element for RootView {
                 }
                 if has_ctrl_cmd && !modifiers.shift && key.eq_ignore_ascii_case("w") {
                     (actions.on_close_pane.borrow_mut())();
+                    return true;
+                }
+                // Cmd/Ctrl+F raises the active agent pane's whole-transcript
+                // filter, the bar the transcript draws over its terminal blocks.
+                // A shell pane answers the same chord itself, beside Cmd+Shift+F
+                // and the alternate-screen rule, so the root leaves every shell
+                // pane's filter keys to that pane.
+                if has_ctrl_cmd && !modifiers.shift && !modifiers.alt && key.eq_ignore_ascii_case("f")
+                {
+                    let mut state = self.state.borrow_mut();
+                    let pane_id = state.active_pane_id;
+                    if matches!(state.pane_view(pane_id), BlockView::Agent { .. }) {
+                        let filter = state
+                            .terminal_global_filters
+                            .entry(pane_id)
+                            .or_default()
+                            .clone();
+                        drop(state);
+                        toggle_terminal_filter(&filter);
+                        return true;
+                    }
+                }
+                // Ctrl+Tab / Ctrl+Shift+Tab walk the tab strip. Ctrl only: the
+                // OS eats Cmd+Tab before the window sees it, and staying off
+                // the Cmd family keeps the chord clear of the menus.
+                if modifiers.ctrl && !modifiers.command && key == "Tab" {
+                    let delta = if modifiers.shift { -1 } else { 1 };
+                    (actions.on_switch_space.borrow_mut())(delta);
                     return true;
                 }
                 // Pane focus navigation: Ctrl/Cmd+Arrows move between panes.

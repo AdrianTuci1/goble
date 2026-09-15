@@ -95,9 +95,23 @@ pub struct McpSearchEntry {
 pub struct WorkflowEntry {
     pub id: String,
     pub name: String,
+    /// What the workflow is for, as its author wrote it: the objective a
+    /// workflow-runs row shows under the name.
+    pub description: String,
+    /// The workflow's phases, in the order the record declares them.
+    pub steps: Vec<WorkflowStepEntry>,
     pub trigger: String,
     pub enabled: bool,
     pub created_at: String,
+}
+
+/// One phase of a registered workflow: a named step that one agent runs.
+#[derive(Clone, Debug)]
+pub struct WorkflowStepEntry {
+    pub name: String,
+    /// The agent the step runs as. Empty when the record names none, which
+    /// means no execution can be matched to the step.
+    pub agent_id: String,
 }
 
 /// An execution (agent run) shown in the tasks/executions page. Real data from
@@ -148,7 +162,6 @@ pub struct CostEntry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppTab {
     Chat,
-    Settings,
     Projects,
     Workflows,
     Executions,
@@ -157,8 +170,11 @@ pub enum AppTab {
     Mcps,
 }
 
-/// Settings overlay categories, mirroring the grok-build settings pages.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Settings tab pages, mirroring the grok-build settings pages.
+///
+/// Serialized with the pane that shows one: the page rides in the leaf (see
+/// `PaneKind::Settings`), so it survives a save/load and a pane lift.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SettingsCategory {
     Appearance,
     Mouse,
@@ -169,6 +185,11 @@ pub enum SettingsCategory {
     /// picks Local or Remote: the secrets belong next to the choice that makes
     /// them matter, before the model and machine-config pages.
     Environment,
+    /// The SSH connections this machine already knows, read from `~/.ssh`. It
+    /// sits directly after Environment because both pages report what a session
+    /// that leaves this machine would need; unlike Environment it is read-only
+    /// and never stored by goble, so it draws no database state of its own.
+    Connections,
     Models,
     Advanced,
 }
@@ -180,6 +201,7 @@ impl SettingsCategory {
         SettingsCategory::EditorInput,
         SettingsCategory::AgentApproval,
         SettingsCategory::Environment,
+        SettingsCategory::Connections,
         SettingsCategory::Models,
         SettingsCategory::Advanced,
     ];
@@ -191,6 +213,7 @@ impl SettingsCategory {
             SettingsCategory::EditorInput => "Editor & Input",
             SettingsCategory::AgentApproval => "Agent & Approval",
             SettingsCategory::Environment => "Environment",
+            SettingsCategory::Connections => "Connections",
             SettingsCategory::Models => "Models",
             SettingsCategory::Advanced => "Advanced",
         }
@@ -253,6 +276,12 @@ pub enum SettingsControl {
     EnvironmentSecret(String),
     /// Environment: remove one secret.
     EnvironmentDeleteSecret(String),
+    /// Connections: one concrete host from `~/.ssh/config`; Enter selects the
+    /// row and names it. Nothing connects: this build cannot open a session
+    /// over SSH.
+    SshHost(String),
+    /// Connections: re-read `~/.ssh` and replace the cached read.
+    ReloadSshHosts,
 }
 
 impl SettingsControl {

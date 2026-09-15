@@ -29,6 +29,14 @@ pub struct ConversationEntry {
     /// The directory the conversation works in, drawn on its card under the
     /// subject. Empty when the conversation has no directory of its own yet.
     pub directory: String,
+    /// Whether the agent has produced anything in this conversation.
+    ///
+    /// A conversation is opened before it has been answered — a new tab is a
+    /// place to type, not yet a thread — and one nobody has answered is not
+    /// history the sidebar lists. Defaults to `true`: only a caller that has
+    /// read the conversation's own messages can say it was never answered, so
+    /// an entry built without them is shown rather than silently dropped.
+    pub has_agent_reply: bool,
 }
 
 impl Default for ConversationEntry {
@@ -42,6 +50,7 @@ impl Default for ConversationEntry {
             folder: "General".to_string(),
             workspace_routing: "local".to_string(),
             directory: String::new(),
+            has_agent_reply: true,
         }
     }
 }
@@ -62,6 +71,7 @@ impl ConversationEntry {
             folder: "General".to_string(),
             workspace_routing: "local".to_string(),
             directory: String::new(),
+            has_agent_reply: true,
         }
     }
 
@@ -84,6 +94,14 @@ impl ConversationEntry {
     /// subject. Empty draws no row.
     pub fn with_directory(mut self, directory: impl Into<String>) -> Self {
         self.directory = directory.into();
+        self
+    }
+
+    /// Whether the agent has produced anything in this conversation. A
+    /// conversation that has not been answered is left out of the sidebar's
+    /// list; see [`ConversationEntry::has_agent_reply`].
+    pub fn with_has_agent_reply(mut self, has_agent_reply: bool) -> Self {
+        self.has_agent_reply = has_agent_reply;
         self
     }
 }
@@ -473,5 +491,18 @@ mod tests {
             .with_workspace_routing("remote");
         assert_eq!(remote.workspace_routing, "remote");
         assert_eq!(remote.id, "c1");
+    }
+
+    /// Only a caller that read the conversation's own messages can say nobody
+    /// answered it, so an entry built without them is listed rather than
+    /// dropped: the default is the safe reading of "not known".
+    #[test]
+    fn a_conversation_entry_is_listed_until_a_caller_says_it_was_not_answered() {
+        assert!(ConversationEntry::default().has_agent_reply);
+        assert!(ConversationEntry::new("c1", "Ada", "Hello!", "10:00").has_agent_reply);
+        let unanswered =
+            ConversationEntry::new("c1", "Ada", "Hello!", "10:00").with_has_agent_reply(false);
+        assert!(!unanswered.has_agent_reply);
+        assert_eq!(unanswered.name, "Ada");
     }
 }

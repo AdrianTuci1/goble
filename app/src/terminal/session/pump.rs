@@ -51,6 +51,12 @@ impl TerminalSession {
             if let HookEvent::Preexec(value) = &event {
                 self.observe_preexec(value);
             }
+            // The shell's own `cd` is what moves a pane to another directory,
+            // and `cd` prints nothing: the hook channel is where the move shows
+            // up (OSC 7 is the other carrier, folded in below).
+            if let Some((path, start)) = hook_cwd(&event) {
+                self.record_reported_cwd(path, start);
+            }
             if self.hooks.len() == EVENT_BACKLOG {
                 self.hooks.pop_front();
             }
@@ -160,4 +166,19 @@ impl TerminalSession {
             Err(_) => false,
         }
     }
+}
+
+/// The working directory a hook carries, if it carries one, and whether it is
+/// where the shell started rather than a directory its prompt reported: every
+/// `Precmd` reports where its prompt is, and `InitShell` reports where the shell
+/// was put. A blank value is not a directory, so it is dropped rather than
+/// written.
+fn hook_cwd(event: &HookEvent) -> Option<(String, bool)> {
+    let (reported, start) = match event {
+        HookEvent::Precmd(value) => (value.pwd.as_deref(), false),
+        HookEvent::InitShell(value) => (value.cwd.as_deref(), true),
+        _ => return None,
+    };
+    let reported = reported?.trim();
+    (!reported.is_empty()).then(|| (reported.to_string(), start))
 }

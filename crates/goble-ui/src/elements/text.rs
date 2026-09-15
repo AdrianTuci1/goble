@@ -29,6 +29,10 @@ pub struct Text {
     max_lines: Option<usize>,
     weight: FontWeight,
     font_family: FontFamily,
+    /// The width the text was last measured against. Drawing breaks a run at a
+    /// different width than the measurement did, so the line count of the drawn
+    /// block follows this number and not the measured size.
+    wrap_width: f32,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -43,6 +47,7 @@ impl Text {
             max_lines: None,
             weight: FontWeight::Regular,
             font_family: FontFamily::System,
+            wrap_width: f32::INFINITY,
             size: None,
             origin: None,
         }
@@ -129,32 +134,34 @@ impl Element for Text {
         }
         size.x = size.x.max(constraint.min.x).min(constraint.max.x);
         size.y = size.y.max(constraint.min.y).min(constraint.max.y);
+        self.wrap_width = constraint.max.x;
         self.size = Some(size);
         size
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        if let Some(size) = self.size {
-            if let Some(renderer) = ctx.renderer.as_mut() {
-                renderer.draw_text_with_font(
-                    origin,
-                    self.text.clone(),
-                    self.font_size,
-                    self.color,
-                    // The measured width is the ceil of the glyph extents, which
-                    // can sit a fraction below the sum of the advances. Drawing
-                    // at exactly that width would wrap the last word of a text
-                    // sized to its own content (e.g. a one-line chip label), so
-                    // allow a point of slack.
-                    size.x + 1.0,
-                    self.line_height,
-                    self.weight,
-                    self.font_family,
-                    false,
-                );
-            }
+        if self.size.is_none() {
+            return;
         }
+        let Some(renderer) = ctx.renderer.as_mut() else {
+            return;
+        };
+        renderer.draw_text_with_font(
+            origin,
+            self.text.clone(),
+            self.font_size,
+            self.color,
+            // The drawing wrap width is the one the measurement used, so the
+            // drawn run breaks exactly where the box was sized to break: a box
+            // measured at 160 and drawn at 161 takes one line fewer than the
+            // box reserves.
+            self.wrap_width,
+            self.line_height,
+            self.weight,
+            self.font_family,
+            false,
+        );
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -170,6 +177,22 @@ impl Element for Text {
 mod tests {
     use super::*;
     use crate::geometry::vec2f;
+    use crate::render::RenderCommand;
+
+    /// The (text, size, wrap width) of the run the element drew.
+    fn drawn_run(element: &mut Box<dyn Element>, width: f32, app: &AppContext) -> (String, Vector2F, f32) {
+        let commands = crate::test_util::render_element(element, vec2f(width, 4000.0), app);
+        let size = element.size().expect("the element laid out");
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText {
+                    text, max_width, ..
+                } => Some((text.clone(), size, *max_width)),
+                _ => None,
+            })
+            .expect("the text draws one run")
+    }
 
     #[test]
     fn text_measures_empty_string() {
@@ -208,5 +231,70 @@ mod tests {
         );
         assert!(size.x <= 60.0);
         assert!(size.y > 20.0 * DEFAULT_LINE_HEIGHT);
+    }
+
+    /// A narrower constraint re-wraps the paragraph, so the box comes down to
+    /// the constraint and gets taller.
+    #[test]
+    fn a_narrower_constraint_rewraps_the_text() {
+        let app = AppContext::default();
+        let paragraph = "one two three four five six seven eight nine ten";
+        let mut wide = Text::new(paragraph);
+        let wide_size = wide.layout(
+            SizeConstraint::loose(vec2f(400.0, 4000.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut narrow = Text::new(paragraph);
+        let narrow_size = narrow.layout(
+            SizeConstraint::loose(vec2f(120.0, 4000.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert!(
+            wide_size.x > narrow_size.x,
+            "the box narrows with the constraint: {} then {}",
+            wide_size.x,
+            narrow_size.x
+        );
+        assert!(narrow_size.x <= 120.0);
+        assert!(
+            narrow_size.y > wide_size.y,
+            "the narrower box holds more lines"
+        );
+    }
+
+    /// The run is drawn at the width the box was measured at. Drawing it at the
+    /// measured size instead breaks it wherever that size falls, which is one
+    /// line more or less than the box holds — the block then spills over the
+    /// content below it, or leaves its last line's worth of space empty.
+    #[test]
+    fn wrapped_text_is_drawn_at_the_width_it_was_measured_at() {
+        let app = AppContext::default();
+        let paragraph =
+            "The agent wrote a long paragraph of prose that has to reflow on every resize";
+        for width in [120.0_f32, 163.0, 240.0, 331.0] {
+            let mut element: Box<dyn Element> = Box::new(Text::new(paragraph));
+            let (drawn, size, max_width) = drawn_run(&mut element, width, &app);
+            assert_eq!(
+                max_width, width,
+                "the run is drawn at the width its box was measured at"
+            );
+            let drawn_height = measure_text_atlas(
+                &drawn,
+                DEFAULT_FONT_SIZE,
+                DEFAULT_LINE_HEIGHT,
+                max_width,
+                FontWeight::Regular,
+                FontFamily::System,
+                false,
+            )
+            .y;
+            assert!(
+                drawn_height <= size.y + 0.5,
+                "the drawn block is {drawn_height} tall in a {width} wide box that reserves {}",
+                size.y
+            );
+        }
     }
 }

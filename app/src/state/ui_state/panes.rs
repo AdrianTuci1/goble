@@ -16,6 +16,12 @@ impl UiState {
     /// The store conversation id a pane is bound to. A pane with no explicit
     /// conversation lazily uses the currently selected conversation, which is
     /// how the initial single pane tracks the sidebar selection.
+    ///
+    /// A gesture that must not inherit the sidebar's selection — anything that
+    /// starts a conversation of the pane's own — asks [`Self::pane_owns_conversation`]
+    /// instead: this fallback is the conversation the pane is *showing*, which
+    /// is what a send into the surface on screen wants, and what Cmd/Ctrl+Enter
+    /// must not take for an answer.
     pub fn pane_conversation_id(&self, pane_id: u64) -> Option<String> {
         self.pane_sessions
             .get(&pane_id)
@@ -144,6 +150,20 @@ impl UiState {
             .get(&pane_id)
             .map(|s| !s.conversation_id.is_empty())
             .unwrap_or(false)
+    }
+
+    /// Attach a file the picker returned to `pane_id`'s rich input, for the
+    /// chip row over the editor. The same path twice is one attachment.
+    pub fn attach_pane_file(&mut self, pane_id: u64, path: String) {
+        let files = self.pane_attachments.entry(pane_id).or_default();
+        if !files.iter().any(|file| file == &path) {
+            files.push(path);
+        }
+    }
+
+    /// The files `pane_id`'s rich input carries, for whatever draws them.
+    pub fn pane_attachments(&self, pane_id: u64) -> Vec<String> {
+        self.pane_attachments.get(&pane_id).cloned().unwrap_or_default()
     }
 
     /// The model an agent turn on `pane_id` runs: the pane's own choice, then

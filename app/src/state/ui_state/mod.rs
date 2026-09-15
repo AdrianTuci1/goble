@@ -7,6 +7,8 @@
 
 use super::*;
 
+use goble_core::ssh_hosts::SshHosts;
+
 mod agents;
 mod mock;
 mod pane_move;
@@ -27,6 +29,15 @@ pub const NEW_CONVERSATION_TITLE: &str = "New conversation";
 /// conversation has no subject yet. Once the conversation has one, the tab
 /// reads the subject instead (see [`UiState::space_label`]).
 pub const NEW_AGENT_TAB_LABEL: &str = "New Agent";
+
+/// What the composer's model control reads while no model is configured: the
+/// pane's own model value stays empty — [`UiState::pane_agent_model`] reports
+/// nothing chosen, which is what [`UiState::can_run_agent_turn`] decides on —
+/// and only the label the view draws says what is missing.
+///
+/// The element that draws the label owns the words, and this is that very
+/// constant re-exported, so the two cannot come to say different things.
+pub use goble_ui::elements::chat_composer::MODEL_NOT_CONFIGURED;
 
 
 #[derive(Clone)]
@@ -64,6 +75,9 @@ pub struct UiState {
     /// App-owned open flags for the composer harness / dir / branch menus.
     pub harness_menu_open: Rc<RefCell<bool>>,
     pub dir_menu_open: Rc<RefCell<bool>>,
+    /// The shell-bar composer's directory tray scroll offset, app-owned beside
+    /// its open flag so a deep directory keeps the position the wheel left it.
+    pub dir_menu_scroll: PanelScroll,
     pub branch_menu_open: Rc<RefCell<bool>>,
     /// The git branch of the active pane's working directory (best-effort,
     /// read from `.git/HEAD`). Shown as the composer's branch pill when set.
@@ -101,9 +115,15 @@ pub struct UiState {
     /// so the filter bar of one pty/agent pane does not open in its sibling.
     pub terminal_global_filters: HashMap<u64, TerminalFilter>,
     pub crons_open: bool,
-    /// Whether the tasks & workflows overlay is up (it covers the workspace
-    /// without replacing it).
+    /// Whether the workflow-runs overlay is up (it covers the workspace without
+    /// replacing it).
     pub task_workflow_open: bool,
+    /// The workflow the overlay's run list has selected, and the phase — one of
+    /// that workflow's steps — selected inside its detail. Shared cells because
+    /// the element tree is rebuilt every frame: a row the user clicked writes
+    /// its index there and the next frame's rows read it back.
+    pub task_workflow_selected: Rc<RefCell<usize>>,
+    pub task_workflow_phase: Rc<RefCell<usize>>,
     /// Whether the keyboard shortcuts panel is up.
     pub shortcuts_help_open: bool,
     /// The shortcuts panel's filter text, and the row it highlights — an index
@@ -139,12 +159,8 @@ pub struct UiState {
     pub settings_cluster_configured: bool,
     pub settings_authorized_keys: Vec<(String, String, String)>,
     pub settings_vault_unlocked: bool,
-    /// Whether the Settings overlay panel is open (replaces the old Settings tab).
-    pub settings_overlay_open: bool,
-    /// Active settings category in the overlay.
-    pub settings_category: SettingsCategory,
-    /// Which of the overlay's two regions (the category rail, the content
-    /// pane) holds the keyboard. Opening the overlay starts in the rail.
+    /// Which of the settings tab's two regions (the page rail, the content
+    /// pane) holds the keyboard. Opening it starts in the rail.
     pub settings_focus: SettingsFocus,
     /// The pane control the keyboard is on: an index into the order
     /// [`crate::ui::settings::pane_controls`] answers for the active category.
@@ -172,6 +188,21 @@ pub struct UiState {
     /// Settings → Environment: the name the entry being edited carried before
     /// the fields were filled in, so an edit that renames removes the old one.
     pub settings_environment_editing: Option<String>,
+    /// Settings → Connections: the `~/.ssh` read, filled when the page is
+    /// first shown and kept until the reload row re-reads it. The element tree
+    /// is rebuilt every frame, so the directory is read here and never while
+    /// the page draws; `None` means there was no home directory to read.
+    pub settings_ssh_hosts: Option<SshHosts>,
+    /// Whether [`Self::settings_ssh_hosts`] has been filled. A cache that has
+    /// been read is not read again for the same home, however many frames the
+    /// page is drawn on.
+    pub settings_ssh_read: bool,
+    /// The home directory `~/.ssh` is read under. `None` is the user's own
+    /// home; tests point it at a fixture so no real home is ever read.
+    pub settings_ssh_home: Option<std::path::PathBuf>,
+    /// Settings → Connections: the alias `Enter` last selected, drawn as the
+    /// page's prefill line. It names a target for whatever consumes it next.
+    pub settings_ssh_selected: Option<String>,
     /// Mouse: invert the wheel/scroll direction.
     pub settings_invert_scroll: bool,
     /// Mouse: scroll speed multiplier (1..=100, default 50).
@@ -327,6 +358,11 @@ pub struct UiState {
     /// pane id. Owned here for the same reason as the scroll offset: the element
     /// tree is rebuilt every frame.
     pub pane_usage_open: HashMap<u64, Rc<RefCell<bool>>>,
+    /// Files the pane's rich input carries, keyed by pane id: what the attach
+    /// control picked and the chips over the editor draw. Owned here (the
+    /// element is rebuilt every frame) and spent with the draft they belong to
+    /// (see `send_agent_prompt`).
+    pub pane_attachments: HashMap<u64, Vec<String>>,
     /// Per-pane scroll offset of the terminal pane's own command sections (the
     /// block view), keyed by pane id. Owned here for the same reason as the
     /// transcript scroll: the pane's element tree is rebuilt every frame.

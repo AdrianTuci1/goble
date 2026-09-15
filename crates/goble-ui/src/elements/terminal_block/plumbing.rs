@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::elements::{Element, terminal_block};
 use super::data::TerminalData;
 use super::filter::{TerminalCopyHandler, TerminalFilter};
+use crate::elements::{terminal_block, Element};
 
 /// What a terminal block needs from the app wherever it is drawn: the app-owned
 /// per-block filter map, the surface's own whole-block filter and the copy
@@ -49,5 +49,47 @@ impl TerminalBlockPlumbing {
             self.global_filter.clone(),
             self.on_copy.clone(),
         )
+    }
+
+    /// The filter state of the block the pointer is over, if any: a block writes
+    /// its own hover flag as the pointer moves over it, so at most one entry is
+    /// set at a time.
+    pub fn hovered_filter(&self) -> Option<TerminalFilter> {
+        self.filters
+            .borrow()
+            .values()
+            .find(|filter| filter.is_hovered())
+            .cloned()
+    }
+
+    /// Show or hide the filter bar of the block under the pointer. Returns
+    /// whether a block was found: with the pointer off every block there is
+    /// nothing to filter.
+    pub fn toggle_hovered_filter(&self) -> bool {
+        match self.hovered_filter() {
+            Some(filter) => {
+                filter.toggle_bar();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// This surface's whole-output filter, when the app wired one: one filter
+    /// over every block the surface draws.
+    pub fn global_filter(&self) -> Option<TerminalFilter> {
+        self.global_filter.clone()
+    }
+
+    /// Show or hide this surface's whole-output filter bar. Returns whether the
+    /// app wired one, so a surface with no filter reports that nothing happened.
+    pub fn toggle_global_filter(&self) -> bool {
+        match self.global_filter() {
+            Some(filter) => {
+                filter.toggle_bar();
+                true
+            }
+            None => false,
+        }
     }
 }

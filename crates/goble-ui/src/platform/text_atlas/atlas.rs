@@ -5,18 +5,34 @@ use crate::theme::FontFamily;
 
 use super::fonts::{rasterize_text, FontWeight};
 
-const ATLAS_SIZE: u32 = 2048;
-const PADDING: u32 = 4;
+pub(super) const ATLAS_SIZE: u32 = 2048;
+/// Empty texels kept between two entries, and between an entry and the edge of
+/// the atlas. The atlas is sampled with a linear filter, so the outermost
+/// fragment of a glyph's quad can land between its own texels and the ones
+/// after them; that gutter is what it lands on, and it is zero, or a
+/// neighbouring glyph's ink shows up at the edge of the run as a speckle.
+pub(super) const PADDING: u32 = 4;
 
 /// What one attempt to place a run did.
-enum Placement {
-    /// The run is in the atlas.
-    Done,
+pub(super) enum Placement {
+    /// The run is in the atlas's pixels, in this region, from this coverage.
+    Written { region: Region, data: Vec<u8> },
+    /// Nothing to draw (an empty run).
+    Empty,
     /// The atlas is full: the caller may clear it and start over.
     Full,
     /// The run is larger than the atlas and can never be placed, at any level
     /// of fullness.
     TooLarge,
+}
+
+/// A rectangle of atlas texels: where a run's pixels live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Region {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -33,22 +49,182 @@ pub struct TextAtlas {
     sampler: wgpu::Sampler,
     bind_group: wgpu::BindGroup,
     bind_group_layout: wgpu::BindGroupLayout,
-    texture_data: Vec<u8>,
+    store: AtlasStore,
+}
+
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub(super) struct TextKey {
+    text: String,
+    /// The run's size in physical pixels, as `f32` bits. It is not rounded:
+    /// the rasterizer's line breaks are a function of this number, and the
+    /// element measured its box with the size the layout actually holds, so a
+    /// rounded size can break a run into one line more than the box it was
+    /// measured into.
+    font_size: u32,
+    weight: FontWeight,
+    mono: bool,
+    italic: bool,
+    /// The width the run wraps at, in physical pixels, as `f32` bits (`∞` when
+    /// the caller gave no bound). Keyed exactly, for the same reason.
+    max_width: u32,
+    /// Line-height multiplier, as `f32` bits.
+    line_height: u32,
+}
+
+/// The key a run is cached under. Callers pass already-scaled sizes, so both
+/// the frame's lookup and the placement pass derive the same key from the same
+/// numbers.
+pub(super) fn text_key(
+    text: &str,
+    font_size: f32,
+    weight: FontWeight,
+    family: FontFamily,
+    italic: bool,
+    max_width: f32,
+    line_height: f32,
+) -> TextKey {
+    TextKey {
+        text: text.to_string(),
+        font_size: font_size.to_bits(),
+        weight,
+        mono: family == FontFamily::Mono,
+        italic,
+        max_width: max_width.to_bits(),
+        line_height: line_height.to_bits(),
+    }
+}
+
+/// The atlas without its texture: which run sits where, and the coverage those
+/// runs rasterized to. Kept apart from the wgpu objects so the packing and the
+/// pixels can be read back in a test, with no device.
+pub(super) struct AtlasStore {
+    /// One byte of coverage per texel, row-major, [`ATLAS_SIZE`] per row: the
+    /// exact bytes the texture holds.
+    pixels: Vec<u8>,
     entries: HashMap<TextKey, AtlasEntry>,
     cursor_x: u32,
     cursor_y: u32,
     row_height: u32,
 }
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-struct TextKey {    text: String,
-    font_size: u32,
-    weight: FontWeight,
-    mono: bool,
-    italic: bool,
-    max_width: u32,
-    /// Line-height multiplier (e.g. 1.2) encoded ×100 so the key stays hashable.
-    line_height: u32,
+impl AtlasStore {
+    pub(super) fn new() -> Self {
+        Self {
+            pixels: vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize],
+            entries: HashMap::new(),
+            cursor_x: PADDING,
+            cursor_y: PADDING,
+            row_height: 0,
+        }
+    }
+
+    pub(super) fn contains(&self, key: &TextKey) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    pub(super) fn entry(&self, key: &TextKey) -> Option<&AtlasEntry> {
+        self.entries.get(key)
+    }
+
+    pub(super) fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    /// Rasterize and place one run, or report why it could not be placed.
+    pub(super) fn place(&mut self, key: &TextKey) -> Placement {
+        let Some((entry, data, width, height)) = rasterize_text(
+            &key.text,
+            f32::from_bits(key.font_size),
+            key.weight,
+            key.mono,
+            key.italic,
+            f32::from_bits(key.max_width),
+            f32::from_bits(key.line_height),
+        ) else {
+            // Nothing to draw: no entry, and no reason to retry.
+            return Placement::Empty;
+        };
+
+        // A run wider or taller than the atlas can never be placed, however
+        // empty it is. Callers with an unbounded wrap width (terminal lines,
+        // code blocks) produce those; clamping them into the texture would
+        // stretch or crop them, so they are skipped instead.
+        if width + PADDING > ATLAS_SIZE || height + PADDING > ATLAS_SIZE {
+            return Placement::TooLarge;
+        }
+
+        let Some(region) = self.next_region(width, height) else {
+            return Placement::Full;
+        };
+
+        self.entries.insert(
+            key.clone(),
+            AtlasEntry {
+                uv_origin: [
+                    region.x as f32 / ATLAS_SIZE as f32,
+                    region.y as f32 / ATLAS_SIZE as f32,
+                ],
+                uv_size: [
+                    width as f32 / ATLAS_SIZE as f32,
+                    height as f32 / ATLAS_SIZE as f32,
+                ],
+                size: [width as f32, height as f32],
+                offset: entry.offset,
+            },
+        );
+        self.blit(region, width, &data);
+        Placement::Written { region, data }
+    }
+
+    /// The next free region that fits a run of `width x height`, advancing the
+    /// packing cursor past it. Every region keeps [`PADDING`] texels clear on
+    /// all four sides, and the cursor only moves once a region is known to fit.
+    fn next_region(&mut self, width: u32, height: u32) -> Option<Region> {
+        let mut x = self.cursor_x;
+        let mut y = self.cursor_y;
+        let mut row_height = self.row_height;
+        if x + width + PADDING > ATLAS_SIZE {
+            x = PADDING;
+            y += row_height + PADDING;
+            row_height = 0;
+        }
+        if y + height + PADDING > ATLAS_SIZE {
+            return None;
+        }
+        self.cursor_x = x + width + PADDING;
+        self.cursor_y = y;
+        self.row_height = row_height.max(height);
+        Some(Region {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    /// Copy a rasterized run's bytes into the region they were placed in. Every
+    /// pixel a placement owns is written, so no part of the atlas keeps the ink
+    /// of an earlier pass.
+    fn blit(&mut self, region: Region, src_stride: u32, data: &[u8]) {
+        for row in 0..region.height {
+            let src = (row * src_stride) as usize;
+            let dst = ((region.y + row) * ATLAS_SIZE + region.x) as usize;
+            self.pixels[dst..dst + region.width as usize]
+                .copy_from_slice(&data[src..src + region.width as usize]);
+        }
+    }
+
+    /// Empty the atlas: entries are dropped, the cursor goes back to the top,
+    /// and the pixels are wiped. The wipe is what keeps the gutter around a
+    /// re-placed run clear — without it the previous pass's ink stays under the
+    /// new runs' edges, where the sampler's filter reaches it.
+    pub(super) fn reset(&mut self) {
+        self.entries.clear();
+        self.cursor_x = PADDING;
+        self.cursor_y = PADDING;
+        self.row_height = 0;
+        self.pixels.fill(0);
+    }
 }
 
 impl TextAtlas {
@@ -136,11 +312,7 @@ impl TextAtlas {
             sampler,
             bind_group,
             bind_group_layout,
-            texture_data,
-            entries: HashMap::new(),
-            cursor_x: PADDING,
-            cursor_y: PADDING,
-            row_height: 0,
+            store: AtlasStore::new(),
         }
     }
 
@@ -181,15 +353,15 @@ impl TextAtlas {
                     ..
                 } = command
                 {
-                    Some(TextKey {
-                        text: text.clone(),
-                        font_size: (*font_size * scale).round() as u32,
-                        weight: *font_weight,
-                        mono: *font_family == FontFamily::Mono,
-                        italic: *font_italic,
-                        max_width: (*max_width * scale).round() as u32,
-                        line_height: (*line_height * 100.0).round() as u32,
-                    })
+                    Some(text_key(
+                        text,
+                        *font_size * scale,
+                        *font_weight,
+                        *font_family,
+                        *font_italic,
+                        *max_width * scale,
+                        *line_height,
+                    ))
                 } else {
                     None
                 }
@@ -204,16 +376,21 @@ impl TextAtlas {
         let mut index = 0;
         while index < keys.len() {
             let key = &keys[index];
-            if self.entries.contains_key(key) {
+            if self.store.contains(key) {
                 index += 1;
                 continue;
             }
-            match self.place(queue, key) {
-                Placement::Done | Placement::TooLarge => index += 1,
+            match self.store.place(key) {
+                Placement::Written { region, data } => {
+                    self.upload(queue, region, &data);
+                    index += 1;
+                }
+                Placement::Empty | Placement::TooLarge => index += 1,
                 Placement::Full if !restarted => {
                     // Everything placed so far in this frame was dropped with
                     // the atlas, so the pass starts over on the empty one.
-                    self.reset();
+                    self.store.reset();
+                    self.clear_texture(queue);
                     restarted = true;
                     index = 0;
                 }
@@ -225,113 +402,56 @@ impl TextAtlas {
         }
     }
 
-    /// Rasterize and place one run, or report why it could not be placed.
-    fn place(&mut self, queue: &wgpu::Queue, key: &TextKey) -> Placement {
-        let Some((raster, data, width, height)) = rasterize_text(
-            &key.text,
-            key.font_size,
-            key.weight,
-            key.mono,
-            key.italic,
-            key.max_width as f32,
-            key.line_height as f32 / 100.0,
-        ) else {
-            // Nothing to draw (an empty run): no entry, and no reason to retry.
-            return Placement::Done;
-        };
-
-        // A run wider or taller than the atlas can never be placed, however
-        // empty it is. Callers with an unbounded wrap width (terminal lines,
-        // code blocks) produce those; clamping them into the texture would
-        // stretch or crop them, so they are skipped instead.
-        if width + PADDING > ATLAS_SIZE || height + PADDING > ATLAS_SIZE {
-            return Placement::TooLarge;
-        }
-
-        if self.cursor_x + width + PADDING > ATLAS_SIZE {
-            self.cursor_x = PADDING;
-            self.cursor_y += self.row_height + PADDING;
-            self.row_height = 0;
-        }
-        if self.cursor_y + height + PADDING > ATLAS_SIZE {
-            return Placement::Full;
-        }
-
-        let x = self.cursor_x;
-        let y = self.cursor_y;
-        self.cursor_x += width + PADDING;
-        self.row_height = self.row_height.max(height);
-
-        let uv_origin = [x as f32 / ATLAS_SIZE as f32, y as f32 / ATLAS_SIZE as f32];
-        let uv_size = [
-            width as f32 / ATLAS_SIZE as f32,
-            height as f32 / ATLAS_SIZE as f32,
-        ];
-        let entry = AtlasEntry {
-            uv_origin,
-            uv_size,
-            size: [width as f32, height as f32],
-            offset: raster.offset,
-        };
-        self.entries.insert(key.clone(), entry);
-
-        self.write_region(queue, x, y, width, height, &data);
-        Placement::Done
-    }
-
-    /// Empty the atlas and start filling it from the top again. Entries are
-    /// dropped with it, so the next pass re-rasterizes what the frame draws;
-    /// stale pixels are never sampled, because a lookup without an entry draws
-    /// nothing.
-    fn reset(&mut self) {
-        self.entries.clear();
-        self.cursor_x = PADDING;
-        self.cursor_y = PADDING;
-        self.row_height = 0;
-    }
-
-    fn write_region(
-        &mut self,
-        queue: &wgpu::Queue,
-        x: u32,
-        y: u32,
-        width: u32,
-        height: u32,
-        data: &[u8],
-    ) {
-        // A single text run can be wider (or taller) than the atlas's usable
-        // space when the caller passes an unbounded max_width (e.g. terminal
-        // lines). The placement check above only wraps to a new row and does
-        // not shrink such a run, so clamp the copy extent to the atlas bounds
-        // here — writing past ATLAS_SIZE makes wgpu validate the copy as
-        // overrunning the destination texture and panic.
-        let write_width = (ATLAS_SIZE.saturating_sub(x)).min(width);
-        let write_height = (ATLAS_SIZE.saturating_sub(y)).min(height);
-        if write_width == 0 || write_height == 0 {
-            return;
-        }
-        for row in 0..write_height {
-            let src_offset = (row * width) as usize;
-            let dst_offset = ((y + row) * ATLAS_SIZE + x) as usize;
-            self.texture_data[dst_offset..dst_offset + write_width as usize]
-                .copy_from_slice(&data[src_offset..src_offset + write_width as usize]);
-        }
+    /// Upload one placed run's coverage into the region it was given. The
+    /// region is inside the atlas (the store only hands out regions that fit),
+    /// so the copy needs no clamp: writing past `ATLAS_SIZE` would make wgpu
+    /// reject the copy as overrunning the texture.
+    fn upload(&self, queue: &wgpu::Queue, region: Region, data: &[u8]) {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d { x, y, z: 0 },
+                origin: wgpu::Origin3d {
+                    x: region.x,
+                    y: region.y,
+                    z: 0,
+                },
                 aspect: wgpu::TextureAspect::All,
             },
             data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(width),
-                rows_per_image: Some(write_height),
+                bytes_per_row: Some(region.width),
+                rows_per_image: Some(region.height),
             },
             wgpu::Extent3d {
-                width: write_width,
-                height: write_height,
+                width: region.width,
+                height: region.height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    /// Write the whole (wiped) atlas back to the texture. A reset only touches
+    /// the pixels the next pass places, so the rest of the texture has to be
+    /// cleared in one go or the previous pass's ink stays under the new runs.
+    fn clear_texture(&self, queue: &wgpu::Queue) {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            self.store.pixels(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(ATLAS_SIZE),
+                rows_per_image: Some(ATLAS_SIZE),
+            },
+            wgpu::Extent3d {
+                width: ATLAS_SIZE,
+                height: ATLAS_SIZE,
                 depth_or_array_layers: 1,
             },
         );
@@ -366,15 +486,14 @@ impl TextAtlas {
         max_width: f32,
         line_height: f32,
     ) -> Option<&AtlasEntry> {
-        let key = TextKey {
-            text: text.to_string(),
-            font_size: font_size.round() as u32,
+        self.store.entry(&text_key(
+            text,
+            font_size,
             weight,
-            mono: family == FontFamily::Mono,
+            family,
             italic,
-            max_width: max_width.round() as u32,
-            line_height: (line_height * 100.0).round() as u32,
-        };
-        self.entries.get(&key)
+            max_width,
+            line_height,
+        ))
     }
 }

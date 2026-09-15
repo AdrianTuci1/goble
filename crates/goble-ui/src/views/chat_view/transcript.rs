@@ -1,18 +1,26 @@
 use std::sync::Arc;
 
 use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind};
+use crate::elements::terminal_block::{terminal_filter_bar, TerminalFilter};
 use crate::elements::{
-    filter_option_labels, slash_menu_open, AppContext, AskUserCard, Axis, Button, ButtonVariant,
-    ChatComposer, ChatMessageBubble, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    Empty, Expanded, Fill, Flex, FrameView, HoverRow, Icon, MainAxisAlignment, MainAxisSize,
-    Padding, PopupMenu, PopupMenuItem, PopupMenuPosition, QuickActionButton, Scrollable,
-    ShortcutHints, SlashMenu, Stack, Text, Tooltip, TooltipPosition, TopbarButton,
-    TurnStatusFooter,
+    slash_menu_open, AppContext, AskUserCard, Axis, Button, ButtonVariant, ChatComposer,
+    ChatMessageBubble, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty,
+    Expanded, Fill, Flex, FrameView, HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu,
+    Padding, QuickActionButton, Scrollable, ShortcutHints, SlashMenu, Stack, Text, Tooltip,
+    TooltipPosition, TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
 
 use super::ChatView;
+
+/// How much lower the instruction strip sits than the block's own inset put
+/// it: the strip belongs to the input under it, and the caps read as that
+/// input's row only when they hug the separator over it.
+pub(super) const STRIP_RISE: f32 = 6.0;
+
+/// What the whole-transcript filter bar's field says when it is empty.
+const TRANSCRIPT_FILTER_PLACEHOLDER: &str = "Filter terminal output";
 
 /// Group a token count in threes, so a long conversation's totals stay
 /// readable (`1234567` reads as `1,234,567`).
@@ -50,6 +58,35 @@ impl ChatView {
         if let Some(cb) = self.on_composer_slash_accept.clone() {
             menu = menu.with_on_accept(move |index| (cb.borrow_mut())(index));
         }
+        Some(menu.finish())
+    }
+
+    /// The models the pane can run, when the composer's model control opened
+    /// them: the same band the command list is drawn in, in the same slot over
+    /// the input, so the two read as one list that the draft's commands win
+    /// (see [`Self::slash_menu`] and the slot rule in `rebuild`). `None` while
+    /// it is closed, so a closed list takes no space at all.
+    fn model_menu(&self) -> Option<Box<dyn Element>> {
+        if !*self.composer_model_menu_open.borrow() {
+            return None;
+        }
+        let accept = self.on_select_model_item.clone()?;
+        let open = self.composer_model_menu_open.clone();
+        let mut menu = ModelMenu::new(
+            self.composer_model_items.clone(),
+            self.composer_model_index.clone(),
+        )
+        .with_on_accept(move |index| {
+            *open.borrow_mut() = false;
+            (accept.borrow_mut())(index);
+        });
+        // The pointer moves the same selection the arrow keys do (the composer
+        // routes those), so the highlight is the row either one would take.
+        let index = self.composer_model_index.clone();
+        let len = self.composer_model_items.len();
+        menu = menu.with_on_move(move |row| {
+            *index.borrow_mut() = row.min(len.saturating_sub(1));
+        });
         Some(menu.finish())
     }
 
@@ -263,53 +300,47 @@ impl ChatView {
         })
     }
 
-    /// The whole-transcript filter bar (filter button + tray). Returns `None`
-    /// when no global filter is wired up.
+    /// How many of the transcript's terminal lines the wired whole-transcript
+    /// filter keeps, and how many there are — what its bar counts. A fragment
+    /// that draws no lines contributes nothing.
+    fn terminal_line_counts(&self, filter: &TerminalFilter) -> (usize, usize) {
+        let mut matched = 0;
+        let mut total = 0;
+        for message in &self.messages {
+            for fragment in &message.fragments {
+                let ChatFragmentKind::Terminal(data) = &fragment.kind else {
+                    continue;
+                };
+                total += data.lines.len();
+                matched += data
+                    .lines
+                    .iter()
+                    .filter(|line| filter.matches(line.kind, &line.text))
+                    .count();
+            }
+        }
+        (matched, total)
+    }
+
+    /// The whole-transcript filter bar, drawn over the transcript while the
+    /// wired filter is open. `None` when no filter is wired up or the user has
+    /// not raised one, so a closed bar takes no space at all.
     fn build_global_filter_bar(&self, app: &AppContext) -> Option<Box<dyn Element>> {
         let filter = self.global_terminal_filter.clone()?;
-        let selected = *filter.selected.borrow();
-        let muted = ColorToken::Muted;
-        let items = filter_option_labels()
-            .iter()
-            .enumerate()
-            .map(|(i, label)| {
-                let mut item = PopupMenuItem::new(*label);
-                if i == selected {
-                    item = item.selected();
-                }
-                item
-            })
-            .collect::<Vec<_>>();
-        let trigger = TopbarButton::new(
-            Icon::new("sliders")
-                .with_size(14.0)
-                .with_theme_color(muted, app)
-                .finish(),
-        )
-        .with_size(24.0)
-        .with_active(selected != 0)
-        .finish();
-        let filter_for_select = filter.clone();
-        let menu = PopupMenu::new(trigger, items)
-            .with_open(filter.open.clone())
-            .with_position(PopupMenuPosition::Below)
-            .with_on_select(move |idx| *filter_for_select.selected.borrow_mut() = idx)
-            .finish();
-        let row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(8.0)
-            .with_child(
-                Text::new("Filter terminal output")
-                    .with_theme_color(muted, app)
-                    .with_font_size(12.0)
-                    .finish(),
-            )
-            .with_child(menu)
-            .finish();
+        if !filter.is_open() {
+            return None;
+        }
+        let (matched, total) = self.terminal_line_counts(&filter);
         Some(
-            Container::new(row)
-                .with_padding(EdgeInsets::new(0.0, 0.0, 4.0, 0.0))
-                .finish(),
+            Container::new(terminal_filter_bar(
+                &filter,
+                TRANSCRIPT_FILTER_PLACEHOLDER,
+                matched,
+                total,
+                app,
+            ))
+            .with_padding(EdgeInsets::new(0.0, 0.0, 4.0, 0.0))
+            .finish(),
         )
     }
 
@@ -598,6 +629,9 @@ impl ChatView {
         let on_composer_change = self.on_composer_change.clone();
         let mut composer = ChatComposer::new()
             .with_value(current_value)
+            // The files the attach control picked: one chip per file, over the
+            // editor they belong to.
+            .with_attachments(self.composer_attachments.clone())
             .with_focused(self.composer_focused)
             .with_caret(self.composer_caret.clone())
             .with_stop_visible(self.composer_stop_visible)
@@ -670,11 +704,13 @@ impl ChatView {
                 composer.with_on_decision(move |id, decision| (cb.borrow_mut())(id, decision));
         }
         if let Some(cb) = self.on_select_model_item.clone() {
-            composer = composer.with_model_menu(
-                self.composer_model_items.clone(),
-                self.composer_model_menu_open.clone(),
-                move |idx| (cb.borrow_mut())(idx),
-            );
+            composer = composer
+                .with_model_menu(
+                    self.composer_model_items.clone(),
+                    self.composer_model_menu_open.clone(),
+                    move |idx| (cb.borrow_mut())(idx),
+                )
+                .with_model_menu_index(self.composer_model_index.clone());
         }
         if let Some(cb) = self.on_select_harness_item.clone() {
             composer = composer.with_harness_menu(
@@ -689,6 +725,7 @@ impl ChatView {
                 self.composer_dir_menu_open.clone(),
                 move |idx| (cb.borrow_mut())(idx),
             );
+            composer = composer.with_dir_menu_scroll(self.composer_dir_menu_scroll.clone());
         }
         if let Some(cb) = self.on_select_branch_item.clone() {
             composer = composer.with_branch_menu(
@@ -739,11 +776,13 @@ impl ChatView {
         //
         // The pane's instructions are the strip over the separator, the last row
         // of the content: they name the gestures the input under them answers,
-        // and warp-new keeps them off the input's own rows. The build draws the
-        // slash menu over the whole input block — above the strip — the way
-        // grok-build puts it over the prompt, not over the pane.
+        // and warp-new keeps them off the input's own rows. The build draws both
+        // bands — the draft's commands and the models the model control opened —
+        // over the whole input block, above the strip: one slot, which the
+        // draft's own command list holds while the draft is a command, the way
+        // grok-build puts them over the prompt and not over the pane.
         if self.show_composer {
-            if let Some(menu) = self.slash_menu() {
+            if let Some(menu) = self.slash_menu().or_else(|| self.model_menu()) {
                 column = column.with_child(menu);
             }
             if !self.composer_hints.is_empty() {
@@ -754,8 +793,16 @@ impl ChatView {
                 // row: the gestures belong to the input below them, and the gap
                 // is what reads them as the input's own row rather than as the
                 // conversation's tail.
+                //
+                // The block is pinned to the input under it (the transcript
+                // above it is the flex child that takes the slack), so the caps'
+                // height over the separator is decided by the inset *beneath*
+                // them and not by the gap above: `sm - STRIP_RISE` puts them
+                // six points lower than `sm` alone did, with the block's own
+                // height unchanged.
                 column = column.with_child(
-                    Padding::new(strip, EdgeInsets::new(md, 4.0, md, sm)).finish(),
+                    Padding::new(strip, EdgeInsets::new(md, 4.0 + STRIP_RISE, md, sm - STRIP_RISE))
+                        .finish(),
                 );
             }
             column = column.with_child(Divider::horizontal().finish());

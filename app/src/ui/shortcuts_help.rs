@@ -60,9 +60,10 @@ pub(crate) fn sections() -> Vec<(&'static str, Vec<ShortcutHint>)> {
                 ShortcutHint::new(&["⌘", "Space"], "split right"),
                 ShortcutHint::new(&["⌘", "⇧", "D"], "split down"),
                 ShortcutHint::new(&["⌘", "W"], "close pane"),
-                ShortcutHint::new(&["⌘", "⇧", "W"], "tasks & workflows"),
+                ShortcutHint::new(&["⌘", "⇧", "W"], "workflow runs"),
                 ShortcutHint::new(&["⌘", "←", "→"], "previous / next pane"),
                 ShortcutHint::new(&["⌘", "↑", "↓"], "pane above / below"),
+                ShortcutHint::new(&["⌃", "⇥"], "next / previous space"),
             ],
         ),
         (
@@ -579,7 +580,6 @@ mod tests {
             let mut s = state.borrow_mut();
             s.show_workspace_choice = false;
             s.show_llm_key_banner = false;
-            s.settings_overlay_open = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
             s.task_workflow_open = false;
@@ -677,6 +677,8 @@ mod tests {
             match key.as_str() {
                 "⌘" => modifiers.command = true,
                 "⇧" => modifiers.shift = true,
+                "⌃" => modifiers.ctrl = true,
+                "⇥" => keys.push("Tab".to_string()),
                 "←" => keys.push("ArrowLeft".to_string()),
                 "→" => keys.push("ArrowRight".to_string()),
                 "↑" => keys.push("ArrowUp".to_string()),
@@ -905,14 +907,14 @@ mod tests {
                     assert!(chord(&mut root, &app, &keys[0], modifiers), "⌘W answers");
                     assert_eq!(pane_count(&state), 1, "⌘W closes a pane");
                 }
-                "tasks & workflows" => {
+                "workflow runs" => {
                     assert!(
                         chord(&mut root, &app, &keys[0], modifiers),
                         "⌘⇧W answers"
                     );
                     assert!(
                         state.borrow().task_workflow_open,
-                        "⌘⇧W opens the tasks & workflows overlay"
+                        "⌘⇧W opens the workflow-runs overlay"
                     );
                 }
                 "previous / next pane" | "pane above / below" => {
@@ -949,6 +951,48 @@ mod tests {
                         );
                     }
                 }
+                "next / previous space" => {
+                    // The chord walks the tab strip, so there has to be a second
+                    // tab: a second space, with the first one on screen.
+                    {
+                        let mut s = state.borrow_mut();
+                        let id = 9;
+                        s.spaces.push(crate::ui::Space::unnamed(Pane::Leaf {
+                            id,
+                            kind: crate::ui::PaneKind::Terminal,
+                        }));
+                        s.active_space = 0;
+                        s.active_pane_id = s.spaces[0].root.first_leaf_id();
+                    }
+                    assert_eq!(keys, vec!["Tab"], "the row's key is Tab");
+                    assert!(
+                        chord(&mut root, &app, &keys[0], modifiers),
+                        "Ctrl+Tab answers"
+                    );
+                    assert_eq!(state.borrow().active_space, 1, "Ctrl+Tab moves a tab on");
+                    let backwards = ModifiersState {
+                        shift: true,
+                        ..modifiers
+                    };
+                    assert!(
+                        chord(&mut root, &app, &keys[0], backwards),
+                        "Ctrl+Shift+Tab answers"
+                    );
+                    assert_eq!(
+                        state.borrow().active_space,
+                        0,
+                        "Ctrl+Shift+Tab moves a tab back"
+                    );
+                    assert!(
+                        chord(&mut root, &app, &keys[0], backwards),
+                        "Ctrl+Shift+Tab answers at the first tab too"
+                    );
+                    assert_eq!(
+                        state.borrow().active_space,
+                        1,
+                        "Ctrl+Shift+Tab wraps to the last tab"
+                    );
+                }
                 other => panic!("the panel names {other:?}: prove it or drop the row"),
             }
         }
@@ -978,9 +1022,10 @@ mod tests {
                 ("⌘ Space".to_string(), "split right".to_string()),
                 ("⌘ ⇧ D".to_string(), "split down".to_string()),
                 ("⌘ W".to_string(), "close pane".to_string()),
-                ("⌘ ⇧ W".to_string(), "tasks & workflows".to_string()),
+                ("⌘ ⇧ W".to_string(), "workflow runs".to_string()),
                 ("⌘ ← →".to_string(), "previous / next pane".to_string()),
                 ("⌘ ↑ ↓".to_string(), "pane above / below".to_string()),
+                ("⌃ ⇥".to_string(), "next / previous space".to_string()),
                 (
                     "↵".to_string(),
                     "send (queues while a turn runs)".to_string()
@@ -1256,7 +1301,7 @@ mod tests {
         let (mut root, state, _dir, app) = open_panel();
 
         // Walk to the end of the table: the list has to scroll to follow.
-        for _ in 0..13 {
+        for _ in 0..14 {
             assert!(chord(&mut root, &app, "ArrowDown", ModifiersState::none()));
         }
         let commands = frame(&mut root, &app);
@@ -1290,7 +1335,7 @@ mod tests {
         clear_filter(&mut root, &app);
         let commands = frame(&mut root, &app);
         let visible = visible_row_count("");
-        assert_eq!(visible, 14, "the whole table is back");
+        assert_eq!(visible, 15, "the whole table is back");
         assert!(state.borrow().shortcuts_help_index < visible);
         let (top, bottom) = the_highlighted_band(&commands, &app);
         let y = label_y(&commands, "command palette");

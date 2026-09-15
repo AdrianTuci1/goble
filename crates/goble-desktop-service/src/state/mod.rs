@@ -13,6 +13,7 @@
 //! here and in [`types`].
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use goble_core::agent::AgentId;
@@ -80,6 +81,15 @@ pub struct DesktopState {
     cluster_identity: Mutex<Option<ClusterIdentity>>,
     thread_store: Arc<ThreadStore>,
     config: parking_lot::Mutex<goble_core::config::GobleConfig>,
+    /// The `config.toml` this state saves to. `None` on a state built with
+    /// [`DesktopState::new`], which has no home of its own: `open_default` pins
+    /// the located home, tests pin a temp file. Nothing resolves the user's real
+    /// home on its own, so a state over a temp store cannot write into it.
+    config_path: Mutex<Option<PathBuf>>,
+    /// The `~/.goble/environment.toml` groups as last read, and why the last
+    /// read failed. The file is the identity of a group; this is only the page's
+    /// last view of it.
+    environment: Mutex<environment::EnvironmentCache>,
     /// The daemon core (embedded): owns the harness registry and execution
     /// ledger. DesktopState is the composition root for the embedded daemon, so
     /// it seeds the registry and drives the daemon instead of constructing a

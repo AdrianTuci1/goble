@@ -422,14 +422,19 @@ fn agent_header_3_dots_opens_menu() {
     assert!(*open.borrow(), "3-dots menu should open after clicking it");
 }
 
-/// Mount a `ChatComposer` that carries a `PopupMenu` pill, click the pill's
-/// trigger icon, and assert the app-owned open flag flips.
+/// Mount a `ChatComposer` that carries a menu control, click the control's
+/// trigger, and assert the app-owned open flag flips.
 ///
 /// This is the rich-input regression: the model, directory and branch pills
 /// all share the same dispatch path (`ChatComposer` → `self.root` →
 /// `Padding`), so proving each one opens proves the `Padding`/`PopupMenu`
-/// wiring the topbar swallow bug used to break.
-fn assert_composer_pill_opens(mut composer: Box<dyn Element>, trigger_icon: &str, open: Rc<RefCell<bool>>) {
+/// wiring the topbar swallow bug used to break. A pill is triggered by its
+/// glyph, the model control — which carries no glyph — by its own label.
+fn assert_composer_pill_opens(
+    mut composer: Box<dyn Element>,
+    trigger: fn(&[RenderCommand]) -> Option<(f32, f32)>,
+    open: Rc<RefCell<bool>>,
+) {
     let app = AppContext::default();
 
     // Layout + paint so the trigger's bounds are known.
@@ -443,7 +448,7 @@ fn assert_composer_pill_opens(mut composer: Box<dyn Element>, trigger_icon: &str
     composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
     let cmds = paint_ctx.renderer.take().map(|r| r.commands().to_vec()).unwrap_or_default();
 
-    let (x, y) = icon_center(&cmds, trigger_icon).expect("composer pill trigger icon");
+    let (x, y) = trigger(&cmds).expect("composer pill trigger");
     let mut ctx = EventContext::default();
     let down = DispatchedEvent::MouseDown { position: vec2f(x, y), button: 0 };
     let up = DispatchedEvent::MouseUp { position: vec2f(x, y), button: 0 };
@@ -461,7 +466,7 @@ fn assert_composer_pill_opens(mut composer: Box<dyn Element>, trigger_icon: &str
     composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
     let _ = composer.dispatch_event(&up, &mut ctx, &app);
 
-    assert!(*open.borrow(), "composer pill ({trigger_icon}) should open its dropdown");
+    assert!(*open.borrow(), "composer pill should open its dropdown");
 }
 
 #[test]
@@ -479,7 +484,8 @@ fn composer_model_pill_opens_menu() {
             |_| {},
         )
         .finish();
-    assert_composer_pill_opens(composer, "sparkle", open);
+    // The model control is its label: no glyph, so the label is the trigger.
+    assert_composer_pill_opens(composer, |cmds| text_center(cmds, "gpt-4o"), open);
 }
 
 #[test]
@@ -497,7 +503,7 @@ fn composer_dir_pill_opens_menu() {
             |_| {},
         )
         .finish();
-    assert_composer_pill_opens(composer, "folder", open);
+    assert_composer_pill_opens(composer, |cmds| icon_center(cmds, "folder"), open);
 }
 
 #[test]
@@ -515,7 +521,7 @@ fn composer_branch_pill_opens_menu() {
             |_| {},
         )
         .finish();
-    assert_composer_pill_opens(composer, "git-branch", open);
+    assert_composer_pill_opens(composer, |cmds| icon_center(cmds, "git-branch"), open);
 }
 
 #[test]
@@ -616,7 +622,7 @@ fn the_status_footer_names_the_work_still_running() {
     let state = root.state_rc();
     let s = state.borrow();
     assert!(
-        !s.settings_overlay_open && !s.crons_open && !s.right_sidebar_open,
+        s.settings_pane().is_none() && !s.crons_open && !s.right_sidebar_open,
         "clicking the footer line opens nothing"
     );
 }

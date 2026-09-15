@@ -53,6 +53,16 @@ impl ScrollState {
         (self.content - self.viewport).max(0.0)
     }
 
+    /// How much room the region had at its last layout, along the scroll axis.
+    ///
+    /// A caller that draws only what fits — a file view standing the rest of a
+    /// long body in as spacers — reads the room it has here, since the layout
+    /// that measures it happens after the tree is built. Zero until the region
+    /// has been laid out once.
+    pub fn viewport(&self) -> f32 {
+        self.viewport
+    }
+
     /// Whether the region is currently pinned to the end of its content (a
     /// transcript in follow-the-stream mode).
     pub fn is_pinned(&self) -> bool {

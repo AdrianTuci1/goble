@@ -62,6 +62,14 @@ pub struct TerminalSession {
     osc: VecDeque<OscEvent>,
     /// The last working directory the shell reported (`OSC 7`).
     cwd: Option<String>,
+    /// The report the app has already been offered, so a directory the shell
+    /// said once is never offered as a move twice.
+    cwd_handed: Option<String>,
+    /// Whether a shell of its own was spawned behind this session. A shell
+    /// starts where it is put — by the app, or by itself when the app named no
+    /// directory — so its start is never a move. A session with no shell behind
+    /// it (a failed launch, a screen a test drives) has no start to discount.
+    spawned: bool,
     /// Scratch directory holding this session's integration script; removed on
     /// drop. `None` when the shell has no integration or the file could not be
     /// written.
@@ -119,6 +127,8 @@ impl TerminalSession {
             hooks: VecDeque::new(),
             osc: VecDeque::new(),
             cwd: None,
+            cwd_handed: None,
+            spawned: false,
             integration_dir: None,
             pending_claim: None,
             claim_outcomes: VecDeque::new(),
@@ -127,6 +137,15 @@ impl TerminalSession {
             awaiting: HashMap::new(),
             tool_results: Vec::new(),
         }
+    }
+
+    /// A session around a screen with a shell started behind it, the shape
+    /// [`Self::spawn`] builds: a unit test has no pty to start a shell in.
+    #[cfg(test)]
+    pub(crate) fn started(emulator: Emulator) -> Self {
+        let mut session = Self::with_emulator(emulator);
+        session.spawned = true;
+        session
     }
 
     /// Spawn `$SHELL` (or `/bin/zsh`) in `cwd` and start a background reader.
@@ -191,6 +210,8 @@ impl TerminalSession {
             hooks: VecDeque::new(),
             osc: VecDeque::new(),
             cwd: None,
+            cwd_handed: None,
+            spawned: true,
             integration_dir,
             pending_claim: None,
             claim_outcomes: VecDeque::new(),

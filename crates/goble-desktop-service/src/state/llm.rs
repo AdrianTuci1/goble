@@ -157,6 +157,26 @@ impl DesktopState {
         Ok(intent)
     }
 
+    /// The settings a turn on `model` would actually run with: a `[model.<slug>]`
+    /// entry the config declares carries its own endpoint and key, and
+    /// [`DesktopState::resolve_llm_provider`] uses that entry first, so the
+    /// window must read the same ones. Anything else is the store's
+    /// per-provider setting, exactly as before. `None` when neither has a key.
+    pub fn effective_llm_setting(&self, provider: &str, model: &str) -> Option<LlmSetting> {
+        if let Some((slug, entry)) = self.config().model_for(model) {
+            if let Some(key) = entry.resolved_key() {
+                return Some(LlmSetting {
+                    api_key: key.to_string(),
+                    base_url: entry.base_url.clone(),
+                    model: entry.model_id(slug),
+                    temperature: None,
+                });
+            }
+        }
+        self.get_llm_setting(provider)
+            .filter(|setting| !setting.api_key.trim().is_empty())
+    }
+
     pub fn get_llm_setting(&self, provider: &str) -> Option<LlmSetting> {
         self.store
             .lock()
@@ -243,17 +263,29 @@ impl DesktopState {
 
     /// The model to select by default for a provider: the global config default
     /// when set, otherwise the configured model, otherwise the provider default.
+    ///
+    /// The answer is always a model the app offers — [`DesktopState::available_models`]
+    /// — because a model the config does not declare cannot run: a `[models]
+    /// default` naming one (a leftover from an earlier save, say) would otherwise
+    /// be the label over a tray that does not list it, with no key to reach it.
+    /// The declared catalog decides in that case.
     pub fn default_model(&self, provider: &str) -> String {
         let provider = if provider.is_empty() { "openai" } else { provider };
+        let offered = self.available_models(provider);
         if let Some(default) = self.config_default_model() {
-            return default;
+            if offered.contains(&default) {
+                return default;
+            }
         }
         if let Some(s) = self.get_llm_setting(provider) {
-            if !s.model.is_empty() {
+            if !s.model.is_empty() && offered.contains(&s.model) {
                 return s.model;
             }
         }
-        llm::default_model_for(provider).to_string()
+        offered
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| llm::default_model_for(provider).to_string())
     }
 }
 
@@ -345,6 +377,104 @@ default = "deepseek"
             state.available_models("openai"),
             vec!["deepseek-flash".to_string(), "kimi-k2.7".to_string()]
         );
+    }
+
+    /// A config a user edited by hand: the model entry carries the key, and
+    /// `[models] default` still names a model the file does not declare. This is
+    /// the shape `~/.goble/config.toml` had when the window said "No API key
+    /// configured" over a file that carries one.
+    const HAND_EDITED: &str = r##"
+[model.deepseek]
+model = "deepseek-flash"
+base_url = "https://api.deepseek.com"
+name = "Deepseek-V4-Flash"
+api_key = "sk-02fd2d7e19c04ef0998acefbdbfbdcd4"
+max_completion_tokens = 16384
+context_window = 256000
+
+[models]
+default = "gpt-4o"
+
+[theme]
+dark = true
+accent = "#14b8a6"
+"##;
+
+    /// The key the window reads has to be the key a turn would run with: an
+    /// entry the config declares carries its own `api_key`, and the notice band
+    /// must not tell the user to configure what they already configured by hand.
+    #[test]
+    fn the_key_a_hand_edited_config_carries_is_the_setting_the_app_reads() {
+        let state = state_with(HAND_EDITED);
+
+        let setting = state
+            .effective_llm_setting("openai", "deepseek-flash")
+            .expect("the entry's own key is the setting in force");
+        assert_eq!(setting.api_key, "sk-02fd2d7e19c04ef0998acefbdbfbdcd4");
+        assert_eq!(setting.model, "deepseek-flash");
+        assert_eq!(
+            setting.base_url.as_deref(),
+            Some("https://api.deepseek.com")
+        );
+
+        assert!(
+            state
+                .effective_llm_setting("openai", "not-declared")
+                .is_none(),
+            "a model no entry declares has no setting of its own"
+        );
+    }
+
+    /// The store still answers when the config declares nothing for the model,
+    /// so a provider configured through the dialog is unchanged.
+    #[test]
+    fn the_stores_setting_answers_when_no_entry_declares_the_model() {
+        let state = state_with("[theme]\ndark = false\n");
+        state
+            .set_llm_setting(
+                "openai",
+                "sk-store",
+                Some("https://api.openai.com/v1"),
+                "gpt-4o",
+                Some(0.2),
+            )
+            .expect("save the store setting");
+
+        let setting = state
+            .effective_llm_setting("openai", "gpt-4o")
+            .expect("the store's setting is the one in force");
+        assert_eq!(setting.api_key, "sk-store");
+        assert_eq!(setting.temperature, Some(0.2));
+    }
+
+    /// The model the window starts on has to be one it can offer: a `[models]
+    /// default` naming a model no entry declares cannot run, so the catalog the
+    /// config declares decides instead. The tray and the label then agree.
+    #[test]
+    fn the_default_model_is_one_the_configured_catalog_offers() {
+        let state = state_with(HAND_EDITED);
+
+        assert_eq!(state.config_default_model().as_deref(), Some("gpt-4o"));
+        assert_eq!(
+            state.default_model("openai"),
+            "deepseek-flash",
+            "the only model the file declares is the one it starts on"
+        );
+        assert!(
+            state
+                .available_models("openai")
+                .contains(&state.default_model("openai")),
+            "and the label is a row of the tray"
+        );
+    }
+
+    /// A declared default keeps winning: the rule above is a fallback for a
+    /// default the file does not declare, not a demotion of the declared one.
+    #[test]
+    fn a_declared_default_still_wins_over_the_rest_of_the_catalog() {
+        let state = state_with(CONFIGURED);
+
+        assert_eq!(state.default_model("openai"), "deepseek-flash");
     }
 
     #[test]

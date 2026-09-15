@@ -42,8 +42,24 @@ impl UiState {
         }
         self.settings_vault_unlocked = desktop.is_vault_unlocked();
         self.vim_mode = desktop.get_vim_mode();
-        if let Some(s) = desktop.get_llm_setting("openai") {
-            self.settings_llm_provider = "openai".to_string();
+        // The models are what the key is resolved against, so they come first.
+        self.refresh_llm_models(desktop);
+        // The setting in force is the one a turn would run with, model and all:
+        // a `[model.<slug>]` entry in `~/.goble/config.toml` carries its own
+        // `api_key`, and reading only the store's per-provider row here told a
+        // user who had set a key in the file to go and configure a key.
+        let provider = if self.settings_llm_provider.trim().is_empty() {
+            "openai".to_string()
+        } else {
+            self.settings_llm_provider.clone()
+        };
+        let model = if self.selected_model.trim().is_empty() {
+            self.settings_llm_model.clone()
+        } else {
+            self.selected_model.clone()
+        };
+        if let Some(s) = desktop.effective_llm_setting(&provider, &model) {
+            self.settings_llm_provider = provider;
             self.settings_llm_model = s.model;
             self.settings_llm_api_key = s.api_key;
             self.settings_llm_base_url = s.base_url.unwrap_or_default();

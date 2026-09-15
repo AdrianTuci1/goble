@@ -43,6 +43,65 @@ fn save_key(actions: &UiActions, api_key: &str) {
     );
 }
 
+/// A `~/.goble/config.toml` a user edited by hand: the model entry carries the
+/// key, and `[models] default` still names a model the file does not declare.
+/// The key is a placeholder — nothing here reaches a provider.
+const HAND_EDITED: &str = r##"
+[model.deepseek]
+model = "deepseek-flash"
+base_url = "https://api.deepseek.com"
+name = "Deepseek-V4-Flash"
+api_key = "sk-hand-edited"
+max_completion_tokens = 16384
+context_window = 256000
+
+[models]
+default = "gpt-4o"
+
+[theme]
+dark = true
+accent = "#14b8a6"
+"##;
+
+/// A key the user set by hand in the config file is a configured key. The window
+/// reads the setting a turn would actually run with — the entry's own `api_key` —
+/// so the send path does not tell them to configure what they already configured,
+/// and the model it starts on is one that file declares rather than the
+/// `[models] default` naming a model the file has no entry for.
+#[test]
+fn a_key_set_by_hand_in_the_config_is_a_configured_key() {
+    let (desktop, dir) = common::desktop_state();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, HAND_EDITED).expect("write the config");
+    desktop.set_config_path(&path);
+    desktop.reload_config(&path).expect("load the config");
+
+    let (state, _actions) = build(&desktop);
+    let s = state.borrow();
+
+    assert_eq!(s.settings_llm_api_key, "sk-hand-edited");
+    assert_eq!(s.settings_llm_base_url, "https://api.deepseek.com");
+    assert_eq!(
+        s.settings_llm_model, "deepseek-flash",
+        "the model in force is the one the file declares"
+    );
+    assert_eq!(s.selected_model, "deepseek-flash");
+    assert!(
+        s.models.iter().any(|m| m == &s.selected_model),
+        "and the label is a row of its own tray: {:?}",
+        s.models
+    );
+    assert!(
+        s.can_run_agent_turn(1),
+        "a turn has a key, a provider and a model"
+    );
+    assert_ne!(
+        s.llm_notice_heading(),
+        "No API key configured",
+        "the notice band has nothing to complain about"
+    );
+}
+
 #[test]
 fn first_run_send_message_surfaces_key_banner() {
     let (desktop, _dir) = common::desktop_state();

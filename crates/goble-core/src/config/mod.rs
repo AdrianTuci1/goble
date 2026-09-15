@@ -23,6 +23,50 @@ mod tests;
 
 pub use migrate::{LegacyModelConfig, LlmConfig, ProviderConfig};
 
+/// The commented block `config.toml` opens with, documenting the file's own
+/// shape. It is written by [`GobleConfig::to_toml`] — the one writer for the
+/// file, seeding and saving alike — so a save cannot drop it the way a rewrite
+/// of the body alone did.
+pub const CONFIG_HEADER: &str = "\
+# goble configuration, in grok's own layout: one [model.<slug>] table per model,
+# the model new sessions start on under [models] default, and MCP servers under
+# [mcp_servers.<name>]. Every section and every key is optional, so a file that
+# sets one thing parses, and a file written for grok reads here.
+#
+# A model. The slug is its name in this file, `model` is the id sent to the API
+# (the slug itself when it is left out), `base_url` picks the endpoint, and
+# `api_key` is the credential, written inline. `hidden = true` keeps an entry
+# out of the picker while it stays usable by naming it.
+#
+#   [model.deepseek]
+#   model = \"deepseek-flash\"
+#   name = \"Deepseek-V4-Flash\"
+#   base_url = \"https://api.deepseek.com\"
+#   api_key = \"sk-...\"
+#   max_completion_tokens = 16384
+#   context_window = 256000
+#
+# Which model the app starts on, by the slug of a table above:
+#
+#   [models]
+#   default = \"deepseek\"
+#
+# An MCP server is an HTTP endpoint (`url`) or a stdio command (`command`, with
+# `args`); `enabled` is true unless it says otherwise.
+#
+#   [mcp_servers.penpot]
+#   url = \"http://localhost:4400/mcp\"
+#
+# [theme] is goble's own section and grok has no equivalent: `dark`, `accent`,
+# and the optional `primary` / `secondary`.
+#
+# Sections this app does not model (grok's [cli], [ui], [privacy], the
+# marketplace) are kept exactly as they were written. Editing this file by hand
+# is expected: the app reads it when it starts, and writes it back — this header
+# included — when a setting that lives here changes.
+
+";
+
 /// The top-level sections this schema models. Everything else a file carries
 /// (grok's `[cli]`, `[ui]`, `[marketplace]`, `[privacy]`, …) is kept verbatim in
 /// [`GobleConfig::extra`] so a save does not drop another tool's settings.
@@ -183,10 +227,13 @@ fn default_accent() -> String {
 }
 
 impl GobleConfig {
-    /// Write the new layout. Any `extra` section is appended as it was read, so
-    /// a section goble does not model survives the round-trip.
+    /// Write the file: [`CONFIG_HEADER`] first, then the new layout. Any `extra`
+    /// section is appended as it was read, so a section goble does not model
+    /// survives the round-trip. This is the one writer for `config.toml`, so
+    /// every path — the seeded file and every save — carries the header.
     pub fn to_toml(&self) -> anyhow::Result<String> {
-        toml::to_string(self).map_err(anyhow::Error::from)
+        let body = toml::to_string(self).map_err(anyhow::Error::from)?;
+        Ok(format!("{CONFIG_HEADER}{body}"))
     }
 
     /// Strict parse: a field whose value has the wrong type fails the whole

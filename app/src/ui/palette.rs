@@ -149,6 +149,10 @@ pub fn slash_commands(state: &UiSnapshot, actions: &UiActions) -> Vec<SlashComma
         SlashCommand::new("fullscreen", "Toggle full screen", {
             run(&actions.on_toggle_fullscreen)
         }),
+        SlashCommand::new("maximize", "Expand this pane over the panes space", {
+            let act = actions.on_toggle_pane_maximized.clone();
+            move || (act.borrow_mut())(pane_id)
+        }),
         SlashCommand::new("projects", "Open the project list", run(&actions.on_projects)),
         SlashCommand::new("scheduled", "Open the scheduled tasks", {
             run(&actions.on_open_crons)

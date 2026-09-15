@@ -153,10 +153,10 @@ pub struct UiSnapshot {
     pub auto_approve: bool,
     pub right_sidebar_open: bool,
     /// Whether the agent/window is fullscreen (borderless). Rendered as the
-    /// checked state of the agent header menu's fullscreen item.
+    /// checked state of `/fullscreen` in the palette.
     pub fullscreen: bool,
-    /// App-owned open flag for the agent header's 3-dots menu.
-    pub agent_header_menus: HashMap<u64, Rc<RefCell<bool>>>,
+    /// The pane drawn over the whole panes space, if any.
+    pub maximized_pane: Option<u64>,
     /// Per-terminal-block filter state (open flag + selected filter), keyed by
     /// content; shared with app state so the filter tray persists.
     pub terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,

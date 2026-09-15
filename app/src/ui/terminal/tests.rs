@@ -734,105 +734,69 @@ use std::collections::HashMap;
         );
     }
 
-    /// The pane's topbar tray is an overlay, not another child of the pane's
-    /// column: with the dots open, the panel must be painted after the shell's
-    /// output so it covers text instead of being covered by it, and it must open
-    /// leftwards from the dots, which sit at the pane's right edge, so the whole
-    /// panel stays inside the window.
+    /// The pane's bar carries one control beside the close X: the expand
+    /// control that grows the pane over the panes space. Nothing opens a tray
+    /// over the shell's output any more, so the shell keeps the pane's surface
+    /// and the bar keeps one control.
     #[test]
-    fn the_panes_tray_paints_over_the_output_and_stays_inside_the_window() {
+    fn the_panes_bar_draws_the_expand_control_and_no_tray() {
         let app = AppContext::default();
         let (mut root, state, _dir) = shell_root();
         {
-            let mut s = state.borrow_mut();
-            // Output under the tray, so "paints over it" is a claim about text.
+            let s = state.borrow_mut();
             let mut emulator = Emulator::new(80, 24);
-            emulator.feed(b"echo painted-under-the-tray\r\npainted-under-the-tray\r\n");
+            emulator.feed(b"echo the-pane-keeps-its-output\r\nthe-pane-keeps-its-output\r\n");
             s.terminal
                 .borrow_mut()
                 .sessions
                 .insert(1, TerminalSession::with_emulator(emulator));
-            // The dots' open flag is app-owned state; a click on the trigger
-            // flips it, so opening it here is what that click leaves behind.
-            s.agent_header_menus.insert(1, Rc::new(RefCell::new(true)));
         }
 
         let window = vec2f(1024.0, 768.0);
         let commands = render_element(&mut root, window, &app);
 
-        // The panel's own surface: the raised background the popup paints. The
-        // header band uses `Surface`, so this rect is the panel's.
-        let raised = app.theme.color(goble_ui::theme::ColorToken::SurfaceRaised);
-        let (panel_index, panel) = commands
-            .iter()
-            .enumerate()
-            .find_map(|(index, command)| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == raised && rect.height() > 100.0 =>
-                {
-                    Some((index, *rect))
-                }
-                _ => None,
-            })
-            .expect("the open tray paints its panel");
-        // The shell's output is on screen as the grid's per-glyph runs, so a
-        // panel painted after the last of them covers text, not just background.
-        let grid_glyphs: Vec<&String> = commands
+        // The shell's output is on screen as the grid's per-glyph runs.
+        let painted: String = commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } if text.chars().count() == 1 => Some(text),
+                RenderCommand::DrawText { text, .. } if text.chars().count() == 1 => Some(text.as_str()),
                 _ => None,
             })
             .collect();
-        let painted: String = grid_glyphs.iter().map(|text| text.as_str()).collect();
         assert!(
-            painted.contains("painted-under-the-tray"),
+            painted.contains("the-pane-keeps-its-output"),
             "the pane paints the shell's output: {painted:?}"
         );
-        let output_index = commands
-                .iter()
-                .rposition(|command| {
-                    matches!(command, RenderCommand::DrawText { text, .. } if text.chars().count() == 1)
-                })
-                .expect("the pane paints the shell's output");
-        let bar_index = commands
+
+        let icons: Vec<&String> = commands
             .iter()
-            .position(|command| {
-                matches!(
-                    command,
-                    RenderCommand::DrawText { text, .. } if text == ChatComposer::new().placeholder()
-                )
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, .. } => Some(name),
+                _ => None,
             })
-            .expect("the pane paints its rich input");
-        let tray_text_index = commands
-                .iter()
-                .position(|command| {
-                    matches!(command, RenderCommand::DrawText { text, .. } if text == "Clear transcript")
-                })
-                .expect("the open tray paints its items");
+            .collect();
         assert!(
-                panel_index > output_index && panel_index > bar_index,
-                "the tray paints after the pane's own content: panel {panel_index}, output {output_index}, bar {bar_index}"
-            );
+            icons.iter().any(|name| *name == "maximize-01"),
+            "the pane's bar draws the expand control: {icons:?}"
+        );
         assert!(
-            panel_index < tray_text_index,
-            "the panel's items paint on its own surface: panel {panel_index}, items {tray_text_index}"
+            !icons.iter().any(|name| *name == "dots-horizontal"),
+            "and no tray trigger: {icons:?}"
         );
 
-        // Leftwards from the dots, which sit at the pane's right edge: the panel
-        // stops short of the window's right edge and stays inside the pane.
-        assert!(
-            panel.min_x() >= crate::ui::SIDEBAR_WIDTH,
-            "the tray opened leftwards into the pane: {panel:?}"
-        );
-        assert!(
-            panel.max_x() <= window.x - 32.0 && panel.max_y() <= window.y,
-            "the tray stops short of the window's right edge: {panel:?}"
-        );
-        assert!(
-            panel.min_y() >= 0.0,
-            "the tray is inside the window: {panel:?}"
-        );
+        let drawn: Vec<&String> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        for gone in ["Copy", "Restart", "Rename", "Clear transcript", "Fullscreen"] {
+            assert!(
+                !drawn.iter().any(|text| *text == gone),
+                "the tray label {gone} is not drawn over the output: {drawn:?}"
+            );
+        }
     }
 
     /// R5: the bar is the pane's only typing surface. An active shell pane hands

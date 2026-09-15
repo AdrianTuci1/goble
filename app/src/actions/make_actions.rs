@@ -136,6 +136,7 @@ pub fn make_actions(
     let on_shortcuts_help_move = Rc::clone(&state);
     let on_toggle_right_sidebar = Rc::clone(&state);
     let on_toggle_fullscreen = Rc::clone(&state);
+    let on_toggle_pane_maximized = Rc::clone(&state);
     let on_clear_transcript = Rc::clone(&state);
     let on_cron_create = Rc::clone(&state);
     let on_cron_delete = Rc::clone(&state);
@@ -767,15 +768,7 @@ pub fn make_actions(
             #[cfg(not(target_os = "macos"))]
             log::info!("copy terminal block: {text}");
         })),
-        on_restart: Rc::new(RefCell::new(move || {
-            log::info!("restart agent pressed");
-        })),
-        // Agent-header 3-dots menu: rename the current agent/conversation. The
-        // store rename is not wired yet; log so the menu item is not a dead end.
-        on_rename_agent: Rc::new(RefCell::new(move || {
-            log::info!("rename agent pressed (coming soon)");
-        })),
-        // Agent-header 3-dots menu: clear the active pane's in-memory transcript
+        // Clear the active pane's in-memory transcript
         // (messages + suspended ask + queued prompt). The backend store is left
         // intact so the conversation can be recovered by restarting the session.
         on_clear_transcript: Rc::new(RefCell::new(move || {
@@ -1400,13 +1393,37 @@ pub fn make_actions(
             let mut state = on_toggle_right_sidebar.borrow_mut();
             state.right_sidebar_open = !state.right_sidebar_open;
         })),
-        // Agent-header 3-dots menu: toggle the agent/window borderless fullscreen.
-        // The fullscreen flag is app-owned so the menu's checked state survives
-        // the per-frame rebuild; the platform window follows via `window_control`.
+        // Toggle the agent/window borderless fullscreen. The fullscreen flag is
+        // app-owned so it survives the per-frame rebuild; the platform window
+        // follows via `window_control`.
         on_toggle_fullscreen: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_fullscreen.borrow_mut();
             state.fullscreen = !state.fullscreen;
             window_control.set_fullscreen(state.fullscreen);
+        })),
+        // The pane header's expand control: one pane at a time is drawn over the
+        // whole panes space. A second press on the same pane puts the tree back,
+        // so the pane returns to the place it had — the layout is untouched.
+        on_toggle_pane_maximized: Rc::new(RefCell::new(move |pane_id: u64| {
+            let mut state = on_toggle_pane_maximized.borrow_mut();
+            let retract = state.maximized_pane == Some(pane_id);
+            // A pane has nothing to expand over while its space holds one: the
+            // tree already is that pane. warp-new's toggle refuses the same case
+            // (`pane_count() > 1`). Taking the expansion back is never refused,
+            // so a pane left expanded by an edit that removed its neighbour
+            // still has a way out.
+            let expandable = state
+                .spaces
+                .get(state.active_space)
+                .is_some_and(|space| space.root.leaf_count() > 1);
+            if !retract && !expandable {
+                return;
+            }
+            // The pane that takes the space is the pane the app works in, so the
+            // expansion moves the focus with it.
+            state.focus_pane(pane_id);
+            state.maximized_pane = if retract { None } else { Some(pane_id) };
+            state.sync_active_view();
         })),
         on_cron_create: Rc::new(RefCell::new(move || {
             let mut state = on_cron_create.borrow_mut();
@@ -1541,6 +1558,11 @@ pub fn make_actions(
             // A child view open in the closed pane goes with it: the next pane to
             // take this id must not inherit a stranger's transcript.
             state.sub_agent_views.remove(&active_id);
+            // An expanded pane that is closed gives the space back: the id is
+            // dropped with the pane, so nothing is left expanded by name.
+            if state.maximized_pane == Some(active_id) {
+                state.maximized_pane = None;
+            }
             // Drop any terminal session (killing its shell) + input mirror.
             state.terminal.borrow_mut().drop_pane(active_id);
             if let Some(next) = next {
@@ -1816,7 +1838,7 @@ pub fn make_actions(
         })),
         on_pane_activate: Rc::new(RefCell::new(move |id: u64| {
             let mut state = on_pane_activate.borrow_mut();
-            state.active_pane_id = id;
+            state.focus_pane(id);
             state.sync_active_view();
             if let Some(desktop) = &desktop_pane_activate {
                 state.refresh_messages(desktop);
@@ -1835,7 +1857,7 @@ pub fn make_actions(
                 return;
             };
             if let Some(next) = space.navigate(state.active_pane_id, dir) {
-                state.active_pane_id = next;
+                state.focus_pane(next);
                 state.sync_active_view();
                 if let Some(desktop) = &desktop_pane_navigate {
                     state.refresh_messages(desktop);

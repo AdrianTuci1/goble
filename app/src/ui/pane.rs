@@ -89,6 +89,14 @@ impl Pane {
         }
     }
 
+    /// How many leaf panes (visible panes) the subtree holds.
+    pub fn leaf_count(&self) -> usize {
+        match self {
+            Pane::Leaf { .. } => 1,
+            Pane::Split { first, second, .. } => first.leaf_count() + second.leaf_count(),
+        }
+    }
+
     /// Every file view in this subtree as `(pane id, path)`, in traversal order.
     /// What the surfaces that read the machine (the frame's file cache) look at.
     pub fn file_leaves(&self, out: &mut Vec<(u64, String)>) {

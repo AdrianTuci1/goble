@@ -1496,13 +1496,13 @@ fn a_pane_dragged_onto_the_tab_strip_becomes_its_own_tab() {
 
     // The handle is the pane's own header: the top band of the pane, where the
     // header's controls sit — never the body, whose press belongs to the editor.
-    let (dots_x, header_y) =
-        topmost_icon_center(&commands, "dots-horizontal").expect("the pane header's menu control");
+    let (control_x, header_y) =
+        topmost_icon_center(&commands, "maximize-01").expect("the pane header's expand control");
     assert!(
         header_y > topbar_height,
         "the handle is the pane's header, below the toolbar (y={header_y})"
     );
-    let press_at = vec2f(dots_x - 60.0, header_y);
+    let press_at = vec2f(control_x - 60.0, header_y);
     assert!(
         send(
             &mut root,
@@ -1621,9 +1621,9 @@ fn a_pane_lifted_onto_the_strip_is_dropped_off_it_with_no_change() {
     let app = AppContext::default();
     let (mut root, state_rc, _desktop, _dir, kept, moved) = split_workspace(&app);
     let commands = frame(&mut root, &app);
-    let (dots_x, header_y) =
-        topmost_icon_center(&commands, "dots-horizontal").expect("the pane header's menu control");
-    let press_at = vec2f(dots_x - 60.0, header_y);
+    let (control_x, header_y) =
+        topmost_icon_center(&commands, "maximize-01").expect("the pane header's expand control");
+    let press_at = vec2f(control_x - 60.0, header_y);
     send(
         &mut root,
         &app,
@@ -1646,7 +1646,7 @@ fn a_pane_lifted_onto_the_strip_is_dropped_off_it_with_no_change() {
         },
     );
     let _ = frame(&mut root, &app);
-    let away = vec2f(dots_x - 60.0, header_y + 200.0);
+    let away = vec2f(control_x - 60.0, header_y + 200.0);
     send(&mut root, &app, DispatchedEvent::MouseMove { position: away });
     let _ = frame(&mut root, &app);
     assert!(send(

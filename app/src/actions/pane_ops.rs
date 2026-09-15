@@ -24,7 +24,7 @@ pub(super) fn split_active_pane(
         if let Some(new_id) =
             space.split_with_kind(state.active_pane_id, dir, &mut state.next_pane_id, kind)
         {
-            state.active_pane_id = new_id;
+            state.focus_pane(new_id);
             ensure_pane_hover(state, new_id);
             state.bind_pane_new_conversation(new_id, desktop.map(|d| d.as_ref()));
             let project_id = media.selected_project_id().to_string();
@@ -67,7 +67,7 @@ pub(super) fn open_file_pane(
         ) else {
             return;
         };
-        state.active_pane_id = new_id;
+        state.focus_pane(new_id);
         ensure_pane_hover(state, new_id);
     }
     state.sync_active_view();

@@ -95,10 +95,11 @@ pub struct UiState {
     /// row ([`UiState::open_sub_agent`]) and left again with Esc
     /// ([`UiState::close_sub_agent_view`]).
     pub sub_agent_views: HashMap<u64, SubAgentChildView>,
-    /// App-owned open flags for each pane's agent-header 3-dots menu, keyed by
-    /// pane id. Per-pane (rather than a single shared flag) so opening the tray
-    /// in one split pane does not open it in the other panes sharing the view.
-    pub agent_header_menus: HashMap<u64, Rc<RefCell<bool>>>,
+    /// The pane drawn over the whole panes space, if any. Lives in app state so
+    /// it survives the per-frame element rebuild; `None` is the tree's own
+    /// layout. A pane id from another space simply does not match, so the
+    /// expansion is per-space without being stored per-space.
+    pub maximized_pane: Option<u64>,
     /// Per-terminal-block filter state (open flag + selected filter), keyed by
     /// the block's content key. Shared with the UI so the filter tray's open
     /// state + selection survive the per-frame element rebuild.

@@ -235,6 +235,23 @@ pub fn build_ui(
         }));
     }
     {
+        // The pane header's expand control, reachable from the keyboard: the
+        // command applies to the active pane, which is the pane the control
+        // belongs to. warp-new carries the same command ("Toggle Maximize
+        // Active Pane") with no default chord of its own.
+        let toggle_maximized = actions.on_toggle_pane_maximized.clone();
+        let pane_id = state.active_pane_id;
+        let close = close_palette.clone();
+        command_list.push(PaletteCommand::new(
+            "Toggle maximize active pane",
+            "",
+            move || {
+                (toggle_maximized.borrow_mut())(pane_id);
+                (close.borrow_mut())();
+            },
+        ));
+    }
+    {
         // The chord takes a direction, so it cannot go through `run`.
         let switch_space = actions.on_switch_space.clone();
         let close = close_palette.clone();

@@ -32,7 +32,19 @@ use super::{Pane, PaneKind, SplitDir, UiActions, UiSnapshot};
 /// an empty chat pane rather than panicking on user-controlled state.
 pub fn build_active_space(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
     match state.spaces.get(state.active_space) {
-        Some(space) => build_pane(app, state, actions, &space.root),
+        Some(space) => {
+            // One pane at a time is drawn over the whole panes space: the leaf
+            // the header's expand control names, instead of the tree. The tree
+            // itself is left alone, so retracting puts the pane back in the
+            // place it had. An id that names no leaf of *this* space (it was
+            // closed, or it belongs to another space) falls through to the tree.
+            if let Some(id) = state.maximized_pane {
+                if let Some(kind) = leaf_kind_of(&space.root, id) {
+                    return build_leaf(app, state, actions, id, kind);
+                }
+            }
+            build_pane(app, state, actions, &space.root)
+        }
         None => {
             let id = 0u64;
             let chat = chat::build_agent_chat(app, state, actions, id, true, None);
@@ -46,6 +58,18 @@ pub fn build_active_space(app: &AppContext, state: &UiSnapshot, actions: &UiActi
                 .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
                 .with_border(app.theme.color(ColorToken::Border).into())
                 .finish()
+        }
+    }
+}
+
+/// The kind of the leaf pane `target` holds in this subtree, or `None` when the
+/// subtree has no such leaf. What the expand control needs: the id names a
+/// pane, and drawing it needs its kind.
+fn leaf_kind_of(pane: &Pane, target: u64) -> Option<PaneKind> {
+    match pane {
+        Pane::Leaf { id, kind } => (*id == target).then(|| kind.clone()),
+        Pane::Split { first, second, .. } => {
+            leaf_kind_of(first, target).or_else(|| leaf_kind_of(second, target))
         }
     }
 }

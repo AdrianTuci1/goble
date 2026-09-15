@@ -52,10 +52,7 @@ pub struct UiActions {
     pub on_copy: Rc<RefCell<dyn FnMut()>>,
     /// Copy a terminal block's text to the clipboard (receives the block text).
     pub on_copy_terminal: Rc<RefCell<dyn FnMut(String)>>,
-    pub on_restart: Rc<RefCell<dyn FnMut()>>,
-    /// Rename the current agent/conversation (agent-header 3-dots menu).
-    pub on_rename_agent: Rc<RefCell<dyn FnMut()>>,
-    /// Clear the active pane's transcript (agent-header 3-dots menu).
+    /// Clear the active pane's transcript (`/clear` in the palette).
     pub on_clear_transcript: Rc<RefCell<dyn FnMut()>>,
     pub on_stop: Rc<RefCell<dyn FnMut()>>,
     /// Enter a sub-agent child's own conversation in `pane_id`, by the child's
@@ -228,6 +225,9 @@ pub struct UiActions {
     /// Toggle the agent/window fullscreen (borderless). Flips app state and
     /// requests the platform window to enter/leave fullscreen.
     pub on_toggle_fullscreen: Rc<RefCell<dyn FnMut()>>,
+    /// Expand `pane_id` over the whole panes space, or put it back in its own
+    /// place when it is already the expanded one.
+    pub on_toggle_pane_maximized: Rc<RefCell<dyn FnMut(u64)>>,
     pub on_cron_create: Rc<RefCell<dyn FnMut()>>,
     pub on_cron_delete: Rc<RefCell<dyn FnMut(String)>>,
     pub on_cron_trigger: Rc<RefCell<dyn FnMut(String)>>,

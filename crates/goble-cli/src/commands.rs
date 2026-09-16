@@ -89,9 +89,7 @@ pub async fn async_main() -> Result<()> {
             username,
             ssh_key,
             install_path,
-            install_docker,
-            install_hermes,
-            install_crewai,
+            remote_desktop,
             local_test,
         }
         | Command::SetupWorker {
@@ -100,9 +98,7 @@ pub async fn async_main() -> Result<()> {
             username,
             ssh_key,
             install_path,
-            install_docker,
-            install_hermes,
-            install_crewai,
+            remote_desktop,
             local_test,
         } => {
             do_provision(
@@ -112,9 +108,7 @@ pub async fn async_main() -> Result<()> {
                 username,
                 ssh_key,
                 install_path,
-                install_docker,
-                install_hermes,
-                install_crewai,
+                remote_desktop,
                 local_test,
             )?;
         }

@@ -44,12 +44,10 @@ pub enum Command {
         ssh_key: Option<PathBuf>,
         #[arg(short, long, default_value = "/opt/goblin")]
         install_path: String,
+        /// Install the remote desktop computer use streams from. It downloads in
+        /// the background on the host, after the worker is already serving.
         #[arg(long)]
-        install_docker: bool,
-        #[arg(long)]
-        install_hermes: bool,
-        #[arg(long)]
-        install_crewai: bool,
+        remote_desktop: bool,
         #[arg(long, default_value = "false")]
         local_test: bool,
     },
@@ -66,12 +64,10 @@ pub enum Command {
         ssh_key: Option<PathBuf>,
         #[arg(short, long, default_value = "/opt/goblin")]
         install_path: String,
+        /// Install the remote desktop computer use streams from. It downloads in
+        /// the background on the host, after the worker is already serving.
         #[arg(long)]
-        install_docker: bool,
-        #[arg(long)]
-        install_hermes: bool,
-        #[arg(long)]
-        install_crewai: bool,
+        remote_desktop: bool,
         #[arg(long, default_value = "false")]
         local_test: bool,
     },

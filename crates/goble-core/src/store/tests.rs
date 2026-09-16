@@ -43,6 +43,47 @@ fn test_chat_workspace_routing_roundtrip() {
     assert_eq!(store.get_chat_workspace_routing("missing").unwrap(), None);
 }
 
+/// A conversation's title is written on its own and read back, so a subject
+/// derived from the conversation survives a restart. Retitling leaves the
+/// conversation's `updated_at` alone: the title says what the conversation is
+/// about, not when it was last said in.
+#[test]
+fn test_chat_title_roundtrip() {
+    let store = Store::open_in_memory().unwrap();
+    store
+        .insert_chat(
+            "c1",
+            "New conversation",
+            None,
+            None,
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z",
+        )
+        .unwrap();
+    assert_eq!(
+        store.get_chat_title("c1").unwrap(),
+        Some("New conversation".to_string())
+    );
+
+    store
+        .set_chat_title("c1", "Initial user onboarding")
+        .unwrap();
+    assert_eq!(
+        store.get_chat_title("c1").unwrap(),
+        Some("Initial user onboarding".to_string())
+    );
+    let rows = store.list_chats().unwrap();
+    assert_eq!(rows[0].1, "Initial user onboarding");
+    assert_eq!(
+        rows[0].5, "2024-01-01T00:00:00Z",
+        "retitling is not activity: updated_at still says when it was last said in"
+    );
+
+    // The title is the conversation's own; a chat that does not exist has none.
+    store.set_chat_title("missing", "Nowhere").unwrap();
+    assert_eq!(store.get_chat_title("missing").unwrap(), None);
+}
+
 /// A conversation's reported token counts accumulate across its model calls and
 /// are read back as one total. A provider that reports no cache accounting
 /// leaves the cached figure absent rather than folding in a zero, and a chat

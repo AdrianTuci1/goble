@@ -6,7 +6,7 @@ use goble_desktop_service::DesktopState;
 
 use crate::media::MediaState;
 use crate::state::{default_pane_path, UiState};
-use crate::ui::{Pane, PaneKind, SplitDir};
+use crate::ui::{Pane, PaneKind, Space, SplitDir};
 
 /// Split the active pane of the active space along `dir`, focusing the new pane
 /// and binding it to a distinct conversation + cwd so the two panes never share
@@ -24,7 +24,7 @@ pub(super) fn split_active_pane(
         if let Some(new_id) =
             space.split_with_kind(state.active_pane_id, dir, &mut state.next_pane_id, kind)
         {
-            state.active_pane_id = new_id;
+            state.focus_pane(new_id);
             ensure_pane_hover(state, new_id);
             state.bind_pane_new_conversation(new_id, desktop.map(|d| d.as_ref()));
             let project_id = media.selected_project_id().to_string();
@@ -67,7 +67,7 @@ pub(super) fn open_file_pane(
         ) else {
             return;
         };
-        state.active_pane_id = new_id;
+        state.focus_pane(new_id);
         ensure_pane_hover(state, new_id);
     }
     state.sync_active_view();
@@ -114,6 +114,60 @@ pub(super) fn open_pane_harness(
     if let Some(conversation_id) = state.pane_conversation_id(pane_id) {
         let label = state.conversation_name(&conversation_id);
         state.enter_agent_view(pane_id, &conversation_id, &label);
+    }
+}
+
+/// Close the space (tab) at `index`.
+///
+/// The last remaining space is never removed: it resets to a fresh empty chat
+/// pane, so closing a tab never exits the program (an earlier version owned the
+/// single pane, and a close on it tore the window down).
+pub(super) fn close_space_at(state: &mut UiState, index: usize, desktop: Option<&DesktopState>) {
+    if index >= state.spaces.len() {
+        return;
+    }
+    // Drop every pane session/runtime/hover for the space's leaves and kill any
+    // terminal sessions along with them.
+    let closed = state.spaces.remove(index);
+    for id in collect_leaf_ids(&closed.root) {
+        state.pane_sessions.remove(&id);
+        state.pane_runtime.remove(&id);
+        state.pane_hover.remove(&id);
+        state.sub_agent_views.remove(&id);
+        state.terminal.borrow_mut().drop_pane(id);
+    }
+    // If the space being closed was the last one, restore a fresh empty chat
+    // space so the window is never left with zero tabs.
+    if state.spaces.is_empty() {
+        let id = state.next_pane_id;
+        state.next_pane_id += 1;
+        // Nobody named this space: its tab label is derived from what it holds,
+        // so it reads the agent label until its conversation has a subject.
+        state.spaces.push(Space::unnamed(Pane::Leaf { id, kind: PaneKind::Chat }));
+        state.active_space = 0;
+        state.active_pane_id = id;
+        ensure_pane_hover(state, id);
+        state.bind_pane_new_conversation(id, desktop);
+        state.refresh_space_labels();
+        state.sync_active_view();
+        if let Some(desktop) = desktop {
+            state.refresh_messages(desktop);
+            state.save_panes(desktop);
+        }
+        return;
+    }
+    // Re-index the active space after the removal.
+    if index < state.active_space {
+        state.active_space -= 1;
+    } else if index == state.active_space {
+        state.active_space = state.active_space.min(state.spaces.len() - 1);
+    }
+    // Focus the new active space's first leaf.
+    state.active_pane_id = state.spaces[state.active_space].root.first_leaf_id();
+    state.sync_active_view();
+    if let Some(desktop) = desktop {
+        state.refresh_messages(desktop);
+        state.save_panes(desktop);
     }
 }
 

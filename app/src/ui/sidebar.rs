@@ -1547,6 +1547,127 @@ mod sidebar_surface_tests {
         );
     }
 
+    /// A conversation the agent has answered is named from what was said in it:
+    /// the row reads the subject the agent derived, not the placeholder the
+    /// conversation was created with, and the subject is written to the store so
+    /// the next launch reads it back.
+    #[test]
+    fn a_conversation_the_agent_answered_reads_its_own_subject() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let chat = desktop
+            .create_chat(crate::state::NEW_CONVERSATION_TITLE, None, None)
+            .expect("a conversation nobody has named");
+        desktop
+            .add_chat_message(&chat, "user", "Hello")
+            .expect("the user's prompt");
+        desktop
+            .add_chat_message(&chat, "assistant", "Hi! How can I help?")
+            .expect("the agent's reply");
+
+        let view = RootView::new(&app, &desktop, None);
+        let state = view.state_rc();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.refresh_conversations(&desktop);
+            assert_eq!(
+                s.conversations[0].name, "Initial user onboarding",
+                "the title source reads the subject derived from the conversation"
+            );
+        }
+        assert_eq!(
+            desktop.list_chats()[0].title,
+            "Initial user onboarding",
+            "the derived subject is written to the store"
+        );
+
+        let mut root: Box<dyn Element> = Box::new(view);
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        let drawn = sidebar_list_text(&commands);
+        assert!(
+            drawn.iter().any(|text| text == "Initial user onboarding"),
+            "the card reads the derived subject: {drawn:?}"
+        );
+        assert_eq!(
+            drawn
+                .iter()
+                .filter(|text| *text == crate::state::NEW_CONVERSATION_TITLE)
+                .count(),
+            1,
+            "the placeholder is left on the create row alone: {drawn:?}"
+        );
+    }
+
+    /// The subject is not frozen at the first answer: a later turn that moves
+    /// the conversation to another subject renames it again, in the list and in
+    /// the store.
+    #[test]
+    fn a_later_turn_renames_the_conversation() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let chat = desktop
+            .create_chat(crate::state::NEW_CONVERSATION_TITLE, None, None)
+            .expect("a conversation nobody has named");
+        desktop
+            .add_chat_message(&chat, "user", "Hello")
+            .expect("the user's prompt");
+        desktop
+            .add_chat_message(&chat, "assistant", "Hi! How can I help?")
+            .expect("the agent's reply");
+
+        let view = RootView::new(&app, &desktop, None);
+        let state = view.state_rc();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.refresh_conversations(&desktop);
+            assert_eq!(s.conversations[0].name, "Initial user onboarding");
+        }
+
+        desktop
+            .add_chat_message(&chat, "user", "Can you add a title to the sidebar?")
+            .expect("the follow-up prompt");
+        desktop
+            .add_chat_message(&chat, "assistant", "Sure, the card reads it now.")
+            .expect("the agent's second reply");
+        {
+            let mut s = state.borrow_mut();
+            s.refresh_conversations(&desktop);
+            assert_eq!(
+                s.conversations[0].name, "Add a title to the sidebar",
+                "the later subject replaces the agent's own earlier one"
+            );
+        }
+        assert_eq!(
+            desktop.list_chats()[0].title,
+            "Add a title to the sidebar",
+            "the rename is written to the store too"
+        );
+        assert_eq!(
+            desktop
+                .store_clone()
+                .get_chat_title(&chat)
+                .expect("read the stored title"),
+            Some("Add a title to the sidebar".to_string()),
+            "and it is the title the store holds"
+        );
+    }
+
     /// The list is empty for one of two reasons and they read differently: no
     /// conversation has been answered yet, or the ones that have belong to
     /// another environment. An unanswered conversation is the first, not the

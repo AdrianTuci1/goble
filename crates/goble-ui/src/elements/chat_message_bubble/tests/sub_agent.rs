@@ -44,15 +44,20 @@ fn sub_agent_call_shows_its_own_rows() {
 /// Each of the four statuses draws its own line on the parent transcript:
 /// the description, then the status phrase — with the activity label and the
 /// elapsed time only while the child runs.
+///
+/// The mark itself does not change with the status: every row draws the same
+/// diamond, and the status is the colour it is drawn in. A live child is not a
+/// spinner and an ended one is not a different shape.
 #[test]
 fn each_sub_agent_status_draws_its_own_line() {
+    let app = AppContext::default();
     let cases = [
         (
             SubAgentRowStatus::Running,
             "reading",
             Duration::from_millis(4500),
             None,
-            "◐",
+            ColorToken::Accent,
             "running · reading · 4.5s",
         ),
         (
@@ -60,7 +65,7 @@ fn each_sub_agent_status_draws_its_own_line() {
             "",
             Duration::from_secs(43),
             Some("migration audited"),
-            "●",
+            ColorToken::Success,
             "completed in 43s",
         ),
         (
@@ -68,7 +73,7 @@ fn each_sub_agent_status_draws_its_own_line() {
             "",
             Duration::from_secs(12),
             Some("child turn failed"),
-            "◆",
+            ColorToken::Error,
             "failed in 12s · child turn failed",
         ),
         (
@@ -76,11 +81,11 @@ fn each_sub_agent_status_draws_its_own_line() {
             "",
             Duration::from_secs(5),
             Some("stopped by the user"),
-            "◇",
+            ColorToken::Muted,
             "cancelled in 5.0s",
         ),
     ];
-    for (status, activity, elapsed, outcome, glyph, line) in cases {
+    for (status, activity, elapsed, outcome, token, line) in cases {
         let call = spawn_call(ToolCallStatus::Finished);
         let record = record("conv-child-1", status, activity, elapsed, outcome);
         let (commands, _) =
@@ -93,8 +98,8 @@ fn each_sub_agent_status_draws_its_own_line() {
         // One ruler row: the status mark, the verb, the child in quotes and
         // the record's own line, with no body and no card.
         assert!(
-            row.starts_with(glyph),
-            "status {status:?} draws its own bullet {glyph:?}, got {row:?}"
+            row.starts_with("◆ "),
+            "status {status:?} draws the one diamond mark, got {row:?}"
         );
         assert!(
             row.contains("“audit the migration”"),
@@ -104,8 +109,34 @@ fn each_sub_agent_status_draws_its_own_line() {
             row.contains(line),
             "status {status:?} must draw {line:?}, got {row:?}"
         );
-        assert_eq!(rows.len(), 1, "the folded call is one row, got {rows:?}");
+        assert!(
+            mark_color(&commands, folded_mark(&app, token)),
+            "status {status:?} is carried by the mark's colour, {token:?}"
+        );
+        assert_eq!(
+            rows.iter().filter(|row| row.starts_with("◆ ")).count(),
+            1,
+            "the folded call draws one marked row, got {rows:?}"
+        );
     }
+}
+
+/// The colour a collapsed row's mark is drawn in: the status's own colour
+/// blended half into the background. The rows under test are folded, so the
+/// state reads through the dimming rather than beside it.
+fn folded_mark(app: &AppContext, token: ColorToken) -> crate::color::ColorU {
+    app.theme
+        .color(token)
+        .mix(&app.theme.color(ColorToken::Bg), 0.5)
+}
+
+/// Whether a run of the mark is drawn in `color`. The mark is the row's first
+/// run, so the status a row reports is the colour at the head of its line.
+fn mark_color(commands: &[RenderCommand], color: crate::color::ColorU) -> bool {
+    commands.iter().any(|command| match command {
+        RenderCommand::DrawText { text, color: drawn, .. } => text == "◆ " && *drawn == color,
+        _ => false,
+    })
 }
 
 /// A running row's activity and elapsed time come from the live record, so a
@@ -207,12 +238,17 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
         click_at(bubble, &app, origin + vec2f(2.0, 4.0));
     };
 
-    // Folded it is the one ruler row, like every other shape's default.
+    // Folded it is the one header row, like every other shape's default. The
+    // open target sits beside it as its own, smaller run.
     let folded = drawn_row_texts(&paint_bubble(&mut bubble, &app));
     assert_eq!(
-        folded.len(),
+        folded.iter().filter(|row| row.contains("Subagent")).count(),
         1,
-        "a folded sub-agent draws one line, got {folded:?}"
+        "a folded sub-agent draws one header line, got {folded:?}"
+    );
+    assert!(
+        !folded.iter().any(|row| row.contains("tool calls")),
+        "a folded row draws none of the record's counters, got {folded:?}"
     );
 
     header_click(&mut bubble);
@@ -274,9 +310,12 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
         "the third click folds the call back, like every other shape"
     );
     assert_eq!(
-        drawn_row_texts(&paint_bubble(&mut bubble, &app)).len(),
+        drawn_row_texts(&paint_bubble(&mut bubble, &app))
+            .iter()
+            .filter(|row| row.contains("Subagent"))
+            .count(),
         1,
-        "folded again it is one line"
+        "folded again the header is one line"
     );
 }
 
@@ -324,38 +363,52 @@ fn clicking_a_sub_agent_row_fires_the_open_action() {
     );
 }
 
-/// The status affordance is read from the persisted status: the glyph and
-/// colour change with it, and no result text is inspected to infer it.
+/// The status affordance is read from the persisted status: one mark, drawn in
+/// the colour the status carries, and no result text is inspected to infer it.
 #[test]
 fn status_affordance_reflects_the_persisted_status() {
     let app = AppContext::default();
     let cases = [
-        (ToolCallStatus::Pending, "○", ColorToken::Muted),
-        (ToolCallStatus::Running, "◐", ColorToken::Accent),
-        (ToolCallStatus::Finished, "●", ColorToken::Success),
-        (ToolCallStatus::Error, "◆", ColorToken::Error),
+        (ToolCallStatus::Pending, ColorToken::Accent),
+        (ToolCallStatus::Running, ColorToken::Accent),
+        (ToolCallStatus::Finished, ColorToken::Muted),
+        (ToolCallStatus::Error, ColorToken::Error),
     ];
-    for (status, glyph, token) in cases {
+    for (status, token) in cases {
         let (commands, _) = paint_tool_calls(vec![call("ls", "{}", status, None)]);
-        // The mark is drawn with the row's trailing space.
-        let mark = format!("{glyph} ");
-        let drawn = commands.iter().find_map(|c| match c {
-            RenderCommand::DrawText { text, color, .. } if *text == mark => Some(*color),
-            _ => None,
-        });
+        // The mark is drawn with the row's trailing space. `ls` is not a
+        // command, so its finished mark is the quiet colour rather than the
+        // success one a finished `run_command` carries.
+        assert!(
+            mark_color(&commands, folded_mark(&app, token)),
+            "status {status:?} draws the mark in {token:?}"
+        );
         assert_eq!(
-            drawn,
-            Some(app.theme.color(token)),
-            "status {status:?} draws {glyph:?} in {token:?}"
+            drawn_texts(&commands).iter().filter(|t| *t == "◆ ").count(),
+            1,
+            "every status draws the same one mark"
         );
     }
+
+    // A finished command is the one success the mark announces.
+    let (commands, _) = paint_tool_calls(vec![call(
+        "run_command",
+        r#"{"command":"ls"}"#,
+        ToolCallStatus::Finished,
+        Some("file.txt"),
+    )]);
+    assert!(
+        mark_color(&commands, folded_mark(&app, ColorToken::Success)),
+        "a finished command carries the success colour"
+    );
 }
 
-/// A `role="tool"` result row still renders as its terminal block; the tool
-/// call adds no card beside it. The block's own controls are drawn only while
-/// the pointer is over them, so the row at rest is its output alone.
+/// A `role="tool"` message carrying a terminal fragment is the command the
+/// *user* ran inside the pane, and it is still the block the pane draws — with
+/// the block's own controls while the pointer is over it. This is the one path
+/// that keeps a segmented block; an agent's tool call takes none of it.
 #[test]
-fn tool_result_block_still_renders_for_a_tool_row() {
+fn tool_result_block_still_renders_for_a_user_command() {
     use crate::elements::TerminalFilter;
 
     let app = AppContext::default();

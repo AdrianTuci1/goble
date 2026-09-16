@@ -7,13 +7,14 @@ use goble_ui::elements::{
     MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem, RunningIndicator, SizeConstraint,
     Text, TextInput, Tooltip, TooltipPosition, TopbarButton,
 };
-use goble_ui::event::DispatchedEvent;
+use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY, BUTTON_SECONDARY};
 use goble_ui::elements::interactive::contains;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
-use goble_ui::theme::{ColorToken, SpacingToken};
+use goble_ui::theme::{ColorToken, SpacingToken, TabColor, TabTint};
 
 use crate::state::PaneDrag;
 
+use super::super::tab_menu::{build_tab_menu, TabMenuTab, TabMenuAction};
 use super::super::{file_view, MediaActions, MediaSnapshot, UiActions, UiSnapshot};
 
 /// The width of the environment menu's hover tray.
@@ -162,13 +163,47 @@ pub fn build_topbar(
         .finish();
     // The card a pane being dragged onto the strip carries floats over the whole
     // bar — tabs, "+ ▾" and the settings icon alike — so it is a second,
-    // zero-sized child of a stack rather than part of the row.
+    // zero-sized child of a stack rather than part of the row. The tab menu is
+    // the third: hung from the pointer it was opened at, it floats over the bar
+    // and over the pane below it, and it is the first child dispatched, so the
+    // press that lands on it never reaches the tab under it.
+    let menu = build_space_menu(state, actions);
     goble_ui::elements::Stack::new()
         .with_children(vec![
             bar,
             build_pane_drag_ghost(app, state.pane_drag.as_ref()),
+            menu,
         ])
         .finish()
+}
+
+/// The menu of the tab a right click opened, or nothing at all while none is
+/// open. The panel hangs from the point the click landed on, over the window —
+/// see [`crate::ui::tab_menu`].
+fn build_space_menu(state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+    let Some(menu) = *state.space_menu.borrow() else {
+        return Empty::new().with_size(vec2f(0.0, 0.0)).finish();
+    };
+    let Some(space) = state.spaces.get(menu.index) else {
+        return Empty::new().with_size(vec2f(0.0, 0.0)).finish();
+    };
+    let tab = TabMenuTab {
+        index: menu.index,
+        tabs: state.spaces.len(),
+        color: space.color,
+        named: space.named,
+    };
+    let on_action = actions.on_space_menu_action.clone();
+    let on_close = actions.on_space_menu_close.clone();
+    let index = menu.index;
+    build_tab_menu(
+        tab,
+        menu.at,
+        Rc::new(RefCell::new(move |action: TabMenuAction| {
+            (on_action.borrow_mut())(index, action)
+        })),
+        Rc::new(RefCell::new(move || (on_close.borrow_mut())())),
+    )
 }
 
 /// The topbar's live cue: a spinner and `◆ N`, where N is C1's count of work in
@@ -1099,7 +1134,7 @@ fn build_workspace_strip(
         let tab: Box<dyn Element> = if active && state.space_rename_editing {
             build_rename_tab(app, state, actions)
         } else {
-            build_workspace_chip(app, actions, index, &space.name, active)
+            build_workspace_chip(app, actions, index, &space.name, active, space.color)
         };
         children.push(FrameChild::Tab(Box::new(TabRect::new(
             tab,
@@ -1126,27 +1161,37 @@ fn build_workspace_strip(
 
 /// One clickable workspace tab: the name plus an "x" that closes that
 /// workspace. A single click selects the space; a second click within the
-/// double-click window starts the inline rename.
+/// double-click window starts the inline rename — counted on the press, which
+/// is what [`WorkspaceChip`] reports here. A right click opens the tab's menu
+/// at the pointer.
 fn build_workspace_chip(
     app: &AppContext,
     actions: &UiActions,
     index: usize,
     name: &str,
     active: bool,
+    color: Option<TabColor>,
 ) -> Box<dyn Element> {
-    let color = if active {
+    let label_color = if active {
         ColorToken::Text
     } else {
         ColorToken::Muted
     };
-    let label = TabLabel::new(name, color).finish();
+    let label = TabLabel::new(name, label_color).finish();
     let on_click = actions.on_workspace_click.clone();
     let on_close = actions.on_close_space.clone();
+    let on_press = actions.on_space_press.clone();
+    let on_right_click = actions.on_space_menu.clone();
     Box::new(WorkspaceChip::new(
         label,
         index,
         active,
+        color,
         Rc::new(RefCell::new(move |i: usize| (on_click.borrow_mut())(i))),
+        Rc::new(RefCell::new(move |i: usize| (on_press.borrow_mut())(i))),
+        Rc::new(RefCell::new(move |i: usize, at: Vector2F| {
+            (on_right_click.borrow_mut())(i, at)
+        })),
         TopbarButton::new(
             Icon::new("x")
                 .with_size(10.0)
@@ -1194,12 +1239,25 @@ fn build_rename_field(_app: &AppContext, state: &UiSnapshot, actions: &UiActions
 /// itself never strokes a border — no boundary can read as a doubled line. The
 /// trailing "x" closes the workspace; it is hit-tested before the tab body so
 /// it never doubles as a select click.
+///
+/// A tab carrying a colour fills its surface with that colour, at the share the
+/// tab's own state gives it — 60 % while it is the active tab, 40 % while the
+/// pointer is over it, 20 % otherwise, over the fill that state would have had
+/// anyway (see [`TabColor::tint_over`]). A tab with no colour paints exactly the
+/// three fills it painted before colours existed.
 pub(super) struct WorkspaceChip {
     child: Box<dyn Element>,
     close: Box<dyn Element>,
     index: usize,
     active: bool,
+    color: Option<TabColor>,
     on_click: Rc<RefCell<dyn FnMut(usize)>>,
+    /// The press, reported before the click so the multi-click is counted from
+    /// it (see [`UiState::space_press_run`](crate::state::SpacePressRun)).
+    on_press: Rc<RefCell<dyn FnMut(usize)>>,
+    /// A right click on the tab, with the point the pointer was at: the tab's
+    /// menu hangs from the pointer itself.
+    on_right_click: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
     state: goble_ui::elements::interactive::InteractiveState,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -1210,7 +1268,10 @@ impl WorkspaceChip {
         child: Box<dyn Element>,
         index: usize,
         active: bool,
+        color: Option<TabColor>,
         on_click: Rc<RefCell<dyn FnMut(usize)>>,
+        on_press: Rc<RefCell<dyn FnMut(usize)>>,
+        on_right_click: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
         close: Box<dyn Element>,
     ) -> Self {
         Self {
@@ -1218,7 +1279,10 @@ impl WorkspaceChip {
             close,
             index,
             active,
+            color,
             on_click,
+            on_press,
+            on_right_click,
             state: Default::default(),
             size: None,
             origin: None,
@@ -1264,6 +1328,16 @@ impl WorkspaceChip {
             origin.y + (size.y - close_size.y).max(0.0) / 2.0,
         )
     }
+
+    /// The fill a tab of this state is drawn with: the theme's own surface for
+    /// that state, carrying the tab's colour at the state's share of it.
+    fn tinted(&self, app: &AppContext, base: ColorToken, tint: TabTint) -> goble_ui::ColorU {
+        let base = app.theme.color(base);
+        match self.color {
+            Some(color) => color.tint_over(base, tint),
+            None => base,
+        }
+    }
 }
 
 impl Element for WorkspaceChip {
@@ -1298,11 +1372,15 @@ impl Element for WorkspaceChip {
         let hovered = ctx.hovered(rect);
         if let Some(renderer) = ctx.renderer.as_mut() {
             // `fill_rect`, not `fill_rounded_rect`: a tab has square corners,
-            // and no stroke joins it to its neighbour's rule.
+            // and no stroke joins it to its neighbour's rule. A coloured tab
+            // tints the fill its own state gives it, so the tab still reads as
+            // active (or hovered) and the colour reads as a colour.
             if self.active {
-                renderer.fill_rect(rect, app.theme.color(ColorToken::SurfaceRaised));
+                renderer.fill_rect(rect, self.tinted(app, ColorToken::SurfaceRaised, TabTint::Active));
             } else if hovered {
-                renderer.fill_rect(rect, app.theme.color(ColorToken::Hover));
+                renderer.fill_rect(rect, self.tinted(app, ColorToken::Hover, TabTint::Hovered));
+            } else if self.color.is_some() {
+                renderer.fill_rect(rect, self.tinted(app, ColorToken::Surface, TabTint::Resting));
             }
         }
         let child_size = self.child.size().unwrap_or(Vector2F::zero());
@@ -1355,6 +1433,28 @@ impl Element for WorkspaceChip {
         };
         if over_tab && self.close.dispatch_event(event, ctx, app) {
             return true;
+        }
+        // A right press is the tab's menu, hung from the point it landed on
+        // rather than from the tab's own corner (warp-new's
+        // `TabContextMenuAnchor::Pointer`). Nothing else sees the press: it
+        // opens the menu, it is not a click on the tab.
+        if let DispatchedEvent::MouseDown { position, button } = event {
+            if *button == BUTTON_SECONDARY && over_tab {
+                let cb = Rc::clone(&self.on_right_click);
+                let index = self.index;
+                let at = *position;
+                (cb.borrow_mut())(index, at);
+                return true;
+            }
+        }
+        // A primary press is what the tab's multi-click is counted from, so it
+        // is reported before the release that follows it reads the count.
+        if let DispatchedEvent::MouseDown { button, .. } = event {
+            if *button == BUTTON_PRIMARY && over_tab {
+                let cb = Rc::clone(&self.on_press);
+                let index = self.index;
+                (cb.borrow_mut())(index);
+            }
         }
         let bounds = match self.bounds() {
             Some(b) => b,

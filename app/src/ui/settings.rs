@@ -247,6 +247,7 @@ pub fn build_settings_pane(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
+    pane_id: u64,
     page: SettingsCategory,
 ) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
@@ -280,7 +281,18 @@ pub fn build_settings_pane(
         )
         .finish();
     let header = Container::new(header)
-        .with_padding(EdgeInsets::new(sm, md, sm, md))
+        // The focused pane's corner mark is drawn over the left end of this bar
+        // (see `panes::FOCUS_MARKER_SIZE`), so the bar starts past it.
+        .with_padding(EdgeInsets::new(
+            sm + if state.active_pane_id == pane_id {
+                super::panes::FOCUS_MARKER_SIZE
+            } else {
+                0.0
+            },
+            md,
+            sm,
+            md,
+        ))
         .finish();
 
     let nav = build_nav(app, state, actions, page);

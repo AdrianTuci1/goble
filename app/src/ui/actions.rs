@@ -6,6 +6,7 @@ use goble_ui::SettingsPage;
 
 use super::color_picker;
 use super::pane::NavDir;
+use super::tab_menu::TabMenuAction;
 use super::types::{AppTab, SettingsCategory, SidebarView, WorkspaceRouting};
 
 /// Callbacks supplied by the host app for the main view. Created fresh on
@@ -52,10 +53,7 @@ pub struct UiActions {
     pub on_copy: Rc<RefCell<dyn FnMut()>>,
     /// Copy a terminal block's text to the clipboard (receives the block text).
     pub on_copy_terminal: Rc<RefCell<dyn FnMut(String)>>,
-    pub on_restart: Rc<RefCell<dyn FnMut()>>,
-    /// Rename the current agent/conversation (agent-header 3-dots menu).
-    pub on_rename_agent: Rc<RefCell<dyn FnMut()>>,
-    /// Clear the active pane's transcript (agent-header 3-dots menu).
+    /// Clear the active pane's transcript (`/clear` in the palette).
     pub on_clear_transcript: Rc<RefCell<dyn FnMut()>>,
     pub on_stop: Rc<RefCell<dyn FnMut()>>,
     /// Enter a sub-agent child's own conversation in `pane_id`, by the child's
@@ -123,6 +121,13 @@ pub struct UiActions {
     /// Click on a topbar workspace chip: selects that space, and a double-click
     /// enters inline rename for its name.
     pub on_workspace_click: Rc<RefCell<dyn FnMut(usize)>>,
+    /// Right click on a workspace tab: open its menu hung from `at`, the point
+    /// the click landed on. A second right click on the same tab closes it.
+    pub on_space_menu: Rc<RefCell<dyn FnMut(usize, goble_ui::Vector2F)>>,
+    /// The open tab menu closed itself — a press landed outside its panel.
+    pub on_space_menu_close: Rc<RefCell<dyn FnMut()>>,
+    /// A row of the tab menu was chosen, for the tab at that index.
+    pub on_space_menu_action: Rc<RefCell<dyn FnMut(usize, TabMenuAction)>>,
     /// Update the inline space-rename draft.
     pub on_space_rename_change: Rc<RefCell<dyn FnMut(String)>>,
     /// Track focus of the inline space-rename field (blur commits).
@@ -228,6 +233,9 @@ pub struct UiActions {
     /// Toggle the agent/window fullscreen (borderless). Flips app state and
     /// requests the platform window to enter/leave fullscreen.
     pub on_toggle_fullscreen: Rc<RefCell<dyn FnMut()>>,
+    /// Expand `pane_id` over the whole panes space, or put it back in its own
+    /// place when it is already the expanded one.
+    pub on_toggle_pane_maximized: Rc<RefCell<dyn FnMut(u64)>>,
     pub on_cron_create: Rc<RefCell<dyn FnMut()>>,
     pub on_cron_delete: Rc<RefCell<dyn FnMut(String)>>,
     pub on_cron_trigger: Rc<RefCell<dyn FnMut(String)>>,

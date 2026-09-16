@@ -75,6 +75,34 @@ use super::*;
         assert!(!state.can_run_agent_turn(1), "a key with no model cannot run");
     }
 
+    /// A focus that moves to another pane ends the expansion: warp-new's rule
+    /// (`pane_group/focus_state.rs` clears its maximized pane whenever the
+    /// focused pane changes), so a pane that gave up the focus cannot keep the
+    /// whole space. Focusing the pane that is already expanded leaves it alone,
+    /// which is what makes the retract control a toggle rather than a way to
+    /// re-expand.
+    #[test]
+    fn focusing_another_pane_ends_the_expansion() {
+        let mut state = UiState::mock();
+        state.active_pane_id = 1;
+        state.maximized_pane = Some(1);
+
+        state.focus_pane(1);
+        assert_eq!(state.active_pane_id, 1);
+        assert_eq!(
+            state.maximized_pane,
+            Some(1),
+            "the pane that is already the expanded one keeps the space"
+        );
+
+        state.focus_pane(2);
+        assert_eq!(state.active_pane_id, 2, "the focus moved");
+        assert_eq!(
+            state.maximized_pane, None,
+            "and the pane it left cannot keep the whole space"
+        );
+    }
+
     #[test]
     fn sync_active_view_reflects_active_pane() {
         let mut state = UiState::mock();

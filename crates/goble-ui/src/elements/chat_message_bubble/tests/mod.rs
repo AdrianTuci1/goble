@@ -149,12 +149,22 @@ fn paint_tool_calls_with_fold(
     calls: Vec<ToolCall>,
     mode: Option<ToolDisplayMode>,
 ) -> (Vec<RenderCommand>, f32) {
+    let modes = mode.map(|mode| vec![mode; calls.len()]);
+    paint_tool_calls_with_modes(calls, modes.as_deref())
+}
+
+/// Paint the same bubble with each call in its own fold, so a test can hold one
+/// call open and leave the next collapsed.
+fn paint_tool_calls_with_modes(
+    calls: Vec<ToolCall>,
+    modes: Option<&[ToolDisplayMode]>,
+) -> (Vec<RenderCommand>, f32) {
     let app = AppContext::default();
-    let fold: HashMap<String, ToolDisplayMode> = match mode {
-        Some(mode) => calls
+    let fold: HashMap<String, ToolDisplayMode> = match modes {
+        Some(modes) => calls
             .iter()
             .enumerate()
-            .map(|(index, call)| (tool_fold_key(call, index), mode))
+            .map(|(index, call)| (tool_fold_key(call, index), modes[index]))
             .collect(),
         None => HashMap::new(),
     };

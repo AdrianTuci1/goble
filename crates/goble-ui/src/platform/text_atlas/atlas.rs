@@ -50,6 +50,10 @@ pub struct TextAtlas {
     bind_group: wgpu::BindGroup,
     bind_group_layout: wgpu::BindGroupLayout,
     store: AtlasStore,
+    /// The render scale the last `prepare` ran at. Runs are keyed in physical
+    /// pixels, so a change of scale makes every entry unreachable, and the
+    /// measurement cache the same tree was measured with is dropped with it.
+    scale: f32,
 }
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
@@ -313,6 +317,7 @@ impl TextAtlas {
             bind_group,
             bind_group_layout,
             store: AtlasStore::new(),
+            scale: 0.0,
         }
     }
 
@@ -339,6 +344,16 @@ impl TextAtlas {
         commands: &[RenderCommand],
         scale: f32,
     ) {
+        // Runs are keyed in physical pixels, so a change of scale makes every
+        // entry unreachable: the atlas refills at the new scale, and the
+        // measurement cache the tree laid out against is dropped with it.
+        // fontdue's metrics are scale-free (elements measure in logical
+        // points), so this costs one frame of re-measurement per zoom or
+        // display change rather than preventing a wrong answer.
+        if self.scale != scale {
+            self.scale = scale;
+            super::cache::invalidate_text_measure_cache();
+        }
         let keys: Vec<TextKey> = commands
             .iter()
             .filter_map(|command| {

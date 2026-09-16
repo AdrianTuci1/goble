@@ -1,10 +1,10 @@
 use crate::elements::chat_content::{SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode};
-use crate::elements::{Diff, DiffLine, DiffLineKind, Element, Hunk, TerminalData, TerminalStatus};
-use crate::theme::ColorToken;
+use crate::elements::{Diff, DiffLine, DiffLineKind, Element, Hunk, InlineText, TerminalData, TerminalLine, TerminalStatus, TextSpan};
+use crate::platform::text_atlas::FontWeight;
+use crate::theme::{ColorToken, FontFamily};
 use goble_core::harness::{one_line, tool_kind_for, web_search_sources, ToolCallStatus, ToolKind};
 use super::read_excerpt::{read_excerpt, read_excerpt_column};
-use crate::elements::terminal_block::TerminalBlockPlumbing;
-use super::tool_call::{argument_str, tool_body_row};
+use super::tool_call::{argument_str, tool_body_row, tool_body_span_row, TOOL_ROW_FONT_SIZE};
 
 /// First / last body lines a truncated read draws, and the fewer lines a
 /// truncated command's output draws — grok-build's per-block truncation counts.
@@ -79,13 +79,12 @@ pub(super) fn folded_text_rows(
 
 /// The body a tool call shows, shaped by the family its name parses into. The
 /// header already names the call and its operand, so a body opens with the
-/// result itself: a read's excerpt, a command's block, an edit's hunks. A
+/// result itself: a read's excerpt, a command's output, an edit's hunks. A
 /// folded call has no body; the fold is the only thing this adds.
 pub(super) fn build_tool_call_body(
     call: &ToolCall,
     mode: ToolDisplayMode,
     sub_agent: Option<&SubAgentRow>,
-    plumbing: &TerminalBlockPlumbing,
     app: &crate::elements::AppContext,
 ) -> Vec<Box<dyn Element>> {
     if mode == ToolDisplayMode::Collapsed {
@@ -94,7 +93,7 @@ pub(super) fn build_tool_call_body(
     let arguments: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
     match tool_kind_for(&call.name) {
-        ToolKind::Execute => command_body(&arguments, call, mode, plumbing, app),
+        ToolKind::Execute => command_body(&arguments, call, mode, app),
         ToolKind::Read => read_body(&arguments, call, mode, app),
         ToolKind::Create => path_body(call, mode, app),
         ToolKind::Edit => diff_body(&arguments, call, mode, app),
@@ -107,31 +106,103 @@ pub(super) fn build_tool_call_body(
         | ToolKind::SearchTools
         | ToolKind::Skill => result_rows(call, mode, READ_TRUNCATION, app),
         ToolKind::SubAgent => sub_agent_body(&arguments, call, mode, sub_agent, app),
-        ToolKind::UseTool | ToolKind::Other => generic_body(call, mode, app),
+        ToolKind::UseTool => generic_body(call, mode, app),
+        ToolKind::Other => other_body(call, mode, app),
     }
 }
 
-/// A command: the terminal block its segment is, built from the command and its
-/// output. It is the same block terminal mode draws, not a re-drawn agent-output
-/// row, so one command is one block wherever it appears. Truncated, the block
-/// carries the head and tail of the output; expanded, all of it.
+/// A command: what it printed, drawn continuously under the row that names it.
+///
+/// It is not a terminal block. An agent's call is part of its reply, so it
+/// carries no block header, no copy button and no filter — those belong to a
+/// command the user ran, which the pane draws as the block. The command line
+/// itself is not repeated here either: the row above already names it, and
+/// grok-build likewise hides a command whose row states it.
 pub(super) fn command_body(
     arguments: &serde_json::Value,
     call: &ToolCall,
     mode: ToolDisplayMode,
-    plumbing: &TerminalBlockPlumbing,
     app: &crate::elements::AppContext,
 ) -> Vec<Box<dyn Element>> {
     let Some(command) = argument_str(arguments, "command") else {
         return result_rows(call, mode, READ_TRUNCATION, app);
     };
     let output = call.result.as_deref().unwrap_or("");
-    let output = match mode {
-        ToolDisplayMode::Truncated => truncate_lines(output, COMMAND_TRUNCATION).join("\n"),
-        _ => output.to_string(),
+    // The block's own data is the one place that resolves the terminal's ANSI
+    // colours, so the output is read from it and drawn as rows rather than
+    // parsed a second time. Its first line is the command, drawn by the header.
+    let data = TerminalData::for_command(command, output, command_status(call.status));
+    let lines: Vec<&TerminalLine> = data.lines.iter().skip(1).collect();
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let (first, last) = COMMAND_TRUNCATION;
+    let elided = mode == ToolDisplayMode::Truncated && lines.len() > first + last;
+    let mut rows: Vec<Box<dyn Element>> = Vec::with_capacity(lines.len() + 1);
+    for (index, line) in lines.iter().enumerate() {
+        let hidden = elided && index >= first && index < lines.len() - last;
+        if hidden {
+            // The elision is marked once, where the middle it drops begins.
+            if index == first {
+                rows.push(tool_body_row(
+                    format!("… +{} lines", lines.len() - first - last),
+                    ColorToken::Muted,
+                    app,
+                ));
+            }
+            continue;
+        }
+        rows.push(output_row(line, call.status, app));
+    }
+    rows
+}
+
+/// One line of a command's output as the runs it is drawn in: the runs the
+/// terminal resolved, or the line's own text. A failed command's output is
+/// drawn in the error colour whatever the terminal resolved, so the reason a
+/// row is red is the reason the row reports.
+pub(super) fn output_spans(
+    line: &TerminalLine,
+    status: ToolCallStatus,
+    app: &crate::elements::AppContext,
+) -> Vec<TextSpan> {
+    let fallback = match status {
+        ToolCallStatus::Error => ColorToken::Error,
+        _ => ColorToken::Text,
     };
-    let data = TerminalData::for_command(command, &output, command_status(call.status));
-    vec![plumbing.element(&data)]
+    if line.runs.is_empty() {
+        return vec![TextSpan::plain(line.text.clone())
+            .with_family(FontFamily::Mono)
+            .with_color(app.theme.color(fallback))];
+    }
+    line.runs
+        .iter()
+        .map(|run| {
+            let mut span = TextSpan::plain(run.text.clone())
+                .with_family(FontFamily::Mono)
+                .with_color(run.color.unwrap_or_else(|| app.theme.color(fallback)));
+            if run.bold {
+                span = span.with_weight(FontWeight::Bold);
+            }
+            if run.italic {
+                span = span.with_italic(true);
+            }
+            // A tool body is never underlined, not even for an SGR 4 the command
+            // printed: the row's runs are the agent's reply, and a reply is read
+            // as prose. The pane's own terminal block, which reproduces a
+            // command's output, keeps the attribute.
+            span.with_underline(false)
+        })
+        .collect()
+}
+
+/// One output line drawn as its runs, on the body band.
+fn output_row(
+    line: &TerminalLine,
+    status: ToolCallStatus,
+    app: &crate::elements::AppContext,
+) -> Box<dyn Element> {
+    tool_body_span_row(output_spans(line, status, app), app)
 }
 
 /// The block's state, read from the call's persisted status. A call that has
@@ -364,20 +435,85 @@ pub(super) fn sub_agent_argument_rows(
     rows
 }
 
-/// A tool with no declared shape: its arguments, then its result.
+/// A tool with no declared shape: its named arguments, then its result.
+///
+/// The argument payload is never printed as JSON. Each named argument is one row
+/// reading `key: value` — the shape the reference draws an integration tool's
+/// arguments in — with a string as it stands and a nested value as its count. A
+/// payload that is empty, null or unparsable names no argument, so the body
+/// opens on the result instead.
 pub(super) fn generic_body(
     call: &ToolCall,
     mode: ToolDisplayMode,
     app: &crate::elements::AppContext,
 ) -> Vec<Box<dyn Element>> {
-    let mut rows = Vec::new();
-    if !call.arguments.is_empty() && call.arguments != "{}" {
-        rows.push(tool_body_row(
-            call.arguments.clone(),
-            ColorToken::Muted,
-            app,
-        ));
-    }
+    let arguments: serde_json::Value =
+        serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
+    let mut rows = argument_rows(&arguments, app);
     rows.extend(result_rows(call, mode, READ_TRUNCATION, app));
     rows
+}
+
+/// A tool no family claims: its result alone. The row already names the tool and
+/// the one argument it could name, so the body opens on the output rather than
+/// repeating the call's arguments.
+pub(super) fn other_body(
+    call: &ToolCall,
+    mode: ToolDisplayMode,
+    app: &crate::elements::AppContext,
+) -> Vec<Box<dyn Element>> {
+    result_rows(call, mode, READ_TRUNCATION, app)
+}
+
+/// One row per named argument, the name quiet and the value plain.
+fn argument_rows(
+    arguments: &serde_json::Value,
+    app: &crate::elements::AppContext,
+) -> Vec<Box<dyn Element>> {
+    let Some(named) = arguments.as_object() else {
+        return Vec::new();
+    };
+    named
+        .iter()
+        .map(|(key, value)| {
+            InlineText::new(vec![
+                TextSpan::plain(format!("{key}: "))
+                    .with_family(FontFamily::Mono)
+                    .with_color(app.theme.color(ColorToken::Muted)),
+                TextSpan::plain(argument_value(value))
+                    .with_family(FontFamily::Mono)
+                    .with_color(app.theme.color(ColorToken::Text)),
+            ])
+            .with_font_size(TOOL_ROW_FONT_SIZE)
+            .with_line_height(1.4)
+            .finish()
+        })
+        .collect()
+}
+
+/// One argument value on one line: a string as it stands, a `null`, a boolean or
+/// a number as it reads, and a nested payload as how much of it there is. A
+/// value is never printed as JSON: the row is the agent's reply, and a payload
+/// belongs in the tool's own output, printed there if the tool chose to.
+fn argument_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => one_line(text),
+        serde_json::Value::Null => "null".to_string(),
+        other if other.is_boolean() || other.is_number() => other.to_string(),
+        serde_json::Value::Array(items) => count_of(items.len(), "item"),
+        other => match other.as_object() {
+            Some(fields) => count_of(fields.len(), "field"),
+            None => String::new(),
+        },
+    }
+}
+
+/// How many of something a nested argument holds, in the reference's own plural
+/// style (`1 field`, `3 items`).
+fn count_of(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
 }

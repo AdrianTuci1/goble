@@ -36,9 +36,6 @@ impl RootView {
         self.screen_state
             .borrow_mut()
             .tick(self.desktop.as_deref());
-        // Ensure every pane has a per-pane agent-header 3-dots menu flag before
-        // the snapshot is built, so the tray open state is independent per pane.
-        self.state.borrow_mut().ensure_agent_menu_flags();
         // Follow what every pane's own shell reports as its working directory
         // before anything reads a path: the rich input's directory pill, the tab
         // label that derives from it and the explorer all draw from the pane's
@@ -250,7 +247,7 @@ impl RootView {
                 auto_approve: s.auto_approve,
                 right_sidebar_open: s.right_sidebar_open,
                 fullscreen: s.fullscreen,
-                agent_header_menus: s.agent_header_menus.clone(),
+                maximized_pane: s.maximized_pane,
                 terminal_filters: s.terminal_filters.clone(),
                 reasoning_expanded: s.reasoning_expanded.clone(),
                 tool_fold: s.tool_fold.clone(),
@@ -360,6 +357,7 @@ impl RootView {
                 space_rename_editing: s.space_rename_editing,
                 space_rename_draft: s.space_rename_draft.clone(),
                 space_rename_focused: s.space_rename_focused,
+                space_menu: s.space_menu.clone(),
                 agent_cards: s.agent_cards.clone(),
                 new_agent_hover: s.new_agent_hover.clone(),
                 command_palette_open: s.command_palette_open,

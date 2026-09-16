@@ -131,6 +131,49 @@ fn to_toml_emits_the_grok_layout() {
     assert!(!toml.contains("version ="), "{toml}");
 }
 
+/// The header is the file's own documentation, and every write carries it: a
+/// save that rewrote only the body left the user with a config file that says
+/// nothing about what may go in it.
+#[test]
+fn every_write_opens_with_the_header() {
+    let toml = GobleConfig::default().to_toml().expect("serialize");
+    assert!(toml.starts_with(CONFIG_HEADER), "{toml}");
+
+    // A save after a model and a theme change — the write the settings make —
+    // carries it too, and the file still parses to what was written.
+    let mut config = GobleConfig::default();
+    config
+        .model
+        .entry("deepseek".to_string())
+        .or_default()
+        .api_key = Some("sk-test".to_string());
+    config.models.default = Some("deepseek".to_string());
+    config.theme.dark = false;
+
+    let toml = config.to_toml().expect("serialize");
+    assert!(toml.starts_with(CONFIG_HEADER), "{toml}");
+    assert_eq!(GobleConfig::from_toml(&toml).expect("parse"), config);
+}
+
+/// What the header documents is what the file holds: the three sections, the
+/// shape of a model entry, and the promise that a section goble does not model
+/// survives.
+#[test]
+fn the_header_documents_the_file() {
+    assert!(CONFIG_HEADER.starts_with("# goble configuration"));
+    assert!(CONFIG_HEADER.contains("[model.deepseek]"));
+    assert!(CONFIG_HEADER.contains(r#"model = "deepseek-flash""#));
+    assert!(CONFIG_HEADER.contains(r#"api_key = "sk-...""#));
+    assert!(CONFIG_HEADER.contains(r#"default = "deepseek""#));
+    assert!(CONFIG_HEADER.contains("[mcp_servers.penpot]"));
+    assert!(CONFIG_HEADER.contains("[theme]"));
+    assert!(CONFIG_HEADER.contains("kept exactly as they were written"));
+    // The lines a reader follows are comments, so the file they open parses.
+    let (parsed, problems) = GobleConfig::load_toml(CONFIG_HEADER).expect("the header alone is TOML");
+    assert_eq!(parsed, GobleConfig::default());
+    assert!(problems.is_empty(), "{problems:?}");
+}
+
 #[test]
 fn a_grok_file_round_trips_with_its_unmodelled_sections() {
     let config = grok_shaped();

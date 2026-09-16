@@ -1,3 +1,4 @@
+use super::title::agent_subject;
 use super::*;
 
 impl UiState {
@@ -47,7 +48,7 @@ impl UiState {
             right_sidebar_open: false,
             fullscreen: false,
             sub_agent_views: HashMap::new(),
-            agent_header_menus: HashMap::new(),
+            maximized_pane: None,
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
             reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
             tool_fold: Rc::new(RefCell::new(HashMap::new())),
@@ -136,9 +137,10 @@ impl UiState {
             global_search_scroll: Rc::new(RefCell::new(ScrollState::default())),
             settings_scroll: Rc::new(RefCell::new(ScrollState::default())),
             space_rename_editing: false,
-            space_click_at: Rc::new(RefCell::new(None)),
+            space_press_run: Rc::new(RefCell::new(None)),
             space_rename_draft: String::new(),
             space_rename_focused: false,
+            space_menu: Rc::new(RefCell::new(None)),
             agent_cards: HashMap::new(),
             new_agent_hover: Rc::new(RefCell::new(false)),
             spaces: default_spaces(),
@@ -379,13 +381,23 @@ impl UiState {
         self.selected_harness = "internal".to_string();
     }
 
+    /// Rebuild the sidebar's conversation list from the service.
+    ///
+    /// A conversation the agent has answered in is also named here: the subject
+    /// is derived from what was said in it ([`agent_subject`]) and written back
+    /// through [`DesktopState::set_chat_title`], so the row drawn below reads it
+    /// at once and the next launch reads it from the store. The write happens
+    /// only when the subject actually changes — a conversation the agent has
+    /// already named, or one the user named, is left alone — so the
+    /// `chats:updated` the write emits cannot feed this call back into itself.
     pub fn refresh_conversations(&mut self, desktop: &DesktopState) {
         let chats = desktop.list_chats();
         self.conversations = chats
             .iter()
             .map(|c| {
-                // One read of the conversation's messages answers both what its
-                // card previews and whether the agent has said anything in it.
+                // One read of the conversation's messages answers what its card
+                // previews, whether the agent has said anything in it, and what
+                // the conversation is about.
                 let messages = desktop.list_chat_messages(&c.id).unwrap_or_default();
                 let last = messages
                     .last()
@@ -400,7 +412,22 @@ impl UiState {
                 let has_agent_reply = messages
                     .iter()
                     .any(|m| m.role == "assistant" || m.role == "tool");
-                ConversationEntry::new(c.id.clone(), c.title.clone(), last, time_ago(&c.updated_at))
+                let title = match agent_subject(
+                    &c.title,
+                    &messages
+                        .iter()
+                        .map(|m| (m.role.as_str(), m.content.as_str()))
+                        .collect::<Vec<_>>(),
+                ) {
+                    Some(subject) => {
+                        if let Err(e) = desktop.set_chat_title(&c.id, &subject) {
+                            log::warn!("set_chat_title for {} failed: {e}", c.id);
+                        }
+                        subject
+                    }
+                    None => c.title.clone(),
+                };
+                ConversationEntry::new(c.id.clone(), title, last, time_ago(&c.updated_at))
                     .with_workspace_routing(
                         c.workspace_routing
                             .clone()

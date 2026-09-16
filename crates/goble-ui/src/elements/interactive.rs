@@ -1,5 +1,5 @@
 use crate::elements::EventContext;
-use crate::event::DispatchedEvent;
+use crate::event::{DispatchedEvent, BUTTON_PRIMARY};
 use crate::geometry::{RectF, Vector2F};
 
 /// Tracks pointer-interaction state for a single interactive element.
@@ -26,6 +26,10 @@ pub fn contains(bounds: RectF, position: Vector2F) -> bool {
 
 /// Process a dispatched event and update interaction state.
 ///
+/// Only the primary button is a click: a right or middle press is the caller's
+/// own gesture (a context menu, an "open in new tab"), so it is left untouched
+/// here rather than counted as a press of the control it landed on.
+///
 /// Returns `true` if the event was consumed. When a click is completed, `on_click` is called.
 pub fn handle_mouse_event(
     state: &mut InteractiveState,
@@ -43,7 +47,10 @@ pub fn handle_mouse_event(
             // Mouse move does not consume the event; let other elements see it too.
             false
         }
-        DispatchedEvent::MouseDown { position, .. } => {
+        DispatchedEvent::MouseDown { position, button } => {
+            if *button != BUTTON_PRIMARY {
+                return false;
+            }
             if contains(bounds, *position) {
                 state.pressed = true;
                 true
@@ -51,7 +58,10 @@ pub fn handle_mouse_event(
                 false
             }
         }
-        DispatchedEvent::MouseUp { position, .. } => {
+        DispatchedEvent::MouseUp { position, button } => {
+            if *button != BUTTON_PRIMARY {
+                return false;
+            }
             // The element tree is rebuilt every frame (see the root view's
             // `layout`), so the `pressed` flag set by an earlier MouseDown on
             // this instance is lost before the matching MouseUp arrives. Fire

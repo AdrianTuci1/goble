@@ -12,16 +12,19 @@ use goble_ui::geometry::Vector2F;
 use goble_ui::{ChatMessage, ChatRole, SettingsPage};
 
 use crate::media::MediaState;
-use crate::state::{default_pane_path, routing_to_str, UiState, NEW_CONVERSATION_TITLE};
+use crate::state::{
+    default_pane_path, routing_to_str, SpaceMenu, SpacePressRun, UiState, MULTI_CLICK_INTERVAL_MS,
+    NEW_CONVERSATION_TITLE,
+};
 use crate::terminal::{classify_input, InputClass};
 use crate::ui::{
     AppTab, CronEntry, NavDir, Pane, PaneKind, SettingsCategory, SettingsControl, SidebarView,
-    Space, SplitDir, UiActions, WorkspaceRouting,
+    Space, SplitDir, TabMenuAction, UiActions, WorkspaceRouting,
 };
 use crate::ui::color_picker::ColorTarget;
 
 use super::pane_ops::{
-    collect_leaf_ids, ensure_pane_hover, open_file_pane, open_pane_harness, split_active_pane,
+    close_space_at, ensure_pane_hover, open_file_pane, open_pane_harness, split_active_pane,
 };
 use super::prompt::{run_terminal_command, send_agent_prompt};
 use crate::ui::pickers::{change_directory_command, checkout_branch_command};
@@ -136,6 +139,7 @@ pub fn make_actions(
     let on_shortcuts_help_move = Rc::clone(&state);
     let on_toggle_right_sidebar = Rc::clone(&state);
     let on_toggle_fullscreen = Rc::clone(&state);
+    let on_toggle_pane_maximized = Rc::clone(&state);
     let on_clear_transcript = Rc::clone(&state);
     let on_cron_create = Rc::clone(&state);
     let on_cron_delete = Rc::clone(&state);
@@ -158,6 +162,9 @@ pub fn make_actions(
     let on_add_medium_focus_change = Rc::clone(&state);
     let on_add_medium_close = Rc::clone(&state);
     let on_space_press = Rc::clone(&state);
+    let on_space_menu = Rc::clone(&state);
+    let on_space_menu_close = Rc::clone(&state);
+    let on_space_menu_action = Rc::clone(&state);
     let on_space_hover = Rc::clone(&state);
     let on_space_reorder = Rc::clone(&state);
     let on_space_release = Rc::clone(&state);
@@ -246,6 +253,7 @@ pub fn make_actions(
     let desktop_add_space_with_medium = desktop.clone();
     let desktop_space_reorder = desktop.clone();
     let desktop_workspace_click = desktop.clone();
+    let desktop_space_menu_action = desktop.clone();
     let desktop_pane_activate = desktop.clone();
     let desktop_pane_navigate = desktop.clone();
     let desktop_pane_drag = desktop.clone();
@@ -447,7 +455,8 @@ pub fn make_actions(
             state.set_active_pane_path(path.clone());
             // The subject the row was given names the conversation from the
             // start; a blank one means the user clicked the row directly, so the
-            // placeholder title stands and the tab reads "New Agent".
+            // conversation opens on the placeholder, which the agent replaces
+            // with a subject of its own once it has answered in it.
             let title = if state.new_conversation_draft.trim().is_empty() {
                 NEW_CONVERSATION_TITLE.to_string()
             } else {
@@ -767,15 +776,7 @@ pub fn make_actions(
             #[cfg(not(target_os = "macos"))]
             log::info!("copy terminal block: {text}");
         })),
-        on_restart: Rc::new(RefCell::new(move || {
-            log::info!("restart agent pressed");
-        })),
-        // Agent-header 3-dots menu: rename the current agent/conversation. The
-        // store rename is not wired yet; log so the menu item is not a dead end.
-        on_rename_agent: Rc::new(RefCell::new(move || {
-            log::info!("rename agent pressed (coming soon)");
-        })),
-        // Agent-header 3-dots menu: clear the active pane's in-memory transcript
+        // Clear the active pane's in-memory transcript
         // (messages + suspended ask + queued prompt). The backend store is left
         // intact so the conversation can be recovered by restarting the session.
         on_clear_transcript: Rc::new(RefCell::new(move || {
@@ -1090,26 +1091,18 @@ pub fn make_actions(
             if index >= state.spaces.len() {
                 return;
             }
-            let now = std::time::Instant::now();
-            // The click lives in app state, not in a local of this frame's
-            // actions: a cell rebuilt every frame would be back to `None` by the
-            // second click, and the rename would never open. It names the tab
-            // too, so clicking two different tabs quickly is not a double click.
-            let click = state.space_click_at.clone();
-            let double = click
+            // The press this release ends is what the gesture is counted from
+            // (see `on_space_press`), not the time of the release: `count` names
+            // the tab too, so clicking two different tabs quickly is not a
+            // double click, and a press held long does not eat the window.
+            let count = state
+                .space_press_run
                 .borrow()
-                .map(|(tab, at)| tab == index && now.duration_since(at).as_millis() < 400)
-                .unwrap_or(false);
-            *click.borrow_mut() = if double { None } else { Some((index, now)) };
-            if double {
-                // Second click on a chip: rename that workspace inline. The
-                // field opens on the label the tab draws now — the derived one
-                // for a tab nobody has named — so the user edits what they see.
-                state.active_space = index;
-                state.active_pane_id = state.spaces[index].root.first_leaf_id();
-                state.space_rename_draft = state.space_label(index);
-                state.space_rename_editing = true;
-                state.space_rename_focused = true;
+                .filter(|run| run.index == index)
+                .map(|run| run.count)
+                .unwrap_or(1);
+            if count == 2 {
+                state.begin_space_rename(index);
                 return;
             }
             // A single click selects the clicked workspace (Warp-style chip row).
@@ -1120,6 +1113,88 @@ pub fn make_actions(
                 if let Some(desktop) = &desktop_workspace_click {
                     state.refresh_messages(desktop);
                     state.save_panes(desktop);
+                }
+            }
+        })),
+        // The menu a right click on a tab opens: hung from the point the click
+        // landed on, which is where the bar paints it.
+        on_space_menu: Rc::new(RefCell::new(move |index: usize, at: Vector2F| {
+            let state = on_space_menu.borrow_mut();
+            if index >= state.spaces.len() {
+                return;
+            }
+            // A second right click on the tab the menu is already open on closes
+            // it again, the way warp-new's toggle does.
+            let open_here = state
+                .space_menu
+                .borrow()
+                .map(|menu| menu.index == index)
+                .unwrap_or(false);
+            if open_here {
+                *state.space_menu.borrow_mut() = None;
+                return;
+            }
+            *state.space_menu.borrow_mut() = Some(SpaceMenu { index, at });
+        })),
+        // The menu closed itself: a press landed outside the panel, so the tab
+        // it belongs to is dropped here — otherwise the next frame would build
+        // the same menu open again.
+        on_space_menu_close: Rc::new(RefCell::new(move || {
+            let state = on_space_menu_close.borrow();
+            *state.space_menu.borrow_mut() = None;
+        })),
+        on_space_menu_action: Rc::new(RefCell::new(move |index: usize, action: TabMenuAction| {
+            let mut state = on_space_menu_action.borrow_mut();
+            // Choosing a row closes the menu whether or not the row does
+            // anything, which is what a menu does.
+            *state.space_menu.borrow_mut() = None;
+            if index >= state.spaces.len() {
+                return;
+            }
+            match action {
+                TabMenuAction::Rename => state.begin_space_rename(index),
+                // The typed name is given up, which is the whole of it: the
+                // label is derived from what the tab holds again the next time
+                // the tree is rebuilt (`refresh_space_labels` runs before every
+                // frame's snapshot), so a terminal tab reads its directory once
+                // more and an agent tab its conversation's subject.
+                TabMenuAction::ResetName => {
+                    state.spaces[index].named = false;
+                    if let Some(desktop) = &desktop_space_menu_action {
+                        state.save_panes(desktop);
+                    }
+                }
+                TabMenuAction::MoveLeft => {
+                    if index > 0 {
+                        state.reorder_space(index, index - 1);
+                        if let Some(desktop) = &desktop_space_menu_action {
+                            state.save_panes(desktop);
+                        }
+                    }
+                }
+                TabMenuAction::Close => {
+                    close_space_at(&mut state, index, desktop_space_menu_action.as_deref());
+                }
+                // Every other tab goes, from the far end inwards, so the index
+                // of the tab being kept never shifts under the removals.
+                TabMenuAction::CloseOthers => {
+                    for other in (index + 1..state.spaces.len()).rev() {
+                        close_space_at(&mut state, other, desktop_space_menu_action.as_deref());
+                    }
+                    for other in (0..index).rev() {
+                        close_space_at(&mut state, other, desktop_space_menu_action.as_deref());
+                    }
+                    // What is left is the tab the menu was opened on, and it is
+                    // the one on screen.
+                    if let Some(desktop) = &desktop_space_menu_action {
+                        state.save_panes(desktop);
+                    }
+                }
+                TabMenuAction::SetColor(color) => {
+                    state.spaces[index].color = color;
+                    if let Some(desktop) = &desktop_space_menu_action {
+                        state.save_panes(desktop);
+                    }
                 }
             }
         })),
@@ -1400,13 +1475,37 @@ pub fn make_actions(
             let mut state = on_toggle_right_sidebar.borrow_mut();
             state.right_sidebar_open = !state.right_sidebar_open;
         })),
-        // Agent-header 3-dots menu: toggle the agent/window borderless fullscreen.
-        // The fullscreen flag is app-owned so the menu's checked state survives
-        // the per-frame rebuild; the platform window follows via `window_control`.
+        // Toggle the agent/window borderless fullscreen. The fullscreen flag is
+        // app-owned so it survives the per-frame rebuild; the platform window
+        // follows via `window_control`.
         on_toggle_fullscreen: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_fullscreen.borrow_mut();
             state.fullscreen = !state.fullscreen;
             window_control.set_fullscreen(state.fullscreen);
+        })),
+        // The pane header's expand control: one pane at a time is drawn over the
+        // whole panes space. A second press on the same pane puts the tree back,
+        // so the pane returns to the place it had — the layout is untouched.
+        on_toggle_pane_maximized: Rc::new(RefCell::new(move |pane_id: u64| {
+            let mut state = on_toggle_pane_maximized.borrow_mut();
+            let retract = state.maximized_pane == Some(pane_id);
+            // A pane has nothing to expand over while its space holds one: the
+            // tree already is that pane. warp-new's toggle refuses the same case
+            // (`pane_count() > 1`). Taking the expansion back is never refused,
+            // so a pane left expanded by an edit that removed its neighbour
+            // still has a way out.
+            let expandable = state
+                .spaces
+                .get(state.active_space)
+                .is_some_and(|space| space.root.leaf_count() > 1);
+            if !retract && !expandable {
+                return;
+            }
+            // The pane that takes the space is the pane the app works in, so the
+            // expansion moves the focus with it.
+            state.focus_pane(pane_id);
+            state.maximized_pane = if retract { None } else { Some(pane_id) };
+            state.sync_active_view();
         })),
         on_cron_create: Rc::new(RefCell::new(move || {
             let mut state = on_cron_create.borrow_mut();
@@ -1541,6 +1640,11 @@ pub fn make_actions(
             // A child view open in the closed pane goes with it: the next pane to
             // take this id must not inherit a stranger's transcript.
             state.sub_agent_views.remove(&active_id);
+            // An expanded pane that is closed gives the space back: the id is
+            // dropped with the pane, so nothing is left expanded by name.
+            if state.maximized_pane == Some(active_id) {
+                state.maximized_pane = None;
+            }
             // Drop any terminal session (killing its shell) + input mirror.
             state.terminal.borrow_mut().drop_pane(active_id);
             if let Some(next) = next {
@@ -1659,53 +1763,7 @@ pub fn make_actions(
         // close on it tore the window down).
         on_close_space: Rc::new(RefCell::new(move |index: usize| {
             let mut state = on_close_space.borrow_mut();
-            if index >= state.spaces.len() {
-                return;
-            }
-            // Drop every pane session/runtime/hover for the space's leaves and
-            // kill any terminal sessions along with them.
-            let closed = state.spaces.remove(index);
-            for id in collect_leaf_ids(&closed.root) {
-                state.pane_sessions.remove(&id);
-                state.pane_runtime.remove(&id);
-                state.pane_hover.remove(&id);
-                state.sub_agent_views.remove(&id);
-                state.terminal.borrow_mut().drop_pane(id);
-            }
-            // If the space being closed was the last one, restore a fresh empty
-            // chat space so the window is never left with zero tabs.
-            if state.spaces.is_empty() {
-                let id = state.next_pane_id;
-                state.next_pane_id += 1;
-                // Nobody named this space: its tab label is derived from what it
-                // holds, so it reads the agent label until its conversation has
-                // a subject of its own.
-                state.spaces.push(Space::unnamed(Pane::Leaf { id, kind: PaneKind::Chat }));
-                state.active_space = 0;
-                state.active_pane_id = id;
-                ensure_pane_hover(&mut state, id);
-                state.bind_pane_new_conversation(id, desktop_close_space.as_deref());
-                state.refresh_space_labels();
-                state.sync_active_view();
-                if let Some(desktop) = &desktop_close_space {
-                    state.refresh_messages(desktop);
-                    state.save_panes(desktop);
-                }
-                return;
-            }
-            // Re-index the active space after the removal.
-            if index < state.active_space {
-                state.active_space -= 1;
-            } else if index == state.active_space {
-                state.active_space = state.active_space.min(state.spaces.len() - 1);
-            }
-            // Focus the new active space's first leaf.
-            state.active_pane_id = state.spaces[state.active_space].root.first_leaf_id();
-            state.sync_active_view();
-            if let Some(desktop) = &desktop_close_space {
-                state.refresh_messages(desktop);
-                state.save_panes(desktop);
-            }
+            close_space_at(&mut state, index, desktop_close_space.as_deref());
         })),
         on_add_space: Rc::new(RefCell::new(move || {
             let mut state = on_add_space.borrow_mut();
@@ -1790,6 +1848,26 @@ pub fn make_actions(
             let mut state = on_space_press.borrow_mut();
             state.space_press = Some(index);
             state.space_hover = Some(index);
+            // The press, not the release, is what the double click is counted
+            // from: the count is warp-new's own rule (`SpacePressRun`), read
+            // here and acted on by `on_workspace_click` when the button comes
+            // back up. A press on a different tab, or one that arrives after
+            // the window, starts a run of its own.
+            let now = std::time::Instant::now();
+            let run = state.space_press_run.clone();
+            let count = run
+                .borrow()
+                .filter(|run| {
+                    run.index == index
+                        && now.duration_since(run.pressed_at).as_millis() <= MULTI_CLICK_INTERVAL_MS
+                })
+                .map(|run| run.count + 1)
+                .unwrap_or(1);
+            *run.borrow_mut() = Some(SpacePressRun {
+                index,
+                pressed_at: now,
+                count,
+            });
         })),
         on_space_hover: Rc::new(RefCell::new(move |hover: Option<usize>| {
             on_space_hover.borrow_mut().space_hover = hover;
@@ -1816,7 +1894,7 @@ pub fn make_actions(
         })),
         on_pane_activate: Rc::new(RefCell::new(move |id: u64| {
             let mut state = on_pane_activate.borrow_mut();
-            state.active_pane_id = id;
+            state.focus_pane(id);
             state.sync_active_view();
             if let Some(desktop) = &desktop_pane_activate {
                 state.refresh_messages(desktop);
@@ -1835,7 +1913,7 @@ pub fn make_actions(
                 return;
             };
             if let Some(next) = space.navigate(state.active_pane_id, dir) {
-                state.active_pane_id = next;
+                state.focus_pane(next);
                 state.sync_active_view();
                 if let Some(desktop) = &desktop_pane_navigate {
                     state.refresh_messages(desktop);

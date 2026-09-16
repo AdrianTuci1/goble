@@ -30,12 +30,16 @@ impl SubAgentRowStatus {
     /// status so the transcript row, the child view's title and the work
     /// overlay (S7) all draw the same mark for the same status rather than
     /// each inventing one.
+    ///
+    /// The bullet is the same diamond whatever the status — a live child is not
+    /// a spinner and an ended one is not a different shape. The status is the
+    /// colour, which is also what the parent's tool row draws its own mark in.
     pub fn affordance(self) -> (&'static str, crate::theme::ColorToken) {
         match self {
-            Self::Running => ("◐", crate::theme::ColorToken::Accent),
-            Self::Completed => ("●", crate::theme::ColorToken::Success),
+            Self::Running => ("◆", crate::theme::ColorToken::Accent),
+            Self::Completed => ("◆", crate::theme::ColorToken::Success),
             Self::Failed => ("◆", crate::theme::ColorToken::Error),
-            Self::Cancelled => ("◇", crate::theme::ColorToken::Muted),
+            Self::Cancelled => ("◆", crate::theme::ColorToken::Muted),
         }
     }
 }

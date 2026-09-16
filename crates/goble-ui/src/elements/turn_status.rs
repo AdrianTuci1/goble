@@ -20,16 +20,24 @@ const SPINNER_PERIOD: Duration = Duration::from_millis(480);
 /// state (C1's `LiveWork`); the element only draws the phrasing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TurnActivity {
-    /// A tool call is in flight, drawn as its command when it has one and as the
-    /// tool's name otherwise.
-    Tool {
-        name: String,
-        command: Option<String>,
-    },
+    /// A tool call is in flight, drawn as the row its family gives it — `Run
+    /// cargo test`, `Search "fn main" in src`, `Fetch https://…` — and as the
+    /// tool's own name when no family claims it.
+    Tool { name: String, arguments: String },
     /// The turn is suspended on the user's approval of a command proposal.
     WaitingOnApproval,
     /// The turn is suspended on the user's answer to an `ask_user` question.
     WaitingOnQuestion,
+    /// The turn is suspended on a sub-agent child it spawned and awaited, drawn
+    /// as the child's description and activity when the live record carries them
+    /// and as `Waiting on subagent…` otherwise.
+    WaitingOnSubAgent {
+        description: Option<String>,
+        activity: Option<String>,
+    },
+    /// The prompt is sent and the model's first output has not arrived: the wait
+    /// for the model to (re)start streaming.
+    WaitingForResponse,
     /// The model is reasoning.
     Thinking,
     /// The model is writing its answer.
@@ -39,16 +47,22 @@ pub enum TurnActivity {
 impl TurnActivity {
     pub fn label(&self) -> String {
         match self {
-            Self::Tool {
-                name: _,
-                command: Some(command),
-            } => command.clone(),
-            Self::Tool {
-                name,
-                command: None,
-            } => name.clone(),
+            Self::Tool { name, arguments } => {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
+                let row = goble_core::harness::tool_row(name, &parsed, None);
+                format!("{}{}", row.verb, row.subject)
+            }
             Self::WaitingOnApproval => "Waiting on approval…".to_string(),
             Self::WaitingOnQuestion => "Waiting on a question…".to_string(),
+            Self::WaitingOnSubAgent {
+                description,
+                activity,
+            } => match (description, activity) {
+                (Some(description), Some(activity)) => format!("{description}: {activity}…"),
+                _ => "Waiting on subagent…".to_string(),
+            },
+            Self::WaitingForResponse => "Waiting for response…".to_string(),
             Self::Thinking => "Thinking…".to_string(),
             Self::Responding => "Responding…".to_string(),
         }
@@ -62,8 +76,7 @@ pub enum WorkKind {
     Command,
     /// Worker agent executions the service reports as running.
     Execution,
-    /// A spawned sub-agent. No source produces one yet (the sub-agent events
-    /// land with S4), so the app never emits this kind today.
+    /// Sub-agent children the pane reports as still running.
     SubAgent,
 }
 
@@ -143,8 +156,19 @@ impl TurnStatus {
 /// The spinner's frame and the elapsed label both come from the app's real
 /// clock: the element layer owns neither a clock nor a frame counter, so the app
 /// passes the age of the observed turn start (C1's `turn_started_at`) and the
-/// phase advances with it. No token count is drawn — the live events carry none,
-/// and one is not invented.
+/// phase advances with it.
+///
+/// The states the reference row carries that this one does not, because nothing
+/// in a pane's live data says them: `Cancelling…` (a stop ends the pane's turn
+/// synchronously, so no cancelling window is ever observed), `Verifying…` (no
+/// goal-mode verification), `Compacting…` and `Retrying (attempt N)…` (no live
+/// event), `Sleeping…`, `Waiting on task output…` and `Waiting on tasks…` (the
+/// only awaitable work a pane spawns is a sub-agent child, which
+/// [`TurnActivity::WaitingOnSubAgent`] names), `Running…` (every pane turn is an
+/// inference turn), `Starting session…` (no MCP init progress reaches the pane),
+/// and the fork/worktree/restore command labels (no such command). The
+/// right-hand token count is not drawn either: `chat:usage` reports what a
+/// conversation has spent, not the context the next request carries.
 pub struct TurnStatusFooter {
     status: TurnStatus,
     root: Option<Box<dyn Element>>,
@@ -355,7 +379,7 @@ mod tests {
         let status = TurnStatus::busy(
             TurnActivity::Tool {
                 name: "run_command".to_string(),
-                command: Some("cargo test -p goble-ui".to_string()),
+                arguments: r#"{"command":"cargo test -p goble-ui"}"#.to_string(),
             },
             Some(Duration::from_secs(65)),
             2,
@@ -367,8 +391,8 @@ mod tests {
         let drawn = texts(&commands);
 
         assert!(
-            drawn.iter().any(|t| t == "cargo test -p goble-ui"),
-            "the running command is the activity: {drawn:?}"
+            drawn.iter().any(|t| t == "Run cargo test -p goble-ui"),
+            "the running command is the activity, prefixed with Run: {drawn:?}"
         );
         assert!(
             drawn.iter().any(|t| t == "1:05"),
@@ -423,15 +447,77 @@ mod tests {
             label(TurnActivity::WaitingOnQuestion),
             "Waiting on a question…"
         );
+        assert_eq!(
+            label(TurnActivity::WaitingForResponse),
+            "Waiting for response…"
+        );
         assert_eq!(label(TurnActivity::Thinking), "Thinking…");
         assert_eq!(label(TurnActivity::Responding), "Responding…");
-        // A tool without a command falls back to its name.
+        // A sub-agent wait is the child when the record carries it, and the
+        // reference row's own words when it does not.
+        assert_eq!(
+            label(TurnActivity::WaitingOnSubAgent {
+                description: Some("fix flaky test".to_string()),
+                activity: Some("reading the schema".to_string()),
+            }),
+            "fix flaky test: reading the schema…"
+        );
+        assert_eq!(
+            label(TurnActivity::WaitingOnSubAgent {
+                description: None,
+                activity: None,
+            }),
+            "Waiting on subagent…"
+        );
+        // A tool no family claims falls back to its name.
         assert_eq!(
             label(TurnActivity::Tool {
-                name: "read_file".to_string(),
-                command: None,
+                name: "list_entities".to_string(),
+                arguments: r#"{"query":"x"}"#.to_string(),
             }),
-            "read_file"
+            "list_entities"
+        );
+    }
+
+    /// A running tool's row is the row its own family gives it — the same parse
+    /// the transcript's header uses — and a tool no family claims keeps its
+    /// name. None of them prints the call's arguments.
+    #[test]
+    fn a_running_tools_row_is_the_row_its_family_gives_it() {
+        let app = AppContext::default();
+        let row_of = |name: &str, arguments: &str| -> String {
+            let activity = TurnActivity::Tool {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            };
+            let mut element: Box<dyn Element> =
+                TurnStatusFooter::new(TurnStatus::busy(activity, None, 0)).finish();
+            let drawn = texts(&render_element(&mut element, vec2f(600.0, 40.0), &app));
+            drawn
+                .into_iter()
+                .find(|text| !crate::elements::SPINNER_FRAMES.contains(&text.as_str()))
+                .unwrap_or_else(|| panic!("{name} draws no activity"))
+        };
+
+        assert_eq!(
+            row_of("run_command", r#"{"command":"cargo test -p goble-ui"}"#),
+            "Run cargo test -p goble-ui",
+            "a command is Run and the command"
+        );
+        assert_eq!(
+            row_of("grep", r#"{"pattern":"fn main"}"#),
+            r#"Search "fn main""#,
+            "a search is Search and its pattern"
+        );
+        assert_eq!(
+            row_of("web_fetch", r#"{"url":"https://example.com"}"#),
+            "Fetch https://example.com",
+            "a fetch is Fetch and its URL"
+        );
+        assert_eq!(
+            row_of("list_entities", r#"{"query":"open issues"}"#),
+            "list_entities",
+            "a tool no family claims reads as its name, not as its arguments"
         );
     }
 
@@ -446,6 +532,10 @@ mod tests {
                 kind: WorkKind::Execution,
                 count: 1,
             },
+            WorkKindCount {
+                kind: WorkKind::SubAgent,
+                count: 1,
+            },
         ]);
         let mut element: Box<dyn Element> = TurnStatusFooter::new(status).finish();
 
@@ -456,8 +546,10 @@ mod tests {
             .find(|t| t.contains("still running"))
             .expect("the still-running line is drawn");
 
-        assert!(line.contains("2 commands still running"), "{line}");
-        assert!(line.contains("1 execution still running"), "{line}");
+        assert_eq!(
+            line,
+            "2 commands still running · 1 execution still running · 1 sub-agent still running"
+        );
         assert_eq!(command_counts(&commands).stroke_rect, 0, "no border");
     }
 

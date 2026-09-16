@@ -7,7 +7,7 @@ use crate::elements::{
     EventContext, Fill, Flex, Icon, LayoutContext, PaintContext, Point, ScrollState, Scrollable,
     SizeConstraint, Text,
 };
-use crate::event::DispatchedEvent;
+use crate::event::{DispatchedEvent, BUTTON_PRIMARY};
 use crate::geometry::{rectf, vec2f, PointF, RectF, Size2F, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
 
@@ -141,6 +141,14 @@ pub struct PopupMenu {
     /// `paint` (where hover is decided) and read by the next frame's `layout`,
     /// which is what builds the tray.
     hover_index: Rc<RefCell<Option<usize>>>,
+    /// A row drawn after every item, in the panel's own flow — the tab menu's
+    /// colour dots, which are a row of controls rather than a labelled item.
+    /// `None` leaves the panel exactly the items it was given.
+    footer_row: Option<Box<dyn Element>>,
+    /// Told when the menu closes *itself* — a press outside the panel — so the
+    /// app's own open state hears about it. Without this the app would not know
+    /// the menu had closed and would open it again on the next frame.
+    on_close: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     state: InteractiveState,
     panel: Option<Box<dyn Element>>,
     panel_size: Option<Vector2F>,
@@ -167,6 +175,8 @@ impl PopupMenu {
             on_select: None,
             hover_tray: None,
             hover_index: Rc::new(RefCell::new(None)),
+            footer_row: None,
+            on_close: None,
             state: InteractiveState::default(),
             panel: None,
             panel_size: None,
@@ -235,6 +245,24 @@ impl PopupMenu {
     /// the per-frame rebuild (the open flag is app-owned for the same reason).
     pub fn with_hover_index(mut self, hover_index: Rc<RefCell<Option<usize>>>) -> Self {
         self.hover_index = hover_index;
+        self
+    }
+
+    /// Add a row after the items, in the panel's own column and at its own
+    /// height: warp-new's tab menu carries the tab's colours as one such row —
+    /// a strip of dots, each its own click target — rather than as a labelled
+    /// item (see `app/src/tab.rs::dot_color_option_menu_items`).
+    pub fn with_footer_row(mut self, row: Box<dyn Element>) -> Self {
+        self.footer_row = Some(row);
+        self
+    }
+
+    /// Called when the menu closes itself — a press outside the panel — so an
+    /// app that rebuilds the element every frame can clear its own open state.
+    /// An item's selection is reported through [`Self::with_on_select`] instead,
+    /// which the menu calls before it closes.
+    pub fn with_on_close<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_close = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -425,7 +453,7 @@ impl PopupMenu {
         // A capped panel is a viewport over the rows — the cap, or the whole
         // list when that is shorter, so a three-row directory does not leave
         // five rows of empty panel in the tray.
-        let content: Box<dyn Element> = match self.max_visible_rows {
+        let list: Box<dyn Element> = match self.max_visible_rows {
             Some(max_rows) => {
                 let visible = max_rows.max(1).min(self.items.len().max(1)) as f32;
                 let height = visible * POPUP_ITEM_HEIGHT + (visible - 1.0) * POPUP_ITEM_SPACING;
@@ -438,6 +466,18 @@ impl PopupMenu {
                 .finish()
             }
             None => column.finish(),
+        };
+        // A footer row hangs below the list at its own height and outside the
+        // list's viewport: the cap is a window over the *items*, and a row that
+        // is not an item is neither scrolled away with them nor counted in.
+        let content: Box<dyn Element> = match self.footer_row.take() {
+            Some(row) => Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_spacing(POPUP_ITEM_SPACING)
+                .with_child(list)
+                .with_child(row)
+                .finish(),
+            None => list,
         };
         Container::new(content)
             .with_padding(EdgeInsets::uniform(sm))
@@ -613,11 +653,21 @@ impl Element for PopupMenu {
             }
             if let Some(panel_bounds) = self.panel_bounds() {
                 if self.panel_is_inside(event, panel_bounds) {
-                    return self
+                    let consumed = self
                         .panel
                         .as_mut()
                         .map(|p| p.dispatch_event(event, ctx, app))
                         .unwrap_or(false);
+                    // The panel is a surface, not only its rows: a press on its
+                    // padding, or in the gap between two of its controls, is
+                    // still a press on the open menu. Letting it through would
+                    // reach whatever the panel is drawn over — the tab a tab
+                    // menu hangs on would take the click as its own.
+                    return consumed
+                        || matches!(
+                            event,
+                            DispatchedEvent::MouseDown { .. } | DispatchedEvent::MouseUp { .. }
+                        );
                 }
             }
             // A press that lands on the trigger itself should toggle the menu
@@ -630,9 +680,23 @@ impl Element for PopupMenu {
                     return handle_mouse_event(&mut self.state, event, bounds, ctx, &mut toggle);
                 }
             }
-            // Clicking outside the panel (but somewhere in the window) closes it.
-            if matches!(event, DispatchedEvent::MouseDown { .. }) {
+            // Clicking outside the panel (but somewhere in the window) closes
+            // it. Only the primary button dismisses a menu: a right press is a
+            // gesture of its own — it is what opens a tab's menu, and on the tab
+            // that menu already belongs to it is what closes it again — so
+            // treating it as a dismissal here would have the two cancel out and
+            // leave the menu standing.
+            if matches!(
+                event,
+                DispatchedEvent::MouseDown {
+                    button: BUTTON_PRIMARY,
+                    ..
+                }
+            ) {
                 *self.open.borrow_mut() = false;
+                if let Some(cb) = self.on_close.as_ref() {
+                    (cb.borrow_mut())();
+                }
             }
             return false;
         }

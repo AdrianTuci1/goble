@@ -182,10 +182,11 @@ use std::collections::HashMap;
         render_element(&mut element, vec2f(600.0, 200.0), app)
     }
 
-    /// Q8: a command is one block, drawn by the same element in the transcript
-    /// and in the terminal pane. The pane's executed-command block renders
-    /// identically in the transcript, and a command the agent ran is that same
-    /// block built from the command the bridge produced for it.
+    /// Q8: a command the *user* ran is one block, drawn by the same element in
+    /// the transcript and in the terminal pane. A command the *agent* ran is
+    /// not: an agent's call is part of its reply, drawn continuously under the
+    /// row that names it, and it takes no block. Both sides of the distinction
+    /// are pinned here.
     #[test]
     fn a_command_block_renders_identically_in_the_transcript_and_the_pane() {
         let app = AppContext::default();
@@ -215,13 +216,9 @@ use std::collections::HashMap;
             "the same block must render in the transcript"
         );
 
-        // A command the agent ran is that block, built from the command and its
-        // output rather than re-drawn as agent output.
-        let command = TerminalData::for_command("echo hi", "hi", TerminalStatus::Success);
-        let command_runs = text_runs(&paint(
-            terminal_block(&command, TerminalFilter::default(), None, None),
-            &app,
-        ));
+        // The same command the agent ran is not that block: the transcript
+        // draws the row that names it and then its output, with no block
+        // prompt line and no block header of its own.
         let call = ToolCall {
             id: "call-1".to_string(),
             name: "run_command".to_string(),
@@ -229,8 +226,8 @@ use std::collections::HashMap;
             status: ToolCallStatus::Finished,
             result: Some("hi".to_string()),
         };
-        // The command starts folded; expand it so the transcript draws the same
-        // block the pane does.
+        // The command starts folded; expand it so the transcript draws the
+        // output under the row.
         let fold = Rc::new(RefCell::new(std::collections::HashMap::from([(
             goble_ui::tool_fold_key(&call, 0),
             goble_ui::ToolDisplayMode::Expanded,
@@ -239,12 +236,21 @@ use std::collections::HashMap;
             .with_tool_calls(vec![call])
             .with_tool_fold(fold);
         let bubble_runs = text_runs(&paint(Box::new(bubble), &app));
-        // The header is the mark, the verb and the command it runs for; the
-        // block itself follows it unchanged.
-        assert_eq!(
-            &bubble_runs[3..],
-            command_runs.as_slice(),
-            "the agent's command segment must be the terminal block"
+        assert!(
+            bubble_runs.iter().any(|(text, _, _, _)| text == "echo hi"),
+            "the row names the command, got {bubble_runs:?}"
+        );
+        assert!(
+            bubble_runs.iter().any(|(text, _, _, _)| text == "hi"),
+            "the output is drawn under the row, got {bubble_runs:?}"
+        );
+        assert!(
+            !bubble_runs.iter().any(|(text, _, _, _)| text == "❯ "),
+            "the agent's call carries no block prompt line, got {bubble_runs:?}"
+        );
+        assert!(
+            bubble_runs.iter().all(|(_, _, _, size)| *size == 12.0),
+            "the row and its body are the tool row's own size, got {bubble_runs:?}"
         );
     }
 
@@ -734,105 +740,69 @@ use std::collections::HashMap;
         );
     }
 
-    /// The pane's topbar tray is an overlay, not another child of the pane's
-    /// column: with the dots open, the panel must be painted after the shell's
-    /// output so it covers text instead of being covered by it, and it must open
-    /// leftwards from the dots, which sit at the pane's right edge, so the whole
-    /// panel stays inside the window.
+    /// The pane's bar carries one control beside the close X: the expand
+    /// control that grows the pane over the panes space. Nothing opens a tray
+    /// over the shell's output any more, so the shell keeps the pane's surface
+    /// and the bar keeps one control.
     #[test]
-    fn the_panes_tray_paints_over_the_output_and_stays_inside_the_window() {
+    fn the_panes_bar_draws_the_expand_control_and_no_tray() {
         let app = AppContext::default();
         let (mut root, state, _dir) = shell_root();
         {
-            let mut s = state.borrow_mut();
-            // Output under the tray, so "paints over it" is a claim about text.
+            let s = state.borrow_mut();
             let mut emulator = Emulator::new(80, 24);
-            emulator.feed(b"echo painted-under-the-tray\r\npainted-under-the-tray\r\n");
+            emulator.feed(b"echo the-pane-keeps-its-output\r\nthe-pane-keeps-its-output\r\n");
             s.terminal
                 .borrow_mut()
                 .sessions
                 .insert(1, TerminalSession::with_emulator(emulator));
-            // The dots' open flag is app-owned state; a click on the trigger
-            // flips it, so opening it here is what that click leaves behind.
-            s.agent_header_menus.insert(1, Rc::new(RefCell::new(true)));
         }
 
         let window = vec2f(1024.0, 768.0);
         let commands = render_element(&mut root, window, &app);
 
-        // The panel's own surface: the raised background the popup paints. The
-        // header band uses `Surface`, so this rect is the panel's.
-        let raised = app.theme.color(goble_ui::theme::ColorToken::SurfaceRaised);
-        let (panel_index, panel) = commands
-            .iter()
-            .enumerate()
-            .find_map(|(index, command)| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == raised && rect.height() > 100.0 =>
-                {
-                    Some((index, *rect))
-                }
-                _ => None,
-            })
-            .expect("the open tray paints its panel");
-        // The shell's output is on screen as the grid's per-glyph runs, so a
-        // panel painted after the last of them covers text, not just background.
-        let grid_glyphs: Vec<&String> = commands
+        // The shell's output is on screen as the grid's per-glyph runs.
+        let painted: String = commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } if text.chars().count() == 1 => Some(text),
+                RenderCommand::DrawText { text, .. } if text.chars().count() == 1 => Some(text.as_str()),
                 _ => None,
             })
             .collect();
-        let painted: String = grid_glyphs.iter().map(|text| text.as_str()).collect();
         assert!(
-            painted.contains("painted-under-the-tray"),
+            painted.contains("the-pane-keeps-its-output"),
             "the pane paints the shell's output: {painted:?}"
         );
-        let output_index = commands
-                .iter()
-                .rposition(|command| {
-                    matches!(command, RenderCommand::DrawText { text, .. } if text.chars().count() == 1)
-                })
-                .expect("the pane paints the shell's output");
-        let bar_index = commands
+
+        let icons: Vec<&String> = commands
             .iter()
-            .position(|command| {
-                matches!(
-                    command,
-                    RenderCommand::DrawText { text, .. } if text == ChatComposer::new().placeholder()
-                )
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, .. } => Some(name),
+                _ => None,
             })
-            .expect("the pane paints its rich input");
-        let tray_text_index = commands
-                .iter()
-                .position(|command| {
-                    matches!(command, RenderCommand::DrawText { text, .. } if text == "Clear transcript")
-                })
-                .expect("the open tray paints its items");
+            .collect();
         assert!(
-                panel_index > output_index && panel_index > bar_index,
-                "the tray paints after the pane's own content: panel {panel_index}, output {output_index}, bar {bar_index}"
-            );
+            icons.iter().any(|name| *name == "maximize-01"),
+            "the pane's bar draws the expand control: {icons:?}"
+        );
         assert!(
-            panel_index < tray_text_index,
-            "the panel's items paint on its own surface: panel {panel_index}, items {tray_text_index}"
+            !icons.iter().any(|name| *name == "dots-horizontal"),
+            "and no tray trigger: {icons:?}"
         );
 
-        // Leftwards from the dots, which sit at the pane's right edge: the panel
-        // stops short of the window's right edge and stays inside the pane.
-        assert!(
-            panel.min_x() >= crate::ui::SIDEBAR_WIDTH,
-            "the tray opened leftwards into the pane: {panel:?}"
-        );
-        assert!(
-            panel.max_x() <= window.x - 32.0 && panel.max_y() <= window.y,
-            "the tray stops short of the window's right edge: {panel:?}"
-        );
-        assert!(
-            panel.min_y() >= 0.0,
-            "the tray is inside the window: {panel:?}"
-        );
+        let drawn: Vec<&String> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        for gone in ["Copy", "Restart", "Rename", "Clear transcript", "Fullscreen"] {
+            assert!(
+                !drawn.iter().any(|text| *text == gone),
+                "the tray label {gone} is not drawn over the output: {drawn:?}"
+            );
+        }
     }
 
     /// R5: the bar is the pane's only typing surface. An active shell pane hands
@@ -1167,6 +1137,58 @@ use std::collections::HashMap;
             state.borrow().pane_view(1),
             BlockView::Agent { conversation_id },
             "clicking the card reopens the conversation's agent view"
+        );
+    }
+
+    /// The focused pane's corner mark is drawn over the left end of the pane's
+    /// own bar, so the bar starts past it. The harness's "esc for terminal" hint
+    /// leads that bar, and without the room the mark leaves it would sit under
+    /// the mark and read as one glyph with it.
+    #[test]
+    fn the_harness_hint_starts_past_the_focus_mark() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        // One frame first: the bar takes the keys once it is on screen.
+        let _ = pane_runs(&mut root, &app);
+        // Cmd+Enter is what opens the pane's harness, and the open harness is
+        // the only view whose bar leads with the hint.
+        for ch in "explain".chars() {
+            assert!(press(&mut root, &app, &ch.to_string()));
+        }
+        let cmd_enter = key(
+            "Enter",
+            ModifiersState {
+                command: true,
+                ..ModifiersState::default()
+            },
+        );
+        let mut ctx = EventContext::default();
+        assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
+        assert!(
+            state.borrow().pane_controls(1).harness_mode,
+            "the harness is open, so its bar is the one on screen"
+        );
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+
+        let (mark, mark_size) = commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::DrawIcon {
+                    origin, name, size, ..
+                } if name == "upper-left-triangle" => Some((*origin, *size)),
+                _ => None,
+            })
+            .expect("the focused pane draws its corner mark");
+        let esc = commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::DrawText { origin, text, .. } if text == "esc" => Some(*origin),
+                _ => None,
+            })
+            .expect("the harness bar leads with the esc hint");
+        assert!(
+            esc.x >= mark.x + mark_size,
+            "the hint starts past the mark: esc at {esc:?}, mark at {mark:?} sized {mark_size}"
         );
     }
 

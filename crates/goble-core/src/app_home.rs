@@ -44,26 +44,6 @@ const WORKSPACE_DIRS: &[&str] = &[
     "workflows",
 ];
 
-/// The header a seeded `config.toml` carries: the layout is grok's, and the
-/// commented block is the shape a model entry takes.
-const CONFIG_HEADER: &str = "\
-# goble configuration. The layout is grok's (~/.grok/config.toml): one
-# [model.<slug>] table per model, the default selection under [models], MCP
-# servers under [mcp_servers.<name>]. Every key is optional.
-#
-# [models]
-# default = \"deepseek\"
-#
-# [model.deepseek]
-# model = \"deepseek-flash\"
-# name = \"Deepseek-V4-Flash\"
-# base_url = \"https://api.deepseek.com\"
-# api_key = \"sk-...\"
-# max_completion_tokens = 16384
-# context_window = 256000
-
-";
-
 /// Goble's per-machine workspace home directory. The home mirrors the `~/.grok`
 /// layout so a machine/VM/cluster — which is one workspace — has a single hidden
 /// folder holding config, docs, bundled tooling, sessions, worktrees, logs and
@@ -160,7 +140,9 @@ impl GobleHome {
         if path.exists() {
             return Ok(());
         }
-        let toml = format!("{CONFIG_HEADER}{}", GobleConfig::default().to_toml()?);
+        // The same writer a save uses (`GobleConfig::to_toml`), so the seeded
+        // file and every later save carry the same header.
+        let toml = GobleConfig::default().to_toml()?;
         fs::write(&path, toml).context("write default config.toml")?;
         Ok(())
     }

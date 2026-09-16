@@ -25,7 +25,9 @@ fn with_inline_terminal(
     pane_id: u64,
 ) -> Vec<ChatMessage> {
     // The pane's own executed-command block: the transcript draws it with the
-    // same terminal block the pane does, so one command is one block.
+    // same terminal block the pane does, so a command the user ran is one block
+    // wherever it appears. A command the agent ran is not this: its call is part
+    // of the agent's reply and is drawn continuously under the row that names it.
     let block = {
         let reg = terminal.borrow();
         reg.sessions
@@ -44,14 +46,15 @@ fn with_inline_terminal(
 /// The transcript rows for the commands typed *inside* a conversation — the `!`
 /// lines the user ran from the pane's agent input — so the conversation draws
 /// them where they ran instead of leaving them behind the shell's own view
-/// (Esc). Each is the shared terminal block, so a command typed in a
-/// conversation and one the agent ran read the same.
+/// (Esc). Each is the shared terminal block: a command the user typed is the
+/// one thing that is drawn segmented, and it is drawn the same in a
+/// conversation as in the pane.
 ///
 /// A block the agent owns is left out: its turn already carries that command as
-/// its own tool-call row. The caller passes the conversation's own blocks, so a
-/// shell block is never among them: the shell's history keeps its blocks to
-/// itself, and a conversation opened from the terminal still starts on a clean
-/// sheet.
+/// its own tool-call row, drawn continuously in the reply rather than as a
+/// block. The caller passes the conversation's own blocks, so a shell block is
+/// never among them: the shell's history keeps its blocks to itself, and a
+/// conversation opened from the terminal still starts on a clean sheet.
 fn conversation_command_rows(blocks: &[VisibleBlock]) -> Vec<ChatMessage> {
     blocks
         .iter()

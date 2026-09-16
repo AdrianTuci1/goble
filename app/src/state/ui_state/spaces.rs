@@ -101,6 +101,29 @@ impl UiState {
         }
     }
 
+    /// Open the inline rename field on the tab at `index`, seeded with the label
+    /// that tab draws right now. One entry point for both paths that start a
+    /// rename — a double click on the tab and the tab menu's "Rename tab" — so
+    /// the two can never open the field in different states.
+    ///
+    /// The tab becomes the active one first: the field is drawn in the *active*
+    /// tab's slot (see `build_workspace_strip`), so renaming a tab the menu was
+    /// opened on while another one is on screen would otherwise open a field the
+    /// user cannot see.
+    pub fn begin_space_rename(&mut self, index: usize) {
+        if index >= self.spaces.len() {
+            return;
+        }
+        if self.active_space != index {
+            self.active_space = index;
+            self.active_pane_id = self.spaces[index].root.first_leaf_id();
+            self.sync_active_view();
+        }
+        self.space_rename_draft = self.space_label(index);
+        self.space_rename_editing = true;
+        self.space_rename_focused = true;
+    }
+
     /// The label the tab at `index` draws: the name the user typed for it, or —
     /// for a tab nobody has named — what the tab holds, read off its **focused**
     /// pane.

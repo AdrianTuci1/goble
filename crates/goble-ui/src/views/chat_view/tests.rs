@@ -118,6 +118,118 @@ fn chat_view_empty_state_layouts() {
     assert!(size.y > 0.0);
 }
 
+/// The empty state: "New conversation" and its invitation are centered inside
+/// a rounded bordered frame, the frame is inset from the pane's side edges and
+/// capped in width, and it hangs a third of the free height above the composer
+/// rather than dead center — the placement the reference welcome box uses.
+#[test]
+fn the_empty_state_is_centered_in_a_frame() {
+    use crate::elements::text::measure_text;
+    use crate::geometry::RectF;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    const TITLE: &str = "New conversation";
+    const SUBTITLE: &str = "Ask anything to get started.";
+
+    fn draw(width: f32, height: f32) -> Vec<RenderCommand> {
+        let app = AppContext::default();
+        let mut view = ChatView::new().with_empty_state(TITLE, SUBTITLE).finish();
+        render_element(&mut view, vec2f(width, height), &app)
+    }
+
+    fn text_origin(commands: &[RenderCommand], needle: &str) -> Vector2F {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == needle => Some(*origin),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{needle:?} is drawn"))
+    }
+
+    fn inside(point: Vector2F, rect: RectF) -> bool {
+        point.x >= rect.min_x()
+            && point.x <= rect.max_x()
+            && point.y >= rect.min_y()
+            && point.y <= rect.max_y()
+    }
+
+    /// The rounded border the empty state's own text sits in.
+    fn empty_frame(commands: &[RenderCommand], text: Vector2F) -> RectF {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::StrokeRect {
+                    rect,
+                    corner_radius,
+                    ..
+                } if *corner_radius > 0.0 && inside(text, *rect) => Some(*rect),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the empty state's text sits inside a rounded frame"))
+    }
+
+    let app = AppContext::default();
+    let margin = app.theme.spacing_px(SpacingToken::Xl);
+
+    // A pane narrower than the frame's cap: the frame spans it minus the
+    // margin on each side.
+    let commands = draw(600.0, 800.0);
+    let title = text_origin(&commands, TITLE);
+    let subtitle = text_origin(&commands, SUBTITLE);
+    let frame = empty_frame(&commands, title);
+
+    assert!(
+        inside(subtitle, frame),
+        "both lines sit in the frame: subtitle {subtitle:?} is outside {frame:?}"
+    );
+    assert!(
+        inside(title, frame),
+        "the title sits in the frame: {title:?} is outside {frame:?}"
+    );
+
+    // Centered inside it, not hugging an edge.
+    let title_middle = title.x + measure_text(TITLE, 12.0, 1.2, f32::INFINITY).x / 2.0;
+    let frame_middle = (frame.min_x() + frame.max_x()) / 2.0;
+    assert!(
+        (title_middle - frame_middle).abs() <= 1.0,
+        "the title is centered in the frame: text middle {title_middle}, frame middle {frame_middle}"
+    );
+
+    assert!(
+        (frame.min_x() - margin).abs() < 0.01 && (600.0 - frame.max_x() - margin).abs() < 0.01,
+        "the frame keeps a {margin} px margin inside a 600 px pane, got {frame:?}"
+    );
+
+    // A pane wider than the cap: the frame takes the cap and stays centered,
+    // rather than running the full width or hugging the left margin.
+    let wide = draw(1200.0, 800.0);
+    let wide_title = text_origin(&wide, TITLE);
+    let wide_frame = empty_frame(&wide, wide_title);
+    assert!(
+        (wide_frame.width() - super::transcript::EMPTY_FRAME_MAX_WIDTH).abs() < 0.01,
+        "a wide pane caps the frame at {}, got {}",
+        super::transcript::EMPTY_FRAME_MAX_WIDTH,
+        wide_frame.width()
+    );
+    assert!(
+        (wide_frame.min_x() - (1200.0 - wide_frame.width()) / 2.0).abs() < 0.01,
+        "the capped frame is centered in the pane, got {wide_frame:?}"
+    );
+
+    // It sits a third of the free height down: 600 px more pane moves it
+    // 200 px, where a box centered in the slack would move 300.
+    let taller = draw(600.0, 1400.0);
+    let taller_frame = empty_frame(&taller, text_origin(&taller, TITLE));
+    let moved = taller_frame.min_y() - frame.min_y();
+    assert!(
+        (moved - 200.0).abs() <= 1.0,
+        "the frame hangs a third of the slack above the composer, so 600 px more pane moves it \
+         200 px, got {moved}"
+    );
+}
+
 #[test]
 fn chat_view_transcript_clips_to_the_viewport_and_follows_the_stream() {
     use crate::test_util::{command_counts, render_element};
@@ -1402,4 +1514,377 @@ fn the_transcript_filter_bar_stays_down_until_it_is_raised() {
         !drawn.iter().any(|t| t == "alpha line"),
         "the dropped line is not drawn: {drawn:?}"
     );
+}
+
+/// What "Fork and usage keep their place under the last message" means, read
+/// off the drawn frame rather than asserted by hand: the footer is the closing
+/// row of the *scrolled* transcript content — one column gap below the last
+/// message's own row, inside the viewport the transcript clips to, moving with
+/// that message when the transcript scrolls, and holding the transcript's room
+/// under itself so it never sits on the input's separator.
+mod the_footers_place {
+    use super::*;
+    use crate::elements::interactive::contains;
+    use crate::elements::{LayoutContext, PaintContext, SizeConstraint};
+    use crate::geometry::RectF;
+    use crate::render::{RenderCommand, Renderer};
+    use goble_core::llm::TokenUsage;
+
+    /// One user turn (so the last message paints a measurable row band), the
+    /// repo's own fold/scroll state, and a footer with both affordances wired.
+    fn pane(last_message: &str, scroll: Rc<RefCell<ScrollState>>) -> Box<dyn Element> {
+        ChatView::new()
+            .with_messages(vec![ChatMessage::new(
+                ChatRole::User,
+                vec![ChatFragment::text(last_message)],
+            )])
+            .with_scroll_state(scroll)
+            .with_usage(TokenUsage {
+                input: 1_234,
+                cached: Some(800),
+                output: 56,
+            })
+            .with_on_fork(|| {})
+            .finish()
+    }
+
+    /// The same pane over a conversation long enough to scroll.
+    fn long_pane(scroll: Rc<RefCell<ScrollState>>) -> Box<dyn Element> {
+        let messages = (0..40)
+            .map(|i| {
+                ChatMessage::new(
+                    ChatRole::User,
+                    vec![ChatFragment::text(format!("streamed line {i}"))],
+                )
+            })
+            .collect();
+        ChatView::new()
+            .with_messages(messages)
+            .with_scroll_state(scroll)
+            .with_usage(TokenUsage {
+                input: 1_234,
+                cached: Some(800),
+                output: 56,
+            })
+            .with_on_fork(|| {})
+            .finish()
+    }
+
+    /// One frame at `size`, the way the app draws it, with the pointer at
+    /// `cursor` while painting when one is given.
+    fn frame(
+        view: &mut Box<dyn Element>,
+        size: Vector2F,
+        app: &AppContext,
+        cursor: Option<Vector2F>,
+    ) -> Vec<RenderCommand> {
+        let _ = view.layout(
+            SizeConstraint::loose(size),
+            &mut LayoutContext::default(),
+            app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        if let Some(position) = cursor {
+            ctx.cursor_inside = true;
+            ctx.cursor_position = position;
+        }
+        view.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        ctx.renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default()
+    }
+
+    fn text_origin(commands: &[RenderCommand], needle: &str) -> Vector2F {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == needle => Some(*origin),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{needle:?} is drawn"))
+    }
+
+    fn texts(commands: &[RenderCommand]) -> Vec<String> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The last message's own row: the pane-wide band it paints behind its text,
+    /// taken as the bottom-most one that starts above `above` (the footer's ink).
+    fn last_row(commands: &[RenderCommand], app: &AppContext, above: f32) -> RectF {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == app.theme.color(ColorToken::SurfaceRaised)
+                        && rect.max_y() <= above =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .max_by(|a, b| a.max_y().total_cmp(&b.max_y()))
+            .unwrap_or_else(|| panic!("the last message paints its row band"))
+    }
+
+    /// The rect of the affordance the pointer at `point` is inside: the band
+    /// that frame draws and the resting frame does not.
+    fn hovered_row(rest: &[RenderCommand], hovered: &[RenderCommand], point: Vector2F) -> RectF {
+        let bands = |commands: &[RenderCommand]| -> Vec<RectF> {
+            commands
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::FillRect { rect, .. } if rect.height() <= 40.0 => Some(*rect),
+                    _ => None,
+                })
+                .collect()
+        };
+        let resting = bands(rest);
+        bands(hovered)
+            .into_iter()
+            .find(|band| contains(*band, point) && !resting.contains(band))
+            .unwrap_or_else(|| panic!("the affordance at {point:?} paints a band under the pointer"))
+    }
+
+    /// The viewport the transcript clips its content to.
+    fn viewport(commands: &[RenderCommand]) -> RectF {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::ClipRect(rect) => Some(*rect),
+                _ => None,
+            })
+            .expect("the transcript clips to its viewport")
+    }
+
+    fn assert_close(what: &str, got: f32, want: f32) {
+        assert!((got - want).abs() < 0.05, "{what}: got {got}, want {want}");
+    }
+
+    /// The two affordances close the transcript as one row, directly under the
+    /// last message, inside the scrolled viewport rather than over the input.
+    #[test]
+    fn the_footer_is_the_closing_row_of_the_scrolled_content() {
+        let app = AppContext::default();
+        let size = vec2f(600.0, 520.0);
+        let md = app.theme.spacing_px(SpacingToken::Md);
+        let scroll = Rc::new(RefCell::new(ScrollState::following()));
+        let mut view = pane("Salut", scroll);
+
+        let rest = frame(&mut view, size, &app, None);
+        let fork = text_origin(&rest, "Fork");
+        let usage = text_origin(&rest, "1,290 tokens");
+        assert_eq!(fork.y, usage.y, "the two affordances are one closing row");
+        assert!(
+            usage.x > fork.x,
+            "the usage disclosure follows the fork on that row: {usage:?} against {fork:?}"
+        );
+
+        let row = last_row(&rest, &app, fork.y);
+        assert!(
+            fork.y > row.max_y(),
+            "the footer is under the last message: {fork:?} against {row:?}"
+        );
+
+        let probe = fork + vec2f(1.0, 1.0);
+        let hovered = frame(&mut view, size, &app, Some(probe));
+        let footer = hovered_row(&rest, &hovered, probe);
+        assert_close(
+            "the footer sits one column gap under the last message",
+            footer.min_y() - row.max_y(),
+            md,
+        );
+
+        let viewport = viewport(&rest);
+        assert!(
+            footer.min_y() >= viewport.min_y() && footer.max_y() <= viewport.max_y(),
+            "the footer is inside the scrolled viewport: {footer:?} in {viewport:?}"
+        );
+        assert!(
+            footer.max_y() < viewport.max_y(),
+            "the transcript keeps its room under that closing row: {footer:?} in {viewport:?}"
+        );
+    }
+
+    /// Short content is still flushed to the end of the viewport, and the slack
+    /// that does it lands above the message: the footer keeps the same `md` gap
+    /// under the last message at two pane heights, and the room below it is the
+    /// footer's own — so it does not read as part of the input under it.
+    #[test]
+    fn the_footer_keeps_its_gap_under_the_last_message_when_the_content_is_short() {
+        let app = AppContext::default();
+        let md = app.theme.spacing_px(SpacingToken::Md);
+        for height in [520.0_f32, 900.0] {
+            let size = vec2f(600.0, height);
+            let scroll = Rc::new(RefCell::new(ScrollState::following()));
+            let mut view = pane("Salut", scroll.clone());
+            let rest = frame(&mut view, size, &app, None);
+            let fork = text_origin(&rest, "Fork");
+            let row = last_row(&rest, &app, fork.y);
+            let probe = fork + vec2f(1.0, 1.0);
+            let hovered = frame(&mut view, size, &app, Some(probe));
+            let footer = hovered_row(&rest, &hovered, probe);
+            let viewport = viewport(&rest);
+
+            assert_eq!(
+                scroll.borrow().max_offset(),
+                0.0,
+                "one message is shorter than a {height} px pane, so nothing scrolls"
+            );
+            assert_close(
+                &format!("the gap under the last message at {height}"),
+                footer.min_y() - row.max_y(),
+                md,
+            );
+            assert_close(
+                &format!("the transcript's room under its closing row at {height}"),
+                viewport.max_y() - footer.max_y(),
+                md,
+            );
+            assert!(
+                row.min_y() - viewport.min_y() > 0.0,
+                "the anchor's slack is above the message, not between it and the footer"
+            );
+        }
+    }
+
+    /// The footer is inside the scrolled content: a scroll delta carries it by
+    /// exactly that much, and reading the history from the top takes it out of
+    /// the viewport with the last message instead of stranding it.
+    #[test]
+    fn scrolling_the_transcript_carries_the_footer_with_the_last_message() {
+        let app = AppContext::default();
+        let size = vec2f(600.0, 480.0);
+        let scroll = Rc::new(RefCell::new(ScrollState::following()));
+        let mut view = long_pane(scroll.clone());
+
+        let pinned = frame(&mut view, size, &app, None);
+        let viewport = viewport(&pinned);
+        let pinned_fork = text_origin(&pinned, "Fork");
+        assert!(
+            scroll.borrow().max_offset() > 0.0,
+            "40 messages are taller than the pane"
+        );
+        assert!(
+            pinned_fork.y >= viewport.min_y() && pinned_fork.y <= viewport.max_y(),
+            "the footer is in view at the end of the stream: {pinned_fork:?} in {viewport:?}"
+        );
+
+        // The user scrolls up through the conversation.
+        scroll.borrow_mut().scroll_by(-120.0);
+        let scrolled = frame(&mut view, size, &app, None);
+        assert_close(
+            "the footer moves with the transcript's scroll offset",
+            text_origin(&scrolled, "Fork").y - pinned_fork.y,
+            120.0,
+        );
+
+        // All the way back: the footer has left the viewport, with the message.
+        scroll.borrow_mut().scroll_by(-10_000.0);
+        let top = frame(&mut view, size, &app, None);
+        assert_eq!(scroll.borrow().offset(), 0.0, "the transcript is at its start");
+        assert!(
+            text_origin(&top, "Fork").y > viewport.max_y(),
+            "at the start of the history the footer is out of the viewport, not stranded over \
+             the composer"
+        );
+    }
+
+    /// While the last message is still growing the footer stays under it: the
+    /// anchored transcript ends on the same row in every frame, at the same
+    /// `md` gap from the row above, rather than jumping between frames.
+    #[test]
+    fn the_footer_stays_under_the_last_message_while_it_streams() {
+        let app = AppContext::default();
+        let size = vec2f(600.0, 520.0);
+        let md = app.theme.spacing_px(SpacingToken::Md);
+        let scroll = Rc::new(RefCell::new(ScrollState::following()));
+
+        let mut first = pane("Salut", scroll.clone());
+        let rest = frame(&mut first, size, &app, None);
+        let fork = text_origin(&rest, "Fork");
+        let row = last_row(&rest, &app, fork.y);
+        let probe = fork + vec2f(1.0, 1.0);
+        let hovered = frame(&mut first, size, &app, Some(probe));
+        let footer = hovered_row(&rest, &hovered, probe);
+
+        // The same conversation, frame after frame, with the last message's
+        // text still arriving: each frame is a rebuild with more of it.
+        for (frame_index, chunk) in [120_usize, 260, 400].into_iter().enumerate() {
+            let mut streaming = pane(&"x".repeat(chunk), scroll.clone());
+            let grown = frame(&mut streaming, size, &app, None);
+            let grown_fork = text_origin(&grown, "Fork");
+            let grown_row = last_row(&grown, &app, grown_fork.y);
+            assert!(
+                grown_row.height() > row.height(),
+                "the last message grew by frame {frame_index}: {:?} against {row:?}",
+                grown_row
+            );
+            let probe = grown_fork + vec2f(1.0, 1.0);
+            let hovered = frame(&mut streaming, size, &app, Some(probe));
+            let grown_footer = hovered_row(&grown, &hovered, probe);
+            let viewport = viewport(&grown);
+            assert_eq!(
+                scroll.borrow().offset(),
+                0.0,
+                "the growing message does not move the transcript's offset"
+            );
+            assert!(
+                grown_footer.min_y() >= viewport.min_y()
+                    && grown_footer.max_y() <= viewport.max_y(),
+                "the footer stays inside the scrolled viewport while the message grows: \
+                 {grown_footer:?} in {viewport:?}"
+            );
+            assert_close(
+                "the footer does not jump while the message grows",
+                grown_footer.min_y(),
+                footer.min_y(),
+            );
+            assert_close(
+                "the footer is still the row under the growing message",
+                grown_footer.min_y() - grown_row.max_y(),
+                md,
+            );
+        }
+    }
+
+    /// A transcript with no message draws no footer at all: a fresh
+    /// conversation is the empty state, and the footer arrives with the first
+    /// message it belongs under.
+    #[test]
+    fn an_empty_transcript_draws_no_footer() {
+        let app = AppContext::default();
+        let scroll = Rc::new(RefCell::new(ScrollState::following()));
+        let mut view = ChatView::new()
+            .with_scroll_state(scroll)
+            .with_usage(TokenUsage {
+                input: 1_234,
+                cached: Some(800),
+                output: 56,
+            })
+            .with_on_fork(|| {})
+            .finish();
+        let commands = frame(&mut view, vec2f(600.0, 520.0), &app, None);
+        let drawn = texts(&commands);
+        assert!(
+            drawn.iter().any(|text| text == "New conversation"),
+            "the empty state is what a fresh pane shows: {drawn:?}"
+        );
+        assert!(
+            !drawn.iter().any(|text| text == "Fork"),
+            "no message to sit under, so no fork: {drawn:?}"
+        );
+        assert!(
+            !drawn
+                .iter()
+                .any(|text| text.contains("tokens") || text.contains("usage")),
+            "and no usage disclosure: {drawn:?}"
+        );
+    }
 }

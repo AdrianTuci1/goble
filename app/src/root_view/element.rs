@@ -43,7 +43,8 @@ impl Element for RootView {
     }
 
     /// Whether the frame clock still has a reason to run: an agent turn, a tool
-    /// call, a pending approval or question, or a command printing into a pane.
+    /// call, a pending approval or question, a command printing into a pane, or
+    /// a transcript gliding to content that arrived while it was following.
     /// Everything else is event-driven, so an idle window idles instead of
     /// rebuilding and repainting the same frame.
     fn wants_animation(&self) -> bool {
@@ -55,6 +56,16 @@ impl Element for RootView {
             || live.pending_approval.is_some()
             || live.pending_question.is_some()
         {
+            return true;
+        }
+        // A glide is over in a fraction of a second: at the idle rate (250ms a
+        // frame) it would arrive in one visible step instead of travelling.
+        let gliding = state
+            .pane_chat_scroll
+            .values()
+            .chain(state.pane_terminal_scroll.values())
+            .any(|scroll| scroll.borrow().is_animating());
+        if gliding {
             return true;
         }
         let running = state.terminal.borrow().any_running_command();
@@ -152,5 +163,89 @@ impl Element for RootView {
             }
         }
         self.element.dispatch_event(event, ctx, app)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use goble_core::store::Store;
+    use goble_desktop_service::{DesktopState, ThreadStore};
+    use goble_ui::elements::{Axis, Scrollable};
+    use goble_ui::geometry::vec2f;
+    use goble_ui::{ScrollState, SizeConstraint};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    /// Mount a real root over an in-memory store, as the root-view cases do.
+    fn root() -> (RootView, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let view = RootView::new(&AppContext::default(), &desktop, None);
+        (view, dir)
+    }
+
+    /// A transcript glide is over in a fraction of a second, which the idle
+    /// heartbeat (250ms a frame) cannot carry: while one runs, the frame clock
+    /// has to stay at the active rate, and it has to let go once the glide has
+    /// landed.
+    #[test]
+    fn a_transcript_glide_keeps_the_frame_clock_at_the_active_rate() {
+        let (view, _dir) = root();
+        assert!(
+            !view.wants_animation(),
+            "a window with nothing in flight idles"
+        );
+
+        // Pane 1's transcript, as the app itself registers it.
+        let scroll = {
+            let mut state = view.state.borrow_mut();
+            state.ensure_pane_controls();
+            state
+                .pane_chat_scroll
+                .entry(1)
+                .or_insert_with(|| Rc::new(RefCell::new(ScrollState::following())))
+                .clone()
+        };
+        let app = AppContext::default();
+        let constraint = SizeConstraint::loose(vec2f(400.0, 200.0));
+        let laid_out = |height: f32| {
+            Scrollable::new(
+                goble_ui::elements::Empty::new()
+                    .with_size(vec2f(100.0, height))
+                    .finish(),
+                Axis::Vertical,
+            )
+            .with_state(Rc::clone(&scroll))
+            .layout(constraint, &mut LayoutContext::default(), &app);
+        };
+
+        // The pane opens on its transcript, at the end of it.
+        laid_out(400.0);
+        assert!(!view.wants_animation(), "an opened transcript is at rest");
+
+        // A long answer arrives in one frame: the transcript glides to it.
+        laid_out(3000.0);
+        assert!(
+            scroll.borrow().is_animating(),
+            "the new content is glided to, not jumped to"
+        );
+        assert!(
+            view.wants_animation(),
+            "the glide needs the active frame rate"
+        );
+
+        // The glide lands, and the window goes quiet again.
+        while scroll.borrow().is_animating() {
+            scroll.borrow_mut().advance(0.016);
+        }
+        assert!(
+            !view.wants_animation(),
+            "a landed glide no longer asks for frames"
+        );
     }
 }

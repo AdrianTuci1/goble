@@ -6,6 +6,20 @@ impl UiState {
         self.sub_agent_views.get(&pane_id)
     }
 
+    /// Move the focus to `pane_id` within the space on screen.
+    ///
+    /// The pane drawn over the panes space gives way to the one the focus moved
+    /// to: warp-new clears its maximized pane whenever the focused pane changes
+    /// (`app/src/pane_group/focus_state.rs`), so a pane that gave up the focus
+    /// cannot keep the whole space. Moving the focus to the pane that is already
+    /// the expanded one leaves the expansion standing.
+    pub fn focus_pane(&mut self, pane_id: u64) {
+        if self.active_pane_id != pane_id {
+            self.maximized_pane = None;
+        }
+        self.active_pane_id = pane_id;
+    }
+
     /// Point the global "active pane" fields at the active pane's own session +
     /// runtime so anything still reading the singletons sees the right pane.
     pub fn sync_active_view(&mut self) {
@@ -237,7 +251,11 @@ impl UiState {
                         .unwrap_or_else(|| Rc::new(RefCell::new(0))),
                     queued_prompt: rt.and_then(|r| r.queued_prompt.clone()),
                     agent_busy: rt.map(|r| r.busy).unwrap_or(false),
-                    turn_status: pane_turn_status(rt, executions),
+                    turn_status: pane_turn_status(
+                        rt,
+                        executions,
+                        self.running_sub_agent_count(*pane_id),
+                    ),
                     inline_screen: None,
                     screen_link: message_screen_link(&rt.map(|r| r.messages.clone()).unwrap_or_default()),
                     sub_agents: self.sub_agent_rows(*pane_id),
@@ -423,33 +441,6 @@ impl UiState {
                 continue;
             }
             self.set_pane_path(pane_id, path);
-        }
-    }
-
-    /// Get (creating if needed) the app-owned open flag for `pane_id`'s
-    /// agent-header 3-dots menu. Keyed per pane so opening the tray in one
-    /// split pane does not open it in the others sharing the view.
-    pub fn agent_menu_open(&mut self, pane_id: u64) -> Rc<RefCell<bool>> {
-        self.agent_header_menus
-            .entry(pane_id)
-            .or_insert_with(|| Rc::new(RefCell::new(false)))
-            .clone()
-    }
-
-    /// Ensure a per-pane agent-header menu flag exists for every rendered leaf
-    /// pane (walking the space tree), plus any session key and the active pane,
-    /// so the UI can always read a stable app-owned flag and the tray's
-    /// open/closed state persists across the per-frame rebuild. Called before
-    /// the snapshot is built.
-    pub fn ensure_agent_menu_flags(&mut self) {
-        let mut ids = Vec::new();
-        for space in &self.spaces {
-            collect_leaf_pane_ids(&space.root, &mut ids);
-        }
-        ids.extend(self.pane_sessions.keys().copied());
-        ids.push(self.active_pane_id);
-        for id in ids {
-            self.agent_menu_open(id);
         }
     }
 }

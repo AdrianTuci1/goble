@@ -181,6 +181,21 @@ impl UiState {
             .collect()
     }
 
+    /// How many of `pane_id`'s spawned sub-agent children are still running. A
+    /// child that completed, failed or was cancelled has ended and is not
+    /// counted, so the pane's still-running line names only live work.
+    pub fn running_sub_agent_count(&self, pane_id: u64) -> usize {
+        self.pane_runtime
+            .get(&pane_id)
+            .map(|rt| {
+                rt.sub_agents
+                    .values()
+                    .filter(|record| record.row.is_running())
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     /// Record one worker agent execution as running, from `agent:started`. The
     /// start time is the service's own, carried on the event; a run already
     /// tracked is refreshed rather than duplicated.

@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 use crate::theme::FontFamily;
 
 use super::atlas::AtlasEntry;
+use super::cache;
 
 /// Bundled Roboto font weight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -48,7 +49,31 @@ pub fn measure_text(
 
 /// Like [`measure_text`] but using an explicit font family (e.g. mono for
 /// terminals) and an oblique/italic face.
+///
+/// Memoized by every number the answer depends on: the tree is rebuilt every
+/// frame, so a transcript asks for the same few hundred runs over and over.
 pub fn measure_text_family(
+    text: &str,
+    font_size: f32,
+    line_height: f32,
+    max_width: f32,
+    weight: FontWeight,
+    family: FontFamily,
+    italic: bool,
+) -> crate::geometry::Vector2F {
+    let key = cache::SizeKey::new(
+        text, font_size, line_height, max_width, weight, family, italic,
+    );
+    if let Some(size) = cache::lookup_size(&key) {
+        return size;
+    }
+    let size = measure_uncached(text, font_size, line_height, max_width, weight, family, italic);
+    cache::store_size(key, size);
+    size
+}
+
+/// [`measure_text_family`] without the cache: the fontdue pass itself.
+pub(super) fn measure_uncached(
     text: &str,
     font_size: f32,
     line_height: f32,
@@ -101,7 +126,27 @@ pub fn measure_text_family(
 ///
 /// The sum is taken the way fontdue's own layout takes it, so `text` fits a
 /// `max_width` of exactly this value and no less.
+///
+/// Memoized like [`measure_text_family`]: a paragraph asks for the advance of
+/// every word it holds, on every frame.
 pub fn advance_width(
+    text: &str,
+    font_size: f32,
+    weight: FontWeight,
+    family: FontFamily,
+    italic: bool,
+) -> f32 {
+    let key = cache::AdvanceKey::new(text, font_size, weight, family, italic);
+    if let Some(advance) = cache::lookup_advance(&key) {
+        return advance;
+    }
+    let advance = advance_width_uncached(text, font_size, weight, family, italic);
+    cache::store_advance(key, advance);
+    advance
+}
+
+/// [`advance_width`] without the cache: the fontdue pass itself.
+pub(super) fn advance_width_uncached(
     text: &str,
     font_size: f32,
     weight: FontWeight,

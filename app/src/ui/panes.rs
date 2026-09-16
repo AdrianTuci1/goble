@@ -11,11 +11,11 @@ use std::rc::Rc;
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     AppContext, Axis, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Expanded,
-    Fill, Flex, HoverButton, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint,
-    SplitNode, Text,
+    Fill, Flex, HoverButton, Icon, LayoutContext, MainAxisSize, PaintContext, Point,
+    SizeConstraint, SplitNode, Stack, Text,
 };
 use goble_ui::event::DispatchedEvent;
-use goble_ui::geometry::{rectf, Vector2F};
+use goble_ui::geometry::{rectf, vec2f, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::chat;
@@ -25,6 +25,13 @@ use super::shell::TOPBAR_HEIGHT;
 use super::terminal;
 use super::{Pane, PaneKind, SplitDir, UiActions, UiSnapshot};
 
+/// The corner mark the focused pane carries, and the room its own topbar leaves
+/// for it. warp-new draws the same mark in the same corner
+/// (`add_active_pane_indicator_to_stack`): an accent right triangle filling the
+/// pane's top-left, which is how the pane the keyboard is in reads at a glance
+/// even where nothing else in the bar changes.
+pub(crate) const FOCUS_MARKER_SIZE: f32 = 16.0;
+
 /// Build the active space's pane tree as the main chat content.
 ///
 /// Guards against an empty space list or an out-of-range active index (which
@@ -32,7 +39,19 @@ use super::{Pane, PaneKind, SplitDir, UiActions, UiSnapshot};
 /// an empty chat pane rather than panicking on user-controlled state.
 pub fn build_active_space(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
     match state.spaces.get(state.active_space) {
-        Some(space) => build_pane(app, state, actions, &space.root),
+        Some(space) => {
+            // One pane at a time is drawn over the whole panes space: the leaf
+            // the header's expand control names, instead of the tree. The tree
+            // itself is left alone, so retracting puts the pane back in the
+            // place it had. An id that names no leaf of *this* space (it was
+            // closed, or it belongs to another space) falls through to the tree.
+            if let Some(id) = state.maximized_pane {
+                if let Some(kind) = leaf_kind_of(&space.root, id) {
+                    return build_leaf(app, state, actions, id, kind);
+                }
+            }
+            build_pane(app, state, actions, &space.root)
+        }
         None => {
             let id = 0u64;
             let chat = chat::build_agent_chat(app, state, actions, id, true, None);
@@ -46,6 +65,18 @@ pub fn build_active_space(app: &AppContext, state: &UiSnapshot, actions: &UiActi
                 .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
                 .with_border(app.theme.color(ColorToken::Border).into())
                 .finish()
+        }
+    }
+}
+
+/// The kind of the leaf pane `target` holds in this subtree, or `None` when the
+/// subtree has no such leaf. What the expand control needs: the id names a
+/// pane, and drawing it needs its kind.
+fn leaf_kind_of(pane: &Pane, target: u64) -> Option<PaneKind> {
+    match pane {
+        Pane::Leaf { id, kind } => (*id == target).then(|| kind.clone()),
+        Pane::Split { first, second, .. } => {
+            leaf_kind_of(first, target).or_else(|| leaf_kind_of(second, target))
         }
     }
 }
@@ -202,9 +233,7 @@ fn build_leaf(
         // The settings tab's surface: the rail, the page and the footer, with
         // the page the leaf carries. It composes with the tree like any other
         // pane — it can be split, walked to and closed.
-        PaneKind::Settings { page } => {
-            settings::build_settings_pane(app, state, actions, page)
-        }
+        PaneKind::Settings { page } => settings::build_settings_pane(app, state, actions, id, page),
         // A file view is read-only: no composer, no shell, just the file the
         // pane was opened on.
         PaneKind::File { path } => file_view::build_file_view(app, state, actions, id, &path),
@@ -243,9 +272,23 @@ fn build_leaf(
     } else {
         ColorToken::Border
     };
-    Container::new(column.finish())
+    let pane = Container::new(column.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
         .with_border(app.theme.color(border_color).into())
+        .finish();
+    if !active {
+        return pane;
+    }
+    // The focused pane's mark: the accent triangle sits in the pane's own
+    // top-left corner, which is where the pane the keyboard is in is read from.
+    // The pane's bar starts past it (see `chat::build_agent_header`).
+    let marker = Icon::new("upper-left-triangle")
+        .with_size(FOCUS_MARKER_SIZE)
+        .with_theme_color(ColorToken::Accent, app)
+        .finish();
+    Stack::new()
+        .with_children(vec![pane])
+        .with_overlay(marker, vec2f(0.0, 0.0))
         .finish()
 }
 

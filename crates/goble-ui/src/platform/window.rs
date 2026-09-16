@@ -264,8 +264,8 @@ impl ApplicationHandler for App {
             }
             winit::event::WindowEvent::MouseInput { state, button, .. } => {
                 let button_id = match button {
-                    winit::event::MouseButton::Left => 0,
-                    winit::event::MouseButton::Right => 1,
+                    winit::event::MouseButton::Left => crate::event::BUTTON_PRIMARY,
+                    winit::event::MouseButton::Right => crate::event::BUTTON_SECONDARY,
                     _ => 2,
                 };
                 let position = self.cursor_position;

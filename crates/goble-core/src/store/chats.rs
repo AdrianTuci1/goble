@@ -28,6 +28,30 @@ impl Store {
         Ok(())
     }
 
+    /// Write a conversation's title. The title is the subject its sidebar card
+    /// reads, so it is written on its own rather than with the message rows; the
+    /// conversation's `updated_at` keeps naming when it was last *said* in.
+    pub fn set_chat_title(&self, id: &str, title: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chats SET title = ?1 WHERE id = ?2",
+            params![title, id],
+        )?;
+        Ok(())
+    }
+
+    /// Read a conversation's title, or `None` when there is no such
+    /// conversation.
+    pub fn get_chat_title(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT title FROM chats WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get::<_, String>(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn set_chat_model(&self, id: &str, provider: &str, model: &str) -> Result<()> {
         self.conn.lock().execute(
             "UPDATE chats SET provider = ?1, model = ?2 WHERE id = ?3",

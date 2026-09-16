@@ -228,6 +228,92 @@ pub enum ColorToken {
     DiffDeleteBg,
 }
 
+/// The preset colours a tab can be tinted with: the six warp-new's own tab menu
+/// offers (`app/src/ui_components/color_dot.rs::TAB_COLOR_OPTIONS` — the normal
+/// ANSI red through cyan), read out of the terminal palette
+/// ([`goble_terminal::palette::ANSI_16`]) so a tab and the shell inside it agree
+/// on what "red" is. The "no colour" entry is the `Option`'s `None`, as it is
+/// there: the menu draws it as its own dot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TabColor {
+    Red,
+    Green,
+    Yellow,
+    Blue,
+    Magenta,
+    Cyan,
+}
+
+impl TabColor {
+    /// The six presets, in the order warp-new's dot row draws them.
+    pub const ALL: [TabColor; 6] = [
+        TabColor::Red,
+        TabColor::Green,
+        TabColor::Yellow,
+        TabColor::Blue,
+        TabColor::Magenta,
+        TabColor::Cyan,
+    ];
+
+    /// The palette index the colour is read at: red is ANSI 1 through cyan at 6.
+    pub const fn ansi_index(self) -> usize {
+        match self {
+            TabColor::Red => 1,
+            TabColor::Green => 2,
+            TabColor::Yellow => 3,
+            TabColor::Blue => 4,
+            TabColor::Magenta => 5,
+            TabColor::Cyan => 6,
+        }
+    }
+
+    /// The colour as the palette defines it.
+    pub fn color(self) -> ColorU {
+        let (r, g, b) = goble_terminal::palette::ANSI_16[self.ansi_index()];
+        ColorU::new(r, g, b, 255)
+    }
+
+    /// The name the menu's tooltip reads, as warp-new's own `Display` spells it.
+    pub const fn label(self) -> &'static str {
+        match self {
+            TabColor::Red => "Red",
+            TabColor::Green => "Green",
+            TabColor::Yellow => "Yellow",
+            TabColor::Blue => "Blue",
+            TabColor::Magenta => "Magenta",
+            TabColor::Cyan => "Cyan",
+        }
+    }
+
+    /// How much of the colour a tab carries while it is in `state`, over the
+    /// surface that tab is filled with: warp-new's own 60 / 40 / 20 split of the
+    /// tab background between the active, the hovered and the resting tab
+    /// (`app/src/tab.rs`, `base_opacity`).
+    pub fn tint_over(self, base: ColorU, state: TabTint) -> ColorU {
+        base.mix(&self.color(), state.opacity())
+    }
+}
+
+/// Which of a tab's three states its colour is measured at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabTint {
+    Active,
+    Hovered,
+    Resting,
+}
+
+impl TabTint {
+    /// The share of the colour the tab carries in this state.
+    fn opacity(self) -> f32 {
+        match self {
+            TabTint::Active => 0.6,
+            TabTint::Hovered => 0.4,
+            TabTint::Resting => 0.2,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AccentColor {
     Blue,

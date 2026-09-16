@@ -7,7 +7,7 @@ use goble_desktop_service::{DesktopState, ThreadStore};
 use goble_ui::elements::{AppContext, Element, Icon, Text, TopbarButton};
 use goble_ui::event::{DispatchedEvent, ModifiersState};
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
-use goble_ui::theme::ColorToken;
+use goble_ui::theme::{ColorToken, TabColor};
 
 use super::topbar::{build_live_indicator, insertion_index, WorkspaceChip};
 
@@ -141,6 +141,20 @@ fn tab(
     on_click: Rc<RefCell<dyn FnMut(usize)>>,
     close: Box<dyn Element>,
 ) -> Box<dyn Element> {
+    tab_colored(app, active, None, on_click, close)
+}
+
+/// The same tab, carrying `color`.
+fn tab_colored(
+    app: &AppContext,
+    active: bool,
+    color: Option<TabColor>,
+    on_click: Rc<RefCell<dyn FnMut(usize)>>,
+    close: Box<dyn Element>,
+) -> Box<dyn Element> {
+    let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
+    let noop_at: Rc<RefCell<dyn FnMut(usize, Vector2F)>> =
+        Rc::new(RefCell::new(|_: usize, _: Vector2F| {}));
     Box::new(WorkspaceChip::new(
         Text::new("Space 1")
             .with_theme_color(ColorToken::Text, app)
@@ -148,7 +162,10 @@ fn tab(
             .finish(),
         1,
         active,
+        color,
         on_click,
+        noop,
+        noop_at,
         close,
     ))
 }
@@ -304,6 +321,93 @@ fn close_point(commands: &[RenderCommand]) -> Option<Vector2F> {
         } if name == "x-close" => Some(vec2f(origin.x + size / 2.0, origin.y + size / 2.0)),
         _ => None,
     })
+}
+
+/// The one fill a frame drew, when it drew exactly one: a tab's own surface.
+fn single_fill(commands: &[RenderCommand]) -> goble_ui::ColorU {
+    let fills: Vec<_> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { color, .. } => Some(*color),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fills.len(), 1, "the tab draws one surface: {fills:?}");
+    fills[0]
+}
+
+/// R73: a tab carrying a colour fills its surface with that colour, at the
+/// share the tab's own state gives it — the active tab 60 %, a hovered one
+/// 40 %, a resting one 20 %. A tab with no colour draws exactly the fills it
+/// drew before colours existed, so nothing changes for the tabs nobody tinted.
+#[test]
+fn a_coloured_tab_tints_the_fill_its_state_gives_it() {
+    let app = AppContext::default();
+    let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
+    let red = TabColor::Red;
+    let inside = vec2f(20.0, TOPBAR_HEIGHT / 2.0);
+
+    let active = single_fill(&render_element(
+        &mut tab_colored(&app, true, Some(red), noop.clone(), close_button(&app, noop.clone())),
+        vec2f(400.0, TOPBAR_HEIGHT),
+        &app,
+    ));
+    assert_eq!(
+        active,
+        red.tint_over(app.theme.color(ColorToken::SurfaceRaised), goble_ui::theme::TabTint::Active),
+        "the active tab carries the colour over its raised surface"
+    );
+
+    let resting = single_fill(&render_element(
+        &mut tab_colored(&app, false, Some(red), noop.clone(), close_button(&app, noop.clone())),
+        vec2f(400.0, TOPBAR_HEIGHT),
+        &app,
+    ));
+    assert_eq!(
+        resting,
+        red.tint_over(app.theme.color(ColorToken::Surface), goble_ui::theme::TabTint::Resting),
+        "a resting coloured tab keeps the bar's own surface under the colour"
+    );
+
+    let hovered = single_fill(&render_with_pointer(
+        &mut tab_colored(&app, false, Some(red), noop.clone(), close_button(&app, noop.clone())),
+        vec2f(400.0, TOPBAR_HEIGHT),
+        &app,
+        Some(inside),
+    ));
+    assert_eq!(
+        hovered,
+        red.tint_over(app.theme.color(ColorToken::Hover), goble_ui::theme::TabTint::Hovered),
+        "under the pointer the colour is drawn over the hover fill"
+    );
+
+    // The three shares are three different fills: the state the tab is in is
+    // still readable on a coloured tab, which is the whole point of the split.
+    assert_ne!(active, hovered, "active and hovered are not one shade");
+    assert_ne!(hovered, resting, "nor are hovered and resting");
+
+    // An untinted tab: the three theme fills themselves, unchanged.
+    for (tinted, plain) in [
+        (
+            active,
+            app.theme.color(ColorToken::SurfaceRaised),
+        ),
+        (
+            hovered,
+            app.theme.color(ColorToken::Hover),
+        ),
+    ] {
+        assert_ne!(tinted, plain, "a coloured tab is not its plain surface");
+    }
+    assert_eq!(
+        single_fill(&render_element(
+            &mut tab_colored(&app, true, None, noop.clone(), close_button(&app, noop)),
+            vec2f(400.0, TOPBAR_HEIGHT),
+            &app,
+        )),
+        app.theme.color(ColorToken::SurfaceRaised),
+        "a tab with no colour draws the raised surface itself"
+    );
 }
 
 /// R33: the trailing "x" is drawn only while the pointer is over the tab, and a

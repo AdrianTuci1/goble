@@ -1,17 +1,12 @@
 use super::*;
 
-    /// One command, one rendering: the persisted tool-result path and the
-    /// tool-call path build the same block for the same command and output.
-    ///
-    /// The command text is not in the result row (`"<call_id>\n<body>"`); it is
-    /// the `command` argument of the call the row names, resolved from the
-    /// assistant row's persisted `tool_calls` column. Both paths therefore build
-    /// their block through `TerminalData::for_command` — `command_body` does it
-    /// for the tool call, `tool_terminal_data` now does it for the result — so
-    /// the command line is highlighted as shell and the output keeps its ANSI
-    /// colours on either path.
+    /// A persisted tool result is folded into the call it belongs to, not drawn
+    /// as a segment of its own. The agent's call and its output are one
+    /// continuous row in its reply; a terminal block — with its header, its copy
+    /// button and its filter — belongs to a command the *user* ran, which the
+    /// pane builds, and none is built here.
     #[test]
-    fn a_persisted_tool_result_builds_the_same_block_as_the_tool_call() {
+    fn a_persisted_tool_result_folds_into_the_call_it_belongs_to() {
         use goble_ui::elements::chat_content::ChatFragmentKind;
 
         let command = "printf '\\033[31mred\\033[0m\\n'";
@@ -23,8 +18,7 @@ use super::*;
             role: "assistant".into(),
             content: String::new(),
             tool_calls: Some(format!(
-                r#"[{{"id":"call_1","name":"run_command","arguments":{arguments},"status":"finished","result":{result}}}]"#,
-                result = serde_json::to_string(output).unwrap(),
+                r#"[{{"id":"call_1","name":"run_command","arguments":{arguments},"status":"finished"}}]"#
             )),
             created_at: "2026-09-10T00:00:00Z".into(),
         };
@@ -37,31 +31,92 @@ use super::*;
         };
 
         let messages = MessageParseCache::default().resolve(&[assistant, result]);
-        let ChatFragmentKind::Terminal(persisted) = &messages[1].fragments[0].kind else {
-            panic!(
-                "a tool row is a terminal block, got {:?}",
-                messages[1].fragments[0]
-            );
+
+        assert_eq!(
+            messages.len(),
+            1,
+            "the result row is not a message of its own"
+        );
+        let calls = &messages[0].tool_calls;
+        assert_eq!(calls.len(), 1, "the assistant row keeps its one call");
+        assert_eq!(
+            calls[0].result.as_deref(),
+            Some(output),
+            "the row's output is the call's result"
+        );
+        assert!(
+            !messages
+                .iter()
+                .flat_map(|message| message.fragments.iter())
+                .any(|fragment| matches!(fragment.kind, ChatFragmentKind::Terminal(_))),
+            "no terminal block is built on the agent's path"
+        );
+    }
+
+    /// A result row whose call the transcript does not carry still becomes a
+    /// message — the output is real and must be readable — but it is drawn as
+    /// the agent's own prose surface, never as a terminal block.
+    #[test]
+    fn an_orphan_tool_result_row_is_not_a_terminal_block() {
+        use goble_ui::elements::chat_content::ChatFragmentKind;
+
+        let orphan = goble_desktop_service::ChatMessage {
+            id: "m9".into(),
+            role: "tool".into(),
+            content: "call_missing\nsome output".to_string(),
+            tool_calls: None,
+            created_at: "2026-09-10T00:00:00Z".into(),
         };
 
-        // The tool-call path's block: `command_body` builds exactly this, from
-        // the call's `command` argument and result.
-        let tool_call = TerminalData::for_command(command, output, TerminalStatus::Success);
-        assert_eq!(
-            persisted, &tool_call,
-            "the persisted tool result and the tool call must build the same block"
-        );
+        let messages = MessageParseCache::default().resolve(&[orphan]);
 
-        // And it is the shared coloured rendering, not the old flat block: the
-        // command line carries shell-highlight runs and the output keeps its
-        // ANSI colour.
+        assert_eq!(messages.len(), 1);
         assert!(
-            !persisted.lines[0].runs.is_empty(),
-            "the command line is highlighted as shell"
+            !matches!(messages[0].fragments[0].kind, ChatFragmentKind::Terminal(_)),
+            "an orphan result row is not a terminal block, got {:?}",
+            messages[0].fragments[0]
         );
+        let ChatFragmentKind::CodeBlock { code, .. } = &messages[0].fragments[0].kind else {
+            panic!(
+                "an orphan result row draws its output, got {:?}",
+                messages[0].fragments[0]
+            );
+        };
+        assert_eq!(code, "some output", "the row's body is what it draws");
         assert!(
-            persisted.lines[1].runs.iter().any(|run| run.color.is_some()),
-            "the output keeps the ANSI colour it emitted"
+            !code.contains("call_missing"),
+            "the call id line is not part of the body"
+        );
+    }
+
+    /// A call whose result the store already carries keeps it: a result row that
+    /// arrives later (or repeats) does not overwrite what the call recorded.
+    #[test]
+    fn a_folded_result_never_overwrites_the_calls_own_result() {
+        let assistant = goble_desktop_service::ChatMessage {
+            id: "m1".into(),
+            role: "assistant".into(),
+            content: String::new(),
+            tool_calls: Some(
+                r#"[{"id":"call_1","name":"run_command","arguments":{"command":"ls"},"status":"finished","result":"from the call"}]"#
+                    .to_string(),
+            ),
+            created_at: "2026-09-10T00:00:00Z".into(),
+        };
+        let result = goble_desktop_service::ChatMessage {
+            id: "m2".into(),
+            role: "tool".into(),
+            content: "call_1\nfrom the result row".to_string(),
+            tool_calls: None,
+            created_at: "2026-09-10T00:00:01Z".into(),
+        };
+
+        let messages = MessageParseCache::default().resolve(&[assistant, result]);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].tool_calls[0].result.as_deref(),
+            Some("from the call"),
+            "the call's own recorded result wins"
         );
     }
 

@@ -954,6 +954,692 @@ fn the_active_workspace_tab_becomes_the_rename_field() {
     );
 }
 
+/// R72: a second click on a tab opens its inline rename field, and the field is
+/// still there on the next frame — the tab is editable by double click, as it
+/// was before.
+#[test]
+fn a_double_click_on_a_tab_opens_its_rename_field() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let view = RootView::new(&app, &desktop, None);
+    let state = view.state_rc();
+    let mut root: Box<dyn Element> = Box::new(view);
+
+    let tab = active_tab_rect(&frame(&mut root, &app), &app);
+    let at = vec2f(tab.min_x() + 4.0, tab.min_y() + tab.height() / 2.0);
+    click(&mut root, &app, at);
+    // The frame the app paints between the two presses, which is where a tab
+    // the first click renamed would move out from under the pointer.
+    let tab = active_tab_rect(&frame(&mut root, &app), &app);
+    let at = vec2f(at.x.max(tab.min_x() + 4.0), at.y);
+    click(&mut root, &app, at);
+
+    assert!(
+        state.borrow().space_rename_editing,
+        "the second click starts the rename of the clicked tab"
+    );
+    let commands = frame(&mut root, &app);
+    assert!(state.borrow().space_rename_editing, "the field stays open");
+    // The field is the live one, not the tab's own label: a focused field
+    // paints its insertion beam, and the beam sits in the tab's slot.
+    let caret = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::Focus)
+                    && (rect.height() - 16.0).abs() < 0.5 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the rename field draws its caret in the tab: {:?}",
+                commands
+                    .iter()
+                    .filter_map(|c| match c {
+                        RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        caret.min_x() >= tab.min_x() - 1.0 && caret.max_x() <= tab.max_x() + 1.0,
+        "the field sits in the tab {tab:?}, got {caret:?}"
+    );
+
+    // The field is editable: a key typed while it is open reaches it, not the
+    // composer behind it.
+    let before = state.borrow().space_rename_draft.clone();
+    send(
+        &mut root,
+        &app,
+        goble_ui::event::DispatchedEvent::KeyDown {
+            key: "x".to_string(),
+            modifiers: goble_ui::event::ModifiersState::default(),
+        },
+    );
+    assert_ne!(
+        state.borrow().space_rename_draft,
+        before,
+        "typing while the tab is being renamed edits the tab's name"
+    );
+}
+
+/// R72: the gesture is counted on the press, which is warp-new's own rule
+/// (`MULTI_CLICK_INTERVAL`, counted press-to-press). A second press inside the
+/// window opens the field however long that press is held afterwards — the
+/// case a release-to-release reading of the same two clicks misses, because
+/// the two releases stand further apart than the window.
+#[test]
+fn a_held_second_press_still_renames_the_tab() {
+    use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY};
+
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let view = RootView::new(&app, &desktop, None);
+    let state = view.state_rc();
+    let mut root: Box<dyn Element> = Box::new(view);
+
+    let tab = active_tab_rect(&frame(&mut root, &app), &app);
+    let at = vec2f(tab.min_x() + 4.0, tab.min_y() + tab.height() / 2.0);
+
+    let started = std::time::Instant::now();
+    let down = DispatchedEvent::MouseDown {
+        position: at,
+        button: BUTTON_PRIMARY,
+    };
+    let up = DispatchedEvent::MouseUp {
+        position: at,
+        button: BUTTON_PRIMARY,
+    };
+    send(&mut root, &app, down.clone());
+    send(&mut root, &app, up.clone());
+    // The second press lands half a window after the first, and is held for
+    // three quarters of one: the presses are 200 ms apart and the releases
+    // 500 ms, so a reading that timed the releases would see no gesture.
+    let window = goble_app::state::MULTI_CLICK_INTERVAL_MS;
+    std::thread::sleep(std::time::Duration::from_millis((window / 2) as u64));
+    send(&mut root, &app, down);
+    std::thread::sleep(std::time::Duration::from_millis((window * 3 / 4) as u64));
+    send(&mut root, &app, up);
+    let span = started.elapsed().as_millis();
+
+    assert!(
+        span > window,
+        "the two releases are {span} ms apart, past the {window} ms window — \
+         only the presses are inside it"
+    );
+    assert!(
+        state.borrow().space_rename_editing,
+        "the second press opens the field, whatever the release that follows it does"
+    );
+}
+
+/// The origin the topbar draws `label` at, so a test can aim a click at that
+/// tab rather than at the window.
+fn tab_label_origin(commands: &[RenderCommand], label: &str) -> goble_ui::Vector2F {
+    commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::DrawText { origin, text, .. } if text == label => Some(*origin),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the strip draws a {label:?} tab"))
+}
+
+/// R72: two clicks at the *same* pointer position land on the same tab even
+/// when the first one changes which tab is active — the reported case, where a
+/// tab could no longer be renamed by double click.
+#[test]
+fn a_double_click_renames_a_tab_that_is_not_the_active_one() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let view = RootView::new(&app, &desktop, None);
+    let state = view.state_rc();
+    {
+        let mut s = state.borrow_mut();
+        s.show_onboarding_tip = false;
+        s.show_llm_key_banner = false;
+        s.show_workspace_choice = false;
+        s.spaces[0].name = "Primary".to_string();
+        s.spaces[0].named = true;
+        let id = s.next_pane_id;
+        s.next_pane_id += 1;
+        s.spaces.push(goble_app::ui::Space::new(
+            "Second",
+            goble_app::ui::Pane::Leaf {
+                id,
+                kind: goble_app::ui::PaneKind::Terminal,
+            },
+        ));
+        s.active_space = 0;
+    }
+    let mut root: Box<dyn Element> = Box::new(view);
+
+    // The second tab is the one the user clicks: the pointer never moves, so
+    // both presses land on the same absolute point — the whole point of the
+    // case, since the first press makes that tab the active one.
+    let commands = frame(&mut root, &app);
+    let label = tab_label_origin(&commands, "Second");
+    let at = vec2f(label.x + 2.0, goble_app::ui::shell::TOPBAR_HEIGHT / 2.0);
+    click(&mut root, &app, at);
+    let _ = frame(&mut root, &app);
+    click(&mut root, &app, at);
+
+    assert_eq!(state.borrow().active_space, 1, "the first click selected it");
+    assert!(
+        state.borrow().space_rename_editing,
+        "the second click opens its rename field"
+    );
+    let commands = frame(&mut root, &app);
+    assert_eq!(
+        state.borrow().space_rename_focused,
+        true,
+        "the field takes the keyboard"
+    );
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::Focus)
+                    && (rect.height() - 16.0).abs() < 0.5
+        )),
+        "the open field draws its caret: {:?}",
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A right click at `at`: the down/up pair the window's own loop sends for the
+/// secondary button — the one a tab's menu opens on.
+fn right_click(root: &mut Box<dyn Element>, app: &AppContext, at: goble_ui::Vector2F) {
+    use goble_ui::event::DispatchedEvent;
+    send(
+        root,
+        app,
+        DispatchedEvent::MouseDown {
+            position: at,
+            button: 1,
+        },
+    );
+    send(
+        root,
+        app,
+        DispatchedEvent::MouseUp {
+            position: at,
+            button: 1,
+        },
+    );
+}
+
+/// The origin the menu draws `label` at, or a panic naming the rows that were
+/// drawn instead — so a missing row reads as the list it was in.
+fn row_origin(commands: &[RenderCommand], label: &str) -> goble_ui::Vector2F {
+    commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text == label => Some(*origin),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the menu draws {label:?}, got {:?}",
+                commands
+                    .iter()
+                    .filter_map(|command| match command {
+                        RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Open the menu of the tab whose label is `label`, and paint the frame that
+/// carries it — the panel is built from the state the right click leaves.
+fn open_tab_menu(
+    root: &mut Box<dyn Element>,
+    app: &AppContext,
+    label: &str,
+) -> Vec<RenderCommand> {
+    let commands = frame(root, app);
+    let at = tab_label_origin(&commands, label);
+    right_click(
+        root,
+        app,
+        vec2f(
+            at.x + 2.0,
+            goble_app::ui::shell::TOPBAR_HEIGHT / 2.0,
+        ),
+    );
+    frame(root, app)
+}
+
+/// Choose one row of the menu that is already open: the row's own label is
+/// drawn inside the row's bounds, so a click on it lands on the row.
+fn choose_row(root: &mut Box<dyn Element>, app: &AppContext, row: &str) -> Vec<RenderCommand> {
+    let commands = frame(root, app);
+    let at = row_origin(&commands, row);
+    click(root, app, vec2f(at.x + 1.0, at.y + 1.0));
+    frame(root, app)
+}
+
+/// The menu's own panel: the one rounded surface the frame draws at the theme's
+/// raised colour. It is asserted unique, so it cannot silently become some
+/// other card of the shell.
+fn menu_panel(commands: &[RenderCommand], app: &AppContext) -> goble_ui::geometry::RectF {
+    let panels: Vec<_> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                && (*corner_radius - 6.0).abs() < 0.001 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(panels.len(), 1, "the menu draws one panel: {panels:?}");
+    panels[0]
+}
+
+/// The rectangle of the red dot of the menu's colour row, in the frame that is
+/// open: the one circle of that colour drawn as a rounded fill.
+fn red_dot(commands: &[RenderCommand]) -> goble_ui::geometry::RectF {
+    let red = goble_ui::theme::TabColor::Red.color();
+    commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == red && (*corner_radius - 8.0).abs() < 0.001 => Some(*rect),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the menu's colour row draws a red dot: {commands:?}"))
+}
+
+/// A view of two tabs — an agent tab that derives its own label and a terminal
+/// tab the user named — with the flags a first run would raise turned off.
+/// Returns the state handle and the frame's element, so a test can drive the
+/// strip.
+#[allow(clippy::type_complexity)]
+fn two_tab_view(
+    desktop: &Arc<DesktopState>,
+    app: &AppContext,
+) -> (Rc<RefCell<UiState>>, Box<dyn Element>) {
+    let view = RootView::new(app, desktop, None);
+    let state = view.state_rc();
+    {
+        let mut s = state.borrow_mut();
+        s.show_onboarding_tip = false;
+        s.show_llm_key_banner = false;
+        s.show_workspace_choice = false;
+        // The first tab is nobody's name: it reads what it holds, which is the
+        // agent label while its conversation has no subject.
+        s.spaces[0].name.clear();
+        s.spaces[0].named = false;
+        let id = s.next_pane_id;
+        s.next_pane_id += 1;
+        s.spaces.push(goble_app::ui::Space::new(
+            "Second",
+            goble_app::ui::Pane::Leaf {
+                id,
+                kind: goble_app::ui::PaneKind::Terminal,
+            },
+        ));
+        s.active_space = 0;
+    }
+    (state, Box::new(view))
+}
+
+/// R73: a right click on a tab opens its menu hung from the pointer itself —
+/// warp-new's `TabContextMenuAnchor::Pointer` — drawn over the window rather
+/// than clipped to the bar it hangs from.
+#[test]
+fn a_right_click_hangs_the_tab_menu_from_the_pointer_over_the_window() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let (state, mut root) = two_tab_view(&desktop, &app);
+
+    // Well inside the second tab, so a panel hung from that tab's own corner
+    // would be drawn tens of pixels to the left of where the click landed.
+    let at = vec2f(
+        tab_label_x(&mut root, &app, "Second") + 40.0,
+        goble_app::ui::shell::TOPBAR_HEIGHT / 2.0,
+    );
+    right_click(&mut root, &app, at);
+    let commands = frame(&mut root, &app);
+
+    assert_eq!(
+        state.borrow().space_menu.borrow().map(|menu| menu.index),
+        Some(1),
+        "the tab the click landed on is the one whose menu is open"
+    );
+    let rename = row_origin(&commands, "Rename tab");
+    assert!(
+        rename.x >= at.x && rename.x - at.x <= 30.0,
+        "the panel's first row starts at the pointer ({at:?}), not at the tab's own corner: {rename:?}"
+    );
+    assert!(rename.y >= at.y, "the panel opens below the pointer");
+
+    // Drawn over the window, not inside the bar: the rows paint after the pane
+    // behind them, and the colour row — the panel's last — is drawn below the
+    // toolbar band entirely.
+    let pane = text_index(&commands, "Ask anything to get started")
+        .expect("the pane's empty state");
+    assert!(
+        text_index(&commands, "Rename tab").unwrap() > pane,
+        "the menu paints above the pane surface"
+    );
+    let dot = red_dot(&commands);
+    assert!(
+        dot.min_y() > goble_app::ui::shell::TOPBAR_HEIGHT,
+        "the menu's last row is drawn over the body, below the bar: {dot:?}"
+    );
+}
+
+/// R73: only the rows that apply to the tab are drawn — warp-new's own gates on
+/// "Reset tab name" (a name the user typed), "Move Tab Left" (a slot to move
+/// into) and "Close other tabs" (a second tab to close).
+#[test]
+fn the_tab_menus_rows_are_the_ones_that_apply_to_that_tab() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let (_state, mut root) = two_tab_view(&desktop, &app);
+
+    // The first tab: it has nowhere to move left and no typed name to reset,
+    // and there is a second tab for "Close other tabs" to close.
+    let commands = open_tab_menu(&mut root, &app, "New Agent");
+    assert!(text_index(&commands, "Rename tab").is_some());
+    assert!(text_index(&commands, "Close tab").is_some());
+    assert!(
+        text_index(&commands, "Move Tab Left").is_none(),
+        "the first tab has nowhere to move left"
+    );
+    assert!(
+        text_index(&commands, "Reset tab name").is_none(),
+        "a tab that derived its own label has no typed name to give back"
+    );
+    assert!(
+        text_index(&commands, "Close other tabs").is_some(),
+        "and a second tab is there to close"
+    );
+
+    // The same right click on the other tab, which has the rows the first one
+    // lacked: a right click belongs to the tab it lands on.
+    let commands = open_tab_menu(&mut root, &app, "Second");
+    assert!(text_index(&commands, "Reset tab name").is_some(), "a typed name can be reset");
+    assert!(text_index(&commands, "Move Tab Left").is_some(), "the second tab can move left");
+    assert!(text_index(&commands, "Close other tabs").is_some());
+}
+
+/// R73: "Rename tab" opens the tab's inline rename field, seeded with the name
+/// that tab draws — the same field a double click opens.
+#[test]
+fn the_tab_menus_rename_row_opens_the_inline_field() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let (state, mut root) = two_tab_view(&desktop, &app);
+
+    open_tab_menu(&mut root, &app, "Second");
+    choose_row(&mut root, &app, "Rename tab");
+
+    let state = state.borrow();
+    assert!(state.space_rename_editing, "the field is open");
+    assert_eq!(state.active_space, 1, "on the tab the menu belonged to");
+    assert_eq!(state.space_rename_draft, "Second", "seeded with the name it draws");
+}
+
+/// R73: "Reset tab name" gives the typed name up, and the label derived from
+/// what the tab holds takes over again.
+#[test]
+fn the_tab_menus_reset_row_gives_the_typed_name_back() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let (state, mut root) = two_tab_view(&desktop, &app);
+
+    open_tab_menu(&mut root, &app, "Second");
+    let commands = choose_row(&mut root, &app, "Reset tab name");
+
+    assert!(!state.borrow().spaces[1].named, "the name is no longer the user's");
+    assert!(
+        text_index(&commands, "Second").is_none(),
+        "the tab reads what it holds again: {:?}",
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
+}
+
+/// R73: "Move Tab Left" swaps the tab with its left neighbour — in the state
+/// and in the strip that is drawn from it.
+#[test]
+fn the_tab_menus_move_left_row_swaps_the_tab_with_its_neighbour() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let (state, mut root) = two_tab_view(&desktop, &app);
+
+    open_tab_menu(&mut root, &app, "Second");
+    let commands = choose_row(&mut root, &app, "Move Tab Left");
+
+    assert_eq!(
+        state.borrow().spaces[0].name,
+        "Second",
+        "the tab that moved is the first one now"
+    );
+    assert!(
+        tab_label_origin(&commands, "Second").x < tab_label_origin(&commands, "New Agent").x,
+        "and it is drawn to the left of the tab it passed"
+    );
+}
+
+/// R73: "Close tab" closes the tab the menu was opened on.
+#[test]
+fn the_tab_menus_close_row_closes_that_tab() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let (state, mut root) = two_tab_view(&desktop, &app);
+
+    open_tab_menu(&mut root, &app, "Second");
+    let commands = choose_row(&mut root, &app, "Close tab");
+
+    assert_eq!(state.borrow().spaces.len(), 1, "one tab is left");
+    assert_eq!(state.borrow().spaces[0].name, "New Agent", "the other one");
+    assert!(text_index(&commands, "Second").is_none(), "and it is off the strip");
+}
+
+/// R73: "Close other tabs" leaves the tab the menu was opened on and nothing
+/// else, however many tabs stand on either side of it.
+#[test]
+fn the_tab_menus_close_others_row_leaves_only_that_tab() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let (state, mut root) = two_tab_view(&desktop, &app);
+    {
+        // A third tab, so there is one on either side of the one being kept.
+        let mut s = state.borrow_mut();
+        let id = s.next_pane_id;
+        s.next_pane_id += 1;
+        s.spaces.push(goble_app::ui::Space::new(
+            "Third",
+            goble_app::ui::Pane::Leaf {
+                id,
+                kind: goble_app::ui::PaneKind::Terminal,
+            },
+        ));
+    }
+
+    open_tab_menu(&mut root, &app, "Second");
+    let commands = choose_row(&mut root, &app, "Close other tabs");
+
+    let state = state.borrow();
+    assert_eq!(state.spaces.len(), 1, "only the tab the menu belonged to is left");
+    assert_eq!(state.spaces[0].name, "Second");
+    assert_eq!(state.active_space, 0, "and it is the tab on screen");
+    assert!(text_index(&commands, "New Agent").is_none());
+    assert!(text_index(&commands, "Third").is_none());
+}
+
+/// R73: a colour dot tints the tab, and the dot of the colour the tab already
+/// carries clears it again — the toggle warp-new's own dots have.
+#[test]
+fn a_colour_dot_tints_the_tab_and_the_same_dot_clears_it() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let (state, mut root) = two_tab_view(&desktop, &app);
+    let red = goble_ui::theme::TabColor::Red;
+
+    let commands = open_tab_menu(&mut root, &app, "Second");
+    let dot = red_dot(&commands);
+    click(&mut root, &app, vec2f(dot.min_x() + 8.0, dot.min_y() + 8.0));
+    let commands = frame(&mut root, &app);
+
+    assert_eq!(
+        state.borrow().spaces[1].color,
+        Some(red),
+        "the dot's own colour lands on the tab"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { color, .. }
+                if *color
+                    == red.tint_over(
+                        app.theme.color(ColorToken::Surface),
+                        goble_ui::theme::TabTint::Resting,
+                    )
+        )),
+        "and the resting tab is filled with it"
+    );
+
+    // The same dot again: the tab's colour is given up.
+    let commands = open_tab_menu(&mut root, &app, "Second");
+    let dot = red_dot(&commands);
+    click(&mut root, &app, vec2f(dot.min_x() + 8.0, dot.min_y() + 8.0));
+    frame(&mut root, &app);
+    assert_eq!(state.borrow().spaces[1].color, None, "the dot toggles it off");
+}
+
+/// R73: a press on the menu's own surface never reaches the tab under it —
+/// without that, a press in the panel's padding would be counted as a click on
+/// the tab the panel hangs over, and two of them would open its rename field.
+#[test]
+fn a_press_on_the_menus_own_surface_never_reaches_the_tab_under_it() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let (state, mut root) = two_tab_view(&desktop, &app);
+
+    let commands = open_tab_menu(&mut root, &app, "Second");
+    // Inside the panel and on no row of it — the padding above its first row —
+    // and still over the tab the panel hangs from: the panel's top edge is a
+    // few pixels below the pointer, which is inside the bar.
+    let panel = menu_panel(&commands, &app);
+    let slack = vec2f(panel.min_x() + 4.0, panel.min_y() + 3.0);
+    assert!(
+        (slack.y - goble_app::ui::shell::TOPBAR_HEIGHT).abs() < 12.0,
+        "the point is on the tab that opened the menu: {slack:?} against the bar's {}",
+        goble_app::ui::shell::TOPBAR_HEIGHT
+    );
+    for _ in 0..2 {
+        click(&mut root, &app, slack);
+        frame(&mut root, &app);
+    }
+
+    let state = state.borrow();
+    assert!(
+        !state.space_rename_editing,
+        "two presses on the menu's own surface are not a double click on the tab"
+    );
+    assert!(
+        state.space_menu.borrow().is_some(),
+        "and they do not close the menu either — they are presses on it"
+    );
+}
+
+/// R73: a press outside the panel closes the menu, on the frame that follows —
+/// the app's own open flag is what the next frame is built from, so a menu that
+/// only closed itself would open again.
+#[test]
+fn a_press_outside_the_tab_menu_closes_it() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let (state, mut root) = two_tab_view(&desktop, &app);
+
+    open_tab_menu(&mut root, &app, "Second");
+    assert!(
+        state.borrow().space_menu.borrow().is_some(),
+        "the menu is open"
+    );
+
+    send(
+        &mut root,
+        &app,
+        goble_ui::event::DispatchedEvent::MouseDown {
+            position: vec2f(600.0, 600.0),
+            button: 0,
+        },
+    );
+    let commands = frame(&mut root, &app);
+
+    assert!(
+        state.borrow().space_menu.borrow().is_none(),
+        "the press outside closed it"
+    );
+    assert!(
+        text_index(&commands, "Rename tab").is_none(),
+        "and the next frame draws no panel"
+    );
+}
+
+/// R73: a second right click on the same tab closes its menu — the toggle
+/// warp-new's `ToggleTabRightClickMenu` is.
+#[test]
+fn a_second_right_click_on_the_same_tab_closes_its_menu() {
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let (state, mut root) = two_tab_view(&desktop, &app);
+
+    let commands = open_tab_menu(&mut root, &app, "Second");
+    let _ = row_origin(&commands, "Rename tab");
+    let again = vec2f(
+        tab_label_x(&mut root, &app, "Second") + 40.0,
+        goble_app::ui::shell::TOPBAR_HEIGHT / 2.0,
+    );
+    right_click(&mut root, &app, again);
+    let commands = frame(&mut root, &app);
+
+    assert!(
+        state.borrow().space_menu.borrow().is_none(),
+        "the second right click closed it"
+    );
+    assert!(text_index(&commands, "Rename tab").is_none(), "and it is off the frame");
+}
+
+/// The x the tab whose label is `label` draws that label at, on the frame that
+/// is already showing.
+fn tab_label_x(root: &mut Box<dyn Element>, app: &AppContext, label: &str) -> f32 {
+    let commands = frame(root, app);
+    tab_label_origin(&commands, label).x
+}
+
 /// The Settings→Appearance color wheel paints at its own layout origin (the
 /// settings pane's content column), not at the window origin where it would
 /// smear over the sidebar and the toolbar. The settings tab is a pane of the
@@ -1054,6 +1740,72 @@ fn shell_body_paints_below_the_toolbar() {
             "{needle} paints at y={y}, inside the toolbar band (height {topbar_height})"
         );
     }
+}
+
+/// A fresh app comes up on the real store with nothing seeded in it — no
+/// conversation rows, no transcript — so the pane shows the empty state, and
+/// it draws that state centered inside its frame.
+#[test]
+fn a_fresh_app_shows_the_empty_state_inside_its_frame() {
+    let (desktop, _dir) = common::desktop_state();
+    assert!(
+        desktop.list_chats().is_empty(),
+        "the app ships no conversation of its own"
+    );
+
+    let app = AppContext::default();
+    let mut root: Box<dyn Element> = Box::new(RootView::new(&app, &desktop, None));
+    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+
+    let painted = |needle: &str| {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText { text, origin, .. } if text == needle => Some(*origin),
+            _ => None,
+        })
+    };
+    let invitation = painted("Ask anything to get started.").expect("the empty state's invitation");
+    let frame = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::StrokeRect {
+                rect,
+                corner_radius,
+                ..
+            } if *corner_radius > 0.0
+                && invitation.x >= rect.min_x()
+                && invitation.x <= rect.max_x()
+                && invitation.y >= rect.min_y()
+                && invitation.y <= rect.max_y() =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the pane frames its empty state");
+
+    let title = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { text, origin, .. }
+                if text == "New conversation"
+                    && origin.x >= frame.min_x()
+                    && origin.x <= frame.max_x()
+                    && origin.y >= frame.min_y()
+                    && origin.y <= frame.max_y() =>
+            {
+                Some(*origin)
+            }
+            _ => None,
+        })
+        .expect("the pane draws the empty state's title inside its frame");
+    assert!(
+        title.y > frame.min_y(),
+        "the title sits below the frame's top edge: {title:?} in {frame:?}"
+    );
+    assert!(
+        frame.min_x() >= 1024.0 / 4.0,
+        "the frame belongs to the pane, not the sidebar: {frame:?}"
+    );
 }
 
 /// The toolbar's trays paint above the shell surface: the "+ ▾" environment

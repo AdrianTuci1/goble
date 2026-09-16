@@ -3,7 +3,9 @@
 //! The struct's fields are declared here; its methods live one module per
 //! concern ([`refresh`], [`pane_move`], [`panes`], [`agents`], [`session`],
 //! [`settings`], [`mock`], [`spaces`]) as separate `impl UiState` blocks, which
-//! are the same block to the compiler as one.
+//! are the same block to the compiler as one. [`title`] is not one of them: the
+//! subject a conversation is named with is derived from the conversation, not
+//! held by the state machine.
 
 use super::*;
 
@@ -17,12 +19,15 @@ mod refresh;
 mod session;
 mod settings;
 mod spaces;
+mod title;
 
 pub use pane_move::{PaneDrag, PaneMove};
 
 /// The title a conversation gets when it is created without a subject of its
 /// own. It is a placeholder, not a subject: a tab whose agent holds such a
-/// conversation still reads [`NEW_AGENT_TAB_LABEL`].
+/// conversation still reads [`NEW_AGENT_TAB_LABEL`], and the agent replaces it
+/// with a subject derived from the conversation ([`title`]) once it has
+/// answered in it.
 pub const NEW_CONVERSATION_TITLE: &str = "New conversation";
 
 /// The label a tab whose pane holds an agent draws while that agent's
@@ -38,6 +43,29 @@ pub const NEW_AGENT_TAB_LABEL: &str = "New Agent";
 /// The element that draws the label owns the words, and this is that very
 /// constant re-exported, so the two cannot come to say different things.
 pub use goble_ui::elements::chat_composer::MODEL_NOT_CONFIGURED;
+
+/// The window two presses on the same tab are one gesture in, in milliseconds —
+/// a double click. warp-new's own value and its own name
+/// (`crates/octomusui/src/windowing/winit/event_loop/mod.rs::MULTI_CLICK_INTERVAL`).
+pub const MULTI_CLICK_INTERVAL_MS: u128 = 400;
+
+/// A run of presses on one workspace tab, counted the way warp-new counts a
+/// multi-click: on the press, against the *previous press* rather than against
+/// any release between them.
+#[derive(Clone, Copy, Debug)]
+pub struct SpacePressRun {
+    pub index: usize,
+    pub pressed_at: std::time::Instant,
+    pub count: u32,
+}
+
+/// An open workspace tab menu: the tab it belongs to and the point the right
+/// click landed on, which is where the panel hangs from.
+#[derive(Clone, Copy, Debug)]
+pub struct SpaceMenu {
+    pub index: usize,
+    pub at: goble_ui::Vector2F,
+}
 
 
 #[derive(Clone)]
@@ -292,19 +320,31 @@ pub struct UiState {
     /// Scroll offset of the settings overlay's content pane.
     pub settings_scroll: Rc<RefCell<ScrollState>>,
     /// Whether the topbar workspace frame is in inline-rename mode (entered by
-    /// double-clicking the active space's name).
+    /// double-clicking the tab, or from its menu's "Rename tab" row).
     pub space_rename_editing: bool,
-    /// The last click on the workspace tab strip: which tab, and when. A second
-    /// click on the *same* tab inside the double-click window starts the inline
-    /// rename. App-owned rather than a local of the per-frame actions: the
-    /// element tree — and the callbacks in it — is rebuilt every frame, so a
-    /// cell made with them would forget the first click before the second one
-    /// arrives and the rename could never open.
-    pub space_click_at: Rc<RefCell<Option<(usize, std::time::Instant)>>>,
+    /// The run of presses on a workspace tab that the strip is counting: which
+    /// tab, when it was pressed, and how many presses in a row this is.
+    ///
+    /// warp-new's own rule (`crates/octomusui/src/windowing/winit/event_loop/
+    /// mod.rs::determine_click_count_and_update_button_state`): the count is
+    /// read on the *press* and acted on at the release, so the time a press is
+    /// held does not come out of the window between two presses. App-owned
+    /// rather than a local of the per-frame actions: the element tree — and the
+    /// callbacks in it — is rebuilt every frame, so a cell made with them would
+    /// forget the first press before the second one arrives and the rename
+    /// could never open.
+    pub space_press_run: Rc<RefCell<Option<SpacePressRun>>>,
     /// The in-progress space name while renaming.
     pub space_rename_draft: String,
     /// Whether the rename field holds focus.
     pub space_rename_focused: bool,
+    /// The workspace tab whose right-click menu is open, and the point the
+    /// pointer was at when it opened — warp-new hangs that menu from the
+    /// pointer itself (`TabContextMenuAnchor::Pointer`). `None` when no menu is
+    /// open; the menu element is built for the frame this names, and a press
+    /// outside its panel clears it (`on_space_menu_close`), because only the app
+    /// outlives the frame that press happened in.
+    pub space_menu: Rc<RefCell<Option<SpaceMenu>>>,
     /// Per-card interaction state (hover / delete menu), owned here so it
     /// survives the per-frame element rebuild. Keyed by conversation id.
     pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,

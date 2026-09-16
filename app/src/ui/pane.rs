@@ -1,3 +1,5 @@
+use goble_ui::theme::TabColor;
+
 use super::SettingsCategory;
 
 /// Which kind of content a pane hosts.
@@ -345,6 +347,13 @@ pub struct Space {
     /// environment here; `#[serde(default)]` keeps older persisted layouts parseable.
     #[serde(default)]
     pub medium: String,
+    /// The colour the tab is tinted with, or `None` for the theme's own
+    /// surfaces. Chosen from the tab's right-click menu (see
+    /// [`crate::ui::TabMenuAction`]) and saved beside the tab it belongs to, so
+    /// it comes back with the layout; `#[serde(default)]` reads a layout saved
+    /// before this existed as untinted.
+    #[serde(default)]
+    pub color: Option<TabColor>,
 }
 
 impl Space {
@@ -355,6 +364,7 @@ impl Space {
             named: true,
             root,
             medium: "local".to_string(),
+            color: None,
         }
     }
 
@@ -368,6 +378,7 @@ impl Space {
             named: false,
             root,
             medium: "local".to_string(),
+            color: None,
         }
     }
 
@@ -375,6 +386,12 @@ impl Space {
     /// created through the topbar "+" menu).
     pub fn with_medium(mut self, medium: impl Into<String>) -> Self {
         self.medium = medium.into();
+        self
+    }
+
+    /// Tint this space's tab with one of the preset colours.
+    pub fn with_color(mut self, color: Option<TabColor>) -> Self {
+        self.color = color;
         self
     }
 

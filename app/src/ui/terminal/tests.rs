@@ -182,10 +182,11 @@ use std::collections::HashMap;
         render_element(&mut element, vec2f(600.0, 200.0), app)
     }
 
-    /// Q8: a command is one block, drawn by the same element in the transcript
-    /// and in the terminal pane. The pane's executed-command block renders
-    /// identically in the transcript, and a command the agent ran is that same
-    /// block built from the command the bridge produced for it.
+    /// Q8: a command the *user* ran is one block, drawn by the same element in
+    /// the transcript and in the terminal pane. A command the *agent* ran is
+    /// not: an agent's call is part of its reply, drawn continuously under the
+    /// row that names it, and it takes no block. Both sides of the distinction
+    /// are pinned here.
     #[test]
     fn a_command_block_renders_identically_in_the_transcript_and_the_pane() {
         let app = AppContext::default();
@@ -215,13 +216,9 @@ use std::collections::HashMap;
             "the same block must render in the transcript"
         );
 
-        // A command the agent ran is that block, built from the command and its
-        // output rather than re-drawn as agent output.
-        let command = TerminalData::for_command("echo hi", "hi", TerminalStatus::Success);
-        let command_runs = text_runs(&paint(
-            terminal_block(&command, TerminalFilter::default(), None, None),
-            &app,
-        ));
+        // The same command the agent ran is not that block: the transcript
+        // draws the row that names it and then its output, with no block
+        // prompt line and no block header of its own.
         let call = ToolCall {
             id: "call-1".to_string(),
             name: "run_command".to_string(),
@@ -229,8 +226,8 @@ use std::collections::HashMap;
             status: ToolCallStatus::Finished,
             result: Some("hi".to_string()),
         };
-        // The command starts folded; expand it so the transcript draws the same
-        // block the pane does.
+        // The command starts folded; expand it so the transcript draws the
+        // output under the row.
         let fold = Rc::new(RefCell::new(std::collections::HashMap::from([(
             goble_ui::tool_fold_key(&call, 0),
             goble_ui::ToolDisplayMode::Expanded,
@@ -239,12 +236,21 @@ use std::collections::HashMap;
             .with_tool_calls(vec![call])
             .with_tool_fold(fold);
         let bubble_runs = text_runs(&paint(Box::new(bubble), &app));
-        // The header is the mark, the verb and the command it runs for; the
-        // block itself follows it unchanged.
-        assert_eq!(
-            &bubble_runs[3..],
-            command_runs.as_slice(),
-            "the agent's command segment must be the terminal block"
+        assert!(
+            bubble_runs.iter().any(|(text, _, _, _)| text == "echo hi"),
+            "the row names the command, got {bubble_runs:?}"
+        );
+        assert!(
+            bubble_runs.iter().any(|(text, _, _, _)| text == "hi"),
+            "the output is drawn under the row, got {bubble_runs:?}"
+        );
+        assert!(
+            !bubble_runs.iter().any(|(text, _, _, _)| text == "❯ "),
+            "the agent's call carries no block prompt line, got {bubble_runs:?}"
+        );
+        assert!(
+            bubble_runs.iter().all(|(_, _, _, size)| *size == 12.0),
+            "the row and its body are the tool row's own size, got {bubble_runs:?}"
         );
     }
 

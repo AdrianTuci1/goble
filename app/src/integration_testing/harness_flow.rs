@@ -326,11 +326,12 @@ fn run_chat_turn_emits_turn_finished() {
     );
 }
 
-/// `refresh_messages` maps persisted tool rows to a distinct `ChatRole::Tool`
-/// (rendered as a terminal block) and surfaces the assistant message's tool-call
-/// metadata, so tool invocations render distinctly instead of as assistant prose.
+/// `refresh_messages` folds a persisted tool row into the call it belongs to
+/// and surfaces the assistant message's tool-call metadata, so the agent's call
+/// and its output are one continuous row in its reply instead of a segment of
+/// their own. A terminal block belongs to a command the *user* ran.
 #[test]
-fn refresh_messages_maps_tool_rows_and_evokes() {
+fn refresh_messages_folds_tool_rows_into_their_call() {
     let (desktop, _dir) = common::desktop_state();
     let chat_id = desktop
         .create_chat("Demo", None, None)
@@ -363,7 +364,11 @@ fn refresh_messages_maps_tool_rows_and_evokes() {
     }
 
     let msgs = &state.borrow().chat_messages;
-    assert_eq!(msgs.len(), 3, "user + assistant + tool rows");
+    assert_eq!(
+        msgs.len(),
+        2,
+        "user + assistant rows: the tool result is not a row of its own"
+    );
     assert_eq!(msgs[0].role, ChatRole::User);
     assert_eq!(msgs[1].role, ChatRole::Assistant);
     assert_eq!(
@@ -373,13 +378,16 @@ fn refresh_messages_maps_tool_rows_and_evokes() {
     );
     assert_eq!(msgs[1].tool_calls[0].name, "ls");
     assert_eq!(
-        msgs[2].role,
-        ChatRole::Tool,
-        "tool rows should render as Tool, not assistant prose"
+        msgs[1].tool_calls[0].result.as_deref(),
+        Some("file.txt"),
+        "the result row's output is the call's result"
     );
     assert!(
-        matches!(msgs[2].fragments[0].kind, ChatFragmentKind::Terminal(_)),
-        "tool output should be presented as a terminal block"
+        !msgs
+            .iter()
+            .flat_map(|message| message.fragments.iter())
+            .any(|fragment| matches!(fragment.kind, ChatFragmentKind::Terminal(_))),
+        "an agent's call builds no terminal block"
     );
 }
 

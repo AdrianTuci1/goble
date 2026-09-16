@@ -11,7 +11,7 @@ use goble_ui::elements::{
 };
 use goble_ui::{ScrollState, SettingsPage};
 
-use crate::state::{PaneControls, PaneDrag, PaneWorkItem};
+use crate::state::{PaneControls, PaneDrag, PaneWorkItem, SpaceMenu};
 use crate::terminal::TerminalRegistry;
 
 use super::color_picker;
@@ -322,6 +322,9 @@ pub struct UiSnapshot {
     pub space_rename_draft: String,
     /// Whether the rename field holds focus.
     pub space_rename_focused: bool,
+    /// The workspace tab whose right-click menu is open and the point the
+    /// pointer was at when it opened, so the bar can hang the panel from it.
+    pub space_menu: Rc<RefCell<Option<SpaceMenu>>>,
     /// Per-card interaction state (hover / delete menu), shared with the
     /// card elements so selections and menus persist across frames.
     pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,

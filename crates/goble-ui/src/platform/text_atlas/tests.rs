@@ -2,7 +2,7 @@ use super::*;
 use crate::theme::FontFamily;
 
 use super::atlas::{text_key, AtlasStore, Placement, ATLAS_SIZE, PADDING};
-use super::fonts::{advance_width, font_set, rasterize_text};
+use super::fonts::{advance_width, font_set, measure_uncached, rasterize_text};
 
 #[test]
 fn line_height_grows_wrapped_block_height() {
@@ -454,4 +454,162 @@ fn regions_overlap(a: super::atlas::Region, b: super::atlas::Region) -> bool {
         && b.x < a.x + a.width
         && a.y < b.y + b.height
         && b.y < a.y + a.height
+}
+
+/// A run to measure through the cache, with the label its failure message
+/// carries: (text, font size, line height, max width, weight, family, italic).
+type Run<'a> = (&'a str, f32, f32, f32, FontWeight, FontFamily, bool);
+
+/// Measure a run through the cache and assert it is what a fresh fontdue pass
+/// says, returning it so a caller can compare it with another run's.
+fn cached(run: Run<'_>, label: &str) -> crate::geometry::Vector2F {
+    let (text, font_size, line_height, max_width, weight, family, italic) = run;
+    let through_the_cache =
+        measure_text_family(text, font_size, line_height, max_width, weight, family, italic);
+    let fresh = measure_uncached(text, font_size, line_height, max_width, weight, family, italic);
+    assert_eq!(
+        through_the_cache, fresh,
+        "{label}: the cache answered {through_the_cache:?}, a fresh measurement is {fresh:?}"
+    );
+    through_the_cache
+}
+
+/// Every number in the cache key has to be in it. Each run below is measured
+/// after the baseline, so a key that dropped the field it varies would answer
+/// with the baseline's size and fail against the fresh measurement beside it.
+#[test]
+fn a_cached_measurement_equals_a_fresh_one_for_every_key() {
+    const PARAGRAPH: &str = "The agent wrote a long paragraph of prose that has to reflow on every resize";
+    let baseline = cached(
+        (PARAGRAPH, 12.0, 1.2, 400.0, FontWeight::Regular, FontFamily::System, false),
+        "the baseline",
+    );
+    let narrow = cached(
+        (PARAGRAPH, 12.0, 1.2, 140.0, FontWeight::Regular, FontFamily::System, false),
+        "a narrower wrap width",
+    );
+    assert!(
+        narrow.y > baseline.y,
+        "the narrower box holds more lines: {narrow:?} against {baseline:?}"
+    );
+    let larger = cached(
+        (PARAGRAPH, 24.0, 1.2, 400.0, FontWeight::Regular, FontFamily::System, false),
+        "a larger font size",
+    );
+    assert!(
+        larger.y > baseline.y,
+        "the larger face takes more room: {larger:?} against {baseline:?}"
+    );
+    let loftier = cached(
+        (PARAGRAPH, 12.0, 2.0, 400.0, FontWeight::Regular, FontFamily::System, false),
+        "a taller line height",
+    );
+    assert!(
+        loftier.y > baseline.y,
+        "the taller lines take more room: {loftier:?} against {baseline:?}"
+    );
+    let bold = cached(
+        (PARAGRAPH, 12.0, 1.2, 400.0, FontWeight::Bold, FontFamily::System, false),
+        "a heavier weight",
+    );
+    assert_ne!(bold.x, baseline.x, "bold is not the regular face's ink");
+    let mono = cached(
+        (PARAGRAPH, 12.0, 1.2, 400.0, FontWeight::Regular, FontFamily::Mono, false),
+        "the mono family",
+    );
+    assert_ne!(mono.x, baseline.x, "mono is not the system face's ink");
+    let oblique = cached(
+        (PARAGRAPH, 12.0, 1.2, 400.0, FontWeight::Regular, FontFamily::System, true),
+        "an oblique face",
+    );
+    assert_ne!(
+        oblique.x, baseline.x,
+        "the oblique face is not the upright one's ink"
+    );
+    let other = cached(
+        ("A different run", 12.0, 1.2, 400.0, FontWeight::Regular, FontFamily::System, false),
+        "another string",
+    );
+    assert_ne!(other, baseline, "another string is another size");
+}
+
+/// The per-frame cost of the rebuild, from the transcript's own render: a frame
+/// that shows the same messages as the frame before it must not run the fontdue
+/// pass a second time. The numbers are printed so the effect is measured rather
+/// than asserted.
+#[test]
+fn a_second_frame_of_the_same_transcript_measures_no_text() {
+    use crate::elements::chat_content::{ChatFragment, ChatMessage, ChatRole};
+    use crate::elements::{AppContext, Element, LayoutContext, SizeConstraint};
+    use crate::geometry::vec2f;
+    use crate::ChatView;
+
+    // Load the bundled fonts first: the one-time font load is not the cost
+    // being measured here.
+    let _ = measure_text(
+        "warm up the bundled fonts",
+        12.0,
+        1.2,
+        400.0,
+        FontWeight::Regular,
+    );
+    invalidate_text_measure_cache();
+
+    let app = AppContext::default();
+    let messages: Vec<ChatMessage> = (0..60)
+        .map(|index| ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text(format!(
+                "streamed answer {index} with a sentence long enough to wrap in the pane it is drawn in"
+            ))],
+        ))
+        .collect();
+    let constraint = SizeConstraint::loose(vec2f(700.0, 700.0));
+
+    let mut first = ChatView::new().with_messages(messages.clone());
+    let before = measure_cache_stats();
+    let started = std::time::Instant::now();
+    let _ = first.layout(constraint, &mut LayoutContext::default(), &app);
+    let cold = started.elapsed();
+    let after_first = measure_cache_stats();
+
+    let mut second = ChatView::new().with_messages(messages.clone());
+    let started = std::time::Instant::now();
+    let _ = second.layout(constraint, &mut LayoutContext::default(), &app);
+    let warm = started.elapsed();
+    let after_second = measure_cache_stats();
+
+    let measured_first = after_first.misses - before.misses;
+    let measured_second = after_second.misses - after_first.misses;
+    let asked = (after_second.hits + after_second.misses) - (after_first.hits + after_first.misses);
+    eprintln!(
+        "text measurement cache: the first frame ran {measured_first} fontdue passes in {cold:?}; \
+         the second was asked for {asked} runs, ran {measured_second} passes in {warm:?}"
+    );
+    assert!(
+        measured_first > 50,
+        "the sample has to ask for a transcript's worth of runs, got {measured_first}"
+    );
+    assert_eq!(
+        measured_second, 0,
+        "the second frame re-measured {measured_second} runs"
+    );
+    assert!(
+        asked >= measured_first,
+        "the second frame asks for every run the first one measured: {asked} asked for {measured_first} measured"
+    );
+
+    // A new render scale (a zoom, or a move to another display) refills the
+    // atlas, and drops these answers with it: the frame after it measures
+    // everything again rather than reading a size the old atlas was sized for.
+    invalidate_text_measure_cache();
+    let dropped = measure_cache_stats();
+    assert_eq!(dropped.entries, 0, "an invalidation drops the sizes");
+    assert_eq!(dropped.advance_entries, 0, "and the advances");
+    let mut third = ChatView::new().with_messages(messages);
+    let _ = third.layout(constraint, &mut LayoutContext::default(), &app);
+    assert!(
+        measure_cache_stats().misses > dropped.misses,
+        "the frame after an invalidation measures its runs again"
+    );
 }

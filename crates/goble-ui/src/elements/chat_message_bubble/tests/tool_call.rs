@@ -9,7 +9,7 @@ use crate::elements::{terminal_block, AppContext, TerminalData, TerminalStatus};
 use crate::geometry::vec2f;
 use crate::render::RenderCommand;
 use crate::test_util::render_element;
-use crate::theme::ColorToken;
+use crate::theme::{ColorToken, FontFamily};
 use goble_core::harness::ToolCallStatus;
 use goble_core::harness::{tool_kind_for, tool_row, ToolKind};
 use super::*;
@@ -44,6 +44,10 @@ fn tool_call_draws_no_border_or_card() {
 /// the tool's own name, on one baseline, with no argument or result row. `ls`
 /// carries no path here, so the parse has no operand to name and falls back to
 /// the tool, exactly as it does for a call no family claims.
+///
+/// The mark is the one diamond every state draws, coloured by the state: a
+/// collapsed call's is the quiet colour, because a finished `ls` is a read-line
+/// tool and not the success a finished command announces.
 #[test]
 fn collapsed_tool_call_renders_in_one_row() {
     let (commands, _) =
@@ -56,17 +60,17 @@ fn collapsed_tool_call_renders_in_one_row() {
     );
     assert_eq!(
         drawn_row_texts(&commands),
-        vec!["● ls".to_string()],
+        vec!["◆ ls".to_string()],
         "only the status mark and the tool name are drawn"
     );
     assert_eq!(drawn_texts(&commands).len(), 2, "one row of two runs");
 }
 
-/// A tool whose definition declares no shape (here `list_entities`) expands
-/// in place: its arguments and its result are drawn as their own rows
-/// beneath the header.
+/// A tool whose definition declares no shape (here `list_entities`) expands in
+/// place: the row names the tool and the one argument it can name, and the body
+/// opens on the result. The argument payload is never printed as JSON.
 #[test]
-fn expanded_generic_tool_call_draws_arguments_and_result_in_place() {
+fn expanded_generic_tool_call_draws_its_result_and_never_prints_json() {
     let (commands, _) = paint_tool_calls_with_fold(
         vec![call(
             "list_entities",
@@ -83,17 +87,57 @@ fn expanded_generic_tool_call_draws_arguments_and_result_in_place() {
         "the tool name is drawn, got {texts:?}"
     );
     assert!(
-        texts.iter().any(|t| t == r#"{"kind":"agent"}"#),
-        "the arguments row is drawn, got {texts:?}"
-    );
-    assert!(
         texts.iter().any(|t| t == "2 entities"),
         "the result row is drawn, got {texts:?}"
     );
     assert_eq!(
-        drawn_rows(&commands),
-        3,
-        "header + arguments + result are three inline rows, got {texts:?}"
+        drawn_row_texts(&commands),
+        vec!["┃ ◆ list_entities agent".to_string(), "2 entities".to_string()],
+        "the row and its result are the whole body, got {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains(['{', '}'])),
+        "the argument payload is never printed as JSON, got {texts:?}"
+    );
+}
+
+/// An integration call (`use_tool`) names each argument on its own row — the
+/// shape the reference draws an integration tool's arguments in — rather than
+/// printing the payload it was called with.
+#[test]
+fn an_integration_tools_arguments_are_named_not_printed() {
+    let arguments = r#"{"name":"save_issue","input":{"title":"Bug"}}"#;
+    let (commands, _) = paint_tool_calls_with_fold(
+        vec![call(
+            "use_tool",
+            arguments,
+            ToolCallStatus::Finished,
+            Some("saved"),
+        )],
+        Some(ToolDisplayMode::Expanded),
+    );
+
+    let rows = drawn_row_texts(&commands);
+    assert!(
+        rows.iter().any(|row| row.contains("name: save_issue")),
+        "each argument is a `key: value` row, got {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains("input: 1 field")),
+        "a nested argument is named by how much it holds, got {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains('{') || row.contains('[')),
+        "no row prints a payload in braces, got {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row == arguments),
+        "the payload is never printed as it was received, got {rows:?}"
+    );
+    assert_eq!(
+        rows.last().map(String::as_str),
+        Some("saved"),
+        "the result closes the body, got {rows:?}"
     );
 }
 
@@ -119,8 +163,8 @@ fn tool_shapes_are_read_from_the_parsed_family() {
     assert_eq!(row.subject, "src/lib.rs");
 }
 
-/// A command is drawn as the terminal block: its command line, its output
-/// and the block's own title, never the raw argument JSON.
+/// A command's call names the command on its own row and draws what it printed
+/// beneath it, never the raw argument JSON.
 #[test]
 fn command_call_shows_the_command_and_its_output() {
     let (commands, _) = paint_tool_calls_with_fold(
@@ -148,24 +192,87 @@ fn command_call_shows_the_command_and_its_output() {
     );
 }
 
-/// The segment a command the agent ran is drawn as is the terminal block,
-/// and it renders identically in the two places a block appears: the
-/// transcript and terminal mode.
+/// An agent's command is drawn continuously in its reply, never as the
+/// terminal block the pane draws. A block is a segment: it carries its own
+/// header, its copy button and its filter, and those belong to a command the
+/// *user* ran. An agent's call has none of them, and its output is unbounded
+/// by a viewer chrome it did not ask for.
+///
+/// The build gate is the strongest form of this: the module that draws a tool
+/// call's body does not reference the plumbing a block is built with, so a
+/// block cannot be constructed on this path at all. This asserts the drawn
+/// result of that — no block title, no block controls, no border.
 #[test]
-fn a_command_segment_is_the_same_block_terminal_mode_draws() {
+fn an_agents_command_is_not_a_terminal_block() {
+    let command = "cargo test -p goble-ui";
+    let output = "test result: ok. 231 passed";
+    let (commands, _) = paint_tool_calls_with_fold(
+        vec![call(
+            "run_command",
+            r#"{"command":"cargo test -p goble-ui"}"#,
+            ToolCallStatus::Finished,
+            Some(output),
+        )],
+        Some(ToolDisplayMode::Expanded),
+    );
+
+    // The block's own chrome: a copy or filter control is an icon, and the
+    // block's status label is its header's trailing text. Neither is drawn.
+    let icons = commands
+        .iter()
+        .filter(|c| matches!(c, RenderCommand::DrawIcon { .. }))
+        .count();
+    assert_eq!(icons, 0, "an agent's call draws no block controls");
+    let borders = commands
+        .iter()
+        .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
+        .count();
+    assert_eq!(borders, 0, "an agent's call draws no block frame");
+
+    // What it does draw: the row that names the command, then the output.
+    let runs = text_runs(&commands);
+    assert!(
+        runs.iter().any(|(text, _, _, _)| text == command),
+        "the row names the command it ran, got {runs:?}"
+    );
+    assert!(
+        runs.iter().any(|(text, _, _, _)| text == output),
+        "the output is drawn continuously under it, got {runs:?}"
+    );
+    assert!(
+        runs.iter().all(|(_, _, _, size)| *size == 12.0),
+        "the row and its body are one size, got {runs:?}"
+    );
+
+    // The block's own title is nowhere: the command is drawn once, by the row
+    // that names it, not a second time as a block header.
+    let titles = runs
+        .iter()
+        .filter(|(text, _, _, _)| text == command)
+        .count();
+    assert_eq!(titles, 1, "the command is drawn once, got {runs:?}");
+}
+
+/// The block the pane draws for a user's command is unchanged: one command is
+/// still one block wherever the *user* ran it. The agent's path and the pane's
+/// are the two sides of the same distinction, so both are pinned.
+#[test]
+fn a_users_command_is_still_the_terminal_block() {
     let app = AppContext::default();
     let data = TerminalData::for_command(
         "cargo test -p goble-ui",
         "test result: ok. 231 passed",
         TerminalStatus::Success,
     );
-
-    // Terminal mode: the block on its own, exactly as the pane draws it.
     let mut block = terminal_block(&data, TerminalFilter::default(), None, None);
     let block_runs = text_runs(&render_element(&mut block, vec2f(600.0, 200.0), &app));
+    assert!(
+        block_runs.iter().any(|(text, _, _, _)| text == "❯ "),
+        "the pane's block draws its own prompt line, got {block_runs:?}"
+    );
 
-    // The transcript: the same command as the agent's tool call, expanded
-    // so the block (not the folded header) is what is compared.
+    // An agent's call to the same command has no block, so it draws no prompt
+    // line and no block title: the difference is the whole point.
     let (commands, _) = paint_tool_calls_with_fold(
         vec![call(
             "run_command",
@@ -176,18 +283,9 @@ fn a_command_segment_is_the_same_block_terminal_mode_draws() {
         Some(ToolDisplayMode::Expanded),
     );
     let transcript_runs = text_runs(&commands);
-
     assert!(
-        !block_runs.is_empty(),
-        "the shared block draws its title, command and output"
-    );
-    // The transcript draws the tool-call header (the mark, the verb and the
-    // command it runs for) and then the block itself; the block runs must match
-    // exactly.
-    assert_eq!(
-        &transcript_runs[3..],
-        block_runs.as_slice(),
-        "the transcript's command segment must be the block terminal mode draws"
+        !transcript_runs.iter().any(|(text, _, _, _)| text == "❯ "),
+        "an agent's call draws no block prompt, got {transcript_runs:?}"
     );
 }
 
@@ -365,7 +463,7 @@ fn expanded_read_draws_a_gutter_and_highlighted_lines_on_a_band() {
 
     // The body is highlighted, not one muted blob: drop the gutter and the
     // header's own runs and require more than one code colour.
-    let header = ["●", "read_file", "src/lib.rs"];
+    let header = ["┃ ", "◆ ", "Read ", "src/lib.rs"];
     let body_colours: std::collections::HashSet<ColorU> = commands
         .iter()
         .filter_map(|c| match c {
@@ -681,3 +779,222 @@ fn web_search_call_shows_the_query_and_its_sources() {
     );
 }
 
+/// A call that is open draws the rail down its left edge; a folded one draws
+/// none. The rail is what says the rows under a header belong to that call, so
+/// a folded row is one line with nothing hanging off it.
+#[test]
+fn the_rail_is_drawn_only_while_the_call_is_open() {
+    let call = || {
+        call(
+            "read_file",
+            r#"{"path":"src/lib.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("fn main() {}\n"),
+        )
+    };
+    let (folded, _) = paint_tool_calls(vec![call()]);
+    assert!(
+        !drawn_texts(&folded).iter().any(|t| t == "┃ "),
+        "a folded call draws no rail"
+    );
+
+    let (open, _) = paint_tool_calls_with_fold(vec![call()], Some(ToolDisplayMode::Expanded));
+    let rail = text_runs(&open)
+        .into_iter()
+        .find(|(text, _, _, _)| text == "┃ ")
+        .expect("an open call draws its rail");
+    assert_eq!(rail.2, FontFamily::Mono, "the rail is a mono cell");
+    assert_eq!(rail.3, 12.0, "the rail is drawn at the row's own size");
+}
+
+/// The state is the mark's colour, and it is dimmed while the call is folded.
+/// An open call's mark is at full strength, so the fold and the state read off
+/// the same row without either of them being a second glyph.
+#[test]
+fn the_mark_is_dimmed_while_the_call_is_folded() {
+    let app = AppContext::default();
+    let call = || {
+        call(
+            "run_command",
+            r#"{"command":"ls"}"#,
+            ToolCallStatus::Finished,
+            Some("file.txt"),
+        )
+    };
+    let mark = |commands: &[RenderCommand]| {
+        text_runs(commands)
+            .into_iter()
+            .find(|(text, _, _, _)| text == "◆ ")
+            .expect("the mark is drawn")
+            .1
+    };
+
+    let (folded, _) = paint_tool_calls(vec![call()]);
+    let (open, _) = paint_tool_calls_with_fold(vec![call()], Some(ToolDisplayMode::Expanded));
+    let success = app.theme.color(ColorToken::Success);
+    assert_eq!(mark(&open), success, "an open call's mark is at full strength");
+    assert_eq!(
+        mark(&folded),
+        success.mix(&app.theme.color(ColorToken::Bg), 0.5),
+        "a folded call's mark is blended half into the background"
+    );
+}
+
+/// The row and its body are drawn at 12 px, and the one action a row owns at
+/// 10 px while the row is retracted. The sizes are the row's shape, so a body
+/// line is never smaller than the row that names it.
+#[test]
+fn the_row_is_twelve_px_and_a_retracted_action_is_ten() {
+    let call = spawn_call(ToolCallStatus::Running);
+    let record = record(
+        "conv-child-1",
+        crate::elements::chat_content::SubAgentRowStatus::Running,
+        "reading",
+        std::time::Duration::from_secs(4),
+        None,
+    );
+    let (folded, _) = paint_sub_agent(vec![call.clone()], HashMap::from([(call.id.clone(), record.clone())]), None);
+    let sizes: HashMap<String, f32> = text_runs(&folded)
+        .into_iter()
+        .map(|(text, _, _, size)| (text, size))
+        .collect();
+    assert_eq!(
+        sizes.get("open child"),
+        Some(&10.0),
+        "the action is a size down while the row is retracted, got {sizes:?}"
+    );
+    assert_eq!(sizes.get("◆ "), Some(&12.0), "the row itself stays 12 px");
+
+    let (open, _) = paint_sub_agent(
+        vec![call.clone()],
+        HashMap::from([(call.id, record)]),
+        Some(ToolDisplayMode::Expanded),
+    );
+    let sizes: HashMap<String, f32> = text_runs(&open)
+        .into_iter()
+        .map(|(text, _, _, size)| (text, size))
+        .collect();
+    assert_eq!(
+        sizes.get("open child"),
+        Some(&12.0),
+        "an open row draws its action at the row's own size, got {sizes:?}"
+    );
+}
+
+/// A command's output keeps the colours the terminal resolved and adds no
+/// emphasis of its own, and an underline is never one of them: no tool row is
+/// underlined for being a path, a URL or a label, nor because the command
+/// printed an SGR 4.
+#[test]
+fn tool_rows_underline_nothing_they_did_not_receive() {
+    use crate::elements::terminal_block::{TerminalLine, TerminalRun};
+
+    let app = AppContext::default();
+    let plain = TerminalLine {
+        text: "src/lib.rs".to_string(),
+        kind: crate::elements::TerminalLineKind::Output,
+        runs: Vec::new(),
+    };
+    let spans = crate::elements::chat_message_bubble::tool_body::output_spans(
+        &plain,
+        ToolCallStatus::Finished,
+        &app,
+    );
+    assert_eq!(spans.len(), 1);
+    assert!(
+        !spans[0].underline,
+        "a plain output line is not underlined"
+    );
+
+    let emitted = TerminalLine {
+        text: "underlined".to_string(),
+        kind: crate::elements::TerminalLineKind::Output,
+        runs: vec![TerminalRun {
+            text: "underlined".to_string(),
+            color: None,
+            bold: false,
+            italic: false,
+            underline: true,
+        }],
+    };
+    let spans = crate::elements::chat_message_bubble::tool_body::output_spans(
+        &emitted,
+        ToolCallStatus::Finished,
+        &app,
+    );
+    assert!(
+        !spans[0].underline,
+        "a row stays plain even when the command it ran printed an SGR 4"
+    );
+}
+
+/// Two collapsed tool rows touch, and a row that is open keeps the block's gap
+/// between itself and its neighbour. The pitch between two headers is therefore
+/// one row's height while both are collapsed, and that height plus the gap once
+/// one of them is open.
+#[test]
+fn two_collapsed_tool_rows_touch_and_an_open_one_keeps_its_gap() {
+    let app = AppContext::default();
+    let baselines = |commands: &[RenderCommand]| -> Vec<f32> {
+        let mut ys: Vec<f32> = commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawText { origin, .. } => Some((origin.y * 10.0).round() / 10.0),
+                _ => None,
+            })
+            .collect();
+        ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        ys.dedup();
+        ys
+    };
+
+    let md = app.theme.spacing_px(crate::theme::SpacingToken::Md);
+    let sm = app.theme.spacing_px(crate::theme::SpacingToken::Sm);
+    // A call still running draws no body, so a pair of them isolates the gap.
+    let pending = |path: &str| {
+        call(
+            "read_file",
+            &format!(r#"{{\"path\":\"{path}\"}}"#),
+            ToolCallStatus::Running,
+            None,
+        )
+    };
+    let pending_calls = || vec![pending("src/lib.rs"), pending("src/other.rs")];
+
+    let (one, one_height) = paint_tool_calls(vec![pending("src/lib.rs")]);
+    assert_eq!(baselines(&one).len(), 1, "a collapsed read is one row");
+    let row_height = one_height - 2.0 * md;
+
+    let (touching, two_height) = paint_tool_calls(pending_calls());
+    let rows = baselines(&touching);
+    assert_eq!(rows.len(), 2, "two collapsed rows draw nothing else");
+    assert!(
+        (rows[1] - rows[0] - row_height).abs() < 0.5,
+        "two collapsed rows touch: the headers stand {} apart against a {} row",
+        rows[1] - rows[0],
+        row_height
+    );
+    assert!(
+        (two_height - one_height - row_height).abs() < 0.5,
+        "the second collapsed row adds exactly one row: {} against {}",
+        two_height - one_height,
+        row_height
+    );
+
+    let modes = [ToolDisplayMode::Collapsed, ToolDisplayMode::Expanded];
+    let (open, open_height) = paint_tool_calls_with_modes(pending_calls(), Some(&modes));
+    let rows = baselines(&open);
+    assert!(
+        (rows[1] - rows[0] - row_height - sm).abs() < 0.5,
+        "an open neighbour keeps the gap: the headers stand {} apart against {} + {}",
+        rows[1] - rows[0],
+        row_height,
+        sm
+    );
+    assert!(
+        (open_height - two_height - sm).abs() < 0.5,
+        "the gap is the whole of what opening a body-less neighbour adds: {} against {}",
+        open_height - two_height,
+        sm
+    );
+}

@@ -251,7 +251,11 @@ impl UiState {
                         .unwrap_or_else(|| Rc::new(RefCell::new(0))),
                     queued_prompt: rt.and_then(|r| r.queued_prompt.clone()),
                     agent_busy: rt.map(|r| r.busy).unwrap_or(false),
-                    turn_status: pane_turn_status(rt, executions),
+                    turn_status: pane_turn_status(
+                        rt,
+                        executions,
+                        self.running_sub_agent_count(*pane_id),
+                    ),
                     inline_screen: None,
                     screen_link: message_screen_link(&rt.map(|r| r.messages.clone()).unwrap_or_default()),
                     sub_agents: self.sub_agent_rows(*pane_id),

@@ -120,6 +120,21 @@ impl DesktopState {
         Ok(id)
     }
 
+    /// Retitle a conversation.
+    ///
+    /// The write reaches the store, the in-memory list the sidebar is built
+    /// from, and the frontends through `chats:updated` — so the new title is
+    /// durable and visible without a restart, the same path
+    /// [`Self::set_chat_model`] takes.
+    pub fn set_chat_title(&self, id: &str, title: &str) -> anyhow::Result<()> {
+        self.store.lock().set_chat_title(id, title)?;
+        if let Some(chat) = self.chats.lock().iter_mut().find(|c| c.id == id) {
+            chat.title = title.to_string();
+        }
+        self.emit("chats:updated", ());
+        Ok(())
+    }
+
     pub fn set_chat_model(&self, id: &str, provider: &str, model: &str) -> anyhow::Result<()> {
         self.store.lock().set_chat_model(id, provider, model)?;
         if let Some(chat) = self.chats.lock().iter_mut().find(|c| c.id == id) {

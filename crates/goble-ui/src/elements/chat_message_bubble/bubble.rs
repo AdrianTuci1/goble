@@ -153,14 +153,15 @@ impl ChatMessageBubble {
 
         // Tool invocations attached to this (assistant) message render as
         // inline rows above the prose so the read is "the agent called these
-        // tools, then produced this reply".
+        // tools, then produced this reply". They are part of the reply and take
+        // no terminal plumbing: a call never draws a block, a copy button or a
+        // filter, which belong to a command the user ran.
         if !self.tool_calls.is_empty() {
             column = column.with_child(build_tool_call_rows(
                 &self.tool_calls,
                 &self.tool_fold,
                 &self.sub_agents,
                 &self.on_action,
-                &self.terminal_plumbing(),
                 app,
             ));
         }

@@ -3,11 +3,11 @@ use std::sync::Arc;
 use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind};
 use crate::elements::terminal_block::{terminal_filter_bar, TerminalFilter};
 use crate::elements::{
-    slash_menu_open, AppContext, AskUserCard, Axis, Button, ButtonVariant, ChatComposer,
-    ChatMessageBubble, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty,
-    Expanded, Fill, Flex, FrameView, HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu,
-    Padding, QuickActionButton, Scrollable, ShortcutHints, SlashMenu, Stack, Text, Tooltip,
-    TooltipPosition, TurnStatusFooter,
+    slash_menu_open, AppContext, AskUserCard, Axis, Border, Button, ButtonVariant, ChatComposer,
+    ChatMessageBubble, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
+    Empty, Expanded, Fill, Flex, FrameView, HoverRow, Icon, MainAxisAlignment, MainAxisSize,
+    ModelMenu, Padding, QuickActionButton, Scrollable, ShortcutHints, SlashMenu, Spacer, Stack,
+    Text, Tooltip, TooltipPosition, TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
@@ -21,6 +21,14 @@ pub(super) const STRIP_RISE: f32 = 6.0;
 
 /// What the whole-transcript filter bar's field says when it is empty.
 const TRANSCRIPT_FILTER_PLACEHOLDER: &str = "Filter terminal output";
+
+/// Cap on the empty state's frame. A pane wider than this keeps the box
+/// readable instead of stretching it across the whole window.
+pub(super) const EMPTY_FRAME_MAX_WIDTH: f32 = 720.0;
+
+/// How far the frame's border is mixed from the pane background toward the
+/// theme's border, so the box reads as a soft edge rather than a hard rule.
+const EMPTY_FRAME_BORDER_MIX: f32 = 0.45;
 
 /// Group a token count in threes, so a long conversation's totals stay
 /// readable (`1234567` reads as `1,234,567`).
@@ -90,9 +98,16 @@ impl ChatView {
         Some(menu.finish())
     }
 
+    /// What a pane with nothing in its transcript shows: the title and the
+    /// invitation, centered in a rounded bordered frame.
+    ///
+    /// The frame spans the pane minus a margin on each side (capped at
+    /// [`EMPTY_FRAME_MAX_WIDTH`]) and sits a third of the free height above the
+    /// composer, which is where the reference tool's welcome box puts it.
     fn build_empty_state(&self, app: &AppContext) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
-        let xl = app.theme.spacing_px(SpacingToken::Xl);
+        let padding = app.theme.spacing_px(SpacingToken::Lg);
+        let margin = app.theme.spacing_px(SpacingToken::Xl);
         let title = self
             .empty_title
             .clone()
@@ -102,7 +117,7 @@ impl ChatView {
             .clone()
             .unwrap_or_else(|| "Ask anything to get started.".to_string());
 
-        let column = Flex::column()
+        let content = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(spacing)
             .with_child(
@@ -119,8 +134,48 @@ impl ChatView {
             )
             .finish();
 
-        Container::new(column)
-            .with_padding(EdgeInsets::new(0.0, xl, 0.0, 0.0))
+        // The frame's width comes from this `Max` row: it takes whatever the
+        // constraint offers, so the border spans the pane instead of hugging
+        // the two lines of text.
+        let border = app
+            .theme
+            .color(ColorToken::Bg)
+            .mix(&app.theme.color(ColorToken::Border), EMPTY_FRAME_BORDER_MIX);
+        let frame = Container::new(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_main_axis_alignment(MainAxisAlignment::Center)
+                .with_child(content)
+                .finish(),
+        )
+        .with_padding(EdgeInsets::uniform(padding))
+        .with_border(Border::all(1.0).with_border_color(border))
+        .with_corner_radius(app.theme.radius_px())
+        .finish();
+
+        // Two spacers in a 1:2 ratio put the frame a third of the slack down
+        // the pane and leave the rest below it. The outer flex claims the
+        // height it was given so the composer stays pinned to the bottom.
+        Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(Spacer::new().with_flex(1.0).finish())
+            .with_child(
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_main_axis_alignment(MainAxisAlignment::Center)
+                    .with_child(
+                        Container::new(
+                            ConstrainedBox::new(frame)
+                                .with_max_width(EMPTY_FRAME_MAX_WIDTH)
+                                .finish(),
+                        )
+                        .with_padding(EdgeInsets::new(margin, 0.0, margin, 0.0))
+                        .finish(),
+                    )
+                    .finish(),
+            )
+            .with_child(Spacer::new().with_flex(2.0).finish())
             .finish()
     }
 
@@ -134,6 +189,12 @@ impl ChatView {
     /// the provider reports one, and output). Nothing here is a price. A
     /// conversation whose provider has reported nothing yet says so rather than
     /// drawing a zero, and its disclosure does not open.
+    ///
+    /// The row is the closing child of the message column, i.e. part of the
+    /// scrolled transcript rather than a sibling of it: `rebuild` hands it to
+    /// the same `Scrollable` the messages go into, so the column's own spacing
+    /// puts it directly under the last message and scrolling carries it away
+    /// with that message instead of stranding it over the composer.
     fn build_conversation_footer(&self, app: &AppContext) -> Option<Box<dyn Element>> {
         if self.messages.is_empty() {
             return None;
@@ -267,7 +328,17 @@ impl ChatView {
                     .finish(),
             );
         }
-        Some(column.finish())
+        // The room the transcript keeps under its own last row belongs to this
+        // row, since it is what the anchored content ends on: without it the
+        // affordances are pressed onto the input's separator, which reads as
+        // the input's chrome rather than as the tail of the message above them.
+        Some(
+            Padding::new(
+                column.finish(),
+                EdgeInsets::new(0.0, 0.0, 0.0, app.theme.spacing_px(SpacingToken::Md)),
+            )
+            .finish(),
+        )
     }
 
     /// The expanded usage line, shaped like the reference tool's readout: the
@@ -369,10 +440,9 @@ impl ChatView {
             && self.screen_link.is_none()
             && self.notice.is_none()
         {
-            // Wrap in a scrollable so it fills the remaining height and pins
-            // the composer to the bottom of the window (a bare container would
-            // size to its content and leave a gap under the composer).
-            Scrollable::new(self.build_empty_state(app), Axis::Vertical).finish()
+            // The empty state claims the remaining height itself, so the
+            // composer stays pinned to the bottom of the window.
+            self.build_empty_state(app)
         } else {
             let mut message_column = Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)

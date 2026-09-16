@@ -48,9 +48,9 @@ pub(crate) fn build_sub_agent_child_view(
         }
         // A child whose live record the pane no longer holds still has its
         // conversation. The title names it by id and leaves the status out rather
-        // than inventing one.
+        // than inventing one; the mark is the one every status draws.
         None => (
-            "◇",
+            "◆",
             ColorToken::Muted,
             child.child_id.clone(),
             "no live record".to_string(),

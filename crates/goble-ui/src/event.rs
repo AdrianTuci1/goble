@@ -13,6 +13,13 @@ impl ModifiersState {
     }
 }
 
+/// The pointer buttons the platform reports, in the order every element that
+/// asks about one reads them. A left press is the primary button — the one a
+/// click is made of — a right press is the one a context menu opens on, and
+/// anything else is neither.
+pub const BUTTON_PRIMARY: u32 = 0;
+pub const BUTTON_SECONDARY: u32 = 1;
+
 /// An OS-level event wrapped for dispatch in the element tree.
 #[derive(Clone, Debug)]
 pub enum DispatchedEvent {

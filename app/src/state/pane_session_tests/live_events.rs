@@ -261,9 +261,9 @@ use super::*;
                     activity,
                     TurnActivity::Tool {
                         name: "run_command".into(),
-                        command: Some("cargo test".into()),
+                        arguments: serde_json::json!({ "command": "cargo test" }).to_string(),
                     },
-                    "a running tool is drawn as its command"
+                    "a running tool is drawn as the row its family gives it"
                 );
                 assert!(
                     elapsed.is_some(),
@@ -340,19 +340,298 @@ use super::*;
         );
     }
 
+    /// The text the live footer draws for `status`, through the widget the app
+    /// mounts with it.
+    fn drawn_footer_texts(status: TurnStatus) -> Vec<String> {
+        use goble_ui::elements::AppContext;
+        use goble_ui::render::RenderCommand;
+        use goble_ui::test_util::render_element;
+        use goble_ui::{Element, TurnStatusFooter};
+
+        let mut element: Box<dyn Element> = TurnStatusFooter::new(status).finish();
+        render_element(
+            &mut element,
+            goble_ui::vec2f(600.0, 40.0),
+            &AppContext::default(),
+        )
+        .into_iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawText { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect()
+    }
+
+    /// A busy turn whose prompt has been sent and whose model has not started
+    /// streaming yet is waiting for the response — "Waiting for response…" on
+    /// the line, not a Thinking the model is not doing.
+    #[test]
+    fn the_footer_waits_for_the_response_until_the_model_streams() {
+        let mut state = UiState::mock();
+        state.begin_turn(1);
+        assert!(
+            state.pane_runtime.get(&1).unwrap().reasoning.is_empty(),
+            "the turn has produced no reasoning row yet"
+        );
+
+        let status = state.pane_chat_snapshot().get(&1).unwrap().turn_status.clone();
+        assert!(
+            matches!(
+                status,
+                TurnStatus::Busy {
+                    activity: TurnActivity::WaitingForResponse,
+                    ..
+                }
+            ),
+            "no reasoning row yet is the wait for the response: {status:?}"
+        );
+        assert!(
+            drawn_footer_texts(status)
+                .iter()
+                .any(|t| t == "Waiting for response…"),
+            "the footer draws the wait for the response"
+        );
+    }
+
+    /// The model's own phase is read from the reasoning rows this turn has
+    /// produced: an open newest row is thinking, a closed one is the model
+    /// writing its answer.
+    #[test]
+    fn the_footer_reads_thinking_and_responding_from_the_reasoning_rows() {
+        use goble_desktop_service::{ReasoningEvent, ReasoningPhase};
+
+        let event = |phase, step, mode: &str, delta: &str, content: Option<&str>| ReasoningEvent {
+            chat_id: "c1".into(),
+            step,
+            mode: mode.to_string(),
+            delta: delta.to_string(),
+            content: content.map(str::to_string),
+            decision: None,
+            phase,
+        };
+        let activity = |state: &UiState| match state
+            .pane_chat_snapshot()
+            .get(&1)
+            .unwrap()
+            .turn_status
+            .clone()
+        {
+            TurnStatus::Busy { activity, .. } => activity,
+            other => panic!("a busy turn is Busy, got {other:?}"),
+        };
+
+        let mut state = UiState::mock();
+        state.begin_turn(1);
+
+        state.apply_reasoning_event(&event(
+            ReasoningPhase::Started,
+            Some(0),
+            "contemplating",
+            "",
+            None,
+        ));
+        assert_eq!(
+            activity(&state),
+            TurnActivity::Thinking,
+            "an open reasoning row is the model thinking"
+        );
+
+        state.apply_reasoning_event(&event(
+            ReasoningPhase::Done,
+            Some(0),
+            "contemplating",
+            "",
+            Some("weighing options"),
+        ));
+        assert_eq!(
+            activity(&state),
+            TurnActivity::Responding,
+            "the closed row means the model is writing its answer"
+        );
+
+        state.apply_reasoning_event(&event(
+            ReasoningPhase::Started,
+            Some(1),
+            "contemplating",
+            "",
+            None,
+        ));
+        assert_eq!(
+            activity(&state),
+            TurnActivity::Thinking,
+            "the newest row's state is the one the footer reports"
+        );
+    }
+
+    /// A turn that spawned a child and is awaiting it names the child, not the
+    /// spawn call: the call's own row would read `create_agent`, which says
+    /// nothing about what the pane is waiting on.
+    #[test]
+    fn the_footer_waits_on_the_child_the_spawn_call_is_awaiting() {
+        let spawned = |run_in_background: bool| goble_desktop_service::SubAgentSpawnedEvent {
+            chat_id: "c1".into(),
+            subagent_id: "conv-child-1".into(),
+            subagent_type: "reviewer".into(),
+            description: "audit the migration".into(),
+            parent_call_id: "call_spawn_1".into(),
+            run_in_background,
+        };
+        let awaiting = |state: &UiState| {
+            let status = state
+                .pane_chat_snapshot()
+                .get(&1)
+                .unwrap()
+                .turn_status
+                .clone();
+            match status {
+                TurnStatus::Busy { activity, .. } => activity,
+                other => panic!("a busy turn is Busy, got {other:?}"),
+            }
+        };
+
+        let mut state = UiState::mock();
+        state.apply_tool_event(&goble_desktop_service::ToolCallEvent {
+            chat_id: "c1".into(),
+            id: "call_spawn_1".into(),
+            name: "create_agent".into(),
+            arguments: serde_json::json!({ "description": "audit the migration" }),
+            status: ToolCallStatus::Running,
+            result: None,
+        });
+        state.begin_turn(1);
+
+        // The call is in flight before the child reports itself: the wait is
+        // named without a record to read it from.
+        assert_eq!(
+            awaiting(&state),
+            TurnActivity::WaitingOnSubAgent {
+                description: None,
+                activity: None,
+            },
+            "a spawn call awaiting a child that has not reported is the plain wait"
+        );
+
+        state.apply_subagent_spawned(&spawned(false));
+        let activity = awaiting(&state);
+        assert_eq!(
+            activity,
+            TurnActivity::WaitingOnSubAgent {
+                description: Some("audit the migration".into()),
+                activity: Some("initializing".into()),
+            },
+            "the child's own record names the wait once it exists"
+        );
+        assert!(
+            drawn_footer_texts(state.pane_chat_snapshot().get(&1).unwrap().turn_status.clone())
+                .iter()
+                .any(|t| t == "audit the migration: initializing…"),
+            "the footer draws the child and what it is doing"
+        );
+    }
+
+    /// The still-running line counts the pane's live sub-agent children beside
+    /// its commands and the workspace's executions; a child that has ended is
+    /// not work in flight and does not appear.
+    #[test]
+    fn the_footer_names_a_running_sub_agent_and_ignores_an_ended_one() {
+        let spawned = |child_id: &str, parent_call_id: &str| {
+            goble_desktop_service::SubAgentSpawnedEvent {
+                chat_id: "c1".into(),
+                subagent_id: child_id.into(),
+                subagent_type: "reviewer".into(),
+                description: "audit the migration".into(),
+                parent_call_id: parent_call_id.into(),
+                run_in_background: true,
+            }
+        };
+        let finished = |child_id: &str| goble_desktop_service::SubAgentFinishedEvent {
+            chat_id: "c1".into(),
+            subagent_id: child_id.into(),
+            status: "completed".into(),
+            output: Some("audit clean".into()),
+            error: None,
+            duration_ms: 12000,
+            turns: 3,
+            tool_calls: 5,
+            tokens: 2000,
+        };
+
+        let mut state = UiState::mock();
+        for (id, name) in [("t1", "run_command"), ("t2", "read_file")] {
+            state.apply_tool_event(&goble_desktop_service::ToolCallEvent {
+                chat_id: "c1".into(),
+                id: id.into(),
+                name: name.into(),
+                arguments: serde_json::json!({ "command": "cargo test" }),
+                status: ToolCallStatus::Running,
+                result: None,
+            });
+        }
+        state.apply_agent_started("worker-a", "trace-1", "agent-1", "2026-09-11T10:00:00Z");
+        state.apply_subagent_spawned(&spawned("conv-child-1", "call_spawn_1"));
+        state.apply_subagent_spawned(&spawned("conv-child-2", "call_spawn_2"));
+        state.apply_subagent_finished(&finished("conv-child-2"));
+
+        let status = state.pane_chat_snapshot().get(&1).unwrap().turn_status.clone();
+        assert_eq!(
+            status,
+            TurnStatus::StillRunning {
+                kinds: vec![
+                    WorkKindCount {
+                        kind: WorkKind::Command,
+                        count: 2,
+                    },
+                    WorkKindCount {
+                        kind: WorkKind::Execution,
+                        count: 1,
+                    },
+                    WorkKindCount {
+                        kind: WorkKind::SubAgent,
+                        count: 1,
+                    },
+                ]
+            },
+            "the kinds read Command, Execution, SubAgent, and the ended child is not one"
+        );
+        let line = drawn_footer_texts(status)
+            .into_iter()
+            .find(|t| t.contains("still running"))
+            .expect("the still-running line is drawn");
+        assert_eq!(
+            line,
+            "2 commands still running · 1 execution still running · 1 sub-agent still running"
+        );
+
+        // A pane whose only child has ended has nothing in flight.
+        let mut ended = UiState::mock();
+        ended.apply_subagent_spawned(&spawned("conv-child-1", "call_spawn_1"));
+        ended.apply_subagent_finished(&finished("conv-child-1"));
+        assert_eq!(
+            ended
+                .pane_chat_snapshot()
+                .get(&1)
+                .unwrap()
+                .turn_status,
+            TurnStatus::Idle,
+            "a completed child leaves the footer at zero height"
+        );
+    }
+
     /// A tool result's status is its call's persisted status, not a prefix in
-    /// the result text: an errored call renders as an error, and a finished call
-    /// whose printed text happens to say `ERROR:` still renders as a success.
+    /// the result text: an errored call keeps its error, and a finished call
+    /// whose printed text happens to say `ERROR:` is not turned into one. The
+    /// status is read where the row is drawn — the mark's colour on the call's
+    /// own row — and never inferred from the output.
     #[test]
     fn a_tool_result_reads_its_status_from_the_call_record() {
-        use goble_ui::elements::chat_content::ChatFragmentKind;
+        use goble_core::harness::ToolCallStatus;
 
         let assistant = |status: &str| goble_desktop_service::ChatMessage {
             id: "m1".into(),
             role: "assistant".into(),
             content: String::new(),
             tool_calls: Some(format!(
-                r#"[{{"id":"call_1","name":"run_command","arguments":{{}},"status":"{status}","result":"boom"}}]"#
+                r#"[{{"id":"call_1","name":"run_command","arguments":{{}},"status":"{status}"}}]"#
             )),
             created_at: "2026-09-10T00:00:00Z".into(),
         };
@@ -368,32 +647,27 @@ use super::*;
 
         let status_of = |rows: &[goble_desktop_service::ChatMessage]| {
             let messages = MessageParseCache::default().resolve(rows);
-            match &messages[1].fragments[0].kind {
-                ChatFragmentKind::Terminal(data) => data.status,
-                other => panic!("a tool row is a terminal block, got {other:?}"),
-            }
+            assert_eq!(messages.len(), 1, "the result row folds into its call");
+            messages[0].tool_calls[0].status
         };
 
         assert_eq!(
             status_of(&[assistant("error"), result.clone()]),
-            Some(TerminalStatus::Error),
+            ToolCallStatus::Error,
             "the error status is read from the call record"
         );
         assert_eq!(
             status_of(&[assistant("finished"), result.clone()]),
-            Some(TerminalStatus::Success),
+            ToolCallStatus::Finished,
             "a finished call is not turned into an error by its result text"
         );
 
-        // A status that changes on the call row re-parses the result row it
-        // belongs to, even though the result row's own text did not change.
-        let mut cache = MessageParseCache::default();
-        cache.resolve(&[assistant("error"), result.clone()]);
-        assert_eq!(cache.parse_count(), 2);
-        cache.resolve(&[assistant("finished"), result]);
+        // The folded body is the result row's, and it keeps the text verbatim:
+        // nothing here reads the status out of it.
+        let messages = MessageParseCache::default().resolve(&[assistant("finished"), result]);
         assert_eq!(
-            cache.parse_count(),
-            4,
-            "a changed call status re-parses the result row it belongs to"
+            messages[0].tool_calls[0].result.as_deref(),
+            Some("boom: ERROR: not found"),
+            "the row's body is folded in verbatim"
         );
     }

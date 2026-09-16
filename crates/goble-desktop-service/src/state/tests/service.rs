@@ -273,3 +273,60 @@ fn migrate_legacy_chats_creates_threads() {
         .unwrap();
     assert_eq!(messages.len(), 2);
 }
+
+/// A conversation's title is written to the store, into the in-memory list the
+/// sidebar is built from, and onto the bus as `chats:updated` — the write path
+/// a subject derived from the conversation's own content takes, so the app
+/// re-reads the list and shows the new subject.
+#[test]
+fn setting_a_chat_title_reaches_the_store_the_list_and_the_bus() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let state = DesktopState::new(
+        store.clone(),
+        crate::thread_store::ThreadStore::new(dir.path()).unwrap(),
+    );
+    let bus = Arc::new(crate::event_bus::CollectingEventBus::new());
+    state.set_event_bus(bus.clone());
+    let chat_id = state
+        .create_chat("New conversation", None, None)
+        .expect("create chat");
+    // The creation's own event is taken away, so the one below is this write's.
+    bus.take_events();
+
+    state
+        .set_chat_title(&chat_id, "Initial user onboarding")
+        .expect("retitle the conversation");
+
+    assert_eq!(
+        store.get_chat_title(&chat_id).unwrap(),
+        Some("Initial user onboarding".to_string()),
+        "the title is durable"
+    );
+    assert_eq!(
+        state.list_chats()[0].title,
+        "Initial user onboarding",
+        "the list the sidebar is built from carries it"
+    );
+    let events = bus.take_events();
+    assert!(
+        events.iter().any(|(name, _)| name == "chats:updated"),
+        "the write is announced so the app re-reads the list: {events:?}"
+    );
+
+    // Retitling one conversation leaves its neighbours' titles alone.
+    let other = state.create_chat("Kept", None, None).expect("create chat");
+    state
+        .set_chat_title(&chat_id, "Sidebar subjects")
+        .expect("retitle again");
+    let listed = state.list_chats();
+    let kept = listed
+        .iter()
+        .find(|c| c.id == other)
+        .expect("the other chat");
+    assert_eq!(kept.title, "Kept");
+    assert_eq!(
+        store.get_chat_title(&chat_id).unwrap(),
+        Some("Sidebar subjects".to_string())
+    );
+}

@@ -6,6 +6,7 @@ use goble_ui::SettingsPage;
 
 use super::color_picker;
 use super::pane::NavDir;
+use super::tab_menu::TabMenuAction;
 use super::types::{AppTab, SettingsCategory, SidebarView, WorkspaceRouting};
 
 /// Callbacks supplied by the host app for the main view. Created fresh on
@@ -120,6 +121,13 @@ pub struct UiActions {
     /// Click on a topbar workspace chip: selects that space, and a double-click
     /// enters inline rename for its name.
     pub on_workspace_click: Rc<RefCell<dyn FnMut(usize)>>,
+    /// Right click on a workspace tab: open its menu hung from `at`, the point
+    /// the click landed on. A second right click on the same tab closes it.
+    pub on_space_menu: Rc<RefCell<dyn FnMut(usize, goble_ui::Vector2F)>>,
+    /// The open tab menu closed itself — a press landed outside its panel.
+    pub on_space_menu_close: Rc<RefCell<dyn FnMut()>>,
+    /// A row of the tab menu was chosen, for the tab at that index.
+    pub on_space_menu_action: Rc<RefCell<dyn FnMut(usize, TabMenuAction)>>,
     /// Update the inline space-rename draft.
     pub on_space_rename_change: Rc<RefCell<dyn FnMut(String)>>,
     /// Track focus of the inline space-rename field (blur commits).

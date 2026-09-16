@@ -31,6 +31,7 @@ pub mod shell;
 pub mod shortcuts_help;
 pub mod sidebar;
 pub mod space_bar;
+pub mod tab_menu;
 pub mod task_workflow;
 pub mod terminal;
 pub mod vault;
@@ -45,6 +46,7 @@ mod types;
 pub use actions::{AiActions, MediaActions, ProjectsActions, ScreenActions, UiActions};
 pub use build::build_ui;
 pub use pane::{NavDir, Pane, PaneKind, Space, SplitDir};
+pub use tab_menu::{TabMenuAction, TabMenuTab};
 pub use snapshot::{
     AiSnapshot, ComposerContext, MediaNode, MediaProject, MediaSession, MediaSnapshot,
     PaneChatSnapshot, ProjectEntry, ProjectSessionEntry, ProjectsSnapshot, ScreenFrameSnapshot,

@@ -5,21 +5,24 @@ use goble_core::agent::AgentSpec;
 use goble_core::protocol::DesktopMessage;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+/// The `goblin` binary cargo builds for this package's integration tests.
+const GOBLIN_BIN: &str = env!("CARGO_BIN_EXE_goblin");
+
 fn find_free_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     listener.local_addr().unwrap().port()
 }
 
 #[tokio::test]
-#[ignore = "E2E: requires a built `goblin` binary (set GOBLIN_BIN); not run in the default suite"]
 async fn test_worker_health_and_websocket_run_agent() {
     let port = find_free_port();
     let workspace = tempfile::TempDir::new().unwrap();
-    let bin = std::env::var("GOBLIN_BIN")
-        .unwrap_or_else(|_| "/root/goble/target/release/goblin".to_string());
-    assert!(std::path::Path::new(&bin).exists(), "goblin binary not found at {bin}; build with `cargo build --release --package goblin-worker`");
+    assert!(
+        std::path::Path::new(GOBLIN_BIN).exists(),
+        "cargo did not build the `goblin` binary at {GOBLIN_BIN}"
+    );
 
-    let mut child = tokio::process::Command::new(&bin)
+    let mut child = tokio::process::Command::new(GOBLIN_BIN)
         .args([
             "--bind",
             &format!("127.0.0.1:{port}"),
@@ -41,6 +44,16 @@ async fn test_worker_health_and_websocket_run_agent() {
     let stderr = child.stderr.take().unwrap();
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            eprintln!("worker log: {line}");
+        }
+    });
+
+    // Drain stdout too: the worker's `tracing` output goes to stdout, and a run
+    // that fills the undrained pipe would block the child.
+    let stdout = child.stdout.take().unwrap();
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             eprintln!("worker log: {line}");
         }

@@ -210,6 +210,7 @@ impl UiState {
                 1u64,
                 PaneRuntime {
                     messages: pane_mock_messages,
+                    session_rows: Vec::new(),
                     parse_cache: MessageParseCache::default(),
                     pending_ask: None,
                     pending_command: None,
@@ -226,6 +227,7 @@ impl UiState {
             )]),
             live_executions: HashMap::new(),
             pane_controls: HashMap::new(),
+            pane_workers: HashMap::new(),
             pane_chat_scroll: HashMap::new(),
             pane_usage_open: HashMap::new(),
             pane_attachments: HashMap::new(),

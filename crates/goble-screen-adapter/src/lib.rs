@@ -57,6 +57,13 @@ impl LocalAdapter {
     }
 
     /// Register both the capturer and the controller into `registry`.
+    ///
+    /// Both halves on purpose: this is the **own-desktop** path, where the
+    /// person at the machine is the only writer, so there is nobody for the
+    /// registry's one-writer rule to arbitrate with. A desktop two sides can
+    /// reach (a remote one, see `goble-screen-sdk`) registers its capturer here
+    /// and takes its controller through [`ScreenRegistry::take_control`]
+    /// instead.
     pub fn register(&self, registry: &ScreenRegistry) {
         registry.register_capturer(Arc::clone(&self.capturer));
         registry.register_controller(Arc::clone(&self.controller));
@@ -321,6 +328,26 @@ mod tests {
         LocalAdapter::connect_and_register(LOCAL_SOURCE, &registry).unwrap();
         assert_eq!(registry.capturer_sources(), vec![LOCAL_SOURCE.to_string()]);
         assert_eq!(registry.controller_sources(), vec![LOCAL_SOURCE.to_string()]);
+    }
+
+    /// The local source registers both halves on purpose — there is one person
+    /// at the machine, so the registry's one-writer rule has nobody to
+    /// arbitrate with — and that lands as the user holding its input.
+    #[test]
+    fn the_local_source_is_the_users_own() {
+        let registry = ScreenRegistry::new();
+        LocalAdapter::connect_and_register(LOCAL_SOURCE, &registry).unwrap();
+        assert_eq!(
+            registry.control_holder(LOCAL_SOURCE),
+            Some(goble_screen_core::ControlHolder::User)
+        );
+        assert!(registry.has_control(LOCAL_SOURCE));
+        // The agent's path is the one refused; nothing is driven here, because
+        // the local controller really does move this machine's pointer and
+        // key events when input reaches it.
+        assert!(registry
+            .click_as(goble_screen_core::ControlHolder::Agent, LOCAL_SOURCE, 1, 2)
+            .is_err());
     }
 
     /// The PNG-decode path is macOS-specific and independent of

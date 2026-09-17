@@ -297,6 +297,18 @@ impl DesktopState {
                     ThreadMessagesUpdatedPayload { thread_id },
                 );
             }
+            WorkerMessage::ScreenHandoff { trace_id, config } => {
+                // A session running on a worker hands its desktop off through
+                // here: the desktop is the side that opens the RDP stream, so
+                // the handoff travels on the worker channel as the config the
+                // daemon event carried. It lands in the same open path as a
+                // local handoff, which is what lets a resumed session find the
+                // desktop its predecessor opened even when the run was remote.
+                match serde_json::from_value::<goble_harness_types::RemoteScreenConfig>(config) {
+                    Ok(config) => self.hand_off_remote_screen(&trace_id, config),
+                    Err(e) => self.add_log(format!("screen handoff could not be read: {e}")),
+                }
+            }
             _ => {
                 // Ignore unhandled agent runtime and worker message variants for now.
             }

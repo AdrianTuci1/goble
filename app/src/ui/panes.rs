@@ -23,6 +23,7 @@ use super::file_view;
 use super::settings;
 use super::shell::TOPBAR_HEIGHT;
 use super::terminal;
+use super::worker;
 use super::{Pane, PaneKind, SplitDir, UiActions, UiSnapshot};
 
 /// The corner mark the focused pane carries, and the room its own topbar leaves
@@ -230,6 +231,11 @@ fn build_leaf(
     let active = state.active_pane_id == id;
     let content = match kind {
         PaneKind::Chat => chat::build_agent_chat(app, state, actions, id, active, None),
+        // A viewer session: the conversation runs on a worker, so the pane is
+        // the conversation's own surface with no shell behind it. It is never
+        // given the shell builder below, which is the only thing that mounts a
+        // pty — there is nothing local for a viewer pane to fall back to.
+        PaneKind::Worker => worker::build_worker_pane(app, state, actions, id, active),
         // The settings tab's surface: the rail, the page and the footer, with
         // the page the leaf carries. It composes with the tree like any other
         // pane — it can be split, walked to and closed.
@@ -246,9 +252,10 @@ fn build_leaf(
                 .get(&id)
                 .map(|c| c.composer_path.clone())
                 .unwrap_or_default();
-            // The pane's own builder picks the surface: the shell's grid with
-            // its rich input bar, or — while this pane's harness is open — the
-            // very agent view a chat pane mounts.
+            // The pane's own builder picks the surface from the pane's mode:
+            // the shell's grid with its rich input bar, or — while Cmd+Enter's
+            // switch has put this pane in agent mode — the very agent view a
+            // chat pane mounts.
             terminal::build_terminal(app, state, actions, id, cwd, active)
         }
     };

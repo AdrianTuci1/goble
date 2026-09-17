@@ -136,13 +136,28 @@ async fn handle_desktop_message(
             });
         }
         DesktopMessage::PushSecrets { secrets } => {
-            for secret in secrets.clone() {
+            // A push is a seed, not the mechanism: only the names this
+            // workspace does not already hold are taken. The worker's vault is
+            // authoritative for the workspace, so a client whose local key
+            // differs must not change what the remote turns authenticate with
+            // — that is the explicit `SetVaultSecret` act.
+            let fresh: Vec<goble_core::secret::Secret> = secrets
+                .into_iter()
+                .filter(|secret| !state.holds_secret(&secret.name))
+                .collect();
+            if fresh.is_empty() {
+                return Ok(());
+            }
+            {
+                let mut vault = state.file_vault.lock();
+                for secret in &fresh {
+                    vault.set(&secret.name, &secret.encrypted_value, b"").ok();
+                }
+            }
+            for secret in fresh {
                 state.store_secret(secret);
             }
-            let mut vault = state.file_vault.lock();
-            for secret in secrets {
-                vault.set(&secret.name, &secret.encrypted_value, b"").ok();
-            }
+            // `save_vault` takes the same lock, so it is released first.
             state.save_vault(b"").ok();
         }
         DesktopMessage::PushMcpServers { servers } => {
@@ -509,5 +524,112 @@ fn query_store_entities(
             Ok(items)
         }
         _ => anyhow::bail!("unknown entity type: {entity_type}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use goble_core::secret::Secret;
+    use goble_core::worker::WorkerId;
+
+    /// A worker whose vault lives in a temp dir, so nothing touches
+    /// `/var/goblin/vault.json`.
+    fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = AppState::new(WorkerId::generate());
+        state.set_vault_path(tmp.path().join("vault.json"));
+        (tmp, state)
+    }
+
+    fn pushed(value: &[u8]) -> DesktopMessage {
+        DesktopMessage::PushSecrets {
+            secrets: vec![Secret::new("llm_api_key", "openai", value.to_vec())],
+        }
+    }
+
+    /// A freshly provisioned worker holds nothing; the push is what fills it.
+    #[tokio::test]
+    async fn test_push_secrets_fills_a_worker_that_holds_nothing() {
+        let (_tmp, state) = test_state();
+        let runner = Runner::new(state.clone());
+
+        handle_desktop_message(&state, &runner, pushed(b"sk-client"))
+            .await
+            .unwrap();
+
+        assert!(
+            state
+                .secrets
+                .lock()
+                .values()
+                .any(|s| s.name == "llm_api_key" && s.encrypted_value == b"sk-client"),
+            "the worker holds the pushed key under the name it resolves"
+        );
+    }
+
+    /// What `goble secret set --worker …` leaves behind: the vault holds the
+    /// value this workspace authenticates with. A client that connects with a
+    /// different local key must not rewrite it.
+    ///
+    /// `CredentialVault::set` refuses an empty passphrase and the message
+    /// handlers pass `b""`, so this vault is written under one — the state a
+    /// vault written by an explicit act is in.
+    #[tokio::test]
+    async fn test_push_secrets_does_not_overwrite_a_name_the_vault_holds() {
+        let (_tmp, state) = test_state();
+        state
+            .file_vault
+            .lock()
+            .set("llm_api_key", b"sk-worker", b"passphrase")
+            .unwrap();
+        let runner = Runner::new(state.clone());
+
+        handle_desktop_message(&state, &runner, pushed(b"sk-client"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            state
+                .file_vault
+                .lock()
+                .get("llm_api_key", b"passphrase")
+                .unwrap(),
+            Some(b"sk-worker".to_vec()),
+            "the worker's vault is authoritative"
+        );
+        assert!(
+            state
+                .secrets
+                .lock()
+                .values()
+                .all(|s| s.name != "llm_api_key"),
+            "nor is the pushed value taken into memory"
+        );
+    }
+
+    /// The same rule for a name the worker already holds in memory: the second
+    /// push is a gap that is not there.
+    #[tokio::test]
+    async fn test_push_secrets_does_not_overwrite_a_name_already_held() {
+        let (_tmp, state) = test_state();
+        state.store_secret(Secret::new("llm_api_key", "openai", b"sk-first".to_vec()));
+        let runner = Runner::new(state.clone());
+
+        handle_desktop_message(&state, &runner, pushed(b"sk-second"))
+            .await
+            .unwrap();
+
+        let held: Vec<Vec<u8>> = state
+            .secrets
+            .lock()
+            .values()
+            .map(|s| s.encrypted_value.clone())
+            .collect();
+        assert_eq!(
+            held,
+            vec![b"sk-first".to_vec()],
+            "the value the worker holds stays the one it resolves"
+        );
     }
 }

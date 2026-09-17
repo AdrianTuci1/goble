@@ -249,6 +249,16 @@ pub enum WorkerMessage {
     WorkflowRun {
         run: serde_json::Value,
     },
+    // The harness handed off to a remote desktop and the desktop client — the
+    // side that opens the RDP stream, against the host's `xrdp` — is the one
+    // that acts on it. `config` is the handoff's `RemoteScreenConfig` as JSON,
+    // the same decoupling `WorkflowRun` uses: this protocol crate does not
+    // depend on the harness types. Relay the frame instead of dropping it and a
+    // session running on a worker hands its desktop off like a local one.
+    ScreenHandoff {
+        trace_id: String,
+        config: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

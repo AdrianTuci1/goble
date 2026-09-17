@@ -24,7 +24,8 @@ use crate::ui::{
 use crate::ui::color_picker::ColorTarget;
 
 use super::pane_ops::{
-    close_space_at, ensure_pane_hover, open_file_pane, open_pane_harness, split_active_pane,
+    close_space_at, ensure_pane_hover, open_file_pane, open_pane_harness, release_inline_screens,
+    split_active_pane,
 };
 use super::prompt::{run_terminal_command, send_agent_prompt};
 use crate::ui::pickers::{change_directory_command, checkout_branch_command};
@@ -72,6 +73,7 @@ pub fn make_actions(
     let on_voice = Rc::clone(&state);
     let on_model_select = Rc::clone(&state);
     let on_select_harness_state = Rc::clone(&state);
+    let desktop_select_harness = desktop.clone();
     let on_select_dir = Rc::clone(&state);
     let on_select_medium = Rc::clone(&media);
     let on_create_medium = Rc::clone(&media);
@@ -189,6 +191,7 @@ pub fn make_actions(
     let on_add_worker = Rc::clone(&state);
     let on_remove_worker = Rc::clone(&state);
     let on_close_inline_screen = Rc::clone(&state);
+    let desktop_close_inline_screen = desktop.clone();
     let on_open_screen_link = Rc::clone(&state);
     let on_vault_unlock = Rc::clone(&state);
     let on_create_cluster = Rc::clone(&state);
@@ -484,6 +487,19 @@ pub fn make_actions(
                 // transcript, so the tab starts on a clean thread.
                 state.bind_active_pane_conversation(conversation_id, desktop_create.as_deref());
             }
+            // A space opened on an environment whose conversations run on a
+            // worker holds a viewer pane from the start: the conversation's
+            // shell is the worker's, so the pane is never given a local
+            // terminal it would only have to be torn out of (and never a pty
+            // process it should not have spawned). A local environment keeps
+            // the terminal pane it always had.
+            if let Some(desktop) = &desktop_create {
+                state.adopt_routing(
+                    id,
+                    Some(WorkspaceRouting::from_routing(routing)),
+                    desktop,
+                );
+            }
             open_pane_harness(&mut state, id, desktop_create.as_ref());
             state.refresh_space_labels();
             state.sync_active_view();
@@ -548,8 +564,11 @@ pub fn make_actions(
                 Some(InputClass::TerminalCommand(cmd)) => {
                     // A `!` line typed in an agent view is that conversation's
                     // command, so the conversation draws it: the block belongs to
-                    // the conversation and not to the shell behind Esc.
-                    let conversation = match state.pane_controls(pane_id).view {
+                    // the conversation and not to the shell behind Esc. The pane's
+                    // view names it, and it is read the one way the app reads a
+                    // pane's surface (`pane_view`), so the conversation the
+                    // command is filed under is the one the pane is drawing.
+                    let conversation = match state.pane_view(pane_id) {
                         BlockView::Agent { conversation_id } => Some(conversation_id),
                         BlockView::Terminal => None,
                     };
@@ -698,12 +717,33 @@ pub fn make_actions(
                 *state.model_menu_open.borrow_mut() = false;
             }
         })),
-        // The composer's left pill selects the work environment (medium), not a
-        // registered harness: an unknown medium id is ignored by `select_medium`.
+        // The environment control selects the medium the conversation's turns
+        // run on, not a registered harness; an unknown medium id is ignored. A
+        // conversation running on a worker keeps its own choice: it is persisted
+        // on that conversation (A3), so the pair of panes showing two
+        // conversations never shares one environment, and the turn the pane
+        // submits carries it. A pane with no environment control — every local
+        // conversation — keeps selecting the window's environment.
         on_select_harness: Rc::new(RefCell::new(move |pane_id: u64, medium_id: String| {
-            let mut media = on_select_medium.borrow_mut();
-            let _ = media.select_medium(&medium_id);
-            drop(media);
+            let viewer = on_select_harness_state.borrow().pane_is_viewer(pane_id);
+            let known = on_select_medium.borrow().has_medium(&medium_id);
+            if known && viewer {
+                let mut state = on_select_harness_state.borrow_mut();
+                let conversation = state.pane_conversation_id(pane_id).unwrap_or_default();
+                if let (Some(desktop), false) = (&desktop_select_harness, conversation.is_empty()) {
+                    if let Err(e) = desktop.set_chat_medium(&conversation, Some(&medium_id)) {
+                        log::warn!("set_chat_medium failed: {e}");
+                    }
+                }
+                // The pane shows the choice on the next frame, whether or not the
+                // conversation's row could be written.
+                state.pane_controls_mut(pane_id).environment = medium_id.clone();
+            } else if known {
+                // A pane with no environment of its own — every local pane — keeps
+                // selecting the window's environment, which is what its turns run
+                // on. An unknown id changes nothing; the menu still closes.
+                let _ = on_select_medium.borrow_mut().select_medium(&medium_id);
+            }
             let mut state = on_select_harness_state.borrow_mut();
             {
                 let controls = state.pane_controls_mut(pane_id);
@@ -1633,20 +1673,21 @@ pub fn make_actions(
             } else {
                 None
             };
-            // Drop the closed pane's session/runtime/hover so it is reclaimed.
-            state.pane_sessions.remove(&active_id);
-            state.pane_runtime.remove(&active_id);
-            state.pane_hover.remove(&active_id);
-            // A child view open in the closed pane goes with it: the next pane to
-            // take this id must not inherit a stranger's transcript.
-            state.sub_agent_views.remove(&active_id);
+            // The session ends with its pane: a desktop this pane was the last
+            // one showing is closed with it, so a handoff nobody is watching
+            // does not outlive the conversation that asked for it. A source
+            // another pane still shows stays open.
+            release_inline_screens(&mut state, [active_id], desktop_close_pane.as_deref());
+            // The closed pane owns nothing: its session/runtime/hover, a child
+            // view open in it and its shell (killing the pty) go with it, and so
+            // does its viewer session — a pane that is gone must not be found by
+            // a later worker status report.
+            state.forget_pane(active_id);
             // An expanded pane that is closed gives the space back: the id is
             // dropped with the pane, so nothing is left expanded by name.
             if state.maximized_pane == Some(active_id) {
                 state.maximized_pane = None;
             }
-            // Drop any terminal session (killing its shell) + input mirror.
-            state.terminal.borrow_mut().drop_pane(active_id);
             if let Some(next) = next {
                 state.active_pane_id = next;
             }
@@ -2137,9 +2178,14 @@ pub fn make_actions(
         on_close_inline_screen: Rc::new(RefCell::new(move || {
             let mut state = on_close_inline_screen.borrow_mut();
             let pane_id = state.active_pane_id;
-            if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                rt.inline_screen_source = None;
-            }
+            // The card closes with the pane's source. The desktop is closed
+            // only when this was the last pane showing it, so dismissing one
+            // conversation's card does not stop a stream another one watches.
+            release_inline_screens(
+                &mut state,
+                [pane_id],
+                desktop_close_inline_screen.as_deref(),
+            );
         })),
         on_open_screen_link: Rc::new(RefCell::new(move |uri: String| {
             let mut state = on_open_screen_link.borrow_mut();

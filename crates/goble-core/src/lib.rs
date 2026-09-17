@@ -28,6 +28,7 @@ pub mod reasoning;
 pub mod secret;
 pub mod secret_manager;
 pub mod snapshot;
+pub mod ssh_command;
 pub mod ssh_hosts;
 pub mod store;
 pub mod subagent;

@@ -13,7 +13,7 @@ use goble_desktop_service::DesktopState;
 use goble_harness_types::MediumKind;
 use goble_persistence::{Project, Session};
 
-use crate::ui::{MediaNode, MediaProject, MediaSession};
+use crate::ui::{MediaNode, MediaProject, MediaSession, WorkspaceRouting};
 
 /// The top-level mediums, in display order: `(kind, id, label)`.
 const MEDIUM_META: &[(MediumKind, &str, &str)] = &[
@@ -32,6 +32,18 @@ pub fn medium_routing(medium_id: &str) -> &'static str {
     match medium_id {
         "remote-xrdp" => "remote",
         _ => "local",
+    }
+}
+
+/// The medium a conversation's routing implies: a conversation routed to a
+/// worker runs on the remote environment until the user picks another one in
+/// its composer, and a local conversation runs on the local medium. It is the
+/// inverse of [`medium_routing`], so a pane draws — and its turn carries — the
+/// environment its routing already says.
+pub fn medium_for_routing(routing: WorkspaceRouting) -> &'static str {
+    match routing {
+        WorkspaceRouting::Remote => "remote-xrdp",
+        WorkspaceRouting::Local => "local",
     }
 }
 
@@ -318,6 +330,12 @@ impl MediaState {
         true
     }
 
+    /// Whether the tree holds a medium under `id`. The environment control lists
+    /// the tree's own mediums, so an id it does not hold is not a choice.
+    pub fn has_medium(&self, medium_id: &str) -> bool {
+        self.mediums.iter().any(|m| m.id == medium_id)
+    }
+
     /// Select only a medium (used by the composer's harness pill): resets the
     /// project to that medium's default and clears the session so the next turn
     /// runs on the pane's own session. Unknown mediums are ignored.
@@ -570,6 +588,24 @@ mod tests {
         assert_eq!(medium_routing("vm"), "local");
         // A user-added medium routes to `local` by default.
         assert_eq!(medium_routing("staging-vps"), "local");
+    }
+
+    /// The inverse: the medium a routing implies until the user picks one in a
+    /// conversation's composer. The pair must agree, or a pane would draw an
+    /// environment whose routing is not the one the pane is shaped by.
+    #[test]
+    fn medium_for_routing_is_the_inverse_of_medium_routing() {
+        assert_eq!(medium_for_routing(WorkspaceRouting::Remote), "remote-xrdp");
+        assert_eq!(medium_for_routing(WorkspaceRouting::Local), "local");
+        for routing in [WorkspaceRouting::Local, WorkspaceRouting::Remote] {
+            assert_eq!(
+                medium_routing(medium_for_routing(routing)),
+                match routing {
+                    WorkspaceRouting::Local => "local",
+                    WorkspaceRouting::Remote => "remote",
+                }
+            );
+        }
     }
 
     #[test]

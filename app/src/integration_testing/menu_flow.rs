@@ -488,9 +488,9 @@ fn the_palette_toggles_the_active_panes_expansion() {
 /// Mount a `ChatComposer` that carries a menu control, click the control's
 /// trigger, and assert the app-owned open flag flips.
 ///
-/// This is the rich-input regression: the model, directory and branch pills
-/// all share the same dispatch path (`ChatComposer` → `self.root` →
-/// `Padding`), so proving each one opens proves the `Padding`/`PopupMenu`
+/// This is the rich-input regression: the environment, model, directory and
+/// branch pills all share the same dispatch path (`ChatComposer` → `self.root`
+/// → `Padding`), so proving each one opens proves the `Padding`/`PopupMenu`
 /// wiring the topbar swallow bug used to break. A pill is triggered by its
 /// glyph, the model control — which carries no glyph — by its own label.
 fn assert_composer_pill_opens(
@@ -587,38 +587,28 @@ fn composer_branch_pill_opens_menu() {
     assert_composer_pill_opens(composer, |cmds| icon_center(cmds, "git-branch"), open);
 }
 
+/// The environment pill is drawn again, for the host that wires one: a
+/// conversation on a worker picks the environment its turn runs on beside the
+/// send affordance (A3). It is a pill like the directory and the branch, so it
+/// opens the host's menu through the same dispatch path, and it carries a glyph
+/// (`computer` → `agentmode`) of its own — the model control, which has none,
+/// is what the label-triggered case above covers.
 #[test]
-fn the_composer_harness_pill_is_gone() {
+fn composer_environment_pill_opens_menu() {
     let open = Rc::new(RefCell::new(false));
-    let mut composer = ChatComposer::new()
-        .with_harness_label("Local")
+    let open_menu = open.clone();
+    let composer = ChatComposer::new()
+        .with_harness_label("Remote (xrdp)")
         .with_harness_menu(
             vec![
                 PopupMenuItem::new("Local"),
-                PopupMenuItem::new("Remote"),
+                PopupMenuItem::new("Remote (xrdp)").selected(),
             ],
-            open.clone(),
+            open_menu,
             |_| {},
         )
         .finish();
-    let app = AppContext::default();
-    let _ = composer.layout(
-        SizeConstraint::loose(vec2f(600.0, 400.0)),
-        &mut LayoutContext::default(),
-        &app,
-    );
-    let renderer = Renderer::new();
-    let mut paint_ctx = PaintContext::new(renderer);
-    composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
-    let cmds = paint_ctx.renderer.take().map(|r| r.commands().to_vec()).unwrap_or_default();
-
-    // The environment (harness) pill is no longer drawn: its glyph is absent
-    // and the host's menu stays shut even though it was still wired.
-    assert!(
-        icon_center(&cmds, "agentmode").is_none(),
-        "the composer draws no environment pill: {cmds:?}"
-    );
-    assert!(!*open.borrow(), "and there is no trigger left to open its menu");
+    assert_composer_pill_opens(composer, |cmds| icon_center(cmds, "agentmode"), open);
 }
 
 /// The rich input carries no account button any more. The pills around its

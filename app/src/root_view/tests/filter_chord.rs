@@ -48,9 +48,19 @@ fn cmd_f_raises_the_transcript_filter_of_an_agent_pane_and_leaves_a_shell_pane_i
         "the root leaves a shell pane's filter chord to the pane"
     );
 
-    state.borrow_mut().pane_controls_mut(pane_id).view = BlockView::Agent {
-        conversation_id: "c1".to_string(),
-    };
+    // Onto the pane's agent surface, through the one writer that decides it:
+    // the harness switch and the view filter are written together there
+    // (`PaneControls::surface`, U1), so a pane is an agent pane exactly when
+    // that switch is on. Writing the view filter alone used to stand for the
+    // same thing; it does not any more, because a pane whose switch is off is a
+    // shell whatever its filter was left on.
+    state
+        .borrow_mut()
+        .enter_agent_view(pane_id, "c1", "Parent conversation");
+    assert!(
+        matches!(state.borrow().pane_view(pane_id), BlockView::Agent { .. }),
+        "the pane is on its agent surface"
+    );
     let _ = render_element(&mut root, vec2f(1200.0, 800.0), &app);
     assert!(
         root.dispatch_event(&cmd_f, &mut ctx, &app),

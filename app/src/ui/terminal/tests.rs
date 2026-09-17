@@ -483,6 +483,15 @@ use std::collections::HashMap;
         root.dispatch_event(&key(name, ModifiersState::none()), &mut ctx, app)
     }
 
+    /// Type `text` at whatever holds the keys, one character per key event, the
+    /// way the window delivers it. Every character must be taken, so a surface
+    /// that swallowed one cannot pass for one that typed the line.
+    fn type_line(root: &mut Box<dyn Element>, app: &AppContext, text: &str) {
+        for c in text.chars() {
+            assert!(press(root, app, &c.to_string()), "{c:?} was taken by the surface");
+        }
+    }
+
     /// R5: the shell pane's bottom bar is the chat surface's own composer, not a
     /// bespoke second one. It draws the shared `ChatComposer`'s placeholder —
     /// the very string the chat pane's composer draws — and the pty-only `❯`
@@ -551,6 +560,106 @@ use std::collections::HashMap;
                 separator < hint,
                 "the shell's instruction is inside the input, under its separator ({separator} against {hint})"
             );
+    }
+
+    /// S2: the shell bar names the host a submitted `ssh` line bound the pane
+    /// to, driven by the bound session itself — and a pane at a local shell
+    /// draws no such chip, because the absence is the statement. Clearing the
+    /// binding (`exit`) takes the chip away again.
+    #[test]
+    fn a_bound_shell_pane_names_its_host_and_clearing_the_binding_removes_it() {
+        /// What the fixture's `web` alias resolves to, as the chip reads it.
+        const CHIP: &str = "deploy@web (web.example.com)";
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        // The machine's `~/.ssh/config` is a fixture here, so the address on the
+        // chip is the file's and never the developer's own.
+        let home = tempfile::tempdir().expect("temp home");
+        std::fs::create_dir_all(home.path().join(".ssh")).expect("fixture .ssh");
+        std::fs::write(
+            home.path().join(".ssh/config"),
+            "Host web\n    HostName web.example.com\n    User deploy\n    Port 2222\n",
+        )
+        .expect("fixture config");
+        state.borrow_mut().settings_ssh_home = Some(home.path().to_path_buf());
+
+        // A local shell: no chip anywhere in the pane.
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            !pane_has(&runs, CHIP),
+            "a local shell names no host: {runs:?}"
+        );
+
+        // The line the user submits at the bar binds the pane to the host it
+        // names (S1) ...
+        type_line(&mut root, &app, "ssh web");
+        assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+        assert_eq!(
+            state
+                .borrow()
+                .terminal
+                .borrow()
+                .ssh_session(1)
+                .map(|session| session.host.clone()),
+            Some("web.example.com".to_string()),
+            "the submitted line bound this pane's shell to the host it named"
+        );
+
+        // ... and the chip over the input names it.
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&runs, CHIP),
+            "the bound pane's bar names the host it is on: {runs:?}"
+        );
+
+        // The pane's other surface is the same pane on the same session, so its
+        // agent view (Cmd+Enter) names the same host over its own input.
+        let cmd_enter = key(
+            "Enter",
+            ModifiersState {
+                command: true,
+                ..ModifiersState::default()
+            },
+        );
+        assert!(
+            root.dispatch_event(&cmd_enter, &mut EventContext::default(), &app),
+            "Cmd+Enter is taken by the bar"
+        );
+        assert!(
+            state.borrow().pane_controls(1).harness_mode,
+            "Cmd+Enter opened the pane's harness"
+        );
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&runs, CHIP),
+            "the pane's agent view names the same host: {runs:?}"
+        );
+        assert!(press(&mut root, &app, "Escape"), "Esc is the way back to the shell");
+        assert!(
+            !state.borrow().pane_controls(1).harness_mode,
+            "Escape put the harness away"
+        );
+        // The shell's own bar is the surface again, and it still names the host:
+        // the pane never left the session.
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&runs, CHIP),
+            "the shell's bar names the host again: {runs:?}"
+        );
+
+        // `exit` is the way back to a local shell, and the chip goes with the
+        // binding instead of lingering as a stale name.
+        type_line(&mut root, &app, "exit");
+        assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+        assert!(
+            state.borrow().terminal.borrow().ssh_session(1).is_none(),
+            "exit returned the pane to a local shell"
+        );
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            !pane_has(&runs, CHIP),
+            "the chip goes with the binding: {runs:?}"
+        );
     }
 
     /// The directory pill's menu is a window onto the machine: while it is open
@@ -1138,6 +1247,564 @@ use std::collections::HashMap;
             BlockView::Agent { conversation_id },
             "clicking the card reopens the conversation's agent view"
         );
+    }
+
+    /// The runs only the agent surface draws, in the pane's own area: the agent
+    /// rich input's instruction strip and the `esc for terminal` cue the open
+    /// harness leads its bar with. A shell pane draws none of them, and the
+    /// shell's own bar draws the one instruction that belongs to a command line
+    /// (the shared-composer test above pins that side).
+    const AGENT_SURFACE_RUNS: [&str; 4] = ["send", "send to cloud", "tasks", "for terminal"];
+
+    /// S4: a shell pane in terminal mode builds no agent surface and dispatches
+    /// no agent action. Nothing about the pane's kind has made it an agent
+    /// session — its mode is off — so the pane draws the shell, and a
+    /// prompt-shaped line submitted at its bar stays a shell command: no
+    /// conversation is bound to the pane, the pane does not switch itself into
+    /// agent mode, and no turn is attempted (a turn that could not run is what
+    /// would raise the missing-model notice, and it is never reached).
+    #[test]
+    fn a_shell_pane_in_terminal_mode_builds_no_agent_surface_and_dispatches_no_agent_action() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        let _ = pane_runs(&mut root, &app);
+
+        // The pane is a terminal leaf with its own session, out of agent mode.
+        assert!(
+            !state.borrow().pane_controls(1).harness_mode,
+            "a fresh shell pane is not in agent mode"
+        );
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&runs, "new conversation"),
+            "the pane draws its shell's bar: {runs:?}"
+        );
+        for label in AGENT_SURFACE_RUNS {
+            assert!(
+                !pane_has(&runs, label),
+                "a shell pane draws no agent surface, so no {label:?}: {runs:?}"
+            );
+        }
+
+        // A line that reads like a prompt is a command like any other at this
+        // bar. (That the submitted line really ran in the pane's shell is pinned
+        // where the shell reports it — `a_bound_shell_pane_names_its_host...`
+        // above binds the pane from the line it types — and by
+        // `the_shells_bar_runs_its_draft_as_a_command...`.)
+        type_line(&mut root, &app, "explain the last command");
+        assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+        let s = state.borrow();
+        assert!(
+            !s.pane_controls(1).harness_mode,
+            "Enter runs the line instead of switching the pane into agent mode"
+        );
+        assert_eq!(
+            s.pane_view(1),
+            BlockView::Terminal,
+            "and the pane is still the shell"
+        );
+        assert!(
+            s.pane_conversation_id(1).is_none(),
+            "a shell command binds this pane no conversation"
+        );
+        assert!(
+            !s.show_llm_key_banner,
+            "no agent turn was dispatched (a refused one raises the notice band)"
+        );
+        assert!(
+            !s.pane_runtime.get(&1).map(|rt| rt.busy).unwrap_or(false),
+            "and no turn is running for the pane"
+        );
+        drop(s);
+        assert_eq!(
+            state.borrow().terminal.borrow().input(1),
+            "",
+            "the line was submitted at the bar, not typed into the shell's grid"
+        );
+    }
+
+    /// S4: an SSH-bound pane in terminal mode behaves the same way. Binding the
+    /// pane to a host (S1) is not the switch: the pane is still a terminal, with
+    /// a chip naming where it is, and it stays one through another line.
+    #[test]
+    fn an_ssh_bound_pane_in_terminal_mode_is_still_a_terminal() {
+        /// What the fixture's `web` alias resolves to, as the chip reads it.
+        const CHIP: &str = "deploy@web (web.example.com)";
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        let home = tempfile::tempdir().expect("temp home");
+        std::fs::create_dir_all(home.path().join(".ssh")).expect("fixture .ssh");
+        std::fs::write(
+            home.path().join(".ssh/config"),
+            "Host web\n    HostName web.example.com\n    User deploy\n    Port 2222\n",
+        )
+        .expect("fixture config");
+        state.borrow_mut().settings_ssh_home = Some(home.path().to_path_buf());
+        let _ = pane_runs(&mut root, &app);
+
+        // The line binds the pane to the host it names ...
+        type_line(&mut root, &app, "ssh web");
+        assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+        assert_eq!(
+            state
+                .borrow()
+                .terminal
+                .borrow()
+                .ssh_session(1)
+                .map(|session| session.host.clone()),
+            Some("web.example.com".to_string()),
+            "the submitted line bound this pane's shell to the host it named"
+        );
+
+        // ... and the bound pane is still a terminal: the chip names the host,
+        // the shell's bar is the surface, and no agent surface is built.
+        assert!(
+            !state.borrow().pane_controls(1).harness_mode,
+            "binding a host does not switch the pane into agent mode"
+        );
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&runs, CHIP),
+            "the bound pane's bar names the host it is on: {runs:?}"
+        );
+        assert!(
+            pane_has(&runs, "new conversation"),
+            "and the pane is still its shell: {runs:?}"
+        );
+        for label in AGENT_SURFACE_RUNS {
+            assert!(
+                !pane_has(&runs, label),
+                "an SSH-bound terminal pane draws no agent surface, so no {label:?}: {runs:?}"
+            );
+        }
+
+        // Another line — prompt-shaped, and nothing the shell can bind — leaves
+        // the pane where it is: on the same session, out of agent mode, with no
+        // conversation and no turn.
+        type_line(&mut root, &app, "explain the last command");
+        assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+        let s = state.borrow();
+        assert!(
+            !s.pane_controls(1).harness_mode,
+            "the line did not switch the pane into agent mode"
+        );
+        assert!(
+            s.pane_conversation_id(1).is_none(),
+            "and bound it no conversation"
+        );
+        assert!(
+            !s.show_llm_key_banner,
+            "no agent turn was dispatched for it"
+        );
+        assert!(
+            s.terminal.borrow().ssh_session(1).is_some(),
+            "the pane never left the host it is on"
+        );
+    }
+
+    /// S4: the pane's mode is what decides its content shape. A block list
+    /// filtered to a conversation is not an agent pane — the filter says which
+    /// blocks the agent view would draw, not that this pane is one — so with the
+    /// mode off the pane still draws the shell; Cmd+Enter's switch is what puts
+    /// the agent surface over the same session.
+    #[test]
+    fn the_panes_mode_decides_its_surface_and_the_switch_puts_the_agent_surface_up() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        let _ = pane_runs(&mut root, &app);
+
+        // The pane's filter points at a conversation while the mode is off —
+        // the view filter alone, which is what a pane routed to a worker is
+        // left with when the shape takes its harness switch away
+        // (`UiState::viewer_shape`). The switch is the surface decision, so the
+        // filter is written on its own here rather than through
+        // `enter_agent_view`, which enters the agent surface and turns the
+        // switch on with it.
+        state.borrow_mut().pane_controls_mut(1).view = BlockView::Agent {
+            conversation_id: "c1".to_string(),
+        };
+        assert!(
+            !state.borrow().pane_controls(1).harness_mode,
+            "the filter was pointed at a conversation without the switch"
+        );
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&runs, "new conversation"),
+            "the pane is still the shell, filter or no filter: {runs:?}"
+        );
+        for label in AGENT_SURFACE_RUNS {
+            assert!(
+                !pane_has(&runs, label),
+                "no agent surface is mounted for it, so no {label:?}: {runs:?}"
+            );
+        }
+
+        // Cmd+Enter is the switch, and the agent surface is what it draws.
+        type_line(&mut root, &app, "explain");
+        let cmd_enter = key(
+            "Enter",
+            ModifiersState {
+                command: true,
+                ..ModifiersState::default()
+            },
+        );
+        assert!(
+            root.dispatch_event(&cmd_enter, &mut EventContext::default(), &app),
+            "Cmd+Enter is taken by the bar"
+        );
+        assert!(
+            state.borrow().pane_controls(1).harness_mode,
+            "Cmd+Enter put the pane in agent mode"
+        );
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&runs, "send to cloud"),
+            "the agent surface's own instruction strip is drawn: {runs:?}"
+        );
+        assert!(
+            pane_has(&runs, "for terminal"),
+            "and its bar leads with the way back to the shell: {runs:?}"
+        );
+        assert!(
+            !pane_has(&runs, "new conversation"),
+            "the shell bar's own instruction is gone with the shell: {runs:?}"
+        );
+    }
+
+    /// S3: the words the busy shell's refusal draws. They are the reference's
+    /// own (`EnterAgentViewError::LongRunningCommand`), and the pane draws them
+    /// over the shell it stayed on, so the chord never does nothing silently.
+    const BUSY_REFUSAL: &str = "Cannot enter agent mode while a command is running.";
+
+    /// A pane's session with a finished command's output on it and the pane's
+    /// current shell line still running: the state a pane is in while a local
+    /// `ssh` holds the shell, since the command that is running *is* the
+    /// session. The output is what the switch must not cost the pane.
+    fn session_holding_a_line(output: &str) -> TerminalSession {
+        use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PreexecValue};
+        use goble_terminal::HookEvent;
+
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+            command: Some("echo S3-MARKER".to_string()),
+        })));
+        emulator.feed(format!("echo S3-MARKER\r\n{output}\r\n").as_bytes());
+        emulator.feed(&encode_hook(&HookEvent::CommandFinished(
+            CommandFinishedValue {
+                exit_code: 0,
+                ..Default::default()
+            },
+        )));
+        // The line the shell is inside now: no `CommandFinished` follows it
+        // while the user is on the host.
+        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+            command: Some("ssh web".to_string()),
+        })));
+        TerminalSession::with_emulator(emulator)
+    }
+
+    /// S3: `Cmd+Enter` on a shell pane bound to an SSH session enters terminal +
+    /// agent mode on the **same** session, and Esc brings it back out on that
+    /// same session: the binding is the one from before the switch in both
+    /// directions, and the output the shell had already printed is still on the
+    /// pane afterwards. The bound pane is the one the switch exists for, and the
+    /// command its shell is running is the `ssh` line itself, so the busy guard
+    /// must not refuse it.
+    #[test]
+    fn cmd_enter_switches_an_ssh_bound_pane_to_the_agent_view_on_the_same_session() {
+        /// What the fixture's `web` alias resolves to, as the chip reads it.
+        const CHIP: &str = "deploy@web (web.example.com)";
+        const MARKER: &str = "S3-MARKER";
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        let home = tempfile::tempdir().expect("temp home");
+        std::fs::create_dir_all(home.path().join(".ssh")).expect("fixture .ssh");
+        std::fs::write(
+            home.path().join(".ssh/config"),
+            "Host web\n    HostName web.example.com\n    User deploy\n    Port 2222\n",
+        )
+        .expect("fixture config");
+        {
+            let mut s = state.borrow_mut();
+            s.settings_ssh_home = Some(home.path().to_path_buf());
+            s.terminal
+                .borrow_mut()
+                .sessions
+                .insert(1, session_holding_a_line(MARKER));
+        }
+        let _ = pane_runs(&mut root, &app);
+
+        // The line the user submits at the bar binds the pane to its host, and
+        // the shell it runs in is inside that line from then on.
+        type_line(&mut root, &app, "ssh web");
+        assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+        let before = state
+            .borrow()
+            .terminal
+            .borrow()
+            .ssh_session(1)
+            .cloned()
+            .expect("the submitted line bound this pane's shell to its host");
+        assert_eq!(before.host, "web.example.com");
+
+        // What the pane is before the switch: a terminal on that host, with the
+        // output the shell already printed still on it.
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&runs, CHIP),
+            "the bound pane names the host it is on: {runs:?}"
+        );
+        assert!(
+            pane_has(&runs, MARKER),
+            "and the shell's earlier output is still drawn: {runs:?}"
+        );
+
+        // Cmd+Enter is the switch. It is not a restart and not a second
+        // connection: the pane's binding and its history are the same objects.
+        let cmd_enter = key(
+            "Enter",
+            ModifiersState {
+                command: true,
+                ..ModifiersState::default()
+            },
+        );
+        assert!(
+            root.dispatch_event(&cmd_enter, &mut EventContext::default(), &app),
+            "Cmd+Enter is taken by the bar"
+        );
+        let s = state.borrow();
+        assert!(
+            s.pane_controls(1).harness_mode,
+            "Cmd+Enter put the SSH-bound pane in agent mode"
+        );
+        let conversation_id = s
+            .pane_conversation_id(1)
+            .expect("the agent view has a conversation of its own to draw");
+        assert_eq!(
+            s.pane_view(1),
+            BlockView::Agent { conversation_id },
+            "the pane shows the agent view over the shell it was on"
+        );
+        assert_eq!(
+            s.terminal.borrow().ssh_session(1),
+            Some(&before),
+            "the session is the one from before the switch, not a reconnected one"
+        );
+        assert!(
+            s.pane_controls(1).harness_refusal.is_none(),
+            "the switch was made, so there is no refusal to draw"
+        );
+        assert!(
+            s.pane_terminal_view(1)
+                .iter()
+                .any(|block| block.command == "echo S3-MARKER"),
+            "the shell's earlier command is still the pane's history"
+        );
+        drop(s);
+
+        let runs = pane_runs(&mut root, &app);
+        for label in AGENT_SURFACE_RUNS {
+            assert!(
+                pane_has(&runs, label),
+                "the agent surface is up over the same shell, so {label:?} is drawn: {runs:?}"
+            );
+        }
+        assert!(
+            pane_has(&runs, CHIP),
+            "and its input names the same host: {runs:?}"
+        );
+
+        // Esc is the way back out, and it does not drop the session either.
+        assert!(
+            press(&mut root, &app, "Escape"),
+            "Esc is taken by the agent view"
+        );
+        let s = state.borrow();
+        assert!(
+            !s.pane_controls(1).harness_mode,
+            "Esc returned the pane to its shell"
+        );
+        assert_eq!(
+            s.pane_view(1),
+            BlockView::Terminal,
+            "and pointed it back at the shell's own history"
+        );
+        assert_eq!(
+            s.terminal.borrow().ssh_session(1),
+            Some(&before),
+            "the session outlived the round trip"
+        );
+        drop(s);
+
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&runs, "new conversation"),
+            "the shell's own bar is back: {runs:?}"
+        );
+        assert!(
+            pane_has(&runs, MARKER),
+            "and the output from before the switch is still drawn: {runs:?}"
+        );
+        assert!(
+            pane_has(&runs, CHIP),
+            "with the chip still naming the host: {runs:?}"
+        );
+    }
+
+    /// S3: the entry guard. A pane that is already in the agent view enters no
+    /// second one. A click on a conversation card enters that conversation's
+    /// view, and a `Cmd+Enter` that arrives before the next frame's rebuild
+    /// lands on the tree that drew the shell — so the chord really does reach
+    /// the entry point twice. The second entry must bind no second conversation
+    /// and point the pane at no second view: the reference's guard for this
+    /// direction is `AlreadyInAgentView`.
+    #[test]
+    fn cmd_enter_on_a_pane_already_in_the_agent_view_pushes_nothing_again() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        // The tree in hand drew the shell: it is what the card click left
+        // behind, and its bar is the shell's.
+        let _ = pane_runs(&mut root, &app);
+        {
+            let mut s = state.borrow_mut();
+            s.pane_controls_mut(1).harness_mode = true;
+            s.enter_agent_view(1, "c1", "A conversation");
+        }
+        assert!(
+            !state.borrow().pane_owns_conversation(1),
+            "the card's conversation is not the pane's own"
+        );
+
+        let cmd_enter = key(
+            "Enter",
+            ModifiersState {
+                command: true,
+                ..ModifiersState::default()
+            },
+        );
+        assert!(
+            root.dispatch_event(&cmd_enter, &mut EventContext::default(), &app),
+            "the tree's bar takes the chord"
+        );
+
+        let s = state.borrow();
+        assert!(
+            s.pane_controls(1).harness_mode,
+            "the pane is still in agent mode"
+        );
+        assert_eq!(
+            s.pane_view(1),
+            BlockView::Agent {
+                conversation_id: "c1".to_string()
+            },
+            "and still shows the conversation it was already showing"
+        );
+        assert!(
+            !s.pane_owns_conversation(1),
+            "no second conversation was bound behind the one on screen"
+        );
+        assert!(
+            s.pane_controls(1).harness_refusal.is_none(),
+            "and nothing was refused: the entry was already made"
+        );
+    }
+
+    /// S3: the busy guard, and the fact that it speaks. A pane whose own shell
+    /// is running a command does not switch — the harness could not run in it,
+    /// since its command could not be claimed — and the pane says why over the
+    /// shell it stayed on. The reason is only good while the state that produced
+    /// it holds: once the shell is back at a prompt the switch is made and the
+    /// line is not drawn again.
+    #[test]
+    fn a_command_running_in_the_panes_own_shell_refuses_the_switch_and_says_so() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        {
+            let s = state.borrow();
+            let mut registry = s.terminal.borrow_mut();
+            // A local shell inside `cargo build`: `Preexec` arrived, no
+            // `CommandFinished` yet.
+            registry
+                .sessions
+                .insert(1, session_with_a_command_running("cargo build"));
+        }
+        let _ = pane_runs(&mut root, &app);
+
+        let cmd_enter = key(
+            "Enter",
+            ModifiersState {
+                command: true,
+                ..ModifiersState::default()
+            },
+        );
+        assert!(
+            root.dispatch_event(&cmd_enter, &mut EventContext::default(), &app),
+            "Cmd+Enter is taken by the bar"
+        );
+        let s = state.borrow();
+        assert!(
+            !s.pane_controls(1).harness_mode,
+            "a shell that is running a command does not switch"
+        );
+        assert!(
+            !s.pane_owns_conversation(1),
+            "and the refusal binds the pane no conversation"
+        );
+        assert_eq!(
+            s.pane_view(1),
+            BlockView::Terminal,
+            "the pane is still the shell it was"
+        );
+        drop(s);
+
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            pane_has(&runs, BUSY_REFUSAL),
+            "the refusal is drawn over the shell the pane stayed on: {runs:?}"
+        );
+        assert!(
+            pane_has(&runs, "new conversation"),
+            "which is still that shell: {runs:?}"
+        );
+
+        // The command finishes. The pane is ready for the switch now, so the
+        // reason is no longer drawn — and the same chord makes the switch.
+        state
+            .borrow_mut()
+            .terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, session_that_ran("cargo build", "Compiling goble v0.1.0"));
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            !pane_has(&runs, BUSY_REFUSAL),
+            "a reason that no longer holds is never drawn: {runs:?}"
+        );
+        assert!(
+            root.dispatch_event(&cmd_enter, &mut EventContext::default(), &app),
+            "Cmd+Enter is taken by the bar"
+        );
+        assert!(
+            state.borrow().pane_controls(1).harness_mode,
+            "the switch the command was holding up is made once it is done"
+        );
+    }
+
+    /// The session of a local shell that is mid-command: the integration
+    /// handshake, a `Preexec` and no `CommandFinished`, so the command's block
+    /// is still executing and the shell is not at a prompt.
+    fn session_with_a_command_running(command: &str) -> TerminalSession {
+        use goble_terminal::hooks::{encode_hook, PreexecValue};
+        use goble_terminal::HookEvent;
+
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+            command: Some(command.to_string()),
+        })));
+        emulator.feed(format!("{command}\r\n").as_bytes());
+        TerminalSession::with_emulator(emulator)
     }
 
     /// The focused pane's corner mark is drawn over the left end of the pane's

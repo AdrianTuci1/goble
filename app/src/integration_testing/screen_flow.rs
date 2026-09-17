@@ -214,6 +214,8 @@ fn captured_frame_renders_into_frame_view_shape() {
         recorded_count: 0,
         replay_status: None,
         frame: Some(ScreenFrameSnapshot {
+            source: "local".to_string(),
+            driver: goble_ui::ScreenDriver::ViewOnly,
             frame_seq: state.frame_seq,
             width: frame.width,
             height: frame.height,

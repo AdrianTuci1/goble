@@ -513,7 +513,7 @@ mod tests {
             },
             DaemonEvent::ScreenHandoff {
                 session_id: SessionId::new("s1"),
-                config: RemoteScreenConfig::new("vm.example.com", "u", "p"),
+                config: RemoteScreenConfig::new("vm.example.com", "desktop-account"),
             },
         ];
 
@@ -522,6 +522,14 @@ mod tests {
             let line = msg.to_line().unwrap();
             let decoded = DaemonMessage::from_line(&line).unwrap();
             assert_eq!(decoded, msg);
+
+            // The handoff crosses the daemon wire with the reference only: no
+            // password, no username, nothing to resolve away downstream.
+            if matches!(event, DaemonEvent::ScreenHandoff { .. }) {
+                assert!(line.contains(r#""credential":"desktop-account""#), "{line}");
+                assert!(!line.contains("password"), "{line}");
+                assert!(!line.contains("username"), "{line}");
+            }
         }
     }
 

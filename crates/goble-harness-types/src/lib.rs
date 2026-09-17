@@ -83,16 +83,20 @@ pub enum InteractionChannel {
 /// hands off to an interactive GUI session. This is the *model-shape* of the
 /// handoff request; the runtime layer [`ScreenCapturer`]/[`ScreenController`]
 /// pair that actually streams and drives it lives in `goble-screen-sdk`.
+///
+/// The account is **referenced, never carried**: `credential` names a stored
+/// credential and the host resolves its value where the RDP connection is
+/// built, so no password reaches this type, the event that carries it, a log
+/// line or a tool result (rule 1 of `03-workspace-model/shared-secrets-and-toml.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteScreenConfig {
     /// Hostname or IP of the remote (e.g. `"vm.example.com"`).
     pub host: String,
     /// RDP port (default 3389).
     pub port: u16,
-    /// RDP account username.
-    pub username: String,
-    /// RDP account password.
-    pub password: String,
+    /// Name of the stored credential holding the desktop account — the account
+    /// line `username:password` is its *value*, and only the host reads it.
+    pub credential: String,
     /// Requested desktop width in pixels.
     pub width: u16,
     /// Requested desktop height in pixels.
@@ -100,20 +104,26 @@ pub struct RemoteScreenConfig {
 }
 
 impl RemoteScreenConfig {
-    /// A config for the default RDP port and a 1280x720 desktop.
-    pub fn new(
-        host: impl Into<String>,
-        username: impl Into<String>,
-        password: impl Into<String>,
-    ) -> Self {
+    /// A config for the default RDP port and a 1280x720 desktop, reaching the
+    /// desktop with the credential stored under `credential`.
+    pub fn new(host: impl Into<String>, credential: impl Into<String>) -> Self {
         Self {
             host: host.into(),
             port: 3389,
-            username: username.into(),
-            password: password.into(),
+            credential: credential.into(),
             width: 1280,
             height: 720,
         }
+    }
+
+    /// Whether `name` has the shape of a credential *reference*: a single token
+    /// nothing else can be mistaken for — not empty, and carrying no whitespace,
+    /// control character or `:` — so an account line (`user:password`) or a
+    /// pasted value is refused before it can reach an event payload, a log line
+    /// or a tool result.
+    pub fn is_credential_name(name: &str) -> bool {
+        !name.is_empty()
+            && !name.contains(|c: char| c.is_whitespace() || c.is_control() || c == ':')
     }
 }
 
@@ -321,13 +331,30 @@ mod tests {
 
     #[test]
     fn remote_screen_config_roundtrip() {
-        let cfg = RemoteScreenConfig::new("vm.example.com", "user", "pass");
+        let cfg = RemoteScreenConfig::new("vm.example.com", "desktop-account");
         assert_eq!(cfg.port, 3389);
         assert_eq!(cfg.width, 1280);
         assert_eq!(cfg.height, 720);
 
         let json = serde_json::to_string(&cfg).unwrap();
+        // The account is a reference: no username and no password are on the
+        // wire, only the name of the stored credential to resolve.
+        assert!(json.contains(r#""credential":"desktop-account""#), "{json}");
+        assert!(!json.contains("password"), "{json}");
+        assert!(!json.contains("username"), "{json}");
         let decoded: RemoteScreenConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, cfg);
+    }
+
+    #[test]
+    fn only_a_single_token_is_a_credential_name() {
+        assert!(RemoteScreenConfig::is_credential_name("desktop-account"));
+        assert!(RemoteScreenConfig::is_credential_name("xrdp_vps.1"));
+        // An account line, a pasted value or an empty name is refused: the
+        // reference must not be able to carry what it stands for.
+        assert!(!RemoteScreenConfig::is_credential_name(""));
+        assert!(!RemoteScreenConfig::is_credential_name("goble:hunter2"));
+        assert!(!RemoteScreenConfig::is_credential_name("two words"));
+        assert!(!RemoteScreenConfig::is_credential_name("line\nbreak"));
     }
 }

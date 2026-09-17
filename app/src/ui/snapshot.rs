@@ -11,7 +11,9 @@ use goble_ui::elements::{
 };
 use goble_ui::{ScrollState, SettingsPage};
 
-use crate::state::{PaneControls, PaneDrag, PaneWorkItem, SpaceMenu};
+use crate::state::{
+    PaneAttach, PaneControls, PaneDrag, PaneWorkItem, SpaceMenu, WorkerPaneSession,
+};
 use crate::terminal::TerminalRegistry;
 
 use super::color_picker;
@@ -37,6 +39,50 @@ pub struct SubAgentViewSnapshot {
     pub messages: Vec<UiChatMessage>,
 }
 
+/// A viewer pane's session as its surface draws it: which worker the
+/// conversation runs on, and how the connection stands. `None` on every pane
+/// that is not a viewer pane ([`crate::ui::PaneKind::Worker`]), which is why a
+/// chat pane and a viewer pane cannot be drawn from the same data by accident.
+#[derive(Clone, Debug)]
+pub struct WorkerPaneSnapshot {
+    /// The paired worker the conversation's turns run on. Empty while none has
+    /// been resolved — the pane's state names what is missing.
+    pub worker_id: String,
+    pub attach: PaneAttach,
+    /// The session the pane (re-)attached to on that worker, or that the
+    /// conversation has none. `None` before any attach has run, so the pane
+    /// never claims a session it has not rejoined.
+    pub session: Option<WorkerPaneSession>,
+}
+
+impl WorkerPaneSnapshot {
+    /// The line the pane leads its transcript with: which worker, how the
+    /// connection stands, and what the conversation's session there is. The
+    /// words are [`PaneAttach`]'s and [`WorkerPaneSession`]'s own.
+    ///
+    /// A conversation with no session says so here — the line is the pane's own
+    /// report, and "no session to rejoin" is a state of it, not silence.
+    pub fn connection_line(&self) -> String {
+        let connection = self.attach.words(&self.worker_id);
+        match &self.session {
+            Some(session) => format!("{connection} · {}", session.words()),
+            None => connection,
+        }
+    }
+
+    /// What the composer's directory control reads for this pane. There is no
+    /// local directory behind a viewer pane — drawing one would name this
+    /// machine for work that is not running on it — so the pill names where the
+    /// conversation actually runs.
+    pub fn location_label(&self) -> String {
+        if self.worker_id.trim().is_empty() {
+            "no worker".to_string()
+        } else {
+            self.worker_id.clone()
+        }
+    }
+}
+
 /// Per-pane chat data used to render a chat leaf: its own transcript, composer
 /// draft, working-directory label, suspended ask and queued prompt. Each chat
 /// pane is an independent session, so this is keyed by pane id and never shared.
@@ -46,6 +92,12 @@ pub struct PaneChatSnapshot {
     pub messages: Vec<UiChatMessage>,
     pub composer_draft: String,
     pub composer_path: String,
+    /// This pane's viewer session, when the pane is a viewer pane: the worker
+    /// its conversation runs on and the state of that connection. `None` for
+    /// every other pane, including a chat pane — which is what makes the two
+    /// distinguishable on screen (the viewer pane draws the connection's own
+    /// report, and there is no shell behind it).
+    pub worker: Option<WorkerPaneSnapshot>,
     /// The files this pane's rich input carries (the attach control added
     /// them), drawn as chips over the editor.
     pub composer_attachments: Vec<String>,
@@ -510,6 +562,11 @@ pub struct ScreenSourceEntry {
 /// Read-only mirror of the held live frame, passed to a [`goble_ui::elements::FrameView`].
 #[derive(Clone, Debug)]
 pub struct ScreenFrameSnapshot {
+    /// The source's own id (`remote-xrdp:<host>:<port>`, or a local one): the
+    /// name the inline card draws for the desktop it shows (C4).
+    pub source: String,
+    /// Who is driving that source right now, read off the screen registry.
+    pub driver: goble_ui::ScreenDriver,
     /// Monotonic parity used to detect pixel changes.
     pub frame_seq: u64,
     /// Frame width in pixels.

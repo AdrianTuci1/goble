@@ -72,15 +72,29 @@ impl UiState {
         )
     }
 
-    /// The view this pane's terminal surface shows. A pane with no controls
-    /// entry yet shows the shell's own history.
+    /// The view this pane's terminal surface shows: the shell's own history, or
+    /// the conversation its open harness is filtered to.
+    ///
+    /// A pane with no controls entry yet shows the shell's own history.
+    ///
+    /// The answer is the pane's own surface decision
+    /// ([`PaneControls::surface`]) — the same one `build_terminal` draws from —
+    /// and never its view filter on its own: a pane whose harness is off is a
+    /// shell however its filter was left, so no caller can read a surface other
+    /// than the one the pane paints.
     pub fn pane_view(&self, pane_id: u64) -> BlockView {
-        self.pane_controls(pane_id).view
+        self.pane_controls(pane_id).surface()
     }
 
     /// Enter `conversation_id`'s agent view in `pane_id`: push the card that
     /// stands for the conversation into the pane's block list (so the terminal
     /// keeps a way back to it) and point the pane's filter at the conversation.
+    ///
+    /// Entering a view is entering the pane's agent surface, so the harness
+    /// switch goes on with the filter: the mode and the view are the two halves
+    /// of one state, written together here and in
+    /// [`Self::leave_agent_view`], so [`PaneControls::surface`] always names the
+    /// surface the pane paints.
     ///
     /// Returns the card's block id, or `None` when the pane has no live
     /// session. Entering the same conversation again reuses its card, so a
@@ -95,16 +109,22 @@ impl UiState {
             self.terminal
                 .borrow_mut()
                 .push_agent_view_block(pane_id, conversation_id, label);
-        self.pane_controls_mut(pane_id).view = BlockView::Agent {
+        let controls = self.pane_controls_mut(pane_id);
+        controls.harness_mode = true;
+        controls.view = BlockView::Agent {
             conversation_id: conversation_id.to_string(),
         };
         block
     }
 
-    /// Leave the agent view: the pane goes back to the shell's own history.
-    /// The card the conversation left behind stays in the list.
+    /// Leave the agent view: the pane goes back to the shell's own history, and
+    /// the harness switch goes off with the filter — a pane off its agent
+    /// surface is a shell. The card the conversation left behind stays in the
+    /// list.
     pub fn leave_agent_view(&mut self, pane_id: u64) {
-        self.pane_controls_mut(pane_id).view = BlockView::Terminal;
+        let controls = self.pane_controls_mut(pane_id);
+        controls.harness_mode = false;
+        controls.view = BlockView::Terminal;
     }
 
     /// Whether `pane_id` is in this space's pane tree as a file view.
@@ -118,17 +138,41 @@ impl UiState {
     /// The working directory the cwd-following surfaces read: the project
     /// explorer's tree and the global search both walk this.
     ///
-    /// It is the active pane's own directory, or — for a file view, which owns
-    /// no directory — the last pane that had one, so opening a file never moves
-    /// the tree the user is browsing out from under them.
+    /// It is the active pane's own directory, or — for a pane that owns no local
+    /// directory (a file view, or a viewer pane whose conversation runs on a
+    /// worker) — the last pane that had one, so neither opening a file nor
+    /// landing on a remote conversation moves the tree the user is browsing out
+    /// from under them.
     pub fn active_working_directory(&self) -> String {
-        if self.active_pane_shows_file() {
+        if self.active_pane_shows_file() || self.pane_is_viewer(self.active_pane_id) {
             return self.composer_path.clone();
         }
         self.pane_sessions
             .get(&self.active_pane_id)
             .map(|session| session.path.clone())
             .unwrap_or_else(|| self.composer_path.clone())
+    }
+
+    /// A pane that is gone owns nothing: drop every entry this state keys by
+    /// its id — its conversation and composer state, its runtime, its hover
+    /// flag, a child view open in it, its shell (and the pty with it) and its
+    /// viewer session.
+    ///
+    /// Both teardown paths call this — the pane close and the tab close — and
+    /// the viewer session is why neither may skip a part of it: the panes a
+    /// `worker:status` report is about are found by [`UiState::pane_workers`]
+    /// alone (the `worker_panes` lookup in `worker.rs`), so a session left
+    /// behind for a pane that no longer exists is a dead pane id that
+    /// [`UiState::worker_status_serving`] and
+    /// [`UiState::worker_connection_dropped`] re-attach and re-detach on every
+    /// later report, forever.
+    pub fn forget_pane(&mut self, pane_id: u64) {
+        self.pane_sessions.remove(&pane_id);
+        self.pane_runtime.remove(&pane_id);
+        self.pane_hover.remove(&pane_id);
+        self.sub_agent_views.remove(&pane_id);
+        self.pane_workers.remove(&pane_id);
+        self.terminal.borrow_mut().drop_pane(pane_id);
     }
 
     /// The display name of a conversation, falling back to its id when the
@@ -204,7 +248,15 @@ impl UiState {
 
     /// Refresh one pane's runtime state (transcript + suspended ask) from the
     /// store conversation `conv`.
+    ///
+    /// A viewer pane that re-attached to its conversation's session reads its
+    /// transcript from that session instead (the rows the re-attach replayed):
+    /// the run is not on this machine, so the store's rows about the
+    /// conversation are not what the session ran.
     pub(crate) fn refresh_pane(&mut self, pane_id: u64, conv: &str, desktop: &DesktopState) {
+        let session_owns_transcript = self.pane_workers.get(&pane_id).is_some_and(|session| {
+            matches!(session.session, Some(WorkerPaneSession::Attached { .. }))
+        });
         let rt = self.pane_runtime.entry(pane_id).or_default();
         // A suspended ask persists in the store, so the inline card survives a
         // refresh; answering clears it (status becomes `answered`).
@@ -225,16 +277,28 @@ impl UiState {
                     .unwrap_or_default();
                 Some(AskUserUi::new(question, quick))
             });
-        match desktop.list_chat_messages(conv) {
-            Ok(msgs) => {
-                // Only the rows whose content changed are re-parsed; the rest
-                // are reused from the cache, so a frame with no new delta (or a
-                // handful of deltas on one streaming row) costs no parsing for
-                // the unchanged tail of the transcript.
-                rt.messages = rt.parse_cache.resolve(&msgs);
-            }
-            Err(e) => {
-                log::warn!("list_chat_messages({conv}): {e}");
+        if session_owns_transcript {
+            // The session's own recording, replayed when the pane (re-)attached:
+            // one row per turn's prompt and reply, in session order.
+            let PaneRuntime {
+                messages,
+                parse_cache,
+                session_rows,
+                ..
+            } = rt;
+            *messages = parse_cache.resolve(session_rows);
+        } else {
+            match desktop.list_chat_messages(conv) {
+                Ok(msgs) => {
+                    // Only the rows whose content changed are re-parsed; the rest
+                    // are reused from the cache, so a frame with no new delta (or a
+                    // handful of deltas on one streaming row) costs no parsing for
+                    // the unchanged tail of the transcript.
+                    rt.messages = rt.parse_cache.resolve(&msgs);
+                }
+                Err(e) => {
+                    log::warn!("list_chat_messages({conv}): {e}");
+                }
             }
         }
         // The live reasoning steps are overlaid first, so they sit ahead of the
@@ -253,13 +317,24 @@ impl UiState {
                 output: usage.output,
             }),
         );
-        // The Local/Remote runtime decision is tracked per-conversation.
+        // The Local/Remote runtime decision is tracked per-conversation, and it
+        // is what this pane's shape follows: a conversation routed to a worker
+        // is a viewer pane with nothing local behind it (see `adopt_routing`).
+        // The pane's kind is read from the conversation, not from the window's
+        // current choice, so every pane shows the shape its own conversation is
+        // routed to.
+        let routing = desktop
+            .get_chat_workspace_routing(conv)
+            .ok()
+            .flatten()
+            .and_then(|s| routing_from_str(&s));
         if pane_id == self.active_pane_id {
-            self.workspace_routing = desktop
-                .get_chat_workspace_routing(conv)
-                .ok()
-                .flatten()
-                .and_then(|s| routing_from_str(&s));
+            self.workspace_routing = routing;
         }
+        self.adopt_routing(pane_id, routing, desktop);
+        // The environment this conversation's turns run on: persisted on the
+        // conversation and chosen in its composer, so a viewer pane draws the
+        // control beside the send affordance and the submit carries it (A3).
+        self.adopt_environment(pane_id, conv, routing, desktop);
     }
 }

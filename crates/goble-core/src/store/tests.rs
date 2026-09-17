@@ -43,6 +43,41 @@ fn test_chat_workspace_routing_roundtrip() {
     assert_eq!(store.get_chat_workspace_routing("missing").unwrap(), None);
 }
 
+/// The environment a conversation's turns run on is written on its own row and
+/// read back, so the choice survives a restart the way the routing does.
+#[test]
+fn test_chat_medium_roundtrip() {
+    let store = Store::open_in_memory().unwrap();
+    store
+        .insert_chat("c1", "Demo", None, None, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+        .unwrap();
+    assert_eq!(store.get_chat_medium("c1").unwrap(), None);
+
+    store.set_chat_medium("c1", Some("remote-xrdp")).unwrap();
+    assert_eq!(
+        store.get_chat_medium("c1").unwrap(),
+        Some("remote-xrdp".to_string())
+    );
+
+    store.set_chat_medium("c1", Some("staging-vps")).unwrap();
+    assert_eq!(
+        store.get_chat_medium("c1").unwrap(),
+        Some("staging-vps".to_string())
+    );
+
+    // Clearing the choice is allowed (the routing's own environment applies).
+    store.set_chat_medium("c1", None).unwrap();
+    assert_eq!(store.get_chat_medium("c1").unwrap(), None);
+
+    // Unknown chats have no environment, and no choice of another
+    // conversation's leaks into them.
+    assert_eq!(store.get_chat_medium("missing").unwrap(), None);
+    store
+        .insert_chat("c2", "Other", None, None, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+        .unwrap();
+    assert_eq!(store.get_chat_medium("c2").unwrap(), None);
+}
+
 /// A conversation's title is written on its own and read back, so a subject
 /// derived from the conversation survives a restart. Retitling leaves the
 /// conversation's `updated_at` alone: the title says what the conversation is

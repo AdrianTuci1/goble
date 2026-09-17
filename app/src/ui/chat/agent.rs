@@ -12,7 +12,7 @@ use crate::emulator::VisibleBlock;
 use crate::state::PaneControls;
 
 use super::super::{UiActions, UiSnapshot};
-use super::{build_agent_error, build_agent_header, build_sub_agent_child_view, chat_action_relay, pane_session_snapshot};
+use super::{build_agent_error, build_agent_header, build_sub_agent_child_view, chat_action_relay, pane_session_snapshot, PaneChatSnapshot};
 
 /// If `pane_id` has a live PTY session with output, append it as an inline
 /// terminal block after the transcript so a terminal command (`!cmd`) actually
@@ -83,6 +83,39 @@ fn with_conversation_commands(
     messages
 }
 
+/// The notice a pane leads its transcript with.
+///
+/// A viewer pane draws its worker connection's state there: the pane has no
+/// shell to show, so the state of the session is the one thing it must report
+/// (connecting, connected, and — if the connection drops — that it dropped).
+/// Every other pane draws the missing-model-key notice it had before, from the
+/// window-level banner flag.
+fn notice_for(
+    session: &PaneChatSnapshot,
+    state: &UiSnapshot,
+    app: &AppContext,
+    actions: &UiActions,
+) -> Option<Box<dyn Element>> {
+    match &session.worker {
+        Some(worker) => Some(crate::ui::worker::build_worker_notice(app, worker)),
+        None => state
+            .show_llm_key_banner
+            .then(|| build_agent_error(app, actions, state.llm_notice_heading)),
+    }
+}
+
+/// What the composer's directory control reads for this pane.
+///
+/// A viewer pane has no local working directory — its conversation runs on a
+/// worker — so it names where the work actually runs instead of drawing this
+/// machine's path under a conversation that is not on it.
+fn composer_path(session: &PaneChatSnapshot) -> String {
+    match &session.worker {
+        Some(worker) => worker.location_label(),
+        None => crate::state::display_path(&session.composer_path),
+    }
+}
+
 /// Agent chat tab: a header row with the agent identity/status/copy/restart,
 /// then the message transcript + composer (which fills the remaining space).
 ///
@@ -101,6 +134,11 @@ pub fn build_agent_chat(
     on_escape: Option<Rc<RefCell<dyn FnMut()>>>,
 ) -> Box<dyn Element> {
     let session = pane_session_snapshot(state, pane_id);
+    // The host this pane's shell is on, when a submitted `ssh` line bound it
+    // (S1). The agent view is the same pane's other surface, so it names the
+    // same session over its own input; a local shell has no entry and draws no
+    // chip.
+    let ssh_session = state.terminal.borrow().ssh_session(pane_id).cloned();
 
     // A pane showing a sub-agent's child view (S6) shows that child's own
     // conversation, not its own: the child's transcript under a title naming the
@@ -195,13 +233,12 @@ pub fn build_agent_chat(
     };
     let mut chat = ChatView::new()
         .with_header(header)
-        // No key configured: the error shows at the top of this pane's chat
-        // area, with the button that opens the model-provider dialog.
-        .with_notice(
-            state
-                .show_llm_key_banner
-                .then(|| build_agent_error(app, actions, state.llm_notice_heading)),
-        )
+        // A viewer pane leads its transcript with the worker connection's own
+        // state — what the worker streamed is the whole of what this pane has,
+        // and a dropped connection has to be readable where the conversation is.
+        // Every other pane leads with the missing-model-key notice, if it has
+        // one.
+        .with_notice(notice_for(&session, state, app, actions))
         .with_messages(messages)
         // The transcript scrolls and follows the stream; the state is
         // app-owned per pane so a chosen scrollback position is held.
@@ -234,8 +271,8 @@ pub fn build_agent_chat(
         .with_composer_caret(controls.caret.clone())
         // The transcript's own fold key (`e`) is the active pane's too.
         .with_pane_active(active)
-        .with_composer_path(crate::state::display_path(&session.composer_path))
-        .with_composer_model_label(controls.model.clone())
+        .with_composer_path(composer_path(&session))
+        .with_composer_ssh_session(ssh_session)
         .with_composer_attachments(session.composer_attachments.clone())
         .with_composer_stop_visible(session.agent_busy)
         // The instructions the composer draws above its editor: grok-build's
@@ -283,6 +320,17 @@ pub fn build_agent_chat(
         // `⌘⌥↵`: the same submit, routed to the cloud medium.
         .with_composer_on_send_to_cloud(move |text| (on_send_to_cloud.borrow_mut())(text));
 
+    // The model control is the client's own choice, so it is drawn only where
+    // the client's choice is the one the turn runs on. A viewer pane's
+    // conversation runs on a worker, which resolves its own model
+    // (`LLM_MODEL`), and the remote turn carries none (`build_remote_turn`), so
+    // the pane draws no control whose selection the route would drop: the
+    // environment it can honestly choose is its only submit-time control (A3,
+    // model half).
+    if session.worker.is_none() {
+        chat = chat.with_composer_model_label(controls.model.clone());
+    }
+
     // Modal (vim) editing of the agent composer, when the user turned it on.
     if state.vim_mode {
         chat = chat.with_composer_vim(controls.vim.clone(), actions.clipboard.clone());
@@ -300,15 +348,18 @@ pub fn build_agent_chat(
 
     // A live remote-desktop handoff renders inline at the end of the
     // transcript. The frame's texture key is stable per pane so the screen
-    // stream updates in place across rebuilds.
+    // stream updates in place across rebuilds; the card itself is captioned
+    // with the source's own id and who is driving it (C4).
     if let Some(frame) = &session.inline_screen {
-        chat = chat.with_inline_screen(
-            format!("inline-{pane_id}"),
-            frame.frame_seq,
-            frame.width,
-            frame.height,
-            std::sync::Arc::clone(&frame.data),
-        );
+        chat = chat.with_inline_screen(goble_ui::InlineScreen {
+            source: format!("inline-{pane_id}"),
+            desktop: frame.source.clone(),
+            driver: frame.driver,
+            frame_seq: frame.frame_seq,
+            width: frame.width,
+            height: frame.height,
+            data: std::sync::Arc::clone(&frame.data),
+        });
     }
 
     // warp-new context pills: harness (the selected medium), working directory

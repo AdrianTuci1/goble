@@ -3,7 +3,8 @@
 //!
 //! One module per surface of the service: bootstrapping and the core accessors
 //! ([`bootstrap`]), the daemon-event translator that feeds the UI ([`translator`]),
-//! chat turns ([`turns`]), chat storage ([`chats`]), agents, workflows and teams
+//! chat turns ([`turns`]), re-attaching a client to a conversation's session
+//! ([`attach`]), chat storage ([`chats`]), agents, workflows and teams
 //! ([`agents`]), worker pairing and routing ([`workers`]), cluster identity and
 //! installs ([`cluster`]), the vault and access grants ([`vault`]), the
 //! environment secret groups ([`environment`]), LLM settings
@@ -32,6 +33,7 @@ use crate::thread_store::ThreadStore;
 use crate::worker_manager::WorkerClient;
 
 mod agents;
+mod attach;
 mod bootstrap;
 mod chats;
 mod cluster;
@@ -50,6 +52,8 @@ mod workers;
 #[cfg(test)]
 mod tests;
 
+pub use attach::{AttachedSession, SessionAttach};
+pub use bootstrap::RemoteDesktopInfo;
 pub use types::{
     AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, CommandProposedEvent, ExecutionInfo, Intent,
     IntentParams, LlmSetting, LogEntry, ReasoningEvent, ReasoningPhase, SubAgentFinishedEvent,
@@ -114,4 +118,17 @@ pub struct DesktopState {
     /// platform-aware: macOS uses the real `screencapture` capturer, other
     /// platforms fall back to a synthetic adapter.
     screen: goble_screen_core::ScreenRegistry,
+    /// Every remote desktop this state has open, keyed by the source id the
+    /// registry holds it under — the one recorded source-id → host mapping, so
+    /// "which desktop is this host's" is answered in one place rather than at a
+    /// call site. A second handoff for a host reuses the desktop recorded for
+    /// it instead of connecting again, and the record carries whether the RDP
+    /// client behind it is still there, so a desktop whose client is gone is
+    /// reported instead of serving the frame it left behind.
+    ///
+    /// The record holds the controller too: a remote desktop is view-only while
+    /// nobody has taken it, so the registry holds its capturer and the
+    /// controller waits here for [`DesktopState::take_screen_control`]. The
+    /// local source is not here: its own adapter registers both halves.
+    remote_desktops: Mutex<HashMap<String, bootstrap::RemoteDesktop>>,
 }

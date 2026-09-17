@@ -559,7 +559,7 @@ impl ChatView {
                     .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_child(
-                        Text::new("Component desktop · harness in control")
+                        Text::new(screen.caption())
                             .with_theme_color(ColorToken::Muted, app)
                             .with_font_size(12.0)
                             .finish(),
@@ -742,6 +742,12 @@ impl ChatView {
         }
         if let Some(path) = self.composer_path.clone() {
             composer = composer.with_path_label(path);
+        }
+        // The host a bound shell session is on, named over the editor with the
+        // directory and branch it belongs beside (S2). A local session draws
+        // nothing, the same as everywhere else.
+        if let Some(session) = self.composer_ssh_session.clone() {
+            composer = composer.with_ssh_session(Some(session));
         }
         if let Some(label) = self.composer_harness_label.clone() {
             composer = composer.with_harness_label(label);

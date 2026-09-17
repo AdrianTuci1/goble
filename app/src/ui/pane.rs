@@ -10,6 +10,22 @@ use super::SettingsCategory;
 pub enum PaneKind {
     Chat,
     Terminal,
+    /// A conversation running on a remote worker: a viewer session with no
+    /// local shell.
+    ///
+    /// Nothing local backs the pane. There is no PTY to spawn, no local cwd to
+    /// read and no shell to fall back to, so a dropped connection has nothing to
+    /// degrade into — the pane draws the connection's own state instead (see
+    /// [`crate::state::PaneAttach`]) and keeps its conversation, which the worker
+    /// goes on running. The pane is built as a conversation surface, never as
+    /// [`PaneKind::Terminal`]: `build_leaf` routes a viewer pane to
+    /// [`crate::ui::worker::build_worker_pane`], which mounts no pty.
+    ///
+    /// `UiState::adopt_routing` is the one place a leaf becomes a viewer pane
+    /// (a conversation whose routing resolves to a worker) and the one place it
+    /// stops being one (the routing goes back to local — the pane then returns
+    /// as a plain chat pane, never as a shell).
+    Worker,
     /// A read-only view of one file, opened from the explorer tree or a search
     /// result.
     File { path: String },

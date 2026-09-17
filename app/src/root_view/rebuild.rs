@@ -32,10 +32,17 @@ impl RootView {
         self.state.borrow_mut().take_global_search_result();
         // Advance any running screen-event replay by real time (one step per
         // frame). The schedule itself is deterministic; only the pacing uses
-        // the wall clock, and tests drive it through `step_replay`.
+        // the wall clock, and tests drive it through `step_replay`. The held
+        // frame is refreshed here too, for the source the sheet is broadcasting
+        // and for one any conversation is showing inline: the card is a viewer
+        // of its own, so a handed-off desktop streams with the sheet closed.
+        let watched = {
+            let state = self.state.borrow();
+            state.inline_screen_viewers(&self.screen_state.borrow().selected_source) > 0
+        };
         self.screen_state
             .borrow_mut()
-            .tick(self.desktop.as_deref());
+            .tick(self.desktop.as_deref(), watched);
         // Follow what every pane's own shell reports as its working directory
         // before anything reads a path: the rich input's directory pill, the tab
         // label that derives from it and the explorer all draw from the pane's
@@ -54,32 +61,17 @@ impl RootView {
         // picker and explorer caches beside it: it is refilled when the page is
         // shown (or by its reload row) and never while the page draws.
         self.state.borrow_mut().ensure_ssh_hosts();
-        // The composer's left pill is the window-wide environment (medium) every
-        // pane shares; the other two pills describe one pane's own shell and are
-        // filled in per pane below, from that pane's working directory.
+        // The composer's context pills are the pane's own: the environment the
+        // pane's conversation runs on (a conversation on a worker picks one) and
+        // the working directory and branch, which describe one shell. All three
+        // are filled in per pane below; what is built here is the frame they
+        // share.
         let composer_context = {
-            let media = self.media_state.borrow();
             let state_s = self.state.borrow();
-            let harness_label = media
-                .mediums
-                .iter()
-                .find(|m| m.id == media.selected_medium)
-                .map(|m| m.label.clone())
-                .unwrap_or_else(|| media.selected_medium.clone());
-            let mut harness_ids = Vec::new();
-            let mut harness_items = Vec::new();
-            for m in &media.mediums {
-                harness_ids.push(m.id.clone());
-                let mut item = PopupMenuItem::new(m.label.clone()).with_icon("computer");
-                if m.id == media.selected_medium {
-                    item = item.selected();
-                }
-                harness_items.push(item);
-            }
             ComposerContext {
-                harness_label,
-                harness_ids,
-                harness_items,
+                harness_label: String::new(),
+                harness_ids: Vec::new(),
+                harness_items: Vec::new(),
                 harness_menu_open: state_s.harness_menu_open.clone(),
                 dir_menu_open: state_s.dir_menu_open.clone(),
                 dir_menu_scroll: state_s.dir_menu_scroll.clone(),
@@ -105,6 +97,8 @@ impl RootView {
                 if let Some(frame) = &screen.frame {
                     let selected = screen.selected_source.clone();
                     let frame_snap = ScreenFrameSnapshot {
+                        source: frame.source.clone(),
+                        driver: crate::screen::screen_driver(self.desktop.as_deref(), &selected),
                         frame_seq: screen.frame_seq,
                         width: frame.width,
                         height: frame.height,
@@ -132,6 +126,7 @@ impl RootView {
             // menu is closed, which is why the rows arrive with the open flag.
             let composer_context: HashMap<u64, ComposerContext> = {
                 let mut pickers = self.pickers.borrow_mut();
+                let media = self.media_state.borrow();
                 pane_chat
                     .keys()
                     .map(|&pid| {
@@ -143,6 +138,38 @@ impl RootView {
                             .map(|session| session.path.clone())
                             .unwrap_or_default();
                         ctx.harness_menu_open = controls.harness_menu_open.clone();
+
+                        // The environment control belongs to the conversation
+                        // that runs on a worker, and to it alone: the pane names
+                        // the medium its own conversation runs on (A3), and the
+                        // rows are the environments the app has. Every other
+                        // pane is given no label, so no environment control is
+                        // drawn for it — a local conversation has no environment
+                        // of its own to choose.
+                        ctx.harness_label = String::new();
+                        ctx.harness_ids = Vec::new();
+                        ctx.harness_items = Vec::new();
+                        if let Some(environment) = s.pane_environment(pid) {
+                            ctx.harness_label = media
+                                .mediums
+                                .iter()
+                                .find(|m| m.id == environment)
+                                .map(|m| m.label.clone())
+                                .unwrap_or_else(|| environment.clone());
+                            ctx.harness_ids = media.mediums.iter().map(|m| m.id.clone()).collect();
+                            ctx.harness_items = media
+                                .mediums
+                                .iter()
+                                .map(|m| {
+                                    let mut item = PopupMenuItem::new(m.label.clone())
+                                        .with_icon("computer");
+                                    if m.id == environment {
+                                        item = item.selected();
+                                    }
+                                    item
+                                })
+                                .collect();
+                        }
 
                         ctx.dir_menu_open = controls.dir_menu_open.clone();
                         ctx.dir_menu_scroll = controls.dir_menu_scroll.clone();
@@ -447,6 +474,11 @@ impl RootView {
                 recorded_count: s.recorded.len(),
                 replay_status: s.replay_status.clone(),
                 frame: s.frame.as_ref().map(|f| ScreenFrameSnapshot {
+                    source: f.source.clone(),
+                    driver: crate::screen::screen_driver(
+                        self.desktop.as_deref(),
+                        &s.selected_source,
+                    ),
                     frame_seq: s.frame_seq,
                     width: f.width,
                     height: f.height,

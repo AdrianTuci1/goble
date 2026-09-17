@@ -160,6 +160,7 @@ impl UiState {
                 path: current_dir_display(),
             })]),
             pane_runtime: HashMap::new(),
+            pane_workers: HashMap::new(),
             live_executions: HashMap::new(),
             pane_controls: HashMap::new(),
             pane_chat_scroll: HashMap::new(),

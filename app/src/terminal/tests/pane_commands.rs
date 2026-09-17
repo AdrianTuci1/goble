@@ -48,3 +48,33 @@ use super::*;
         let result = answer.blocking_recv().expect("the pane answers");
         assert!(result.is_err(), "a refused claim fails the tool call");
     }
+
+    /// S3: what the agent's `run_command` gets on a pane whose shell is not at a
+    /// prompt — the state an SSH-bound pane is in the whole time it is on the
+    /// host, because the command its shell is running is the `ssh` line itself.
+    /// A claim attaches to the block that is waiting for a command and this
+    /// pane's block is executing, so the tool call fails up front instead of the
+    /// line being written into the command that is already running.
+    #[test]
+    fn an_agent_command_is_refused_while_the_shell_is_inside_the_ssh_line() {
+        let mut session = detached();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
+        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+        // The shell is inside `ssh web`: the `Preexec` arrived and no
+        // `CommandFinished` can while the user is on the host.
+        run_hook(&mut session, preexec("ssh web"));
+
+        let answer = submit(&mut session, "echo hi");
+        session.pump();
+
+        assert_eq!(
+            answer.blocking_recv().expect("the pane answers"),
+            Err("the pane's shell is not ready to run an agent command".to_string()),
+            "the pane refuses the claim rather than attaching it to the ssh line"
+        );
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "and writes nothing: the agent's command never reached the pty"
+        );
+    }

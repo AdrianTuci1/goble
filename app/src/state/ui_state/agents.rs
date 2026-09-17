@@ -378,15 +378,27 @@ impl UiState {
         self.sub_agent_views.insert(pane_id, view);
     }
 
-    /// Leave the child view open in `pane_id`, if it has one: the pane's filter
-    /// goes back to the view it came from — the shell, or the parent's own agent
+    /// Leave the child view open in `pane_id`, if it has one: the pane goes
+    /// back to the view it came from — the shell, or the parent's own agent
     /// view when the row was clicked from inside it — and both cards stay in the
     /// block list. Returns whether a child view was open.
+    ///
+    /// The surface the pane goes back to is decided the way it always is: a
+    /// child view is entered through [`Self::enter_agent_view`], so the harness
+    /// switch is on while it is open, and returning to the shell turns it off
+    /// with the filter ([`Self::leave_agent_view`]) rather than leaving the pane
+    /// painting an agent surface its own view calls the shell.
     pub fn close_sub_agent_view(&mut self, pane_id: u64) -> bool {
         let Some(view) = self.sub_agent_views.remove(&pane_id) else {
             return false;
         };
-        self.pane_controls_mut(pane_id).view = view.returned_to;
+        match view.returned_to {
+            // Back to the parent's agent view: still the pane's agent surface,
+            // so the harness switch stays on with the filter.
+            BlockView::Agent { .. } => self.pane_controls_mut(pane_id).view = view.returned_to,
+            // Back to the shell: the switch goes off with the filter.
+            BlockView::Terminal => self.leave_agent_view(pane_id),
+        }
         true
     }
 

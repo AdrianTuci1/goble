@@ -7,6 +7,32 @@ impl RootView {
     /// changed (chats, messages, workflows, agents). Called on every frame
     /// before the tree is rebuilt, so backend updates show up live.
     pub(super) fn drain_events(&mut self) {
+        let Some(desktop) = self.desktop.clone() else {
+            return;
+        };
+        // A clicked BYOH handoff link: open the screen sheet, selecting the
+        // source derived from the URI. This is the user's own click, not
+        // something the backend announced, so it is performed before the bus is
+        // read and does not wait for an unrelated event to arrive. The root owns
+        // the screen sheet, so the action only stashes the URI here. What the
+        // click selected is carried for the rest of the frame: the user's own
+        // click is the selection that survives it (see the `screen:handoff`
+        // arm).
+        let mut user_selected = false;
+        if let Some(link) = self.state.borrow_mut().pending_screen_link_open.take() {
+            let source = crate::state::screen_source_from_link(&link);
+            let mut s = self.screen_state.borrow_mut();
+            s.open = true;
+            s.refresh_sources(&desktop);
+            if let Some(src) = source {
+                s.select_source(&src);
+                // `select_source` ignores a source the list does not carry, so
+                // this is what the click actually took: a URI naming no
+                // registered source leaves the frame with no user selection to
+                // keep.
+                user_selected = s.selected_source == src;
+            }
+        }
         let Some(bus) = self.event_bus.clone() else {
             return;
         };
@@ -14,9 +40,6 @@ impl RootView {
         if events.is_empty() {
             return;
         }
-        let Some(desktop) = self.desktop.clone() else {
-            return;
-        };
         let mut state = self.state.borrow_mut();
         for (name, payload) in events {
             match name.as_str() {
@@ -208,6 +231,27 @@ impl RootView {
                         state.apply_agent_finished(trace);
                     }
                 }
+                // A worker's own report of itself. A report that says it can
+                // still serve work means the channel is live, so the viewer
+                // panes on it re-join the sessions they run on — the run lives
+                // on the worker, so a drop and a return is a re-attach, not a
+                // new session. Any other report is that connection gone, so the
+                // panes on it detach and say so. Neither turns a viewer pane
+                // into a terminal — there is no local shell behind one.
+                "worker:status" => {
+                    let worker = payload.get("worker_id").and_then(|v| v.as_str());
+                    let status = payload.get("status").and_then(|v| v.as_str());
+                    if let (Some(worker), Some(status)) = (worker, status) {
+                        if worker_status_serving(status) {
+                            state.worker_status_serving(worker, &desktop);
+                        } else {
+                            state.worker_connection_dropped(
+                                worker,
+                                &format!("worker {worker} reported {status}"),
+                            );
+                        }
+                    }
+                }
                 "agent:state_update" => {
                     if let (Some(trace), Some(reported)) = (
                         payload.get("trace_id").and_then(|v| v.as_str()),
@@ -249,42 +293,73 @@ impl RootView {
                     self.media_state.borrow_mut().refresh(&desktop);
                     state.refresh_observability(&desktop);
                 }
-                // The agent handed the desktop to a remote screen: open the
-                // screen panel, refresh the source list (so the fresh remote
-                // source shows up), then select it. The same source is marked
+                // The agent handed the desktop to a remote screen. The sheet is
+                // the manual broadcast/computer-use surface and is left exactly
+                // as the user had it: an agent's tool call may not throw a
+                // window open over the app. What a handoff does is refresh the
+                // source list (so the fresh remote source shows up), select it
+                // when the frame carries no click of the user's own (the frame
+                // the app holds is the selected source's), and mark the source
                 // as this conversation's inline handoff, so its live frame
-                // renders inside the chat's harness area too.
+                // renders as the card in the conversation.
                 "screen:handoff" => {
                     if let Some(source) = payload.get("source").and_then(|v| v.as_str()) {
                         let mut s = self.screen_state.borrow_mut();
-                        s.open = true;
                         s.refresh_sources(&desktop);
-                        s.select_source(source);
+                        // The user's own click beats the agent's tool call in the
+                        // same frame: a handoff does not overwrite the source the
+                        // user has just selected by clicking its link. A handoff
+                        // in a frame with no such click still selects its own
+                        // source.
+                        if !user_selected {
+                            s.select_source(source);
+                        }
                         let pane_id = payload
                             .get("chat_id")
                             .and_then(|v| v.as_str())
                             .and_then(|cid| state.pane_id_for_conversation(cid))
                             .unwrap_or(state.active_pane_id);
-                        if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                            rt.inline_screen_source = Some(source.to_string());
-                        }
+                        // The pane's runtime is created here when it does not
+                        // exist yet: the handoff is the first thing the pane
+                        // sees only if nothing has refreshed its transcript, and
+                        // the card has to have a pane to live in either way.
+                        state
+                            .pane_runtime
+                            .entry(pane_id)
+                            .or_default()
+                            .inline_screen_source = Some(source.to_string());
+                    }
+                }
+                // The host closed a handed-off desktop (the last pane showing
+                // it let go, or the session ended): every pane stops drawing
+                // it and the sheet drops the frame it held, so no card shows a
+                // desktop that is gone.
+                "screen:closed" => {
+                    if let Some(source) = payload.get("source").and_then(|v| v.as_str()) {
+                        state.forget_inline_screen_source(source);
+                        self.screen_state
+                            .borrow_mut()
+                            .close_source(source, &desktop);
                     }
                 }
                 _ => {}
             }
         }
-
-        // A clicked BYOH handoff link: open the screen sheet, selecting the
-        // source derived from the URI. The root owns the screen sheet, so the
-        // action only stashes the URI here.
-        if let Some(link) = state.pending_screen_link_open.take() {
-            let source = crate::state::screen_source_from_link(&link);
-            let mut s = self.screen_state.borrow_mut();
-            s.open = true;
-            s.refresh_sources(&desktop);
-            if let Some(src) = source {
-                s.select_source(&src);
-            }
-        }
     }
+}
+
+/// Whether a `worker:status` report says the worker is still serving sessions.
+///
+/// The desktop service sends the status as [`goble_core::worker::WorkerStatus`]'s
+/// own form (its debug words), so it parses back here; the two states that can
+/// run work are `Online` and `Idle` (`WorkerSnapshot::is_available`). Anything
+/// else — `Offline`, `Unknown`, `Pairing`, `Error(..)`, or a report this build
+/// cannot parse — is a connection a viewer pane has lost, since the pane may
+/// only claim a live channel when the worker reported one.
+fn worker_status_serving(status: &str) -> bool {
+    use goble_core::worker::WorkerStatus;
+    matches!(
+        serde_json::from_value::<WorkerStatus>(serde_json::Value::String(status.to_string())),
+        Ok(WorkerStatus::Online | WorkerStatus::Idle)
+    )
 }

@@ -13,6 +13,41 @@ fn test_list_tools() {
 }
 
 #[test]
+fn open_screen_is_declared_with_a_credential_reference() {
+    let definition = harness_tool_definitions()
+        .into_iter()
+        .find(|definition| definition.name == "open_screen")
+        .expect("open_screen is defined");
+    let properties = definition.parameters["properties"]
+        .as_object()
+        .expect("an object schema");
+    assert!(
+        properties.contains_key("credential"),
+        "the tool names a stored credential"
+    );
+    // The model is never handed the account: no username and no password are
+    // in the schema it writes against.
+    assert!(!properties.contains_key("username"), "{properties:?}");
+    assert!(!properties.contains_key("password"), "{properties:?}");
+    let required = definition.parameters["required"]
+        .as_array()
+        .expect("a required list");
+    for field in ["host", "credential"] {
+        assert!(
+            required.iter().any(|r| r.as_str() == Some(field)),
+            "{field} is required"
+        );
+    }
+    assert!(
+        definition
+            .description
+            .contains("resolves it when it builds the RDP connection"),
+        "the description says the value is resolved host-side: {}",
+        definition.description
+    );
+}
+
+#[test]
 fn spawn_subagent_is_declared_with_its_schema() {
     let definition = harness_tool_definitions()
         .into_iter()

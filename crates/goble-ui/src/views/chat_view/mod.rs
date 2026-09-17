@@ -21,6 +21,7 @@ use crate::geometry::Vector2F;
 use crate::vim::{Clipboard, VimState};
 use goble_core::harness::CommandDecision;
 use goble_core::llm::TokenUsage;
+use goble_core::ssh_command::SshSession;
 
 mod builder;
 mod element;
@@ -29,14 +30,71 @@ mod transcript;
 #[cfg(test)]
 mod tests;
 
-/// A live remote-desktop frame rendered inline at the end of the transcript.
+/// A live remote-desktop frame rendered inline at the end of the transcript,
+/// with the card's caption: which desktop it shows and who is driving it.
 #[derive(Clone)]
-struct InlineScreen {
-    source: String,
-    frame_seq: u64,
-    width: u32,
-    height: u32,
-    data: Arc<[u8]>,
+pub struct InlineScreen {
+    /// The frame's texture key (`inline-<pane id>`), stable per pane so the
+    /// stream updates in place across rebuilds. Not what the card names.
+    pub source: String,
+    /// The desktop's own id — the `remote-xrdp:<host>:<port>` a handoff
+    /// registered — which the card names.
+    pub desktop: String,
+    /// Who holds the desktop's input right now.
+    pub driver: ScreenDriver,
+    /// Monotonic parity of the frame, so an unchanged one is not re-uploaded.
+    pub frame_seq: u64,
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// RGBA8 pixels, `width * height * 4` bytes.
+    pub data: Arc<[u8]>,
+}
+
+impl InlineScreen {
+    /// The card's caption: the desktop by name, and who is driving it.
+    fn caption(&self) -> String {
+        format!(
+            "{} · {}",
+            screen_desktop_name(&self.desktop),
+            self.driver.words()
+        )
+    }
+}
+
+/// Who is driving the desktop a card shows. The screen registry's control
+/// holder answers the first two (`has_control` is its "anyone at all" form);
+/// `ViewOnly` is a desktop nobody holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScreenDriver {
+    /// Nobody holds the desktop's input: the card is a picture of it.
+    #[default]
+    ViewOnly,
+    /// The agent drives it: its tool calls are the desktop's input.
+    Agent,
+    /// The user drives it.
+    User,
+}
+
+impl ScreenDriver {
+    /// The words the card draws for this driver.
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::ViewOnly => "view only",
+            Self::Agent => "the agent is driving",
+            Self::User => "you are driving",
+        }
+    }
+}
+
+/// The name a card gives a desktop: a `remote-xrdp:<host>:<port>` source is
+/// named by its host (`vm:3389`), anything else by its own id.
+pub fn screen_desktop_name(source: &str) -> String {
+    source
+        .strip_prefix("remote-xrdp:")
+        .unwrap_or(source)
+        .to_string()
 }
 
 pub struct ChatView {
@@ -93,6 +151,10 @@ pub struct ChatView {
     composer_focused: bool,
     composer_model_label: Option<String>,
     composer_path: Option<String>,
+    /// The SSH session the pane's shell is bound to, when a submitted `ssh` line
+    /// put it on a host (S1). Handed to the composer, which draws the session
+    /// chip above the editor; a local session carries none.
+    composer_ssh_session: Option<SshSession>,
     /// The files the rich input carries: the attach control adds the path the
     /// system picker returned, and the composer draws one chip per file over
     /// the editor.
@@ -212,6 +274,7 @@ impl ChatView {
             composer_focused: false,
             composer_model_label: None,
             composer_path: None,
+            composer_ssh_session: None,
             composer_attachments: Vec::new(),
             composer_stop_visible: false,
             composer_hints: Vec::new(),

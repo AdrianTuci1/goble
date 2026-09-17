@@ -26,6 +26,7 @@ mod pane_commands;
 mod registry;
 mod session;
 mod shell;
+mod ssh_session;
 
     /// A session whose screen the test drives directly, with no pty behind it.
     fn detached() -> TerminalSession {

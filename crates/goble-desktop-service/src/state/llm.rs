@@ -1,8 +1,15 @@
 use std::sync::Arc;
 
 use goble_core::llm::{self, CompletionRequest, LlmProvider};
+use goble_core::secret::Secret;
 
 use super::{DesktopState, Intent, LlmSetting};
+
+/// The name a worker's `llm_factory` resolves its LLM credential under
+/// (`crates/goblin-worker/src/llm_factory.rs` reads `llm_api_key` out of the
+/// worker's own secrets). A worker is seeded under this one name; the worker's
+/// own vault decides whether the value is taken.
+const WORKER_LLM_KEY_SECRET: &str = "llm_api_key";
 
 fn fallback_mock() -> (Arc<dyn LlmProvider>, String) {
     (
@@ -175,6 +182,46 @@ impl DesktopState {
         }
         self.get_llm_setting(provider)
             .filter(|setting| !setting.api_key.trim().is_empty())
+    }
+
+    /// The credential a freshly paired worker is seeded with: the LLM key this
+    /// workspace authenticates its own turns with, under the one name the
+    /// worker's `llm_factory` resolves.
+    ///
+    /// The value comes from [`DesktopState::effective_llm_setting`] — the same
+    /// resolution a local turn uses, so a `[model.<slug>]` entry's inline key in
+    /// `~/.goble/config.toml` and the store's per-provider setting are read the
+    /// one way they are read elsewhere, with no second reader. `None` when the
+    /// workspace has no key: a worker is never handed an empty one.
+    ///
+    /// This is a seed, not the mechanism: the worker's own vault stays
+    /// authoritative for it, and changing a key there is the explicit
+    /// `goble secret set` act.
+    pub fn llm_api_key_secret(&self) -> Option<Secret> {
+        let provider = self.default_llm_provider();
+        let model = self.default_model(&provider);
+        let setting = self.effective_llm_setting(&provider, &model)?;
+        if setting.api_key.trim().is_empty() {
+            return None;
+        }
+        Some(Secret::new(
+            WORKER_LLM_KEY_SECRET,
+            provider,
+            setting.api_key.into_bytes(),
+        ))
+    }
+
+    /// The provider the workspace's configured default model talks to: its
+    /// entry's `base_url` picks the backend, exactly as it does for a turn, and
+    /// OpenAI is the answer when the config declares no model — the same
+    /// default `refresh_settings` starts from.
+    fn default_llm_provider(&self) -> String {
+        let config = self.config();
+        let base = config
+            .default_model_id()
+            .and_then(|id| config.model_for(&id))
+            .and_then(|(_, entry)| entry.base_url.clone());
+        config_backend("", base.as_deref()).to_string()
     }
 
     pub fn get_llm_setting(&self, provider: &str) -> Option<LlmSetting> {

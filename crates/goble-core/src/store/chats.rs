@@ -95,6 +95,28 @@ impl Store {
         }
     }
 
+    /// Persist the environment (medium) a chat's turns run on, chosen where the
+    /// prompt is submitted.
+    pub fn set_chat_medium(&self, id: &str, medium_id: Option<&str>) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chats SET medium_id = ?1 WHERE id = ?2",
+            params![medium_id, id],
+        )?;
+        Ok(())
+    }
+
+    /// Read the environment a chat's turns run on, if one was chosen.
+    pub fn get_chat_medium(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT medium_id FROM chats WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(row.get::<_, Option<String>>(0)?)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Fold one model call's provider-reported token counts into a
     /// conversation's durable total. Accounting only, no price. A call that
     /// reports no cache accounting leaves `usage_cached` as it was rather than

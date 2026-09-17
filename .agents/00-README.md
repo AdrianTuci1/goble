@@ -82,6 +82,7 @@ flowchart TB
   root --> pl["10-platform-and-performance/README.md"]
   pl --> wgp["10-platform-and-performance/wgpu-renderer-platform.md"]
   pl --> perf["10-platform-and-performance/performance.md"]
+  pl --> tci["10-platform-and-performance/testing-and-ci.md"]
 ```
 
 ## Cross-links between subsystems

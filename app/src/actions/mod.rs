@@ -18,3 +18,6 @@ pub use make_actions::make_actions;
 
 #[cfg(test)]
 mod pane_independence_tests;
+
+#[cfg(test)]
+mod screen_close_tests;

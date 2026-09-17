@@ -60,6 +60,11 @@ struct TerminalView {
     /// The shared rich input bar pinned to the bottom of the pane, taken by the
     /// frame that draws it (the tree is rebuilt from scratch every frame).
     bar: Option<Box<dyn Element>>,
+    /// Why the pane last refused the switch into agent mode, when it refused.
+    /// The pane stayed on its shell, so the reason is drawn over that shell —
+    /// the chord never does nothing silently. Taken by the frame that draws it,
+    /// like the bar, and handed back by that frame's build.
+    harness_refusal: Option<String>,
     /// Whether the bar's editor holds the keyboard, so the pane hands keys to
     /// the bar instead of encoding them for the shell. While they disagree the
     /// grid keeps the keys, which is what a click on the grid restores.

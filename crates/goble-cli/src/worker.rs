@@ -5,7 +5,9 @@ use anyhow::Result;
 use futures::SinkExt;
 use goble_core::crypto::{generate_pairing_code, hash_pairing_code};
 use goble_core::protocol::DesktopMessage;
-use goble_core::provision::{provision_worker, LocalTransport, ProvisionConfig, SshTransport};
+use goble_core::provision::{
+    provision_worker, LocalTransport, ProvisionConfig, SshTransport, DEFAULT_DATA_ROOT,
+};
 use goble_core::store::Store;
 use goble_core::tls::CertGenerator;
 use goble_core::worker::{WorkerConfig, WorkerId};
@@ -41,6 +43,7 @@ pub(crate) fn do_provision(
         name: name.clone(),
         install_path: install_path.clone(),
         workspace_root: "/var/goblin/workspaces".to_string(),
+        data_root: DEFAULT_DATA_ROOT.to_string(),
         pairing_code_hash: pairing_hash.clone(),
         install_remote_desktop: remote_desktop,
         goblin_binary: std::env::current_exe()?

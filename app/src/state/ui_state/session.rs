@@ -96,10 +96,12 @@ impl UiState {
         // A child view shows a conversation reached from the pane's own
         // transcript (S6). Once the pane binds elsewhere that transcript is
         // stale and its composer-less body would hide the newly-selected
-        // conversation, so the pane goes back to the shell. The child's card
+        // conversation, so the pane goes back to the shell — the whole way
+        // back: leaving the agent view turns the pane's harness off too, so the
+        // surface it draws is the one `pane_view` reports. The child's card
         // stays in the block list and its messages stay in the store.
         if self.sub_agent_views.remove(&self.active_pane_id).is_some() {
-            self.pane_controls_mut(self.active_pane_id).view = BlockView::Terminal;
+            self.leave_agent_view(self.active_pane_id);
         }
         if let Some(session) = self.pane_sessions.get_mut(&self.active_pane_id) {
             session.conversation_id = conversation_id.clone();
@@ -243,6 +245,17 @@ impl UiState {
                     messages: rt.map(|r| r.messages.clone()).unwrap_or_default(),
                     composer_draft: session.draft.clone(),
                     composer_path: session.path.clone(),
+                    // A viewer pane's connection state is the same map the
+                    // events write; a pane with no entry is not a viewer pane
+                    // and draws no connection line.
+                    worker: self
+                        .pane_workers
+                        .get(pane_id)
+                        .map(|worker| WorkerPaneSnapshot {
+                            worker_id: worker.worker_id.clone(),
+                            attach: worker.attach.clone(),
+                            session: worker.session.clone(),
+                        }),
                     composer_attachments: self.pane_attachments(*pane_id),
                     pending_ask: rt.and_then(|r| r.pending_ask.clone()),
                     pending_command: rt.and_then(|r| r.pending_command.clone()),

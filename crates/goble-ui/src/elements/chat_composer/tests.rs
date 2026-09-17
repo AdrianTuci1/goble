@@ -162,18 +162,28 @@ fn composer_puts_every_control_in_the_footer_below_the_editor() {
     );
 }
 
+/// The environment pill is the host's to give. A composer whose host wires a
+/// label and a menu draws it as the first context pill — the environment the
+/// draft's turn runs on, ahead of the directory and the branch that describe
+/// the work inside it — and a host that wires none draws no environment control
+/// at all. That second half is what keeps a local conversation free of the
+/// control: the app gives the label to the conversation that runs on a worker
+/// and to no other (see `ui::chat::agent`).
 #[test]
-fn composer_renders_dir_and_branch_pills_without_the_environment_pill() {
+fn composer_draws_the_environment_pill_only_when_its_host_wires_one() {
     use crate::elements::PaintContext;
     use crate::render::{RenderCommand, Renderer};
 
     let app = AppContext::default();
     let mut composer = ChatComposer::new()
-        .with_harness_label("grok build")
+        .with_harness_label("Remote (xrdp)")
         .with_path_label("/work/project")
         .with_branch_label("main")
         .with_harness_menu(
-            vec![PopupMenuItem::new("grok build")],
+            vec![
+                PopupMenuItem::new("Local"),
+                PopupMenuItem::new("Remote (xrdp)").selected(),
+            ],
             Rc::new(RefCell::new(false)),
             |_| {},
         )
@@ -211,19 +221,102 @@ fn composer_renders_dir_and_branch_pills_without_the_environment_pill() {
             _ => None,
         })
         .collect();
-    // folder + git-branch are the two context pills the rich input still draws.
+    // The environment pill (`computer` -> the agentmode glyph), the working
+    // directory and the branch are the three context pills the host set.
+    for expected in ["agentmode", "folder", "git-branch"] {
+        assert!(icons.iter().any(|n| n == expected), "missing icon {expected}");
+    }
+    let pill_x = |name: &str| -> f32 {
+        commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::DrawIcon { origin, name: n, .. } if n == name => Some(origin.x),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the {name} pill is drawn"))
+    };
+    assert!(
+        pill_x("agentmode") < pill_x("folder"),
+        "the environment leads the context row: {} vs {}",
+        pill_x("agentmode"),
+        pill_x("folder")
+    );
+    assert!(
+        drawn_texts(&commands).iter().any(|t| t == "Remote (xrdp)"),
+        "the pill names the environment the turn runs on: {:?}",
+        drawn_texts(&commands)
+    );
+    // Its control is the same card every other pill is: the theme's grey
+    // outline at the input's own corner radius, so the environment cannot read
+    // as something other than the selectors beside it.
+    let pill = card_of(&commands, "agentmode");
+    let outlined = commands.iter().any(|c| matches!(
+        c,
+        RenderCommand::StrokeRect { rect, color, width, corner_radius }
+            if *rect == pill
+                && *color == app.theme.color(ColorToken::Border)
+                && *width == 1.0
+                && *corner_radius == COMPOSER_CONTROL_RADIUS
+    ));
+    assert!(outlined, "the environment pill outlines its own card");
+
+    // A press on the pill opens the host's menu — the same dispatch path the
+    // directory and the branch pills take. The flag is the host's, so the
+    // click that flips it is proven where every other pill's is
+    // (`integration_testing::menu_flow`); what is asserted here is that the
+    // environment control is the same popup: its open flag draws the panel,
+    // with the environments the host listed in it.
+    let open = Rc::new(RefCell::new(true));
+    let mut wired = ChatComposer::new()
+        .with_harness_label("Remote (xrdp)")
+        .with_harness_menu(
+            vec![
+                PopupMenuItem::new("Local"),
+                PopupMenuItem::new("Remote (xrdp)").selected(),
+            ],
+            open,
+            |_| {},
+        );
+    let commands = paint_composer(&app, &mut wired);
+    assert!(
+        drawn_texts(&commands).iter().any(|t| t == "Local"),
+        "the open environment menu draws the environments the host listed: {:?}",
+        drawn_texts(&commands)
+    );
+
+    // The host that wires no environment draws none: the directory and the
+    // branch are the two cards, and no environment glyph or label is painted.
+    let mut plain = ChatComposer::new()
+        .with_path_label("/work/project")
+        .with_branch_label("main")
+        .with_dir_menu(
+            vec![PopupMenuItem::new("/work/project")],
+            Rc::new(RefCell::new(false)),
+            |_| {},
+        )
+        .with_branch_menu(
+            vec![PopupMenuItem::new("main")],
+            Rc::new(RefCell::new(false)),
+            |_| {},
+        );
+    let (_, commands) = paint_composer_in(&app, &mut plain, vec2f(600.0, 400.0));
+    let icons: Vec<String> = commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
     for expected in ["folder", "git-branch"] {
         assert!(icons.iter().any(|n| n == expected), "missing icon {expected}");
     }
-    // The environment pill (`computer` -> the agentmode glyph) is gone, even
-    // though the host still sets its label and its menu.
     assert!(
         !icons.iter().any(|n| n == "agentmode"),
-        "the environment pill is not drawn: {icons:?}"
+        "a host that wires no environment draws no environment control: {icons:?}"
     );
     assert!(
-        !drawn_texts(&commands).iter().any(|t| t == "grok build"),
-        "and its label is not drawn either: {:?}",
+        !drawn_texts(&commands).iter().any(|t| t == "Remote (xrdp)"),
+        "and no environment label either: {:?}",
         drawn_texts(&commands)
     );
 
@@ -317,13 +410,13 @@ fn the_rich_input_controls_draw_no_drop_down_chevron() {
 
     let app = AppContext::default();
     let mut composer = ChatComposer::new()
-        .with_harness_label("grok build")
+        .with_harness_label("Remote (xrdp)")
         .with_path_label("~/Projects/goble")
         .with_branch_label("main")
         .with_model_label("gpt-4o")
         .with_on_attach(|| {})
         .with_harness_menu(
-            vec![PopupMenuItem::new("grok build")],
+            vec![PopupMenuItem::new("Remote (xrdp)")],
             Rc::new(RefCell::new(false)),
             |_| {},
         )
@@ -355,20 +448,112 @@ fn the_rich_input_controls_draw_no_drop_down_chevron() {
     assert_eq!(
         icons,
         [
+            "agentmode",  // the environment pill
             "folder",     // the working-directory pill
             "git-branch", // the branch pill
             "plus",       // attach
         ],
-        "every control draws its own glyph and none of them a chevron, \
-         the environment pill included"
+        "every control draws its own glyph and none of them a chevron"
     );
     assert!(
         !icons.iter().any(|name| name == "sparkle"),
         "the model control carries no icon: it reads as the model's own name"
     );
+}
+
+/// S2: the session chip names the host a bound shell session is on — the user
+/// and the host as the session has them, and the `~/.ssh/config` alias beside
+/// the address it resolves to when one was used. It rides above the editor with
+/// the context pills and is not a card; a local session draws no chip at all,
+/// because the absence is the statement.
+#[test]
+fn the_session_chip_names_the_bound_host_and_a_local_session_draws_none() {
+    use crate::render::RenderCommand;
+    use goble_core::ssh_command::SshSession;
+
+    let app = AppContext::default();
+    let bounds = |host: &str, user: &str, alias: Option<&str>| SshSession {
+        host: host.to_string(),
+        user: user.to_string(),
+        port: 22,
+        alias: alias.map(str::to_string),
+    };
+    // The composer as the shell bar builds it: a draft, its context pills, and
+    // the session the pane's shell is bound to — or none.
+    let paint = |session: Option<SshSession>| {
+        let mut composer = ChatComposer::new()
+            .with_value("hi")
+            .with_path_label("~/Projects/goble")
+            // The shell bar's own shape: the context rides above the editor.
+            .with_context_above_editor(true)
+            .with_ssh_session(session);
+        paint_composer_in(&app, &mut composer, vec2f(600.0, 400.0))
+    };
+    let text_y = |commands: &[RenderCommand], text: &str| -> Option<f32> {
+        commands.iter().find_map(|c| match c {
+            RenderCommand::DrawText { origin, text: drawn, .. } if drawn == text => Some(origin.y),
+            _ => None,
+        })
+    };
+    let cards = |commands: &[RenderCommand]| {
+        commands
+            .iter()
+            .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
+            .count()
+    };
+
+    // A local shell: the frame the chip must leave alone.
+    let local = paint(None);
+
+    // An alias from `~/.ssh/config`: the chip names the alias and the address
+    // it stands for.
+    let (bound_size, commands) = paint(Some(bounds("web.example.com", "deploy", Some("web"))));
+    let chip = text_y(&commands, "deploy@web (web.example.com)")
+        .expect("the chip names the user and the host the session has");
+    let editor = text_y(&commands, "hi").expect("the editor text");
     assert!(
-        !icons.iter().any(|name| name == "agentmode"),
-        "the environment pill is gone from the rich input"
+        chip < editor,
+        "the chip sits above the editor, with the other context: {chip} vs {editor}"
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::DrawIcon { name, .. }
+                if name == "conversation-remote")),
+        "the chip draws the remote mark: {commands:?}"
+    );
+    // A chip, not a card: the only card on this composer is the directory pill.
+    assert_eq!(cards(&commands), 1, "the chip outlines no box of its own: {commands:?}");
+
+    // A name no block declares is the host itself.
+    let (_, commands) = paint(Some(bounds("server.example.com", "ada", None)));
+    assert!(
+        text_y(&commands, "ada@server.example.com").is_some(),
+        "a session with no alias reads `user@host`: {commands:?}"
+    );
+
+    // A local shell: no chip, no remote mark, and no box where one would be —
+    // and the row the chip joins is not re-laid out either way.
+    let (local_size, commands) = local;
+    assert!(
+        !drawn_texts(&commands).iter().any(|t| t.contains("deploy@")),
+        "a local session draws no chip: {commands:?}"
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::DrawIcon { name, .. }
+                if name == "conversation-remote")),
+        "and no remote mark either: {commands:?}"
+    );
+    assert_eq!(
+        cards(&commands),
+        1,
+        "the row is the same one card the directory pill draws: {commands:?}"
+    );
+    assert_eq!(
+        bound_size.y, local_size.y,
+        "the chip joins the context row without reflowing the input: {bound_size:?} against {local_size:?}"
     );
 }
 

@@ -8,4 +8,4 @@ pub mod actions;
 pub mod state;
 
 pub use actions::make_screen_actions;
-pub use state::ScreenState;
+pub use state::{screen_driver, ScreenState};

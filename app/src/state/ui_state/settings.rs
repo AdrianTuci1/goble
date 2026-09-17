@@ -468,6 +468,16 @@ impl UiState {
         }
     }
 
+    /// The `~/.ssh` read a submitted command's host is resolved against, from
+    /// the home directory the Connections page reads under. Read fresh rather
+    /// than out of that page's cache: the page fills its own when it is shown,
+    /// and a command must not make the page's read stale any more than the page
+    /// may hand a command an older one.
+    pub fn ssh_hosts_for_command(&self) -> Option<SshHosts> {
+        self.ssh_home()
+            .map(|home| goble_core::ssh_hosts::read_ssh_hosts(&home))
+    }
+
     /// Select a connection by alias: `Enter` names it for whatever consumes the
     /// target next. Nothing connects — this build opens no session over SSH.
     pub fn ssh_select_host(&mut self, alias: &str) {

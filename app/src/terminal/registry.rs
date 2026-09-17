@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use goble_core::harness::PaneSession;
+use goble_core::ssh_command::SshSession;
 use goble_terminal::blocks::BlockView;
 use goble_terminal::BlockId;
 
@@ -21,9 +22,32 @@ pub struct TerminalRegistry {
     /// Per-pane surface mode (shell vs. a TUI agent). Owned here so it survives
     /// the per-frame element rebuild and is dropped with the pane.
     pub modes: HashMap<u64, TerminalMode>,
+    /// The SSH session each pane's shell is on, keyed by pane id, from the
+    /// `ssh` line the user submitted in it. Absent for a pane at a local shell,
+    /// so a pane whose command opened no session carries no binding.
+    pub ssh_sessions: HashMap<u64, SshSession>,
 }
 
 impl TerminalRegistry {
+    /// The host the pane's shell is on, or `None` when it is local.
+    pub fn ssh_session(&self, pane_id: u64) -> Option<&SshSession> {
+        self.ssh_sessions.get(&pane_id)
+    }
+
+    /// Move the pane's shell to [`SshSession`], or back to a local shell with
+    /// `None`. What a submitted line means for the pane is read in
+    /// `run_terminal_command`, which owns the command path; this is the storage.
+    pub fn set_ssh_session(&mut self, pane_id: u64, session: Option<SshSession>) {
+        match session {
+            Some(session) => {
+                self.ssh_sessions.insert(pane_id, session);
+            }
+            None => {
+                self.ssh_sessions.remove(&pane_id);
+            }
+        }
+    }
+
     pub fn ensure_session(&mut self, pane_id: u64, cwd: &str) {
         if self.sessions.contains_key(&pane_id) {
             return;
@@ -45,6 +69,7 @@ impl TerminalRegistry {
         self.sessions.remove(&pane_id);
         self.input.remove(&pane_id);
         self.modes.remove(&pane_id);
+        self.ssh_sessions.remove(&pane_id);
     }
 
     pub fn input(&self, pane_id: u64) -> String {
@@ -80,6 +105,27 @@ impl TerminalRegistry {
         self.sessions
             .values()
             .any(|session| session.has_running_command())
+    }
+
+    /// Whether the pane's shell is busy with a command of its own — the state
+    /// that refuses the switch into agent mode (`open_pane_harness`).
+    ///
+    /// A pane bound to an SSH session is not busy in this sense: the running
+    /// command is the session itself — the local `ssh` process — while the
+    /// remote shell it put the user in is idle at a prompt. That pane is the one
+    /// the switch exists for, and the reference treats a long-running command
+    /// the same way: its `SetInputModeAgent` hands the command to the agent
+    /// (tag-in) instead of refusing it, and the refusal is the path that would
+    /// leave the command behind. Reading the binding here is what keeps the
+    /// switch from refusing the session it was asked to attach the agent to.
+    pub fn running_a_command(&self, pane_id: u64) -> bool {
+        if self.ssh_sessions.contains_key(&pane_id) {
+            return false;
+        }
+        self.sessions
+            .get(&pane_id)
+            .map(|session| session.has_running_command())
+            .unwrap_or(false)
     }
 
     /// The blocks a view draws in `pane_id`, oldest first. A pane with no

@@ -85,6 +85,12 @@ pub(super) fn ensure_pane_hover(state: &mut UiState, pane_id: u64) {
         .or_insert_with(|| Rc::new(RefCell::new(false)));
 }
 
+/// The reason a busy shell gives for refusing the switch into agent mode, word
+/// for word the reference's own `EnterAgentViewError::LongRunningCommand`
+/// (`Cannot enter agent mode while a command is running.`). The pane draws it
+/// over the shell it stayed on, so the chord never does nothing silently.
+pub(super) const HARNESS_BUSY_REFUSAL: &str = "Cannot enter agent mode while a command is running.";
+
 /// Open `pane_id`'s harness: the pane shows its agent view over its own shell.
 ///
 /// A pane with no conversation of its own gets one bound first, so the view
@@ -98,11 +104,40 @@ pub(super) fn ensure_pane_hover(state: &mut UiState, pane_id: u64) {
 /// transcript's notice band names the missing key or model. Refusing the switch
 /// instead left the pane on its shell with nothing to say why the chord (or the
 /// sidebar's "New conversation" row, which lands here) did nothing.
+///
+/// Two guards, both on this one entry point, both the reference's own:
+///
+/// * **Already in the agent view** — entering again pushes nothing (no second
+///   conversation, no second card, no second view). `AlreadyInAgentView` is
+///   warp-new's guard for the same direction, and the pane really is entered
+///   twice: a card click and a `Cmd+Enter` that arrive before the next frame's
+///   rebuild both land on the tree that drew the shell.
+/// * **A command running in the pane's shell** — the switch is refused and says
+///   so (`HARNESS_BUSY_REFUSAL`), because the agent's own commands cannot run in
+///   a shell that is not at a prompt: the claim attaches to the block that is
+///   waiting for a command, and a running command's block is not one. The pane
+///   records the reason and draws it over the shell it stayed on. An SSH-bound
+///   pane is exempt — see `TerminalRegistry::running_a_command` — so the
+///   switch works on exactly the session it exists for.
 pub(super) fn open_pane_harness(
     state: &mut UiState,
     pane_id: u64,
     desktop: Option<&Arc<DesktopState>>,
 ) {
+    // A viewer pane has no shell to switch from: its conversation runs on a
+    // worker, so mounting the agent view over a pty it does not have would
+    // invent a terminal for it. The pane already reports its own state.
+    if state.pane_is_viewer(pane_id) {
+        return;
+    }
+    if state.pane_controls(pane_id).harness_mode {
+        return;
+    }
+    if state.terminal.borrow().running_a_command(pane_id) {
+        state.pane_controls_mut(pane_id).harness_refusal = Some(HARNESS_BUSY_REFUSAL.to_string());
+        return;
+    }
+    state.pane_controls_mut(pane_id).harness_refusal = None;
     state.pane_controls_mut(pane_id).harness_mode = true;
     if !state.pane_owns_conversation(pane_id) {
         state.bind_pane_new_conversation(pane_id, desktop.map(|d| d.as_ref()));
@@ -117,6 +152,28 @@ pub(super) fn open_pane_harness(
     }
 }
 
+/// Let the panes in `ids` go of the desktop each was showing, closing every
+/// desktop whose last viewer is one of them.
+///
+/// The rule is [`UiState::release_inline_screen`]'s and stays there: a desktop
+/// closes only when no pane anywhere still names it, so a source another pane or
+/// another tab is watching survives. This is the one place the app acts on that
+/// answer, so a dismissed card, a closed pane and a closed tab all release a
+/// desktop under the same terms.
+pub(super) fn release_inline_screens(
+    state: &mut UiState,
+    ids: impl IntoIterator<Item = u64>,
+    desktop: Option<&DesktopState>,
+) {
+    for id in ids {
+        if let Some(source) = state.release_inline_screen(id) {
+            if let Some(desktop) = desktop {
+                desktop.close_remote_screen(&source);
+            }
+        }
+    }
+}
+
 /// Close the space (tab) at `index`.
 ///
 /// The last remaining space is never removed: it resets to a fresh empty chat
@@ -127,14 +184,20 @@ pub(super) fn close_space_at(state: &mut UiState, index: usize, desktop: Option<
         return;
     }
     // Drop every pane session/runtime/hover for the space's leaves and kill any
-    // terminal sessions along with them.
+    // terminal sessions along with them. The panes' desktops are released first,
+    // before their runtimes go: a tab closing is a viewer leaving like any other,
+    // so a desktop this tab was the last one showing closes with it while one
+    // another tab still shows stays open.
     let closed = state.spaces.remove(index);
-    for id in collect_leaf_ids(&closed.root) {
-        state.pane_sessions.remove(&id);
-        state.pane_runtime.remove(&id);
-        state.pane_hover.remove(&id);
-        state.sub_agent_views.remove(&id);
-        state.terminal.borrow_mut().drop_pane(id);
+    let leaves = collect_leaf_ids(&closed.root);
+    release_inline_screens(state, leaves.iter().copied(), desktop);
+    // A pane in the closed tab owns nothing any more: its session, runtime,
+    // hover flag, child view, shell and viewer session all go with it — the last
+    // one because the worker's status path finds the panes a report is about by
+    // the viewer sessions alone, so a session left behind is a dead pane id it
+    // would keep reporting on.
+    for id in leaves {
+        state.forget_pane(id);
     }
     // If the space being closed was the last one, restore a fresh empty chat
     // space so the window is never left with zero tabs.

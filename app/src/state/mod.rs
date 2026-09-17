@@ -34,7 +34,7 @@ use crate::ui::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, HarnessEntry, LlmFormField, Pane,
     PaneChatSnapshot, PaneKind, SearchRow, SettingsCategory, SettingsControl, SettingsFocus,
     SidebarView, Space, TaskEntry, TimelineEntry, WorkflowEntry, WorkflowStepEntry,
-    WorkspaceRouting, SIDEBAR_WIDTH,
+    WorkerPaneSnapshot, WorkspaceRouting, SIDEBAR_WIDTH,
 };
 use crate::ui::global_search::SearchWorker;
 

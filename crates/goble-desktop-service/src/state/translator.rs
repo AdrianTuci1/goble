@@ -299,27 +299,21 @@ impl DesktopState {
                 );
             }
             DE::TraceFinished { session_id, .. } => {
+                // A finished run ends the *turn*, not the desktop that turn
+                // asked for. The card stays in the conversation for the user to
+                // watch or take over — that is what it is for — so closing here
+                // would blank a desktop somebody is still looking at, and a
+                // desktop the agent opened can outlive the turn that asked for
+                // it. The close is the card's dismissal and the session's end
+                // instead (`DesktopState::close_remote_screen`, reached from
+                // the app's actions).
                 self.emit(
                     "chat:turn_finished",
                     serde_json::json!({ "chat_id": session_id.0 }),
                 );
             }
             DE::ScreenHandoff { session_id, config } => {
-                match self.open_remote_screen(config) {
-                    Ok(source) => {
-                        self.add_log(format!("opened remote desktop {source}"));
-                        self.emit(
-                            "screen:handoff",
-                            serde_json::json!({
-                                "chat_id": session_id.0,
-                                "source": source,
-                            }),
-                        );
-                    }
-                    Err(e) => {
-                        self.add_log(format!("screen handoff failed: {e:#}"));
-                    }
-                }
+                self.hand_off_remote_screen(&session_id.0, config);
             }
             _ => {}
         }

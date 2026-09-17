@@ -504,18 +504,20 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "open_screen".to_string(),
-            description: "Open a remote desktop over the harness window and hand off to it. The agent calls this when it needs a real GUI; the host opens the stream in a screen pane and routes your keyboard/mouse to it. `host` is required; `port` defaults to 3389 and `width`/`height` to 1280x720.".to_string(),
+            description: "Open a remote desktop over the harness window and hand off to it. The agent calls this when it needs a real GUI; the host opens the stream in a screen pane and routes your keyboard/mouse to it. The desktop account is never passed here: `credential` names a credential stored on the host, whose value is the account line `username:password`, and the host resolves it when it builds the RDP connection — the username and the password never appear in this call, its result or the transcript. `host` and `credential` are required; `port` defaults to 3389 and `width`/`height` to 1280x720.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "host": { "type": "string" },
                     "port": { "type": "integer" },
-                    "username": { "type": "string" },
-                    "password": { "type": "string" },
+                    "credential": {
+                        "type": "string",
+                        "description": "Name of a stored credential holding the desktop account (`username:password`), a single token such as `xrdp-vps`; the value is resolved on the host and never travels in this call."
+                    },
                     "width": { "type": "integer" },
                     "height": { "type": "integer" }
                 },
-                "required": ["host"]
+                "required": ["host", "credential"]
             }),
         },
     ]

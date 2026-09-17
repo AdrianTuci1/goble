@@ -35,6 +35,7 @@ pub mod tab_menu;
 pub mod task_workflow;
 pub mod terminal;
 pub mod vault;
+pub mod worker;
 
 mod actions;
 mod build;
@@ -50,7 +51,7 @@ pub use tab_menu::{TabMenuAction, TabMenuTab};
 pub use snapshot::{
     AiSnapshot, ComposerContext, MediaNode, MediaProject, MediaSession, MediaSnapshot,
     PaneChatSnapshot, ProjectEntry, ProjectSessionEntry, ProjectsSnapshot, ScreenFrameSnapshot,
-    ScreenSnapshot, ScreenSourceEntry, SubAgentViewSnapshot, UiSnapshot,
+    ScreenSnapshot, ScreenSourceEntry, SubAgentViewSnapshot, UiSnapshot, WorkerPaneSnapshot,
 };
 pub use types::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, HarnessKind,

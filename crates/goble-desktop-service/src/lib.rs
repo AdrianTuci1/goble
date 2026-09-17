@@ -8,8 +8,9 @@ pub use event_bus::{CollectingEventBus, EventBus, NoOpEventBus};
 pub use ssh_installer::{PlatformInfo, SshCredentials, WorkerInstallResult};
 
 pub use state::{
-    AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, CommandProposedEvent, DesktopState,
+    AgentInfo, AttachedSession, Chat, ChatMessage, ClusterIdentityInfo, CommandProposedEvent, DesktopState,
     ExecutionInfo, Intent, IntentParams, LlmSetting, LogEntry, ReasoningEvent, ReasoningPhase,
+    SessionAttach,
     SubAgentFinishedEvent, SubAgentProgressEvent, SubAgentSpawnedEvent, TeamInfo,
     ThreadMessageSummary, ThreadReactionSummary, ThreadSummary, TokenUsageEvent, ToolCallEvent,
     VaultSecretInfo,

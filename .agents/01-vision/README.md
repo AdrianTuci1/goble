@@ -32,6 +32,7 @@ The repo already has a working backend (`goble-core` + `goble-desktop-service` +
 
 ## Related
 
+- [`remote-features.md`](remote-features.md) — what the remote direction gives the user, feature by feature
 - [`../02-first-run-and-routing/README.md`](../02-first-run-and-routing/README.md) — the first-run flow and the local/remote router
 - [`../03-workspace-model/README.md`](../03-workspace-model/README.md) — the workspace as the unit of deployment
 - [`../10-platform-and-performance/README.md`](../10-platform-and-performance/README.md) — perf/rendering principles

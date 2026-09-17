@@ -411,7 +411,15 @@ fn chat_view_renders_inline_screen_as_image() {
     let app = AppContext::default();
     let pixels = vec![0u8; 200 * 120 * 4];
     let mut view = ChatView::new()
-        .with_inline_screen("inline-1", 1, 200, 120, Arc::from(pixels))
+        .with_inline_screen(InlineScreen {
+            source: "inline-1".to_string(),
+            desktop: "local".to_string(),
+            driver: ScreenDriver::ViewOnly,
+            frame_seq: 1,
+            width: 200,
+            height: 120,
+            data: Arc::from(pixels),
+        })
         .finish();
     let commands = render_element(&mut view, vec2f(600.0, 800.0), &app);
     let counts = command_counts(&commands);
@@ -421,12 +429,67 @@ fn chat_view_renders_inline_screen_as_image() {
     );
     assert!(
         counts.draw_text > 0,
-        "the harness-in-control header should render text"
+        "the card's caption should render text"
     );
     assert_eq!(
         counts.stroke_rect, 0,
         "the inline desktop handoff paints a band, not a bordered card"
     );
+}
+
+/// C4: the card names the desktop it draws and who is driving it — the source's
+/// own id (not the frame's texture key) and the control state for both holders.
+#[test]
+fn the_inline_desktop_card_names_the_desktop_and_who_is_driving_it() {
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let captions = |driver: ScreenDriver| -> Vec<String> {
+        let pixels = vec![0u8; 4 * 4 * 4];
+        let mut view = ChatView::new()
+            .with_inline_screen(InlineScreen {
+                source: "inline-1".to_string(),
+                desktop: "remote-xrdp:vm:3389".to_string(),
+                driver,
+                frame_seq: 1,
+                width: 4,
+                height: 4,
+                data: Arc::from(pixels),
+            })
+            .finish();
+        render_element(&mut view, vec2f(600.0, 800.0), &app)
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    for (driver, expected) in [
+        (ScreenDriver::Agent, "vm:3389 · the agent is driving"),
+        (ScreenDriver::User, "vm:3389 · you are driving"),
+        (ScreenDriver::ViewOnly, "vm:3389 · view only"),
+    ] {
+        let drawn = captions(driver);
+        assert!(
+            drawn.iter().any(|t| t == expected),
+            "the card names the desktop and the holder for {driver:?}: {drawn:?}"
+        );
+    }
+}
+
+/// The card names the host a `remote-xrdp:` source runs on, not the id's
+/// prefix, and leaves any other source id alone.
+#[test]
+fn screen_desktop_name_names_a_remote_desktop_by_its_host() {
+    assert_eq!(screen_desktop_name("remote-xrdp:vm:3389"), "vm:3389");
+    assert_eq!(
+        screen_desktop_name("remote-xrdp:10.0.0.4:3389"),
+        "10.0.0.4:3389"
+    );
+    assert_eq!(screen_desktop_name("local"), "local");
 }
 
 #[test]

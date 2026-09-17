@@ -190,24 +190,25 @@ pub const OPEN_SCREEN_TOOL: &str = "open_screen";
 
 impl HarnessServerEvent {
     /// Build a [`HarnessServerEvent::ScreenHandoff`] from an `open_screen` tool
-    /// call. The tool arguments carry `host` (required), `port` (default 3389),
-    /// `username`, `password`, and optional `width`/`height` (default 1280x720).
+    /// call. The tool arguments carry `host` and `credential` (both required),
+    /// and optional `port` (default 3389) / `width`/`height` (default 1280x720).
+    /// `credential` is the *name* of a stored credential, never a username or a
+    /// password: the host resolves its value where the RDP connection is built,
+    /// so no secret enters the event this returns.
     ///
     /// Returns `None` if the arguments are not parseable as a screen request so
-    /// the caller can surface a `ToolCallError` instead.
+    /// the caller can surface a `ToolCallError` instead. A `credential` that is
+    /// not a single token (`RemoteScreenConfig::is_credential_name`) is refused
+    /// here for the same reason: what reaches the event must be a reference.
     pub fn screen_handoff_from_tool_call(
         session_id: SessionId,
         arguments: &serde_json::Value,
     ) -> Option<Self> {
         let host = arguments.get("host")?.as_str()?;
-        let username = arguments
-            .get("username")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let password = arguments
-            .get("password")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let credential = arguments.get("credential")?.as_str()?;
+        if !RemoteScreenConfig::is_credential_name(credential) {
+            return None;
+        }
         let port = arguments
             .get("port")
             .and_then(|v| v.as_u64())
@@ -228,8 +229,7 @@ impl HarnessServerEvent {
             config: RemoteScreenConfig {
                 host: host.to_string(),
                 port,
-                username: username.to_string(),
-                password: password.to_string(),
+                credential: credential.to_string(),
                 width,
                 height,
             },
@@ -372,7 +372,7 @@ mod tests {
     fn screen_handoff_event_roundtrips() {
         let ev = HarnessMessage::Server(HarnessServerEvent::ScreenHandoff {
             session_id: SessionId::new("s1"),
-            config: RemoteScreenConfig::new("vm.example.com", "user", "pass"),
+            config: RemoteScreenConfig::new("vm.example.com", "desktop-account"),
         });
         let line = ev.to_line().unwrap();
         let decoded = HarnessMessage::from_line(&line).unwrap();
@@ -381,10 +381,11 @@ mod tests {
 
     #[test]
     fn screen_handoff_from_tool_call_parses_defaults() {
-        // Minimal args: only host. Ports/dims fall back to defaults.
+        // Minimal args: host and the credential name. Ports/dims fall back to
+        // defaults.
         let ev = HarnessServerEvent::screen_handoff_from_tool_call(
             SessionId::new("s1"),
-            &serde_json::json!({ "host": "vm.example.com", "username": "u", "password": "p" }),
+            &serde_json::json!({ "host": "vm.example.com", "credential": "desktop-account" }),
         )
         .unwrap();
         match ev {
@@ -393,20 +394,58 @@ mod tests {
                 assert_eq!(config.port, 3389);
                 assert_eq!(config.width, 1280);
                 assert_eq!(config.height, 720);
-                assert_eq!(config.username, "u");
-                assert_eq!(config.password, "p");
+                assert_eq!(config.credential, "desktop-account");
             }
             _ => panic!("expected a screen handoff"),
         }
     }
 
     #[test]
-    fn screen_handoff_from_tool_call_requires_host() {
+    fn a_handoff_from_a_tool_call_carries_no_account_value() {
+        // The model writes a credential name and the account stays host-side:
+        // the event that reaches the daemon and the host holds the reference
+        // and nothing else, even when account values are handed in beside it.
+        let ev = HarnessServerEvent::screen_handoff_from_tool_call(
+            SessionId::new("s1"),
+            &serde_json::json!({
+                "host": "vm.example.com",
+                "credential": "desktop-account",
+                "username": "goble",
+                "password": "hunter2",
+            }),
+        )
+        .unwrap();
+        let line = HarnessMessage::Server(ev).to_line().unwrap();
+        assert!(line.contains(r#""credential":"desktop-account""#), "{line}");
+        assert!(!line.contains("password"), "{line}");
+        assert!(!line.contains("hunter2"), "{line}");
+        assert!(!line.contains("username"), "{line}");
+    }
+
+    #[test]
+    fn screen_handoff_from_tool_call_requires_host_and_a_credential_name() {
         let ev = HarnessServerEvent::screen_handoff_from_tool_call(
             SessionId::new("s1"),
             &serde_json::json!({ "port": 3390 }),
         );
         assert!(ev.is_none());
+
+        // No credential at all is not a handoff: there would be nothing to
+        // resolve and no account to connect with.
+        let ev = HarnessServerEvent::screen_handoff_from_tool_call(
+            SessionId::new("s1"),
+            &serde_json::json!({ "host": "vm.example.com" }),
+        );
+        assert!(ev.is_none());
+
+        // Neither is an account line or an empty name in the reference's place.
+        for credential in ["goble:hunter2", "", "two words"] {
+            let ev = HarnessServerEvent::screen_handoff_from_tool_call(
+                SessionId::new("s1"),
+                &serde_json::json!({ "host": "vm.example.com", "credential": credential }),
+            );
+            assert!(ev.is_none(), "`{credential}` must not become a handoff");
+        }
     }
 
     #[test]

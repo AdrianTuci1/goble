@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
@@ -11,6 +10,7 @@ use crate::elements::{
 use crate::vim::{Clipboard, VimState};
 use goble_core::harness::CommandDecision;
 use goble_core::llm::TokenUsage;
+use goble_core::ssh_command::SshSession;
 
 use super::{ChatView, InlineScreen};
 
@@ -229,6 +229,15 @@ impl ChatView {
 
     pub fn with_composer_path(mut self, path: impl Into<String>) -> Self {
         self.composer_path = Some(path.into());
+        self
+    }
+
+    /// The SSH session this pane's shell is bound to, when a submitted `ssh`
+    /// line put it on a host. The composer names it above its editor, so the
+    /// pane's agent view says where the session under it is; a local session
+    /// carries no chip.
+    pub fn with_composer_ssh_session(mut self, session: Option<SshSession>) -> Self {
+        self.composer_ssh_session = session;
         self
     }
 
@@ -457,22 +466,10 @@ impl ChatView {
     }
 
     /// Set a live remote-desktop frame to render inline at the end of the
-    /// transcript, marking the harness's handoff of control (computer use).
-    pub fn with_inline_screen(
-        mut self,
-        source: impl Into<String>,
-        frame_seq: u64,
-        width: u32,
-        height: u32,
-        data: Arc<[u8]>,
-    ) -> Self {
-        self.inline_screen = Some(InlineScreen {
-            source: source.into(),
-            frame_seq,
-            width,
-            height,
-            data,
-        });
+    /// transcript, captioned by [`InlineScreen`] itself: the desktop's name and
+    /// who is driving it (C4).
+    pub fn with_inline_screen(mut self, screen: InlineScreen) -> Self {
+        self.inline_screen = Some(screen);
         self
     }
 

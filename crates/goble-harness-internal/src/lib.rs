@@ -462,14 +462,38 @@ mod tests {
             HarnessEvent::ToolCallStarted {
                 id: "t1".to_string(),
                 name: OPEN_SCREEN_TOOL.to_string(),
-                arguments: serde_json::json!({ "host": "vm.example.com", "username": "u", "password": "p" }),
+                arguments: serde_json::json!({ "host": "vm.example.com", "credential": "desktop-account" }),
             },
         );
         assert!(events.iter().any(|e| matches!(e, HarnessServerEvent::ToolCallStarted { name, .. } if name == OPEN_SCREEN_TOOL)));
         assert!(events.iter().any(|e| matches!(
             e,
-            HarnessServerEvent::ScreenHandoff { config, .. } if config.host == "vm.example.com" && config.username == "u"
+            HarnessServerEvent::ScreenHandoff { config, .. } if config.host == "vm.example.com" && config.credential == "desktop-account"
         )));
+    }
+
+    #[test]
+    fn a_handoff_without_a_credential_name_is_not_emitted() {
+        let session_id = SessionId::new("s1");
+        for arguments in [
+            serde_json::json!({ "host": "vm.example.com" }),
+            serde_json::json!({ "host": "vm.example.com", "credential": "goble:hunter2" }),
+        ] {
+            let events = map_event(
+                &session_id,
+                HarnessEvent::ToolCallStarted {
+                    id: "t1".to_string(),
+                    name: OPEN_SCREEN_TOOL.to_string(),
+                    arguments,
+                },
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, HarnessServerEvent::ScreenHandoff { .. })),
+                "no handoff is emitted without a credential reference: {events:?}"
+            );
+        }
     }
 
     #[test]

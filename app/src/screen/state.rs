@@ -17,12 +17,25 @@
 use std::time::Instant;
 
 use goble_desktop_service::DesktopState;
-use goble_screen_core::ScreenFrame;
+use goble_screen_core::{ControlHolder, ScreenFrame};
+use goble_ui::ScreenDriver;
 
 use crate::ui::ScreenSourceEntry;
 
 /// The source id used by the [`ScreenState::mock`] test fixture.
 const MOCK_SOURCE: &str = "local";
+
+/// Who is driving `source` right now, as the card in a transcript names it:
+/// the screen registry's control holder (C1's `control_holder`, whose
+/// `has_control` is the "anyone at all" form). A source nobody holds — every
+/// freshly opened remote desktop — is view-only.
+pub fn screen_driver(desktop: Option<&DesktopState>, source: &str) -> ScreenDriver {
+    match desktop.and_then(|desktop| desktop.screen_registry().control_holder(source)) {
+        Some(ControlHolder::Agent) => ScreenDriver::Agent,
+        Some(ControlHolder::User) => ScreenDriver::User,
+        None => ScreenDriver::ViewOnly,
+    }
+}
 
 /// A recorded screen event, timestamped in milliseconds relative to when
 /// recording started. Order is preserved.
@@ -118,6 +131,12 @@ impl ScreenState {
     }
 
     /// Reload the capturable/controllable source list from the screen registry.
+    ///
+    /// A source is controllable when a controller is registered for it, or when
+    /// the host holds one to hand over: a handed-off remote desktop registers
+    /// its capturer alone and parks its controller until a holder takes it, so
+    /// it is drivable (by taking it) the moment it opens, not only after
+    /// somebody drives it.
     pub fn refresh_sources(&mut self, desktop: &DesktopState) {
         let registry = desktop.screen_registry();
         let capturers = registry.capturer_sources();
@@ -128,7 +147,10 @@ impl ScreenState {
             .map(|source| ScreenSourceEntry {
                 source: source.clone(),
                 capturable: true,
-                controllable: controllers.contains(source),
+                controllable: controllers.contains(source)
+                    || desktop
+                        .remote_desktop(source)
+                        .is_some_and(|desktop| desktop.alive),
             })
             .collect();
         // Controller-only sources (unusual but complete): keep them visible.
@@ -166,6 +188,18 @@ impl ScreenState {
         }
     }
 
+    /// A source closed (the last pane showing it let go, or its session
+    /// ended): drop the frame held for it — the frame buffer of a desktop
+    /// nobody watches — and re-read the source list, so the selection falls to
+    /// another source (or is cleared) and nothing keeps drawing it.
+    pub fn close_source(&mut self, source: &str, desktop: &DesktopState) {
+        if self.frame.as_ref().is_some_and(|frame| frame.source == source) {
+            self.frame = None;
+            self.last_capture = None;
+        }
+        self.refresh_sources(desktop);
+    }
+
     /// Toggle live capture. Turning it on attempts a best-effort grab through
     /// the screen registry; turning it off clears the status and held frame.
     pub fn toggle_broadcast(&mut self, on: bool, desktop: Option<&DesktopState>) {
@@ -181,7 +215,7 @@ impl ScreenState {
     /// Best-effort grab of `selected_source` and hold it as the live frame,
     /// updating the status line. A successful grab is recorded as an
     /// observation event while recording. Called by `toggle_broadcast` and by
-    /// the per-frame `tick` while the sheet is open and broadcasting.
+    /// the per-frame `tick` while the source is being streamed.
     fn poll_capture(&mut self, desktop: Option<&DesktopState>) {
         let Some(desktop) = desktop else {
             // No backend: nothing to capture (the app always has a store), so
@@ -218,8 +252,13 @@ impl ScreenState {
     }
 
     /// A pointer click at source pixel `(x, y)` on the selected source, routed
-    /// through the registry controller when computer-use is on. The event is
+    /// through the desktop's controller when computer-use is on. The event is
     /// also recorded (for a later replay) regardless of computer-use.
+    ///
+    /// The click is the user's own input, so it takes the desktop when nobody is
+    /// driving it — a handed-off remote desktop is view-only until then — and
+    /// takes it back from the agent if the agent is driving. See
+    /// [`DesktopState::click`].
     pub fn click(&mut self, x: u32, y: u32, desktop: Option<&DesktopState>) {
         self.record_input(ScreenRecordKind::Click { x, y });
         if !self.computer_use {
@@ -227,14 +266,14 @@ impl ScreenState {
         }
         if let Some(desktop) = desktop {
             let source = self.selected_source.clone();
-            if let Err(e) = desktop.screen_registry().click(&source, x, y) {
+            if let Err(e) = desktop.click(&source, x, y) {
                 self.replay_status = Some(format!("click failed: {e}"));
             }
         }
     }
 
     /// Type `text` into the focused field of the selected source, routed
-    /// through the registry controller when computer-use is on.
+    /// through the desktop's controller when computer-use is on.
     pub fn type_text(&mut self, text: &str, desktop: Option<&DesktopState>) {
         self.record_input(ScreenRecordKind::TypeText { text: text.to_string() });
         if !self.computer_use {
@@ -242,14 +281,14 @@ impl ScreenState {
         }
         if let Some(desktop) = desktop {
             let source = self.selected_source.clone();
-            if let Err(e) = desktop.screen_registry().type_text(&source, text) {
+            if let Err(e) = desktop.type_text(&source, text) {
                 self.replay_status = Some(format!("type failed: {e}"));
             }
         }
     }
 
     /// Scroll the selected source by `(dx, dy)` ticks, routed through the
-    /// registry controller when computer-use is on.
+    /// desktop's controller when computer-use is on.
     pub fn scroll(&mut self, dx: i32, dy: i32, desktop: Option<&DesktopState>) {
         self.record_input(ScreenRecordKind::Scroll { dx, dy });
         if !self.computer_use {
@@ -257,7 +296,7 @@ impl ScreenState {
         }
         if let Some(desktop) = desktop {
             let source = self.selected_source.clone();
-            if let Err(e) = desktop.screen_registry().scroll(&source, dx, dy) {
+            if let Err(e) = desktop.scroll(&source, dx, dy) {
                 self.replay_status = Some(format!("scroll failed: {e}"));
             }
         }
@@ -358,7 +397,7 @@ impl ScreenState {
                 }
                 ScreenRecordKind::Click { x, y } => {
                     if let Some(desktop) = desktop {
-                        match desktop.screen_registry().click(&source, *x, *y) {
+                        match desktop.click(&source, *x, *y) {
                             Ok(()) => {}
                             Err(e) => self.replay_status = Some(format!("replay click failed: {e}")),
                         }
@@ -366,7 +405,7 @@ impl ScreenState {
                 }
                 ScreenRecordKind::TypeText { text } => {
                     if let Some(desktop) = desktop {
-                        match desktop.screen_registry().type_text(&source, text) {
+                        match desktop.type_text(&source, text) {
                             Ok(()) => {}
                             Err(e) => self.replay_status = Some(format!("replay type failed: {e}")),
                         }
@@ -374,7 +413,7 @@ impl ScreenState {
                 }
                 ScreenRecordKind::Scroll { dx, dy } => {
                     if let Some(desktop) = desktop {
-                        match desktop.screen_registry().scroll(&source, *dx, *dy) {
+                        match desktop.scroll(&source, *dx, *dy) {
                             Ok(()) => {}
                             Err(e) => self.replay_status = Some(format!("replay scroll failed: {e}")),
                         }
@@ -397,11 +436,15 @@ impl ScreenState {
     }
 
     /// Wall-clock tick called once per frame from the root view. While the
-    /// sheet is open and broadcasting, refreshes the held live frame; then
-    /// advances the replay schedule by the time elapsed since the last tick so
-    /// a running replay plays back in (roughly) real time.
-    pub fn tick(&mut self, desktop: Option<&DesktopState>) {
-        if self.open && self.broadcast {
+    /// sheet is open and broadcasting, refreshes the held live frame; a source
+    /// a conversation is showing inline (`watched`) is streamed besides, whether
+    /// or not the sheet is open — the card in the transcript is a viewer of its
+    /// own, and a handed-off desktop is drawn there with the sheet, the manual
+    /// surface, closed. Then advances the replay schedule by the time elapsed
+    /// since the last tick so a running replay plays back in (roughly) real
+    /// time.
+    pub fn tick(&mut self, desktop: Option<&DesktopState>, watched: bool) {
+        if (self.open && self.broadcast) || watched {
             self.poll_capture(desktop);
         }
         if !self.replaying {
@@ -654,8 +697,62 @@ mod tests {
         state.open = true;
         state.toggle_broadcast(true, Some(&desktop));
         state.frame = None;
-        state.tick(Some(&desktop));
+        state.tick(Some(&desktop), false);
         assert!(state.frame.is_some(), "tick should re-capture while open+broadcast");
+    }
+
+    /// C4: a conversation showing a source inline streams it even with the sheet
+    /// closed — the card is the surface for a handoff, and the sheet stays the
+    /// manual one.
+    #[test]
+    fn tick_streams_a_source_a_conversation_shows_inline_with_the_sheet_closed() {
+        let (desktop, _dir) = desktop_with_mock_capturer();
+        let mut state = ScreenState::from_desktop(&desktop);
+        assert!(!state.open);
+        assert!(!state.broadcast);
+        state.frame = None;
+        state.tick(Some(&desktop), true);
+        let frame = state
+            .frame
+            .as_ref()
+            .expect("a card showing the source holds a frame");
+        assert_eq!(frame.source, "local");
+    }
+
+    /// The card's holder comes from the registry, one writer at a time: nobody
+    /// holding is view-only, and each holder is named as itself.
+    #[test]
+    fn screen_driver_answers_the_registrys_control_holder() {
+        let (desktop, _dir) = desktop_with_mock_capturer();
+        // The local source is the machine's own desktop: the adapter registers
+        // both halves on purpose, so the person at the machine drives it.
+        assert_eq!(screen_driver(Some(&desktop), "local"), ScreenDriver::User);
+        assert_eq!(
+            screen_driver(None, "local"),
+            ScreenDriver::ViewOnly,
+            "with no backend there is no holder to name"
+        );
+        assert_eq!(
+            screen_driver(Some(&desktop), "remote-xrdp:vm:3389"),
+            ScreenDriver::ViewOnly,
+            "a source no one holds and nothing registered is not driven"
+        );
+
+        let ctl = std::sync::Arc::new(goble_screen_core::MockController::new("local"));
+        desktop
+            .screen_registry()
+            .release_control("local", ControlHolder::User)
+            .expect("the user releases");
+        assert_eq!(
+            screen_driver(Some(&desktop), "local"),
+            ScreenDriver::ViewOnly,
+            "a released desktop is view-only again"
+        );
+        desktop
+            .screen_registry()
+            .take_control("local", ControlHolder::Agent, ctl)
+            .expect("the agent takes the released desktop");
+        assert_eq!(screen_driver(Some(&desktop), "local"), ScreenDriver::Agent);
     }
 
     #[test]
@@ -678,6 +775,79 @@ mod tests {
                 goble_screen_core::MockAction::TypeText { text: "hi".into() },
                 goble_screen_core::MockAction::Scroll { dx: -1, dy: 2 },
             ]
+        );
+    }
+
+    /// C6: the app's click on a handed-off desktop drives it. A handoff's source
+    /// registers its capturer alone and the host parks the controller, so the
+    /// click has to take it first — before this it failed with `NoController`
+    /// and a handed-off desktop could not be driven at all.
+    #[test]
+    fn a_click_on_a_handed_off_desktop_takes_it_and_reaches_the_controller() {
+        const SOURCE: &str = "remote-xrdp:vm:3389";
+        let dir = tempfile::tempdir().expect("create temp thread store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("open in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("open thread store"),
+        );
+        let ctl = std::sync::Arc::new(goble_screen_core::MockController::new(SOURCE));
+        desktop
+            .screen_registry()
+            .register_capturer(std::sync::Arc::new(
+                goble_screen_core::MockCapturer::new(SOURCE).with_blank(4, 4),
+            ));
+        // The handoff's controller is the host's, parked until a holder takes
+        // it — the record `open_remote_screen` writes, without a live RDP client.
+        desktop.record_open_desktop(
+            SOURCE,
+            "vm",
+            3389,
+            ctl.clone(),
+            goble_screen_core::ClientLiveness::new(),
+        );
+
+        let mut state = ScreenState::from_desktop(&desktop);
+        assert!(
+            state
+                .sources
+                .iter()
+                .any(|entry| entry.source == SOURCE && entry.controllable),
+            "a desktop the host holds a controller for is drivable: {:?}",
+            state.sources
+        );
+        state.select_source(SOURCE);
+        state.toggle_computer_use(true);
+        assert!(
+            !desktop.screen_registry().has_control(SOURCE),
+            "the desktop starts view-only: the capturer is registered alone"
+        );
+        assert_eq!(
+            screen_driver(Some(&desktop), SOURCE),
+            ScreenDriver::ViewOnly
+        );
+
+        state.click(10, 20, Some(&desktop));
+        state.type_text("hi", Some(&desktop));
+        state.scroll(-1, 2, Some(&desktop));
+
+        assert_eq!(
+            ctl.actions(),
+            vec![
+                goble_screen_core::MockAction::Click { x: 10, y: 20 },
+                goble_screen_core::MockAction::TypeText { text: "hi".into() },
+                goble_screen_core::MockAction::Scroll { dx: -1, dy: 2 },
+            ],
+            "the app's own input reached the controller the host parked"
+        );
+        assert!(
+            state.replay_status.is_none(),
+            "the click is no longer a failure: {:?}",
+            state.replay_status
+        );
+        assert_eq!(
+            screen_driver(Some(&desktop), SOURCE),
+            ScreenDriver::User,
+            "the user's own input took the desktop"
         );
     }
 

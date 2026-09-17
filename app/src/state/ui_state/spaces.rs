@@ -151,6 +151,10 @@ impl UiState {
         match space.leaf_kind(pane_id) {
             Some(PaneKind::Chat) => self.pane_subject(pane_id),
             Some(PaneKind::File { path }) => display_path(path),
+            // A viewer pane has no local directory to be named after: its
+            // conversation runs on a worker, so the tab reads the conversation's
+            // subject, exactly as a chat pane's does.
+            Some(PaneKind::Worker) => self.pane_subject(pane_id),
             // A terminal pane — and any leaf kind that later appears — names
             // where it runs.
             _ => display_path(&self.pane_working_path(pane_id)),
@@ -169,6 +173,7 @@ impl UiState {
         match kind {
             Some(PaneKind::Chat) => self.pane_subject(pane_id),
             Some(PaneKind::File { path }) => display_path(&path),
+            Some(PaneKind::Worker) => self.pane_subject(pane_id),
             _ => display_path(&self.pane_working_path(pane_id)),
         }
     }

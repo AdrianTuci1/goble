@@ -3,19 +3,54 @@ name: CI
 # The release workflow is manual and only runs at release time, so the emulator
 # conformance suite needs its own gate. Scoped to the paths it can be affected
 # by, plus a manual trigger.
+#
+# `on.<event>.paths` is workflow-scoped, not per job, so this list is the union
+# of the two jobs' crate sets, grouped below by job. Each group is exactly the
+# crates that job links, so a change to a crate either job links cannot land
+# unverified; a push touching any of them runs both jobs.
 on:
   push:
     paths:
+      # terminal / conformance
       - 'crates/goble-terminal/**'
       - 'vendor/alacritty_terminal/**'
       - 'scripts/fetch-alacritty-terminal.sh'
+      # worker / e2e
+      - 'crates/goblin-worker/**'
+      - 'crates/goble-core/**'
+      - 'crates/goble-daemon/**'
+      - 'crates/goble-daemon-client/**'
+      - 'crates/goble-daemon-protocol/**'
+      - 'crates/goble-harness-internal/**'
+      - 'crates/goble-harness-protocol/**'
+      - 'crates/goble-harness-runtime/**'
+      - 'crates/goble-harness-types/**'
+      - 'crates/goble-replay/**'
+      - 'crates/goble-sandbox/**'
+      - 'crates/goble-workflow/**'
+      # both jobs
       - '.config/nextest.toml'
       - '.github/workflows/ci.yml'
   pull_request:
     paths:
+      # terminal / conformance
       - 'crates/goble-terminal/**'
       - 'vendor/alacritty_terminal/**'
       - 'scripts/fetch-alacritty-terminal.sh'
+      # worker / e2e
+      - 'crates/goblin-worker/**'
+      - 'crates/goble-core/**'
+      - 'crates/goble-daemon/**'
+      - 'crates/goble-daemon-client/**'
+      - 'crates/goble-daemon-protocol/**'
+      - 'crates/goble-harness-internal/**'
+      - 'crates/goble-harness-protocol/**'
+      - 'crates/goble-harness-runtime/**'
+      - 'crates/goble-harness-types/**'
+      - 'crates/goble-replay/**'
+      - 'crates/goble-sandbox/**'
+      - 'crates/goble-workflow/**'
+      # both jobs
       - '.config/nextest.toml'
       - '.github/workflows/ci.yml'
   workflow_dispatch:
@@ -66,3 +101,42 @@ jobs:
 
       - name: Run the terminal emulator conformance suite
         run: cargo nextest run -p goble-terminal --profile ci
+
+  # The worker is the process every agent run goes through, so a change to a
+  # crate it links has to run its suite too. The paths above are the closure of
+  # `cargo metadata` from crates/goblin-worker/Cargo.toml: goble-core (which
+  # pulls goble-sandbox), goble-daemon{,-client,-protocol}, goble-replay,
+  # goble-harness-{internal,protocol,runtime,types} and goble-workflow.
+  worker-e2e:
+    name: worker / e2e
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Same reason as the terminal job: the vendored emulator is a path
+      # dependency of goble-terminal and cargo resolves the whole workspace to
+      # build one member, so without it this job's suite fails to even list.
+      - name: Restore the vendored terminal emulator
+        if: ${{ !hashFiles('vendor/alacritty_terminal/Cargo.toml') }}
+        shell: bash
+        run: ./scripts/fetch-alacritty-terminal.sh --install
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      # worker_e2e.rs and runtime_isolation_e2e.rs start the worker built from
+      # this checkout (env!("CARGO_BIN_EXE_goblin")) and drive it over loopback
+      # HTTP/WS, so no shell and no runtime is installed here; the one #[ignore]d
+      # MCP test needs `node` and stays out of the default suite.
+      - name: Run the worker suite
+        run: cargo nextest run -p goblin-worker --profile ci

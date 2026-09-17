@@ -28,10 +28,10 @@ use super::{FONT_SIZE, LINE_HEIGHT};
 ///
 /// The pane draws one of two surfaces, both shared with the chat workspace:
 ///
-/// * While this pane's harness (agent session) is open, it draws the very agent
-///   view a chat pane draws — [`chat::build_agent_chat`], the same function the
-///   `PaneKind::Chat` leaf mounts — with Escape wired back to the shell. There
-///   is no terminal-only agent view.
+/// * While this pane is in agent mode — Cmd+Enter's switch is on — it draws the
+///   very agent view a chat pane draws — [`chat::build_agent_chat`], the same
+///   function the `PaneKind::Chat` leaf mounts — with Escape wired back to the
+///   shell. There is no terminal-only agent view.
 /// * Otherwise it draws the shell: the commands it ran as sections (the block
 ///   view — one section per command, headed by its directory and duration), with
 ///   the shared rich input bar pinned to the bottom of the pane. The bar is the
@@ -43,10 +43,13 @@ use super::{FONT_SIZE, LINE_HEIGHT};
 /// instead of the sections.
 ///
 /// Cmd+Enter opens this pane's harness and Esc (at the agent view) returns it
-/// to the plain pty, so the pane keeps its own switch.
-/// The pane's `view` is the filter over its block list: the shell's own history
-/// (the terminal) or one conversation's agent view. A conversation card left in
-/// the terminal is clickable to reopen its view.
+/// to the plain pty, so the pane keeps its own switch. The surface drawn here is
+/// the pane's own decision, [`PaneControls::surface`] — the same reading
+/// `UiState::pane_view` hands every caller — so the pane that paints and the
+/// caller that routes a chord can never name different surfaces: a pane that is
+/// not in agent mode is a shell, whatever conversation its block list happens to
+/// be filtered to (a conversation card left in the terminal is clickable to
+/// reopen that conversation's agent view, which switches the mode on with it).
 pub fn build_terminal(
     app: &AppContext,
     state: &crate::ui::UiSnapshot,
@@ -55,16 +58,20 @@ pub fn build_terminal(
     cwd: String,
     active: bool,
 ) -> Box<dyn Element> {
-    let view = state
+    // Which surface this pane draws is the pane's own decision — the same one
+    // every reader of `pane_view` is handed — so the pane that paints and the
+    // caller that routes a chord can never name different surfaces. Out of
+    // agent mode the pane is a terminal running the user's shell, whatever
+    // conversation its block list happens to be filtered to.
+    let agent_mode = state
         .pane_controls
         .get(&pane_id)
-        .map(|c| c.view.clone())
-        .unwrap_or(BlockView::Terminal);
+        .is_some_and(|controls| matches!(controls.surface(), BlockView::Agent { .. }));
 
     // The open harness is the shared agent view. Esc is its way back to the
     // shell: the harness closes and the bar's editor is left unfocused, so the
     // grid takes the keys.
-    if matches!(view, BlockView::Agent { .. }) {
+    if agent_mode {
         let on_harness_mode = actions.on_set_pane_harness_mode.clone();
         let on_composer_focus = actions.on_composer_focus_change.clone();
         let leave: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
@@ -73,6 +80,11 @@ pub fn build_terminal(
         }));
         return chat::build_agent_chat(app, state, actions, pane_id, active, Some(leave));
     }
+
+    // Out of agent mode the pane is exactly its shell, and the block list it
+    // draws is the shell's own history: the `view` filter belongs to the agent
+    // view, so a shell pane never inherits one.
+    let view = BlockView::Terminal;
 
     // The shell view wears the pane's one topbar, the same bar the harness's
     // agent view draws — without the `esc`, which is only the way back *from*
@@ -98,6 +110,18 @@ pub fn build_terminal(
     let bar_focused = active && !owner.program_owns_screen(pane_id) && !filter_typing;
     let bar = chat::build_terminal_composer(state, actions, pane_id, bar_focused);
     drop(owner);
+    // Why the pane's last Cmd+Enter was refused, if it was. The reason is only
+    // good while the state that produced it holds, so it is read while the
+    // pane's shell is still running the command that refused the switch: a
+    // reason is never drawn over a shell that is back at a prompt.
+    let refusal = if state.terminal.borrow().running_a_command(pane_id) {
+        state
+            .pane_controls
+            .get(&pane_id)
+            .and_then(|controls| controls.harness_refusal.clone())
+    } else {
+        None
+    };
     let shell = TerminalView::new(
         state.terminal.clone(),
         pane_id,
@@ -111,6 +135,7 @@ pub fn build_terminal(
         actions.on_set_pane_harness_mode.clone(),
         actions.on_open_agent_view.clone(),
     )
+    .with_harness_refusal(refusal)
     // The pane's history scrolls on the app's own per-pane state, and each
     // section draws through the same block plumbing the transcript uses, so a
     // filter tray opened on a block survives the per-frame rebuild wherever the
@@ -209,6 +234,7 @@ impl TerminalView {
             active,
             view,
             bar: Some(bar),
+            harness_refusal: None,
             composer_focused,
             on_activate,
             on_route,
@@ -237,6 +263,13 @@ impl TerminalView {
     /// filter map, the pane's whole-history filter and the copy handler.
     pub(super) fn with_block_plumbing(mut self, plumbing: TerminalBlockPlumbing) -> Self {
         self.plumbing = plumbing;
+        self
+    }
+
+    /// Attach the reason the pane's last Cmd+Enter was refused, so the pane —
+    /// which stayed on its shell — draws it there.
+    pub(super) fn with_harness_refusal(mut self, reason: Option<String>) -> Self {
+        self.harness_refusal = reason;
         self
     }
 
@@ -420,6 +453,26 @@ impl TerminalView {
                 .finish()
         };
         column = column.with_child(Expanded::new(body).finish());
+
+        // The reason the last Cmd+Enter was refused: the pane's shell is running
+        // a command of its own, so the switch was refused rather than made with
+        // a command half-run. It is a full-width band of one row over the shell
+        // the pane stayed on — the same shape the agent view's own notice draws,
+        // so a refusal reads as a refusal wherever the pane shows one.
+        if let Some(reason) = self.harness_refusal.take() {
+            column = column.with_child(
+                Container::new(
+                    Text::new(reason)
+                        .with_theme_color(ColorToken::Error, app)
+                        .with_font_size(FONT_SIZE)
+                        .with_line_height(LINE_HEIGHT)
+                        .finish(),
+                )
+                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+                .with_padding(EdgeInsets::uniform(md))
+                .finish(),
+            );
+        }
 
         // The shared rich input bar, pinned to the bottom of the pane under the
         // grid and the conversation cards. It is the chat surface's own composer

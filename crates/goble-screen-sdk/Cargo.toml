@@ -45,3 +45,10 @@ optional = true
 version = "1"
 optional = true
 features = ["full"]
+
+# The `rdp` feature's tests. The SDK reports a failed session through `log` and
+# the IronRDP engine through `tracing`; without both installed the reason a
+# connection dropped never reaches the test's output.
+[dev-dependencies]
+env_logger = "0.11"
+tracing-subscriber = { workspace = true }

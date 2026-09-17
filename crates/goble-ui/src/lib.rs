@@ -48,7 +48,7 @@ pub use elements::{
 };
 pub use geometry::{rectf, size2f, vec2f, PointF, RectF, Size2F, Vector2F};
 pub use syntax::highlight;
-pub use views::chat_view::ChatView;
+pub use views::chat_view::{screen_desktop_name, ChatView, InlineScreen, ScreenDriver};
 pub use views::settings_view::{SettingsPage, SettingsView};
 pub use views::thread_list_view::{ThreadKind, ThreadListEntry, ThreadListView};
 pub use views::thread_view::ThreadView;

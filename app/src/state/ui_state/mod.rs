@@ -2,10 +2,10 @@
 //!
 //! The struct's fields are declared here; its methods live one module per
 //! concern ([`refresh`], [`pane_move`], [`panes`], [`agents`], [`session`],
-//! [`settings`], [`mock`], [`spaces`]) as separate `impl UiState` blocks, which
-//! are the same block to the compiler as one. [`title`] is not one of them: the
-//! subject a conversation is named with is derived from the conversation, not
-//! held by the state machine.
+//! [`screen`], [`settings`], [`mock`], [`spaces`], [`worker`]) as separate
+//! `impl UiState` blocks, which are the same block to the compiler as one.
+//! [`title`] is not one of them: the subject a conversation is named with is
+//! derived from the conversation, not held by the state machine.
 
 use super::*;
 
@@ -16,10 +16,12 @@ mod mock;
 mod pane_move;
 mod panes;
 mod refresh;
+mod screen;
 mod session;
 mod settings;
 mod spaces;
 mod title;
+mod worker;
 
 pub use pane_move::{PaneDrag, PaneMove};
 
@@ -382,6 +384,14 @@ pub struct UiState {
     pub pane_sessions: HashMap<u64, PaneSession>,
     /// Runtime per-pane transcript/ask/queued/busy state (not persisted).
     pub pane_runtime: HashMap<u64, PaneRuntime>,
+    /// Per-pane viewer sessions, keyed by pane id: which worker the pane's
+    /// conversation runs on and how that connection stands. An entry exists for
+    /// a viewer pane (a [`crate::ui::PaneKind::Worker`] leaf) and for no other
+    /// kind — a pane that leaves viewer shape drops its entry, because it no
+    /// longer has a connection to report. Not persisted: which worker a routing
+    /// resolves to is the worker pool's answer, re-resolved when the pane adopts
+    /// the routing again.
+    pub pane_workers: HashMap<u64, WorkerSession>,
     /// Worker agent executions observed live from the `agent:*` events, keyed
     /// by trace id. `agent:started` inserts, `agent:finished` removes (it is no
     /// longer in flight); the product pages are still re-read from the service

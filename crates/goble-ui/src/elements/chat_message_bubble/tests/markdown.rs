@@ -290,3 +290,48 @@ fn block_quote_is_an_indent_and_a_rail() {
         "the quoted text must be drawn, got {texts:?}"
     );
 }
+
+/// A markdown list draws grok-build's muted bullet before every item, and an
+/// ordered list keeps its source numbers. The marker is its own run so the
+/// item body keeps the paragraph colour and a wrapped item hangs under its
+/// first line.
+#[test]
+fn lists_draw_muted_bullets_and_ordered_numbers() {
+    let app = AppContext::default();
+    let message =
+        ChatMessage::from_markdown(ChatRole::Assistant, "- one\n- two\n\n1. first\n2. second");
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments);
+    bubble.layout(
+        SizeConstraint::loose(vec2f(600.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let commands = paint_ctx.renderer.take().unwrap().commands().to_vec();
+    let texts = text_runs(&commands);
+
+    let markers: Vec<(&str, ColorU)> = texts
+        .iter()
+        .filter_map(|(text, color, ..)| match text.as_str() {
+            "• " | "1. " | "2. " => Some((text.as_str(), *color)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        markers,
+        vec![
+            ("• ", app.theme.color(ColorToken::Muted)),
+            ("• ", app.theme.color(ColorToken::Muted)),
+            ("1. ", app.theme.color(ColorToken::Muted)),
+            ("2. ", app.theme.color(ColorToken::Muted)),
+        ],
+        "bullets and numbers are muted markers, got {texts:?}"
+    );
+    for item in ["one", "two", "first", "second"] {
+        assert!(
+            texts.iter().any(|(text, ..)| text == item),
+            "the item body {item:?} is drawn, got {texts:?}"
+        );
+    }
+}

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use goble_core::harness::PaneSession;
@@ -26,6 +27,18 @@ pub struct TerminalRegistry {
     /// `ssh` line the user submitted in it. Absent for a pane at a local shell,
     /// so a pane whose command opened no session carries no binding.
     pub ssh_sessions: HashMap<u64, SshSession>,
+    /// The daemon session each pane is attached to, keyed by pane id. Seeded
+    /// from the persisted pane state at startup and kept current whenever a
+    /// session is spawned or reattached, so the next save persists the id.
+    pub session_ids: HashMap<u64, String>,
+    /// The daemon socket to talk to. `None` uses the default socket and starts
+    /// the daemon when nothing is listening; tests point this at an in-process
+    /// daemon on a temp socket.
+    pub socket: Option<PathBuf>,
+    /// Per-pane copy mode, selection and find-bar state. Owned here for the
+    /// same reason the sessions are: the pane's element tree is rebuilt every
+    /// frame, and the state has to outlive it.
+    pub ui: HashMap<u64, super::PaneTerminalState>,
 }
 
 impl TerminalRegistry {
@@ -48,12 +61,36 @@ impl TerminalRegistry {
         }
     }
 
+    /// Point this registry at an existing daemon instead of the default socket.
+    pub fn use_socket(&mut self, socket: impl Into<PathBuf>) {
+        self.socket = Some(socket.into());
+    }
+
+    /// Remember the daemon session a restored pane was last attached to, so
+    /// the next [`Self::ensure_session`] reattaches rather than starting over.
+    pub fn adopt_session_id(&mut self, pane_id: u64, session_id: String) {
+        if !session_id.is_empty() {
+            self.session_ids.insert(pane_id, session_id);
+        }
+    }
+
     pub fn ensure_session(&mut self, pane_id: u64, cwd: &str) {
         if self.sessions.contains_key(&pane_id) {
             return;
         }
-        match TerminalSession::spawn(cwd) {
+        let persisted = self.session_ids.get(&pane_id).map(String::as_str);
+        let spawned = match &self.socket {
+            #[cfg(unix)]
+            Some(socket) => TerminalSession::spawn_at(socket, pane_id, cwd, persisted),
+            #[cfg(not(unix))]
+            Some(_) => TerminalSession::spawn_for(pane_id, cwd, persisted),
+            None => TerminalSession::spawn_for(pane_id, cwd, persisted),
+        };
+        match spawned {
             Ok(session) => {
+                if let Some(session_id) = session.session_id() {
+                    self.session_ids.insert(pane_id, session_id.to_string());
+                }
                 self.sessions.insert(pane_id, session);
             }
             Err(e) => {
@@ -63,13 +100,50 @@ impl TerminalRegistry {
         }
     }
 
-    /// Remove a pane's session + input mirror + mode (dropping the session kills
-    /// the shell). Called when a pane closes.
+    /// Start a fresh shell for a pane whose previous one is gone (a saved-host
+    /// pane reconnecting after `exit`). The old daemon session id is dropped so
+    /// the spawn never reattaches the shell that just exited.
+    pub fn restart_session(&mut self, pane_id: u64, cwd: &str) {
+        self.sessions.remove(&pane_id);
+        self.session_ids.remove(&pane_id);
+        self.ensure_session(pane_id, cwd);
+    }
+
+    /// Resize a pane's live session to `cols` × `rows`, keeping the font cell
+    /// metrics the pane last reported. Returns false when the pane has no
+    /// session.
+    pub fn resize(&mut self, pane_id: u64, cols: u16, rows: u16) -> bool {
+        match self.sessions.get_mut(&pane_id) {
+            Some(session) => {
+                session.set_grid_size(rows, cols);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Remove a pane's session, detaching it from the daemon. The shell keeps
+    /// running; this is the path a pane takes when it stops being a shell pane,
+    /// not when it closes.
     pub fn drop_pane(&mut self, pane_id: u64) {
         self.sessions.remove(&pane_id);
         self.input.remove(&pane_id);
         self.modes.remove(&pane_id);
         self.ssh_sessions.remove(&pane_id);
+        self.ui.remove(&pane_id);
+    }
+
+    /// Close a pane's shell for good: kill its daemon session, then drop every
+    /// entry keyed by the pane. This is the pane-close path.
+    pub fn kill_pane(&mut self, pane_id: u64) {
+        if let Some(mut session) = self.sessions.remove(&pane_id) {
+            session.kill();
+        }
+        self.session_ids.remove(&pane_id);
+        self.input.remove(&pane_id);
+        self.modes.remove(&pane_id);
+        self.ssh_sessions.remove(&pane_id);
+        self.ui.remove(&pane_id);
     }
 
     pub fn input(&self, pane_id: u64) -> String {

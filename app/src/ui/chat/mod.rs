@@ -64,8 +64,6 @@ fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneChatSnapshot {
             queued_prompt: state.queued_prompt.clone(),
             agent_busy: state.agent_busy,
             turn_status: goble_ui::TurnStatus::Idle,
-            inline_screen: None,
-            screen_link: None,
             sub_agents: std::collections::HashMap::new(),
             sub_agent_view: None,
             scroll: Rc::new(RefCell::new(goble_ui::ScrollState::following())),

@@ -5,7 +5,7 @@ use goble_ui::elements::{
     file_icon_name, AppContext, Button, ConstrainedBox, Container, CrossAxisAlignment, Divider,
     EdgeInsets, Element, Empty, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment,
     MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem, RunningIndicator, SizeConstraint,
-    Text, TextInput, Tooltip, TooltipPosition, TopbarButton,
+    Stack, Text, TextInput, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY, BUTTON_SECONDARY};
 use goble_ui::elements::interactive::contains;
@@ -127,6 +127,16 @@ pub fn build_topbar(
     // information only — no click opens anything from it.
     let live_indicator = build_live_indicator(app, state.live_work_count, state.live_work_phase);
 
+    // The global inbox: an icon with the unread count, between the live cue and
+    // Settings. Pressing it toggles the overlay (Cmd/Ctrl+Shift+I does the
+    // same); the count is the snapshot's live unread total.
+    let inbox_button = build_inbox_control(
+        app,
+        state.inbox_unread_count,
+        state.inbox_open,
+        actions,
+    );
+
     // Settings stays reachable as an icon pinned to the far right.
     let on_settings = actions.on_settings.clone();
     let settings_button = TopbarButton::new(
@@ -146,7 +156,7 @@ pub fn build_topbar(
         vec![sidebar_button],
         workspaces,
         vec![add_workspace],
-        vec![live_indicator, settings_button],
+        vec![live_indicator, inbox_button, settings_button],
     )
     .with_left_spacing(sm * 0.5)
     .with_group_spacing(sm)
@@ -206,12 +216,60 @@ fn build_space_menu(state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element>
     )
 }
 
+/// The topbar's inbox control: the inbox glyph, with a small unread badge when
+/// the count is non-zero. The badge is an overlay so it does not make the
+/// button wider than the other topbar controls.
+fn build_inbox_control(
+    app: &AppContext,
+    unread: usize,
+    open: bool,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    let on_inbox = actions.on_inbox.clone();
+    let button = TopbarButton::new(
+        Icon::new("inbox-01")
+            .with_size(16.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_active(open)
+    .with_on_click(move || (on_inbox.borrow_mut())())
+    .finish();
+    if unread == 0 {
+        return button;
+    }
+    let count = if unread > 99 {
+        "99+".to_string()
+    } else {
+        unread.to_string()
+    };
+    let badge = Container::new(
+        Text::new(count)
+            .with_font_size(9.0)
+            .with_theme_color(ColorToken::Bg, app)
+            .with_max_lines(1)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::new(3.0, 0.0, 3.0, 0.0))
+    .with_background(Fill::Solid(app.theme.color(ColorToken::Badge)))
+    .with_corner_radius(6.0)
+    .finish();
+    Stack::new()
+        .with_children(vec![button])
+        .with_overlay(badge, vec2f(16.0, 0.0))
+        .finish()
+}
+
 /// The topbar's live cue: a spinner and `◆ N`, where N is C1's count of work in
 /// flight (`LiveWork::work_count`). At zero it renders nothing at all, so the
 /// bar keeps its current look and there is no hit target to click.
 ///
 /// It is information only: it carries no handler, so a click passes through.
-pub(super) fn build_live_indicator(app: &AppContext, work_count: usize, phase: f32) -> Box<dyn Element> {
+pub(super) fn build_live_indicator(
+    app: &AppContext,
+    work_count: usize,
+    phase: f32,
+) -> Box<dyn Element> {
     if work_count == 0 {
         return Empty::new().with_size(vec2f(0.0, 0.0)).finish();
     }
@@ -289,7 +347,7 @@ impl TabLabel {
         let mut run = self.run(name, app);
         run.layout(
             SizeConstraint::new(Vector2F::zero(), vec2f(f32::INFINITY, f32::INFINITY)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             app,
         )
         .x
@@ -639,13 +697,13 @@ impl TopbarRow {
         self
     }
 
-    fn width_of(child: &Box<dyn Element>) -> f32 {
+    fn width_of(child: &dyn Element) -> f32 {
         child.size().unwrap_or(Vector2F::zero()).x
     }
 
     /// Where a child sits vertically: centered on the bar, as the flex row the
     /// tab strip used to sit in centered it.
-    fn center_y(child: &Box<dyn Element>, height: f32) -> f32 {
+    fn center_y(child: &dyn Element, height: f32) -> f32 {
         (height - child.size().unwrap_or(Vector2F::zero()).y).max(0.0) / 2.0
     }
 
@@ -655,7 +713,10 @@ impl TopbarRow {
     /// last control sits on the row's own right edge.
     fn fixed_width(&self) -> f32 {
         let sum = |children: &Vec<Box<dyn Element>>| -> f32 {
-            children.iter().map(Self::width_of).sum()
+            children
+                .iter()
+                .map(|child| Self::width_of(child.as_ref()))
+                .sum()
         };
         let left_gaps = self.left_spacing * (self.leading.len() + self.trailing.len()) as f32;
         let group_gaps = self.group_spacing * self.right.len() as f32;
@@ -718,22 +779,22 @@ impl Element for TopbarRow {
         let mut x = 0.0;
         let leading = self.leading.len();
         for (index, child) in self.leading.iter_mut().enumerate() {
-            let y = Self::center_y(child, height);
+            let y = Self::center_y(child.as_ref(), height);
             child.paint(origin + vec2f(x, y), ctx, app);
-            x += Self::width_of(child);
+            x += Self::width_of(child.as_ref());
             if index + 1 < leading {
                 x += self.left_spacing;
             }
         }
-        let y = Self::center_y(&self.strip, height);
+        let y = Self::center_y(self.strip.as_ref(), height);
         self.strip.paint(origin + vec2f(x, y), ctx, app);
-        x += Self::width_of(&self.strip);
+        x += Self::width_of(self.strip.as_ref());
         x += self.left_spacing;
         let trailing = self.trailing.len();
         for (index, child) in self.trailing.iter_mut().enumerate() {
-            let y = Self::center_y(child, height);
+            let y = Self::center_y(child.as_ref(), height);
             child.paint(origin + vec2f(x, y), ctx, app);
-            x += Self::width_of(child);
+            x += Self::width_of(child.as_ref());
             if index + 1 < trailing {
                 x += self.left_spacing;
             }
@@ -741,13 +802,17 @@ impl Element for TopbarRow {
 
         // The cue and Settings are spread over what is left of the row, with
         // the one gap on either side of them that a `SpaceBetween` row drew.
-        let right_widths: Vec<f32> = self.right.iter().map(Self::width_of).collect();
+        let right_widths: Vec<f32> = self
+            .right
+            .iter()
+            .map(|child| Self::width_of(child.as_ref()))
+            .collect();
         let right_total: f32 = right_widths.iter().sum();
         let gaps = self.right.len().max(1) as f32;
         let gap = ((width - x - right_total) / gaps).max(self.group_spacing);
         let mut x = x + gap;
         for (child, child_width) in self.right.iter_mut().zip(right_widths) {
-            let y = Self::center_y(child, height);
+            let y = Self::center_y(child.as_ref(), height);
             child.paint(origin + vec2f(x, y), ctx, app);
             x += child_width + gap;
         }
@@ -1182,17 +1247,17 @@ fn build_workspace_chip(
     let on_close = actions.on_close_space.clone();
     let on_press = actions.on_space_press.clone();
     let on_right_click = actions.on_space_menu.clone();
-    Box::new(WorkspaceChip::new(
-        label,
+    Box::new(WorkspaceChip::new(WorkspaceChipParts {
+        child: label,
         index,
         active,
         color,
-        Rc::new(RefCell::new(move |i: usize| (on_click.borrow_mut())(i))),
-        Rc::new(RefCell::new(move |i: usize| (on_press.borrow_mut())(i))),
-        Rc::new(RefCell::new(move |i: usize, at: Vector2F| {
+        on_click: Rc::new(RefCell::new(move |i: usize| (on_click.borrow_mut())(i))),
+        on_press: Rc::new(RefCell::new(move |i: usize| (on_press.borrow_mut())(i))),
+        on_right_click: Rc::new(RefCell::new(move |i: usize, at: Vector2F| {
             (on_right_click.borrow_mut())(i, at)
         })),
-        TopbarButton::new(
+        close: TopbarButton::new(
             Icon::new("x")
                 .with_size(10.0)
                 .with_theme_color(ColorToken::Muted, app)
@@ -1201,7 +1266,7 @@ fn build_workspace_chip(
         .with_size(16.0)
         .with_on_click(move || (on_close.borrow_mut())(index))
         .finish(),
-    ))
+    }))
 }
 
 /// The inline rename field, centered in the active tab's full height so the
@@ -1263,17 +1328,29 @@ pub(super) struct WorkspaceChip {
     origin: Option<Point>,
 }
 
+pub(super) struct WorkspaceChipParts {
+    pub child: Box<dyn Element>,
+    pub index: usize,
+    pub active: bool,
+    pub color: Option<TabColor>,
+    pub on_click: Rc<RefCell<dyn FnMut(usize)>>,
+    pub on_press: Rc<RefCell<dyn FnMut(usize)>>,
+    pub on_right_click: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
+    pub close: Box<dyn Element>,
+}
+
 impl WorkspaceChip {
-    pub(super) fn new(
-        child: Box<dyn Element>,
-        index: usize,
-        active: bool,
-        color: Option<TabColor>,
-        on_click: Rc<RefCell<dyn FnMut(usize)>>,
-        on_press: Rc<RefCell<dyn FnMut(usize)>>,
-        on_right_click: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
-        close: Box<dyn Element>,
-    ) -> Self {
+    pub(super) fn new(parts: WorkspaceChipParts) -> Self {
+        let WorkspaceChipParts {
+            child,
+            index,
+            active,
+            color,
+            on_click,
+            on_press,
+            on_right_click,
+            close,
+        } = parts;
         Self {
             child,
             close,
@@ -1726,12 +1803,14 @@ impl Element for TabRect {
 /// flight the strip holds the pointer; while nothing is in flight it forwards to
 /// its tabs, whose own hit test is what makes a tab click win a press that lands
 /// on a tab.
+type DragMoveHandler = Rc<RefCell<dyn FnMut(Vector2F, Option<usize>)>>;
+
 struct SpaceDropStrip {
     inner: Box<dyn Element>,
     /// The lifted pane, from app state; `None` when nothing is in flight.
     drag: Option<PaneDrag>,
     tab_rects: Rc<RefCell<Vec<Option<RectF>>>>,
-    on_drag_move: Rc<RefCell<dyn FnMut(Vector2F, Option<usize>)>>,
+    on_drag_move: DragMoveHandler,
     on_drop: Rc<RefCell<dyn FnMut(Option<usize>)>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -1742,7 +1821,7 @@ impl SpaceDropStrip {
         inner: Box<dyn Element>,
         drag: Option<PaneDrag>,
         tab_rects: Rc<RefCell<Vec<Option<RectF>>>>,
-        on_drag_move: Rc<RefCell<dyn FnMut(Vector2F, Option<usize>)>>,
+        on_drag_move: DragMoveHandler,
         on_drop: Rc<RefCell<dyn FnMut(Option<usize>)>>,
     ) -> Self {
         Self {
@@ -2146,7 +2225,7 @@ mod tests {
     /// A full press and release at `pos`, with a frame between them, the way the
     /// running app rebuilds the tree between the two events.
     fn click(root: &mut Box<dyn Element>, app: &AppContext, pos: Vector2F) {
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         let _ = root.dispatch_event(
             &DispatchedEvent::MouseDown {
                 position: pos,
@@ -2349,7 +2428,10 @@ mod tests {
     /// own controls still land inside the window.
     #[test]
     fn a_narrow_window_still_holds_every_control() {
-        const WIDTH: f32 = 420.0;
+        // Narrow enough that the bar's controls leave less than the minimum for
+        // three tabs: at 420 the remaining room still gives each tab more than
+        // [`MIN_TAB_WIDTH`], so the squeezed branch would not be exercised.
+        const WIDTH: f32 = 360.0;
         let app = AppContext::default();
         let names: Vec<String> = (0..3).map(|index| format!("Workspace {index}")).collect();
         let (mut root, _state, _threads) = app_with_workspaces(names);

@@ -12,7 +12,7 @@ use goble_core::harness::CommandDecision;
 use goble_core::llm::TokenUsage;
 use goble_core::ssh_command::SshSession;
 
-use super::{ChatView, InlineScreen};
+use super::ChatView;
 
 impl ChatView {
     /// Attach the app-owned transcript scroll state, so the offset (and the
@@ -462,32 +462,6 @@ impl ChatView {
     /// Fired when the user dismisses a queued prompt.
     pub fn with_on_dismiss_queued<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_dismiss_queued = Some(Rc::new(RefCell::new(callback)));
-        self
-    }
-
-    /// Set a live remote-desktop frame to render inline at the end of the
-    /// transcript, captioned by [`InlineScreen`] itself: the desktop's name and
-    /// who is driving it (C4).
-    pub fn with_inline_screen(mut self, screen: InlineScreen) -> Self {
-        self.inline_screen = Some(screen);
-        self
-    }
-
-    /// Fired when the user closes the inline remote-desktop block.
-    pub fn with_on_close_inline_screen<F: FnMut() + 'static>(mut self, callback: F) -> Self {
-        self.on_close_inline_screen = Some(Rc::new(RefCell::new(callback)));
-        self
-    }
-
-    /// A detected BYOH desktop-handoff URI, rendered as an open-roremote action.
-    pub fn with_screen_link(mut self, link: Option<String>) -> Self {
-        self.screen_link = link;
-        self
-    }
-
-    /// Fired when the user clicks the detected handoff link to open the desktop.
-    pub fn with_on_open_screen_link<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
-        self.on_open_screen_link = Some(Rc::new(RefCell::new(callback)));
         self
     }
 }

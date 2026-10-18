@@ -250,6 +250,7 @@ fn exit_returns_the_pane_to_a_local_shell_and_other_lines_leave_it_alone() {
 /// process, and the output it printed before the switch is still on the pane
 /// afterwards. A restarted pty, a second session or a reconnected `ssh` would
 /// show another pid or an empty screen.
+#[cfg(unix)]
 #[test]
 fn the_pane_keeps_its_own_shell_process_across_the_switch() {
     // The developer's own rc has nothing to do with the pane's shell and would
@@ -257,11 +258,11 @@ fn the_pane_keeps_its_own_shell_process_across_the_switch() {
     // a shell.
     std::env::set_var("GOBLE_SKIP_USER_RC", "1");
     let mut h = harness();
+    let daemon = TestDaemon::start();
     let dir = tempfile::tempdir().expect("temp dir");
     h.state.borrow_mut().terminal.borrow_mut().sessions.insert(
         1,
-        TerminalSession::spawn(dir.path().to_str().expect("a path"))
-            .expect("a shell to run the pane"),
+        daemon.open(1, dir.path().to_str().expect("a path"), None),
     );
 
     // The pane is on a host, which is what the `ssh web` line leaves behind

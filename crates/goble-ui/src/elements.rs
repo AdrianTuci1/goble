@@ -38,7 +38,6 @@ pub use empty::Empty;
 pub use expanded::Expanded;
 pub use file_icon::{file_icon, file_icon_name};
 pub use flex::Flex;
-pub use frame_view::{FrameSize, FrameView};
 pub use header::Header;
 pub use hover_button::HoverButton;
 pub use hover_chip::{HoverChipLayer, HoverChipRegistry};
@@ -73,10 +72,11 @@ pub use stack::Stack;
 pub use switch::Switch;
 pub use tab_bar::{Tab, TabBar};
 pub use terminal_block::{
-    filter_option_labels, terminal_block, TerminalBlock, TerminalBlockPlumbing, TerminalCopyHandler,
-    TerminalData, TerminalFilter, TerminalLine, TerminalLineKind, TerminalMeta, TerminalStatus,
+    filter_option_labels, terminal_block, terminal_block_with_selection, TerminalBlock,
+    TerminalBlockPlumbing, TerminalCopyHandler, TerminalData, TerminalFilter, TerminalLine,
+    TerminalLineGeometry, TerminalLineKind, TerminalMeta, TerminalStatus, TerminalTextSelection,
 };
-pub use terminal_grid::{TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT};
+pub use terminal_grid::{GridRange, TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT};
 pub use text::Text;
 pub use text_area::{LineRuns, TextArea};
 pub use text_input::TextInput;
@@ -587,7 +587,6 @@ pub mod empty;
 pub mod expanded;
 pub mod file_icon;
 pub mod flex;
-pub mod frame_view;
 pub mod group_chat_message;
 pub mod group_chat_message_group;
 pub use group_chat_message::GroupChatMessage;

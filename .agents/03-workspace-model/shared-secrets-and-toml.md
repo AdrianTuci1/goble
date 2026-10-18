@@ -68,7 +68,7 @@ When the ask-user card captures a credential, the card now has a **name** field 
 - `credentials` — lists stored credential **names** (never values).
 - `run_command` — expands `{{credential:<name>}}` server-side at execution time, so the model writes the placeholder and the harness substitutes the value into the process argv. The model sees the name, never the key.
 
-The second reader of the same table is the desktop handoff: `open_screen` names a credential and the host resolves it where the RDP connection is built, the stored value being the account line `username:password` (see [`../04-agent-runtime/computer-use.md`](../04-agent-runtime/computer-use.md)).
+The credential table has one reader: `run_command`'s placeholder expansion, above. Nothing else carries a stored value out of the store.
 
 This satisfies "the model uses tools without seeing the key." Note it currently stores values **in plaintext** (consistent with `llm_settings`/`settings`), i.e. it is a stepping stone toward rule #1 (vault-backed ids) rather than the final architecture. Wiring it to `goble-core::vault::CredentialVault` (with the passphrase lifecycle) is the remaining step.
 

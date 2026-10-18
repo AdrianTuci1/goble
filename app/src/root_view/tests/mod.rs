@@ -5,9 +5,7 @@
 //! transcript row, [`topbar`] the live count cue, [`child_view`] entering a
 //! child's conversation, [`nested_child`] a child entered from inside a
 //! child view, [`return_to_shell`] the pane a conversation switch or an agent
-//! delete sends back to its shell (U1), [`screen_close`] the close of a
-//! handed-off desktop and [`screen_handoff`] the handoff itself (the card, and
-//! the sheet it must not open), and [`worker_pane`] the viewer pane a
+//! delete sends back to its shell (U1), and [`worker_pane`] the viewer pane a
 //! remote-routed conversation gets and its re-attach to the session it runs on.
 //! The fixtures every case shares live here.
 
@@ -39,8 +37,6 @@ mod filter_chord;
 mod hover_chip;
 mod nested_child;
 mod return_to_shell;
-mod screen_close;
-mod screen_handoff;
 mod sub_agent_events;
 mod topbar;
 mod worker_pane;

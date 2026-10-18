@@ -10,7 +10,7 @@ let meta = #{
         #{ title: "Independent panes", detail: "each pane = own conversation + per-session path" },
         #{ title: "Real terminal", detail: "PTY pane, Cmd+Enter routes to harness, else shell" },
         #{ title: "Medium tree", detail: "medium -> project -> session selector" },
-        #{ title: "Section-D UX", detail: "keyboard nav, command palette, a11y, onboarding, screen replay, hardening" },
+        #{ title: "Section-D UX", detail: "keyboard nav, command palette, a11y, onboarding, hardening" },
         #{ title: "macOS sandbox", detail: "real seatbelt backend" },
     ],
 };
@@ -140,7 +140,7 @@ m_impl += "- app/src/ui/shell.rs: where the medium selector is placed (sidebar).
 m_impl += "- crates/goble-harness-types: MediumKind, MediumId, and any session/project types.\n";
 m_impl += "- app/src/actions.rs + root_view.rs: where selected medium/project are read for run_turn.\n";
 m_impl += "\nRequirements:\n";
-m_impl += "1. Replace the flat chip list with a collapsible TREE: top-level medium nodes (Local, VM, Remote xrdp, Browser, Container), each expandable to its PROJECTS, each project expandable to its SESSIONS.\n";
+m_impl += "1. Replace the flat chip list with a collapsible TREE: top-level medium nodes (Local, VM, Remote, Browser, Container), each expandable to its PROJECTS, each project expandable to its SESSIONS.\n";
 m_impl += "2. Represent the hierarchy in app/src/media/state.rs (medium -> list of projects -> list of sessions). Sessions/projects should come from real backend data (DesktopState list_chats / session store per project) when available, with a deterministic fallback only when the store is absent.\n";
 m_impl += "3. Selecting a leaf (a session) sets active medium+project+session for the next turn. Selecting a branch expands/collapses. Keep the selected path highlighted.\n";
 m_impl += "4. run_turn must receive medium_id, project_id, AND session id from the tree selection (update on_send_message / on_send_queued in app/src/actions.rs and root_view.rs to also read the selected session).\n";
@@ -170,7 +170,7 @@ if !ver_ok(v3) { complete(#{ done: false, phase: 3, error: "verify medium-tree f
 log("phase 3 done");
 
 // ---------------------------------------------------------------------------
-// Phase 4 — section D: keyboard nav, command palette, a11y, onboarding, screen reuse, hardening
+// Phase 4 — section D: keyboard nav, command palette, a11y, onboarding, hardening
 // ---------------------------------------------------------------------------
 phase("Section-D UX");
 let d_impl = "Goal: implement the 'section D' polish/hardening set in the Rust app at ";
@@ -179,20 +179,19 @@ d_impl += ".\n\nRead first:\n";
 d_impl += "- app/src/root_view.rs dispatch_event (global keyboard shortcuts) + crates/goble-ui/src/platform/window.rs + crates/goble-ui/src/event.rs (Modifiers, KeyDown).\n";
 d_impl += "- app/src/ui/panes.rs, app/src/ui/mod.rs (Space/Pane/SplitNode), app/src/state.rs + actions.rs.\n";
 d_impl += "- app/src/ui/shell.rs, app/src/ui/sidebar.rs (topbar + sidebar).\n";
-d_impl += "- app/src/ui/chat.rs (onboarding banners show_llm_key_banner/show_workspace_choice), app/src/screen/* + app/src/ui/screen.rs (existing screen/broadcast/computer-use sheet for record/replay reference).\n";
+d_impl += "- app/src/ui/chat.rs (onboarding banners show_llm_key_banner/show_workspace_choice).\n";
 d_impl += "- crates/goble-ui theme/color tokens + existing focus/hover patterns.\n";
 d_impl += "\nImplement ALL of the following, scoped and real:\n";
 d_impl += "1. PANE KEYBOARD NAVIGATION: move focus between panes with Ctrl/Cmd+Arrow keys (up/down/left/right) in the active space; the active pane highlight follows focus. Honor existing split/close shortcuts. Add a small shortcut hint.\n";
 d_impl += "2. COMMAND PALETTE: a Cmd+K overlay listing available commands (new space, split right/down, close pane, switch space, new conversation, open settings/projects, key toggles). Keyboard-scrollable, enterable; wire each to existing UiActions; render as an overlay dialog.\n";
 d_impl += "3. ACCESSIBILITY: ensure interactive elements have a keyboard/activation path (tab/enter), a visible focus ring/visual, and sensible labels/tooltips. For a native app, focus on consistent keyboard focus + focus visuals.\n";
 d_impl += "4. ONBOARDING: complete the first-run flow end to end (model key banner -> local/remote choice -> a short tip surface), make it dismissible without a dead end, and skip it on a returning run. Keep existing banners; add a compact getting-started hint.\n";
-d_impl += "5. SCREEN-EVENT RECORD/REPLAY: use the existing screen registry/controller (goble_screen_core + app/src/screen) to record input/observation events and replay them deterministically (record start/stop, replay once/loop, timing). This ties into the reversible substrate WITHOUT being a conversation rewind.\n";
-d_impl += "6. HARDENING: handle empty states (no conversations/sessions/projects), guard index/name overflows, clamp pane-ratio and sidebar-width inputs, surface errors readably, and fix obvious unwraps/panics on user-controlled state.\n";
+d_impl += "5. HARDENING: handle empty states (no conversations/sessions/projects), guard index/name overflows, clamp pane-ratio and sidebar-width inputs, surface errors readably, and fix obvious unwraps/panics on user-controlled state.\n";
 d_impl += "\nConstraints:\n";
-d_impl += "- Conversation rewind/replay/fork/checkpoint stays agent-controlled: do NOT add user-facing controls for the conversation. (Screen-input record/replay for the screen surface is a distinct, allowed feature.)\n";
-d_impl += "- After editing run `cargo check --workspace --all-targets` and `cargo test -p goble-app`; fix new errors. Add tests for keyboard focus traversal, palette command routing, onboarding skip on return, and record/replay scheduling where feasible.\n";
+d_impl += "- Conversation rewind/replay/fork/checkpoint stays agent-controlled: do NOT add user-facing controls for the conversation.\n";
+d_impl += "- After editing run `cargo check --workspace --all-targets` and `cargo test -p goble-app`; fix new errors. Add tests for keyboard focus traversal, palette command routing, and onboarding skip on return.\n";
 d_impl += "- Do not regress existing first-run/login flows.\n";
-d_impl += "- Report which sub-items landed and which were deferred; be explicit about screen record/replay vs conversation rewind.";
+d_impl += "- Report which sub-items landed and which were deferred.";
 
 let p4 = agent(d_impl,
     #{ label: "impl:section-d", capability_mode: "all" });
@@ -205,9 +204,8 @@ v_impl4 += "1. pane keyboard nav via Ctrl/Cmd+Arrow moves active pane focus;\n";
 v_impl4 += "2. a Cmd+K command palette overlay routes commands to UiActions;\n";
 v_impl4 += "3. keyboard focus + visible focus ring + labels present on interactive elements;\n";
 v_impl4 += "4. onboarding completes and skips on return without a dead end;\n";
-v_impl4 += "5. screen record/replay controls wired against the screen registry/controller (NOT conversation rewind);\n";
-v_impl4 += "6. hardening (empty states, clamped ratio/sidebar, no obvious panics on user state).\n";
-v_impl4 += "Set success=true ONLY if compile is clean, goble-app tests pass, and items 1,2,4,6 are genuinely present. success=false with notes if a core item is missing.";
+v_impl4 += "5. hardening (empty states, clamped ratio/sidebar, no obvious panics on user state).\n";
+v_impl4 += "Set success=true ONLY if compile is clean, goble-app tests pass, and items 1,2,4,5 are genuinely present. success=false with notes if a core item is missing.";
 
 let v4 = agent(v_impl4,
     #{ label: "verify:section-d", capability_mode: "all", output_schema: verify_schema });

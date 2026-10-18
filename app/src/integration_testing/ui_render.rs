@@ -77,7 +77,7 @@ fn the_files_tab_draws_directories_from_the_file_icon_set() {
     ) -> Vec<RenderCommand> {
         let _ = root.layout(
             SizeConstraint::loose(vec2f(1024.0, 768.0)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             app,
         );
         let mut ctx = PaintContext::new(Renderer::new());
@@ -427,7 +427,7 @@ fn press(
     use goble_ui::elements::EventContext;
     use goble_ui::event::DispatchedEvent;
 
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     root.dispatch_event(
         &DispatchedEvent::KeyDown {
             key: key.to_string(),
@@ -1135,9 +1135,8 @@ fn a_double_click_renames_a_tab_that_is_not_the_active_one() {
         "the second click opens its rename field"
     );
     let commands = frame(&mut root, &app);
-    assert_eq!(
+    assert!(
         state.borrow().space_rename_focused,
-        true,
         "the field takes the keyboard"
     );
     assert!(
@@ -1843,7 +1842,7 @@ fn frame(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<RenderCommand> {
 
     let _ = root.layout(
         SizeConstraint::loose(vec2f(1024.0, 768.0)),
-        &mut LayoutContext::default(),
+        &mut LayoutContext,
         app,
     );
     let mut paint_ctx = PaintContext::new(Renderer::new());
@@ -1861,7 +1860,7 @@ fn click(root: &mut Box<dyn Element>, app: &AppContext, at: goble_ui::Vector2F) 
     use goble_ui::elements::EventContext;
     use goble_ui::event::DispatchedEvent;
 
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     let down = root.dispatch_event(
         &DispatchedEvent::MouseDown {
             position: at,
@@ -2160,7 +2159,7 @@ fn send(
     app: &AppContext,
     event: goble_ui::event::DispatchedEvent,
 ) -> bool {
-    let mut ctx = goble_ui::elements::EventContext::default();
+    let mut ctx = goble_ui::elements::EventContext;
     root.dispatch_event(&event, &mut ctx, app)
 }
 
@@ -2187,19 +2186,19 @@ fn active_tab_rect(
         .expect("the active workspace tab is the filled tab of the strip")
 }
 
-/// Mount the app on one space holding a two-pane split, name the tab, and give
-/// the pane that will leave a session of its own. Returns the root, the state,
-/// the pane that stays and the pane that moves.
-fn split_workspace(
-    app: &AppContext,
-) -> (
+type SplitWorkspace = (
     Box<dyn Element>,
     Rc<RefCell<UiState>>,
     Arc<DesktopState>,
     tempfile::TempDir,
     u64,
     u64,
-) {
+);
+
+/// Mount the app on one space holding a two-pane split, name the tab, and give
+/// the pane that will leave a session of its own. Returns the root, the state,
+/// the pane that stays and the pane that moves.
+fn split_workspace(app: &AppContext) -> SplitWorkspace {
     let (desktop, dir) = common::desktop_state();
     let view = RootView::new(app, &desktop, None);
     let state_rc = view.state_rc();

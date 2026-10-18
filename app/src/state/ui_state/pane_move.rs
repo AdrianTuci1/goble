@@ -369,6 +369,7 @@ mod tests {
                 conversation_id: "conv-moved".to_string(),
                 draft: "draft".to_string(),
                 path: "/tmp/moved".to_string(),
+                daemon_session_id: String::new(),
             },
         );
 
@@ -416,6 +417,7 @@ mod tests {
                 conversation_id: String::new(),
                 draft: String::new(),
                 path: "/tmp/pty".to_string(),
+                daemon_session_id: String::new(),
             },
         );
 

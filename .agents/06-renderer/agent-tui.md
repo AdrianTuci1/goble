@@ -98,7 +98,7 @@ ToolCallError { id, message }
 
 and yields them around execution (`crates/goble-core/src/reasoning.rs:632`, `:655`, `:670`). Three hops lose them:
 
-1. **The app never sees the events.** `chat:updated` is emitted for *every* daemon event (`crates/goble-desktop-service/src/state.rs:671`), but the only named events are `chat:ask_user`, `chat:mission`, `chat:turn_finished`, `screen:handoff` (`:674-726`). The native UI reacts to `chat:updated` by **re-reading the store** (`app/src/root_view.rs:134`), so anything not persisted is invisible.
+1. **The app never sees the events.** `chat:updated` is emitted for *every* daemon event (`crates/goble-desktop-service/src/state.rs:671`), but the only named events are `chat:ask_user`, `chat:mission` and `chat:turn_finished` (`:674-726`). The native UI reacts to `chat:updated` by **re-reading the store** (`app/src/root_view.rs:134`), so anything not persisted is invisible.
 2. **The store keeps the intent, not the outcome.** The assistant row's `tool_calls` column holds the planned calls (name + arguments, `reasoning.rs:591-613`). The outcome is a separate `role="tool"` row whose content is `"<call_id>\n<output>"` — written only *after* the call returns (`reasoning.rs:642-654`, `:662-674`). So there is no running state, and nothing links a call card to its output row except an id embedded in text.
 3. **The renderer has no field for it.** `ToolCall { name, arguments }` (`chat_content.rs:121-127`) has nowhere to put a status.
 
@@ -150,7 +150,7 @@ A1 blocks A7 and A8; A2–A3 block A4; A5 and A6 are one feature split at the wi
 - **Reasoning display.** `Reasoning*` events are dropped on the wire; showing the model's thinking needs the adapter change first, then a block. Separate item.
 - **The product pages** (agents, executions, logs) and the per-message author/avatar header and status footer, which are the remaining warp-new parity items in [`../TRACKER.md`](../TRACKER.md).
 - **Persistence of the conversation as a block** — that is B4 in [`terminal-blocks.md`](terminal-blocks.md); this doc reuses it rather than redefining it.
-- **Voice and computer use.** Different surfaces; see [`../04-agent-runtime/README.md`](../04-agent-runtime/README.md).
+- **Voice.** A separate reporting channel; see [`../04-agent-runtime/README.md`](../04-agent-runtime/README.md). The graphical-desktop surface is out of scope ([`../04-agent-runtime/computer-use.md`](../04-agent-runtime/computer-use.md)).
 
 ## 8. Verification
 

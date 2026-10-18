@@ -1395,9 +1395,10 @@ fn build_connections(
         .with_child(heading(app, "Connections from ~/.ssh"))
         .with_child(note(
             app,
-            "Enter selects a connection and names its target. This build opens no session over \
-             SSH, so selecting only records it. Only names and paths are read — never key \
-             contents, and hosts an Include would pull in are not listed.",
+            "Enter selects a connection and names its target. Cmd+Shift+N opens a saved host from \
+             ~/.goble/hosts.toml in a pane; selecting here only records the target. Only names \
+             and paths are read — never key contents, and hosts an Include would pull in are not \
+             listed.",
         ));
 
     col = col.with_child(rule());
@@ -1465,6 +1466,33 @@ fn build_connections(
                     ),
                 ));
             }
+        }
+    }
+
+    col = col.with_child(rule());
+    col = col.with_child(heading(app, "Saved hosts (~/.goble/hosts.toml)"));
+    if state.ssh_host_entries.is_empty() {
+        col = col.with_child(note(
+            app,
+            "No saved hosts. Add a [[hosts]] table with a name and host, then Cmd+Shift+N opens \
+             it in a new pane.",
+        ));
+    } else {
+        for host in &state.ssh_host_entries {
+            let mut detail = host.target();
+            if let Some(identity) = host.identity.as_deref().filter(|value| !value.is_empty()) {
+                detail = format!("{detail} · {identity}");
+            }
+            col = col.with_child(setting_row(
+                app,
+                &host.name,
+                Text::new(detail)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_font_size(11.0)
+                    .with_max_lines(1)
+                    .finish(),
+                false,
+            ));
         }
     }
 

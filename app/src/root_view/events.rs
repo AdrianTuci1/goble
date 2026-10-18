@@ -10,29 +10,6 @@ impl RootView {
         let Some(desktop) = self.desktop.clone() else {
             return;
         };
-        // A clicked BYOH handoff link: open the screen sheet, selecting the
-        // source derived from the URI. This is the user's own click, not
-        // something the backend announced, so it is performed before the bus is
-        // read and does not wait for an unrelated event to arrive. The root owns
-        // the screen sheet, so the action only stashes the URI here. What the
-        // click selected is carried for the rest of the frame: the user's own
-        // click is the selection that survives it (see the `screen:handoff`
-        // arm).
-        let mut user_selected = false;
-        if let Some(link) = self.state.borrow_mut().pending_screen_link_open.take() {
-            let source = crate::state::screen_source_from_link(&link);
-            let mut s = self.screen_state.borrow_mut();
-            s.open = true;
-            s.refresh_sources(&desktop);
-            if let Some(src) = source {
-                s.select_source(&src);
-                // `select_source` ignores a source the list does not carry, so
-                // this is what the click actually took: a URI naming no
-                // registered source leaves the frame with no user selection to
-                // keep.
-                user_selected = s.selected_source == src;
-            }
-        }
         let Some(bus) = self.event_bus.clone() else {
             return;
         };
@@ -45,15 +22,29 @@ impl RootView {
             match name.as_str() {
                 "chats:updated" | "chat:updated" => state.refresh_conversations(&desktop),
                 "chat:turn_finished" => {
-                    // Route the finished turn to the pane that owns its
-                    // conversation (falling back to the active pane).
-                    let pane_id = payload
-                        .get("chat_id")
-                        .and_then(|v| v.as_str())
-                        .and_then(|cid| state.pane_id_for_conversation(cid))
-                        .unwrap_or(state.active_pane_id);
+                    // The conversation names the pane that started the turn and
+                    // is authoritative even after the focus moved. Only a
+                    // finish event that carries no conversation id at all has
+                    // nothing to resolve and falls back to the active pane; one
+                    // naming a conversation no pane owns is not attributed to
+                    // whichever pane happens to be focused.
+                    let pane_id = match payload.get("chat_id").and_then(|v| v.as_str()) {
+                        Some(chat_id) => state.pane_for_chat_event(chat_id),
+                        None => Some(state.active_pane_id),
+                    };
+                    let Some(pane_id) = pane_id else {
+                        continue;
+                    };
                     let conv = state.pane_conversation_id(pane_id);
-                    state.finish_turn(pane_id);
+                    let outcome = match payload.get("status").and_then(|v| v.as_str()) {
+                        Some("success") => crate::state::TurnOutcome::Success,
+                        Some("failed") => crate::state::TurnOutcome::Failed(None),
+                        Some(other) => {
+                            crate::state::TurnOutcome::Failed(Some(other.to_string()))
+                        }
+                        None => crate::state::TurnOutcome::Unknown,
+                    };
+                    state.finish_turn(pane_id, outcome);
                     // A prompt queued while the agent was running is submitted
                     // automatically now that the turn finished (warp-new model).
                     let queued = state
@@ -108,14 +99,24 @@ impl RootView {
                     }
                     state.sync_active_view();
                 }
-                // The agent suspended to ask the user a question; render the
-                // inline ask card in the transcript.
-                "chat:ask_user" => {
-                    let pane_id = payload
+                // A terminal error from the harness: the turn failed with the
+                // message the event carries. The following `turn_finished`
+                // settles the same turn and dedupes the inbox item.
+                "chat:error" => {
+                    let chat_id = payload
                         .get("chat_id")
                         .and_then(|v| v.as_str())
-                        .and_then(|cid| state.pane_id_for_conversation(cid))
-                        .unwrap_or(state.active_pane_id);
+                        .unwrap_or_default();
+                    let message = payload
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    if !chat_id.is_empty() {
+                        state.apply_turn_error(chat_id, message);
+                    }
+                    state.sync_active_view();
+                }
+                "chat:ask_user" => {
                     if let Some(question) = payload.get("question").and_then(|v| v.as_str()) {
                         let quick: Vec<String> = payload
                             .get("quick_replies")
@@ -126,12 +127,12 @@ impl RootView {
                                     .collect()
                             })
                             .unwrap_or_default();
-                        if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                            rt.pending_ask = Some(goble_ui::AskUserUi::new(
-                                question.to_string(),
-                                quick,
-                            ));
-                        }
+                        let chat_id = payload
+                            .get("chat_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        state.apply_ask_user(&chat_id, question, quick);
                     }
                     state.refresh_messages(&desktop);
                 }
@@ -292,55 +293,6 @@ impl RootView {
                     // so a new session shows up in the environment selector.
                     self.media_state.borrow_mut().refresh(&desktop);
                     state.refresh_observability(&desktop);
-                }
-                // The agent handed the desktop to a remote screen. The sheet is
-                // the manual broadcast/computer-use surface and is left exactly
-                // as the user had it: an agent's tool call may not throw a
-                // window open over the app. What a handoff does is refresh the
-                // source list (so the fresh remote source shows up), select it
-                // when the frame carries no click of the user's own (the frame
-                // the app holds is the selected source's), and mark the source
-                // as this conversation's inline handoff, so its live frame
-                // renders as the card in the conversation.
-                "screen:handoff" => {
-                    if let Some(source) = payload.get("source").and_then(|v| v.as_str()) {
-                        let mut s = self.screen_state.borrow_mut();
-                        s.refresh_sources(&desktop);
-                        // The user's own click beats the agent's tool call in the
-                        // same frame: a handoff does not overwrite the source the
-                        // user has just selected by clicking its link. A handoff
-                        // in a frame with no such click still selects its own
-                        // source.
-                        if !user_selected {
-                            s.select_source(source);
-                        }
-                        let pane_id = payload
-                            .get("chat_id")
-                            .and_then(|v| v.as_str())
-                            .and_then(|cid| state.pane_id_for_conversation(cid))
-                            .unwrap_or(state.active_pane_id);
-                        // The pane's runtime is created here when it does not
-                        // exist yet: the handoff is the first thing the pane
-                        // sees only if nothing has refreshed its transcript, and
-                        // the card has to have a pane to live in either way.
-                        state
-                            .pane_runtime
-                            .entry(pane_id)
-                            .or_default()
-                            .inline_screen_source = Some(source.to_string());
-                    }
-                }
-                // The host closed a handed-off desktop (the last pane showing
-                // it let go, or the session ended): every pane stops drawing
-                // it and the sheet drops the frame it held, so no card shows a
-                // desktop that is gone.
-                "screen:closed" => {
-                    if let Some(source) = payload.get("source").and_then(|v| v.as_str()) {
-                        state.forget_inline_screen_source(source);
-                        self.screen_state
-                            .borrow_mut()
-                            .close_source(source, &desktop);
-                    }
                 }
                 _ => {}
             }

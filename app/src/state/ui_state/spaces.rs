@@ -18,10 +18,33 @@ impl UiState {
             return;
         }
         self.spaces = saved.spaces;
+        for space in &mut self.spaces {
+            space.recompute_layout();
+        }
         self.active_space = saved.active_space.min(self.spaces.len() - 1);
         // Restore the per-pane session data (conversation id, draft, cwd) so a
         // pane stays the same independent conversation across a restart.
         self.pane_sessions = saved.pane_sessions;
+        // A pane opened on a saved SSH host comes back bound to it: the chip
+        // and the shell-tool route read the same registry entry a freshly
+        // opened pane fills.
+        self.pane_ssh = saved.pane_ssh;
+        for (pane_id, binding) in &self.pane_ssh {
+            if let Some(session) = &binding.session {
+                self.terminal
+                    .borrow_mut()
+                    .set_ssh_session(*pane_id, Some(session.clone()));
+            }
+        }
+        // Seed the terminal registry with the daemon sessions the panes were
+        // attached to. `ensure_session` reuses an id only while the daemon still
+        // reports that session alive.
+        {
+            let mut terminal = self.terminal.borrow_mut();
+            for (pane_id, session) in &self.pane_sessions {
+                terminal.adopt_session_id(*pane_id, session.daemon_session_id.clone());
+            }
+        }
         // A conversation the store no longer holds — deleted in another process,
         // or cleaned out of the database — is not restored: the pane goes back
         // to following the sidebar selection instead of owning a thread that is
@@ -65,14 +88,53 @@ impl UiState {
         self.ensure_pane_controls();
     }
 
+    /// Copy the daemon session ids the terminal registry holds into the pane
+    /// state, so the next layout save remembers which shell each pane is on.
+    /// The session is created while a pane paints, which is after the action
+    /// that saved the layout; this runs before the frame's snapshot and
+    /// reports whether a pane's id changed.
+    pub fn adopt_daemon_session_ids(&mut self) -> bool {
+        let live: Vec<(u64, String)> = {
+            let terminal = self.terminal.borrow();
+            terminal
+                .session_ids
+                .iter()
+                .map(|(pane_id, session_id)| (*pane_id, session_id.clone()))
+                .collect()
+        };
+        let mut changed = false;
+        for (pane_id, session_id) in live {
+            if let Some(session) = self.pane_sessions.get_mut(&pane_id) {
+                if session.daemon_session_id != session_id {
+                    session.daemon_session_id = session_id;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
     /// Persist the pane layout (spaces + active space/pane) so it survives an
     /// app restart. Called whenever a pane action mutates the layout.
     pub fn save_panes(&self, desktop: &DesktopState) {
+        // A session's daemon id is assigned when the pane first paints, after
+        // the layout's own save points. Overlay the registry's live ids so the
+        // persisted state can reattach next run instead of starting a new shell.
+        let mut pane_sessions = self.pane_sessions.clone();
+        {
+            let terminal = self.terminal.borrow();
+            for (pane_id, session_id) in &terminal.session_ids {
+                if let Some(session) = pane_sessions.get_mut(pane_id) {
+                    session.daemon_session_id = session_id.clone();
+                }
+            }
+        }
         let persisted = PersistedPaneState {
             spaces: self.spaces.clone(),
             active_space: self.active_space,
             active_pane_id: self.active_pane_id,
-            pane_sessions: self.pane_sessions.clone(),
+            pane_sessions,
+            pane_ssh: self.pane_ssh.clone(),
         };
         if let Ok(json) = serde_json::to_string(&persisted) {
             if let Err(e) = desktop.set_ui_panes(&json) {
@@ -349,6 +411,7 @@ impl UiState {
             return false;
         }
         self.active_space = target;
+        self.spaces[target].recompute_layout();
         self.active_pane_id = self.spaces[target].root.first_leaf_id();
         if matches!(
             self.spaces[target].leaf_kind(self.active_pane_id),
@@ -357,6 +420,125 @@ impl UiState {
             self.focus_settings_pane();
         }
         true
+    }
+
+    /// Select a layout for the space at `index` and persist it. Returns whether
+    /// a space was found; a no-op when it already has that layout still saves,
+    /// because the caller's action is the explicit choice.
+    pub fn set_space_layout(
+        &mut self,
+        index: usize,
+        layout: LayoutKind,
+        desktop: Option<&DesktopState>,
+    ) -> bool {
+        let Some(space) = self.spaces.get_mut(index) else {
+            return false;
+        };
+        space.set_layout(layout);
+        if self.active_space == index {
+            self.floating_drag.borrow_mut().take();
+        }
+        if let Some(desktop) = desktop {
+            self.save_panes(desktop);
+        }
+        true
+    }
+
+    /// Cycle the active space through BSP → master-stack → floating, the
+    /// gesture Cmd+Shift+L and the palette entry run.
+    pub fn cycle_space_layout(&mut self, desktop: Option<&DesktopState>) -> LayoutKind {
+        let index = self.active_space;
+        let Some(space) = self.spaces.get(index) else {
+            return LayoutKind::Bsp;
+        };
+        let next = space.layout.cycle();
+        self.set_space_layout(index, next, desktop);
+        next
+    }
+
+    /// Read the saved hosts from `~/.goble/hosts.toml`. The picker calls this
+    /// when it opens, so an edit to the file is seen without a restart; a
+    /// missing file (or no home) yields an empty list rather than an error the
+    /// picker would have nothing to say about.
+    pub fn reload_saved_hosts(&mut self) {
+        self.ssh_host_entries = goble_core::app_home::GobleHome::locate()
+            .ok()
+            .and_then(|home| goble_core::hosts::HostsFile::load(&home.hosts_path()).ok())
+            .map(|file| file.valid_hosts())
+            .unwrap_or_default();
+    }
+
+    /// Bind `pane_id` to `session`, remembering `host_name` when the pane was
+    /// opened from a saved host. The registry is the one place the chip and the
+    /// shell route read, so the binding is written there too.
+    pub fn bind_ssh_pane(
+        &mut self,
+        pane_id: u64,
+        host_name: Option<String>,
+        session: goble_core::ssh_command::SshSession,
+    ) {
+        self.terminal
+            .borrow_mut()
+            .set_ssh_session(pane_id, Some(session.clone()));
+        // A live session answers the offer: a pane that reconnected by typing
+        // its own `ssh` line is not asked about the host it left.
+        if self
+            .ssh_reconnect_prompt
+            .as_ref()
+            .is_some_and(|(pane, _)| *pane == pane_id)
+        {
+            self.ssh_reconnect_prompt = None;
+        }
+        self.pane_ssh.insert(
+            pane_id,
+            SshPaneBinding {
+                host_name,
+                session: Some(session),
+                reconnect: None,
+            },
+        );
+    }
+
+    /// Note that the pane's SSH session ended. A pane opened from a saved host
+    /// keeps the host's name as the reconnect offer; a typed, anonymous session
+    /// leaves nothing behind.
+    pub fn note_ssh_ended(&mut self, pane_id: u64) -> Option<String> {
+        self.terminal.borrow_mut().set_ssh_session(pane_id, None);
+        let binding = self.pane_ssh.get_mut(&pane_id)?;
+        binding.session = None;
+        let reconnect = binding.host_name.clone();
+        binding.reconnect = reconnect.clone();
+        if reconnect.is_none() {
+            self.pane_ssh.remove(&pane_id);
+        }
+        reconnect
+    }
+
+    /// Read a line the user submitted at a shell's own prompt for where it
+    /// leaves that shell: an interactive `ssh` line binds the pane to the host
+    /// it names, and `exit` returns it to the local shell — and offers a saved
+    /// host again. A line typed in the grid and one typed at the rich input bar
+    /// both land here, so the chip and the reconnect offer do not depend on
+    /// which surface the key went through.
+    pub fn note_shell_line(&mut self, pane_id: u64, line: &str) {
+        if self.pane_is_viewer(pane_id) {
+            return;
+        }
+        if let Some(target) = goble_core::ssh_command::parse_ssh_command(line) {
+            let hosts = self.ssh_hosts_for_command();
+            let session =
+                target.resolve(hosts.as_ref(), &goble_core::ssh_hosts::current_user());
+            self.bind_ssh_pane(pane_id, None, session);
+        } else if goble_core::ssh_command::returns_to_local_shell(line) {
+            if let Some(host) = self.note_ssh_ended(pane_id) {
+                self.ssh_reconnect_prompt = Some((pane_id, host));
+            }
+        }
+    }
+
+    /// The saved hosts file as the picker and the Connections page read it.
+    pub fn saved_hosts(&self) -> &[HostEntry] {
+        &self.ssh_host_entries
     }
 
     /// Move the space at `from` to index `to`, keeping the active space the

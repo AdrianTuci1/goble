@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use super::block::{terminal_block_with_selection, TerminalLineGeometry, TerminalTextSelection};
 use super::data::TerminalData;
 use super::filter::{TerminalCopyHandler, TerminalFilter};
 use crate::elements::{terminal_block, Element};
@@ -48,6 +49,33 @@ impl TerminalBlockPlumbing {
             filter,
             self.global_filter.clone(),
             self.on_copy.clone(),
+        )
+    }
+
+    /// Draw `data` as a terminal block with a text selection over its lines,
+    /// recording each drawn line's box for the pointer that owns the selection.
+    /// `line_base` is the block's first line in the caller's flattened text.
+    pub fn element_with_selection(
+        &self,
+        data: &TerminalData,
+        selection: Option<TerminalTextSelection>,
+        line_base: usize,
+        geometry: Rc<RefCell<Vec<TerminalLineGeometry>>>,
+    ) -> Box<dyn Element> {
+        let filter = self
+            .filters
+            .borrow_mut()
+            .entry(data.filter_key())
+            .or_default()
+            .clone();
+        terminal_block_with_selection(
+            data,
+            filter,
+            self.global_filter.clone(),
+            self.on_copy.clone(),
+            selection,
+            line_base,
+            geometry,
         )
     }
 

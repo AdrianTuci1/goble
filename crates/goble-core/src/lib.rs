@@ -13,6 +13,7 @@ pub mod encrypted_wallet;
 pub mod environment;
 pub mod execution;
 pub mod harness;
+pub mod hosts;
 pub mod identity;
 pub mod invite;
 pub mod isolate;

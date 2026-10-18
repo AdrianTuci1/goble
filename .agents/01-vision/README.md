@@ -8,6 +8,12 @@
 
 Goble lets **anyone build complex things from natural language**. You describe an agent, and the agent composes tools, MCP servers, and other agents in a workspace to get the work done. It is an "agent control center", not a chatbot.
 
+Goble is a **terminal window manager with the harness integrated**. A pane is a real terminal with
+command blocks from OSC 133/DCS hooks; an agent command is claimed through the harness claim protocol
+and runs in the user's own shell, so its transcript, tool calls and sub-agents sit beside the prompt
+that produced them. Panes can be local, bound to an SSH session, or fed by a remote worker. Execution
+stays reversible through `goble-replay` (fork, replay, revert).
+
 ## Goals
 
 - Creatable agents that complete user-defined tasks; each has a **persona and a long-lived state** so you can keep talking to the same agent and its conversation **compacts indefinitely**.
@@ -32,7 +38,7 @@ The repo already has a working backend (`goble-core` + `goble-desktop-service` +
 
 ## Related
 
-- [`remote-features.md`](remote-features.md) — what the remote direction gives the user, feature by feature
+- [`remote-features.md`](remote-features.md) — what the remote and terminal direction gives the user, feature by feature
 - [`../02-first-run-and-routing/README.md`](../02-first-run-and-routing/README.md) — the first-run flow and the local/remote router
 - [`../03-workspace-model/README.md`](../03-workspace-model/README.md) — the workspace as the unit of deployment
 - [`../10-platform-and-performance/README.md`](../10-platform-and-performance/README.md) — perf/rendering principles

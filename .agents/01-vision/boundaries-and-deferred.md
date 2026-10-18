@@ -15,6 +15,10 @@ These are the shape we build toward in the next iterations:
 - **Agent runtime** (harness): persona, continuous state, compaction to infinity, sub-agents for routines, tool registry, dynamic MCP install, LLM/model resolution, per-agent CWD + sandbox, inter-agent communication, `remember`, deep-research.
 - **Observability**: executions, traces, logs surfaced from the runtime.
 - **Renderer**: our own wgpu/Rust chat renderer; the ability to rate the renderer onto a remote host's terminal.
+- **Terminal window manager**: real command blocks (OSC 133/DCS), the harness claim protocol running
+  agent commands in the user's own shell, SSH-bound panes, worker/viewer panes, and reversible
+  execution through `goble-replay`. The former graphical-desktop streaming surface is out of scope;
+  its crates, harness tool, install step and UI were removed.
 
 ## Deferred (direction recorded, not built)
 

@@ -15,7 +15,10 @@ mod plumbing;
 #[cfg(test)]
 mod tests;
 
-pub use block::{terminal_block, TerminalBlock};
+pub use block::{
+    terminal_block, terminal_block_with_selection, TerminalBlock, TerminalLineGeometry,
+    TerminalTextSelection,
+};
 pub use data::{TerminalData, TerminalMeta, TerminalStatus};
 pub use filter::{
     filter_option_labels, terminal_filter_bar, terminal_filter_open, toggle_terminal_filter,

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(name = "goble-cli")]
@@ -44,10 +44,6 @@ pub enum Command {
         ssh_key: Option<PathBuf>,
         #[arg(short, long, default_value = "/opt/goblin")]
         install_path: String,
-        /// Install the remote desktop computer use streams from. It downloads in
-        /// the background on the host, after the worker is already serving.
-        #[arg(long)]
-        remote_desktop: bool,
         #[arg(long, default_value = "false")]
         local_test: bool,
     },
@@ -64,10 +60,6 @@ pub enum Command {
         ssh_key: Option<PathBuf>,
         #[arg(short, long, default_value = "/opt/goblin")]
         install_path: String,
-        /// Install the remote desktop computer use streams from. It downloads in
-        /// the background on the host, after the worker is already serving.
-        #[arg(long)]
-        remote_desktop: bool,
         #[arg(long, default_value = "false")]
         local_test: bool,
     },
@@ -129,6 +121,157 @@ pub enum Command {
         #[command(subcommand)]
         action: ClusterAction,
     },
+    /// Control a running Goble window over its Unix control socket.
+    #[cfg(unix)]
+    Ctl {
+        /// Print the typed result as JSON (and errors as a structured object).
+        #[arg(long, global = true)]
+        json: bool,
+        /// Control socket to call; defaults to $GOBLE_CONTROL_SOCKET or
+        /// $HOME/.goble/control.sock.
+        #[arg(long, global = true, value_name = "PATH")]
+        socket: Option<PathBuf>,
+        #[command(subcommand)]
+        action: CtlAction,
+    },
+}
+
+/// The `goble ctl` verbs. Each one is one typed control command.
+#[cfg(unix)]
+#[derive(Subcommand, Debug)]
+pub enum CtlAction {
+    /// List every open pane.
+    ListPanes,
+    /// Open a new pane.
+    NewPane {
+        /// Workspace tab index; defaults to the active space.
+        #[arg(long)]
+        space_id: Option<usize>,
+        /// Working directory for a terminal pane.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Pane kind.
+        #[arg(long, value_enum, default_value_t = PaneKindArg::Terminal)]
+        kind: PaneKindArg,
+    },
+    /// Split a pane.
+    SplitPane {
+        pane_id: u64,
+        /// Split direction: horizontal is left/right, vertical is top/bottom.
+        #[arg(long, value_enum, default_value_t = AxisArg::Horizontal)]
+        axis: AxisArg,
+    },
+    /// Close a pane.
+    ClosePane { pane_id: u64 },
+    /// Focus a pane.
+    FocusPane { pane_id: u64 },
+    /// Write text to a pane's terminal.
+    SendInput {
+        pane_id: u64,
+        text: String,
+        /// Press Enter after the text.
+        #[arg(long)]
+        enter: bool,
+    },
+    /// Resize a pane's terminal grid.
+    ResizePane {
+        pane_id: u64,
+        cols: u16,
+        rows: u16,
+    },
+    /// List workspace tabs.
+    ListSpaces,
+    /// Switch to a workspace tab.
+    SwitchSpace { space_id: usize },
+    /// Report pane agent state, or one pane with --pane-id.
+    AgentState {
+        #[arg(long)]
+        pane_id: Option<u64>,
+    },
+    /// Send a prompt to a pane's agent.
+    PromptAgent { pane_id: u64, text: String },
+    /// List the global agent inbox.
+    Inbox,
+    /// Acknowledge one inbox item, or all of them.
+    AckInbox {
+        #[arg(long, conflicts_with = "all")]
+        id: Option<String>,
+        #[arg(long)]
+        all: bool,
+    },
+    /// Read a space's layout, or set it with --kind.
+    Layout {
+        space_id: usize,
+        #[arg(long, value_enum)]
+        kind: Option<LayoutKindArg>,
+    },
+    /// List PTY daemon sessions.
+    PtyList,
+    /// Attach to a PTY daemon session.
+    PtyAttach { session_id: String },
+    /// Detach from a PTY daemon session.
+    PtyDetach { session_id: String },
+    /// Kill a PTY daemon session.
+    PtyKill { session_id: String },
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum PaneKindArg {
+    Chat,
+    Terminal,
+}
+
+#[cfg(unix)]
+impl From<PaneKindArg> for goble_control::PaneKind {
+    fn from(kind: PaneKindArg) -> Self {
+        match kind {
+            PaneKindArg::Chat => Self::Chat,
+            PaneKindArg::Terminal => Self::Terminal,
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum AxisArg {
+    Horizontal,
+    Vertical,
+}
+
+#[cfg(unix)]
+impl From<AxisArg> for goble_control::SplitAxis {
+    fn from(axis: AxisArg) -> Self {
+        match axis {
+            AxisArg::Horizontal => Self::Horizontal,
+            AxisArg::Vertical => Self::Vertical,
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum LayoutKindArg {
+    Single,
+    Horizontal,
+    Vertical,
+    Bsp,
+    MasterStack,
+    Floating,
+}
+
+#[cfg(unix)]
+impl From<LayoutKindArg> for goble_control::LayoutKind {
+    fn from(kind: LayoutKindArg) -> Self {
+        match kind {
+            LayoutKindArg::Single => Self::Single,
+            LayoutKindArg::Horizontal => Self::Horizontal,
+            LayoutKindArg::Vertical => Self::Vertical,
+            LayoutKindArg::Bsp => Self::Bsp,
+            LayoutKindArg::MasterStack => Self::MasterStack,
+            LayoutKindArg::Floating => Self::Floating,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]

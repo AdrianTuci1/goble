@@ -139,7 +139,7 @@ use super::*;
                 })
                 .unwrap_or_else(|| panic!("the pane draws the {needle:?} run"));
             let position = origin + vec2f(2.0, 4.0);
-            let mut ctx = EventContext::default();
+            let mut ctx = EventContext;
             for event in [
                 DispatchedEvent::MouseDown {
                     position,
@@ -154,7 +154,7 @@ use super::*;
             }
         }
         fn press_escape(root: &mut Box<dyn Element>, app: &AppContext) -> bool {
-            let mut ctx = EventContext::default();
+            let mut ctx = EventContext;
             root.dispatch_event(
                 &DispatchedEvent::KeyDown {
                     key: "Escape".to_string(),

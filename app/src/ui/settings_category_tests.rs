@@ -136,10 +136,10 @@ fn press_event(
     event: &DispatchedEvent,
 ) -> bool {
     let constraint = SizeConstraint::loose(vec2f(1024.0, 768.0));
-    let _ = root.layout(constraint, &mut LayoutContext::default(), app);
+    let _ = root.layout(constraint, &mut LayoutContext, app);
     let mut paint_ctx = PaintContext::new(goble_ui::render::Renderer::new());
     root.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     root.dispatch_event(event, &mut ctx, app)
 }
 
@@ -194,7 +194,7 @@ fn the_arrow_keys_move_the_page_and_escape_leaves_the_tab_open() {
 fn a_modified_arrow_does_not_move_the_page() {
     let app = AppContext::default();
     let (mut root, state, _dir) = settings_root(SettingsCategory::Mouse);
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     root.dispatch_event(
         &DispatchedEvent::KeyDown {
             key: "ArrowDown".to_string(),
@@ -255,7 +255,7 @@ fn a_settings_leaf_draws_the_rail_and_the_page() {
     );
     assert!(pane_text(&commands, "Scroll speed").is_some());
     assert!(
-        !pane_text(&commands, "Font size").is_some(),
+        pane_text(&commands, "Font size").is_none(),
         "and only the selected page's"
     );
     // The tab itself is an ordinary entry in the strip.
@@ -633,7 +633,7 @@ fn rail_fill(commands: &[RenderCommand], app: &AppContext, panel: RectF) -> Opti
 /// happen before a dispatch: the pane learns its own origin while painting.
 fn frame(root: &mut Box<dyn Element>, app: &AppContext, window: Vector2F) -> Vec<RenderCommand> {
     let constraint = SizeConstraint::loose(window);
-    let _ = root.layout(constraint, &mut LayoutContext::default(), app);
+    let _ = root.layout(constraint, &mut LayoutContext, app);
     let mut paint_ctx = PaintContext::new(goble_ui::render::Renderer::new());
     root.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
     paint_ctx
@@ -676,7 +676,7 @@ fn the_appearance_pane_has_one_wheel_wired_to_the_selected_channel() {
         ring.min_x() + ring.width() * 0.5 + 40.0,
         ring.min_y() + ring.height() * 0.5 - 40.0,
     );
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     assert!(
         root.dispatch_event(
             &DispatchedEvent::MouseDown {
@@ -720,7 +720,7 @@ fn clicking_a_swatch_retargets_the_wheel() {
             _ => None,
         })
         .expect("the Accent swatch row is drawn");
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     // Buttons fire on release, so the click is a down/up pair on the row.
     let at = accent + vec2f(2.0, 2.0);
     assert!(root.dispatch_event(
@@ -1095,7 +1095,7 @@ fn the_focus_order_walks_down_the_rows_the_page_draws() {
         let controls = state.borrow().settings_pane_controls();
         assert!(!controls.is_empty(), "{category:?} has a row to focus");
         let mut previous: Option<(f32, f32)> = None;
-        for slot in 0..controls.len() {
+        for (slot, _control) in controls.iter().enumerate() {
             {
                 let mut s = state.borrow_mut();
                 s.settings_focus = SettingsFocus::Pane;
@@ -1159,7 +1159,7 @@ fn a_long_page_scrolls_inside_the_pane() {
     let clip = clip_in_panel(&commands, &app, window);
     assert!(clip.max_y() <= window.y, "the viewport is inside the window");
 
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     assert!(
         root.dispatch_event(
             &DispatchedEvent::Scroll {
@@ -1373,7 +1373,7 @@ fn frame_at(
     at: Vector2F,
 ) -> Vec<RenderCommand> {
     let constraint = SizeConstraint::loose(window);
-    let _ = root.layout(constraint, &mut LayoutContext::default(), app);
+    let _ = root.layout(constraint, &mut LayoutContext, app);
     let mut paint_ctx = PaintContext::new(goble_ui::render::Renderer::new());
     paint_ctx.cursor_inside = true;
     paint_ctx.cursor_position = at;
@@ -1537,7 +1537,7 @@ fn the_environment_rows_answer_the_mouse_as_well_as_the_keys() {
             _ => None,
         })
         .expect("the group row is drawn");
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     let click = at + vec2f(2.0, 2.0);
     root.dispatch_event(
         &DispatchedEvent::MouseDown {
@@ -1910,7 +1910,7 @@ fn the_connection_rows_are_focusable_in_order_and_enter_selects() {
     );
 
     let mut previous: Option<(f32, f32)> = None;
-    for slot in 0..controls.len() {
+    for (slot, _control) in controls.iter().enumerate() {
         {
             let mut s = state.borrow_mut();
             s.settings_focus = SettingsFocus::Pane;
@@ -1938,8 +1938,11 @@ fn the_connection_rows_are_focusable_in_order_and_enter_selects() {
     assert!(drawn(&commands, "select"), "the row's own verb");
     assert!(!drawn(&commands, "connect"), "no row offers a connection");
     assert!(
-        any_run_contains(&commands, "This build opens no session over SSH"),
-        "and the page says so in its own words"
+        any_run_contains(
+            &commands,
+            "Cmd+Shift+N opens a saved host from ~/.goble/hosts.toml in a pane"
+        ),
+        "and the page says where a host pane is opened"
     );
 
     let spaces = state.borrow().spaces.len();

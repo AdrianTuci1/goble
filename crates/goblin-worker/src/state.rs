@@ -395,18 +395,6 @@ pub(crate) fn map_daemon_event(event: DaemonEvent) -> Option<WorkerMessage> {
             level: goble_core::execution::LogLevel::Error,
             message,
         }),
-        // The desktop client is the side that opens the RDP stream, so a
-        // handoff raised by a session running here has to reach it: the config
-        // travels as JSON (this crate reaches the harness type only through the
-        // daemon protocol) and the desktop opens or finds the host's desktop.
-        DE::ScreenHandoff { session_id, config } => {
-            serde_json::to_value(config)
-                .ok()
-                .map(|config| WorkerMessage::ScreenHandoff {
-                    trace_id: session_id.0,
-                    config,
-                })
-        }
         DE::Done { .. }
         | DE::TraceStarted { .. }
         | DE::TraceFinished { .. }
@@ -475,41 +463,6 @@ mod tests {
             project_id: goble_harness_types::ProjectId::new("p"),
             medium_id: goble_harness_types::MediumId::new("m"),
         }).is_none());
-    }
-
-    /// A handoff raised by a session running on the worker is not a lifecycle
-    /// frame: it has to reach the desktop client, which is the side that opens
-    /// the RDP stream. The config crosses the worker channel as JSON, so the
-    /// desktop can open the host's desktop — or find the one it already has.
-    #[test]
-    fn test_map_daemon_event_carries_a_screen_handoff() {
-        let msg = map_daemon_event(DaemonEvent::ScreenHandoff {
-            session_id: goble_harness_types::SessionId::new("trace-1"),
-            config: goble_harness_types::RemoteScreenConfig::new(
-                "vm.example.com",
-                "desktop-account",
-            ),
-        })
-        .expect("a handoff is carried to the desktop, not dropped");
-
-        match &msg {
-            WorkerMessage::ScreenHandoff { trace_id, config } => {
-                assert_eq!(trace_id, "trace-1");
-                assert_eq!(config["host"], "vm.example.com");
-                assert_eq!(config["credential"], "desktop-account");
-                assert_eq!(config["port"], 3389);
-            }
-            other => panic!("expected a screen handoff, got {other:?}"),
-        }
-
-        // The frame survives the worker's WebSocket, which is how it reaches
-        // the desktop.
-        let line = serde_json::to_string(&msg).unwrap();
-        assert!(line.contains(r#""kind":"screen_handoff""#), "{line}");
-        assert!(
-            !line.contains("password"),
-            "the reference travels, not a value: {line}"
-        );
     }
 
     #[test]

@@ -1,5 +1,8 @@
 use super::*;
 
+use crate::state::PaneSession;
+use crate::ui::{Pane, PaneKind, Space};
+
     /// The acceptance for C1: a scripted sequence of live events leaves the one
     /// accessor reporting exactly the work still in flight and nothing else.
     #[test]
@@ -115,5 +118,123 @@ use super::*;
         assert!(
             execution.last_activity.is_some(),
             "agent:tool_result reached the running execution"
+        );
+    }
+
+    /// A turn's events belong to the pane that started it, not to whichever
+    /// pane has focus when they arrive. Two panes each own a conversation; the
+    /// turn starts on A, the focus moves to B, and the events A's harness
+    /// reports must leave B untouched.
+    #[test]
+    fn chat_events_follow_the_pane_that_started_the_turn_after_focus_moves() {
+        let (mut root, bus, _dir) = root_with_bus();
+        let desktop = root.desktop.clone().expect("the root has a desktop");
+        let conversation_a = desktop.create_chat("A", None, None).expect("create A");
+        let conversation_b = desktop.create_chat("B", None, None).expect("create B");
+        // The question is in the store, as the harness persists it, so the
+        // refresh that follows its event keeps the card standing.
+        desktop
+            .store_clone()
+            .insert_pending_ask(
+                "ask-a",
+                &conversation_a,
+                None,
+                "Deploy now?",
+                r#"["yes","no"]"#,
+                "pending",
+                "2026-10-18T00:00:00Z",
+                "2026-10-18T00:00:00Z",
+            )
+            .expect("persist the pending question");
+
+        {
+            let state = root.state_rc();
+            let mut s = state.borrow_mut();
+            s.spaces = vec![
+                Space::new("A", Pane::Leaf { id: 1, kind: PaneKind::Chat }),
+                Space::new("B", Pane::Leaf { id: 2, kind: PaneKind::Chat }),
+            ];
+            s.pane_sessions.insert(
+                2,
+                PaneSession {
+                    conversation_id: conversation_b.clone(),
+                    path: "/b".to_string(),
+                    ..Default::default()
+                },
+            );
+            s.pane_sessions
+                .get_mut(&1)
+                .expect("pane A has a session")
+                .conversation_id = conversation_a.clone();
+            // The turn starts on A...
+            s.begin_turn(1);
+            // ...and the user moves the focus to B.
+            s.pane_runtime.entry(2).or_default().agent_state =
+                crate::state::PaneAgentState::Idle;
+            s.active_space = 1;
+            s.active_pane_id = 2;
+        }
+
+        bus.emit(
+            "chat:command_proposed",
+            serde_json::json!({
+                "chat_id": conversation_a,
+                "id": "call-a",
+                "candidates": ["git status"],
+                "cwd": "/workspace",
+            }),
+        );
+        bus.emit(
+            "chat:ask_user",
+            serde_json::json!({
+                "chat_id": conversation_a,
+                "question": "Deploy now?",
+                "quick_replies": ["yes", "no"],
+            }),
+        );
+        bus.emit(
+            "chat:turn_finished",
+            serde_json::json!({ "chat_id": conversation_a, "status": "success" }),
+        );
+
+        root.drain_events();
+
+        let state = root.state_rc();
+        let s = state.borrow();
+        assert_eq!(
+            s.pane_id_for_conversation(&conversation_a),
+            Some(1),
+            "A's conversation is bound to A"
+        );
+        assert_eq!(
+            s.pane_agent_state(1),
+            crate::state::PaneAgentState::NeedsInput,
+            "A is waiting on the approval and the question it reported"
+        );
+        let a = s.pane_runtime.get(&1).expect("A's runtime");
+        assert!(a.pending_command.is_some(), "A holds its approval");
+        assert!(a.pending_ask.is_some(), "A holds its question");
+        assert!(!a.busy, "the finished turn settled on A");
+
+        assert_eq!(
+            s.pane_agent_state(2),
+            crate::state::PaneAgentState::Idle,
+            "B's state is exactly what it was before A's events arrived"
+        );
+        let b = s.pane_runtime.get(&2).expect("B's runtime");
+        assert!(b.pending_command.is_none(), "B has no approval");
+        assert!(b.pending_ask.is_none(), "B has no question");
+        assert!(b.messages.is_empty(), "B's transcript is untouched");
+
+        assert_eq!(s.inbox.len(), 2, "the approval and the question were raised");
+        assert!(
+            s.inbox.iter().all(|item| item.pane_id == 1),
+            "both inbox items belong to A"
+        );
+        assert!(
+            s.inbox
+                .iter()
+                .all(|item| item.conversation_id == conversation_a),
+            "and both name A's conversation"
         );
     }

@@ -172,8 +172,5 @@ pub(super) fn map_event(ev: HarnessServerEvent) -> Option<DaemonEvent> {
         HarnessServerEvent::Error { session_id, message } => {
             Some(DaemonEvent::Error { session_id, message })
         }
-        HarnessServerEvent::ScreenHandoff { session_id, config } => {
-            Some(DaemonEvent::ScreenHandoff { session_id, config })
-        }
     }
 }

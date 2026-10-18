@@ -12,7 +12,7 @@ use std::sync::Arc;
 use goble_core::harness::PaneSession;
 use goble_desktop_service::DesktopState;
 
-use crate::daemon::DaemonModel;
+use crate::daemon::{DaemonModel, TurnRequest};
 use crate::ui::WorkspaceRouting;
 
 /// Run a chat turn on the conversation's configured target.
@@ -45,7 +45,7 @@ pub fn run_turn(
     let workspace_dir = if cwd.is_empty() { None } else { Some(cwd) };
     DaemonModel::new(Arc::clone(desktop))
         .with_pane_session(pane_session)
-        .run_turn(
+        .run_turn(TurnRequest {
             chat_id,
             prompt,
             provider,
@@ -56,5 +56,5 @@ pub fn run_turn(
             session_id,
             workspace_dir,
             harness_id,
-        )
+        })
 }

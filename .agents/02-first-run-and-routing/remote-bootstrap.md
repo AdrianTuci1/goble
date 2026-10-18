@@ -34,8 +34,8 @@ The install ships **the worker binary and nothing else that is ours**, because t
 
 - **No language runtime.** No Python, no Node, no Ruby, no `venv`. Which language a workspace needs is a property of *that project*, and an agent can install it in the session, through a `run_command` the approval gate shows. A Rails project and a Python project must both work on the same host without the installer having picked one. (R74 removed the Python/CrewAI/Docker steps that presumed otherwise.)
 - **No agent runtime of anyone else's.** No CrewAI, no container runtime, no orchestration framework.
-- **No GUI of ours.** The host never runs our renderer or a `goble` window; a graphical session on the host exists only as the desktop computer use streams from, and that is `xrdp`, configured by the install, not a build of ours.
-- **The heavy, optional piece installs in the background, after the service is up.** The desktop is the only such piece today: the install writes it, launches it with `nohup … &` once `systemctl restart goblin.service` has run, and logs it to `/var/log/goblin-remote-desktop.log`. A provisioning run returns as soon as the worker is serving, and a workspace that never uses computer use pays nothing.
+- **No GUI of ours.** The host never runs our renderer or a `goble` window, and it runs no graphical desktop either: the terminal pane is the one interaction surface, and the worker is a headless service.
+- **Nothing heavy installs beside the worker.** The binary already carries the harness and the services a workspace needs, so the install has no second payload to write or launch. A provisioning run returns as soon as the worker is serving.
 
 Secrets are **not** part of the install at all: they are pushed over the paired connection ([`../03-workspace-model/shared-secrets-and-toml.md`](../03-workspace-model/shared-secrets-and-toml.md)).
 

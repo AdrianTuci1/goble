@@ -1,45 +1,6 @@
 use super::*;
 
 
-/// Extract the text of a chat fragment, for link scanning. Non-text fragments
-/// (lists, actions, terminal blocks) contribute nothing.
-pub(crate) fn fragment_text(f: &goble_ui::elements::chat_content::ChatFragment) -> Option<&str> {
-    use goble_ui::elements::chat_content::ChatFragmentKind;
-    match &f.kind {
-        ChatFragmentKind::Text(s)
-        | ChatFragmentKind::Bold(s)
-        | ChatFragmentKind::Italic(s)
-        | ChatFragmentKind::BoldItalic(s)
-        | ChatFragmentKind::Code(s) => Some(s.as_str()),
-        ChatFragmentKind::CodeBlock { code, .. } => Some(code.as_str()),
-        ChatFragmentKind::Heading { text, .. } => Some(text.as_str()),
-        ChatFragmentKind::Link { url, .. } => Some(url.as_str()),
-        _ => None,
-    }
-}
-
-/// Scan messages (most-recent assistant content first) for a BYOH desktop
-/// handoff URI, so a harness that only prints a hyperlink still surfaces a
-/// clickable handoff affordance.
-pub(crate) fn message_screen_link(messages: &[ChatMessage]) -> Option<String> {
-    for msg in messages.iter().rev() {
-        if msg.role != ChatRole::Assistant {
-            continue;
-        }
-        let mut plain = String::new();
-        for f in &msg.fragments {
-            if let Some(t) = fragment_text(f) {
-                plain.push_str(t);
-                plain.push(' ');
-            }
-        }
-        if let Some(link) = detect_screen_link(&plain) {
-            return Some(link);
-        }
-    }
-    None
-}
-
 /// Format an RFC3339 timestamp as a short relative "time ago" label (e.g.
 /// "40 min ago"). Falls back to the raw string when it cannot be parsed.
 pub(crate) fn time_ago(updated_at: &str) -> String {
@@ -79,9 +40,8 @@ pub(crate) fn trigger_label(trigger: &Trigger) -> String {
 /// belongs to and everything after it is the output.
 pub(crate) fn tool_result_body(content: &str) -> String {
     content
-        .splitn(2, '\n')
-        .nth(1)
-        .unwrap_or("")
+        .split_once('\n')
+        .map_or("", |(_call, body)| body)
         .trim_end()
         .to_string()
 }

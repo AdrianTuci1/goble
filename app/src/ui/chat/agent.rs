@@ -173,8 +173,6 @@ pub fn build_agent_chat(
     let on_command_decision = actions.on_command_decision.clone();
     let on_send_queued = actions.on_send_queued.clone();
     let on_dismiss_queued = actions.on_dismiss_queued.clone();
-    let on_close_inline_screen = actions.on_close_inline_screen.clone();
-    let on_open_screen_link = actions.on_open_screen_link.clone();
     let on_open_url = actions.on_open_url.clone();
     // The row is drawn in this pane, so the child view (S6) opens in this pane:
     // the pane id is baked into the handler here rather than carried by the
@@ -307,9 +305,6 @@ pub fn build_agent_chat(
         .with_queued_prompt(session.queued_prompt.clone())
         .with_on_send_queued(move || (on_send_queued.borrow_mut())())
         .with_on_dismiss_queued(move || (on_dismiss_queued.borrow_mut())())
-        .with_screen_link(session.screen_link.clone())
-        .with_on_open_screen_link(move |uri| (on_open_screen_link.borrow_mut())(uri))
-        .with_on_close_inline_screen(move || (on_close_inline_screen.borrow_mut())())
         .with_composer_model_menu(model_items, model_menu_open, model_index, move |index| {
             if let Some(name) = models_for_select.get(index) {
                 (on_model_select.borrow_mut())(pane_id, name.clone());
@@ -344,22 +339,6 @@ pub fn build_agent_chat(
             .with_usage(session.usage)
             .with_usage_open(session.usage_open.clone())
             .with_on_fork(move || (on_fork.borrow_mut())(pane_id));
-    }
-
-    // A live remote-desktop handoff renders inline at the end of the
-    // transcript. The frame's texture key is stable per pane so the screen
-    // stream updates in place across rebuilds; the card itself is captioned
-    // with the source's own id and who is driving it (C4).
-    if let Some(frame) = &session.inline_screen {
-        chat = chat.with_inline_screen(goble_ui::InlineScreen {
-            source: format!("inline-{pane_id}"),
-            desktop: frame.source.clone(),
-            driver: frame.driver,
-            frame_seq: frame.frame_seq,
-            width: frame.width,
-            height: frame.height,
-            data: std::sync::Arc::clone(&frame.data),
-        });
     }
 
     // warp-new context pills: harness (the selected medium), working directory
@@ -430,13 +409,11 @@ pub fn build_agent_chat(
     if let Some(on_escape) = on_escape {
         chat = chat.with_on_escape(move || (on_escape.borrow_mut())());
     }
-    let chat = chat.finish();
-
     // The right "agent panel" (routines + scheduled tasks) is now a floating
     // overlay layered over the whole app in `build_ui`, not a docked sidebar
     // that shrinks the pane. It is toggled from the chat header's "Toggle
     // panel" item and closed via its X button / backdrop click.
-    chat
+    chat.finish()
 }
 
 #[cfg(test)]
@@ -473,7 +450,7 @@ mod transcript_scroll_tests {
     fn layout_pane(view: &mut ChatView, app: &AppContext) {
         let _ = view.layout(
             SizeConstraint::loose(vec2f(600.0, 480.0)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             app,
         );
     }
@@ -713,7 +690,7 @@ mod link_action_tests {
             .with_on_action(chat_action_relay(on_open_url, on_open_sub_agent));
         view.layout(
             SizeConstraint::loose(vec2f(600.0, 400.0)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             &app,
         );
         let mut paint_ctx = PaintContext::new(Renderer::new());
@@ -731,7 +708,7 @@ mod link_action_tests {
             })
             .unwrap_or_else(|| panic!("the transcript must draw the link run {label:?}"));
         let position = origin + vec2f(2.0, 4.0);
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         for event in [
             DispatchedEvent::MouseDown {
                 position,
@@ -932,21 +909,23 @@ mod agent_pill_tests {
             s.right_sidebar_open = false;
             s.crons_open = false;
             s.active_pane_id = 1;
-            let mut runtime = PaneRuntime::default();
-            runtime.busy = true;
-            runtime.messages = vec![
-                ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Fix the build")]),
-                ChatMessage::new(
-                    ChatRole::Assistant,
-                    vec![ChatFragment::text("Reading the sidebar, then the panes.")],
-                )
-                .with_tool_calls(vec![
-                    read.clone(),
-                    edit.clone(),
-                    search.clone(),
-                    spawn.clone(),
-                ]),
-            ];
+            let mut runtime = PaneRuntime {
+                busy: true,
+                messages: vec![
+                    ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Fix the build")]),
+                    ChatMessage::new(
+                        ChatRole::Assistant,
+                        vec![ChatFragment::text("Reading the sidebar, then the panes.")],
+                    )
+                    .with_tool_calls(vec![
+                        read.clone(),
+                        edit.clone(),
+                        search.clone(),
+                        spawn.clone(),
+                    ]),
+                ],
+                ..PaneRuntime::default()
+            };
             runtime
                 .in_flight_tools
                 .insert(search.id.clone(), search.clone());

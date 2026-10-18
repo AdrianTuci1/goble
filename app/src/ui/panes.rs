@@ -15,7 +15,7 @@ use goble_ui::elements::{
     SizeConstraint, SplitNode, Stack, Text,
 };
 use goble_ui::event::DispatchedEvent;
-use goble_ui::geometry::{rectf, vec2f, Vector2F};
+use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::chat;
@@ -24,7 +24,11 @@ use super::settings;
 use super::shell::TOPBAR_HEIGHT;
 use super::terminal;
 use super::worker;
-use super::{Pane, PaneKind, SplitDir, UiActions, UiSnapshot};
+use super::pane::{default_floating_rect, master_stack_regions};
+use super::{
+    FloatStartHandler, FloatingDrag, FloatingDragMode, LayoutKind, Pane, PaneKind, PaneRect, Space,
+    SplitDir, UiActions, UiSnapshot,
+};
 
 /// The corner mark the focused pane carries, and the room its own topbar leaves
 /// for it. warp-new draws the same mark in the same corner
@@ -51,7 +55,7 @@ pub fn build_active_space(app: &AppContext, state: &UiSnapshot, actions: &UiActi
                     return build_leaf(app, state, actions, id, kind);
                 }
             }
-            build_pane(app, state, actions, &space.root)
+            build_space(app, state, actions, space)
         }
         None => {
             let id = 0u64;
@@ -78,6 +82,85 @@ fn leaf_kind_of(pane: &Pane, target: u64) -> Option<PaneKind> {
         Pane::Leaf { id, kind } => (*id == target).then(|| kind.clone()),
         Pane::Split { first, second, .. } => {
             leaf_kind_of(first, target).or_else(|| leaf_kind_of(second, target))
+        }
+    }
+}
+
+/// Build a space's panes in its selected layout. BSP keeps the draggable split
+/// tree; the other two place each leaf at a region of the pane area.
+fn build_space(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    space: &Space,
+) -> Box<dyn Element> {
+    match space.layout {
+        LayoutKind::Bsp => build_pane(app, state, actions, &space.root),
+        LayoutKind::MasterStack => {
+            let mut leaves = Vec::new();
+            space.root.leaves(&mut leaves);
+            let regions: Vec<(u64, PaneRect)> = master_stack_regions(&leaves)
+                .into_iter()
+                .map(|(id, rect)| {
+                    (
+                        id,
+                        PaneRect::new(rect.min_x(), rect.min_y(), rect.width(), rect.height()),
+                    )
+                })
+                .collect();
+            let children = regions
+                .into_iter()
+                .filter_map(|(id, rect)| {
+                    let kind = leaf_kind_of(&space.root, id)?;
+                    Some(RegionChild::new(
+                        id,
+                        rect,
+                        build_leaf_with_lift(app, state, actions, id, kind, false),
+                    ))
+                })
+                .collect();
+            Box::new(RegionLayer::new(
+                children,
+                false,
+                actions,
+                state.floating_drag.clone(),
+            ))
+        }
+        LayoutKind::Floating => {
+            // The stored order is the z-order; a leaf the space has not given a
+            // rect yet falls back to the cascade, so nothing is drawn twice or
+            // left invisible.
+            let mut children = Vec::new();
+            let mut placed = Vec::new();
+            for pane in &space.floating {
+                let Some(kind) = leaf_kind_of(&space.root, pane.pane_id) else {
+                    continue;
+                };
+                placed.push(pane.pane_id);
+                children.push(RegionChild::new(
+                    pane.pane_id,
+                    pane.rect,
+                    build_leaf_with_lift(app, state, actions, pane.pane_id, kind, false),
+                ));
+            }
+            let mut leaves = Vec::new();
+            space.root.leaves(&mut leaves);
+            for (index, (id, kind)) in leaves.into_iter().enumerate() {
+                if placed.contains(&id) {
+                    continue;
+                }
+                children.push(RegionChild::new(
+                    id,
+                    default_floating_rect(index),
+                    build_leaf_with_lift(app, state, actions, id, kind, false),
+                ));
+            }
+            Box::new(RegionLayer::new(
+                children,
+                true,
+                actions,
+                state.floating_drag.clone(),
+            ))
         }
     }
 }
@@ -135,6 +218,10 @@ struct PaneBody {
     content: Box<dyn Element>,
     on_activate: Rc<RefCell<dyn FnMut(u64)>>,
     on_lift: Rc<RefCell<dyn FnMut(u64, Vector2F)>>,
+    /// Whether a header press lifts the pane toward the tab strip. A floating
+    /// pane's header moves the pane instead, so the gesture is owned by the
+    /// region layer above it.
+    lift: bool,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -145,12 +232,14 @@ impl PaneBody {
         content: Box<dyn Element>,
         on_activate: Rc<RefCell<dyn FnMut(u64)>>,
         on_lift: Rc<RefCell<dyn FnMut(u64, Vector2F)>>,
+        lift: bool,
     ) -> Self {
         Self {
             pane_id,
             content,
             on_activate,
             on_lift,
+            lift,
             size: None,
             origin: None,
         }
@@ -207,17 +296,209 @@ impl Element for PaneBody {
         // dragged onto the tab strip and become a tab. A header control that
         // took the press keeps it (its own click wins), and the body below the
         // header is never a handle.
-        if let DispatchedEvent::MouseDown { position, .. } = event {
-            let on_header = !handled
-                && self
-                    .bounds()
-                    .map(|b| contains(b, *position) && position.y - b.min_y() <= TOPBAR_HEIGHT)
-                    .unwrap_or(false);
-            if on_header {
-                (self.on_lift.borrow_mut())(self.pane_id, *position);
+        if self.lift {
+            if let DispatchedEvent::MouseDown { position, .. } = event {
+                let on_header = !handled
+                    && self
+                        .bounds()
+                        .map(|b| contains(b, *position) && position.y - b.min_y() <= TOPBAR_HEIGHT)
+                        .unwrap_or(false);
+                if on_header {
+                    (self.on_lift.borrow_mut())(self.pane_id, *position);
+                }
             }
         }
         handled || activated
+    }
+}
+
+/// One pane placed at a normalized region of the pane area. The master-stack
+/// and floating layouts are the same layer: the first positions panes without
+/// overlap, the second draws them in z-order over one another.
+struct RegionChild {
+    pane_id: u64,
+    rect: PaneRect,
+    content: Box<dyn Element>,
+}
+
+impl RegionChild {
+    fn new(pane_id: u64, rect: PaneRect, content: Box<dyn Element>) -> Self {
+        Self {
+            pane_id,
+            rect,
+            content,
+        }
+    }
+}
+
+/// The corner grip a floating pane resizes from, in pixels.
+const FLOAT_RESIZE_GRIP: f32 = 16.0;
+
+struct RegionLayer {
+    children: Vec<RegionChild>,
+    floating: bool,
+    floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
+    on_float_start: FloatStartHandler,
+    on_float_rect: Rc<RefCell<dyn FnMut(u64, PaneRect)>>,
+    on_float_rect_end: Rc<RefCell<dyn FnMut()>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl RegionLayer {
+    fn new(
+        children: Vec<RegionChild>,
+        floating: bool,
+        actions: &UiActions,
+        floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
+    ) -> Self {
+        Self {
+            children,
+            floating,
+            floating_drag,
+            on_float_start: actions.on_float_start.clone(),
+            on_float_rect: actions.on_float_rect.clone(),
+            on_float_rect_end: actions.on_float_rect_end.clone(),
+            size: None,
+            origin: None,
+        }
+    }
+
+    fn child_bounds(&self, child: &RegionChild) -> Option<RectF> {
+        let origin = self.origin?;
+        let area = self.size?;
+        let px = child.rect.to_pixels(area);
+        Some(rectf(
+            origin.x() + px.min_x(),
+            origin.y() + px.min_y(),
+            px.width(),
+            px.height(),
+        ))
+    }
+}
+
+impl Element for RegionLayer {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let area = vec2f(constraint.max.x.max(1.0), constraint.max.y.max(1.0));
+        for child in &mut self.children {
+            let px = child.rect.to_pixels(area);
+            let _ = child.content.layout(
+                SizeConstraint::tight(vec2f(px.width().max(1.0), px.height().max(1.0))),
+                ctx,
+                app,
+            );
+        }
+        self.size = Some(area);
+        area
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let Some(area) = self.size else {
+            return;
+        };
+        for child in &mut self.children {
+            let px = child.rect.to_pixels(area);
+            child
+                .content
+                .paint(origin + vec2f(px.min_x(), px.min_y()), ctx, app);
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        // A drag owns every pointer move until it ends, wherever the pointer
+        // has travelled: the pane under it may have changed, the gesture has
+        // not.
+        if self.floating {
+            let drag = self.floating_drag.borrow().clone();
+            if let Some(drag) = drag {
+                match event {
+                    DispatchedEvent::MouseMove { position } => {
+                        (self.on_float_rect.borrow_mut())(drag.pane_id, drag.rect_at(*position));
+                        return true;
+                    }
+                    DispatchedEvent::MouseUp { .. } => {
+                        (self.on_float_rect_end.borrow_mut())();
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let position = match event {
+            DispatchedEvent::MouseDown { position, .. }
+            | DispatchedEvent::MouseUp { position, .. }
+            | DispatchedEvent::MouseMove { position } => Some(*position),
+            _ => None,
+        };
+        if let Some(position) = position {
+            let area = self.size.unwrap_or_else(|| vec2f(1.0, 1.0));
+            for index in (0..self.children.len()).rev() {
+                let Some(bounds) = self.child_bounds(&self.children[index]) else {
+                    continue;
+                };
+                if !contains(bounds, position) {
+                    continue;
+                }
+                if self.floating {
+                    if let DispatchedEvent::MouseDown { .. } = event {
+                        let pane = &self.children[index];
+                        let on_grip = position.x >= bounds.max_x() - FLOAT_RESIZE_GRIP
+                            && position.y >= bounds.max_y() - FLOAT_RESIZE_GRIP;
+                        let on_header = position.y - bounds.min_y() <= TOPBAR_HEIGHT;
+                        if on_grip {
+                            (self.on_float_start.borrow_mut())(
+                                pane.pane_id,
+                                FloatingDragMode::Resize,
+                                position,
+                                area,
+                            );
+                        } else if on_header {
+                            (self.on_float_start.borrow_mut())(
+                                pane.pane_id,
+                                FloatingDragMode::Move,
+                                position,
+                                area,
+                            );
+                        }
+                    }
+                    let _ = self.children[index]
+                        .content
+                        .dispatch_event(event, ctx, app);
+                    return true;
+                }
+                return self.children[index]
+                    .content
+                    .dispatch_event(event, ctx, app);
+            }
+            return false;
+        }
+        // Keys, focus changes and scrolling go to the topmost pane first, the
+        // same order a stack dispatches to its overlays.
+        for child in self.children.iter_mut().rev() {
+            if child.content.dispatch_event(event, ctx, app) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -227,6 +508,17 @@ fn build_leaf(
     actions: &UiActions,
     id: u64,
     kind: PaneKind,
+) -> Box<dyn Element> {
+    build_leaf_with_lift(app, state, actions, id, kind, true)
+}
+
+fn build_leaf_with_lift(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    id: u64,
+    kind: PaneKind,
+    lift: bool,
 ) -> Box<dyn Element> {
     let active = state.active_pane_id == id;
     let content = match kind {
@@ -264,7 +556,7 @@ fn build_leaf(
     // still get the event forwarded to them.
     let on_activate = actions.on_pane_activate.clone();
     let on_lift = actions.on_pane_lift.clone();
-    let content = Box::new(PaneBody::new(id, content, on_activate, on_lift));
+    let content = Box::new(PaneBody::new(id, content, on_activate, on_lift, lift));
     // Every surface draws the one topbar a pane has, so nothing is stacked
     // above the content here: the agent header is the pane's topbar, and the
     // terminal pane draws it for its shell view too (see `build_terminal`).

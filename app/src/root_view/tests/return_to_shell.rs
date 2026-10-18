@@ -231,7 +231,7 @@ impl Fixture {
 
         // 2. Cmd/Ctrl+F is handled. The root leaves the chord to a shell pane,
         // and the shell surface is now the one mounted, so the pane's own
-        // handler opens its whole-output filter.
+        // handler opens its scrollback find bar.
         let cmd_f = DispatchedEvent::KeyDown {
             key: "f".to_string(),
             modifiers: ModifiersState {
@@ -241,18 +241,19 @@ impl Fixture {
         };
         assert!(
             self.root.dispatch_event(&cmd_f, &mut EventContext, &app),
-            "the pane's own filter chord answers Cmd+F"
+            "the pane's own find chord answers Cmd+F"
         );
-        let filter = self
+        let find = self
             .state
             .borrow()
-            .terminal_global_filters
-            .get(&pane_id)
-            .cloned()
-            .expect("the pane's own filter is seeded");
-        assert!(filter.is_open(), "Cmd+F raised the shell pane's filter bar");
+            .terminal
+            .borrow()
+            .pane_ui(pane_id)
+            .map(|ui| ui.find.clone())
+            .expect("the pane's own find bar is seeded");
+        assert!(find.open, "Cmd+F raised the shell pane's find bar");
         assert!(
-            *filter.focused.borrow(),
+            find.focused,
             "and put the caret in its field, which is what types into it"
         );
 

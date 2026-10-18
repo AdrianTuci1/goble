@@ -1,7 +1,7 @@
 let meta = #{
     name: "goble-rollout",
     description: "Follow the repos, propose a clean change-set for a Goble subsystem, implement it sequentially directly in the repo (write + cargo check), then adversarially verify. Re-run per area and rewrite as progress lands.",
-    when_to_use: "Use to advance the Goble daemon/BYOH/voice/screen refactor one subsystem at a time, matching the grok-build + warp-new architecture.",
+    when_to_use: "Use to advance the Goble daemon/BYOH/voice refactor one subsystem at a time, matching the grok-build + warp-new architecture.",
     phases: [
         #{ title: "Assess", detail: "scan current state + reference patterns" },
         #{ title: "Plan", detail: "single plan agent proposes the change-set" },
@@ -11,7 +11,7 @@ let meta = #{
 };
 
 let area = if args == () { () } else { args.area };
-if area == () { pause("verification", "Pass args.area — the subsystem to advance (e.g. daemon-split, harness-byoh, voice, screen-computer-use, projects-ui, replay, sandbox-os)."); }
+if area == () { pause("verification", "Pass args.area — the subsystem to advance (e.g. daemon-split, harness-byoh, voice, projects-ui, replay, sandbox-os)."); }
 let mode = if args == () || args.mode == () { "full" } else { args.mode };
 let goble_root = if args == () || args.goble_root == () { "." } else { args.goble_root };
 let grok_ref = if args == () || args.grok_ref == () { "../grok-build" } else { args.grok_ref };

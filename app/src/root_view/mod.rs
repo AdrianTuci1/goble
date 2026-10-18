@@ -22,7 +22,6 @@ use goble_ui::{AppContext, Point, Vector2F};
 use crate::ai::AiState;
 use crate::media::MediaState;
 use crate::projects::ProjectsState;
-use crate::screen::ScreenState;
 use crate::state::UiState;
 use crate::ui::explorer::ExplorerCache;
 use crate::ui::file_view::FileCache;
@@ -30,6 +29,7 @@ use crate::ui::pickers::PickerCache;
 use crate::ui::UiActions;
 
 mod construct;
+mod control;
 mod element;
 mod events;
 mod rebuild;
@@ -45,7 +45,6 @@ pub struct RootView {
     ai_state: Rc<RefCell<AiState>>,
     projects_state: Rc<RefCell<ProjectsState>>,
     media_state: Rc<RefCell<MediaState>>,
-    screen_state: Rc<RefCell<ScreenState>>,
     desktop: Option<Arc<DesktopState>>,
     event_bus: Option<CollectingEventBus>,
     /// Handle used to request window-level changes (e.g. toggling fullscreen).
@@ -75,6 +74,11 @@ pub struct RootView {
     /// The callbacks built on the last rebuild; kept here so the root can
     /// dispatch global keyboard shortcuts (split/space) before the tree does.
     actions: Option<UiActions>,
+    /// The control socket's server and its UI-command receiver. The server's
+    /// handler forwards non-PTY verbs here; [`Self::process_control_requests`]
+    /// answers them on this thread, once per frame.
+    #[cfg(unix)]
+    control: Option<crate::control::ControlBridge>,
     /// The chips hovered this frame, drawn after the whole element tree (see
     /// [`Element::paint`]). It is the last thing the window paints, so a chip is
     /// never covered by the pane to the right of the element it belongs to, nor

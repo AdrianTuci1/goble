@@ -18,7 +18,7 @@ use crate::state::UiState;
 /// nothing to send the prompt to: no turn starts, no conversation is created for
 /// it and nothing is written into one — the pane shows only the notice band
 /// naming what is missing, and the composer keeps the text the user typed.
-pub(super) fn send_agent_prompt(
+pub(crate) fn send_agent_prompt(
     state: &mut UiState,
     desktop: Option<&Arc<DesktopState>>,
     media: &Rc<RefCell<MediaState>>,
@@ -44,6 +44,13 @@ pub(super) fn send_agent_prompt(
         }
     }
     let chat_id = state.pane_conversation_id(pane_id);
+    // A plain-Enter send may have taken the sidebar fallback rather than the
+    // pane's own binding. Record the id the turn will actually run on before it
+    // starts, so every event it reports is attributed to this pane even if the
+    // focus moves elsewhere before they arrive.
+    if let Some(chat_id) = &chat_id {
+        state.record_pane_conversation(pane_id, chat_id);
+    }
     // The turn's working directory is the pane's own cwd (falls back to the
     // global composer path for a pane without a session entry). A viewer pane
     // has no local cwd: the worker resolves the workspace directory for a turn
@@ -183,19 +190,25 @@ pub(super) fn run_terminal_command(
         None => None,
     };
     let leaves_the_shell = goble_core::ssh_command::returns_to_local_shell(text);
-    let mut reg = state.terminal.borrow_mut();
-    if let Some(session) = ssh_session {
-        reg.set_ssh_session(pane_id, Some(session));
-    } else if leaves_the_shell {
-        reg.set_ssh_session(pane_id, None);
-    }
-    reg.ensure_session(pane_id, &cwd);
-    if let Some(session) = reg.sessions.get_mut(&pane_id) {
-        if let Some(conversation) = conversation {
-            session.run_block_for_conversation(conversation);
+    {
+        let mut reg = state.terminal.borrow_mut();
+        if let Some(session) = ssh_session.clone() {
+            reg.set_ssh_session(pane_id, Some(session));
+        } else if leaves_the_shell {
+            reg.set_ssh_session(pane_id, None);
         }
-        let mut line = text.trim_end().to_string();
-        line.push('\n');
-        session.write(line.as_bytes());
+        reg.ensure_session(pane_id, &cwd);
+        if let Some(session) = reg.sessions.get_mut(&pane_id) {
+            if let Some(conversation) = conversation {
+                session.run_block_for_conversation(conversation);
+            }
+            let mut line = text.trim_end().to_string();
+            line.push('\n');
+            session.write(line.as_bytes());
+        }
     }
+    // A typed `ssh` line and a saved-host pane share one binding record: the
+    // line clears a saved host's name (it named its own target), and `exit`
+    // leaves a saved host behind as the reconnect offer.
+    state.note_shell_line(pane_id, text);
 }

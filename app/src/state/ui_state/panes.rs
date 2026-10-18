@@ -3,7 +3,12 @@ use super::*;
 impl UiState {
     /// Find the pane (if any) bound to a store conversation id. Used to route
     /// backend events (e.g. `chat:turn_finished`) to the pane that owns the turn.
+    /// An empty id names no conversation (an unbound terminal or file pane),
+    /// so it never matches one.
     pub fn pane_id_for_conversation(&self, conversation_id: &str) -> Option<u64> {
+        if conversation_id.is_empty() {
+            return None;
+        }
         self.pane_sessions.iter().find_map(|(id, s)| {
             if s.conversation_id == conversation_id {
                 Some(*id)
@@ -11,6 +16,23 @@ impl UiState {
                 None
             }
         })
+    }
+
+    /// Record that `pane_id` owns `conversation_id`, without rebinding the
+    /// active pane or reloading a transcript.
+    ///
+    /// A plain-Enter send may resolve its conversation through the sidebar
+    /// fallback ([`Self::pane_conversation_id`]); the id the turn actually ran
+    /// on is written here before it starts, so the turn's `chat:*` events reach
+    /// this pane even after the focus moves to another one.
+    pub fn record_pane_conversation(&mut self, pane_id: u64, conversation_id: &str) {
+        if conversation_id.is_empty() {
+            return;
+        }
+        self.pane_sessions
+            .entry(pane_id)
+            .or_default()
+            .conversation_id = conversation_id.to_string();
     }
 
     /// The store conversation id a pane is bound to. A pane with no explicit
@@ -155,8 +177,8 @@ impl UiState {
 
     /// A pane that is gone owns nothing: drop every entry this state keys by
     /// its id — its conversation and composer state, its runtime, its hover
-    /// flag, a child view open in it, its shell (and the pty with it) and its
-    /// viewer session.
+    /// flag, a child view open in it, its shell (killing its daemon session)
+    /// and its viewer session.
     ///
     /// Both teardown paths call this — the pane close and the tab close — and
     /// the viewer session is why neither may skip a part of it: the panes a
@@ -172,7 +194,16 @@ impl UiState {
         self.pane_hover.remove(&pane_id);
         self.sub_agent_views.remove(&pane_id);
         self.pane_workers.remove(&pane_id);
-        self.terminal.borrow_mut().drop_pane(pane_id);
+        self.pane_ssh.remove(&pane_id);
+        if self
+            .ssh_reconnect_prompt
+            .as_ref()
+            .is_some_and(|(pane, _)| *pane == pane_id)
+        {
+            self.ssh_reconnect_prompt = None;
+        }
+        self.prune_inbox_for_pane(pane_id);
+        self.terminal.borrow_mut().kill_pane(pane_id);
     }
 
     /// The display name of a conversation, falling back to its id when the
@@ -277,6 +308,11 @@ impl UiState {
                     .unwrap_or_default();
                 Some(AskUserUi::new(question, quick))
             });
+        // A suspended ask is a real report that the pane needs input, even when
+        // this run did not observe the `chat:ask_user` event (a restored pane).
+        if rt.pending_ask.is_some() {
+            rt.agent_state = PaneAgentState::NeedsInput;
+        }
         if session_owns_transcript {
             // The session's own recording, replayed when the pane (re-)attached:
             // one row per turn's prompt and reply, in session order.

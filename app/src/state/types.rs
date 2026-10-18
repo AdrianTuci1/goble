@@ -16,6 +16,32 @@ pub struct PaneSession {
     pub draft: String,
     /// This pane's working directory (shown as the composer's path label).
     pub path: String,
+    /// The daemon session the pane's shell was last attached to, so the app
+    /// can reattach to the same shell after a restart. Empty for a pane that
+    /// has never had a shell; a session the daemon no longer holds is replaced
+    /// by a fresh one, never reused by id.
+    #[serde(default)]
+    pub daemon_session_id: String,
+}
+
+/// The SSH binding a pane has, persisted with the layout.
+///
+/// A pane opened from the saved-host picker remembers the entry's `name`; a
+/// pane the user moved with a typed `ssh …` line remembers only the resolved
+/// session. When the session ends (`exit`), a named host keeps its name here as
+/// the reconnect offer, while an anonymous one leaves nothing behind.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SshPaneBinding {
+    /// The `~/.goble/hosts.toml` entry this pane was opened from, when it was.
+    #[serde(default)]
+    pub host_name: Option<String>,
+    /// The session the pane's shell is on, as the chip and command routing read
+    /// it. `None` once the session ended.
+    #[serde(default)]
+    pub session: Option<goble_core::ssh_command::SshSession>,
+    /// The saved host to offer reconnecting to after its session ended.
+    #[serde(default)]
+    pub reconnect: Option<String>,
 }
 
 /// How a viewer pane's session stands with the worker its conversation runs
@@ -238,14 +264,14 @@ pub struct PaneRuntime {
     pub command_selection: Option<Rc<RefCell<usize>>>,
     pub queued_prompt: Option<String>,
     pub busy: bool,
+    /// What this pane's agent is doing, derived from the real turn/approval/ask
+    /// events (and, for a TUI agent, the terminal's own mode and running
+    /// command). [`PaneAgentState::Unknown`] until an event reports otherwise.
+    pub agent_state: PaneAgentState,
     /// When this pane's current turn started, when the app observed it (it
     /// issued the turn). `None` means the start was not observed — the chrome
     /// must not invent an elapsed time for it.
     pub turn_started_at: Option<std::time::Instant>,
-    /// The screen source the harness handed off to (shown inline in chat).
-    pub inline_screen_source: Option<String>,
-    /// A detected BYOH handoff URI from the assistant output.
-    pub screen_link: Option<String>,
     /// Live tool calls still running for this pane, keyed by call id. Fed by the
     /// `chat:tool` event and overlaid on the transcript immediately, so a
     /// running call is visible before the turn ends. A finish/error clears the

@@ -20,7 +20,6 @@ pub(crate) fn do_provision(
     username: String,
     ssh_key: Option<PathBuf>,
     install_path: String,
-    remote_desktop: bool,
     local_test: bool,
 ) -> Result<()> {
     let pairing_code = generate_pairing_code();
@@ -45,7 +44,6 @@ pub(crate) fn do_provision(
         workspace_root: "/var/goblin/workspaces".to_string(),
         data_root: DEFAULT_DATA_ROOT.to_string(),
         pairing_code_hash: pairing_hash.clone(),
-        install_remote_desktop: remote_desktop,
         goblin_binary: std::env::current_exe()?
             .parent()
             .map(|p| p.join("goblin"))

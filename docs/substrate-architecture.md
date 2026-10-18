@@ -3,7 +3,7 @@
 This document describes Goble as a **reversible execution substrate**, not "yet another agent". The
 structure follows [Shepherd](https://github.com/shepherd-agents/shepherd) (a runtime that turns an
 agent's execution into a reversible, Git-like trace), but **with Goble's differentiators added**:
-*bring-your-own-harness*, interaction (voice + screen), and per-project observability.
+*bring-your-own-harness*, a terminal window manager with the harness integrated, and per-project observability.
 
 The **security/deploy** document (P2P cluster, identity, mTLS, roles) stays in
 [`ARCHITECTURE.md`](ARCHITECTURE.md); here we cover the *reversible execution* property.
@@ -13,14 +13,17 @@ The **security/deploy** document (P2P cluster, identity, mTLS, roles) stays in
 ## 1. Thesis / positioning
 
 > **"An observable and controllable substrate for agentic work, where you see and steer the work
-> per-project, in any medium and with voice."**
+> per-project, in a terminal, in any medium, and with voice."**
 
 We do not own the harness. Goble provides a **runtime + interaction layer** onto which anyone attaches
 their **own harness** (ours, Claude Code, Codex, or any agent CLI). From this follow the three moats
 (differentiators against competitors):
 
 1. **Reversibility** — execution is a Git-like trace: observe, fork, replay, revert.
-2. **Interaction** — live voice (STT→TTS) and screen (broadcast + computer-use).
+2. **Interaction** — a terminal window manager with the harness integrated: real command blocks
+   from OSC 133/DCS hooks, agent commands claimed and run in the user's own shell, transcripts and
+   tool calls beside the prompt, and SSH-bound or worker-fed panes. Live voice (STT→TTS) sits beside
+   it.
 3. **Per-project observability** — for each directory you see what's running and what isn't.
 
 Dogfooding criterion: if the founder uses it daily on his own projects, it's valid.
@@ -37,7 +40,7 @@ Shepherd structures agentic work around these concepts:
 | **task** | the function signature is the permission surface | a harness invocation: `Grant`/`GrantMode{ReadOnly,ReadWrite}` on declared repos; the contract lives in `goble-harness-types` and is checked in `goble-harness-protocol` |
 | **run** | durable, inspectable execution | `DaemonState` + `goble-replay` (per-turn `TurnRecord` ledger, `ExecutionRecord`/events), surfaced through `DaemonPort` |
 | **effect / changeset** | retained output (a proposal), before applying | transcript + `Checkpoint`/snapshot per turn; reviewable before *settlement* (apply/rewind/replay) |
-| **scope** | the boundary of a binding | **Medium** (Local / VM / RemoteXrdp / Browser / Container) + named bindings |
+| **scope** | the boundary of a binding | **Medium** (Local / VM / Remote / Browser / Container) + named bindings |
 | **grant (permission)** | permissions compiled into writable roots | `Grant`/`GrantMode` + `goble-sandbox` (`SandboxProfile`/`SandboxLevel`, Seatbelt/Landlock/seccomp/bwrap jail) |
 | **trace** | Git-like trace: fork / replay / revert | `DaemonPort::{rewind,fork,replay,checkpoints}` + `goble-replay`; transcript-only rewind plus optional *env restore* |
 | **settlement** | select / apply / release / discard | transcript settlement primitives + the harness's `snapshot`/`restore` reversibility contract |
@@ -55,11 +58,10 @@ Goble presents this behavior **for any harness**, through the reversibility seam
 |---|---|---|---|
 | 1 | **BYOH / harness-agnostic** | Reversibility is injected by the daemon from the event stream any harness already emits — the transcript is reversible for all; *env restore* is optional via `HarnessRuntime::snapshot`/`restore` (default `None`). On a BYOH substrate, task-signature permissions (`ReadOnly`/`ReadWrite` grants per repo) are the only safe path to "the agent controls the medium". | **implemented** |
 | 2 | **Interaction — voice** | Streaming STT (client + `StreamingSttEvent`) + TTS, `audio` feature (off by default) so it compiles without native audio deps. Voice is a medium interaction channel (*relayable* through the seam), not a separate feature. | **model implemented**; native backend `[target]` |
-| 3 | **Interaction — screen** | Two opposite directions (in a single concept you lose half): **broadcast** (emit your live screen — observability/demo) and **computer-use** (the agent controls input/screen). | **broadcast capture implemented** (`goble-screen-core` + `goble-screen-adapter` macOS `screencapture` + app/ screen UI); SDK + computer-use *control* adapter `[target]` |
+| 3 | **Interaction — terminal** | A terminal window manager with the harness integrated: panes are real terminals with OSC 133/DCS command blocks; the agent's commands are claimed and run in the user's own shell; a pane can be local, SSH-bound, or fed by a remote worker. | **implemented** (`goble-terminal`, `app/` panes, the claim protocol, worker/viewer panes) |
 | 4 | **Per-project observability** | Per directory: what's running, what's scheduled, which session is active, what finished. This is the **primary** panel, not a secondary one. "Agent" degrades to a run config. | **implemented**: daemon records carry `project_id`/`medium_id`; durable `projects`/`sessions`/`tasks`; app/ `projects` panel |
 | 5 | **Normal remote deploy** | **Headless/remote** daemon on a VPS/K8s over mTLS WebSocket + **embedded** daemon in-process in the GUI binary. Two composition roots, one `DaemonPort`. | **implemented** (`goblin-worker` and `DesktopState` both drive `goble-daemon`; headless now gets reversibility + `run_workflow`) |
-| 6 | **Medium selector** | An agent-controllable GUI substrate (warp-terminal style); toggle between media (local/VM/xrdp/browser). | **implemented** (app/ medium selector maps the chosen medium onto `HarnessTurn.medium_id`/`project_id`) |
-| 7 | **Share credentials / video without downloading** | Share Chrome cookies / open the remote xrdp window so the agent can grab credentials; watch testing videos without local download. | **target** |
+| 6 | **Medium selector** | An agent-controllable terminal substrate (warp-terminal style); toggle between media (local/VM/remote worker/browser). | **implemented** (app/ medium selector maps the chosen medium onto `HarnessTurn.medium_id`/`project_id`) |
 
 ---
 
@@ -79,12 +81,12 @@ GUI (app/, thick-app on goble-ui wgpu/winit)
 ```
 
 - **Types rule**: `types <- protocol <- runtime` — model types (`goble-harness-types`, `goble-voice`,
-  `goble-workflow`, `goble-screen-core`) don't depend on transport; protocol (wire) and runtime
+  `goble-workflow`) don't depend on transport; protocol (wire) and runtime
   (trait + registry) follow in turn.
 - **Thick-app rule**: a module goes into `crates/` if it doesn't depend on `app/`/`wgpu`. `crates/*`
   never depends on `app/`.
-- **Feature flags** (`FeatureFlag` + cargo features) for heavy subsystems (audio, sandbox backends,
-  screen platform), keeping the common-path build light.
+- **Feature flags** (`FeatureFlag` + cargo features) for heavy subsystems (audio, sandbox backends),
+  keeping the common-path build light.
 
 ### Two composition roots, one core
 
@@ -97,8 +99,8 @@ GUI (app/, thick-app on goble-ui wgpu/winit)
              Snapshot · Rewind · Fork · Replay · Checkpoints
 ```
 
-The GUI **doesn't know** whether the daemon runs locally (where the *local* voice and screen live) or
-on a VPS; the "medium" is just **which daemon listens**.
+The GUI **doesn't know** whether the daemon runs locally (where the *local* voice and terminal live)
+or on a VPS; the "medium" is just **which daemon listens**.
 
 ---
 
@@ -117,9 +119,6 @@ on a VPS; the "medium" is just **which daemon listens**.
 | `goble-workflow` | types | `Workflow`/`Step`/`Trigger`, `WorkflowEngine`, `WorkflowRun`, `WorkflowHostRequest`, `MockStep`; wired into the daemon via `StepExecutor` + `WorkflowHost` + `DaemonPort::run_workflow` | ✅ |
 | `goble-replay` | runtime | per-turn transcript ledger + rewind/revert/fork/replay + settlement (`select`/`apply`/`release`/`discard`); wired into the daemon | ✅ |
 | `goble-persistence` | runtime | `CheckpointStore` (SQLite) implementing `CheckpointSink`; `projects`/`sessions`/`tasks` entities; seeds via `~/.goble/checkpoints.sqlite` | ✅ |
-| `goble-screen-core` | types | `ScreenFrame`, `ScreenCapturer`/`ScreenController`, `ScreenRegistry`, mocks | ✅ |
-| `goble-screen-sdk` | runtime | connection + server & harness entry points | `[target]` |
-| `goble-screen-adapter` | runtime | local capture: macOS `screencapture` → RGBA8 `ScreenFrame` (via `image`), synthetic/mock elsewhere; factory + `ScreenRegistry` wired into `DesktopState` | ✅ |
 | `goble-daemon-protocol` | protocol | GUI↔daemon seam: `DaemonRequest`/`DaemonEvent`/`DaemonMessage` | ✅ |
 | `goble-daemon` | runtime | `DaemonPort`, `DaemonState`, harness registry, execution ledger (`project_id`/`medium_id`), `DaemonEventSink`, `CheckpointSink`, `run_workflow` | ✅ |
 | `goble-daemon-client` | runtime | `DaemonClient` (in-process `InProcessClient` / over WS `WebSocketClient`) | ✅ |
@@ -130,7 +129,7 @@ on a VPS; the "medium" is just **which daemon listens**.
 
 | Primitive | Meaning |
 |---|---|
-| **Medium** | which daemon listens (Local / VM / RemoteXrdp / Browser / Container) — the medium toggle |
+| **Medium** | which daemon listens (Local / VM / Remote / Browser / Container) — the medium toggle |
 | **Project** | a directory: the unit of observability and isolation |
 | **Session** | a working worktree/session inside a project |
 | **Task** | a harness invocation with grants (`ReadOnly`/`ReadWrite`) and a trigger (manual/cron/http/heartbeat) |
@@ -166,11 +165,11 @@ on a VPS; the "medium" is just **which daemon listens**.
 - The harness seam (types/protocol/runtime) + the internal/cli/foreign adapters.
 - The daemon core (`DaemonPort`/`DaemonState`) + full reversibility in `goble-daemon` (snapshot
   capture on settle + `restore` on rewind + transcript-only fallback) + persistence via `CheckpointStore`.
-- The model capability crates: `goble-voice`, `goble-sandbox`, `goble-workflow`, `goble-screen-core`.
+- The model capability crates: `goble-voice`, `goble-sandbox`, `goble-workflow`.
 
 **Target (the next phases of the plan):** substrate + reversibility (done) → per-project observability
-(data + UI) → voice (native backend) → screen (SDK/adapter). Order matters: interaction (voice,
-screen) and observability are the unfinished and most expensive parts (2–3× the harness work).
+(data + UI) → voice (native backend). Order matters: interaction (voice) and observability are the
+unfinished and most expensive parts (2–3× the harness work).
 
 ---
 

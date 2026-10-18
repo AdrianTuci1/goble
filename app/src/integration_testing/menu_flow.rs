@@ -55,7 +55,7 @@ fn render_with_pointer(
     app: &AppContext,
     pos: Option<(f32, f32)>,
 ) -> Vec<RenderCommand> {
-    let _ = root.layout(SizeConstraint::loose(vec2f(W, H)), &mut LayoutContext::default(), app);
+    let _ = root.layout(SizeConstraint::loose(vec2f(W, H)), &mut LayoutContext, app);
     let renderer = Renderer::new();
     let mut paint_ctx = PaintContext::new(renderer);
     if let Some((x, y)) = pos {
@@ -125,10 +125,30 @@ fn topmost_text_position(cmds: &[RenderCommand], text: &str) -> Option<(f32, f32
         .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
 }
 
+/// The top-most place `label` was drawn, matching either the whole label or
+/// the prefix a tab keeps when its room cuts it short with an ellipsis. A long
+/// working-directory label is elided in the top strip, so an exact match would
+/// only find the composer's pill lower down.
+fn topmost_label_position(cmds: &[RenderCommand], label: &str) -> Option<(f32, f32)> {
+    cmds.iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawText { text, origin, .. }
+                if text == label
+                    || text
+                        .strip_suffix('…')
+                        .is_some_and(|stem| !stem.is_empty() && label.starts_with(stem)) =>
+            {
+                Some((origin.x + 8.0, origin.y + 6.0))
+            }
+            _ => None,
+        })
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+}
+
 /// Dispatch a full press+release at `pos`. Between the two, we re-render so the
 /// tree is rebuilt (matching the real about_to_wait redraw between down and up).
 fn click(root: &mut RootView, app: &AppContext, pos: (f32, f32)) {
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     let down = DispatchedEvent::MouseDown { position: vec2f(pos.0, pos.1), button: 0 };
     let _ = root.dispatch_event(&down, &mut ctx, app);
     // Rebuild the tree (a redraw happens between down and up in the real app).
@@ -142,7 +162,7 @@ fn click(root: &mut RootView, app: &AppContext, pos: (f32, f32)) {
 /// by the frame between press and release, so that frame must see the pointer —
 /// the real one does, because the pointer has not moved.
 fn click_with_pointer(root: &mut RootView, app: &AppContext, pos: (f32, f32)) {
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     let down = DispatchedEvent::MouseDown { position: vec2f(pos.0, pos.1), button: 0 };
     let _ = root.dispatch_event(&down, &mut ctx, app);
     let _ = render_with_pointer(root, app, Some(pos));
@@ -154,7 +174,7 @@ fn click_with_pointer(root: &mut RootView, app: &AppContext, pos: (f32, f32)) {
 /// workspace answers, so the pane that appears is a real one — session, focus
 /// and all — rather than one a test wrote into the tree.
 fn split_right(root: &mut RootView, app: &AppContext) {
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     let _ = root.dispatch_event(
         &DispatchedEvent::KeyDown {
             key: " ".to_string(),
@@ -241,7 +261,7 @@ fn topbar_environment_menu_opens_a_space_in_that_environment() {
         (state.spaces.len(), state.spaces.last().map(|s| s.name.clone()))
     };
     let cmds = render(&mut root, &app);
-    let item = text_center(&cmds, "Remote (xrdp)").expect("the menu lists the environments");
+    let item = text_center(&cmds, "Remote (worker)").expect("the menu lists the environments");
     click(&mut root, &app, item);
 
     let new_name = {
@@ -254,7 +274,7 @@ fn topbar_environment_menu_opens_a_space_in_that_environment() {
         );
         let space = state.spaces.last().expect("the new space");
         assert_eq!(
-            space.medium, "remote-xrdp",
+            space.medium, "remote",
             "the new space runs on the chosen environment"
         );
         assert_eq!(
@@ -282,11 +302,13 @@ fn topbar_environment_menu_opens_a_space_in_that_environment() {
 
     // The tab is drawn in the top strip, above the body, next to the old ones.
     // The new tab is named after the directory its pane opens in, so the same
-    // string is also drawn by the composer's working-directory pill lower down:
-    // the top-most run is the tab.
+    // string is also drawn by the composer's working-directory pill lower down
+    // (the full name there, elided in the strip when it does not fit): the
+    // top-most run, whole or elided, is the tab.
     let cmds = render(&mut root, &app);
     let topbar_height = goble_app::ui::shell::TOPBAR_HEIGHT;
-    let (_, tab_y) = topmost_text_position(&cmds, &new_name).expect("the new space's tab is drawn");
+    let (_, tab_y) =
+        topmost_label_position(&cmds, &new_name).expect("the new space's tab is drawn");
     assert!(
         tab_y < topbar_height,
         "the new space's tab sits in the top strip (y={tab_y}, bar is {topbar_height} tall)"
@@ -307,7 +329,7 @@ fn hovering_an_environment_row_offers_make_default_in_a_tray() {
     click(&mut root, &app, trigger);
 
     let cmds = render(&mut root, &app);
-    let row = topmost_text_position(&cmds, "Remote (xrdp)").expect("the menu lists the environments");
+    let row = topmost_text_position(&cmds, "Remote (worker)").expect("the menu lists the environments");
     assert!(
         text_center(&cmds, "Make default").is_none(),
         "no tray is drawn before the pointer is over a row"
@@ -318,7 +340,7 @@ fn hovering_an_environment_row_offers_make_default_in_a_tray() {
     let _ = render_with_pointer(&mut root, &app, Some(row));
     let cmds = render_with_pointer(&mut root, &app, Some(row));
 
-    let names = text_positions(&cmds, "Remote (xrdp)");
+    let names = text_positions(&cmds, "Remote (worker)");
     assert_eq!(
         names.len(),
         2,
@@ -346,7 +368,7 @@ fn hovering_an_environment_row_offers_make_default_in_a_tray() {
 
     assert_eq!(
         root.media_state_rc().borrow().selected_medium_id(),
-        "remote-xrdp",
+        "remote",
         "\"Make default\" makes that environment the one new spaces start in"
     );
     let state_rc = root.state_rc();
@@ -369,9 +391,9 @@ fn hovering_an_environment_row_offers_make_default_in_a_tray() {
         "the tray closes with the menu"
     );
     assert!(
-        text_positions(&cmds, "Remote (xrdp)").is_empty(),
+        text_positions(&cmds, "Remote (worker)").is_empty(),
         "the composer draws no environment pill any more: {:?}",
-        text_positions(&cmds, "Remote (xrdp)")
+        text_positions(&cmds, "Remote (worker)")
     );
 }
 
@@ -385,7 +407,7 @@ fn the_tray_s_make_default_does_nothing_for_the_environment_already_default() {
     // The active environment is the one new spaces already start in.
     root.media_state_rc()
         .borrow_mut()
-        .select_medium("remote-xrdp");
+        .select_medium("remote");
 
     let _ = render(&mut root, &app);
     let cmds = render(&mut root, &app);
@@ -393,7 +415,7 @@ fn the_tray_s_make_default_does_nothing_for_the_environment_already_default() {
     click(&mut root, &app, trigger);
 
     let cmds = render(&mut root, &app);
-    let row = topmost_text_position(&cmds, "Remote (xrdp)").expect("the menu lists the environments");
+    let row = topmost_text_position(&cmds, "Remote (worker)").expect("the menu lists the environments");
     let _ = render_with_pointer(&mut root, &app, Some(row));
     let cmds = render_with_pointer(&mut root, &app, Some(row));
     let button = text_center(&cmds, "Make default").expect("the tray still offers the button");
@@ -403,7 +425,7 @@ fn the_tray_s_make_default_does_nothing_for_the_environment_already_default() {
 
     assert_eq!(
         root.media_state_rc().borrow().selected_medium_id(),
-        "remote-xrdp",
+        "remote",
         "the environment that is already the default is left as it is"
     );
     let state_rc = root.state_rc();
@@ -503,7 +525,7 @@ fn assert_composer_pill_opens(
     // Layout + paint so the trigger's bounds are known.
     let _ = composer.layout(
         SizeConstraint::loose(vec2f(600.0, 400.0)),
-        &mut LayoutContext::default(),
+        &mut LayoutContext,
         &app,
     );
     let renderer = Renderer::new();
@@ -512,7 +534,7 @@ fn assert_composer_pill_opens(
     let cmds = paint_ctx.renderer.take().map(|r| r.commands().to_vec()).unwrap_or_default();
 
     let (x, y) = trigger(&cmds).expect("composer pill trigger");
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     let down = DispatchedEvent::MouseDown { position: vec2f(x, y), button: 0 };
     let up = DispatchedEvent::MouseUp { position: vec2f(x, y), button: 0 };
     // The composer is rebuilt each frame too, so re-lay it out + paint it
@@ -521,7 +543,7 @@ fn assert_composer_pill_opens(
     let _ = composer.dispatch_event(&down, &mut ctx, &app);
     let _ = composer.layout(
         SizeConstraint::loose(vec2f(600.0, 400.0)),
-        &mut LayoutContext::default(),
+        &mut LayoutContext,
         &app,
     );
     let renderer = Renderer::new();
@@ -598,11 +620,11 @@ fn composer_environment_pill_opens_menu() {
     let open = Rc::new(RefCell::new(false));
     let open_menu = open.clone();
     let composer = ChatComposer::new()
-        .with_harness_label("Remote (xrdp)")
+        .with_harness_label("Remote (worker)")
         .with_harness_menu(
             vec![
                 PopupMenuItem::new("Local"),
-                PopupMenuItem::new("Remote (xrdp)").selected(),
+                PopupMenuItem::new("Remote (worker)").selected(),
             ],
             open_menu,
             |_| {},

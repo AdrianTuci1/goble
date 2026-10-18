@@ -1,0 +1,24 @@
+[package]
+name = "goble-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "The Goble MCP server: Model Context Protocol tools over stdio for a running app."
+
+[[bin]]
+name = "goble-mcp"
+path = "src/main.rs"
+
+[lib]
+name = "goble_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+goble-control = { path = "../goble-control" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

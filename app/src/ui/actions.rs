@@ -5,9 +5,25 @@ use goble_ui::geometry::Vector2F;
 use goble_ui::SettingsPage;
 
 use super::color_picker;
-use super::pane::NavDir;
+use super::pane::{FloatingDragMode, NavDir, PaneRect};
 use super::tab_menu::TabMenuAction;
 use super::types::{AppTab, SettingsCategory, SidebarView, WorkspaceRouting};
+
+/// Start a floating pane drag: the pane, the mode, the pointer where the press
+/// landed, and the space's pane area in pixels.
+pub type FloatStartHandler =
+    Rc<RefCell<dyn FnMut(u64, FloatingDragMode, Vector2F, Vector2F)>>;
+/// Answer the inline ask-user card, with an optional credential.
+pub type AnswerAskHandler = Rc<RefCell<dyn FnMut(String, Option<(String, String)>)>>;
+/// Answer a suspended command proposal from a pane.
+pub type CommandDecisionHandler =
+    Rc<RefCell<dyn FnMut(u64, String, goble_core::harness::CommandDecision)>>;
+/// Move a lifted pane with the pointer, over the space's tab strip.
+pub type PaneLiftMoveHandler = Rc<RefCell<dyn FnMut(Vector2F, Option<usize>)>>;
+/// Save the LLM form's five fields.
+pub type SaveLlmHandler = Rc<RefCell<dyn FnMut(String, String, String, String, String)>>;
+/// A callback carrying three strings.
+pub type ThreeStringHandler = Rc<RefCell<dyn FnMut(String, String, String)>>;
 
 /// Callbacks supplied by the host app for the main view. Created fresh on
 /// every rebuild; they mutate app-owned state, which is rendered back on the
@@ -67,13 +83,12 @@ pub struct UiActions {
     /// Submit the composed answer of the inline ask-user card. The optional
     /// `(name, value)` carries a credential entered in the card, threaded out
     /// separately from the answer so the secret never enters the transcript.
-    pub on_answer_ask: Rc<RefCell<dyn FnMut(String, Option<(String, String)>)>>,
+    pub on_answer_ask: AnswerAskHandler,
     /// Skip the inline ask-user card.
     pub on_skip_ask: Rc<RefCell<dyn FnMut()>>,
     /// Answer a suspended command proposal from `pane_id`: `(pane, proposal id,
     /// decision)` resumes the turn (approve/edit runs it, reject fails it).
-    pub on_command_decision:
-        Rc<RefCell<dyn FnMut(u64, String, goble_core::harness::CommandDecision)>>,
+    pub on_command_decision: CommandDecisionHandler,
     /// Toggle one pane's auto-approve (autonomy) switch above its composer.
     pub on_toggle_auto_approve: Rc<RefCell<dyn FnMut(u64, bool)>>,
     /// Turn modal (vim) editing on or off for the rich input. The choice is
@@ -95,7 +110,18 @@ pub struct UiActions {
     /// Dismiss a queued prompt.
     pub on_dismiss_queued: Rc<RefCell<dyn FnMut()>>,
     pub on_menu: Rc<RefCell<dyn FnMut()>>,
+    /// Toggle the global inbox overlay (the topbar control and Cmd+Shift+I).
     pub on_inbox: Rc<RefCell<dyn FnMut()>>,
+    /// Close the inbox overlay without changing anything.
+    pub on_close_inbox: Rc<RefCell<dyn FnMut()>>,
+    /// Move the inbox's highlight by `step` rows, clamped to the list.
+    pub on_inbox_move: Rc<RefCell<dyn FnMut(i32)>>,
+    /// Acknowledge the highlighted inbox item.
+    pub on_inbox_ack: Rc<RefCell<dyn FnMut()>>,
+    /// Acknowledge every inbox item.
+    pub on_inbox_ack_all: Rc<RefCell<dyn FnMut()>>,
+    /// Jump to the pane the highlighted inbox item belongs to.
+    pub on_inbox_jump: Rc<RefCell<dyn FnMut()>>,
     pub on_settings: Rc<RefCell<dyn FnMut()>>,
     /// Toggle the left conversation sidebar (topbar sidebar button).
     pub on_toggle_sidebar: Rc<RefCell<dyn FnMut()>>,
@@ -249,6 +275,31 @@ pub struct UiActions {
     pub on_split_right: Rc<RefCell<dyn FnMut()>>,
     /// Split the active pane downward (Cmd+Shift+D).
     pub on_split_down: Rc<RefCell<dyn FnMut()>>,
+    /// Cycle the active space's layout: BSP → master-stack → floating
+    /// (Cmd+Shift+L and the palette).
+    pub on_cycle_layout: Rc<RefCell<dyn FnMut()>>,
+    /// Start a floating pane drag: the pane, the mode, the pointer where the
+    /// press landed and the space's pane area in pixels.
+    pub on_float_start: FloatStartHandler,
+    /// Move or resize a floating pane after a drag.
+    pub on_float_rect: Rc<RefCell<dyn FnMut(u64, PaneRect)>>,
+    /// The floating drag ended; persist the rect it settled on.
+    pub on_float_rect_end: Rc<RefCell<dyn FnMut()>>,
+    /// Open the saved-host picker (Cmd+Shift+N).
+    pub on_open_ssh_host_picker: Rc<RefCell<dyn FnMut()>>,
+    /// Close the saved-host picker without opening anything.
+    pub on_close_ssh_host_picker: Rc<RefCell<dyn FnMut()>>,
+    /// Move the host picker's selection.
+    pub on_ssh_host_move: Rc<RefCell<dyn FnMut(i32)>>,
+    /// Open the saved host at this row in a new terminal pane.
+    pub on_ssh_host_pick: Rc<RefCell<dyn FnMut(usize)>>,
+    /// A line submitted at a shell's own prompt (typed in the grid), so an
+    /// `ssh` line binds the pane and `exit` offers the saved host again.
+    pub on_shell_line: Rc<RefCell<dyn FnMut(u64, String)>>,
+    /// Reconnect the pane whose SSH session just ended to the saved host.
+    pub on_ssh_reconnect: Rc<RefCell<dyn FnMut()>>,
+    /// Dismiss the reconnect offer.
+    pub on_ssh_reconnect_dismiss: Rc<RefCell<dyn FnMut()>>,
     /// Close the active pane, focusing the surviving sibling.
     pub on_close_pane: Rc<RefCell<dyn FnMut()>>,
     /// Create a new terminal pane by splitting the active pane downward.
@@ -310,7 +361,7 @@ pub struct UiActions {
     pub on_pane_lift: Rc<RefCell<dyn FnMut(u64, Vector2F)>>,
     /// Track the pointer while a pane is lifted, with the tab index the drop
     /// would land at (`None` while the pointer is off the tab strip).
-    pub on_pane_lift_move: Rc<RefCell<dyn FnMut(Vector2F, Option<usize>)>>,
+    pub on_pane_lift_move: PaneLiftMoveHandler,
     /// Release a lifted pane: `Some(index)` gives it a tab of its own at that
     /// insertion point, `None` — a release anywhere but the strip — cancels the
     /// drag with no change to the workspace.
@@ -334,7 +385,7 @@ pub struct UiActions {
     /// Settings: save the profile (name, email).
     pub on_save_profile: Rc<RefCell<dyn FnMut(String, String)>>,
     /// Settings: save the LLM config (provider, model, api_key, base_url, temperature).
-    pub on_save_llm: Rc<RefCell<dyn FnMut(String, String, String, String, String)>>,
+    pub on_save_llm: SaveLlmHandler,
     /// Settings: register a worker (name, url).
     pub on_add_worker: Rc<RefCell<dyn FnMut(String, String)>>,
     /// Settings: remove a worker by id.
@@ -346,13 +397,9 @@ pub struct UiActions {
     /// Settings: unlock the cluster identity (passphrase).
     pub on_unlock_cluster: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: add an authorized key (name, pem, fingerprint).
-    pub on_add_authorized_key: Rc<RefCell<dyn FnMut(String, String, String)>>,
+    pub on_add_authorized_key: ThreeStringHandler,
     /// Settings: remove an authorized key by id.
     pub on_remove_authorized_key: Rc<RefCell<dyn FnMut(String)>>,
-    /// Close the inline remote-desktop block the harness handed off to.
-    pub on_close_inline_screen: Rc<RefCell<dyn FnMut()>>,
-    /// Open a remote desktop from a detected BYOH handoff URI.
-    pub on_open_screen_link: Rc<RefCell<dyn FnMut(String)>>,
     /// Open an external URL clicked in the transcript. The app guards it to
     /// `http`/`https` before any OS opener sees it.
     pub on_open_url: Rc<RefCell<dyn FnMut(String)>>,
@@ -406,7 +453,7 @@ pub struct AiActions {
     pub on_connector_search_change: Rc<RefCell<dyn FnMut(String)>>,
     pub on_install_open: Rc<RefCell<dyn FnMut()>>,
     pub on_install_edit: Rc<RefCell<dyn FnMut(String)>>,
-    pub on_install_pick: Rc<RefCell<dyn FnMut(String, String, String)>>,
+    pub on_install_pick: ThreeStringHandler,
     pub on_install_close: Rc<RefCell<dyn FnMut()>>,
     pub on_install_name_change: Rc<RefCell<dyn FnMut(String)>>,
     pub on_install_source_change: Rc<RefCell<dyn FnMut(String)>>,
@@ -431,7 +478,7 @@ pub struct MediaActions {
     pub on_toggle: Rc<RefCell<dyn FnMut(String)>>,
     /// Select a session leaf: `(medium_id, project_id, session_id)`. Sets the
     /// active medium+project+session for the next turn.
-    pub on_select_session: Rc<RefCell<dyn FnMut(String, String, String)>>,
+    pub on_select_session: ThreeStringHandler,
     /// Select a work environment (medium) by id; resets the project to that
     /// medium's default and clears the session.
     pub on_select_medium: Rc<RefCell<dyn FnMut(String)>>,
@@ -441,36 +488,3 @@ pub struct MediaActions {
     pub on_add_medium: Rc<RefCell<dyn FnMut(String)>>,
 }
 
-/// Callbacks supplied by the host app for the screen panel.
-pub struct ScreenActions {
-    /// Open the screen sheet.
-    pub on_open: Rc<RefCell<dyn FnMut()>>,
-    /// Close the screen sheet.
-    pub on_close: Rc<RefCell<dyn FnMut()>>,
-    /// Toggle live capture (broadcast) of the selected source.
-    pub on_toggle_broadcast: Rc<RefCell<dyn FnMut(bool)>>,
-    /// Toggle computer-use (click/type/scroll) input.
-    pub on_toggle_computer_use: Rc<RefCell<dyn FnMut(bool)>>,
-    /// Select a source by its id.
-    pub on_select_source: Rc<RefCell<dyn FnMut(String)>>,
-    /// Reload the capturable/controllable source list from the registry.
-    pub on_refresh_sources: Rc<RefCell<dyn FnMut()>>,
-    /// Start recording screen observation + input events.
-    pub on_record_start: Rc<RefCell<dyn FnMut()>>,
-    /// Stop recording (the events remain available for replay).
-    pub on_record_stop: Rc<RefCell<dyn FnMut()>>,
-    /// Replay the recorded events once, scheduling them by their timing.
-    pub on_replay_once: Rc<RefCell<dyn FnMut()>>,
-    /// Replay the recorded events in a loop.
-    pub on_replay_loop: Rc<RefCell<dyn FnMut()>>,
-    /// Stop a running replay.
-    pub on_replay_stop: Rc<RefCell<dyn FnMut()>>,
-    /// Discard the recorded events.
-    pub on_clear_recording: Rc<RefCell<dyn FnMut()>>,
-    /// A pointer click at source pixel `(x, y)` on the selected source.
-    pub on_screen_click: Rc<RefCell<dyn FnMut(u32, u32)>>,
-    /// Typed text forwarded to the selected source's focused field.
-    pub on_screen_type: Rc<RefCell<dyn FnMut(String)>>,
-    /// A scroll of `(dx, dy)` ticks on the selected source.
-    pub on_screen_scroll: Rc<RefCell<dyn FnMut(i32, i32)>>,
-}

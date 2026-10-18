@@ -65,6 +65,18 @@
   #define SourceBinary "..\..\target\release\goble-app.exe"
 #endif
 
+#ifndef PtyDaemonBinary
+  #define PtyDaemonBinary "..\..\target\release\goble-pty-daemon.exe"
+#endif
+
+#ifndef CliBinary
+  #define CliBinary "..\..\target\release\goble-cli.exe"
+#endif
+
+#ifndef McpBinary
+  #define McpBinary "..\..\target\release\goble-mcp.exe"
+#endif
+
 #ifndef AppIconPath
   #define AppIconPath "..\..\crates\goble-desktop-native\resources\icons\icon.ico"
 #endif
@@ -171,6 +183,11 @@ Name: "startupicon"; Description: "Start {#MyAppName} when you sign in"; GroupDe
 
 [Files]
 Source: "{#SourceBinary}"; DestDir: "{app}"; DestName: "{#MyExeName}"; Flags: ignoreversion
+; The PTY daemon and the control clients live next to the app: that sibling
+; path is where the app resolves the daemon before falling back to PATH.
+Source: "{#PtyDaemonBinary}"; DestDir: "{app}"; DestName: "goble-pty-daemon.exe"; Flags: ignoreversion
+Source: "{#CliBinary}"; DestDir: "{app}"; DestName: "goble-cli.exe"; Flags: ignoreversion
+Source: "{#McpBinary}"; DestDir: "{app}"; DestName: "goble-mcp.exe"; Flags: ignoreversion
 Source: "{#AppIconPath}"; DestDir: "{app}"; DestName: "goble.ico"; Flags: ignoreversion
 Source: "EULA.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoLicense}"; DestDir: "{app}"; DestName: "LICENSE"; Flags: ignoreversion

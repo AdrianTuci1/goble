@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use portable_pty::CommandBuilder;
-
 // ---------------------------------------------------------------------------
 // Child process / PTY session
 // ---------------------------------------------------------------------------
@@ -42,50 +40,106 @@ fn integration_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
-/// Build a pane's shell command, pointing a supported shell at its
+/// How the daemon should start one pane's shell.
+///
+/// The integration script is still the app's: bash is pointed at it with
+/// `--rcfile`, zsh with `$ZDOTDIR` plus the shim's own variable. The daemon
+/// only receives a program, its arguments and its environment, so PTY bytes
+/// (and the hooks inside them) remain the app's to interpret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ShellLaunch {
+    pub program: String,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+    /// Scratch directory to remove when the session drops.
+    pub integration_dir: Option<PathBuf>,
+}
+
+/// Build a pane's shell launch, pointing a supported shell at its
 /// shell-integration script. bash is given `--rcfile`; zsh reads
 /// `$ZDOTDIR/.zshrc`. Each script then reads the user's own rc itself, because
 /// both mechanisms replace the file the shell would normally read. An
 /// unsupported shell is spawned unchanged and degrades to a plain terminal.
-///
-/// Returns the command and the scratch directory to remove on drop.
-pub(super) fn shell_command(shell: &str, cwd: PathBuf) -> (CommandBuilder, Option<PathBuf>) {
-    let mut cmd = CommandBuilder::new(shell);
-    cmd.cwd(cwd);
-
+pub(super) fn shell_command(shell: &str) -> ShellLaunch {
+    let program = shell.to_string();
     let name = shell_name(shell);
     if name.starts_with("bash") {
         let Some(dir) = integration_dir() else {
-            return (cmd, None);
+            return ShellLaunch {
+                program,
+                args: Vec::new(),
+                env: Vec::new(),
+                integration_dir: None,
+            };
         };
         let script = dir.join("goble.bashrc");
         if std::fs::write(&script, goble_terminal::integration::BASH).is_err() {
-            return (cmd, None);
+            return ShellLaunch {
+                program,
+                args: Vec::new(),
+                env: Vec::new(),
+                integration_dir: None,
+            };
         }
-        cmd.arg("--rcfile");
-        cmd.arg(&script);
-        (cmd, Some(dir))
+        ShellLaunch {
+            program,
+            args: vec![
+                "--rcfile".to_string(),
+                script.display().to_string(),
+            ],
+            env: Vec::new(),
+            integration_dir: Some(dir),
+        }
     } else if name.starts_with("zsh") {
         let Some(dir) = integration_dir() else {
-            return (cmd, None);
+            return ShellLaunch {
+                program,
+                args: Vec::new(),
+                env: Vec::new(),
+                integration_dir: None,
+            };
         };
         if std::fs::write(dir.join(".zshrc"), goble_terminal::integration::ZSH).is_err() {
-            return (cmd, None);
+            return ShellLaunch {
+                program,
+                args: Vec::new(),
+                env: Vec::new(),
+                integration_dir: None,
+            };
         }
         if std::fs::write(dir.join(".zshenv"), goble_terminal::integration::ZSH_ENV).is_err() {
-            return (cmd, None);
+            return ShellLaunch {
+                program,
+                args: Vec::new(),
+                env: Vec::new(),
+                integration_dir: None,
+            };
         }
+        let mut env = Vec::new();
         // Hand the script the directory of the user's own zshrc; ZDOTDIR now
         // points at ours, so it cannot find it on its own.
         if let Some(original) = std::env::var_os("ZDOTDIR")
             .filter(|value| !value.is_empty())
             .or_else(|| std::env::var_os("HOME"))
         {
-            cmd.env("GOBLE_ORIG_ZDOTDIR", original);
+            env.push((
+                "GOBLE_ORIG_ZDOTDIR".to_string(),
+                original.to_string_lossy().into_owned(),
+            ));
         }
-        cmd.env("ZDOTDIR", &dir);
-        (cmd, Some(dir))
+        env.push(("ZDOTDIR".to_string(), dir.display().to_string()));
+        ShellLaunch {
+            program,
+            args: Vec::new(),
+            env,
+            integration_dir: Some(dir),
+        }
     } else {
-        (cmd, None)
+        ShellLaunch {
+            program,
+            args: Vec::new(),
+            env: Vec::new(),
+            integration_dir: None,
+        }
     }
 }

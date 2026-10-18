@@ -41,7 +41,7 @@ fn cmd_f_raises_the_transcript_filter_of_an_agent_pane_and_leaves_a_shell_pane_i
             ..ModifiersState::default()
         },
     };
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
 
     assert!(
         !root.dispatch_event(&cmd_f, &mut ctx, &app),

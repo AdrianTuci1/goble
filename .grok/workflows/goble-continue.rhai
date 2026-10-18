@@ -5,7 +5,7 @@ let meta = #{
         #{ title: "Implement", detail: "one agent per stage, bounded retry, incremental edits" },
         #{ title: "Verify", detail: "independent agent runs cargo check + test, fail-closed" },
     ],
-    when_to_use: "System + screen + UI functionality, voice deprecated for now. Runs listed stages sequentially; stop at the first that does not verify green.",
+    when_to_use: "System and UI functionality, voice deprecated for now. Runs listed stages sequentially; stop at the first that does not verify green.",
 };
 
 let verified_schema = #{
@@ -68,27 +68,11 @@ stages.push(#{ name: "app-projects-domain", target: "goble-app", prompt: p });
 p = impl_brief();
 p += "STAGE: add the medium-selector domain to the native GUI (app/) and map routing onto the turn's medium/project identity.\n";
 p += "Read app/src/ai/ (domain template), app/src/daemon/state.rs, crates/goble-desktop-service/src/state.rs (run_chat_turn, set/get chat workspace routing), and crates/goble-harness-types (MediumId, MediumKind) first.\n";
-p += "Create app/src/media/ (mod.rs + state.rs + actions.rs) following the ai/ template: a MediaState (Clone) with a list of mediums (Local/VM/RemoteXrdp/Browser/Container) and selected_medium, + MediaSnapshot/MediaActions in ui/mod.rs, register in lib.rs, wire into root_view, and add a medium selector surface (a rail or a topbar control).\n";
+p += "Create app/src/media/ (mod.rs + state.rs + actions.rs) following the ai/ template: a MediaState (Clone) with a list of mediums (Local/VM/Remote/Browser/Container) and selected_medium, + MediaSnapshot/MediaActions in ui/mod.rs, register in lib.rs, wire into root_view, and add a medium selector surface (a rail or a topbar control).\n";
 p += "Ensure that when a turn is run, the selected medium maps onto `HarnessTurn.medium_id` (and project_id) instead of always defaulting to 'local'/'default' — thread it through run_chat_turn / DaemonModel::run_turn. Add a unit test asserting the turn is built with the selected medium_id. Ensure `cargo test -p goble-app` and `cargo test -p goble-desktop-service` are green.\n";
 stages.push(#{ name: "app-media-domain", target: "goble-app", prompt: p });
 
-// 5) Real screen adapter (capture+control) + wire a registry so the crate is not orphaned.
-p = impl_brief();
-p += "STAGE: create crate crates/goble-screen-adapter (real capture+control adapter) and wire a ScreenRegistry so it is actually populated.\n";
-p += "Read crates/goble-screen-core/src/lib.rs (ScreenCapturer, ScreenController, ScreenFrame, ScreenRegistry, PlatformBackend), crates/goble-desktop-service/src/state.rs (DesktopState), and the workspace Cargo.toml first.\n";
-p += "Add the crate as a workspace member (crates/* is globbed). It must NOT depend on app/ or goble-core. Implement ScreenCapturer + ScreenController for a real local source: on macOS `capture()` spawns `screencapture`/`screencapture -x -t png` and decodes into an RGBA8 ScreenFrame using the workspace `image` crate (`{ workspace = true }`); a mock/synthetic adapter provides frames on other platforms. Provide a factory returning `Arc<dyn ScreenCapturer>`/`Arc<dyn ScreenController>`.\n";
-p += "Wire a ScreenRegistry into crates/goble-desktop-service (own it on DesktopState, register the local adapter behind a feature/cfg, expose an accessor) so the capturer is reachable and the crate is NOT orphaned. Add unit tests (synthetic frame path always; PNG-decode path behind cfg(target_os=macos)). Ensure `cargo test -p goble-screen-adapter` and `cargo test -p goble-desktop-service` are green.\n";
-stages.push(#{ name: "screen-adapter", target: "goble-screen-adapter", prompt: p });
-
-// 6) app/ screen domain (broadcast + computer-use).
-p = impl_brief();
-p += "STAGE: add the screen domain to the native GUI (app/) for broadcast + computer-use.\n";
-p += "Read app/src/ai/ (domain template), app/src/projects/ (a recently added domain to mirror), app/src/root_view.rs, app/src/ui/mod.rs, and crates/goble-screen-core (ScreenCapturer/ScreenController) first.\n";
-p += "Create app/src/screen/ (mod.rs + state.rs + actions.rs) following the ai/ template: a ScreenState (Clone) with broadcast (live capture via ScreenRegistry through desktop-service) and computer-use (click/type/scroll) flags, plus a capturable source list. Add ScreenSnapshot + ScreenActions to app/src/ui/mod.rs, register `pub mod screen;` in app/src/lib.rs, wire screen_state into root_view (build + snapshot + actions + pass to build_ui), and add a `screen` surface (an AppTab variant or a sheet).\n";
-p += "Write an integration test under app/src/integration_testing/ asserting the screen panel renders and a broadcast/computer-use toggle is wired. Ensure `cargo test -p goble-app` is green.\n";
-stages.push(#{ name: "app-screen-domain", target: "goble-app", prompt: p });
-
-// 7) Real sandbox isolation (bubblewrap subprocess, no unsafe) + enforce hardened flags.
+// 5) Real sandbox isolation (bubblewrap subprocess, no unsafe) + enforce hardened flags.
 p = impl_brief();
 p += "STAGE: make goble-sandbox actually isolate — implement a bubblewrap backend and enforce the hardened flags.\n";
 p += "Read crates/goble-sandbox/src/lib.rs (Sandbox trait, SandboxProfile, SandboxLevel, HardenedFlags, NoopSandbox, SandboxGuard, run_in_sandbox) and crates/goble-sandbox/src/backends/ first.\n";
@@ -96,7 +80,7 @@ p += "Implement a `BwrapSandbox` (Linux target) whose prepare() builds a `bwrap`
 p += "Add unit tests asserting the constructed bwrap command carries the expected hardened flags for a Hardened profile (arg construction; no need for bwrap installed). Ensure `cargo test -p goble-sandbox` is green.\n";
 stages.push(#{ name: "sandbox-real", target: "goble-sandbox", prompt: p });
 
-// 8) Wire the goble-workflow engine into goble-daemon.
+// 6) Wire the goble-workflow engine into goble-daemon.
 p = impl_brief();
 p += "STAGE: wire the goble-workflow engine into goble-daemon so workflows actually run.\n";
 p += "Read crates/goble-workflow/src/lib.rs (Workflow, WorkflowEngine, WorkflowHostRequest, StepExecutor), crates/goble-daemon/src/port.rs + state.rs (DaemonPort, run), and crates/goble-harness-types (Trigger) first.\n";
@@ -104,7 +88,7 @@ p += "Add to goble-daemon: a `StepExecutor` that runs a step by invoking a harne
 p += "Add unit tests (a MockStep/harness stub) asserting a workflow runs steps in order and a failing step marks the run failed. Ensure `cargo test -p goble-daemon` and `cargo test -p goble-workflow` are green.\n";
 stages.push(#{ name: "workflow-daemon-wiring", target: "goble-daemon", prompt: p });
 
-// 9) Replay settlement primitives (select/apply/release/discard).
+// 7) Replay settlement primitives (select/apply/release/discard).
 p = impl_brief();
 p += "STAGE: add settlement primitives (select/apply/release/discard) to goble-replay and surface them on DaemonPort.\n";
 p += "Read crates/goble-replay/src/lib.rs (ReplayLedger: rewind_to, fork, checkpoint, restore, replay, settle_turn*, TurnStatus) and crates/goble-daemon/src/port.rs + state.rs (DaemonPort rewind/fork/replay/checkpoints) first.\n";

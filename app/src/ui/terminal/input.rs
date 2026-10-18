@@ -1,5 +1,7 @@
 //! Routing the pane's keys and pointer events to the pty and its own scrollback.
 
+use std::time::Instant;
+
 use goble_terminal::{KeyEncoder, MouseAction, TermMode};
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::TerminalGrid;
@@ -8,7 +10,8 @@ use goble_ui::geometry::Vector2F;
 use goble_ui::Element;
 
 use crate::terminal::{
-    classify_key, mouse_report, update_input_mirror, TerminalKeyAction, TerminalMode,
+    classify_copy_key, classify_find_key, classify_key, is_copy_mode_chord, mouse_report,
+    update_input_mirror, CopyAction, FindAction, TerminalKeyAction, TerminalMode,
 };
 
 use super::TerminalView;
@@ -27,6 +30,28 @@ impl TerminalView {
 
     pub(super) fn cell_at(&self, position: Vector2F) -> Option<(usize, usize)> {
         self.geometry.borrow().as_ref()?.cell_at(position)
+    }
+
+    /// The block-text cell under `position`: the flattened line of the block
+    /// line the pointer is over and the character column in it. `None` when the
+    /// pointer is not over a block line (a header, a card, the padding).
+    pub(super) fn block_cell_at(&self, position: Vector2F) -> Option<crate::terminal::Cell> {
+        let geometry = self.block_geometry.borrow();
+        for line in geometry.iter() {
+            let height = line.size.y.max(1.0);
+            if position.y < line.origin.y || position.y >= line.origin.y + height {
+                continue;
+            }
+            let text_x = line.origin.x + line.prefix_columns as f32 * line.column_width;
+            let offset = ((position.x - text_x) / line.column_width.max(1.0)).floor();
+            let column = if line.text_columns == 0 {
+                0
+            } else {
+                (offset.max(0.0) as usize).min(line.text_columns - 1)
+            };
+            return Some(crate::terminal::Cell::new(line.base + line.line, column));
+        }
+        None
     }
 
     /// The conversation whose card is under `position`, if any. A card sits on
@@ -61,13 +86,107 @@ impl TerminalView {
     }
 
     pub(super) fn handle_mouse_move(&mut self, position: Vector2F) {
+        if self.dragging_block_selection() {
+            if let Some(cell) = self.block_cell_at(position) {
+                self.terminal
+                    .borrow_mut()
+                    .extend_block_selection(self.pane_id, cell);
+            }
+            return;
+        }
         let Some(cell) = self.cell_at(position) else {
             return;
         };
+        if self.dragging_selection() {
+            if let Some(cell) = self.selection_cell((cell.0, cell.1)) {
+                self.terminal
+                    .borrow_mut()
+                    .extend_selection(self.pane_id, cell);
+            }
+            return;
+        }
         match self.pressed {
             Some(button) => self.report_mouse(MouseAction::Drag(button), cell),
             None => self.report_mouse(MouseAction::Move, cell),
         }
+    }
+
+    /// Whether a mouse drag is currently extending a cell selection.
+    pub(super) fn dragging_selection(&self) -> bool {
+        self.terminal
+            .borrow()
+            .pane_ui(self.pane_id)
+            .is_some_and(|ui| ui.drag_anchor.is_some())
+    }
+
+    /// Whether a mouse drag is currently extending a block-text selection.
+    pub(super) fn dragging_block_selection(&self) -> bool {
+        self.terminal
+            .borrow()
+            .pane_ui(self.pane_id)
+            .is_some_and(|ui| ui.block_drag_anchor.is_some())
+    }
+
+    /// Whether a plain mouse gesture selects cells instead of being reported
+    /// to the program. A full-screen program that negotiated mouse reporting
+    /// keeps the pointer; copy mode and the find bar take it for the grid.
+    pub(super) fn mouse_selects(&self) -> bool {
+        let (copy, find) = {
+            let reg = self.terminal.borrow();
+            (reg.copy_active(self.pane_id), reg.find_open(self.pane_id))
+        };
+        copy || find || !self.input_mode().mouse_reported()
+    }
+
+    /// The absolute content cell under a viewport cell.
+    fn selection_cell(&self, (row, column): (usize, usize)) -> Option<crate::terminal::Cell> {
+        self.terminal
+            .borrow()
+            .screen_cell(self.pane_id, row, column)
+    }
+
+    /// Start a mouse selection; a double- or triple-click resolves to a word or
+    /// the line. Returns whether a cell was under the pointer.
+    pub(super) fn begin_mouse_selection(&mut self, position: Vector2F) -> bool {
+        let Some((row, column)) = self.cell_at(position) else {
+            return false;
+        };
+        let Some(cell) = self.selection_cell((row, column)) else {
+            return false;
+        };
+        self.last_cell = Some((row, column));
+        self.terminal
+            .borrow_mut()
+            .begin_selection(self.pane_id, cell, Instant::now());
+        true
+    }
+
+    /// Start a selection over the block view's text; a double- or triple-click
+    /// resolves to a word or the line. Returns whether a block line was under
+    /// the pointer.
+    pub(super) fn begin_block_mouse_selection(&mut self, position: Vector2F) -> bool {
+        let Some(cell) = self.block_cell_at(position) else {
+            return false;
+        };
+        self.last_cell = None;
+        self.terminal
+            .borrow_mut()
+            .begin_block_selection(self.pane_id, cell, Instant::now());
+        true
+    }
+
+    /// End a mouse selection drag. Returns whether one was in progress.
+    pub(super) fn end_mouse_selection(&mut self) -> bool {
+        self.terminal
+            .borrow_mut()
+            .end_selection(self.pane_id)
+    }
+
+    /// End a block-text selection drag. Returns whether one was in progress.
+    pub(super) fn end_block_mouse_selection(&mut self) -> bool {
+        self.terminal
+            .borrow_mut()
+            .end_block_selection(self.pane_id)
     }
 
     /// The wheel: a pointer report when the program listens for one, otherwise
@@ -134,11 +253,102 @@ impl TerminalView {
             .is_some_and(|filter| *filter.focused.borrow())
     }
 
+    /// Selection, copy mode and the find bar, handed the key before the tree
+    /// and the shell so neither can swallow a chord the pane means for itself.
+    ///
+    /// * Cmd/Ctrl+C copies the mouse selection, or copy mode's selection.
+    /// * Cmd/Ctrl+Shift+C or Cmd/Ctrl+Shift+Space enters/leaves copy mode.
+    /// * While the find bar is open it is modal: Esc closes it, Enter/`n` and
+    ///   Shift+Enter/`N` walk the matches, and the query field takes the rest.
+    /// * Copy mode is modal too: its motions, `v`, `y`, `/` and `q`/Esc never
+    ///   reach the program in the pane.
+    pub(super) fn handle_copy_key(&mut self, key: &str, modifiers: ModifiersState) -> bool {
+        let cmd = modifiers.ctrl || modifiers.command;
+
+        if is_copy_mode_chord(key, modifiers) {
+            self.terminal
+                .borrow_mut()
+                .toggle_copy_mode(self.pane_id);
+            return true;
+        }
+
+        if cmd && !modifiers.shift && !modifiers.alt && key.eq_ignore_ascii_case("c") {
+            let text = self.terminal.borrow().copy_text(self.pane_id);
+            if let Some(text) = text {
+                (self.on_copy.borrow_mut())(text);
+                return true;
+            }
+            return false;
+        }
+
+        let find_open = self.terminal.borrow().find_open(self.pane_id);
+        if find_open {
+            let field_focused = self
+                .terminal
+                .borrow()
+                .pane_ui(self.pane_id)
+                .is_some_and(|ui| ui.find.focused);
+            match classify_find_key(key, modifiers, field_focused) {
+                FindAction::Close => {
+                    self.terminal.borrow_mut().close_find(self.pane_id);
+                }
+                FindAction::Next => self.terminal.borrow_mut().find_next(self.pane_id),
+                FindAction::Previous => {
+                    self.terminal.borrow_mut().find_previous(self.pane_id);
+                }
+                FindAction::ToggleRegex => {
+                    self.terminal
+                        .borrow_mut()
+                        .toggle_find_regex(self.pane_id);
+                }
+                // Typing belongs to the search field, which is in the tree.
+                FindAction::Input => return false,
+                FindAction::Ignore => {}
+            }
+            return true;
+        }
+
+        let copy_active = self.terminal.borrow().copy_active(self.pane_id);
+        if !copy_active {
+            return false;
+        }
+        match classify_copy_key(key, modifiers) {
+            CopyAction::Move(motion) => {
+                self.terminal.borrow_mut().move_copy(self.pane_id, motion);
+            }
+            CopyAction::Visual => self
+                .terminal
+                .borrow_mut()
+                .toggle_copy_visual(self.pane_id),
+            CopyAction::Yank => {
+                let text = self.terminal.borrow().copy_mode_yank_text(self.pane_id);
+                self.terminal.borrow_mut().finish_copy_yank(self.pane_id);
+                if let Some(text) = text {
+                    (self.on_copy.borrow_mut())(text);
+                }
+            }
+            CopyAction::Search => {
+                self.terminal.borrow_mut().open_find(self.pane_id);
+            }
+            CopyAction::Exit => {
+                self.terminal.borrow_mut().exit_copy_mode(self.pane_id);
+            }
+            CopyAction::Ignore => {}
+        }
+        true
+    }
+
+    /// Whether the find bar's query field is the pane's typing surface.
+    pub(super) fn find_open(&self) -> bool {
+        self.terminal.borrow().find_open(self.pane_id)
+    }
+
     /// The pane's own filter keys, handed the key before the tree so the rich
     /// input cannot swallow them. `true` when the pane took the key:
     ///
-    /// * Cmd/Ctrl+F shows or hides the whole-output filter bar over every block
-    ///   the pane draws — the general filter.
+    /// * Cmd/Ctrl+F opens or closes the scrollback find bar.
+    /// * Cmd/Ctrl+Alt+F shows or hides the whole-output filter bar over every
+    ///   block the pane draws — the general filter.
     /// * Cmd/Ctrl+Shift+F shows or hides the filter bar of the block under the
     ///   pointer — warp's per-block filter, the same chord it uses.
     /// * Escape puts the whole-output filter away and restores the output.
@@ -154,36 +364,58 @@ impl TerminalView {
             return true;
         }
         let cmd = modifiers.ctrl || modifiers.command;
-        if !cmd || modifiers.alt || !key.eq_ignore_ascii_case("f") {
+        if !cmd || !key.eq_ignore_ascii_case("f") {
             return false;
+        }
+        if !modifiers.alt && !modifiers.shift {
+            // The find bar works over a full-screen program's screen too: it
+            // is the pane's own surface, and only while it is open do the
+            // keys stop reaching that program.
+            self.terminal.borrow_mut().toggle_find(self.pane_id);
+            return true;
         }
         // A full-screen program owns the screen, so there is no block list to
         // filter and no bar to show.
         if self.program_owns_screen() {
             return false;
         }
-        if modifiers.shift {
+        if modifiers.shift && !modifiers.alt {
             return self.plumbing.toggle_hovered_filter();
         }
-        self.plumbing.toggle_global_filter()
+        if modifiers.alt && !modifiers.shift {
+            return self.plumbing.toggle_global_filter();
+        }
+        false
     }
 
     pub(super) fn handle_key(&mut self, key: &str, modifiers: ModifiersState) -> bool {
         match classify_key(key, modifiers, self.input_mode()) {
             TerminalKeyAction::Forward(bytes) => {
-                let mut reg = self.terminal.borrow_mut();
-                // A plain Enter submits the current input line. If it names a
-                // TUI agent (codex/claude/...), switch the pane to agent mode so
-                // the agent takes over and keeps its native input. This must run
-                // before `update_input_mirror` clears the line on Enter.
-                if bytes.as_slice() == b"\r" {
-                    reg.update_mode_from_input(self.pane_id);
+                // Enter submits the line the mirror holds; capture it before
+                // the mirror clears so an `ssh` line or `exit` typed in the
+                // grid binds the pane the way the rich input bar does.
+                let submitted = (bytes.as_slice() == b"\r")
+                    .then(|| self.terminal.borrow().input(self.pane_id))
+                    .filter(|line| !line.trim().is_empty());
+                {
+                    let mut reg = self.terminal.borrow_mut();
+                    // A plain Enter submits the current input line. If it names
+                    // a TUI agent (codex/claude/...), switch the pane to agent
+                    // mode so the agent takes over and keeps its native input.
+                    // This must run before `update_input_mirror` clears the
+                    // line on Enter.
+                    if bytes.as_slice() == b"\r" {
+                        reg.update_mode_from_input(self.pane_id);
+                    }
+                    if let Some(session) = reg.sessions.get_mut(&self.pane_id) {
+                        session.write(&bytes);
+                    }
+                    let input = reg.input.entry(self.pane_id).or_default();
+                    update_input_mirror(input, key, modifiers);
                 }
-                if let Some(session) = reg.sessions.get_mut(&self.pane_id) {
-                    session.write(&bytes);
+                if let Some(line) = submitted {
+                    (self.on_shell_submit.borrow_mut())(self.pane_id, line);
                 }
-                let input = reg.input.entry(self.pane_id).or_default();
-                update_input_mirror(input, key, modifiers);
                 true
             }
             TerminalKeyAction::RouteToAgent => {

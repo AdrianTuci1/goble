@@ -17,7 +17,7 @@ use goble_terminal::blocks::{BlockView, BlockVisibility};
 use goble_terminal::{
     Block, BlockEvent, BlockId, BlockList, BlockOwner, BlockState, CursorState, HookEvent, HookTap,
     OscEvent, OscTap, Palette, Screen, ScreenConfig, ScreenEvent, ScreenLine, ScreenQuery,
-    ScreenSize, TermMode,
+    ScreenSize, SearchError, SearchMatch, SearchOptions, TermMode,
 };
 use std::time::Duration;
 
@@ -181,6 +181,11 @@ impl Emulator {
         self.screen_lines
     }
 
+    /// The image placements visible in the current viewport, top row first.
+    pub fn images(&self) -> Vec<goble_terminal::ImagePlacement> {
+        self.screen.images()
+    }
+
     /// The visible rows, top row first.
     pub fn rows(&self) -> Vec<ScreenLine> {
         self.screen.lines()
@@ -217,6 +222,77 @@ impl Emulator {
 
     pub fn history_size(&self) -> usize {
         self.screen.history_size()
+    }
+
+    /// Rows of scrollback held above the visible screen.
+    pub fn history_len(&self) -> usize {
+        self.screen.history_len()
+    }
+
+    /// Every row the screen holds: history followed by the visible screen.
+    pub fn total_lines(&self) -> usize {
+        self.screen.total_lines()
+    }
+
+    /// Changes whenever the grid's content changes; a find bar caches its
+    /// matches against it.
+    pub fn revision(&self) -> u64 {
+        self.screen.revision()
+    }
+
+    /// One row by absolute index, oldest first.
+    pub fn line_at(&self, index: usize) -> Option<ScreenLine> {
+        self.screen.line_at(index)
+    }
+
+    /// The last occupied column count of a row, for copy-mode motions.
+    pub fn line_len(&self, index: usize) -> usize {
+        self.screen
+            .line_at(index)
+            .map(|line| {
+                line.cells.iter().enumerate().fold(0, |end, (column, cell)| {
+                    if cell.ch == ' ' && cell.zerowidth.is_empty() {
+                        end
+                    } else {
+                        column + if cell.attrs.wide { 2 } else { 1 }
+                    }
+                })
+            })
+            .unwrap_or(0)
+    }
+
+    /// Search history and the visible screen.
+    pub fn search(
+        &self,
+        query: &str,
+        options: SearchOptions,
+    ) -> Result<Vec<SearchMatch>, SearchError> {
+        self.screen.search(query, options)
+    }
+
+    /// The visible row an absolute content row is painted on, if any.
+    pub fn visible_row_of(&self, line: usize) -> Option<usize> {
+        self.screen.visible_row_of(line)
+    }
+
+    /// Scroll the display until `line` is visible.
+    pub fn scroll_to_line(&mut self, line: usize) {
+        self.screen.scroll_to_line(line);
+    }
+
+    /// Where copy mode starts: the shell's cursor, clamped to the content.
+    pub fn copy_start_cell(&self) -> (usize, usize) {
+        let total = self.screen.total_lines();
+        let line = self.screen.cursor_line().min(total.saturating_sub(1));
+        (line, self.screen.cursor().column)
+    }
+
+    /// Convert a viewport row into an absolute content row.
+    pub fn absolute_line(&self, row: usize) -> Option<usize> {
+        let history = self.screen.history_len();
+        let top = history.saturating_sub(self.screen.display_offset());
+        let line = top.saturating_add(row);
+        (line < self.screen.total_lines()).then_some(line)
     }
 
     /// Scroll the display through the scrollback. 0 is the live bottom.

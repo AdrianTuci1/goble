@@ -16,6 +16,68 @@ use super::*;
         assert_eq!(state.pane_conversation_id(2), None);
     }
 
+    /// Every chat pane is bound at creation, not only the ones opened by a
+    /// split. The initial pane takes the conversation the sidebar is showing,
+    /// so its turn events resolve to it even after the focus moves.
+    #[test]
+    fn ensure_pane_sessions_binds_the_initial_chat_pane() {
+        let dir = tempfile::tempdir().expect("create temp thread store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("open in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("open thread store"),
+        );
+        let selected = desktop
+            .create_chat("Sidebar selection", None, None)
+            .expect("create chat");
+        let mut state = UiState::mock();
+        state.pane_sessions.clear();
+        state.selected_id = Some(selected.clone());
+
+        state.ensure_pane_sessions(Some(&desktop));
+
+        let conversation = state
+            .pane_sessions
+            .get(&1)
+            .expect("the initial pane has a session")
+            .conversation_id
+            .clone();
+        assert_eq!(
+            conversation, selected,
+            "the initial pane binds the conversation the sidebar shows"
+        );
+        assert_eq!(state.pane_id_for_conversation(&conversation), Some(1));
+    }
+
+    /// With nothing selected, the initial pane still gets a conversation: it is
+    /// a real store record, not an empty binding that can only be resolved by
+    /// whichever pane has focus later.
+    #[test]
+    fn ensure_pane_sessions_creates_a_conversation_when_nothing_is_selected() {
+        let dir = tempfile::tempdir().expect("create temp thread store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("open in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("open thread store"),
+        );
+        let mut state = UiState::mock();
+        state.pane_sessions.clear();
+        state.selected_id = None;
+
+        state.ensure_pane_sessions(Some(&desktop));
+
+        let conversation = state
+            .pane_sessions
+            .get(&1)
+            .expect("the initial pane has a session")
+            .conversation_id
+            .clone();
+        assert!(!conversation.is_empty(), "the initial pane owns a conversation");
+        assert!(
+            desktop.list_chats().iter().any(|chat| chat.id == conversation),
+            "the conversation is a real store record, so the sidebar can list it"
+        );
+        assert_eq!(state.pane_id_for_conversation(&conversation), Some(1));
+    }
+
     #[test]
     fn bind_pane_new_conversation_assigns_distinct_mock_id() {
         let mut state = UiState::mock();
@@ -112,6 +174,7 @@ use super::*;
                 conversation_id: "a".into(),
                 draft: "draft1".into(),
                 path: "/a".into(),
+                daemon_session_id: String::new(),
             },
         );
         state.pane_sessions.insert(
@@ -120,6 +183,7 @@ use super::*;
                 conversation_id: "b".into(),
                 draft: "draft2".into(),
                 path: "/b".into(),
+                daemon_session_id: String::new(),
             },
         );
         state.pane_runtime.insert(

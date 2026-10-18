@@ -261,9 +261,9 @@ impl UiState {
             Some(SettingsControl::EnvironmentDeleteSecret(id)) => {
                 self.environment_delete_secret(&id, desktop);
             }
-            // Enter on a connection names it and stops there: this build opens
-            // no session over SSH, so the row is the source of a target rather
-            // than a thing that connects.
+            // Enter on a connection names it and stops there: the row is the
+            // source of a target, while a saved host pane opens from
+            // Cmd+Shift+N or the palette.
             Some(SettingsControl::SshHost(alias)) => self.ssh_select_host(&alias),
             Some(SettingsControl::ReloadSshHosts) => self.reload_ssh_hosts(),
             _ => {}
@@ -448,6 +448,9 @@ impl UiState {
         self.settings_ssh_hosts = self
             .ssh_home()
             .map(|home| goble_core::ssh_hosts::read_ssh_hosts(&home));
+        // The same page lists the saved hosts the picker offers, so Reload
+        // refreshes both files rather than only `~/.ssh`.
+        self.reload_saved_hosts();
         // A host that is no longer in the config cannot stay selected: the row
         // the keyboard would be on is gone.
         let selected = self.settings_ssh_selected.take();
@@ -479,7 +482,8 @@ impl UiState {
     }
 
     /// Select a connection by alias: `Enter` names it for whatever consumes the
-    /// target next. Nothing connects — this build opens no session over SSH.
+    /// target next. The row records a target; Cmd+Shift+N opens a saved host in
+    /// a pane.
     pub fn ssh_select_host(&mut self, alias: &str) {
         let known = self
             .settings_ssh_hosts

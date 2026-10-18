@@ -23,7 +23,7 @@ use goble_core::harness::{
 };
 use goble_core::llm::LlmProvider;
 use goble_core::store::Store;
-use goble_harness_protocol::{HarnessServerEvent, OPEN_SCREEN_TOOL};
+use goble_harness_protocol::HarnessServerEvent;
 use goble_harness_runtime::{HarnessRun, HarnessRuntime};
 use goble_harness_types::{
     CommandDecision, HarnessCapabilities, HarnessId, HarnessTurn, SessionId,
@@ -231,11 +231,7 @@ fn map_stream(
 }
 
 /// Map a core [`HarnessEvent`] into zero or more wire [`HarnessServerEvent`]s.
-///
-/// An `open_screen` tool call maps to **two** frames: the usual `ToolCallStarted`
-/// mirror (so the agent's intent stays visible) plus a `ScreenHandoff` request
-/// the host turns into a live desktop stream. Every other event maps to a single
-/// frame (or none, for `ThinkingModeChanged`).
+/// Every event maps to a single frame (or none, for `ThinkingModeChanged`).
 fn map_event(session_id: &SessionId, event: HarnessEvent) -> Vec<HarnessServerEvent> {
     match event {
         HarnessEvent::AssistantDelta(delta) => vec![HarnessServerEvent::AssistantDelta {
@@ -246,22 +242,12 @@ fn map_event(session_id: &SessionId, event: HarnessEvent) -> Vec<HarnessServerEv
             id,
             name,
             arguments,
-        } => {
-            let mut out = vec![HarnessServerEvent::ToolCallStarted {
-                session_id: session_id.clone(),
-                id,
-                name: name.clone(),
-                arguments: arguments.clone(),
-            }];
-            if name == OPEN_SCREEN_TOOL {
-                if let Some(handoff) =
-                    HarnessServerEvent::screen_handoff_from_tool_call(session_id.clone(), &arguments)
-                {
-                    out.push(handoff);
-                }
-            }
-            out
-        }
+        } => vec![HarnessServerEvent::ToolCallStarted {
+            session_id: session_id.clone(),
+            id,
+            name,
+            arguments,
+        }],
         HarnessEvent::ToolCallFinished { id, result } => vec![HarnessServerEvent::ToolCallFinished {
             session_id: session_id.clone(),
             id,
@@ -452,48 +438,6 @@ mod tests {
             HarnessServerEvent::AssistantDelta { delta, .. } if delta == "hello harness"
         )));
         assert!(seen.iter().any(|e| matches!(e, HarnessServerEvent::Done { .. })));
-    }
-
-    #[test]
-    fn open_screen_tool_call_maps_to_handoff() {
-        let session_id = SessionId::new("s1");
-        let events = map_event(
-            &session_id,
-            HarnessEvent::ToolCallStarted {
-                id: "t1".to_string(),
-                name: OPEN_SCREEN_TOOL.to_string(),
-                arguments: serde_json::json!({ "host": "vm.example.com", "credential": "desktop-account" }),
-            },
-        );
-        assert!(events.iter().any(|e| matches!(e, HarnessServerEvent::ToolCallStarted { name, .. } if name == OPEN_SCREEN_TOOL)));
-        assert!(events.iter().any(|e| matches!(
-            e,
-            HarnessServerEvent::ScreenHandoff { config, .. } if config.host == "vm.example.com" && config.credential == "desktop-account"
-        )));
-    }
-
-    #[test]
-    fn a_handoff_without_a_credential_name_is_not_emitted() {
-        let session_id = SessionId::new("s1");
-        for arguments in [
-            serde_json::json!({ "host": "vm.example.com" }),
-            serde_json::json!({ "host": "vm.example.com", "credential": "goble:hunter2" }),
-        ] {
-            let events = map_event(
-                &session_id,
-                HarnessEvent::ToolCallStarted {
-                    id: "t1".to_string(),
-                    name: OPEN_SCREEN_TOOL.to_string(),
-                    arguments,
-                },
-            );
-            assert!(
-                !events
-                    .iter()
-                    .any(|e| matches!(e, HarnessServerEvent::ScreenHandoff { .. })),
-                "no handoff is emitted without a credential reference: {events:?}"
-            );
-        }
     }
 
     #[test]

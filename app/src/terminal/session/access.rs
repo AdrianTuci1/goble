@@ -128,6 +128,15 @@ impl TerminalSession {
     /// The listener thread has finished (child exited) — used to cheaply detect
     /// when the shell is closed so the pane can render a hint.
     pub fn is_alive(&self) -> bool {
-        self.child.is_some()
+        #[cfg(unix)]
+        {
+            self.link
+                .as_ref()
+                .is_some_and(|link| link.alive.load(std::sync::atomic::Ordering::Relaxed))
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
     }
 }

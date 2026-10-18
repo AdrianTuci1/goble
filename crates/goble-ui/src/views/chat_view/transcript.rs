@@ -1,11 +1,9 @@
-use std::sync::Arc;
-
 use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind};
 use crate::elements::terminal_block::{terminal_filter_bar, TerminalFilter};
 use crate::elements::{
     slash_menu_open, AppContext, AskUserCard, Axis, Border, Button, ButtonVariant, ChatComposer,
     ChatMessageBubble, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    Empty, Expanded, Fill, Flex, FrameView, HoverRow, Icon, MainAxisAlignment, MainAxisSize,
+    Empty, Expanded, Fill, Flex, HoverRow, Icon, MainAxisAlignment, MainAxisSize,
     ModelMenu, Padding, QuickActionButton, Scrollable, ShortcutHints, SlashMenu, Spacer, Stack,
     Text, Tooltip, TooltipPosition, TurnStatusFooter,
 };
@@ -436,8 +434,6 @@ impl ChatView {
 
         let message_area: Box<dyn Element> = if self.messages.is_empty()
             && self.pending_ask.is_none()
-            && self.inline_screen.is_none()
-            && self.screen_link.is_none()
             && self.notice.is_none()
         {
             // The empty state claims the remaining height itself, so the
@@ -548,97 +544,6 @@ impl ChatView {
                 .with_padding(EdgeInsets::uniform(md))
                 .finish();
                 message_column = message_column.with_child(queued_band);
-            }
-            // A live remote-desktop handoff renders inline at the end of the
-            // transcript (the harness takes over control). It scrolls with the
-            // conversation and carries a close button to clear it.
-            if let Some(screen) = &self.inline_screen {
-                let md = app.theme.spacing_px(SpacingToken::Md);
-                let sm = app.theme.spacing_px(SpacingToken::Sm);
-                let mut header = Flex::row()
-                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_child(
-                        Text::new(screen.caption())
-                            .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(12.0)
-                            .finish(),
-                    );
-                if let Some(cb) = self.on_close_inline_screen.clone() {
-                    let close = Button::new(
-                        Icon::new("x-close")
-                            .with_size(11.0)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .finish(),
-                    )
-                    .with_variant(ButtonVariant::Ghost)
-                    .with_on_click(move || (cb.borrow_mut())())
-                    .finish();
-                    header = header.with_child(close);
-                }
-                let frame = FrameView::new(
-                    screen.source.clone(),
-                    screen.frame_seq,
-                    screen.width,
-                    screen.height,
-                    Arc::clone(&screen.data),
-                );
-                let block = Container::new(
-                    Flex::column()
-                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                        .with_spacing(sm)
-                        .with_child(header.finish())
-                        .with_child(frame.finish())
-                        .finish(),
-                )
-                // A full-width band of rows: no border and no rounded card.
-                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                .with_padding(EdgeInsets::uniform(md))
-                .finish();
-                message_column = message_column.with_child(block);
-            }
-            // A detected BYOH handoff hyperlink (no live frame yet): show a
-            // clickable affordance so the user can take over the harness's
-            // desktop.
-            if self.inline_screen.is_none() {
-                if let Some(link) = &self.screen_link {
-                    let md = app.theme.spacing_px(SpacingToken::Md);
-                    let sm = app.theme.spacing_px(SpacingToken::Sm);
-                    let mut row = Flex::row()
-                        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                        .with_child(
-                            Text::new("Harness handed off a desktop")
-                                .with_theme_color(ColorToken::Muted, app)
-                                .with_font_size(12.0)
-                                .finish(),
-                        );
-                    if let Some(cb) = self.on_open_screen_link.clone() {
-                        let link_for_cb = link.clone();
-                        let open = Button::new(
-                            Text::new("Open remote desktop")
-                                .with_theme_color(ColorToken::Bg, app)
-                                .with_font_size(12.0)
-                                .finish(),
-                        )
-                        .with_variant(ButtonVariant::Primary)
-                        .with_on_click(move || (cb.borrow_mut())(link_for_cb.clone()))
-                        .finish();
-                        row = row.with_child(open);
-                    }
-                    let band = Container::new(
-                        Flex::column()
-                            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                            .with_spacing(sm)
-                            .with_child(row.finish())
-                            .finish(),
-                    )
-                    // A full-width band of rows: no border and no rounded card.
-                    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                    .with_padding(EdgeInsets::uniform(md))
-                    .finish();
-                    message_column = message_column.with_child(band);
-                }
             }
             // The transcript scrolls (clipped to the viewport, wheel handled)
             // and tails the stream: the state is app-owned, so new content

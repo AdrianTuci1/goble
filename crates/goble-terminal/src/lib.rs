@@ -10,6 +10,8 @@
 //! * [`osc`] — an observer for the `OSC` numbers the parser discards: the
 //!   working directory (`7`) and the prompt markers (`133`).
 //! * [`palette`] — resolving a cell's colour to RGB.
+//! * [`image`] — the kitty graphics and sixel decoders plus the bounded
+//!   per-screen image cache.
 //! * [`screen`] — a VT screen (grid, cursor, modes, alt screen) over the
 //!   vendored `alacritty_terminal` crate.
 //! * [`blocks`] — the command-block model, which owns one pair of screens per
@@ -24,6 +26,7 @@
 pub mod ansi;
 pub mod blocks;
 pub mod hooks;
+pub mod image;
 /// The shell-integration scripts that emit the hook channel. The pane's PTY
 /// spawn writes the matching one out and points the shell at it (bash
 /// `--rcfile`, zsh `ZDOTDIR`).
@@ -47,11 +50,16 @@ pub use blocks::{
     PendingClaim, SessionInfo, ToolOutcome, ToolResult,
 };
 pub use hooks::{HookEvent, HookTap};
+pub use image::{
+    CachedImage, ImageCache, ImageChunk, ImageDelete, ImageEvent, ImageFormat, ImagePlacement,
+    ImageTap,
+};
 pub use keys::{Key, KeyEncoder, Modifiers, TermMode};
 pub use mouse::{encode_mouse, MouseAction, MouseButton};
 pub use osc::{OscEvent, OscTap, PromptMarker};
 pub use palette::Palette;
 pub use screen::{
     CellAttrs, CursorShape, CursorState, Screen, ScreenCell, ScreenColor, ScreenConfig,
-    ScreenEvent, ScreenEvents, ScreenLine, ScreenQuery, ScreenSize, Underline,
+    ScreenEvent, ScreenEvents, ScreenLine, ScreenQuery, ScreenSize, SearchError, SearchMatch,
+    SearchOptions, Underline,
 };

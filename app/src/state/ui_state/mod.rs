@@ -2,27 +2,30 @@
 //!
 //! The struct's fields are declared here; its methods live one module per
 //! concern ([`refresh`], [`pane_move`], [`panes`], [`agents`], [`session`],
-//! [`screen`], [`settings`], [`mock`], [`spaces`], [`worker`]) as separate
+//! [`settings`], [`mock`], [`spaces`], [`worker`]) as separate
 //! `impl UiState` blocks, which are the same block to the compiler as one.
 //! [`title`] is not one of them: the subject a conversation is named with is
 //! derived from the conversation, not held by the state machine.
 
 use super::*;
 
+use goble_core::hosts::HostEntry;
 use goble_core::ssh_hosts::SshHosts;
 
 mod agents;
+mod inbox;
 mod mock;
 mod pane_move;
 mod panes;
 mod refresh;
-mod screen;
 mod session;
 mod settings;
 mod spaces;
 mod title;
 mod worker;
 
+pub use agents::{PaneAgentState, TurnOutcome};
+pub use inbox::{InboxItem, InboxKind};
 pub use pane_move::{PaneDrag, PaneMove};
 
 /// The title a conversation gets when it is created without a subject of its
@@ -97,9 +100,6 @@ pub struct UiState {
     pub harnesses: Vec<HarnessEntry>,
     /// The harness the active pane routes turns to (default `internal`).
     pub selected_harness: String,
-    /// A detected BYOH handoff URI the user clicked to open; the root view
-    /// performs the open (screen sheet) then clears this.
-    pub pending_screen_link_open: Option<String>,
     /// App-owned open flag for the composer model menu.
     pub model_menu_open: Rc<RefCell<bool>>,
     /// App-owned open flags for the composer harness / dir / branch menus.
@@ -392,6 +392,23 @@ pub struct UiState {
     /// resolves to is the worker pool's answer, re-resolved when the pane adopts
     /// the routing again.
     pub pane_workers: HashMap<u64, WorkerSession>,
+    /// Per-pane SSH bindings, keyed by pane id and persisted with the layout.
+    /// A saved-host pane keeps its host name here so its session chip and the
+    /// reconnect offer survive a restart; a pane the user moved with a typed
+    /// `ssh` line keeps the resolved session.
+    pub pane_ssh: HashMap<u64, SshPaneBinding>,
+    /// The saved hosts read from `~/.goble/hosts.toml`, in file order. Filled
+    /// when the host picker opens, never while the window draws.
+    pub ssh_host_entries: Vec<HostEntry>,
+    /// Whether the Cmd+Shift+N host picker is up and the row it highlights.
+    pub ssh_host_picker_open: bool,
+    pub ssh_host_picker_index: usize,
+    /// A saved host whose session just ended, offered for reconnect: the pane
+    /// it ran in and the entry's name. Cleared by reconnecting or dismissing.
+    pub ssh_reconnect_prompt: Option<(u64, String)>,
+    /// The floating pane drag in progress, shared with the pane elements so it
+    /// survives the per-frame tree rebuild.
+    pub floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
     /// Worker agent executions observed live from the `agent:*` events, keyed
     /// by trace id. `agent:started` inserts, `agent:finished` removes (it is no
     /// longer in flight); the product pages are still re-read from the service
@@ -432,6 +449,21 @@ pub struct UiState {
     pub command_palette_query: String,
     /// The palette's selected row index.
     pub command_palette_index: usize,
+    /// The global inbox: approvals, questions and terminal reports from every
+    /// pane, newest first. Owned here because the inbox is app-wide, not a
+    /// property of the pane on screen.
+    pub inbox: Vec<InboxItem>,
+    /// Whether the inbox overlay is up.
+    pub inbox_open: bool,
+    /// The row the inbox overlay highlights (an index into [`Self::inbox`]).
+    pub inbox_index: usize,
+    /// Why the last jump did not land (its pane closed, or nothing was
+    /// selected), shown by the overlay instead of failing silently.
+    pub inbox_error: Option<String>,
+    /// Scroll offset of the inbox overlay's list.
+    pub inbox_scroll: Rc<RefCell<ScrollState>>,
+    /// Monotonic id source for event-derived inbox items.
+    pub next_inbox_id: u64,
     /// First run: a compact "getting started" hint shown once the workspace
     /// choice is made.
     pub show_onboarding_tip: bool,

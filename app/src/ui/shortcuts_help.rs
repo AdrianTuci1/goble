@@ -592,7 +592,7 @@ mod tests {
     fn frame(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<RenderCommand> {
         let _ = root.layout(
             SizeConstraint::loose(vec2f(1024.0, 768.0)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             app,
         );
         let mut ctx = PaintContext::new(Renderer::new());
@@ -609,7 +609,7 @@ mod tests {
         key: &str,
         modifiers: ModifiersState,
     ) -> bool {
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         root.dispatch_event(
             &DispatchedEvent::KeyDown {
                 key: key.to_string(),
@@ -832,7 +832,7 @@ mod tests {
                 _ => None,
             })
             .expect("the panel draws its close control");
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         for event in [
             DispatchedEvent::MouseDown {
                 position: close,
@@ -850,7 +850,7 @@ mod tests {
         // And a click on the backdrop, left of the centered panel, closes it.
         assert!(toggle(&mut root, &app));
         frame(&mut root, &app);
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         root.dispatch_event(
             &DispatchedEvent::MouseDown {
                 position: vec2f(10.0, 400.0),

@@ -4,13 +4,11 @@
 //! One module per surface of the pane: the builder chain that wires the view up
 //! ([`builder`]), the transcript's per-frame rebuild and its key handling
 //! ([`transcript`]), and the element protocol the view answers ([`element`]).
-//! What the surfaces share — the view's own state and the inline screen frame it
-//! renders — lives here.
+//! What the surfaces share — the view's own state — lives here.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
@@ -29,73 +27,6 @@ mod transcript;
 
 #[cfg(test)]
 mod tests;
-
-/// A live remote-desktop frame rendered inline at the end of the transcript,
-/// with the card's caption: which desktop it shows and who is driving it.
-#[derive(Clone)]
-pub struct InlineScreen {
-    /// The frame's texture key (`inline-<pane id>`), stable per pane so the
-    /// stream updates in place across rebuilds. Not what the card names.
-    pub source: String,
-    /// The desktop's own id — the `remote-xrdp:<host>:<port>` a handoff
-    /// registered — which the card names.
-    pub desktop: String,
-    /// Who holds the desktop's input right now.
-    pub driver: ScreenDriver,
-    /// Monotonic parity of the frame, so an unchanged one is not re-uploaded.
-    pub frame_seq: u64,
-    /// Frame width in pixels.
-    pub width: u32,
-    /// Frame height in pixels.
-    pub height: u32,
-    /// RGBA8 pixels, `width * height * 4` bytes.
-    pub data: Arc<[u8]>,
-}
-
-impl InlineScreen {
-    /// The card's caption: the desktop by name, and who is driving it.
-    fn caption(&self) -> String {
-        format!(
-            "{} · {}",
-            screen_desktop_name(&self.desktop),
-            self.driver.words()
-        )
-    }
-}
-
-/// Who is driving the desktop a card shows. The screen registry's control
-/// holder answers the first two (`has_control` is its "anyone at all" form);
-/// `ViewOnly` is a desktop nobody holds.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ScreenDriver {
-    /// Nobody holds the desktop's input: the card is a picture of it.
-    #[default]
-    ViewOnly,
-    /// The agent drives it: its tool calls are the desktop's input.
-    Agent,
-    /// The user drives it.
-    User,
-}
-
-impl ScreenDriver {
-    /// The words the card draws for this driver.
-    pub fn words(self) -> &'static str {
-        match self {
-            Self::ViewOnly => "view only",
-            Self::Agent => "the agent is driving",
-            Self::User => "you are driving",
-        }
-    }
-}
-
-/// The name a card gives a desktop: a `remote-xrdp:<host>:<port>` source is
-/// named by its host (`vm:3389`), anything else by its own id.
-pub fn screen_desktop_name(source: &str) -> String {
-    source
-        .strip_prefix("remote-xrdp:")
-        .unwrap_or(source)
-        .to_string()
-}
 
 pub struct ChatView {
     header: Option<Box<dyn Element>>,
@@ -216,13 +147,6 @@ pub struct ChatView {
     queued_prompt: Option<String>,
     on_send_queued: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_dismiss_queued: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
-    /// A live remote desktop stream shown inline at the end of the transcript
-    /// when the harness hands off control (the "harness takes over" moment).
-    inline_screen: Option<InlineScreen>,
-    on_close_inline_screen: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
-    /// A detected BYOH handoff URI rendered as a "open remote desktop" action.
-    screen_link: Option<String>,
-    on_open_screen_link: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     /// The transcript's scroll offset. App-owned in practice (the view is
     /// rebuilt every frame); defaults to following the stream so a standalone
     /// view still clips and tails its content.
@@ -316,10 +240,6 @@ impl ChatView {
             queued_prompt: None,
             on_send_queued: None,
             on_dismiss_queued: None,
-            inline_screen: None,
-            on_close_inline_screen: None,
-            screen_link: None,
-            on_open_screen_link: None,
             scroll: Rc::new(RefCell::new(ScrollState::following())),
             pane_active: true,
             show_composer: true,

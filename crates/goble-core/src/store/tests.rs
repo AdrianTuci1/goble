@@ -53,10 +53,10 @@ fn test_chat_medium_roundtrip() {
         .unwrap();
     assert_eq!(store.get_chat_medium("c1").unwrap(), None);
 
-    store.set_chat_medium("c1", Some("remote-xrdp")).unwrap();
+    store.set_chat_medium("c1", Some("remote")).unwrap();
     assert_eq!(
         store.get_chat_medium("c1").unwrap(),
-        Some("remote-xrdp".to_string())
+        Some("remote".to_string())
     );
 
     store.set_chat_medium("c1", Some("staging-vps")).unwrap();

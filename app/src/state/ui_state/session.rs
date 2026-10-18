@@ -198,6 +198,7 @@ impl UiState {
                     conversation_id: String::new(),
                     draft: self.composer_draft.clone(),
                     path: path.clone(),
+                    daemon_session_id: String::new(),
                 },
             );
         }
@@ -269,8 +270,6 @@ impl UiState {
                         executions,
                         self.running_sub_agent_count(*pane_id),
                     ),
-                    inline_screen: None,
-                    screen_link: message_screen_link(&rt.map(|r| r.messages.clone()).unwrap_or_default()),
                     sub_agents: self.sub_agent_rows(*pane_id),
                     sub_agent_view: self.sub_agent_views.get(pane_id).map(|view| {
                         crate::ui::SubAgentViewSnapshot {
@@ -359,7 +358,7 @@ impl UiState {
             // selection live in app state so they survive the rebuild).
             self.terminal_global_filters
                 .entry(id)
-                .or_insert_with(TerminalFilter::default);
+                .or_default();
             // Each pane's transcript owns a persistent scroll state, so the
             // user's scrollback and the follow-the-stream flag survive the
             // per-frame rebuild. A following state opens at the latest message.
@@ -411,6 +410,7 @@ impl UiState {
                         conversation_id: String::new(),
                         draft: String::new(),
                         path: path.clone(),
+                        daemon_session_id: String::new(),
                     },
                 );
             }

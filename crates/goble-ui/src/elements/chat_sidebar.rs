@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::elements::{
     AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, Fill, Flex, Icon,
-    IconButton, Label, LabelSize, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext,
+    IconButton, Label, LabelSize, LayoutContext, MainAxisSize, PaintContext,
     Point, SizeConstraint, Spacer, Text,
 };
 use crate::event::DispatchedEvent;
@@ -33,7 +33,7 @@ impl RoutineItem {
     }
 }
 
-/// The right chat sidebar: a Computer Use preview plus a Routines list.
+/// The right chat sidebar: the conversation's routines list.
 ///
 /// Rendered inside [`ChatLayout`](crate::elements::ChatLayout) next to the
 /// chat surface. Hidden unless the user toggles it from the chat header.
@@ -76,41 +76,6 @@ impl ChatSidebar {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Max)
             .with_spacing(spacing);
-
-        // Computer Use section.
-        column = column.with_child(
-            Label::new("Computer Use")
-                .with_size(LabelSize::Xs)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        );
-
-        let preview = Container::new(
-            Flex::column()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_main_axis_alignment(MainAxisAlignment::Center)
-                .with_spacing(xs)
-                .with_child(
-                    Icon::new("terminal")
-                        .with_size(32.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
-                .with_child(
-                    Text::new("Active")
-                        .with_theme_color(ColorToken::Success, app)
-                        .with_font_size(12.0)
-                        .finish(),
-                )
-                .finish(),
-        )
-        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-        .with_corner_radius(radius)
-        .with_padding(EdgeInsets::uniform(spacing))
-        .finish();
-        column = column.with_child(preview);
-
-        column = column.with_child(crate::elements::Divider::horizontal().finish());
 
         // Routines section header: title + "new routine" button.
         let mut header = Flex::row()

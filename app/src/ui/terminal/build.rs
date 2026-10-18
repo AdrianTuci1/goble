@@ -5,17 +5,18 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use goble_terminal::blocks::BlockView;
-use goble_terminal::Palette;
+use goble_terminal::{Palette, SearchMatch};
 use goble_ui::elements::terminal_block::terminal_filter_bar;
 use goble_ui::elements::{
     AppContext, Axis, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded,
-    Fill, Flex, MainAxisAlignment, MainAxisSize, Scrollable, SizeConstraint, Stack,
-    TerminalBlockPlumbing, TerminalFilter, TerminalGrid, Text,
+    Fill, Flex, GridRange, MainAxisAlignment, MainAxisSize, Scrollable, SearchInput, SizeConstraint,
+    Stack, TerminalBlockPlumbing, TerminalFilter, TerminalGrid, TerminalTextSelection, Text,
+    TopbarButton,
 };
 use goble_ui::geometry::Vector2F;
 use goble_ui::theme::{ColorToken, FontFamily, SpacingToken};
 
-use crate::terminal::{TerminalMode, TerminalRegistry};
+use crate::terminal::{Cell, FindBar, Selection, TerminalMode, TerminalRegistry};
 use crate::ui::chat;
 
 use super::blocks::section_data;
@@ -107,7 +108,11 @@ pub fn build_terminal(
     // surface draws a caret, and the keys are routed into the tree, where the
     // bar sits ahead of the composer.
     let owner = state.terminal.borrow();
-    let bar_focused = active && !owner.program_owns_screen(pane_id) && !filter_typing;
+    let copy_or_find = owner
+        .pane_ui(pane_id)
+        .is_some_and(|ui| ui.copy.active || ui.find.open);
+    let bar_focused =
+        active && !owner.program_owns_screen(pane_id) && !filter_typing && !copy_or_find;
     let bar = chat::build_terminal_composer(state, actions, pane_id, bar_focused);
     drop(owner);
     // Why the pane's last Cmd+Enter was refused, if it was. The reason is only
@@ -134,6 +139,8 @@ pub fn build_terminal(
         actions.on_terminal_command.clone(),
         actions.on_set_pane_harness_mode.clone(),
         actions.on_open_agent_view.clone(),
+        actions.on_shell_line.clone(),
+        actions.on_copy_terminal.clone(),
     )
     .with_harness_refusal(refusal)
     // The pane's history scrolls on the app's own per-pane state, and each
@@ -212,6 +219,197 @@ fn terminal_palette(app: &AppContext) -> Palette {
     )
 }
 
+/// The find bar over a terminal pane: a query field, a regex toggle and the
+/// current/total count or the error that stopped the search.
+fn find_bar(
+    find: &FindBar,
+    app: &AppContext,
+    terminal: Rc<RefCell<TerminalRegistry>>,
+    pane_id: u64,
+) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let muted = ColorToken::Muted;
+
+    let change_terminal = Rc::clone(&terminal);
+    let focus_terminal = Rc::clone(&terminal);
+    let field = SearchInput::new()
+        .with_value(find.query.clone())
+        .with_placeholder("Find in terminal")
+        .with_focused(find.focused)
+        .with_compact(true)
+        .with_on_change(move |value| {
+            change_terminal
+                .borrow_mut()
+                .set_find_query(pane_id, value);
+        })
+        .with_on_focus_change(move |focused| {
+            focus_terminal
+                .borrow_mut()
+                .set_find_focused(pane_id, focused);
+        })
+        .finish();
+
+    let toggle_terminal = Rc::clone(&terminal);
+    let regex_color = if find.regex {
+        ColorToken::Accent
+    } else {
+        muted
+    };
+    let regex = TopbarButton::new(
+        Text::new(".*")
+            .with_font_size(11.0)
+            .with_font_family(FontFamily::Mono)
+            .with_theme_color(regex_color, app)
+            .finish(),
+    )
+    .with_size(24.0)
+    .with_active(find.regex)
+    .with_on_click(move || {
+        toggle_terminal.borrow_mut().toggle_find_regex(pane_id);
+    })
+    .finish();
+
+    let (label, color) = match find.error.as_deref() {
+        Some(error) => (error.to_string(), ColorToken::Error),
+        None => (find.count_label(), muted),
+    };
+    let count = Text::new(label)
+        .with_theme_color(color, app)
+        .with_font_size(11.0)
+        .with_max_lines(1)
+        .finish();
+
+    let row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(Expanded::new(field).finish())
+        .with_child(regex)
+        .with_child(count)
+        .finish();
+    Container::new(row)
+        .with_padding(EdgeInsets::uniform(sm))
+        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+        .with_corner_radius(6.0)
+        .finish()
+}
+
+/// The visible part of each search match, and the index in that list that is
+/// the find bar's current match.
+fn search_ranges(
+    matches: &[SearchMatch],
+    current: Option<usize>,
+    history: usize,
+    display_offset: usize,
+    screen_rows: usize,
+    columns: usize,
+) -> (Vec<GridRange>, Option<usize>) {
+    if columns == 0 {
+        return (Vec::new(), None);
+    }
+    let top = history.saturating_sub(display_offset);
+    let mut ranges = Vec::new();
+    let mut active = None;
+    for (index, found) in matches.iter().enumerate() {
+        let Some(row) = found.line.checked_sub(top) else {
+            continue;
+        };
+        if row >= screen_rows {
+            continue;
+        }
+        let from = found.col.min(columns - 1);
+        let to = found
+            .col
+            .saturating_add(found.len)
+            .saturating_sub(1)
+            .min(columns - 1);
+        if from > to {
+            continue;
+        }
+        if Some(index) == current {
+            active = Some(ranges.len());
+        }
+        ranges.push(GridRange::new((row, from), (row, to)));
+    }
+    (ranges, active)
+}
+
+/// The visible part of a mouse selection, one range per row.
+fn selection_ranges(
+    selection: Selection,
+    history: usize,
+    display_offset: usize,
+    screen_rows: usize,
+    columns: usize,
+) -> Vec<GridRange> {
+    if columns == 0 {
+        return Vec::new();
+    }
+    let (start, end) = selection.ordered();
+    let top = history.saturating_sub(display_offset);
+    let mut ranges = Vec::new();
+    for row in 0..screen_rows {
+        let line = top.saturating_add(row);
+        if line < start.line {
+            continue;
+        }
+        if line > end.line {
+            break;
+        }
+        let from = if line == start.line {
+            start.column.min(columns - 1)
+        } else {
+            0
+        };
+        let to = if line == end.line {
+            end.column.min(columns - 1)
+        } else {
+            columns - 1
+        };
+        if from <= to {
+            ranges.push(GridRange::new((row, from), (row, to)));
+        }
+    }
+    ranges
+}
+
+/// The part of a block-text selection that falls on one block, in the block's
+/// own line and character coordinates. `base` is the block's first line in the
+/// pane's flattened block text.
+fn block_text_selection(
+    selection: Selection,
+    base: usize,
+    line_count: usize,
+) -> Option<TerminalTextSelection> {
+    if line_count == 0 {
+        return None;
+    }
+    let (start, end) = selection.ordered();
+    let last = base + line_count - 1;
+    if end.line < base || start.line > last {
+        return None;
+    }
+    let start_line = start.line.max(base);
+    let end_line = end.line.min(last);
+    let start_column = if start.line < base { 0 } else { start.column };
+    let end_column = if end.line > last {
+        usize::MAX
+    } else {
+        end.column
+    };
+    Some(TerminalTextSelection::new(
+        (start_line - base, start_column),
+        (end_line - base, end_column),
+    ))
+}
+
+/// The visible row and column of an absolute content cell.
+fn visible_cell(cell: Cell, history: usize, display_offset: usize) -> Option<(usize, usize)> {
+    let top = history.saturating_sub(display_offset);
+    let row = cell.line.checked_sub(top)?;
+    Some((row, cell.column))
+}
+
 impl TerminalView {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -226,6 +424,8 @@ impl TerminalView {
         on_route: Rc<RefCell<dyn FnMut(u64, String)>>,
         on_harness_mode: Rc<RefCell<dyn FnMut(u64, bool)>>,
         on_open_agent_view: Rc<RefCell<dyn FnMut(u64, String)>>,
+        on_shell_submit: Rc<RefCell<dyn FnMut(u64, String)>>,
+        on_copy: Rc<RefCell<dyn FnMut(String)>>,
     ) -> Self {
         Self {
             terminal,
@@ -240,8 +440,11 @@ impl TerminalView {
             on_route,
             on_harness_mode,
             on_open_agent_view,
+            on_shell_submit,
+            on_copy,
             geometry: Rc::new(RefCell::new(None)),
             cards: Rc::new(RefCell::new(Vec::new())),
+            block_geometry: Rc::new(RefCell::new(Vec::new())),
             scroll: Rc::new(RefCell::new(goble_ui::ScrollState::following())),
             plumbing: TerminalBlockPlumbing::new(Rc::new(RefCell::new(HashMap::new())), None, None),
             pressed: None,
@@ -291,10 +494,14 @@ impl TerminalView {
         } else {
             0
         };
+        // The find bar is one compact field row; it takes its height from the
+        // grid while it is up.
+        let find_open = self.terminal.borrow().find_open(self.pane_id);
+        let find_chrome = if find_open { row_pitch + sm * 2.0 } else { 0.0 };
         // The bar's own minimum, the figures `ChatComposer` lays out: a 48px
         // editor, a 28px footer row, its padding and the column's spacing.
         let bar_height = 48.0 + 28.0 + sm * 3.0 + md * 2.0;
-        let chrome = badge_lines as f32 * row_pitch + bar_height;
+        let chrome = badge_lines as f32 * row_pitch + bar_height + find_chrome;
         let rows = (((constraint.max.y - sm * 2.0 - chrome) / row_pitch).floor() as usize).max(1);
         let cols = ((constraint.max.x - sm * 2.0) / TerminalGrid::cell_width(FONT_SIZE))
             .floor()
@@ -315,8 +522,15 @@ impl TerminalView {
             // Answers to the program's questions are written from this thread,
             // so the pump runs every frame, painted or not.
             session.pump();
+        }
+        // A find bar's matches are recomputed when its query or the screen has
+        // changed, before the viewport is cloned so an auto-scroll to the
+        // current match is the frame that is painted.
+        reg.refresh_find(self.pane_id);
+        if let Some(session) = reg.sessions.get_mut(&self.pane_id) {
             screen = session.view();
         }
+        let pane_ui = reg.pane_ui(self.pane_id).cloned().unwrap_or_default();
         drop(reg);
 
         // The block list, filtered by this pane's view, is what the agent view
@@ -327,12 +541,24 @@ impl TerminalView {
             .borrow()
             .visible_blocks(self.pane_id, &self.view);
         self.cards.borrow_mut().clear();
+        self.block_geometry.borrow_mut().clear();
 
         let mut column = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
 
-        // The pane's whole-output filter (Cmd+F): one bar over every block the
+        // The scrollback find bar (Cmd+F): the query, its regex toggle and the
+        // current/total match count, scoped to this pane.
+        if pane_ui.find.open {
+            column = column.with_child(find_bar(
+                &pane_ui.find,
+                app,
+                Rc::clone(&self.terminal),
+                self.pane_id,
+            ));
+        }
+
+        // The pane's whole-output filter (Cmd+Alt+F): one bar over every block the
         // pane draws, counting what its query keeps among them. It is the same
         // surface a block's own filter bar is, so the query is typed and edited
         // the same way in both. A full-screen program owns its screen, so it has
@@ -378,6 +604,9 @@ impl TerminalView {
             .with_spacing(sm);
         let mut listed = 0usize;
         if !screen.alt_screen {
+            let block_geometry = Rc::clone(&self.block_geometry);
+            let block_selection = pane_ui.block_selection;
+            let mut line_base = 0usize;
             for block in &blocks {
                 if let Some(card) = &block.card {
                     list = list.with_child(
@@ -394,7 +623,16 @@ impl TerminalView {
                     continue;
                 }
                 if let Some(data) = section_data(block) {
-                    list = list.with_child(self.plumbing.element(&data));
+                    let selection = block_selection.and_then(|selection| {
+                        block_text_selection(selection, line_base, data.lines.len())
+                    });
+                    list = list.with_child(self.plumbing.element_with_selection(
+                        &data,
+                        selection,
+                        line_base,
+                        Rc::clone(&block_geometry),
+                    ));
+                    line_base += data.lines.len();
                     listed += 1;
                 }
             }
@@ -405,7 +643,47 @@ impl TerminalView {
         // not drawn yet reads as a terminal only if we say where it is: the
         // pane shows the shell's directory and a prompt marker until the shell
         // itself paints over it.
-        let body: Box<dyn Element> = if listed > 0 {
+        // Copy mode and the find bar are about cells: they take the grid even
+        // when the shell's block sections would otherwise be the body, so the
+        // visual selection, the matches and the copy cursor can be drawn and
+        // mapped to the pointer. An image in the viewport takes the grid too:
+        // block sections are text, so the live grid is the surface that can
+        // paint the image on its cell.
+        let show_grid = screen.alt_screen
+            || pane_ui.copy.active
+            || pane_ui.find.open
+            || !screen.images.is_empty();
+        let history = screen.scrollback;
+        let display_offset = screen.display_offset;
+        let screen_rows = screen.rows.len();
+        let columns = screen
+            .rows
+            .iter()
+            .map(|row| row.cells.len())
+            .max()
+            .unwrap_or(0);
+        let selection = pane_ui
+            .copy
+            .selection()
+            .or(pane_ui.selection)
+            .map(|selection| selection_ranges(selection, history, display_offset, screen_rows, columns))
+            .unwrap_or_default();
+        let (highlights, active_highlight) = search_ranges(
+            &pane_ui.find.matches,
+            pane_ui.find.current,
+            history,
+            display_offset,
+            screen_rows,
+            columns,
+        );
+        let copy_cursor = pane_ui
+            .copy
+            .active
+            .then(|| visible_cell(pane_ui.copy.cursor, history, display_offset))
+            .flatten()
+            .filter(|(row, _)| *row < screen_rows);
+
+        let body: Box<dyn Element> = if !show_grid && listed > 0 {
             // No grid means no cell under the pointer: a section is not a
             // terminal cell, so the program hears no pointer reports from here.
             *self.geometry.borrow_mut() = None;
@@ -417,7 +695,9 @@ impl TerminalView {
                 // painted its own layout; its rows stay where it put them.
                 .with_bottom_anchor(!screen.alt_screen)
                 .finish()
-        } else if screen.has_content {
+        } else if show_grid || screen.has_content {
+            // The grid is the only surface that can paint an image, so an
+            // image-only viewport takes it even when every cell is blank.
             GridProbe {
                 // The grid is this pane's output; the pane's input is the rich
                 // input bar below it, and that bar owns the caret. A cursor
@@ -431,7 +711,16 @@ impl TerminalView {
                     // below it (warp-new); a full-screen program painted its
                     // own layout, so its rows stay where it put them.
                     .with_bottom_anchor(!screen.alt_screen)
-                    .with_cursor_visible(false),
+                    .with_cursor_visible(false)
+                    .with_selection(selection)
+                    .with_highlights(highlights, active_highlight)
+                    .with_copy_cursor(copy_cursor)
+                    .with_images(screen.images)
+                    .with_image_namespace(format!("pane-{}", self.pane_id))
+                    .with_cell_pixels(
+                        TerminalGrid::cell_width(FONT_SIZE).round(),
+                        row_pitch.round(),
+                    ),
                 geometry: Rc::clone(&self.geometry),
             }
             .finish()

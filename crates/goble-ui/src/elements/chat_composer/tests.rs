@@ -176,13 +176,13 @@ fn composer_draws_the_environment_pill_only_when_its_host_wires_one() {
 
     let app = AppContext::default();
     let mut composer = ChatComposer::new()
-        .with_harness_label("Remote (xrdp)")
+        .with_harness_label("Remote (worker)")
         .with_path_label("/work/project")
         .with_branch_label("main")
         .with_harness_menu(
             vec![
                 PopupMenuItem::new("Local"),
-                PopupMenuItem::new("Remote (xrdp)").selected(),
+                PopupMenuItem::new("Remote (worker)").selected(),
             ],
             Rc::new(RefCell::new(false)),
             |_| {},
@@ -242,7 +242,7 @@ fn composer_draws_the_environment_pill_only_when_its_host_wires_one() {
         pill_x("folder")
     );
     assert!(
-        drawn_texts(&commands).iter().any(|t| t == "Remote (xrdp)"),
+        drawn_texts(&commands).iter().any(|t| t == "Remote (worker)"),
         "the pill names the environment the turn runs on: {:?}",
         drawn_texts(&commands)
     );
@@ -268,11 +268,11 @@ fn composer_draws_the_environment_pill_only_when_its_host_wires_one() {
     // with the environments the host listed in it.
     let open = Rc::new(RefCell::new(true));
     let mut wired = ChatComposer::new()
-        .with_harness_label("Remote (xrdp)")
+        .with_harness_label("Remote (worker)")
         .with_harness_menu(
             vec![
                 PopupMenuItem::new("Local"),
-                PopupMenuItem::new("Remote (xrdp)").selected(),
+                PopupMenuItem::new("Remote (worker)").selected(),
             ],
             open,
             |_| {},
@@ -315,7 +315,7 @@ fn composer_draws_the_environment_pill_only_when_its_host_wires_one() {
         "a host that wires no environment draws no environment control: {icons:?}"
     );
     assert!(
-        !drawn_texts(&commands).iter().any(|t| t == "Remote (xrdp)"),
+        !drawn_texts(&commands).iter().any(|t| t == "Remote (worker)"),
         "and no environment label either: {:?}",
         drawn_texts(&commands)
     );
@@ -410,13 +410,13 @@ fn the_rich_input_controls_draw_no_drop_down_chevron() {
 
     let app = AppContext::default();
     let mut composer = ChatComposer::new()
-        .with_harness_label("Remote (xrdp)")
+        .with_harness_label("Remote (worker)")
         .with_path_label("~/Projects/goble")
         .with_branch_label("main")
         .with_model_label("gpt-4o")
         .with_on_attach(|| {})
         .with_harness_menu(
-            vec![PopupMenuItem::new("Remote (xrdp)")],
+            vec![PopupMenuItem::new("Remote (worker)")],
             Rc::new(RefCell::new(false)),
             |_| {},
         )

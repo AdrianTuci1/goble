@@ -3,7 +3,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use goble_ui::elements::PopupMenuItem;
 use goble_ui::AppContext;
@@ -12,12 +11,11 @@ use crate::actions::make_actions;
 use crate::ai::make_ai_actions;
 use crate::media::make_media_actions;
 use crate::projects::make_projects_actions;
-use crate::screen::make_screen_actions;
 use crate::state::PaneWorkItem;
 use crate::ui::pickers::PARENT_LABEL;
 use crate::ui::{
-    build_ui, AiSnapshot, ComposerContext, MediaSnapshot, ProjectsSnapshot, ScreenFrameSnapshot,
-    ScreenSnapshot, SidebarView, UiSnapshot,
+    build_ui, AiSnapshot, ComposerContext, MediaSnapshot, ProjectsSnapshot, SidebarView,
+    UiSnapshot,
 };
 
 use super::RootView;
@@ -25,24 +23,19 @@ use super::RootView;
 impl RootView {
     /// Rebuild the element tree from the current app state.
     pub(super) fn rebuild(&mut self, app: &AppContext) {
+        // The control socket's UI verbs run here, on the thread that owns the
+        // state, before the frame is built from it. A window with nothing
+        // animating still rebuilds on the idle heartbeat, so a queued command
+        // is answered within one beat even when the user is not touching the
+        // window; when the window closes, the receiver drops and the handler
+        // gets a structured "closed" error.
+        #[cfg(unix)]
+        self.process_control_requests();
         self.drain_events();
         // Collect the global search the worker has finished, if it answered the
         // query the field holds now. The walk runs off this thread, so this is
         // where its answer reaches the rows the sidebar draws.
         self.state.borrow_mut().take_global_search_result();
-        // Advance any running screen-event replay by real time (one step per
-        // frame). The schedule itself is deterministic; only the pacing uses
-        // the wall clock, and tests drive it through `step_replay`. The held
-        // frame is refreshed here too, for the source the sheet is broadcasting
-        // and for one any conversation is showing inline: the card is a viewer
-        // of its own, so a handed-off desktop streams with the sheet closed.
-        let watched = {
-            let state = self.state.borrow();
-            state.inline_screen_viewers(&self.screen_state.borrow().selected_source) > 0
-        };
-        self.screen_state
-            .borrow_mut()
-            .tick(self.desktop.as_deref(), watched);
         // Follow what every pane's own shell reports as its working directory
         // before anything reads a path: the rich input's directory pill, the tab
         // label that derives from it and the explorer all draw from the pane's
@@ -57,6 +50,19 @@ impl RootView {
         // snapshot is built, so two pty/agent panes never share the composer's
         // buttons.
         self.state.borrow_mut().ensure_pane_controls();
+        // A TUI agent's own terminal reports whether it is running a command or
+        // sitting at a prompt; fold that into the pane's agent state before the
+        // snapshot draws it.
+        self.state.borrow_mut().refresh_tui_agent_states();
+        // A pane's daemon session is created while it paints, after the layout
+        // save that opened it. Fold the live ids into the pane state and write
+        // the layout once when one changes, so the next app start can reattach
+        // to the same shell even if no pane action follows.
+        if self.state.borrow_mut().adopt_daemon_session_ids() {
+            if let Some(desktop) = self.desktop.as_ref() {
+                self.state.borrow().save_panes(desktop);
+            }
+        }
         // The Connections page's `~/.ssh` read is cached in app state, like the
         // picker and explorer caches beside it: it is refilled when the page is
         // shown (or by its reload row) and never while the page draws.
@@ -85,38 +91,10 @@ impl RootView {
         };
         let snapshot = {
             let s = self.state.borrow();
-            let mut pane_chat = s.pane_chat_snapshot();
+            let pane_chat = s.pane_chat_snapshot();
             // The topbar's live cue reads C1's one accessor once; the count and
             // phase are carried on the snapshot so `build_topbar` stays pure.
             let live_work = s.live_work();
-            // Overlay the live inline handoff frame onto panes whose harness
-            // handed control to the selected screen source, so the remote
-            // desktop renders inside the chat's harness area.
-            {
-                let screen = self.screen_state.borrow();
-                if let Some(frame) = &screen.frame {
-                    let selected = screen.selected_source.clone();
-                    let frame_snap = ScreenFrameSnapshot {
-                        source: frame.source.clone(),
-                        driver: crate::screen::screen_driver(self.desktop.as_deref(), &selected),
-                        frame_seq: screen.frame_seq,
-                        width: frame.width,
-                        height: frame.height,
-                        data: Arc::from(frame.data.clone()),
-                    };
-                    for (pid, snap) in pane_chat.iter_mut() {
-                        let active = s
-                            .pane_runtime
-                            .get(pid)
-                            .and_then(|rt| rt.inline_screen_source.as_ref())
-                            .map(|src| src == &selected)
-                            .unwrap_or(false);
-                        if active {
-                            snap.inline_screen = Some(frame_snap.clone());
-                        }
-                    }
-                }
-            }
             // Fan the composer pills out per pane: the harness (medium) choice
             // is window-level, but each pane keeps its own working directory,
             // branch and dropdown open flags. The directory and branch menus are
@@ -346,6 +324,11 @@ impl RootView {
                 space_press: s.space_press,
                 space_drag: s.space_drag,
                 pane_drag: s.pane_drag.clone(),
+                floating_drag: s.floating_drag.clone(),
+                ssh_host_entries: s.ssh_host_entries.clone(),
+                ssh_host_picker_open: s.ssh_host_picker_open,
+                ssh_host_picker_index: s.ssh_host_picker_index,
+                ssh_reconnect_prompt: s.ssh_reconnect_prompt.clone(),
                 active_pane_id: s.active_pane_id,
                 dragging_pane_id: s.dragging_pane_id,
                 composer_path: s.composer_path.clone(),
@@ -390,6 +373,12 @@ impl RootView {
                 command_palette_open: s.command_palette_open,
                 command_palette_query: s.command_palette_query.clone(),
                 command_palette_index: s.command_palette_index,
+                inbox_items: s.inbox.clone(),
+                inbox_unread_count: s.unread_inbox_count(),
+                inbox_open: s.inbox_open,
+                inbox_index: s.inbox_index,
+                inbox_error: s.inbox_error.clone(),
+                inbox_scroll: s.inbox_scroll.clone(),
                 show_onboarding_tip: s.show_onboarding_tip,
                 add_space_menu_open: s.add_space_menu_open.clone(),
                 env_selector_open: s.env_selector_open.clone(),
@@ -459,48 +448,17 @@ impl RootView {
             Rc::clone(&self.state),
             self.desktop.clone(),
         );
-        let screen_snapshot = {
-            let s = self.screen_state.borrow();
-            ScreenSnapshot {
-                open: s.open,
-                broadcast: s.broadcast,
-                computer_use: s.computer_use,
-                selected_source: s.selected_source.clone(),
-                sources: s.sources.clone(),
-                last_capture: s.last_capture.clone(),
-                recording: s.recording,
-                replaying: s.replaying,
-                replay_loop: s.replay_loop,
-                recorded_count: s.recorded.len(),
-                replay_status: s.replay_status.clone(),
-                frame: s.frame.as_ref().map(|f| ScreenFrameSnapshot {
-                    source: f.source.clone(),
-                    driver: crate::screen::screen_driver(
-                        self.desktop.as_deref(),
-                        &s.selected_source,
-                    ),
-                    frame_seq: s.frame_seq,
-                    width: f.width,
-                    height: f.height,
-                    data: Arc::from(f.data.clone()),
-                }),
-            }
-        };
-        let screen_actions =
-            make_screen_actions(Rc::clone(&self.screen_state), self.desktop.clone());
-        self.element = build_ui(
+        self.element = build_ui(&crate::ui::BuildContext {
             app,
-            &snapshot,
-            &actions,
-            &ai_snapshot,
-            &ai_actions,
-            &projects_snapshot,
-            &projects_actions,
-            &media_snapshot,
-            &media_actions,
-            &screen_snapshot,
-            &screen_actions,
-        );
+            state: &snapshot,
+            actions: &actions,
+            ai: &ai_snapshot,
+            ai_actions: &ai_actions,
+            projects: &projects_snapshot,
+            projects_actions: &projects_actions,
+            media: &media_snapshot,
+            media_actions: &media_actions,
+        });
         // Register the app commands the native menubar (macOS) dispatches into.
         // The closures are rebuilt each frame, so the menu always triggers the
         // current actions. `window_control` is the same shared handle the mac

@@ -133,11 +133,11 @@ let pages_done = done(pages);
 phase("NoMocks");
 let p = "";
 p += "At /Users/adrian.tucicovencogmail.com/Projects/goble, remove mock fallbacks where a REAL backend exists so the app runs real functionality. Read files first. Do NOT launch the GUI; verify with `cargo check -p goble-app -p goble-ui` and `cargo test`. ";
-p += "Mock sources: app/src/media/state.rs (build_mock ~129, MediaState::mock ~205, refresh_falls_back_to_mock_without_a_store ~555), app/src/projects/state.rs (ProjectsState::mock ~45), app/src/screen/state.rs (ScreenState::mock ~427 + MOCK_SOURCE ~26), app/src/daemon/state.rs (~189/224 'mock'), app/src/state.rs (UiState::mock ~879). ";
-p += "Where a real backend exists (DesktopState store / embedded daemon / goble-screen-core registry), make the default path use it and only keep mock as an explicit TEST fixture (a `#[cfg(test)]` helper or a clearly-labeled test-only factory), NOT as a runtime fallback when the store fails to open. If the store genuinely cannot open, surface an error state instead of silently substituting mock data. ";
+p += "Mock sources: app/src/media/state.rs (build_mock ~129, MediaState::mock ~205, refresh_falls_back_to_mock_without_a_store ~555), app/src/projects/state.rs (ProjectsState::mock ~45), app/src/daemon/state.rs (~189/224 'mock'), app/src/state.rs (UiState::mock ~879). ";
+p += "Where a real backend exists (DesktopState store / embedded daemon), make the default path use it and only keep mock as an explicit TEST fixture (a `#[cfg(test)]` helper or a clearly-labeled test-only factory), NOT as a runtime fallback when the store fails to open. If the store genuinely cannot open, surface an error state instead of silently substituting mock data. ";
 p += "Do NOT remove mock data that is only used by tests; keep test helpers compiling. Update tests that construct mock state via the production path. ";
 p += "ACCEPTANCE: `cargo check -p goble-app -p goble-ui` green; `cargo test -p goble-ui -p goble-app -p goble-desktop-service` green. Report in `issues` any mock you intentionally left (and why). ";
-p += "Return JSON: done, features = ['no-mock-media','no-mock-projects','no-mock-screen','no-mock-daemon'], summary, issues.";
+p += "Return JSON: done, features = ['no-mock-media','no-mock-projects','no-mock-daemon'], summary, issues.";
 let nomocks = agent(p, #{
     label: "nomocks",
     phase: "nomocks",

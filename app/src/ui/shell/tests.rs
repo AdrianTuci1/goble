@@ -9,7 +9,7 @@ use goble_ui::event::{DispatchedEvent, ModifiersState};
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::{ColorToken, TabColor};
 
-use super::topbar::{build_live_indicator, insertion_index, WorkspaceChip};
+use super::topbar::{build_live_indicator, insertion_index, WorkspaceChip, WorkspaceChipParts};
 
 use super::*;
 use crate::root_view::RootView;
@@ -75,7 +75,7 @@ fn the_cue_is_inert_at_zero() {
         "zero work takes no topbar room"
     );
 
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     for event in [
         DispatchedEvent::MouseDown {
             position: vec2f(5.0, 5.0),
@@ -101,12 +101,12 @@ fn the_cue_takes_no_pointer_event() {
     let mut element = cue(2);
     element.layout(
         SizeConstraint::loose(vec2f(200.0, 36.0)),
-        &mut LayoutContext::default(),
+        &mut LayoutContext,
         &app,
     );
     element.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
 
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     for event in [
         DispatchedEvent::MouseDown {
             position: vec2f(10.0, 10.0),
@@ -155,19 +155,19 @@ fn tab_colored(
     let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
     let noop_at: Rc<RefCell<dyn FnMut(usize, Vector2F)>> =
         Rc::new(RefCell::new(|_: usize, _: Vector2F| {}));
-    Box::new(WorkspaceChip::new(
-        Text::new("Space 1")
+    Box::new(WorkspaceChip::new(WorkspaceChipParts {
+        child: Text::new("Space 1")
             .with_theme_color(ColorToken::Text, app)
             .with_font_size(12.0)
             .finish(),
-        1,
+        index: 1,
         active,
         color,
         on_click,
-        noop,
-        noop_at,
+        on_press: noop,
+        on_right_click: noop_at,
         close,
-    ))
+    }))
 }
 
 fn close_button(app: &AppContext, on_close: Rc<RefCell<dyn FnMut(usize)>>) -> Box<dyn Element> {
@@ -258,12 +258,12 @@ fn a_click_on_the_tab_selects_its_space() {
     let mut element = tab(&app, true, on_click, close_button(&app, on_close));
     element.layout(
         SizeConstraint::loose(vec2f(400.0, TOPBAR_HEIGHT)),
-        &mut LayoutContext::default(),
+        &mut LayoutContext,
         &app,
     );
     element.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
 
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     for event in [
         DispatchedEvent::MouseDown {
             position: vec2f(5.0, TOPBAR_HEIGHT / 2.0),
@@ -298,7 +298,7 @@ fn render_with_pointer(
 ) -> Vec<RenderCommand> {
     let _ = element.layout(
         SizeConstraint::loose(size),
-        &mut LayoutContext::default(),
+        &mut LayoutContext,
         app,
     );
     let mut ctx = PaintContext::new(goble_ui::render::Renderer::new());
@@ -454,7 +454,7 @@ fn the_close_control_appears_on_hover_and_closes_its_space() {
     );
     let point = close_point(&hovered).expect("a hovered tab draws its close control");
 
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     for event in [
         DispatchedEvent::MouseDown {
             position: point,
@@ -514,6 +514,7 @@ fn pane_at(path: &str) -> PaneSession {
         conversation_id: String::new(),
         draft: String::new(),
         path: path.to_string(),
+        daemon_session_id: String::new(),
     }
 }
 
@@ -549,12 +550,12 @@ fn topbar_label_origin(commands: &[RenderCommand], label: &str) -> Option<Vector
 fn press(root: &mut Box<dyn Element>, app: &AppContext, name: &str) {
     let _ = root.layout(
         SizeConstraint::loose(window()),
-        &mut LayoutContext::default(),
+        &mut LayoutContext,
         app,
     );
     let mut paint_ctx = PaintContext::default();
     root.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     root.dispatch_event(
         &DispatchedEvent::KeyDown {
             key: name.to_string(),
@@ -569,7 +570,7 @@ fn press(root: &mut Box<dyn Element>, app: &AppContext, name: &str) {
 /// the running app rebuilds the tree between them. The double-click window is
 /// therefore read across frames, which is where it has to hold.
 fn click(root: &mut Box<dyn Element>, app: &AppContext, pos: Vector2F) {
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     let _ = root.dispatch_event(
         &DispatchedEvent::MouseDown {
             position: pos,
@@ -876,12 +877,12 @@ fn press_chord(
 ) -> bool {
     let _ = root.layout(
         SizeConstraint::loose(window()),
-        &mut LayoutContext::default(),
+        &mut LayoutContext,
         app,
     );
     let mut paint_ctx = PaintContext::default();
     root.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     root.dispatch_event(
         &DispatchedEvent::KeyDown {
             key: name.to_string(),

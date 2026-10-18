@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use goble_harness_types::MediumKind;
 use goble_core::store::SecretGroup;
@@ -12,9 +11,10 @@ use goble_ui::elements::{
 use goble_ui::{ScrollState, SettingsPage};
 
 use crate::state::{
-    PaneAttach, PaneControls, PaneDrag, PaneWorkItem, SpaceMenu, WorkerPaneSession,
+    InboxItem, PaneAttach, PaneControls, PaneDrag, PaneWorkItem, SpaceMenu, WorkerPaneSession,
 };
 use crate::terminal::TerminalRegistry;
+use crate::ui::FloatingDrag;
 
 use super::color_picker;
 use super::pane::Space;
@@ -114,11 +114,6 @@ pub struct PaneChatSnapshot {
     /// pane's turn is busy, or the still-running kinds once it stops, or
     /// [`goble_ui::TurnStatus::Idle`] when nothing is in flight.
     pub turn_status: goble_ui::TurnStatus,
-    /// A live remote-desktop frame the harness handed off, rendered inline.
-    pub inline_screen: Option<ScreenFrameSnapshot>,
-    /// A detected BYOH handoff URI (`rdp://…` / `goble://desktop?…`), rendered
-    /// as a clickable "open remote desktop" affordance when no live frame yet.
-    pub screen_link: Option<String>,
     /// The pane's live sub-agent records, keyed by the id of the parent tool
     /// call that spawned each child; the parent transcript's rows read their
     /// status, activity and elapsed time from these.
@@ -396,6 +391,16 @@ pub struct UiSnapshot {
     /// The pane lifted out of its grid toward the tab strip, if any: the strip
     /// draws the insertion marker from it and the bar draws its ghost card.
     pub pane_drag: Option<PaneDrag>,
+    /// The floating pane drag in progress. Shared with app state so a gesture
+    /// that began in one frame continues in the next.
+    pub floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
+    /// The saved SSH hosts from `~/.goble/hosts.toml`, and the picker that
+    /// offers them (Cmd+Shift+N).
+    pub ssh_host_entries: Vec<goble_core::hosts::HostEntry>,
+    pub ssh_host_picker_open: bool,
+    pub ssh_host_picker_index: usize,
+    /// A saved host whose session ended, with the pane it ran in.
+    pub ssh_reconnect_prompt: Option<(u64, String)>,
     /// The focused leaf pane (target for splits/closes, highlighted).
     pub active_pane_id: u64,
     /// The split node currently being dragged, if any.
@@ -425,6 +430,17 @@ pub struct UiSnapshot {
     pub command_palette_query: String,
     /// The palette's selected row index.
     pub command_palette_index: usize,
+    /// The global inbox's items, newest first, and how many are unread (the
+    /// topbar control's badge).
+    pub inbox_items: Vec<InboxItem>,
+    pub inbox_unread_count: usize,
+    /// Whether the inbox overlay is up, the row it highlights, and the reason
+    /// the last jump did not land.
+    pub inbox_open: bool,
+    pub inbox_index: usize,
+    pub inbox_error: Option<String>,
+    /// Scroll offset of the inbox overlay's list.
+    pub inbox_scroll: Rc<RefCell<ScrollState>>,
     /// First run: a compact "getting started" hint shown once the workspace
     /// choice is made, so the first-run flow lands on the chat with a tip.
     pub show_onboarding_tip: bool,
@@ -518,7 +534,7 @@ pub struct MediaProject {
     pub sessions: Vec<MediaSession>,
 }
 
-/// A top-level medium node in the environment tree (Local, VM, Remote xrdp,
+/// A top-level medium node in the environment tree (Local, VM, Remote worker,
 /// Browser, Container), each expandable to its projects, each project
 /// expandable to its sessions. `id` is the [`goble_harness_types::MediumId`]
 /// string carried on the turn.
@@ -544,65 +560,4 @@ pub struct MediaSnapshot {
     pub selected_session: String,
     /// Keys of the tree branches currently expanded (medium / project nodes).
     pub expanded: Vec<String>,
-}
-
-/// A capturable/controllable screen source shown in the screen panel. Read live
-/// from the backend's [`goble_screen_core::ScreenRegistry`] (exposed via
-/// [`goble_desktop_service::DesktopState::screen_registry`]).
-#[derive(Clone, Debug)]
-pub struct ScreenSourceEntry {
-    /// Source identifier, e.g. `local`.
-    pub source: String,
-    /// Whether the source has a registered [`goble_screen_core::ScreenCapturer`].
-    pub capturable: bool,
-    /// Whether the source has a registered [`goble_screen_core::ScreenController`].
-    pub controllable: bool,
-}
-
-/// Read-only mirror of the held live frame, passed to a [`goble_ui::elements::FrameView`].
-#[derive(Clone, Debug)]
-pub struct ScreenFrameSnapshot {
-    /// The source's own id (`remote-xrdp:<host>:<port>`, or a local one): the
-    /// name the inline card draws for the desktop it shows (C4).
-    pub source: String,
-    /// Who is driving that source right now, read off the screen registry.
-    pub driver: goble_ui::ScreenDriver,
-    /// Monotonic parity used to detect pixel changes.
-    pub frame_seq: u64,
-    /// Frame width in pixels.
-    pub width: u32,
-    /// Frame height in pixels.
-    pub height: u32,
-    /// RGBA8 pixel data (`width * height * 4` bytes).
-    pub data: Arc<[u8]>,
-}
-
-/// Plain snapshot of the screen panel state. Owned by the host app and rebuilt
-/// from [`crate::screen::ScreenState`] every frame.
-#[derive(Clone, Debug)]
-pub struct ScreenSnapshot {
-    /// Whether the screen sheet is open.
-    pub open: bool,
-    /// Live capture: whether broadcast is streaming the selected source.
-    pub broadcast: bool,
-    /// Computer-use: whether click/type/scroll input is enabled.
-    pub computer_use: bool,
-    /// The source the panel is operating on.
-    pub selected_source: String,
-    /// The capturable/controllable sources from the screen registry.
-    pub sources: Vec<ScreenSourceEntry>,
-    /// Short status of the last broadcast capture (dimensions or an error).
-    pub last_capture: Option<String>,
-    /// Whether screen-event recording is active.
-    pub recording: bool,
-    /// Whether a screen-event replay is running.
-    pub replaying: bool,
-    /// Whether the replay loops instead of running once.
-    pub replay_loop: bool,
-    /// Number of recorded events.
-    pub recorded_count: usize,
-    /// Non-empty status from the last replay step (e.g. an input error).
-    pub replay_status: Option<String>,
-    /// The held live frame, when broadcast is capturing a source.
-    pub frame: Option<ScreenFrameSnapshot>,
 }

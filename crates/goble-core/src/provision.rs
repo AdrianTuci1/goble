@@ -250,10 +250,6 @@ pub struct ProvisionConfig {
     /// the worker really writes to.
     pub data_root: String,
     pub pairing_code_hash: String,
-    /// Install the remote desktop that a computer-use session streams from. It is
-    /// the only heavy piece of the install, and only computer use needs it, so it
-    /// downloads in the background once the worker is already serving.
-    pub install_remote_desktop: bool,
     pub goblin_binary: PathBuf,
     pub worker_bundle: WorkerBundle,
 }
@@ -282,41 +278,11 @@ impl ProvisionConfig {
             workspace_root: "/var/goblin/workspaces".to_string(),
             data_root: DEFAULT_DATA_ROOT.to_string(),
             pairing_code_hash: pairing_code_hash.into(),
-            install_remote_desktop: false,
             goblin_binary,
             worker_bundle,
         })
     }
 }
-
-/// The remote desktop a computer-use session streams from. It is written to the
-/// host and started in the background *after* the worker service is up, because
-/// the download is the slow part of a provisioning run and a workspace that never
-/// uses computer use never needs it.
-const REMOTE_DESKTOP_STEP: &str = r#"
-cat > "$INSTALL_PATH/goblin-remote-desktop.sh" <<'GOBLIN_REMOTE_DESKTOP'
-#!/bin/bash
-set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends xrdp xorgxrdp xfce4 xfce4-terminal dbus-x11
-# xrdp runs /etc/xrdp/startwm.sh; pin the session instead of inheriting whatever
-# the distribution's Xsession would pick.
-cat > /etc/xrdp/startwm.sh <<'STARTWM'
-#!/bin/sh
-[ -r /etc/profile ] && . /etc/profile
-exec startxfce4
-STARTWM
-chmod +x /etc/xrdp/startwm.sh
-adduser xrdp ssl-cert 2>/dev/null || true
-systemctl enable xrdp
-systemctl restart xrdp
-echo "remote desktop listening on 3389"
-GOBLIN_REMOTE_DESKTOP
-chmod +x "$INSTALL_PATH/goblin-remote-desktop.sh"
-nohup "$INSTALL_PATH/goblin-remote-desktop.sh" > /var/log/goblin-remote-desktop.log 2>&1 &
-echo "remote desktop installing in the background: /var/log/goblin-remote-desktop.log"
-"#;
 
 /// The install hands its own directories to the worker user with `chown -R`, and
 /// some of those directories come from public config fields, so the chown
@@ -359,12 +325,6 @@ chown_guarded() {
 /// session. Secrets are not part of the install: they live in the client's
 /// `config.toml` and are pushed to the worker over the paired connection.
 pub fn generate_install_script(config: &ProvisionConfig) -> String {
-    let remote_desktop = if config.install_remote_desktop {
-        REMOTE_DESKTOP_STEP
-    } else {
-        ""
-    };
-
     let bundle_json = serde_json::to_string(&config.worker_bundle).unwrap_or_default();
 
     format!(
@@ -444,7 +404,6 @@ EOF
 systemctl daemon-reload
 systemctl enable goblin.service
 systemctl restart goblin.service || echo "goblin service start requested; verify with systemctl status goblin"
-{remote_desktop}
 echo "Goblin worker $WORKER_ID provisioned at $INSTALL_PATH"
 "#,
         install_path = config.install_path,
@@ -455,7 +414,6 @@ echo "Goblin worker $WORKER_ID provisioned at $INSTALL_PATH"
         pairing_hash = config.pairing_code_hash,
         bundle_json = bundle_json,
         ca_key_pem = config.worker_bundle.ca_cert_pem.as_str(),
-        remote_desktop = remote_desktop,
     )
 }
 
@@ -500,7 +458,7 @@ mod tests {
 
     #[test]
     fn test_generate_install_script_contains_worker_id() {
-        let config = test_config(false);
+        let config = test_config();
         let script = generate_install_script(&config);
         assert!(script.contains("$INSTALL_PATH/goblin --bind"));
         assert!(script.contains("--tls-bundle $BUNDLE_FILE"));
@@ -514,7 +472,7 @@ mod tests {
     /// a container runtime, or an interpreter to run one.
     #[test]
     fn test_the_install_carries_no_foreign_runtime() {
-        let script = generate_install_script(&test_config(false));
+        let script = generate_install_script(&test_config());
         for foreign in [
             "docker",
             "Docker",
@@ -541,7 +499,7 @@ mod tests {
     /// runs this script in a systemd container.
     #[test]
     fn test_the_install_gives_the_worker_the_data_root_it_is_told_to_use() {
-        let script = generate_install_script(&test_config(false));
+        let script = generate_install_script(&test_config());
         assert!(script.contains("DATA_ROOT=/var/goblin\n"));
         assert!(!script.contains("$(dirname"));
         assert!(script.contains(r#""$INSTALL_PATH" "$WORKSPACE_ROOT" "$TLS_DIR" "$DATA_ROOT""#));
@@ -565,7 +523,7 @@ mod tests {
     /// function, run here exactly as the install runs it.
     #[test]
     fn test_the_install_refuses_a_shallow_data_root() {
-        let mut config = test_config(false);
+        let mut config = test_config();
         config.data_root = "/srv".to_string();
         let script = generate_install_script(&config);
         assert!(script.contains("DATA_ROOT=/srv\n"));
@@ -638,7 +596,7 @@ mod tests {
             }
 
             for field in ["workspace_root", "data_root"] {
-                let mut config = test_config(false);
+                let mut config = test_config();
                 if field == "workspace_root" {
                     config.workspace_root = shallow.to_string();
                 } else {
@@ -670,7 +628,7 @@ mod tests {
     /// decision was made about, so the check and the `chown -R` cannot disagree.
     #[test]
     fn test_the_guard_chowns_a_path_the_install_owns() {
-        let script = generate_install_script(&test_config(false));
+        let script = generate_install_script(&test_config());
         for (value, chowned) in [
             ("/var/goblin/workspaces", "/var/goblin/workspaces"),
             ("/srv/goblin/", "/srv/goblin"),
@@ -727,7 +685,7 @@ mod tests {
     #[test]
     fn test_provisioning_refuses_a_shallow_data_root_before_copying() {
         let tmp = TempDir::new().unwrap();
-        let mut config = test_config(false);
+        let mut config = test_config();
         config.data_root = "/srv".to_string();
         config.goblin_binary = tmp.path().join("goblin");
         let err = provision_worker(&LocalTransport::new(tmp.path()), &config)
@@ -746,7 +704,7 @@ mod tests {
     #[test]
     fn test_provisioning_refuses_a_shallow_workspace_root_before_copying() {
         let tmp = TempDir::new().unwrap();
-        let mut config = test_config(false);
+        let mut config = test_config();
         config.workspace_root = "/srv//".to_string();
         config.goblin_binary = tmp.path().join("goblin");
         let err = provision_worker(&LocalTransport::new(tmp.path()), &config)
@@ -762,35 +720,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_the_remote_desktop_is_not_installed_unless_it_is_asked_for() {
-        let script = generate_install_script(&test_config(false));
-        assert!(!script.contains("xrdp"));
-        assert!(!script.contains("goblin-remote-desktop"));
-    }
-
-    /// Computer use needs a desktop on the host, and that desktop is the slow part
-    /// of the install: it must be started in the background, and only after the
-    /// worker service is already serving.
-    #[test]
-    fn test_the_remote_desktop_installs_in_the_background_after_the_service() {
-        let script = generate_install_script(&test_config(true));
-        let service_started = script
-            .find("systemctl restart goblin.service")
-            .expect("the worker service is started");
-        let desktop_launched = script
-            .find("nohup \"$INSTALL_PATH/goblin-remote-desktop.sh\"")
-            .expect("the remote desktop is launched");
-        assert!(
-            desktop_launched > service_started,
-            "the desktop install must be launched after the worker is serving"
-        );
-        assert!(script.contains("xrdp"));
-        assert!(script.contains("> /var/log/goblin-remote-desktop.log 2>&1 &"));
-    }
-
-
-    fn test_config(install_remote_desktop: bool) -> ProvisionConfig {
+    fn test_config() -> ProvisionConfig {
         ProvisionConfig {
             worker_id: "worker-123".to_string(),
             name: "vps-1".to_string(),
@@ -798,7 +728,6 @@ mod tests {
             workspace_root: "/var/goblin/workspaces".to_string(),
             data_root: DEFAULT_DATA_ROOT.to_string(),
             pairing_code_hash: "deadbeef".to_string(),
-            install_remote_desktop,
             goblin_binary: PathBuf::from("/tmp/goblin"),
             // A hand-written bundle rather than a generated one: a real
             // certificate is base64, and random base64 would make the

@@ -47,6 +47,25 @@ fn main() -> anyhow::Result<()> {
         RootView::new(&ctx, &desktop, Some(bus)).with_app_context(app_context.clone())
     };
 
+    // The control socket is a second front door onto the same UI state. Its
+    // verbs are queued to the winit thread; `pty.*` is answered by the server
+    // thread from the PTY daemon. A socket that cannot bind (another app
+    // instance owns it) is logged, never fatal: the window still opens.
+    #[cfg(unix)]
+    let root = match goble_app::control::start_default() {
+        Ok(control) => {
+            log::info!(
+                "control socket listening at {}",
+                control.socket_path().display()
+            );
+            root.with_control(control)
+        }
+        Err(err) => {
+            log::warn!("control socket is off for this run: {err}");
+            root
+        }
+    };
+
     let result = run_with_root(Box::new(root), app_context);
 
     if let Some(telemetry) = &telemetry {

@@ -256,6 +256,7 @@ mod tests {
                         conversation_id: String::new(),
                         draft: String::new(),
                         path: String::new(),
+                        daemon_session_id: String::new(),
                     },
                 );
             }
@@ -302,7 +303,7 @@ mod tests {
     fn frame(root: &mut RootView, app: &AppContext, cursor: Option<Vector2F>) -> Vec<RenderCommand> {
         let _ = root.layout(
             SizeConstraint::loose(window()),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             app,
         );
         let renderer = Renderer::new();
@@ -322,7 +323,7 @@ mod tests {
     /// A real click: press, one redraw, release — the frames the app draws
     /// between down and up.
     fn click(root: &mut RootView, app: &AppContext, pos: (f32, f32)) {
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         let down = DispatchedEvent::MouseDown {
             position: vec2f(pos.0, pos.1),
             button: 0,
@@ -568,7 +569,7 @@ mod tests {
         // The focus walking right takes the mark with it: the right pane is the
         // active session then, and the left pane's bar carries nothing.
         let _ = frame(&mut root, &app, None);
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         root.dispatch_event(
             &DispatchedEvent::KeyDown {
                 key: "ArrowRight".to_string(),
@@ -688,7 +689,7 @@ mod tests {
         // The frame the press lands on is also the frame the chords are
         // dispatched through, so the tree is rebuilt before the key.
         let _ = frame(&mut root, &app, None);
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         let handled = root.dispatch_event(
             &DispatchedEvent::KeyDown {
                 key: "ArrowLeft".to_string(),
@@ -820,6 +821,7 @@ mod tests {
                         conversation_id: String::new(),
                         draft: String::new(),
                         path: String::new(),
+                        daemon_session_id: String::new(),
                     },
                 );
             }
@@ -976,7 +978,7 @@ mod tests {
             .copied()
             .expect("the pane's chip draws its diamond");
 
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         let taken = root.dispatch_event(
             &DispatchedEvent::MouseDown {
                 position: vec2f(diamond.x + size / 2.0, diamond.y + size / 2.0),
@@ -1074,6 +1076,7 @@ mod tests {
                         conversation_id: String::new(),
                         draft: String::new(),
                         path: String::new(),
+                        daemon_session_id: String::new(),
                     },
                 );
             }

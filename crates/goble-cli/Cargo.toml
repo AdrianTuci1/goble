@@ -17,6 +17,8 @@ path = "src/lib.rs"
 [dependencies]
 tempfile.workspace = true
 goble-core = { path = "../goble-core" }
+# The typed control protocol shared with the app and the MCP server.
+goble-control = { path = "../goble-control" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow.workspace = true
 serde.workspace = true

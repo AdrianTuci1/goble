@@ -208,7 +208,7 @@ fn a_remote_conversation_draws_the_environment_control_and_a_local_one_draws_non
     );
     assert_eq!(
         root.state_rc().borrow().pane_environment(second),
-        Some("remote-xrdp".to_string()),
+        Some("remote".to_string()),
         "a conversation routed to a worker holds the environment its routing implies"
     );
 
@@ -243,7 +243,7 @@ fn a_remote_conversation_draws_the_environment_control_and_a_local_one_draws_non
     assert_eq!(
         texts
             .iter()
-            .filter(|t| t.as_str() == "Remote (xrdp)")
+            .filter(|t| t.as_str() == "Remote (worker)")
             .count(),
         1,
         "the control names the environment: {texts:?}"
@@ -327,7 +327,7 @@ fn the_chosen_environment_is_remembered_on_the_conversation() {
     bind(&root, &desktop, second, &another);
     assert_eq!(
         root.state_rc().borrow().pane_environment(second),
-        Some("remote-xrdp".to_string()),
+        Some("remote".to_string()),
         "a conversation nothing was chosen for keeps the environment its routing implies"
     );
     assert_eq!(
@@ -377,7 +377,7 @@ fn the_submitted_turn_carries_the_chosen_environment() {
     // selection.
     root.media_state_rc()
         .borrow_mut()
-        .select_medium("remote-xrdp");
+        .select_medium("remote");
     let medium = root
         .state_rc()
         .borrow()
@@ -436,23 +436,23 @@ fn the_submitted_turn_carries_the_chosen_environment() {
         goble_harness_types::HarnessId::new("cli-a"),
         "all green",
     )));
-    let model =
-        crate::daemon::DaemonModel::new(Arc::clone(&desktop)).with_remote(desktop.daemon_client());
+    let client = desktop.daemon_client();
+    let model = crate::daemon::DaemonModel::new(Arc::clone(&desktop)).with_remote(client);
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let _guard = rt.enter();
     let handle = model
-        .run_turn(
-            &there,
-            "run the tests",
-            "mock",
-            "",
-            Some(crate::ui::WorkspaceRouting::Remote),
-            &medium,
-            "remote",
-            &there,
-            None,
-            Some("cli-a"),
-        )
+        .run_turn(crate::daemon::TurnRequest {
+            chat_id: &there,
+            prompt: "run the tests",
+            provider: "mock",
+            model: "",
+            routing: Some(crate::ui::WorkspaceRouting::Remote),
+            medium_id: &medium,
+            project_id: "remote",
+            session_id: &there,
+            workspace_dir: None,
+            harness_id: Some("cli-a"),
+        })
         .expect("the remote route accepts the turn");
     rt.block_on(handle).expect("the turn settles");
 

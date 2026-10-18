@@ -108,6 +108,66 @@ fn alt_screen_has_no_scrollback() {
 }
 
 #[test]
+fn search_reads_history_and_the_visible_screen() {
+    let mut s = screen(20, 2, 20);
+    for i in 0..6 {
+        s.feed(format!("line{i}\r\n").as_bytes());
+    }
+    // The history holds the rows that scrolled past the two-line screen.
+    let history = s.history_len();
+    assert!(history > 0);
+    assert_eq!(s.total_lines(), history + 2);
+
+    let found = s.search("line1", SearchOptions::literal()).unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].line < history, "it is in history");
+    assert_eq!(found[0].text, "line1");
+
+    let found = s.search("line5", SearchOptions::literal()).unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].line >= history, "it is on the visible screen");
+
+    // A line accessor reads the same rows the search indexed.
+    assert_eq!(
+        s.line_text_at(found[0].line).as_deref(),
+        Some("line5")
+    );
+    assert!(s.line_at(s.total_lines()).is_none());
+}
+
+#[test]
+fn search_is_smart_case_and_reports_an_invalid_regex() {
+    let mut s = screen(20, 3, 10);
+    s.feed(b"Needle\r\nneedle\r\nNEEDLE");
+    let smart = s.search("needle", SearchOptions::literal()).unwrap();
+    assert_eq!(smart.len(), 3);
+    let sensitive = s.search("Needle", SearchOptions::literal()).unwrap();
+    assert_eq!(sensitive.len(), 1);
+    assert_eq!(sensitive[0].line, 0);
+
+    let regex = s.search(r"n\w+", SearchOptions::regex()).unwrap();
+    assert_eq!(regex.len(), 3);
+    assert!(matches!(
+        s.search("(", SearchOptions::regex()),
+        Err(SearchError::InvalidRegex(_))
+    ));
+    assert!(s.search("missing", SearchOptions::literal()).unwrap().is_empty());
+}
+
+#[test]
+fn scrolling_to_a_match_keeps_it_on_screen() {
+    let mut s = screen(20, 2, 20);
+    for i in 0..8 {
+        s.feed(format!("row{i}\r\n").as_bytes());
+    }
+    let found = s.search("row1", SearchOptions::literal()).unwrap();
+    let line = found[0].line;
+    assert_eq!(s.visible_row_of(line), None, "it is scrolled out");
+    s.scroll_to_line(line);
+    assert!(s.visible_row_of(line).is_some(), "the match is brought back");
+}
+
+#[test]
 fn scrollback_grows_when_enabled() {
     let mut s = screen(20, 2, 100);
     for i in 0..10 {

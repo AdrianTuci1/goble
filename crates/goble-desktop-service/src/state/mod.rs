@@ -53,7 +53,6 @@ mod workers;
 mod tests;
 
 pub use attach::{AttachedSession, SessionAttach};
-pub use bootstrap::RemoteDesktopInfo;
 pub use types::{
     AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, CommandProposedEvent, ExecutionInfo, Intent,
     IntentParams, LlmSetting, LogEntry, ReasoningEvent, ReasoningPhase, SubAgentFinishedEvent,
@@ -113,22 +112,4 @@ pub struct DesktopState {
     /// same record to the app, which overlays it on the persisted rows so a
     /// running call is visible before the turn ends.
     tool_in_flight: Arc<Mutex<HashMap<String, HashMap<String, ToolCallEvent>>>>,
-    /// Screen capture+control registry, seeded with the local platform adapter
-    /// on construction so the capturer/controller are reachable. The backend is
-    /// platform-aware: macOS uses the real `screencapture` capturer, other
-    /// platforms fall back to a synthetic adapter.
-    screen: goble_screen_core::ScreenRegistry,
-    /// Every remote desktop this state has open, keyed by the source id the
-    /// registry holds it under — the one recorded source-id → host mapping, so
-    /// "which desktop is this host's" is answered in one place rather than at a
-    /// call site. A second handoff for a host reuses the desktop recorded for
-    /// it instead of connecting again, and the record carries whether the RDP
-    /// client behind it is still there, so a desktop whose client is gone is
-    /// reported instead of serving the frame it left behind.
-    ///
-    /// The record holds the controller too: a remote desktop is view-only while
-    /// nobody has taken it, so the registry holds its capturer and the
-    /// controller waits here for [`DesktopState::take_screen_control`]. The
-    /// local source is not here: its own adapter registers both halves.
-    remote_desktops: Mutex<HashMap<String, bootstrap::RemoteDesktop>>,
 }

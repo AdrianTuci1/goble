@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use goble_core::hosts::HostEntry;
 use goble_desktop_service::DesktopState;
 
 use crate::media::MediaState;
@@ -32,6 +33,82 @@ pub(super) fn split_active_pane(
             state.set_active_pane_path(path);
             state.sync_active_view();
         }
+    }
+}
+
+/// Open a saved SSH host in a new terminal pane and run the host's `ssh -t`
+/// line in it. The pane is bound through [`TerminalRegistry::set_ssh_session`]
+/// before the line is written, so the existing chip and the agent's shell route
+/// read the session from the same place a typed `ssh host` line puts it.
+pub(super) fn open_ssh_host_pane(
+    state: &mut UiState,
+    desktop: Option<&Arc<DesktopState>>,
+    media: &MediaState,
+    host: &HostEntry,
+) {
+    split_active_pane(state, SplitDir::Vertical, desktop, media, PaneKind::Terminal);
+    let pane_id = state.active_pane_id;
+    let cwd = state
+        .pane_sessions
+        .get(&pane_id)
+        .map(|session| session.path.clone())
+        .unwrap_or_default();
+    let session = host.ssh_session();
+    state.bind_ssh_pane(pane_id, Some(host.name.clone()), session);
+    run_saved_host_line(state, pane_id, &cwd, host);
+    if let Some(desktop) = desktop {
+        state.save_panes(desktop);
+    }
+}
+
+/// Reconnect `pane_id` to the saved host `name` after its session ended. The
+/// shell is restarted first: an `exit` leaves a dead pty behind, and writing
+/// the ssh line into that would do nothing.
+pub(super) fn reconnect_ssh_host(
+    state: &mut UiState,
+    desktop: Option<&Arc<DesktopState>>,
+    pane_id: u64,
+    name: &str,
+) -> bool {
+    let Some(host) = state
+        .ssh_host_entries
+        .iter()
+        .find(|host| host.name == name)
+        .cloned()
+    else {
+        // The entry was removed from hosts.toml since the pane opened. There is
+        // no command to run, so the offer is dropped rather than drawing a
+        // reconnect that cannot.
+        state.pane_ssh.remove(&pane_id);
+        return false;
+    };
+    let cwd = state
+        .pane_sessions
+        .get(&pane_id)
+        .map(|session| session.path.clone())
+        .unwrap_or_default();
+    let session = host.ssh_session();
+    state.bind_ssh_pane(pane_id, Some(host.name.clone()), session);
+    {
+        let mut terminal = state.terminal.borrow_mut();
+        terminal.restart_session(pane_id, &cwd);
+    }
+    run_saved_host_line(state, pane_id, &cwd, &host);
+    if let Some(desktop) = desktop {
+        state.save_panes(desktop);
+    }
+    true
+}
+
+/// Write the host's command line into the pane's shell. The session is already
+/// bound by the caller; this only gives the shell the line to run.
+fn run_saved_host_line(state: &mut UiState, pane_id: u64, cwd: &str, host: &HostEntry) {
+    let mut terminal = state.terminal.borrow_mut();
+    terminal.ensure_session(pane_id, cwd);
+    if let Some(session) = terminal.sessions.get_mut(&pane_id) {
+        let mut line = host.command_line();
+        line.push('\n');
+        session.write(line.as_bytes());
     }
 }
 
@@ -152,28 +229,6 @@ pub(super) fn open_pane_harness(
     }
 }
 
-/// Let the panes in `ids` go of the desktop each was showing, closing every
-/// desktop whose last viewer is one of them.
-///
-/// The rule is [`UiState::release_inline_screen`]'s and stays there: a desktop
-/// closes only when no pane anywhere still names it, so a source another pane or
-/// another tab is watching survives. This is the one place the app acts on that
-/// answer, so a dismissed card, a closed pane and a closed tab all release a
-/// desktop under the same terms.
-pub(super) fn release_inline_screens(
-    state: &mut UiState,
-    ids: impl IntoIterator<Item = u64>,
-    desktop: Option<&DesktopState>,
-) {
-    for id in ids {
-        if let Some(source) = state.release_inline_screen(id) {
-            if let Some(desktop) = desktop {
-                desktop.close_remote_screen(&source);
-            }
-        }
-    }
-}
-
 /// Close the space (tab) at `index`.
 ///
 /// The last remaining space is never removed: it resets to a fresh empty chat
@@ -184,13 +239,9 @@ pub(super) fn close_space_at(state: &mut UiState, index: usize, desktop: Option<
         return;
     }
     // Drop every pane session/runtime/hover for the space's leaves and kill any
-    // terminal sessions along with them. The panes' desktops are released first,
-    // before their runtimes go: a tab closing is a viewer leaving like any other,
-    // so a desktop this tab was the last one showing closes with it while one
-    // another tab still shows stays open.
+    // terminal sessions along with them.
     let closed = state.spaces.remove(index);
     let leaves = collect_leaf_ids(&closed.root);
-    release_inline_screens(state, leaves.iter().copied(), desktop);
     // A pane in the closed tab owns nothing any more: its session, runtime,
     // hover flag, child view, shell and viewer session all go with it — the last
     // one because the worker's status path finds the panes a report is about by

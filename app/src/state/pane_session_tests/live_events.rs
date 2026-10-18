@@ -196,7 +196,7 @@ use super::*;
             "the app observes the turn start it issued"
         );
 
-        state.finish_turn(1);
+        state.finish_turn(1, crate::state::TurnOutcome::Success);
         let work = state.live_work();
         assert!(!work.turn_busy, "a finished turn is no longer busy");
         assert!(

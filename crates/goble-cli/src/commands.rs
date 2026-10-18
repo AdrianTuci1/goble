@@ -25,9 +25,24 @@ pub fn main() -> Result<()> {
 
 pub async fn async_main() -> Result<()> {
     let args = Args::parse();
-    let store = init_store().await?;
 
     match args.command {
+        #[cfg(unix)]
+        Command::Ctl {
+            json,
+            socket,
+            action,
+        } => crate::ctl::run(action, json, socket),
+        command => run_stored(command).await,
+    }
+}
+
+/// Run a command that needs the worker store. `ctl` is dispatched before the
+/// store opens, so a control call works even when the store cannot be opened.
+async fn run_stored(command: Command) -> Result<()> {
+    let store = init_store().await?;
+
+    match command {
         Command::WorkerAdd {
             name,
             host,
@@ -89,7 +104,6 @@ pub async fn async_main() -> Result<()> {
             username,
             ssh_key,
             install_path,
-            remote_desktop,
             local_test,
         }
         | Command::SetupWorker {
@@ -98,7 +112,6 @@ pub async fn async_main() -> Result<()> {
             username,
             ssh_key,
             install_path,
-            remote_desktop,
             local_test,
         } => {
             do_provision(
@@ -108,8 +121,7 @@ pub async fn async_main() -> Result<()> {
                 username,
                 ssh_key,
                 install_path,
-                remote_desktop,
-                local_test,
+                    local_test,
             )?;
         }
         Command::Pair { code } => {
@@ -452,6 +464,12 @@ pub async fn async_main() -> Result<()> {
                 println!("{}", helm_args.join(""));
             }
         },
+        #[cfg(unix)]
+        Command::Ctl {
+            json,
+            socket,
+            action,
+        } => crate::ctl::run(action, json, socket)?,
     }
 
     Ok(())

@@ -56,6 +56,20 @@ pub struct DaemonModel {
     pane_session: Option<Arc<dyn PaneSession>>,
 }
 
+/// One turn's identity and route, as the caller knows it.
+pub struct TurnRequest<'a> {
+    pub chat_id: &'a str,
+    pub prompt: &'a str,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub routing: Option<WorkspaceRouting>,
+    pub medium_id: &'a str,
+    pub project_id: &'a str,
+    pub session_id: &'a str,
+    pub workspace_dir: Option<&'a str>,
+    pub harness_id: Option<&'a str>,
+}
+
 impl DaemonModel {
     /// Wrap the desktop service (the composition root of the embedded daemon).
     /// The remote client is `None` until [`Self::with_remote`] supplies one.
@@ -97,19 +111,19 @@ impl DaemonModel {
     /// a turn for a harness the remote daemon registers) or, when no client is
     /// attached, errors — never silently running locally. `harness_id` names the
     /// harness the turn runs on (`None`/`internal` = the native goble harness).
-    pub fn run_turn(
-        &self,
-        chat_id: &str,
-        prompt: &str,
-        provider: &str,
-        model: &str,
-        routing: Option<WorkspaceRouting>,
-        medium_id: &str,
-        project_id: &str,
-        session_id: &str,
-        workspace_dir: Option<&str>,
-        harness_id: Option<&str>,
-    ) -> Result<tokio::task::JoinHandle<()>> {
+    pub fn run_turn(&self, request: TurnRequest<'_>) -> Result<tokio::task::JoinHandle<()>> {
+        let TurnRequest {
+            chat_id,
+            prompt,
+            provider,
+            model,
+            routing,
+            medium_id,
+            project_id,
+            session_id,
+            workspace_dir,
+            harness_id,
+        } = request;
         match Route::resolve(routing) {
             Route::Local => self.desktop.run_chat_turn_with_pane_session(
                 chat_id,
@@ -192,7 +206,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         DesktopState::new(
             goble_core::store::Store::open_in_memory().expect("store"),
-            ThreadStore::new(dir.path().to_path_buf()).expect("thread store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
         )
     }
 
@@ -201,18 +215,18 @@ mod tests {
         // Remote is attempted (daemon feature flag is on by default) and there
         // is no attached client, so it errors instead of running locally.
         let model = DaemonModel::new(desktop());
-        let err = model.run_turn(
-            "c1",
-            "hi",
-            "mock",
-            "",
-            Some(WorkspaceRouting::Remote),
-            "local",
-            "default",
-            "c1",
-            None,
-            None,
-        );
+        let err = model.run_turn(TurnRequest {
+            chat_id: "c1",
+            prompt: "hi",
+            provider: "mock",
+            model: "",
+            routing: Some(WorkspaceRouting::Remote),
+            medium_id: "local",
+            project_id: "default",
+            session_id: "c1",
+            workspace_dir: None,
+            harness_id: None,
+        });
         assert!(err.is_err(), "remote with no client must not run locally");
     }
 
@@ -236,18 +250,18 @@ mod tests {
         let state = desktop();
         let model = DaemonModel::new(Arc::clone(&state));
         let handle = model
-            .run_turn(
-                "c1",
-                "Say hi",
-                "mock",
-                "",
-                Some(WorkspaceRouting::Local),
-                "local",
-                "default",
-                "c1",
-                None,
-                None,
-            )
+            .run_turn(TurnRequest {
+                chat_id: "c1",
+                prompt: "Say hi",
+                provider: "mock",
+                model: "",
+                routing: Some(WorkspaceRouting::Local),
+                medium_id: "local",
+                project_id: "default",
+                session_id: "c1",
+                workspace_dir: None,
+                harness_id: None,
+            })
             .expect("local run should start");
         handle.await.expect("local turn should finish");
     }

@@ -277,8 +277,8 @@ pub enum SettingsControl {
     /// Environment: remove one secret.
     EnvironmentDeleteSecret(String),
     /// Connections: one concrete host from `~/.ssh/config`; Enter selects the
-    /// row and names it. Nothing connects: this build cannot open a session
-    /// over SSH.
+    /// row and names it. The row records a target, while a saved host from
+    /// `~/.goble/hosts.toml` opens in a pane from Cmd+Shift+N.
     SshHost(String),
     /// Connections: re-read `~/.ssh` and replace the cached read.
     ReloadSshHosts,

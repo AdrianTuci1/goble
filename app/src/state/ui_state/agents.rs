@@ -1,14 +1,74 @@
 use super::*;
 
+/// What a pane's agent is doing, as the real events reported it.
+///
+/// [`Self::Unknown`] is the honest default: a pane whose agent has not reported
+/// anything yet is not assumed to be idle. The state is event-derived (see
+/// [`UiState::begin_turn`], [`UiState::apply_command_proposed`],
+/// [`UiState::apply_ask_user`] and [`UiState::finish_turn`]); the one observed
+/// exception is a TUI agent, whose terminal mode and running command are the
+/// signal ([`UiState::refresh_tui_agent_states`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PaneAgentState {
+    #[default]
+    Unknown,
+    Idle,
+    Working,
+    NeedsInput,
+    Done,
+    Errored,
+}
+
+/// How a turn the app is settling actually ended, read off the terminal event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TurnOutcome {
+    Success,
+    /// A failed turn, with the terminal error's own message when one was
+    /// reported.
+    Failed(Option<String>),
+    /// The finish event carried no status. The turn is over, but no state is
+    /// invented for it.
+    Unknown,
+}
+
 impl UiState {
+    /// The pane a live `chat:*` event belongs to, from the conversation it
+    /// names.
+    ///
+    /// The conversation-to-pane binding is authoritative: focus can move after
+    /// a turn starts, and the event still describes the pane that started it.
+    /// A conversation an event names but no pane owns is not attributed to the
+    /// focused pane — an empty id is the only case with nothing to resolve, and
+    /// it falls back to the active pane. A sub-agent's own conversation resolves
+    /// to the pane that spawned that child, so a nested child's events stay with
+    /// the transcript that drew its parent row.
+    pub fn pane_for_chat_event(&self, conversation_id: &str) -> Option<u64> {
+        if conversation_id.is_empty() {
+            return Some(self.active_pane_id);
+        }
+        self.pane_id_for_conversation(conversation_id)
+            .or_else(|| self.pane_id_owning_sub_agent(conversation_id))
+    }
+
+    /// The pane whose live sub-agent set holds `child_id` as a spawned child.
+    fn pane_id_owning_sub_agent(&self, child_id: &str) -> Option<u64> {
+        self.pane_runtime.iter().find_map(|(pane_id, rt)| {
+            if rt.sub_agents.contains_key(child_id) {
+                Some(*pane_id)
+            } else {
+                None
+            }
+        })
+    }
+
     /// Apply one live `chat:tool` event: a running call is held in the owning
     /// pane's in-flight map and overlaid on the transcript immediately, without
     /// re-reading the store; a finished/errored call clears its overlay entry,
     /// leaving the persisted terminal state to the next refresh.
     pub fn apply_tool_event(&mut self, call: &goble_desktop_service::ToolCallEvent) {
-        let pane_id = self
-            .pane_id_for_conversation(&call.chat_id)
-            .unwrap_or(self.active_pane_id);
+        let Some(pane_id) = self.pane_for_chat_event(&call.chat_id) else {
+            return;
+        };
         {
             let rt = self.pane_runtime.entry(pane_id).or_default();
             if call.status == ToolCallStatus::Running {
@@ -28,16 +88,93 @@ impl UiState {
     /// harness suspended on the owning pane, so the composer draws A5's
     /// approval card. The pane stays busy — the turn is suspended, not finished.
     pub fn apply_command_proposed(&mut self, event: &goble_desktop_service::CommandProposedEvent) {
-        let pane_id = self
-            .pane_id_for_conversation(&event.chat_id)
-            .unwrap_or(self.active_pane_id);
+        let Some(pane_id) = self.pane_for_chat_event(&event.chat_id) else {
+            return;
+        };
+        let detail = event
+            .candidates
+            .first()
+            .cloned()
+            .unwrap_or_else(|| event.cwd.clone());
+        {
+            let rt = self.pane_runtime.entry(pane_id).or_default();
+            rt.pending_command = Some(CommandProposalUi::new(
+                event.id.clone(),
+                event.candidates.clone(),
+                crate::state::display_path(&event.cwd),
+            ));
+            rt.command_selection = Some(Rc::new(RefCell::new(0)));
+            rt.agent_state = PaneAgentState::NeedsInput;
+        }
+        self.raise_inbox(
+            pane_id,
+            event.chat_id.clone(),
+            InboxKind::Approval,
+            "Command needs approval",
+            detail,
+        );
+    }
+
+    /// Apply one live `chat:ask_user` event: hold the question on the pane, mark
+    /// the agent as needing input, and raise the question in the global inbox.
+    pub fn apply_ask_user(&mut self, chat_id: &str, question: &str, quick_replies: Vec<String>) {
+        let Some(pane_id) = self.pane_for_chat_event(chat_id) else {
+            return;
+        };
+        {
+            let rt = self.pane_runtime.entry(pane_id).or_default();
+            rt.pending_ask = Some(AskUserUi::new(question.to_string(), quick_replies));
+            rt.agent_state = PaneAgentState::NeedsInput;
+        }
+        self.raise_inbox(
+            pane_id,
+            chat_id.to_string(),
+            InboxKind::Question,
+            "Agent asked a question",
+            question,
+        );
+    }
+
+    /// Settle a terminal error reported by the harness (`chat:error`). The turn
+    /// is over and failed; the message is the one the event carried.
+    pub fn apply_turn_error(&mut self, chat_id: &str, message: &str) {
+        let Some(pane_id) = self.pane_for_chat_event(chat_id) else {
+            return;
+        };
+        self.finish_turn(pane_id, TurnOutcome::Failed(Some(message.to_string())));
+    }
+
+    /// Settle a command decision the user made: the resumed turn is running, so
+    /// the pane goes back to Working and the card is gone. The busy flag is
+    /// recorded before the proposal is cleared, so the pane derives the same
+    /// state the live event path would (`clear_command_proposal`).
+    pub fn resume_command_decision(&mut self, pane_id: u64, proposal_id: &str) {
+        if let Some(rt) = self.pane_runtime.get_mut(&pane_id) {
+            rt.busy = true;
+        }
+        self.clear_command_proposal(pane_id, proposal_id);
+    }
+
+    /// Settle a skipped question: the resumed turn is running, so the pane
+    /// reports Working and the card is gone.
+    pub fn skip_pending_ask(&mut self, pane_id: u64) {
+        if let Some(rt) = self.pane_runtime.get_mut(&pane_id) {
+            rt.pending_ask = None;
+            rt.busy = true;
+            rt.agent_state = PaneAgentState::Working;
+        }
+    }
+
+    /// Stop a pane's turn. Cancellation has no terminal turn event of its own,
+    /// so the pane reports Idle directly; the suspended approval belongs to the
+    /// turn that is no longer running and goes with it.
+    pub fn stop_turn(&mut self, pane_id: u64) {
         let rt = self.pane_runtime.entry(pane_id).or_default();
-        rt.pending_command = Some(CommandProposalUi::new(
-            event.id.clone(),
-            event.candidates.clone(),
-            crate::state::display_path(&event.cwd),
-        ));
-        rt.command_selection = Some(Rc::new(RefCell::new(0)));
+        rt.busy = false;
+        rt.turn_started_at = None;
+        rt.pending_command = None;
+        rt.command_selection = None;
+        rt.agent_state = PaneAgentState::Idle;
     }
 
     /// Clear `pane_id`'s pending command proposal, so the card disappears the
@@ -48,6 +185,15 @@ impl UiState {
             if rt.pending_command.as_ref().map(|p| p.id.as_str()) == Some(proposal_id) {
                 rt.pending_command = None;
                 rt.command_selection = None;
+                // The decision resumes the suspended turn; without a further
+                // signal the pane is simply running its turn again.
+                if rt.agent_state == PaneAgentState::NeedsInput {
+                    rt.agent_state = if rt.busy {
+                        PaneAgentState::Working
+                    } else {
+                        PaneAgentState::Unknown
+                    };
+                }
             }
         }
     }
@@ -59,18 +205,81 @@ impl UiState {
         let rt = self.pane_runtime.entry(pane_id).or_default();
         rt.busy = true;
         rt.turn_started_at = Some(std::time::Instant::now());
+        rt.agent_state = PaneAgentState::Working;
     }
 
     /// Settle a finished turn on `pane_id`: the pane stops showing busy, its
-    /// observed start time is dropped (the turn is over) and any command
-    /// proposal it was waiting on is dropped (the store now carries the
-    /// outcome). Called from the `chat:turn_finished` path.
-    pub fn finish_turn(&mut self, pane_id: u64) {
+    /// observed start time is dropped (the turn is over), and the terminal
+    /// verdict becomes [`PaneAgentState::Done`] or [`PaneAgentState::Errored`].
+    /// A pending approval or question outlives the finished turn: the pane
+    /// stays [`PaneAgentState::NeedsInput`], the card is left standing, and no
+    /// terminal inbox item is raised over it. Called from the
+    /// `chat:turn_finished` / `chat:error` paths.
+    pub fn finish_turn(&mut self, pane_id: u64, outcome: TurnOutcome) {
+        let conversation_id = self.pane_conversation_id(pane_id).unwrap_or_default();
+        let still_pending;
         if let Some(rt) = self.pane_runtime.get_mut(&pane_id) {
             rt.busy = false;
             rt.turn_started_at = None;
-            rt.pending_command = None;
-            rt.command_selection = None;
+            still_pending = rt.pending_command.is_some() || rt.pending_ask.is_some();
+            if still_pending {
+                rt.agent_state = PaneAgentState::NeedsInput;
+            } else {
+                rt.pending_command = None;
+                rt.command_selection = None;
+                rt.agent_state = match &outcome {
+                    TurnOutcome::Success => PaneAgentState::Done,
+                    TurnOutcome::Failed(_) => PaneAgentState::Errored,
+                    TurnOutcome::Unknown => PaneAgentState::Unknown,
+                };
+            }
+        } else {
+            return;
+        }
+        if still_pending {
+            return;
+        }
+        match outcome {
+            TurnOutcome::Success => self.raise_inbox(
+                pane_id,
+                conversation_id,
+                InboxKind::Done,
+                "Agent turn finished",
+                "The turn completed.",
+            ),
+            TurnOutcome::Failed(detail) => self.raise_inbox(
+                pane_id,
+                conversation_id,
+                InboxKind::Error,
+                "Agent turn failed",
+                detail.unwrap_or_else(|| "The turn ended in an error.".to_string()),
+            ),
+            TurnOutcome::Unknown => String::new(),
+        };
+    }
+
+    /// The state stored for `pane_id`'s agent, or [`PaneAgentState::Unknown`]
+    /// for a pane that has reported nothing.
+    pub fn pane_agent_state(&self, pane_id: u64) -> PaneAgentState {
+        self.pane_runtime
+            .get(&pane_id)
+            .map(|rt| rt.agent_state)
+            .unwrap_or(PaneAgentState::Unknown)
+    }
+
+    /// Refresh the state of every pane whose terminal is running a TUI agent.
+    /// The registry's mode and its running-command flag are the signal: a
+    /// command under way is [`PaneAgentState::Working`], a prompt is
+    /// [`PaneAgentState::Idle`]. A shell pane is left untouched — it has no
+    /// agent state to report.
+    pub fn refresh_tui_agent_states(&mut self) {
+        let terminal = self.terminal.borrow();
+        for (pane_id, rt) in self.pane_runtime.iter_mut() {
+            if let Some(state) =
+                tui_agent_state(&terminal.mode(*pane_id), terminal.running_a_command(*pane_id))
+            {
+                rt.agent_state = state;
+            }
         }
     }
 
@@ -111,9 +320,9 @@ impl UiState {
     /// model's thinking appears as it streams instead of only after the store
     /// re-read that `chat:updated` triggers.
     pub fn apply_reasoning_event(&mut self, event: &goble_desktop_service::ReasoningEvent) {
-        let pane_id = self
-            .pane_id_for_conversation(&event.chat_id)
-            .unwrap_or(self.active_pane_id);
+        let Some(pane_id) = self.pane_for_chat_event(&event.chat_id) else {
+            return;
+        };
         {
             let rt = self.pane_runtime.entry(pane_id).or_default();
             rt.apply_reasoning(event);
@@ -128,9 +337,9 @@ impl UiState {
     /// the pane that owns the parent conversation, so its row appears in the
     /// parent transcript at once.
     pub fn apply_subagent_spawned(&mut self, event: &goble_desktop_service::SubAgentSpawnedEvent) {
-        let pane_id = self
-            .pane_id_for_conversation(&event.chat_id)
-            .unwrap_or(self.active_pane_id);
+        let Some(pane_id) = self.pane_for_chat_event(&event.chat_id) else {
+            return;
+        };
         self.pane_runtime
             .entry(pane_id)
             .or_default()
@@ -144,9 +353,9 @@ impl UiState {
         &mut self,
         event: &goble_desktop_service::SubAgentProgressEvent,
     ) {
-        let pane_id = self
-            .pane_id_for_conversation(&event.chat_id)
-            .unwrap_or(self.active_pane_id);
+        let Some(pane_id) = self.pane_for_chat_event(&event.chat_id) else {
+            return;
+        };
         self.pane_runtime
             .entry(pane_id)
             .or_default()
@@ -159,13 +368,26 @@ impl UiState {
         &mut self,
         event: &goble_desktop_service::SubAgentFinishedEvent,
     ) {
-        let pane_id = self
-            .pane_id_for_conversation(&event.chat_id)
-            .unwrap_or(self.active_pane_id);
+        let Some(pane_id) = self.pane_for_chat_event(&event.chat_id) else {
+            return;
+        };
         self.pane_runtime
             .entry(pane_id)
             .or_default()
             .apply_subagent_finished(event);
+        if event.status == "failed" {
+            let detail = event
+                .error
+                .clone()
+                .unwrap_or_else(|| event.status.clone());
+            self.raise_inbox(
+                pane_id,
+                event.chat_id.clone(),
+                InboxKind::Agent,
+                "Sub-agent failed",
+                detail,
+            );
+        }
     }
 
     /// The live sub-agent rows for `pane_id`, keyed by the id of the parent tool
@@ -402,4 +624,21 @@ impl UiState {
         true
     }
 
+}
+
+/// The state a pane's TUI agent reports through its terminal: `Some(Working)`
+/// while a command runs, `Some(Idle)` at a prompt, and `None` for a shell pane
+/// that has no agent to report.
+pub(super) fn tui_agent_state(
+    mode: &crate::terminal::TerminalMode,
+    running: bool,
+) -> Option<PaneAgentState> {
+    match mode {
+        crate::terminal::TerminalMode::Agent(_) => Some(if running {
+            PaneAgentState::Working
+        } else {
+            PaneAgentState::Idle
+        }),
+        crate::terminal::TerminalMode::Shell => None,
+    }
 }

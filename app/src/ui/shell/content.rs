@@ -1,30 +1,27 @@
-use goble_ui::elements::{AppContext, Element};
+use goble_ui::elements::Element;
 
 use super::super::connectors::build_connectors_page;
 use super::super::harness;
 use super::super::panes;
 use super::super::projects::build_projects_view;
-use super::super::{
-    AiActions, AiSnapshot, AppTab, MediaActions, MediaSnapshot, ProjectsActions, ProjectsSnapshot,
-    UiActions, UiSnapshot,
-};
+use super::super::{AppTab, BuildContext};
 
 /// Main content area: threads placeholder, terminal/chat, or the
 /// per-project observability panel. Navigation is driven by the topbar buttons.
 ///
 /// The settings tab is not a mode of this match: it is a space in the pane
 /// tree, drawn by [`AppTab::Chat`] like every other tab.
-pub fn build_main(
-    app: &AppContext,
-    state: &UiSnapshot,
-    actions: &UiActions,
-    projects: &ProjectsSnapshot,
-    projects_actions: &ProjectsActions,
-    ai: &AiSnapshot,
-    ai_actions: &AiActions,
-    _media: &MediaSnapshot,
-    _media_actions: &MediaActions,
-) -> Box<dyn Element> {
+pub fn build_main(context: &BuildContext<'_>) -> Box<dyn Element> {
+    let BuildContext {
+        app,
+        state,
+        actions,
+        ai,
+        ai_actions,
+        projects,
+        projects_actions,
+        ..
+    } = *context;
     match state.current_tab {
         // The chat/terminal area is the active space's pane tree; the medium
         // selector lives in the topbar, so the whole main column is panes.

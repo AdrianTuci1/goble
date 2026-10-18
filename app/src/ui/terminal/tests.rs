@@ -19,6 +19,7 @@ use std::collections::HashMap;
         CARD_RAIL_WIDTH,
     };
     use goble_ui::geometry::vec2f;
+    use goble_ui::platform::text_atlas::{mono_advance, FontWeight};
     use goble_ui::render::RenderCommand;
     use goble_ui::test_util::render_element;
     use goble_ui::{ChatComposer, ColorU};
@@ -58,8 +59,10 @@ use std::collections::HashMap;
                 harness_cb.borrow_mut().push(on)
             })),
             Rc::new(RefCell::new(|_: u64, _: String| {})),
+            Rc::new(RefCell::new(|_: u64, _: String| {})),
+            Rc::new(RefCell::new(|_: String| {})),
         );
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         let cmd_enter = ModifiersState {
             command: true,
             ..ModifiersState::default()
@@ -86,8 +89,10 @@ use std::collections::HashMap;
             Rc::new(RefCell::new(|_: u64, _: String| {})),
             Rc::new(RefCell::new(|_: u64, _: bool| {})),
             Rc::new(RefCell::new(|_: u64, _: String| {})),
+            Rc::new(RefCell::new(|_: u64, _: String| {})),
+            Rc::new(RefCell::new(|_: String| {})),
         );
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         assert!(!view.dispatch_event(&key("a", ModifiersState::none()), &mut ctx, &app));
     }
 
@@ -147,6 +152,8 @@ use std::collections::HashMap;
                 Rc::new(RefCell::new(|_: u64, _: String| {})),
                 Rc::new(RefCell::new(|_: u64, _: bool| {})),
                 Rc::new(RefCell::new(|_: u64, _: String| {})),
+                Rc::new(RefCell::new(|_: u64, _: String| {})),
+                Rc::new(RefCell::new(|_: String| {})),
             )
         };
 
@@ -401,6 +408,13 @@ use std::collections::HashMap;
             )];
             s.active_space = 0;
             s.active_pane_id = 1;
+            // The fixture turns the default chat pane into a terminal: a
+            // terminal owns no conversation until its first agent turn, and
+            // has no sidebar selection to fall back to.
+            if let Some(session) = s.pane_sessions.get_mut(&1) {
+                session.conversation_id.clear();
+            }
+            s.selected_id = None;
             s.ensure_pane_controls();
             s.terminal
                 .borrow_mut()
@@ -479,7 +493,7 @@ use std::collections::HashMap;
     /// Dispatch one plain key through the whole app tree, so the pane's own
     /// routing is exercised where the app runs it.
     fn press(root: &mut Box<dyn Element>, app: &AppContext, name: &str) -> bool {
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         root.dispatch_event(&key(name, ModifiersState::none()), &mut ctx, app)
     }
 
@@ -622,7 +636,7 @@ use std::collections::HashMap;
             },
         );
         assert!(
-            root.dispatch_event(&cmd_enter, &mut EventContext::default(), &app),
+            root.dispatch_event(&cmd_enter, &mut EventContext, &app),
             "Cmd+Enter is taken by the bar"
         );
         assert!(
@@ -816,7 +830,7 @@ use std::collections::HashMap;
                 .expect("the pane's session")
         };
         let wheel = |root: &mut Box<dyn Element>, dy: f32| {
-            let mut ctx = EventContext::default();
+            let mut ctx = EventContext;
             root.dispatch_event(
                 &DispatchedEvent::MouseMove {
                     position: vec2f(600.0, 300.0),
@@ -949,7 +963,7 @@ use std::collections::HashMap;
         );
 
         // A click on the bar's editor keeps the keys there.
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         let click = DispatchedEvent::MouseDown {
             position: Vector2F::new(editor.x + 4.0, editor.y + 4.0),
             button: 0,
@@ -1008,7 +1022,7 @@ use std::collections::HashMap;
                 ..ModifiersState::default()
             },
         );
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
 
         let s = state.borrow();
@@ -1153,7 +1167,7 @@ use std::collections::HashMap;
                 ..ModifiersState::default()
             },
         );
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
         assert!(
             state.borrow().pane_controls(1).harness_mode,
@@ -1233,7 +1247,7 @@ use std::collections::HashMap;
             })
             .expect("the terminal view draws the conversation card");
         let position = Vector2F::new(rail.min_x() + 20.0, rail.min_y() + 8.0);
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         assert!(root.dispatch_event(
             &DispatchedEvent::MouseDown {
                 position,
@@ -1449,7 +1463,7 @@ use std::collections::HashMap;
             },
         );
         assert!(
-            root.dispatch_event(&cmd_enter, &mut EventContext::default(), &app),
+            root.dispatch_event(&cmd_enter, &mut EventContext, &app),
             "Cmd+Enter is taken by the bar"
         );
         assert!(
@@ -1570,7 +1584,7 @@ use std::collections::HashMap;
             },
         );
         assert!(
-            root.dispatch_event(&cmd_enter, &mut EventContext::default(), &app),
+            root.dispatch_event(&cmd_enter, &mut EventContext, &app),
             "Cmd+Enter is taken by the bar"
         );
         let s = state.borrow();
@@ -1684,7 +1698,7 @@ use std::collections::HashMap;
             },
         );
         assert!(
-            root.dispatch_event(&cmd_enter, &mut EventContext::default(), &app),
+            root.dispatch_event(&cmd_enter, &mut EventContext, &app),
             "the tree's bar takes the chord"
         );
 
@@ -1739,7 +1753,7 @@ use std::collections::HashMap;
             },
         );
         assert!(
-            root.dispatch_event(&cmd_enter, &mut EventContext::default(), &app),
+            root.dispatch_event(&cmd_enter, &mut EventContext, &app),
             "Cmd+Enter is taken by the bar"
         );
         let s = state.borrow();
@@ -1782,7 +1796,7 @@ use std::collections::HashMap;
             "a reason that no longer holds is never drawn: {runs:?}"
         );
         assert!(
-            root.dispatch_event(&cmd_enter, &mut EventContext::default(), &app),
+            root.dispatch_event(&cmd_enter, &mut EventContext, &app),
             "Cmd+Enter is taken by the bar"
         );
         assert!(
@@ -1829,7 +1843,7 @@ use std::collections::HashMap;
                 ..ModifiersState::default()
             },
         );
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
         assert!(
             state.borrow().pane_controls(1).harness_mode,
@@ -2057,29 +2071,22 @@ use std::collections::HashMap;
             Rc::new(RefCell::new(|_: u64, _: String| {})),
             Rc::new(RefCell::new(|_: u64, _: bool| {})),
             Rc::new(RefCell::new(|_: u64, _: String| {})),
+            Rc::new(RefCell::new(|_: u64, _: String| {})),
+            Rc::new(RefCell::new(|_: String| {})),
         )
         .with_block_plumbing(plumbing);
         (view, terminal)
-    }
-
-    /// The `n of m` a filter bar draws, as the pair it names.
-    fn count_pair(text: &str) -> (usize, usize) {
-        let (matched, total) = text.split_once(" of ").expect("a count reads '<n> of <n>'");
-        (
-            matched.parse().expect("matches"),
-            total.parse().expect("total"),
-        )
     }
 
     fn block_filters() -> Rc<RefCell<HashMap<String, TerminalFilter>>> {
         Rc::new(RefCell::new(HashMap::new()))
     }
 
-    /// C: Cmd+F opens the pane's whole-output filter — one bar over every block
-    /// the pane draws, with a real field the keys go into — and what is typed
-    /// narrows the output of them all.
+    /// C: Cmd+F opens the scrollback find bar — a real field the keys go into
+    /// — and what is typed searches the history and the visible screen. Enter
+    /// and `n` walk the matches, Esc closes.
     #[test]
-    fn cmd_f_opens_the_panes_whole_output_filter_and_its_query_narrows_the_output() {
+    fn cmd_f_opens_the_find_bar_and_its_query_searches_the_scrollback() {
         let app = AppContext::default();
         let global = TerminalFilter::default();
         let (pane, terminal) = view_over(
@@ -2088,18 +2095,9 @@ use std::collections::HashMap;
             TerminalBlockPlumbing::new(block_filters(), Some(global.clone()), None),
         );
         let mut pane: Box<dyn Element> = Box::new(pane);
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         let window = vec2f(900.0, 500.0);
-
-        let closed = texts(&render_element(&mut pane, window, &app));
-        assert!(
-            !closed.iter().any(|t| t == "Filter terminal output"),
-            "a closed filter draws no bar: {closed:?}"
-        );
-        assert!(
-            closed.iter().any(|t| t == "alpha line") && closed.iter().any(|t| t == "beta line"),
-            "the pane draws its block's whole output: {closed:?}"
-        );
+        let _ = render_element(&mut pane, window, &app);
 
         // Cmd+F: the pane takes the chord before the tree, so the composer it
         // hands the keys to cannot swallow it.
@@ -2114,31 +2112,25 @@ use std::collections::HashMap;
             pane.dispatch_event(&cmd_f, &mut ctx, &app),
             "the pane takes Cmd+F"
         );
-        assert!(global.is_open(), "Cmd+F shows the whole-output filter");
+        let find = terminal
+            .borrow()
+            .pane_ui(7)
+            .map(|ui| ui.find.clone())
+            .expect("the pane has a find bar");
+        assert!(find.open, "Cmd+F opens the find bar");
+        assert!(find.focused, "and puts the caret in its field");
+        assert_eq!(find.count_label(), "0/0", "an empty query matches nothing");
         assert!(
-            *global.focused.borrow(),
-            "and puts the caret in its field, which is what types into it"
+            !global.is_open(),
+            "the block filter is not what Cmd+F opens any more"
         );
-
+        // The bar is part of the next frame's tree, which is where its field
+        // lives; the per-frame rebuild is what mounts it.
         let open = texts(&render_element(&mut pane, window, &app));
         assert!(
-            open.iter().any(|t| t == "Filter terminal output"),
-            "the bar names what it filters: {open:?}"
+            open.iter().any(|t| t == "Find in terminal"),
+            "the bar names what it searches: {open:?}"
         );
-        let count = |drawn: &[String]| {
-            drawn
-                .iter()
-                .find(|t| t.contains(" of "))
-                .cloned()
-                .expect("the bar counts the lines it filters")
-        };
-        let before = count(&open);
-        let (matched_before, total) = count_pair(&before);
-        assert_eq!(
-            matched_before, total,
-            "an empty query keeps every line the pane's blocks carry"
-        );
-        assert!(total > 1, "the pane's block carries more than one line");
 
         // Typing goes into the bar's field — the pane routes the keys into the
         // tree while that field holds the caret — never to the shell.
@@ -2148,28 +2140,371 @@ use std::collections::HashMap;
                 "the bar's field takes the keystroke {ch:?}"
             );
         }
-        assert_eq!(global.query.borrow().as_str(), "beta");
+        let find = terminal.borrow().pane_ui(7).unwrap().find.clone();
+        assert_eq!(find.query, "beta");
+        assert_eq!(find.matches.len(), 1, "{:?}", find.matches);
+        assert_eq!(find.count_label(), "1/1");
+        assert!(
+            find.matches[0].text == "beta",
+            "the match carries the text and its cell"
+        );
         assert_eq!(
             terminal.borrow().input(7),
             "",
-            "the shell never receives a keystroke meant for the filter"
+            "the shell never receives a keystroke meant for the find bar"
         );
 
-        let narrowed = texts(&render_element(&mut pane, window, &app));
+        let drawn = texts(&render_element(&mut pane, window, &app));
         assert!(
-            narrowed.iter().any(|t| t == "beta line"),
-            "the matching line is drawn: {narrowed:?}"
+            drawn.iter().any(|t| t == "1/1"),
+            "the bar shows current/total: {drawn:?}"
         );
+
+        // Enter walks to the next match and drops the field's caret, so `n`
+        // and `N` navigate rather than type.
+        assert!(pane.dispatch_event(&key("Enter", ModifiersState::none()), &mut ctx, &app));
         assert!(
-            !narrowed.iter().any(|t| t == "alpha line"),
-            "every block's non-matching lines are hidden: {narrowed:?}"
+            !terminal.borrow().pane_ui(7).unwrap().find.focused,
+            "Enter leaves the field so the navigation keys work"
         );
-        let (matched_after, total_after) = count_pair(&count(&narrowed));
+        assert!(pane.dispatch_event(&key("n", ModifiersState::none()), &mut ctx, &app));
         assert_eq!(
-            total_after, total,
-            "the count still measures the whole output"
+            terminal.borrow().pane_ui(7).unwrap().find.count_label(),
+            "1/1",
+            "a single match wraps to itself"
         );
-        assert_eq!(matched_after, 1, "and counts what the query left");
+        assert!(pane.dispatch_event(&key("Escape", ModifiersState::none()), &mut ctx, &app));
+        assert!(
+            !terminal.borrow().find_open(7),
+            "Esc closes the find bar"
+        );
+    }
+
+    type CopyFixture = (
+        TerminalView,
+        Rc<RefCell<TerminalRegistry>>,
+        Rc<RefCell<Vec<String>>>,
+    );
+
+    /// A pane over `session` whose copy handler records what it was given.
+    fn view_over_copy(session: TerminalSession, pane_id: u64) -> CopyFixture {
+        let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
+        terminal.borrow_mut().sessions.insert(pane_id, session);
+        let copied = Rc::new(RefCell::new(Vec::new()));
+        let copied_cb = Rc::clone(&copied);
+        let view = TerminalView::new(
+            Rc::clone(&terminal),
+            pane_id,
+            "/tmp".to_string(),
+            true,
+            BlockView::Terminal,
+            // The test's bar is a label, not the rich composer: with no editor
+            // in the tree the pane's own key path is the one under test.
+            false,
+            Text::new("bar").finish(),
+            Rc::new(RefCell::new(|_: u64| {})),
+            Rc::new(RefCell::new(|_: u64, _: String| {})),
+            Rc::new(RefCell::new(|_: u64, _: bool| {})),
+            Rc::new(RefCell::new(|_: u64, _: String| {})),
+            Rc::new(RefCell::new(|_: u64, _: String| {})),
+            Rc::new(RefCell::new(move |text: String| {
+                copied_cb.borrow_mut().push(text)
+            })),
+        );
+        (view, terminal, copied)
+    }
+
+    /// The painted origin of a terminal glyph, so a mouse gesture lands on the
+    /// cell the user sees.
+    fn glyph_origin(commands: &[RenderCommand], text: &str) -> Vector2F {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { origin, text: drawn, .. } if drawn == text => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the glyph {text:?} is drawn: {commands:?}"))
+    }
+
+    #[test]
+    fn mouse_drag_selects_cells_and_cmd_c_copies_them() {
+        let app = AppContext::default();
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(b"hello world");
+        let (pane, _terminal, copied) =
+            view_over_copy(TerminalSession::with_emulator(emulator), 7);
+        let mut pane: Box<dyn Element> = Box::new(pane);
+        let window = vec2f(900.0, 500.0);
+        let commands = render_element(&mut pane, window, &app);
+        let origin = glyph_origin(&commands, "h");
+        let column = TerminalGrid::cell_width(FONT_SIZE);
+        let row = TerminalGrid::row_pitch(FONT_SIZE, LINE_HEIGHT);
+
+        let mut ctx = EventContext;
+        let start = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
+        let end = Vector2F::new(origin.x + column * 8.5, origin.y + row * 0.5);
+        assert!(pane.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: start,
+                button: 0,
+            },
+            &mut ctx,
+            &app
+        ));
+        // Motion is never consumed: it extends the drag and keeps travelling.
+        let _ = pane.dispatch_event(
+            &DispatchedEvent::MouseMove { position: end },
+            &mut ctx,
+            &app,
+        );
+        assert!(pane.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: end,
+                button: 0,
+            },
+            &mut ctx,
+            &app
+        ));
+        assert!(
+            pane.dispatch_event(
+                &key(
+                    "c",
+                    ModifiersState {
+                        command: true,
+                        ..ModifiersState::default()
+                    }
+                ),
+                &mut ctx,
+                &app
+            ),
+            "Cmd+C copies the selection"
+        );
+        assert_eq!(*copied.borrow(), vec!["hello wor".to_string()]);
+    }
+
+    /// The same drag on the normal shell surface, whose body is the command
+    /// blocks rather than the cell grid: the selection is over the block text
+    /// the user sees, and it is highlighted there.
+    #[test]
+    fn mouse_drag_selects_block_text_and_cmd_c_copies_it() {
+        let app = AppContext::default();
+        let (pane, terminal, copied) = view_over_copy(
+            session_that_ran("echo hello world", "hello world"),
+            7,
+        );
+        let mut pane: Box<dyn Element> = Box::new(pane);
+        let window = vec2f(900.0, 500.0);
+        let commands = render_element(&mut pane, window, &app);
+        let origin = glyph_origin(&commands, "hello world");
+        let column = mono_advance(13.0, FontWeight::Regular);
+        let row = 13.0 * 1.4;
+
+        let mut ctx = EventContext;
+        let start = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
+        let end = Vector2F::new(origin.x + column * 8.5, origin.y + row * 0.5);
+        assert!(pane.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: start,
+                button: 0,
+            },
+            &mut ctx,
+            &app
+        ));
+        let _ = pane.dispatch_event(
+            &DispatchedEvent::MouseMove { position: end },
+            &mut ctx,
+            &app,
+        );
+        assert!(pane.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: end,
+                button: 0,
+            },
+            &mut ctx,
+            &app
+        ));
+        assert!(
+            terminal.borrow().block_selection(7).is_some(),
+            "the drag selects block text"
+        );
+
+        let highlighted = render_element(&mut pane, window, &app);
+        assert!(
+            highlighted.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { color, .. } if color.a == 70
+            )),
+            "the block selection is drawn over the text: {highlighted:?}"
+        );
+
+        assert!(
+            pane.dispatch_event(
+                &key(
+                    "c",
+                    ModifiersState {
+                        command: true,
+                        ..ModifiersState::default()
+                    }
+                ),
+                &mut ctx,
+                &app
+            ),
+            "Cmd+C copies the block selection"
+        );
+        assert_eq!(*copied.borrow(), vec!["hello wor".to_string()]);
+    }
+
+    /// A double click selects the word under the pointer; a third click in the
+    /// same run selects its whole line.
+    #[test]
+    fn block_mouse_double_and_triple_click_select_word_and_line() {
+        let app = AppContext::default();
+        let (pane, _terminal, copied) = view_over_copy(
+            session_that_ran("echo hello world", "hello world"),
+            7,
+        );
+        let mut pane: Box<dyn Element> = Box::new(pane);
+        let commands = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+        let origin = glyph_origin(&commands, "hello world");
+        let column = mono_advance(13.0, FontWeight::Regular);
+        let row = 13.0 * 1.4;
+        let position = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
+        let mut ctx = EventContext;
+        let click = |pane: &mut Box<dyn Element>, ctx: &mut EventContext| {
+            assert!(pane.dispatch_event(
+                &DispatchedEvent::MouseDown {
+                    position,
+                    button: 0,
+                },
+                ctx,
+                &app
+            ));
+            assert!(pane.dispatch_event(
+                &DispatchedEvent::MouseUp {
+                    position,
+                    button: 0,
+                },
+                ctx,
+                &app
+            ));
+        };
+        let copy = |pane: &mut Box<dyn Element>, ctx: &mut EventContext| {
+            assert!(pane.dispatch_event(
+                &key(
+                    "c",
+                    ModifiersState {
+                        command: true,
+                        ..ModifiersState::default()
+                    }
+                ),
+                ctx,
+                &app
+            ));
+        };
+
+        click(&mut pane, &mut ctx);
+        click(&mut pane, &mut ctx);
+        copy(&mut pane, &mut ctx);
+        assert_eq!(*copied.borrow(), vec!["hello".to_string()]);
+
+        click(&mut pane, &mut ctx);
+        copy(&mut pane, &mut ctx);
+        assert_eq!(
+            *copied.borrow(),
+            vec!["hello".to_string(), "hello world".to_string()],
+            "the third click selects the line"
+        );
+    }
+
+    #[test]
+    fn copy_mode_chord_moves_the_cursor_and_yanks_the_line() {
+        let app = AppContext::default();
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(b"one\r\ntwo");
+        let (pane, terminal, copied) =
+            view_over_copy(TerminalSession::with_emulator(emulator), 7);
+        let mut pane: Box<dyn Element> = Box::new(pane);
+        let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+        let mut ctx = EventContext;
+
+        let chord = |pressed: &str| {
+            key(
+                pressed,
+                ModifiersState {
+                    command: true,
+                    shift: true,
+                    ..ModifiersState::default()
+                },
+            )
+        };
+        assert!(pane.dispatch_event(&chord(" "), &mut ctx, &app));
+        assert!(terminal.borrow().copy_active(7), "the chord enters copy mode");
+        for pressed in ["g", "0", "v", "$"] {
+            assert!(
+                pane.dispatch_event(&key(pressed, ModifiersState::none()), &mut ctx, &app),
+                "copy mode takes {pressed:?}"
+            );
+        }
+        // The visual range `v` anchored is drawn in the grid's selection
+        // colour, not only yanked: three cells of "one".
+        let drawn = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+        let pitch = TerminalGrid::cell_width(FONT_SIZE);
+        let blue = goble_terminal::Palette::xterm().ansi[4];
+        let selection = ColorU::new(blue.0, blue.1, blue.2, 255);
+        assert!(
+            drawn.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == selection && (rect.width() - pitch * 3.0).abs() < 0.01
+            )),
+            "the copy-mode visual selection is drawn: {drawn:?}"
+        );
+        assert!(pane.dispatch_event(&key("y", ModifiersState::none()), &mut ctx, &app));
+        assert_eq!(*copied.borrow(), vec!["one".to_string()]);
+        assert!(!terminal.borrow().copy_active(7), "y leaves copy mode");
+    }
+
+    #[test]
+    fn the_find_bar_takes_keys_only_while_it_is_open() {
+        let app = AppContext::default();
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(b"\x1b[?1049hfull screen");
+        let (pane, terminal, _copied) =
+            view_over_copy(TerminalSession::with_emulator(emulator), 7);
+        let mut pane: Box<dyn Element> = Box::new(pane);
+        let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+        let mut ctx = EventContext;
+
+        // The TUI owns the screen and the keys while the find bar is closed.
+        assert!(pane.dispatch_event(&key("x", ModifiersState::none()), &mut ctx, &app));
+        assert_eq!(terminal.borrow().input(7), "x");
+
+        assert!(pane.dispatch_event(
+            &key(
+                "f",
+                ModifiersState {
+                    command: true,
+                    ..ModifiersState::default()
+                }
+            ),
+            &mut ctx,
+            &app
+        ));
+        assert!(terminal.borrow().find_open(7));
+        let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+        assert!(pane.dispatch_event(&key("a", ModifiersState::none()), &mut ctx, &app));
+        assert_eq!(
+            terminal.borrow().input(7),
+            "x",
+            "the find bar's field owns the key, not the TUI"
+        );
+        assert_eq!(
+            terminal.borrow().pane_ui(7).unwrap().find.query,
+            "a",
+            "and the query reached the bar"
+        );
     }
 
     /// C: each pane reads its own whole-output filter, so a query typed in one
@@ -2221,7 +2556,7 @@ use std::collections::HashMap;
         );
         let mut pane: Box<dyn Element> = Box::new(pane);
         let window = vec2f(900.0, 500.0);
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         let chord = key(
             "f",
             ModifiersState {
@@ -2279,4 +2614,32 @@ use std::collections::HashMap;
             drawn.iter().any(|t| t == "Filter block output"),
             "the block's own bar is drawn with its placeholder: {drawn:?}"
         );
+    }
+
+    /// An image is pane content even though every cell is blank. The pane must
+    /// paint the grid for it instead of falling back to the empty-shell hint.
+    #[test]
+    fn an_image_only_viewport_is_painted() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(b"\x1b_Ga=T,f=32,s=1,v=1,i=12;/wAA/w==\x1b\\");
+        assert_eq!(emulator.images().len(), 1, "the fixture placed an image");
+        assert!(
+            emulator.rows().iter().all(|row| row.is_blank()),
+            "the image is the viewport's only content"
+        );
+        state
+            .borrow_mut()
+            .terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, TerminalSession::with_emulator(emulator));
+
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        let drawn = commands
+            .iter()
+            .filter(|command| matches!(command, RenderCommand::DrawImage { .. }))
+            .count();
+        assert_eq!(drawn, 1, "the pane paints its only content: {commands:?}");
     }

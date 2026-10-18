@@ -15,7 +15,7 @@ use crate::ssh_hosts::SshHosts;
 pub const DEFAULT_PORT: u16 = 22;
 
 /// Where an interactive `ssh` session runs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SshSession {
     /// The host ssh connects to: the address a `HostName` names, or the name
     /// the command gave when the config declares no block for it.

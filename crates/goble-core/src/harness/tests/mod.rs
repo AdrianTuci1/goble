@@ -15,7 +15,6 @@ mod definitions;
 mod entities;
 mod files;
 mod guide;
-mod handoff;
 mod mcp;
 mod presentation;
 mod runner;

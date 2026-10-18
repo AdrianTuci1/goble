@@ -242,7 +242,6 @@ fn run_install_phase(
         // root: the store and the vault inside it are named in the unit below.
         data_root: DEFAULT_DATA_ROOT.to_string(),
         pairing_code_hash: "t3-pairing-hash".to_string(),
-        install_remote_desktop: false,
         goblin_binary: binary.to_path_buf(),
         worker_bundle: worker_bundle.clone(),
     };

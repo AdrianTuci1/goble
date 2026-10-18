@@ -256,7 +256,7 @@ use std::collections::HashMap;
             "the agent's call carries no block prompt line, got {bubble_runs:?}"
         );
         assert!(
-            bubble_runs.iter().all(|(_, _, _, size)| *size == 12.0),
+            bubble_runs.iter().all(|(_, _, _, size)| *size == 13.0),
             "the row and its body are the tool row's own size, got {bubble_runs:?}"
         );
     }
@@ -2298,8 +2298,8 @@ use std::collections::HashMap;
         let window = vec2f(900.0, 500.0);
         let commands = render_element(&mut pane, window, &app);
         let origin = glyph_origin(&commands, "hello world");
-        let column = mono_advance(14.0, FontWeight::Regular);
-        let row = 14.0 * 1.45;
+        let column = mono_advance(13.0, FontWeight::Regular);
+        let row = 13.0 * 1.4;
 
         let mut ctx = EventContext;
         let start = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
@@ -2368,8 +2368,8 @@ use std::collections::HashMap;
         let mut pane: Box<dyn Element> = Box::new(pane);
         let commands = render_element(&mut pane, vec2f(900.0, 500.0), &app);
         let origin = glyph_origin(&commands, "hello world");
-        let column = mono_advance(14.0, FontWeight::Regular);
-        let row = 14.0 * 1.45;
+        let column = mono_advance(13.0, FontWeight::Regular);
+        let row = 13.0 * 1.4;
         let position = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
         let mut ctx = EventContext;
         let click = |pane: &mut Box<dyn Element>, ctx: &mut EventContext| {

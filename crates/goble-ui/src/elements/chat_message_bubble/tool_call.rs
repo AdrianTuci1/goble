@@ -25,7 +25,7 @@ pub(super) const TOOL_RAIL: &str = "┃";
 /// keeps its action hints off the row entirely, in the shortcuts bar, and
 /// goble draws the one action a row owns — opening a sub-agent's own view — at
 /// 10 px while the row is retracted.
-pub(super) const TOOL_ROW_FONT_SIZE: f32 = 12.0;
+pub(super) const TOOL_ROW_FONT_SIZE: f32 = 13.0;
 
 pub(super) const TOOL_ACTION_FONT_SIZE: f32 = 10.0;
 

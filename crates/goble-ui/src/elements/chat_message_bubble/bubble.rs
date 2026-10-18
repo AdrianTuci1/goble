@@ -188,7 +188,7 @@ impl ChatMessageBubble {
                     .iter()
                     .map(|s| to_text_span(s, app, &self.on_action))
                     .collect();
-                InlineText::new(text_spans).with_font_size(12.0).finish()
+                InlineText::new(text_spans).with_font_size(14.0).finish()
             }
             ChatBlock::Heading { level, text } => {
                 let font_size = match level {
@@ -206,8 +206,9 @@ impl ChatMessageBubble {
                 // Mono, pre-formatted, not word-wrapped; the fence's language
                 // label rides along with the body, and the body is coloured by
                 // that language when it resolves (otherwise it stays plain).
-                let mut code_element =
-                    Code::new(code.clone()).with_theme_color(ColorToken::Text, app);
+                let mut code_element = Code::new(code.clone())
+                    .with_font_size(13.0)
+                    .with_theme_color(ColorToken::Text, app);
                 if let Some(lang) = lang {
                     code_element = code_element
                         .with_language(lang.clone())
@@ -307,13 +308,13 @@ impl ChatMessageBubble {
                 .with_child(
                     Text::new(marker)
                         .with_theme_color(ColorToken::Muted, app)
-                        .with_font_size(11.0)
+                        .with_font_size(12.0)
                         .finish(),
                 )
                 .with_child(
                     Text::new(label)
                         .with_theme_color(ColorToken::Muted, app)
-                        .with_font_size(11.0)
+                        .with_font_size(12.0)
                         .finish(),
                 )
                 .finish(),
@@ -333,7 +334,7 @@ impl ChatMessageBubble {
             column = column.with_child(
                 Text::new(text.to_string())
                     .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(11.0)
+                    .with_font_size(12.0)
                     .finish(),
             );
         }
@@ -379,7 +380,7 @@ impl ChatMessageBubble {
                 .with_child(
                     Text::new(marker)
                         .with_theme_color(ColorToken::Muted, app)
-                        .with_font_size(12.0)
+                        .with_font_size(14.0)
                         .finish(),
                 )
                 .with_child(content)
@@ -416,7 +417,7 @@ impl ChatMessageBubble {
             row = row.with_child(
                 Text::new(cell.clone())
                     .with_theme_color(ColorToken::Text, app)
-                    .with_font_size(12.0)
+                    .with_font_size(14.0)
                     .finish(),
             );
         }

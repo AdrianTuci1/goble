@@ -240,7 +240,7 @@ fn an_agents_command_is_not_a_terminal_block() {
         "the output is drawn continuously under it, got {runs:?}"
     );
     assert!(
-        runs.iter().all(|(_, _, _, size)| *size == 12.0),
+        runs.iter().all(|(_, _, _, size)| *size == 13.0),
         "the row and its body are one size, got {runs:?}"
     );
 
@@ -804,7 +804,7 @@ fn the_rail_is_drawn_only_while_the_call_is_open() {
         .find(|(text, _, _, _)| text == "┃ ")
         .expect("an open call draws its rail");
     assert_eq!(rail.2, FontFamily::Mono, "the rail is a mono cell");
-    assert_eq!(rail.3, 12.0, "the rail is drawn at the row's own size");
+    assert_eq!(rail.3, 13.0, "the rail is drawn at the row's own size");
 }
 
 /// The state is the mark's colour, and it is dimmed while the call is folded.
@@ -863,7 +863,7 @@ fn the_row_is_twelve_px_and_a_retracted_action_is_ten() {
         Some(&10.0),
         "the action is a size down while the row is retracted, got {sizes:?}"
     );
-    assert_eq!(sizes.get("◆ "), Some(&12.0), "the row itself stays 12 px");
+    assert_eq!(sizes.get("◆ "), Some(&13.0), "the row itself stays 13 px");
 
     let (open, _) = paint_sub_agent(
         vec![call.clone()],
@@ -876,7 +876,7 @@ fn the_row_is_twelve_px_and_a_retracted_action_is_ten() {
         .collect();
     assert_eq!(
         sizes.get("open child"),
-        Some(&12.0),
+        Some(&13.0),
         "an open row draws its action at the row's own size, got {sizes:?}"
     );
 }

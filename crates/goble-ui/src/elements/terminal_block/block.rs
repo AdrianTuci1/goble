@@ -15,9 +15,9 @@ use crate::geometry::{rectf, Vector2F};
 use crate::platform::text_atlas::{measure_text_family, mono_advance, FontWeight};
 use crate::theme::{ColorToken, FontFamily};
 
-const FONT_SIZE: f32 = 14.0;
+const FONT_SIZE: f32 = 13.0;
 
-const LINE_HEIGHT: f32 = 1.45;
+const LINE_HEIGHT: f32 = 1.4;
 
 /// Widest the header's prompt row is allowed to draw before it ellipsizes, so a
 /// deep working directory never pushes the block's controls off its edge.

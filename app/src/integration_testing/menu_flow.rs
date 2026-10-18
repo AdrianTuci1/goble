@@ -470,42 +470,6 @@ fn the_pane_headers_expand_control_expands_the_pane() {
     );
 }
 
-/// The same toggle is a command the palette carries, applied to the active pane
-/// — warp-new's "Toggle Maximize Active Pane". Running it from the ⌘K list is
-/// what a user without the pane header on screen reaches for.
-#[test]
-fn the_palette_toggles_the_active_panes_expansion() {
-    let (mut root, _desktop, _dir) = build_root();
-    let app = AppContext::default();
-    let _ = render(&mut root, &app);
-    split_right(&mut root, &app);
-    let _ = render(&mut root, &app);
-    {
-        // The list draws only the rows the query leaves, so the query is what
-        // puts the command on screen.
-        let state = root.state_rc();
-        let mut state = state.borrow_mut();
-        state.command_palette_open = true;
-        state.command_palette_query = "maximize".to_string();
-    }
-    let cmds = render(&mut root, &app);
-    let row = text_center(&cmds, "Toggle maximize active pane")
-        .expect("the palette lists the expand command");
-
-    click(&mut root, &app, row);
-
-    let state_rc = root.state_rc();
-    let state = state_rc.borrow();
-    assert_eq!(
-        state.maximized_pane,
-        Some(state.active_pane_id),
-        "the command expands the active pane"
-    );
-    assert!(
-        !state.command_palette_open,
-        "and the palette closes, the way its other commands close it"
-    );
-}
 
 /// Mount a `ChatComposer` that carries a menu control, click the control's
 /// trigger, and assert the app-owned open flag flips.

@@ -84,9 +84,10 @@ impl Element for RootView {
         if let Some(actions) = &self.actions {
             if let DispatchedEvent::KeyDown { key, modifiers } = event {
                 let has_ctrl_cmd = modifiers.ctrl || modifiers.command;
-                // Cmd+K toggles the command palette (no other modifier).
+                // Cmd+K opens the keyboard shortcuts panel, the one menu that
+                // lists the chords. Ctrl+. is the same panel's own chord.
                 if has_ctrl_cmd && !modifiers.shift && key.eq_ignore_ascii_case("k") {
-                    (actions.on_toggle_command_palette.borrow_mut())();
+                    (actions.on_toggle_shortcuts_help.borrow_mut())();
                     return true;
                 }
                 // Cmd/Ctrl+Shift+I toggles the global inbox: approvals,

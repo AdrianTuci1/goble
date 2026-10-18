@@ -1,6 +1,3 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use goble_ui::elements::{
     AppContext, Container, CrossAxisAlignment, Divider, Element, Empty, Expanded, Fill, Flex,
     MainAxisSize, Stack,
@@ -9,12 +6,11 @@ use goble_ui::theme::ColorToken;
 use goble_ui::{vec2f, Dialog, Sheet, DIALOG_DEFAULT_WIDTH, SHEET_DEFAULT_WIDTH};
 
 use super::actions::{AiActions, MediaActions, ProjectsActions, UiActions};
-use super::palette::PaletteCommand;
 use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, UiSnapshot};
 use super::types::AppTab;
 use super::{
-    chat, connectors, crons, hosts, inbox, media, model_form, palette, shell, shortcuts_help,
-    sidebar, task_workflow, vault, CONNECTORS_WIDTH,
+    chat, connectors, crons, hosts, inbox, media, model_form, shell, shortcuts_help, sidebar,
+    task_workflow, vault, CONNECTORS_WIDTH,
 };
 
 /// The snapshots and callbacks one frame is built from.
@@ -210,125 +206,6 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // paints/intercepts events while open (see [`super::media::build_add_medium_dialog`]).
     stack = stack.with_overlay(
         media::build_add_medium_dialog(app, state, media_actions, actions),
-        vec2f(0.0, 0.0),
-    );
-
-    // The Cmd+K command palette floats above every other overlay. Each command
-    // is a closure that runs the underlying UiAction (or a toggle) and then
-    // closes the palette.
-    let close_palette = actions.on_close_command_palette.clone();
-    let run = |action: &Rc<RefCell<dyn FnMut()>>| -> PaletteCommand {
-        let act = action.clone();
-        let close = close_palette.clone();
-        PaletteCommand::new("", "", move || {
-            (act.borrow_mut())();
-            (close.borrow_mut())();
-        })
-    };
-    let mut command_list: Vec<PaletteCommand> = vec![
-        run(&actions.on_add_space).with_label("New space", "⌘N"),
-        run(&actions.on_split_right).with_label("Split right", "Ctrl/Cmd+Space"),
-        run(&actions.on_split_down).with_label("Split down", "Cmd+Shift+D"),
-        run(&actions.on_new_terminal).with_label("New terminal", "Cmd+Shift+T"),
-        run(&actions.on_cycle_layout).with_label("Cycle pane layout", "Cmd+Shift+L"),
-        run(&actions.on_open_ssh_host_picker).with_label("Open SSH host", "Cmd+Shift+N"),
-        run(&actions.on_close_pane).with_label("Close pane", "Ctrl/Cmd+W"),
-        run(&actions.on_create_submit).with_label("New conversation", ""),
-        run(&actions.on_settings).with_label("Open settings", ""),
-        run(&actions.on_projects).with_label("Open projects", ""),
-        run(&actions.on_open_crons).with_label("Open scheduled tasks", ""),
-        run(&actions.on_toggle_task_workflow).with_label("Workflow runs", ""),
-        run(&actions.on_toggle_right_sidebar).with_label("Toggle right sidebar", ""),
-    ];
-    {
-        let toggle_dark = actions.on_toggle_dark_mode.clone();
-        let dark_mode = state.settings_dark_mode;
-        let close = close_palette.clone();
-        command_list.push(PaletteCommand::new("Toggle dark mode", "", move || {
-            (toggle_dark.borrow_mut())(!dark_mode);
-            (close.borrow_mut())();
-        }));
-    }
-    {
-        // The pane header's expand control, reachable from the keyboard: the
-        // command applies to the active pane, which is the pane the control
-        // belongs to. warp-new carries the same command ("Toggle Maximize
-        // Active Pane") with no default chord of its own.
-        let toggle_maximized = actions.on_toggle_pane_maximized.clone();
-        let pane_id = state.active_pane_id;
-        let close = close_palette.clone();
-        command_list.push(PaletteCommand::new(
-            "Toggle maximize active pane",
-            "",
-            move || {
-                (toggle_maximized.borrow_mut())(pane_id);
-                (close.borrow_mut())();
-            },
-        ));
-    }
-    {
-        // The chord takes a direction, so it cannot go through `run`.
-        let switch_space = actions.on_switch_space.clone();
-        let close = close_palette.clone();
-        command_list.push(PaletteCommand::new("Next space", "Ctrl+Tab", move || {
-            (switch_space.borrow_mut())(1);
-            (close.borrow_mut())();
-        }));
-    }
-    {
-        // The same switch Settings→Agent carries; either surface turns modal
-        // editing on, and the choice persists.
-        let toggle_vim = actions.on_toggle_vim_mode.clone();
-        let vim_mode = state.vim_mode;
-        let close = close_palette.clone();
-        command_list.push(PaletteCommand::new("Toggle vim mode", "", move || {
-            (toggle_vim.borrow_mut())(!vim_mode);
-            (close.borrow_mut())();
-        }));
-    }
-    command_list.push(
-        run(&ai_actions.on_open_connectors).with_label("Open connectors", ""),
-    );
-    command_list.push(run(&ai_actions.on_open_vault).with_label("Open vault", ""));
-    // One "switch to space N" entry per existing space.
-    for (i, space) in state.spaces.iter().enumerate() {
-        let on_select_space = actions.on_select_space.clone();
-        let close = close_palette.clone();
-        let label = format!("Switch to {}", space.name);
-        command_list.push(PaletteCommand::new(label, "", move || {
-            (on_select_space.borrow_mut())(i);
-            (close.borrow_mut())();
-        }));
-    }
-    command_list.push(
-        run(&ai_actions.on_open_connectors).with_label("Open connectors", ""),
-    );
-    command_list.push(run(&ai_actions.on_open_vault).with_label("Open vault", ""));
-    // Model selection entries: typing `/model` or the model name filters the
-    // palette down to these, so the slash path lists the config.toml models.
-    // A palette pick applies to the active pane's own composer controls.
-    let palette_pane_id = state.active_pane_id;
-    for name in &state.models {
-        let act = actions.on_model_select.clone();
-        let close = close_palette.clone();
-        let name = name.clone();
-        command_list.push(PaletteCommand::new(format!("Model: {name}"), "", move || {
-            (act.borrow_mut())(palette_pane_id, name.clone());
-            (close.borrow_mut())();
-        }));
-    }
-
-    stack = stack.with_overlay(
-        palette::build_command_palette(
-            app,
-            state.command_palette_open,
-            &state.command_palette_query,
-            state.command_palette_index,
-            command_list,
-            actions.on_command_palette_change.clone(),
-            actions.on_command_palette_move.clone(),
-            actions.on_close_command_palette.clone(),
-        ),
         vec2f(0.0, 0.0),
     );
 

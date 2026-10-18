@@ -2298,8 +2298,8 @@ use std::collections::HashMap;
         let window = vec2f(900.0, 500.0);
         let commands = render_element(&mut pane, window, &app);
         let origin = glyph_origin(&commands, "hello world");
-        let column = mono_advance(13.0, FontWeight::Regular);
-        let row = 13.0 * 1.4;
+        let column = mono_advance(14.0, FontWeight::Regular);
+        let row = 14.0 * 1.45;
 
         let mut ctx = EventContext;
         let start = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
@@ -2368,8 +2368,8 @@ use std::collections::HashMap;
         let mut pane: Box<dyn Element> = Box::new(pane);
         let commands = render_element(&mut pane, vec2f(900.0, 500.0), &app);
         let origin = glyph_origin(&commands, "hello world");
-        let column = mono_advance(13.0, FontWeight::Regular);
-        let row = 13.0 * 1.4;
+        let column = mono_advance(14.0, FontWeight::Regular);
+        let row = 14.0 * 1.45;
         let position = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
         let mut ctx = EventContext;
         let click = |pane: &mut Box<dyn Element>, ctx: &mut EventContext| {

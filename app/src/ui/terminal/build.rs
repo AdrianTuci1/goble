@@ -482,6 +482,7 @@ impl TerminalView {
         let palette = terminal_palette(app);
         let sm = app.theme.spacing_px(SpacingToken::Sm);
         let md = app.theme.spacing_px(SpacingToken::Md);
+        let lg = app.theme.spacing_px(SpacingToken::Lg);
         let row_pitch = TerminalGrid::row_pitch(FONT_SIZE, LINE_HEIGHT);
 
         // One badge line per active surface, plus the shared input bar pinned to
@@ -502,8 +503,8 @@ impl TerminalView {
         // editor, a 28px footer row, its padding and the column's spacing.
         let bar_height = 48.0 + 28.0 + sm * 3.0 + md * 2.0;
         let chrome = badge_lines as f32 * row_pitch + bar_height + find_chrome;
-        let rows = (((constraint.max.y - sm * 2.0 - chrome) / row_pitch).floor() as usize).max(1);
-        let cols = ((constraint.max.x - sm * 2.0) / TerminalGrid::cell_width(FONT_SIZE))
+        let rows = (((constraint.max.y - lg * 2.0 - chrome) / row_pitch).floor() as usize).max(1);
+        let cols = ((constraint.max.x - lg * 2.0) / TerminalGrid::cell_width(FONT_SIZE))
             .floor()
             .max(1.0) as usize;
 
@@ -775,7 +776,7 @@ impl TerminalView {
 
         let content = Container::new(column.finish())
             .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-            .with_padding(EdgeInsets::new(sm, sm, sm, sm))
+            .with_padding(EdgeInsets::uniform(lg))
             .finish();
         self.root = Some(content);
     }

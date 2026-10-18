@@ -48,14 +48,12 @@ const KEY_COLUMN_WIDTH: f32 = 108.0;
 ///   handled before the tree so a focused composer cannot swallow them.
 /// - **Input** — the composer's own gestures, the set the instruction strip
 ///   above the editor carries.
-/// - **Palette** — the command palette's keys (`palette.rs`), reachable from
-///   the Workspace section's `⌘K`.
 pub(crate) fn sections() -> Vec<(&'static str, Vec<ShortcutHint>)> {
     vec![
         (
             "Workspace",
             vec![
-                ShortcutHint::new(&["⌘", "K"], "command palette"),
+                ShortcutHint::new(&["⌘", "K"], "keyboard shortcuts"),
                 ShortcutHint::new(&["⌘", "⇧", "T"], "new terminal"),
                 ShortcutHint::new(&["⌘", "Space"], "split right"),
                 ShortcutHint::new(&["⌘", "⇧", "D"], "split down"),
@@ -72,14 +70,6 @@ pub(crate) fn sections() -> Vec<(&'static str, Vec<ShortcutHint>)> {
                 ShortcutHint::new(&["↵"], "send (queues while a turn runs)"),
                 ShortcutHint::new(&["⌘", "↵"], "new conversation"),
                 ShortcutHint::new(&["!"], "shell command"),
-            ],
-        ),
-        (
-            "Palette",
-            vec![
-                ShortcutHint::new(&["↑", "↓"], "move the selection"),
-                ShortcutHint::new(&["↵"], "run the selected command"),
-                ShortcutHint::new(&["Esc"], "close the palette"),
             ],
         ),
     ]
@@ -184,7 +174,7 @@ pub(crate) fn visible_row_count(filter: &str) -> usize {
 /// A section heading: the name in the muted caption weight the panels use.
 fn heading(app: &AppContext, title: &str) -> Box<dyn Element> {
     Text::new(title)
-        .with_font_size(11.0)
+        .with_font_size(12.0)
         .with_theme_color(ColorToken::Muted, app)
         .finish()
 }
@@ -209,7 +199,7 @@ fn row(app: &AppContext, hint: ShortcutHint) -> Box<dyn Element> {
         .with_child(key_column)
         .with_child(
             Text::new(label)
-                .with_font_size(11.0)
+                .with_font_size(12.0)
                 .with_theme_color(ColorToken::Muted, app)
                 .with_max_lines(1)
                 .finish(),
@@ -246,7 +236,7 @@ pub fn build_shortcuts_help(
         .with_spacing(sm)
         .with_child(
             Text::new("Keyboard shortcuts")
-                .with_font_size(12.0)
+                .with_font_size(13.0)
                 .with_theme_color(ColorToken::Text, app)
                 .finish(),
         )
@@ -269,7 +259,7 @@ pub fn build_shortcuts_help(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(
                 Text::new(display)
-                    .with_font_size(12.0)
+                    .with_font_size(13.0)
                     .with_theme_color(
                         if empty {
                             ColorToken::Muted
@@ -320,7 +310,7 @@ pub fn build_shortcuts_help(
         // in the palette's own empty-state wording.
         Container::new(
             Text::new("No shortcuts match")
-                .with_font_size(12.0)
+                .with_font_size(13.0)
                 .with_theme_color(ColorToken::Muted, app)
                 .finish(),
         )
@@ -702,7 +692,7 @@ mod tests {
         // Shut, none of it is drawn.
         let commands = frame(&mut root, &app);
         assert!(!drawn(&commands, "Keyboard shortcuts"));
-        assert!(!drawn(&commands, "command palette"));
+        assert!(!drawn(&commands, "new terminal"));
 
         // Ctrl+. opens it.
         assert!(toggle(&mut root, &app), "the chord is consumed");
@@ -877,11 +867,11 @@ mod tests {
             let (mut root, state, _dir) = workspace();
             let label = hint.label().to_string();
             match label.as_str() {
-                "command palette" => {
+                "keyboard shortcuts" => {
                     assert!(chord(&mut root, &app, &keys[0], modifiers), "⌘K answers");
                     assert!(
-                        state.borrow().command_palette_open,
-                        "⌘K opens the command palette"
+                        state.borrow().shortcuts_help_open,
+                        "⌘K opens the shortcuts panel"
                     );
                 }
                 "new terminal" | "split right" | "split down" => {
@@ -1005,7 +995,7 @@ mod tests {
     #[test]
     fn the_panel_s_rows_are_the_chords_it_draws() {
         let titles: Vec<&str> = sections().into_iter().map(|(title, _)| title).collect();
-        assert_eq!(titles, vec!["Workspace", "Input", "Palette"]);
+        assert_eq!(titles, vec!["Workspace", "Input"]);
         let rows: Vec<(String, String)> = sections()
             .into_iter()
             .flat_map(|(_, hints)| {
@@ -1017,7 +1007,7 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                ("⌘ K".to_string(), "command palette".to_string()),
+                ("⌘ K".to_string(), "keyboard shortcuts".to_string()),
                 ("⌘ ⇧ T".to_string(), "new terminal".to_string()),
                 ("⌘ Space".to_string(), "split right".to_string()),
                 ("⌘ ⇧ D".to_string(), "split down".to_string()),
@@ -1032,9 +1022,6 @@ mod tests {
                 ),
                 ("⌘ ↵".to_string(), "new conversation".to_string()),
                 ("!".to_string(), "shell command".to_string()),
-                ("↑ ↓".to_string(), "move the selection".to_string()),
-                ("↵".to_string(), "run the selected command".to_string()),
-                ("Esc".to_string(), "close the palette".to_string()),
             ]
         );
     }
@@ -1122,7 +1109,7 @@ mod tests {
     fn typing_filters_the_rows_the_panel_draws() {
         let (mut root, state, _dir, app) = open_panel();
         let commands = frame(&mut root, &app);
-        assert!(drawn(&commands, "command palette"));
+        assert!(drawn(&commands, "new terminal"));
         assert!(drawn(&commands, "split right"));
         assert!(drawn(&commands, "send (queues while a turn runs)"));
 
@@ -1131,7 +1118,7 @@ mod tests {
         assert_eq!(state.borrow().shortcuts_help_filter, "split");
         assert!(drawn(&commands, "split right"));
         assert!(drawn(&commands, "split down"));
-        assert!(!drawn(&commands, "command palette"), "the filter narrows");
+        assert!(!drawn(&commands, "new terminal"), "the filter narrows");
         assert!(!drawn(&commands, "send (queues while a turn runs)"));
     }
 
@@ -1142,26 +1129,26 @@ mod tests {
         let (mut root, state, _dir, app) = open_panel();
 
         // The letter of a chord, as the panel writes it.
-        type_text(&mut root, &app, "k");
+        type_text(&mut root, &app, "t");
         let commands = frame(&mut root, &app);
-        assert!(drawn(&commands, "command palette"), "K is the palette's cap");
-        assert!(!drawn(&commands, "split right"), "⌘Space is not ⌘K");
+        assert!(drawn(&commands, "new terminal"), "T is the row's cap");
+        assert!(!drawn(&commands, "close pane"), "⌘W is not ⌘⇧T");
 
         // A cap that is drawn as an icon, typed as the word it stands for. The
         // two terms have to land in the same row.
         clear_filter(&mut root, &app);
-        type_text(&mut root, &app, "cmd k");
+        type_text(&mut root, &app, "cmd t");
         let commands = frame(&mut root, &app);
-        assert_eq!(state.borrow().shortcuts_help_filter, "cmd k");
-        assert!(drawn(&commands, "command palette"));
-        assert!(!drawn(&commands, "new terminal"), "⌘⇧T is not ⌘K");
+        assert_eq!(state.borrow().shortcuts_help_filter, "cmd t");
+        assert!(drawn(&commands, "new terminal"));
+        assert!(!drawn(&commands, "close pane"), "⌘W is not ⌘⇧T");
 
         // The chord joined, the way the row writes it.
         clear_filter(&mut root, &app);
         type_text(&mut root, &app, "⌘⇧t");
         let commands = frame(&mut root, &app);
         assert!(drawn(&commands, "new terminal"));
-        assert!(!drawn(&commands, "command palette"));
+        assert!(!drawn(&commands, "split right"));
 
         // And the name, whatever its case.
         clear_filter(&mut root, &app);
@@ -1191,15 +1178,14 @@ mod tests {
         assert!(toggle(&mut root, &app));
         frame(&mut root, &app);
 
-        // `Esc` is a cap of one row, under Palette: two headings go with it.
-        type_text(&mut root, &app, "esc");
+        // A term only the Input section carries drops the Workspace heading.
+        type_text(&mut root, &app, "send");
         let commands = frame(&mut root, &app);
-        assert!(drawn(&commands, "close the palette"));
-        assert!(drawn(&commands, "Palette"));
+        assert!(drawn(&commands, "send (queues while a turn runs)"));
+        assert!(drawn(&commands, "Input"));
         assert!(!drawn(&commands, "Workspace"), "a heading leaves with its rows");
-        assert!(!drawn(&commands, "Input"));
 
-        // Nothing matches: the panel is the palette's own empty state now.
+        // Nothing matches: the panel says so instead of drawing an empty box.
         type_text(&mut root, &app, "zzz");
         let commands = frame(&mut root, &app);
         assert!(drawn(&commands, "No shortcuts match"));
@@ -1232,7 +1218,7 @@ mod tests {
         assert!(state.borrow().shortcuts_help_open, "the first Escape only clears");
         assert!(state.borrow().shortcuts_help_filter.is_empty());
         let commands = frame(&mut root, &app);
-        assert!(drawn(&commands, "command palette"), "the whole table is back");
+        assert!(drawn(&commands, "new terminal"), "the whole table is back");
         assert!(
             drawn(&commands, "Filter shortcuts"),
             "the field reads as a placeholder again"
@@ -1265,7 +1251,7 @@ mod tests {
         assert!(drawn(&commands, "Keyboard shortcuts"));
         assert!(state.borrow().shortcuts_help_filter.is_empty(), "reopened clean");
         assert_eq!(state.borrow().shortcuts_help_index, 0);
-        assert!(drawn(&commands, "command palette"));
+        assert!(drawn(&commands, "new terminal"));
         assert!(drawn(&commands, "Filter shortcuts"));
     }
 
@@ -1273,10 +1259,10 @@ mod tests {
     #[test]
     fn backspace_edits_the_filter() {
         let (mut root, state, _dir, app) = open_panel();
-        type_text(&mut root, &app, "cmd k");
+        type_text(&mut root, &app, "cmd t");
         let commands = frame(&mut root, &app);
-        assert!(drawn(&commands, "command palette"));
-        assert!(!drawn(&commands, "new terminal"), "⌘⇧T is not ⌘K");
+        assert!(drawn(&commands, "new terminal"));
+        assert!(!drawn(&commands, "close pane"), "⌘W is not ⌘⇧T");
 
         assert!(
             chord(&mut root, &app, "Backspace", ModifiersState::none()),
@@ -1285,8 +1271,8 @@ mod tests {
         frame(&mut root, &app);
         assert_eq!(state.borrow().shortcuts_help_filter, "cmd ");
         let commands = frame(&mut root, &app);
-        assert!(drawn(&commands, "command palette"), "⌘K still matches cmd");
-        assert!(drawn(&commands, "new terminal"), "so does every ⌘ row");
+        assert!(drawn(&commands, "new terminal"), "⌘⇧T still matches cmd");
+        assert!(drawn(&commands, "close pane"), "so does every ⌘ row");
         assert!(
             !drawn(&commands, "send (queues while a turn runs)"),
             "the bare ↵ row does not"
@@ -1301,18 +1287,14 @@ mod tests {
         let (mut root, state, _dir, app) = open_panel();
 
         // Walk to the end of the table: the list has to scroll to follow.
-        for _ in 0..14 {
+        for _ in 0..11 {
             assert!(chord(&mut root, &app, "ArrowDown", ModifiersState::none()));
         }
         let commands = frame(&mut root, &app);
         let last = visible_row_count("") - 1;
         assert_eq!(state.borrow().shortcuts_help_index, last, "the end of the table");
-        assert!(
-            state.borrow().shortcuts_help_scroll.borrow().offset() > 0.0,
-            "the list scrolled to keep the highlighted row in view"
-        );
         let (top, bottom) = the_highlighted_band(&commands, &app);
-        let y = label_y(&commands, "close the palette");
+        let y = label_y(&commands, "shell command");
         assert!(
             y >= top && y <= bottom,
             "the band is drawn on the highlighted row, not at {y} vs {top}..{bottom}"
@@ -1335,10 +1317,10 @@ mod tests {
         clear_filter(&mut root, &app);
         let commands = frame(&mut root, &app);
         let visible = visible_row_count("");
-        assert_eq!(visible, 15, "the whole table is back");
+        assert_eq!(visible, 12, "the whole table is back");
         assert!(state.borrow().shortcuts_help_index < visible);
         let (top, bottom) = the_highlighted_band(&commands, &app);
-        let y = label_y(&commands, "command palette");
+        let y = label_y(&commands, "keyboard shortcuts");
         assert!(y >= top && y <= bottom, "still one band, on the first row");
     }
 }

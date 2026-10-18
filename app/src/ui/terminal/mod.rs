@@ -46,8 +46,8 @@ mod tests;
 pub use blocks::{executed_command_block, section_data};
 pub use build::build_terminal;
 
-const FONT_SIZE: f32 = 12.0;
-const LINE_HEIGHT: f32 = 1.35;
+const FONT_SIZE: f32 = 14.0;
+const LINE_HEIGHT: f32 = 1.45;
 
 struct TerminalView {
     terminal: Rc<RefCell<TerminalRegistry>>,

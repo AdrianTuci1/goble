@@ -553,7 +553,7 @@ fn the_settings_body_fills_the_pane() {
 }
 
 /// The settings tab's own keys answer while it is up, and the window-level
-/// chords are the window's: `⌘K` and `⌘⇧W` still answer, a plain `Enter`
+/// chords are the window's: `Ctrl+.` and `⌘⇧W` still answer, a plain `Enter`
 /// reaches the page and nothing under it, and the tab stays open throughout.
 #[test]
 fn the_window_chords_still_answer_while_the_settings_tab_is_open() {
@@ -567,18 +567,6 @@ fn the_window_chords_still_answer_while_the_settings_tab_is_open() {
     assert!(press(&mut root, &app, "Enter"), "the page consumes Enter");
     assert_eq!(state.borrow().settings_focus, SettingsFocus::Pane);
     assert_eq!(state.borrow().settings_pane_focus, before);
-    assert!(!state.borrow().command_palette_open);
-
-    let command = ModifiersState {
-        command: true,
-        ..Default::default()
-    };
-    assert!(press_event(&mut root, &app, &chord("k", command)));
-    assert!(
-        state.borrow().command_palette_open,
-        "⌘K opens the palette over the settings tab"
-    );
-    press_event(&mut root, &app, &chord("k", command));
 
     let shift_command = ModifiersState {
         command: true,

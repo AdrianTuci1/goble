@@ -563,16 +563,6 @@ mod tests {
         assert!(!drawn(&commands, "Workflow Runs"));
         assert!(!drawn(&commands, "Nightly digest"));
 
-        // The Cmd+K palette carries the same entry, so the overlay is reachable
-        // without the chord.
-        state.borrow_mut().command_palette_open = true;
-        let commands = frame(&mut root, &app);
-        assert!(
-            drawn(&commands, "Workflow runs"),
-            "the palette lists the overlay"
-        );
-        state.borrow_mut().command_palette_open = false;
-
         // The chord opens it.
         assert!(toggle_chord(&mut root, &app), "the chord is consumed");
         assert!(

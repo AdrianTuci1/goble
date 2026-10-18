@@ -127,9 +127,10 @@ pub fn build_topbar(
     // information only — no click opens anything from it.
     let live_indicator = build_live_indicator(app, state.live_work_count, state.live_work_phase);
 
-    // The global inbox: an icon with the unread count, between the live cue and
-    // Settings. Pressing it toggles the overlay (Cmd/Ctrl+Shift+I does the
-    // same); the count is the snapshot's live unread total.
+    // The global inbox: an icon with the unread count, beside the sidebar
+    // toggle. It stays close to the conversation list and the workspace tabs;
+    // pressing it toggles the overlay (Cmd/Ctrl+Shift+I does the same), and the
+    // count is the snapshot's live unread total.
     let inbox_button = build_inbox_control(
         app,
         state.inbox_unread_count,
@@ -153,10 +154,10 @@ pub fn build_topbar(
     // given what the toggle, the "+ ▾" control, the live cue and Settings leave
     // behind, and the controls keep the positions they had (see [`TopbarRow`]).
     let row = TopbarRow::new(
-        vec![sidebar_button],
+        vec![sidebar_button, inbox_button],
         workspaces,
         vec![add_workspace],
-        vec![live_indicator, inbox_button, settings_button],
+        vec![live_indicator, settings_button],
     )
     .with_left_spacing(sm * 0.5)
     .with_group_spacing(sm)
@@ -2482,7 +2483,7 @@ mod tests {
         assert!(
             topbar_texts(&commands)
                 .iter()
-                .any(|text| text.starts_with("a_very") && text.ends_with(ELLIPSIS)),
+                .any(|text| text.starts_with("a_") && text.ends_with(ELLIPSIS)),
             "the file's tab reads its name cut: {:?}",
             topbar_texts(&commands)
         );

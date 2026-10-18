@@ -377,7 +377,7 @@ fn a_section_header_draws_one_prompt_row_above_the_command() {
         app.theme.color(ColorToken::Muted),
         "the prompt row is muted"
     );
-    assert_eq!(prompt_size, 13.0, "the prompt row is the block's mono size");
+    assert_eq!(prompt_size, 14.0, "the prompt row is the block's mono size");
 
     let command = drawn("cargo test").expect("the section body draws the command");
     assert!(

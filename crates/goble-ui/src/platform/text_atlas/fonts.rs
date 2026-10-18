@@ -86,19 +86,8 @@ pub(super) fn measure_uncached(
         return estimate_text_size(text, font_size, line_height, max_width);
     };
     let font = font_set.select(weight, family, italic);
-    let fonts = &[font.clone()];
-    let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
-    layout.reset(&fontdue::layout::LayoutSettings {
-        max_width: if max_width.is_finite() && max_width > 0.0 {
-            Some(max_width)
-        } else {
-            None
-        },
-        max_height: None,
-        line_height,
-        ..Default::default()
-    });
-    layout.append(fonts, &fontdue::layout::TextStyle::new(text, font_size, 0));
+    let chain = font_chain(font, text);
+    let layout = layout_text(text, font_size, max_width, line_height, &chain);
 
     if layout.glyphs().is_empty() {
         return crate::geometry::vec2f(0.0, font_size * line_height);
@@ -157,9 +146,8 @@ pub(super) fn advance_width_uncached(
         return text.chars().count() as f32 * font_size * 0.6;
     };
     let font = font_set.select(weight, family, italic);
-    let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
-    layout.reset(&fontdue::layout::LayoutSettings::default());
-    layout.append(&[font.clone()], &fontdue::layout::TextStyle::new(text, font_size, 0));
+    let chain = font_chain(font, text);
+    let layout = layout_text(text, font_size, f32::INFINITY, 1.0, &chain);
     layout
         .glyphs()
         .iter()
@@ -169,13 +157,177 @@ pub(super) fn advance_width_uncached(
             if glyph.char_data.is_control() {
                 0.0
             } else {
-                font.metrics_indexed(glyph.key.glyph_index, glyph.key.px)
+                chain[glyph.font_index]
+                    .metrics_indexed(glyph.key.glyph_index, glyph.key.px)
                     .advance_width
                     .ceil()
                     .max(0.0)
             }
         })
         .sum()
+}
+
+/// The fonts one run lays out through, in order: the requested face first, then
+/// the fallbacks when the run holds a character that face does not draw.
+///
+/// fontdue lays a run out in one face at a time, so the fallbacks are only
+/// loaded (and only consulted) when the primary face cannot draw something.
+/// Without them a character outside the bundled faces — an arrow, a box-drawing
+/// cell, a CJK glyph — rasterizes as an empty `.notdef` box.
+fn font_chain<'a>(primary: &'a fontdue::Font, text: &str) -> Vec<&'a fontdue::Font> {
+    let mut chain = Vec::with_capacity(4);
+    chain.push(primary);
+    if text
+        .chars()
+        .any(|ch| !ch.is_whitespace() && !primary.has_glyph(ch))
+    {
+        chain.extend(fallback_fonts());
+    }
+    chain
+}
+
+/// Layout `text` through `fonts`, splitting the run at every character the
+/// current face cannot draw and continuing with the first face that can.
+fn layout_text(
+    text: &str,
+    font_size: f32,
+    max_width: f32,
+    line_height: f32,
+    fonts: &[&fontdue::Font],
+) -> fontdue::layout::Layout {
+    let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
+    layout.reset(&fontdue::layout::LayoutSettings {
+        max_width: if max_width.is_finite() && max_width > 0.0 {
+            Some(max_width)
+        } else {
+            None
+        },
+        max_height: None,
+        line_height,
+        ..Default::default()
+    });
+    append_with_fallback(&mut layout, fonts, text, font_size);
+    layout
+}
+
+fn append_with_fallback(
+    layout: &mut fontdue::layout::Layout,
+    fonts: &[&fontdue::Font],
+    text: &str,
+    font_size: f32,
+) {
+    let Some(first) = text.chars().next() else {
+        return;
+    };
+    let face_for = |ch: char| -> usize {
+        if ch.is_whitespace() || ch.is_control() {
+            return 0;
+        }
+        fonts
+            .iter()
+            .position(|font| draws_glyph(font, ch))
+            .unwrap_or(0)
+    };
+    let mut start = 0;
+    let mut current = face_for(first);
+    for (offset, ch) in text.char_indices().skip(1) {
+        let face = face_for(ch);
+        if face != current {
+            layout.append(
+                fonts,
+                &fontdue::layout::TextStyle::new(&text[start..offset], font_size, current),
+            );
+            start = offset;
+            current = face;
+        }
+    }
+    layout.append(
+        fonts,
+        &fontdue::layout::TextStyle::new(&text[start..], font_size, current),
+    );
+}
+
+/// Whether a face can actually draw `ch`.
+///
+/// `has_glyph` only says the face's character map names a glyph. A colour or
+/// bitmap-only face (Apple Color Emoji, say) names one and still rasterizes
+/// nothing, so the chain would hand it a character it cannot ink. Metrics are
+/// computed from the outline, so a zero-sized glyph is skipped and the next
+/// face is tried.
+fn draws_glyph(font: &fontdue::Font, ch: char) -> bool {
+    font.has_glyph(ch) && {
+        let metrics = font.metrics(ch, 16.0);
+        metrics.width > 0 && metrics.height > 0
+    }
+}
+
+/// Faces tried after the bundled primary, in coverage order: the system's
+/// fallbacks first, then the bundled monochrome emoji face.
+///
+/// They are read once, on first use, so a run that stays inside Roboto or Hack
+/// pays nothing for them. The emoji face stays bundled rather than borrowed
+/// from the system because macOS's only emoji font is a colour bitmap font,
+/// which a monochrome coverage atlas cannot rasterize.
+fn fallback_fonts() -> &'static [fontdue::Font] {
+    static FALLBACKS: OnceLock<Vec<fontdue::Font>> = OnceLock::new();
+    FALLBACKS.get_or_init(|| {
+        let mut fonts: Vec<fontdue::Font> = fallback_paths()
+            .into_iter()
+            .filter_map(|path| std::fs::read(path).ok())
+            .filter_map(|bytes| {
+                fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
+            })
+            .collect();
+        if let Ok(emoji) = fontdue::Font::from_bytes(
+            include_bytes!("../../../assets/fonts/noto-emoji/NotoEmoji-Regular.ttf").as_slice(),
+            fontdue::FontSettings::default(),
+        ) {
+            fonts.push(emoji);
+        }
+        fonts
+    })
+}
+
+/// The system faces tried after the bundled one, in coverage order. A missing
+/// file is skipped, so the same list is safe on a machine without the optional
+/// faces.
+fn fallback_paths() -> Vec<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            "/System/Library/Fonts/Menlo.ttc",
+            "/System/Library/Fonts/Apple Symbols.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        ]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        vec![
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        ]
+    }
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            "C:\\Windows\\Fonts\\consola.ttf",
+            "C:\\Windows\\Fonts\\seguisym.ttf",
+            "C:\\Windows\\Fonts\\arialuni.ttf",
+            "C:\\Windows\\Fonts\\msyh.ttc",
+            "C:\\Windows\\Fonts\\malgun.ttf",
+            "C:\\Windows\\Fonts\\Nirmala.ttf",
+        ]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        Vec::new()
+    }
 }
 
 /// Whether the bundled face that draws `text` covers every character in it.
@@ -380,19 +532,8 @@ pub(super) fn rasterize_text(
         FontFamily::System
     };
     let font = font_set.select(weight, family, italic);
-    let fonts = &[font.clone()];
-    let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
-    layout.reset(&fontdue::layout::LayoutSettings {
-        max_width: if max_width.is_finite() && max_width > 0.0 {
-            Some(max_width)
-        } else {
-            None
-        },
-        max_height: None,
-        line_height,
-        ..Default::default()
-    });
-    layout.append(fonts, &fontdue::layout::TextStyle::new(text, font_size, 0));
+    let chain = font_chain(font, text);
+    let layout = layout_text(text, font_size, max_width, line_height, &chain);
 
     let glyphs = layout.glyphs();
     // The quad spans the block's line box, so the drawn ink lands exactly where
@@ -425,7 +566,7 @@ pub(super) fn rasterize_text(
     let mut max_x = f32::NEG_INFINITY;
     let mut max_y = f32::NEG_INFINITY;
     for glyph in glyphs {
-        let (metrics, _) = font.rasterize_config(glyph.key);
+        let (metrics, _) = chain[glyph.font_index].rasterize_config(glyph.key);
         if metrics.width == 0 || metrics.height == 0 {
             continue;
         }
@@ -445,7 +586,7 @@ pub(super) fn rasterize_text(
 
     let mut atlas = vec![0u8; (width * height) as usize];
     for glyph in glyphs {
-        let (metrics, bitmap) = font.rasterize_config(glyph.key);
+        let (metrics, bitmap) = chain[glyph.font_index].rasterize_config(glyph.key);
         if metrics.width == 0 || metrics.height == 0 {
             continue;
         }
@@ -473,4 +614,96 @@ pub(super) fn rasterize_text(
     };
 
     Some((entry, atlas, width, height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A run holding a character the bundled face omits lays that character out
+    /// through a system fallback, so it draws ink instead of the empty
+    /// `.notdef` box. The test skips on a machine with no fallback face.
+    #[test]
+    fn a_glyph_outside_the_bundled_face_uses_a_fallback() {
+        let Some(set) = font_set() else {
+            return;
+        };
+        if fallback_fonts().is_empty() {
+            return;
+        }
+        let primary = set.select(FontWeight::Regular, FontFamily::System, false);
+        assert!(
+            !primary.has_glyph('→'),
+            "Roboto is the primary prose face and has no arrow"
+        );
+        let chain = font_chain(primary, "a → b");
+        assert!(
+            chain.len() > 1,
+            "an arrow pulls in the fallback faces, got {} face(s)",
+            chain.len()
+        );
+
+        let (_, atlas, width, height) =
+            rasterize_text("→", 13.0, FontWeight::Regular, false, false, 100.0, 1.2)
+                .expect("the arrow rasterizes");
+        assert!(width > 0 && height > 0);
+        assert!(
+            atlas.iter().any(|coverage| *coverage > 0),
+            "the fallback draws the arrow's ink"
+        );
+    }
+
+    /// Every script the fallback chain can name draws real ink. A face that
+    /// maps a character but rasterizes no outline (a colour font) is skipped,
+    /// so a character only has to draw through a face that actually covers it.
+    #[test]
+    fn scripts_outside_the_bundled_faces_rasterize_ink() {
+        if font_set().is_none() {
+            return;
+        }
+        let candidates = fallback_fonts();
+        if candidates.is_empty() {
+            return;
+        }
+        // Latin diacritics, Greek, Cyrillic, Hebrew, Arabic, Devanagari, CJK,
+        // arrows, checks, box drawing, braille and emoji: one representative
+        // each.
+        let samples = "șțăîâĂÂÎȘȚαβΩЖДЯאבגابتहिन्दी中文日本語한국어→←↑↓✓✗⚠◆┃▸─│┌┘⠋⠙⠹😀🙂👍";
+        for ch in samples.chars() {
+            let covered = candidates.iter().any(|font| draws_glyph(font, ch));
+            if !covered {
+                continue;
+            }
+            let mut text = String::new();
+            text.push(ch);
+            let (_, atlas, width, height) =
+                rasterize_text(&text, 13.0, FontWeight::Regular, false, false, 100.0, 1.2)
+                    .unwrap_or_else(|| panic!("{ch:?} must rasterize"));
+            assert!(width > 0 && height > 0, "{ch:?} has an empty box");
+            assert!(
+                atlas.iter().any(|coverage| *coverage > 0),
+                "{ch:?} is covered by a fallback but drew no ink"
+            );
+        }
+    }
+
+    /// The bold face reaches the atlas: the same run rasterized at `Bold` is a
+    /// different bitmap from `Regular`, and both hold ink. This is the check
+    /// that a `with_weight(Bold)` in the transcript survives measurement,
+    /// layout and rasterization instead of collapsing to the regular face.
+    #[test]
+    fn bold_reaches_the_atlas_bitmap() {
+        let (_, regular, regular_w, regular_h) =
+            rasterize_text("Thought", 13.0, FontWeight::Regular, true, false, 200.0, 1.2)
+                .expect("regular text rasterizes");
+        let (_, bold, bold_w, bold_h) =
+            rasterize_text("Thought", 13.0, FontWeight::Bold, true, false, 200.0, 1.2)
+                .expect("bold text rasterizes");
+        assert!(regular.iter().any(|coverage| *coverage > 0));
+        assert!(bold.iter().any(|coverage| *coverage > 0));
+        assert!(
+            regular_w != bold_w || regular_h != bold_h || regular != bold,
+            "bold must not reuse the regular bitmap"
+        );
+    }
 }

@@ -371,7 +371,7 @@ fn status_affordance_reflects_the_persisted_status() {
     let cases = [
         (ToolCallStatus::Pending, ColorToken::Accent),
         (ToolCallStatus::Running, ColorToken::Accent),
-        (ToolCallStatus::Finished, ColorToken::Muted),
+        (ToolCallStatus::Finished, ColorToken::Text),
         (ToolCallStatus::Error, ColorToken::Error),
     ];
     for (status, token) in cases {

@@ -6,10 +6,11 @@ use crate::elements::chat_content::{group_fragments_into_blocks, ChatAction, Cha
 use crate::elements::{Chip, Code, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Fill, Flex, InlineText, LayoutContext, PaintContext, Point, SizeConstraint, TerminalFilter, Text};
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
-use crate::theme::{ColorToken, SpacingToken};
+use crate::platform::text_atlas::FontWeight;
+use crate::theme::{ColorToken, FontFamily, SpacingToken};
 use super::quote_rail::QuoteRail;
 use crate::elements::terminal_block::TerminalBlockPlumbing;
-use super::tool_call::{build_tool_call_rows, to_text_span};
+use super::tool_call::{build_tool_call_rows, to_text_span, TOOL_MARK, TOOL_ROW_FONT_SIZE};
 
 pub struct ChatMessageBubble {
     role: ChatRole,
@@ -277,27 +278,25 @@ impl ChatMessageBubble {
         }
     }
 
-    /// A model reasoning (thinking) row. It is recessed — muted text, no card —
-    /// and collapsed to a header until the app-owned expand flag for `key` is
-    /// set; the header is clickable to toggle that flag.
+    /// A model reasoning (thinking) row, drawn the way grok-build's Thinking
+    /// block is: the same filled diamond as a tool call, then a bold muted
+    /// label — `Thought` once the step is over, `Thinking…` while it streams.
+    /// Opening it shows the body behind the pager's dim quote rail.
     fn render_reasoning(
         &self,
         key: &str,
-        mode: &str,
+        _mode: &str,
         text: &str,
         done: bool,
         app: &crate::elements::AppContext,
     ) -> Box<dyn Element> {
         let expanded = *self.reasoning_expanded.borrow().get(key).unwrap_or(&false);
-        let marker = if expanded { "▾ " } else { "▸ " };
-        let mut label = if mode.is_empty() {
-            "Thinking".to_string()
+        let label = if done { "Thought" } else { "Thinking…" };
+        let mark = if done {
+            ColorToken::Muted
         } else {
-            format!("Thinking · {mode}")
+            ColorToken::Accent
         };
-        if !done {
-            label.push('…');
-        }
 
         let toggle = self.reasoning_expanded.clone();
         let key = key.to_string();
@@ -306,15 +305,18 @@ impl ChatMessageBubble {
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_spacing(2.0)
                 .with_child(
-                    Text::new(marker)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .with_font_size(12.0)
+                    Text::new(format!("{TOOL_MARK} "))
+                        .with_theme_color(mark, app)
+                        .with_font_family(FontFamily::Mono)
+                        .with_font_size(TOOL_ROW_FONT_SIZE)
                         .finish(),
                 )
                 .with_child(
                     Text::new(label)
                         .with_theme_color(ColorToken::Muted, app)
-                        .with_font_size(12.0)
+                        .with_font_family(FontFamily::Mono)
+                        .with_font_size(TOOL_ROW_FONT_SIZE)
+                        .with_weight(FontWeight::Bold)
                         .finish(),
                 )
                 .finish(),
@@ -332,10 +334,15 @@ impl ChatMessageBubble {
             .with_child(header);
         if expanded {
             column = column.with_child(
-                Text::new(text.to_string())
-                    .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(12.0)
-                    .finish(),
+                QuoteRail::new(
+                    Text::new(text.to_string())
+                        .with_theme_color(ColorToken::Muted, app)
+                        .with_font_family(FontFamily::Mono)
+                        .with_font_size(TOOL_ROW_FONT_SIZE)
+                        .finish(),
+                    app.theme.spacing_px(SpacingToken::Sm),
+                )
+                .finish(),
             );
         }
         column.finish()

@@ -200,15 +200,15 @@ use super::*;
 
         let collapsed = render(&state);
         assert!(
-            has_text(&collapsed, "Thinking"),
-            "the reasoning header renders"
+            has_text(&collapsed, "Thought"),
+            "the finished reasoning header renders"
         );
         assert!(
             !has_text(&collapsed, "weighing options"),
             "the thinking body is collapsed by default"
         );
         let header_color = collapsed.iter().find_map(|c| match c {
-            RenderCommand::DrawText { text, color, .. } if text.contains("Thinking") => {
+            RenderCommand::DrawText { text, color, .. } if text.contains("Thought") => {
                 Some(*color)
             }
             _ => None,

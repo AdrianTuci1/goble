@@ -76,7 +76,9 @@ fn tool_mark_token(kind: ToolKind, status: ToolCallStatus) -> ColorToken {
         ToolCallStatus::Error => ColorToken::Error,
         ToolCallStatus::Finished => match kind {
             ToolKind::Execute => ColorToken::Success,
-            _ => ColorToken::Muted,
+            // A read-shaped tool's bullet is the pager's default: primary while
+            // the row is open, dimmed into gray while it is folded.
+            _ => ColorToken::Text,
         },
     }
 }
@@ -108,17 +110,25 @@ fn tool_mark_color(
     }
 }
 
-/// The colour of the operand a row names: a path, a command and a URL take the
-/// warm colour grok-build paints them, a search's pattern and glob the success
-/// colour, and a row with no operand class the row's own text colour.
-fn tool_subject_color(kind: ToolKind, app: &crate::elements::AppContext) -> ColorU {
+/// The colour of the operand a row names: a path takes grok-build's warm
+/// orange, a command its yellow, a search's pattern and glob the success
+/// colour, and a row with no operand class the row's own text colour. A
+/// collapsed row is muted whole, exactly as the pager folds it.
+fn tool_subject_color(
+    kind: ToolKind,
+    mode: ToolDisplayMode,
+    app: &crate::elements::AppContext,
+) -> ColorU {
+    if mode == ToolDisplayMode::Collapsed {
+        return app.theme.color(ColorToken::Muted);
+    }
     match kind {
         ToolKind::Read
         | ToolKind::Create
         | ToolKind::Edit
         | ToolKind::List
-        | ToolKind::Execute
-        | ToolKind::WebFetch => app.theme.color(ColorToken::Warning),
+        | ToolKind::WebFetch => app.theme.color(ColorToken::Path),
+        ToolKind::Execute => app.theme.color(ColorToken::Command),
         ToolKind::Search | ToolKind::WebSearch => app.theme.color(ColorToken::Success),
         _ => app.theme.color(ColorToken::Text),
     }
@@ -269,7 +279,7 @@ pub(super) fn tool_call_header(
         // folded row is read for.
         row = row.with_child(run(
             parsed.subject.clone(),
-            tool_subject_color(parsed.kind, app),
+            tool_subject_color(parsed.kind, mode, app),
             FontWeight::Regular,
         ));
     }

@@ -43,40 +43,52 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
     let key = "c1:0";
 
     let collapsed = reasoning_commands(&expanded, key);
-    let texts: Vec<(String, ColorU)> = collapsed
+    let texts: Vec<(String, ColorU, FontWeight)> = collapsed
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::DrawText { text, color, .. } => Some((text.clone(), *color)),
+            RenderCommand::DrawText {
+                text,
+                color,
+                font_weight,
+                ..
+            } => Some((text.clone(), *color, *font_weight)),
             _ => None,
         })
         .collect();
 
     let header = texts
         .iter()
-        .find(|(text, _)| text.contains("Thinking"))
+        .find(|(text, _, _)| text.contains("Thought"))
         .unwrap_or_else(|| panic!("the reasoning header must be drawn, got {texts:?}"));
     assert_eq!(
         header.1,
         app.theme.color(ColorToken::Muted),
         "the reasoning row must be recessed (muted), got {header:?}"
     );
+    assert_eq!(
+        header.2,
+        FontWeight::Bold,
+        "grok-build's Thought label is bold, got {header:?}"
+    );
+    assert_eq!(header.0, "Thought", "the finished label is exactly grok-build's");
     assert!(
-        texts.iter().any(|(text, _)| text == "▸ "),
-        "a collapsed row shows the closed marker, got {texts:?}"
+        texts.iter().any(|(text, _, _)| text == "◆ "),
+        "a thinking row wears the tool diamond while its header is visible, got {texts:?}"
     );
     assert!(
         !texts
             .iter()
-            .any(|(text, _)| text.contains("weighing the options")),
+            .any(|(text, _, _)| text.contains("weighing the options")),
         "the body must be hidden while collapsed, got {texts:?}"
     );
 
     // The app-owned flag is what opens the row.
     expanded.borrow_mut().insert(key.to_string(), true);
-    let open: Vec<String> = reasoning_commands(&expanded, key)
-        .into_iter()
+    let open_commands = reasoning_commands(&expanded, key);
+    let open: Vec<String> = open_commands
+        .iter()
         .filter_map(|command| match command {
-            RenderCommand::DrawText { text, .. } => Some(text),
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
             _ => None,
         })
         .collect();
@@ -86,8 +98,11 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
         "an expanded row draws its body, got {open:?}"
     );
     assert!(
-        open.iter().any(|text| text == "▾ "),
-        "an expanded row shows the open marker, got {open:?}"
+        open_commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { rect, .. } if rect.width() == QUOTE_RAIL_WIDTH
+        )),
+        "an expanded row draws the rail beside its body, got {open_commands:?}"
     );
 }
 

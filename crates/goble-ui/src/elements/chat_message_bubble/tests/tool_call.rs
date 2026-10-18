@@ -9,6 +9,7 @@ use crate::elements::{terminal_block, AppContext, TerminalData, TerminalStatus};
 use crate::geometry::vec2f;
 use crate::render::RenderCommand;
 use crate::test_util::render_element;
+use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily};
 use goble_core::harness::ToolCallStatus;
 use goble_core::harness::{tool_kind_for, tool_row, ToolKind};
@@ -37,6 +38,54 @@ fn tool_call_draws_no_border_or_card() {
     assert_eq!(
         card_fills, 0,
         "a tool call must not paint a raised card background"
+    );
+}
+
+/// grok-build's tool row: the verb is bold and the operand keeps its own
+/// colour. A `read` therefore draws a bold `Read ` before a path in the theme's
+/// warm operand colour, not one plain run.
+#[test]
+fn a_tool_row_draws_a_bold_verb_and_an_accented_operand() {
+    let (commands, _) = paint_tool_calls_with_fold(
+        vec![call(
+            "read_file",
+            r#"{"path":"src/lib.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("1: fn main() {}"),
+        )],
+        Some(ToolDisplayMode::Expanded),
+    );
+    let app = AppContext::default();
+    let run = |needle: &str| {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText {
+                text,
+                color,
+                font_weight,
+                ..
+            } if text == needle => Some((*color, *font_weight)),
+            _ => None,
+        })
+    };
+
+    let (verb_color, verb_weight) = run("Read ").expect("the bold verb is drawn");
+    assert_eq!(
+        verb_weight,
+        FontWeight::Bold,
+        "the verb is bold, as in grok-build"
+    );
+    assert_eq!(verb_color, app.theme.color(ColorToken::Text));
+
+    let (path_color, path_weight) = run("src/lib.rs").expect("the operand is drawn");
+    assert_eq!(
+        path_weight,
+        FontWeight::Regular,
+        "the operand stays at the row's regular weight"
+    );
+    assert_eq!(
+        path_color,
+        app.theme.color(ColorToken::Path),
+        "the path takes grok-build's warm path colour"
     );
 }
 
@@ -190,6 +239,31 @@ fn command_call_shows_the_command_and_its_output() {
         !texts.iter().any(|t| t.contains(r#"{"command""#)),
         "the raw argument JSON is not shown, got {texts:?}"
     );
+
+    // grok-build's `Run` row: a bold primary verb, then the command in the
+    // pager's yellow.
+    let app = AppContext::default();
+    let run = |needle: &str| {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText {
+                text,
+                color,
+                font_weight,
+                ..
+            } if text == needle => Some((*color, *font_weight)),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        run("Run "),
+        Some((app.theme.color(ColorToken::Text), FontWeight::Bold)),
+        "the Run verb is bold primary text"
+    );
+    assert_eq!(
+        run("cargo test -p goble-ui"),
+        Some((app.theme.color(ColorToken::Command), FontWeight::Regular)),
+        "the command takes the pager's command colour"
+    );
 }
 
 /// An agent's command is drawn continuously in its reply, never as the
@@ -334,6 +408,31 @@ fn folded_read_draws_one_line() {
     assert!(
         !texts.iter().any(|t| t == "line 1"),
         "the file body is hidden while folded, got {texts:?}"
+    );
+
+    // grok-build folds a row whole: the verb and its path are both muted, and
+    // only the verb is bold.
+    let app = AppContext::default();
+    let run = |needle: &str| {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText {
+                text,
+                color,
+                font_weight,
+                ..
+            } if text == needle => Some((*color, *font_weight)),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        run("Read "),
+        Some((app.theme.color(ColorToken::Muted), FontWeight::Bold)),
+        "a folded verb is muted and bold"
+    );
+    assert_eq!(
+        run("src/lib.rs"),
+        Some((app.theme.color(ColorToken::Muted), FontWeight::Regular)),
+        "a folded path is muted like the rest of the row"
     );
 }
 

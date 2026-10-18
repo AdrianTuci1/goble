@@ -5,6 +5,35 @@ use crate::geometry::vec2f;
 use crate::theme::{ColorToken, SpacingToken};
 
 #[test]
+fn a_failed_turn_draws_its_reason_in_the_transcript() {
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::text("Partial answer")],
+    )];
+    let mut view = ChatView::new()
+        .with_messages(messages)
+        .with_turn_error(Some("Incorrect API key provided".to_string()))
+        .finish();
+    let commands = render_element(&mut view, vec2f(600.0, 480.0), &app);
+    let texts: Vec<&str> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.iter().any(|text| *text == "Agent turn failed"));
+    assert!(
+        texts.iter().any(|text| text.contains("Incorrect API key provided")),
+        "the reason the turn failed is drawn in the transcript"
+    );
+}
+
+#[test]
 fn chat_view_layouts_with_messages() {
     let app = AppContext::default();
     let messages = vec![ChatMessage::new(

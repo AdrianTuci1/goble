@@ -222,6 +222,7 @@ impl UiState {
                     in_flight_tools: HashMap::new(),
                     sub_agents: HashMap::new(),
                     reasoning: Vec::new(),
+                    turn_error: None,
                 },
             )]),
             live_executions: HashMap::new(),

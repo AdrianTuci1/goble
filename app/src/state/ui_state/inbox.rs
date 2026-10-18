@@ -303,6 +303,36 @@ mod tests {
         assert_eq!(state.pane_agent_state(1), PaneAgentState::Errored);
         assert_eq!(state.inbox[0].kind, InboxKind::Error);
         assert_eq!(state.inbox[0].detail, "model overloaded");
+        assert_eq!(
+            state.pane_runtime.get(&1).and_then(|rt| rt.turn_error.as_deref()),
+            Some("model overloaded"),
+            "the transcript carries the reason the turn failed"
+        );
+    }
+
+    #[test]
+    fn a_new_turn_clears_the_previous_error() {
+        let mut state = UiState::mock();
+        state.begin_turn(1);
+        state.apply_turn_error("c1", "model overloaded");
+        state.begin_turn(1);
+        assert_eq!(
+            state.pane_runtime.get(&1).and_then(|rt| rt.turn_error.as_deref()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_successful_turn_clears_the_previous_error() {
+        let mut state = UiState::mock();
+        state.begin_turn(1);
+        state.apply_turn_error("c1", "model overloaded");
+        state.begin_turn(1);
+        state.finish_turn(1, TurnOutcome::Success);
+        assert_eq!(
+            state.pane_runtime.get(&1).and_then(|rt| rt.turn_error.as_deref()),
+            None
+        );
     }
 
     #[test]

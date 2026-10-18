@@ -118,6 +118,9 @@ pub struct PaneChatSnapshot {
     /// call that spawned each child; the parent transcript's rows read their
     /// status, activity and elapsed time from these.
     pub sub_agents: HashMap<String, goble_ui::SubAgentRow>,
+    /// The message the pane's last turn failed on, drawn inline at the end of
+    /// the transcript so a failed turn is readable where it happened.
+    pub turn_error: Option<String>,
     /// The sub-agent child view this pane shows (S6): the child's own
     /// conversation, entered from the parent transcript's row. `None` when the
     /// pane shows its own transcript.

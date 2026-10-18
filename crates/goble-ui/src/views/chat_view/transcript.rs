@@ -435,6 +435,7 @@ impl ChatView {
         let message_area: Box<dyn Element> = if self.messages.is_empty()
             && self.pending_ask.is_none()
             && self.notice.is_none()
+            && self.turn_error.is_none()
         {
             // The empty state claims the remaining height itself, so the
             // composer stays pinned to the bottom of the window.
@@ -466,6 +467,38 @@ impl ChatView {
                     })
                     .finish();
                 message_column = message_column.with_child(bubble);
+            }
+            // A failed turn says why under the messages it belongs to. The
+            // inbox names the conversation; the transcript carries the reason,
+            // where the user is already looking when the agent goes quiet.
+            if let Some(error) = self.turn_error.clone() {
+                let sm = app.theme.spacing_px(SpacingToken::Sm);
+                let md = app.theme.spacing_px(SpacingToken::Md);
+                message_column = message_column.with_child(
+                    Container::new(
+                        Flex::column()
+                            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                            .with_spacing(sm)
+                            .with_child(
+                                Text::new("Agent turn failed")
+                                    .with_theme_color(ColorToken::Error, app)
+                                    .with_font_size(12.0)
+                                    .finish(),
+                            )
+                            .with_child(
+                                Text::new(error)
+                                    .with_theme_color(ColorToken::Text, app)
+                                    .with_font_size(13.0)
+                                    .finish(),
+                            )
+                            .finish(),
+                    )
+                    .with_background(Fill::Solid(
+                        app.theme.color(ColorToken::SurfaceRaised),
+                    ))
+                    .with_padding(EdgeInsets::uniform(md))
+                    .finish(),
+                );
             }
             // The conversation's own footer closes the transcript: fork it, and
             // the tokens it has spent.

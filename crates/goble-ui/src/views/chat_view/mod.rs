@@ -33,6 +33,10 @@ pub struct ChatView {
     /// An inline notice rendered at the top of the transcript (inside the chat
     /// area rather than as a floating dialog), e.g. the "no API key" error.
     notice: Option<Box<dyn Element>>,
+    /// The message the last turn failed on. Drawn at the end of the transcript,
+    /// under the messages it belongs to, so a failed turn is readable in the
+    /// conversation instead of only in the inbox.
+    turn_error: Option<String>,
     messages: Vec<ChatMessage>,
     quick_actions: Vec<(String, Rc<RefCell<dyn FnMut() + 'static>>)>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
@@ -174,6 +178,7 @@ impl ChatView {
         Self {
             header: None,
             notice: None,
+            turn_error: None,
             messages: Vec::new(),
             quick_actions: Vec::new(),
             on_send: None,

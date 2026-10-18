@@ -4,7 +4,7 @@ use std::rc::Rc;
 use goble_terminal::blocks::BlockView;
 use goble_terminal::BlockOwner;
 use goble_ui::elements::{
-    AppContext, Element, PopupMenuItem,
+    AppContext, Container, EdgeInsets, Element, PopupMenuItem,
 };
 use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView};
 
@@ -237,6 +237,9 @@ pub fn build_agent_chat(
         // Every other pane leads with the missing-model-key notice, if it has
         // one.
         .with_notice(notice_for(&session, state, app, actions))
+        // A failed turn is reported in the conversation it failed in, under
+        // the last message, as well as in the inbox.
+        .with_turn_error(session.turn_error.clone())
         .with_messages(messages)
         // The transcript scrolls and follows the stream; the state is
         // app-owned per pane so a chosen scrollback position is held.
@@ -413,7 +416,12 @@ pub fn build_agent_chat(
     // overlay layered over the whole app in `build_ui`, not a docked sidebar
     // that shrinks the pane. It is toggled from the chat header's "Toggle
     // panel" item and closed via its X button / backdrop click.
-    chat.finish()
+    //
+    // The agent surface keeps a 10 px gutter on each side, so its prose does
+    // not run flush into the pane's edges.
+    Container::new(chat.finish())
+        .with_padding(EdgeInsets::new(10.0, 0.0, 10.0, 0.0))
+        .finish()
 }
 
 #[cfg(test)]
@@ -618,13 +626,13 @@ mod chat_geometry_tests {
         assert_eq!(band.1, 0.0, "the user's band has square corners");
         assert_eq!(
             band.0.min_x(),
-            crate::ui::SIDEBAR_WIDTH,
-            "the user's band starts at the pane's left edge"
+            crate::ui::SIDEBAR_WIDTH + 10.0,
+            "the agent surface keeps its 10 px gutter at the pane's left edge"
         );
         assert_eq!(
             band.0.max_x(),
-            1024.0,
-            "the user's band runs to the pane's right edge"
+            1024.0 - 10.0,
+            "the agent surface keeps its 10 px gutter at the pane's right edge"
         );
         let padded = user_x - band.0.min_x();
         assert!(

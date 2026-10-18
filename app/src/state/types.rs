@@ -286,6 +286,10 @@ pub struct PaneRuntime {
     /// The parent transcript's rows read their status, activity and elapsed time
     /// from here, never from the call's arguments.
     pub sub_agents: HashMap<String, SubAgentRecord>,
+    /// The message the last turn failed on (`chat:error`), kept so the
+    /// transcript can show it in the conversation that failed. Cleared when the
+    /// next turn starts or a turn succeeds.
+    pub turn_error: Option<String>,
 }
 
 /// One live sub-agent child, held by the pane that spawned it: the row the

@@ -141,6 +141,9 @@ impl UiState {
         let Some(pane_id) = self.pane_for_chat_event(chat_id) else {
             return;
         };
+        if let Some(rt) = self.pane_runtime.get_mut(&pane_id) {
+            rt.turn_error = Some(message.to_string());
+        }
         self.finish_turn(pane_id, TurnOutcome::Failed(Some(message.to_string())));
     }
 
@@ -206,6 +209,8 @@ impl UiState {
         rt.busy = true;
         rt.turn_started_at = Some(std::time::Instant::now());
         rt.agent_state = PaneAgentState::Working;
+        // The previous turn's failure belongs to that turn, not to this one.
+        rt.turn_error = None;
     }
 
     /// Settle a finished turn on `pane_id`: the pane stops showing busy, its
@@ -228,8 +233,18 @@ impl UiState {
                 rt.pending_command = None;
                 rt.command_selection = None;
                 rt.agent_state = match &outcome {
-                    TurnOutcome::Success => PaneAgentState::Done,
-                    TurnOutcome::Failed(_) => PaneAgentState::Errored,
+                    TurnOutcome::Success => {
+                        rt.turn_error = None;
+                        PaneAgentState::Done
+                    }
+                    TurnOutcome::Failed(detail) => {
+                        // `chat:error` already left the message here; a bare
+                        // failed status that follows it keeps that message.
+                        if let Some(detail) = detail {
+                            rt.turn_error = Some(detail.clone());
+                        }
+                        PaneAgentState::Errored
+                    }
                     TurnOutcome::Unknown => PaneAgentState::Unknown,
                 };
             }

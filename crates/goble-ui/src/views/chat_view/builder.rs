@@ -56,6 +56,13 @@ impl ChatView {
         self
     }
 
+    /// Draw `error` at the end of the transcript: the message the last turn
+    /// failed on.
+    pub fn with_turn_error(mut self, error: Option<String>) -> Self {
+        self.turn_error = error;
+        self
+    }
+
     pub fn with_messages(mut self, messages: Vec<ChatMessage>) -> Self {
         self.messages = messages;
         self

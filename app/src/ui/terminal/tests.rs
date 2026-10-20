@@ -290,6 +290,7 @@ use std::collections::HashMap;
             pwd: None,
             git_branch: None,
             duration: None,
+            prompt: None,
             card: None,
         };
 
@@ -1979,6 +1980,119 @@ use std::collections::HashMap;
         assert!(
             !pane_has(&runs, "$"),
             "the block view hides the shell's prompt: {runs:?}"
+        );
+    }
+
+    /// The prompt a command was typed at is drawn once, in the block's header.
+    /// The body starts at the command's own `❯` line, so the shell prompt is
+    /// never a row above the command inside the pane.
+    #[test]
+    fn a_typed_command_shows_its_prompt_in_the_header_not_the_body() {
+        use goble_terminal::hooks::{
+            encode_hook, CommandFinishedValue, InitShellValue, PrecmdValue, PreexecValue,
+        };
+        use goble_terminal::HookEvent;
+
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .expect("a user for the prompt");
+        let prompt = format!("{user}@Adrians-MacBook-Pro /tmp %");
+        {
+            let mut emulator = Emulator::new(80, 24);
+            emulator.feed(&encode_hook(&HookEvent::InitShell(InitShellValue {
+                shell: Some("zsh".to_string()),
+                host: Some("Adrians-MacBook-Pro.local".to_string()),
+                honor_ps1: Some(true),
+                ..Default::default()
+            })));
+            emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+            emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
+                pwd: Some("/tmp".to_string()),
+                ..Default::default()
+            })));
+            // The shell typed its own prompt and echoed the line before Preexec.
+            emulator.feed(format!("{prompt} echo hi\r\n").as_bytes());
+            emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+                command: Some("echo hi".to_string()),
+            })));
+            emulator.feed(b"hi\r\n");
+            emulator.feed(&encode_hook(&HookEvent::CommandFinished(
+                CommandFinishedValue {
+                    exit_code: 0,
+                    ..Default::default()
+                },
+            )));
+            state
+                .borrow_mut()
+                .terminal
+                .borrow_mut()
+                .sessions
+                .insert(1, TerminalSession::with_emulator(emulator));
+        }
+
+        let runs = pane_runs(&mut root, &app);
+        let header = runs
+            .iter()
+            .find(|(text, _)| text.starts_with(&prompt))
+            .unwrap_or_else(|| panic!("the header carries the prompt: {runs:?}"));
+        assert!(
+            !pane_has(&runs, &prompt),
+            "the prompt is part of the header row, not a row of its own: {runs:?}"
+        );
+        let body: String = runs.iter().map(|(text, _)| text.as_str()).collect();
+        assert!(
+            body.contains("echo hi"),
+            "the body draws the command alone: {runs:?}"
+        );
+        assert!(
+            header.0.len() > prompt.len(),
+            "the header keeps the block's context beside the prompt: {:?}",
+            header.0
+        );
+    }
+
+    /// A bootstrapped shell waiting at its prompt has no command block to
+    /// draw. The pane leaves that space empty rather than painting the live
+    /// screen, whose only content is the prompt line the block header owns.
+    #[test]
+    fn a_bare_shell_prompt_is_not_drawn_in_the_pane() {
+        use goble_terminal::hooks::{encode_hook, InitShellValue, PrecmdValue};
+        use goble_terminal::HookEvent;
+
+        let app = AppContext::default();
+        let (mut root, state, _dir) = shell_root();
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .expect("a user for the prompt");
+        let prompt = format!("{user}@Adrians-MacBook-Pro /tmp %");
+        {
+            let mut emulator = Emulator::new(80, 24);
+            emulator.feed(&encode_hook(&HookEvent::InitShell(InitShellValue {
+                shell: Some("zsh".to_string()),
+                host: Some("Adrians-MacBook-Pro.local".to_string()),
+                honor_ps1: Some(true),
+                ..Default::default()
+            })));
+            emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+            emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
+                pwd: Some("/tmp".to_string()),
+                ..Default::default()
+            })));
+            emulator.feed(format!("{prompt} ").as_bytes());
+            state
+                .borrow_mut()
+                .terminal
+                .borrow_mut()
+                .sessions
+                .insert(1, TerminalSession::with_emulator(emulator));
+        }
+
+        let runs = pane_runs(&mut root, &app);
+        assert!(
+            !runs.iter().any(|(text, _)| text.contains(&prompt)),
+            "a shell at its prompt draws no prompt row in the pane: {runs:?}"
         );
     }
 

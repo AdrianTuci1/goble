@@ -18,6 +18,19 @@ use crate::terminal::TerminalSession;
 /// an assumed success, so a command still running is not drawn as finished.
 /// `None` while the session has drawn nothing.
 pub fn executed_command_block(session: &TerminalSession) -> Option<TerminalData> {
+    // An integrated shell reports its commands as blocks, so the live screen is
+    // not the source: the screen carries the prompt row too, and a prompt
+    // belongs in the block's header. The newest block with a command is the
+    // block this view draws, streaming as its output grows.
+    if session.is_bootstrapped() {
+        return session
+            .visible_blocks(&BlockView::Terminal)
+            .into_iter()
+            .rev()
+            .find(|block| block.card.is_none() && !block.command.trim().is_empty())
+            .and_then(|block| section_data(&block));
+    }
+
     let snapshot = session.snapshot(48);
     if snapshot.lines.is_empty() {
         return None;
@@ -73,6 +86,9 @@ pub fn section_data(block: &VisibleBlock) -> Option<TerminalData> {
     let mut meta = TerminalMeta::new(crate::state::display_path(
         block.pwd.as_deref().unwrap_or_default(),
     ));
+    if let Some(prompt) = block.prompt.as_deref().filter(|p| !p.is_empty()) {
+        meta = meta.with_prompt(prompt);
+    }
     if let Some(branch) = block.git_branch.as_deref().filter(|b| !b.is_empty()) {
         meta = meta.with_branch(branch);
     }

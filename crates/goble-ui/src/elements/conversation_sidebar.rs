@@ -20,6 +20,9 @@ pub struct ConversationEntry {
     pub name: String,
     pub last_response: String,
     pub timestamp: String,
+    /// What the card's status square reports: gray when idle or stopped,
+    /// yellow while a turn runs or waits on the user, red for a failed turn and
+    /// green for a finished one.
     pub status: ConversationStatus,
     pub folder: String,
     /// The work environment this conversation runs in: `"local"` or `"remote"`.
@@ -244,6 +247,7 @@ impl ConversationSidebar {
                     Rc::new(RefCell::new(AgentCardUi::default())),
                     selected,
                 )
+                .with_status(entry.status)
                 .with_on_click(move || {
                     if let Some(cb) = on_select.as_ref() {
                         (cb.borrow_mut())(select_id.clone());

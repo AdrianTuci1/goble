@@ -15,7 +15,7 @@ use goble_ui::theme::{ColorToken, SpacingToken, TabColor, TabTint};
 use crate::state::PaneDrag;
 
 use super::super::tab_menu::{build_tab_menu, TabMenuTab, TabMenuAction};
-use super::super::{file_view, MediaActions, MediaSnapshot, UiActions, UiSnapshot};
+use super::super::{file_view, MediaActions, MediaSnapshot, PaneDropTarget, UiActions, UiSnapshot};
 
 /// The width of the environment menu's hover tray.
 const ENV_TRAY_WIDTH: f32 = 220.0;
@@ -161,6 +161,9 @@ pub fn build_topbar(
     )
     .with_left_spacing(sm * 0.5)
     .with_group_spacing(sm)
+    .with_gesture(
+        state.pane_drag.is_some() || state.space_drag.is_some() || state.space_press.is_some(),
+    )
     .finish();
 
     // The workspace strip is already drawn at `TOPBAR_HEIGHT` (each tab runs the
@@ -665,6 +668,11 @@ struct TopbarRow {
     right: Vec<Box<dyn Element>>,
     left_spacing: f32,
     group_spacing: f32,
+    /// Whether a pointer gesture owns the bar: a tab press/drag or a lifted
+    /// pane. The strip is then offered every pointer event first, so the
+    /// controls beside it cannot swallow the release of a gesture that
+    /// travelled over them.
+    gesture: bool,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -683,9 +691,15 @@ impl TopbarRow {
             right,
             left_spacing: 0.0,
             group_spacing: 0.0,
+            gesture: false,
             size: None,
             origin: None,
         }
+    }
+
+    fn with_gesture(mut self, gesture: bool) -> Self {
+        self.gesture = gesture;
+        self
     }
 
     fn with_left_spacing(mut self, spacing: f32) -> Self {
@@ -833,6 +847,35 @@ impl Element for TopbarRow {
         ctx: &mut EventContext,
         app: &AppContext,
     ) -> bool {
+        // A gesture in flight belongs to the strip, wherever the pointer has
+        // travelled: the release must end the drag, not click a control the
+        // pointer happens to be over. Anything the strip does not take still
+        // falls through to the controls, so the bar stays usable.
+        let pointer = matches!(
+            event,
+            DispatchedEvent::MouseDown { .. }
+                | DispatchedEvent::MouseMove { .. }
+                | DispatchedEvent::MouseUp { .. }
+        );
+        if self.gesture && pointer {
+            if self.strip.dispatch_event(event, ctx, app) {
+                return true;
+            }
+            for child in &mut self.leading {
+                if child.dispatch_event(event, ctx, app) {
+                    return true;
+                }
+            }
+            for child in &mut self.trailing {
+                if child.dispatch_event(event, ctx, app) {
+                    return true;
+                }
+            }
+            return self
+                .right
+                .iter_mut()
+                .any(|child| child.dispatch_event(event, ctx, app));
+        }
         for child in &mut self.leading {
             if child.dispatch_event(event, ctx, app) {
                 return true;
@@ -1217,8 +1260,16 @@ fn build_workspace_strip(
             frame,
             state.pane_drag.clone(),
             tab_rects,
+            SpacePress {
+                press: state.space_press,
+                pressed_at: state.space_press_at,
+                drag: state.space_drag,
+            },
+            state.pane_bounds.clone(),
             actions.on_pane_lift_move.clone(),
             actions.on_pane_drop.clone(),
+            actions.on_space_reorder.clone(),
+            actions.on_space_release.clone(),
         )),
         state.spaces.len(),
         state.spaces.len().saturating_sub(1),
@@ -1254,7 +1305,9 @@ fn build_workspace_chip(
         active,
         color,
         on_click: Rc::new(RefCell::new(move |i: usize| (on_click.borrow_mut())(i))),
-        on_press: Rc::new(RefCell::new(move |i: usize| (on_press.borrow_mut())(i))),
+        on_press: Rc::new(RefCell::new(move |i: usize, at: Vector2F| {
+            (on_press.borrow_mut())(i, at)
+        })),
         on_right_click: Rc::new(RefCell::new(move |i: usize, at: Vector2F| {
             (on_right_click.borrow_mut())(i, at)
         })),
@@ -1319,8 +1372,9 @@ pub(super) struct WorkspaceChip {
     color: Option<TabColor>,
     on_click: Rc<RefCell<dyn FnMut(usize)>>,
     /// The press, reported before the click so the multi-click is counted from
-    /// it (see [`UiState::space_press_run`](crate::state::SpacePressRun)).
-    on_press: Rc<RefCell<dyn FnMut(usize)>>,
+    /// it (see [`UiState::space_press_run`](crate::state::SpacePressRun)), with
+    /// the point it landed on so a drag can measure how far it has travelled.
+    on_press: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
     /// A right click on the tab, with the point the pointer was at: the tab's
     /// menu hangs from the pointer itself.
     on_right_click: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
@@ -1335,7 +1389,7 @@ pub(super) struct WorkspaceChipParts {
     pub active: bool,
     pub color: Option<TabColor>,
     pub on_click: Rc<RefCell<dyn FnMut(usize)>>,
-    pub on_press: Rc<RefCell<dyn FnMut(usize)>>,
+    pub on_press: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
     pub on_right_click: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
     pub close: Box<dyn Element>,
 }
@@ -1526,12 +1580,14 @@ impl Element for WorkspaceChip {
             }
         }
         // A primary press is what the tab's multi-click is counted from, so it
-        // is reported before the release that follows it reads the count.
-        if let DispatchedEvent::MouseDown { button, .. } = event {
+        // is reported before the release that follows it reads the count. The
+        // point is the drag's origin: the strip only reorders once the pointer
+        // has travelled away from it.
+        if let DispatchedEvent::MouseDown { position, button } = event {
             if *button == BUTTON_PRIMARY && over_tab {
                 let cb = Rc::clone(&self.on_press);
                 let index = self.index;
-                (cb.borrow_mut())(index);
+                (cb.borrow_mut())(index, *position);
             }
         }
         let bounds = match self.bounds() {
@@ -1730,6 +1786,24 @@ fn insertion_x(tabs: &[RectF], index: usize) -> f32 {
     }
 }
 
+/// How far the pointer must travel from a press on a tab before that press
+/// reads as a drag. A click that wobbles a pixel still selects the tab.
+const TAB_DRAG_THRESHOLD: f32 = 4.0;
+
+/// The index the tab at `from` belongs at for a pointer at `x`: how many of the
+/// *other* tabs' centers lie left of the pointer.
+///
+/// Counting the other tabs rather than picking the nearest center is what makes
+/// a drag monotonic in `x`: the tab moves toward the pointer and does not swap
+/// back and forth around a midpoint. The count is also the index the tab takes
+/// once it is moved, because the dragged tab is left out of the count.
+pub(super) fn reorder_target_index(tabs: &[RectF], from: usize, x: f32) -> usize {
+    tabs.iter()
+        .enumerate()
+        .filter(|(index, tab)| *index != from && x > tab.center().x)
+        .count()
+}
+
 /// Records the rectangle a tab was drawn at into the strip's registry while it
 /// paints. Every tab of the strip is wrapped in one — the chip and the inline
 /// rename field alike — so a drop's insertion index always names a position
@@ -1794,25 +1868,51 @@ impl Element for TabRect {
     }
 }
 
-/// The workspace tab strip as a drop target: a pane lifted out of its grid is
-/// dropped between these tabs and becomes a tab of its own there.
+/// The workspace tab strip as a drop target and a reorder handle.
 ///
-/// The strip only resolves and reports the drop — the move itself is app
-/// state's (`UiState::drop_pane`) and the ghost card is the bar's — which is
-/// what lets the whole rule be tested without a pointer. It sees pointer events
-/// before the shell body (the bar is layered above it), so while a pane is in
-/// flight the strip holds the pointer; while nothing is in flight it forwards to
-/// its tabs, whose own hit test is what makes a tab click win a press that lands
-/// on a tab.
-type DragMoveHandler = Rc<RefCell<dyn FnMut(Vector2F, Option<usize>)>>;
+/// A pane lifted out of its grid is dropped between these tabs and becomes a
+/// tab of its own there; a workspace tab pressed and dragged is reordered along
+/// the strip. Both gestures are resolved here and performed by app state — the
+/// pane move is `UiState::release_pane_drag`, the reorder `UiState::reorder_space`
+/// — and the ghost card is the bar's, which is what lets the rules be tested
+/// without a pointer. It sees pointer events before the shell body (the bar is
+/// layered above it), so while a gesture is in flight the strip holds the
+/// pointer; while nothing is in flight it forwards to its tabs, whose own hit
+/// test is what makes a tab click win a press that lands on a tab.
+///
+/// The tab rectangles it resolves against are the ones the tabs were drawn at
+/// (see [`TabRect`]): the strip is rebuilt every frame, and a reorder must name
+/// the place the user can see, not a slot the rebuild has moved.
+type DragMoveHandler = Rc<RefCell<dyn FnMut(Vector2F, Option<usize>, Option<PaneDropTarget>)>>;
+type DropHandler = Rc<RefCell<dyn FnMut(Option<usize>, Option<PaneDropTarget>)>>;
+
+/// The workspace tab press, as app state holds it. A press becomes a drag only
+/// once the pointer has travelled [`TAB_DRAG_THRESHOLD`] away from it, so a
+/// click still selects and a double click still opens the rename; `drag` is the
+/// tab's index after the last reorder, which is what makes the drag follow the
+/// tab across the per-frame rebuild.
+#[derive(Clone, Copy)]
+struct SpacePress {
+    press: Option<usize>,
+    pressed_at: Option<Vector2F>,
+    drag: Option<usize>,
+}
 
 struct SpaceDropStrip {
     inner: Box<dyn Element>,
     /// The lifted pane, from app state; `None` when nothing is in flight.
     drag: Option<PaneDrag>,
     tab_rects: Rc<RefCell<Vec<Option<RectF>>>>,
+    space: SpacePress,
+    /// The bounds the pane area's leaves were drawn at (see
+    /// [`UiSnapshot::pane_bounds`]): what the in-area drop target resolves
+    /// against, since a window is rebuilt every frame and the strip has no
+    /// other way to know where the panes are.
+    pane_bounds: Rc<RefCell<std::collections::HashMap<u64, RectF>>>,
     on_drag_move: DragMoveHandler,
-    on_drop: Rc<RefCell<dyn FnMut(Option<usize>)>>,
+    on_drop: DropHandler,
+    on_space_reorder: Rc<RefCell<dyn FnMut(usize, usize)>>,
+    on_space_release: Rc<RefCell<dyn FnMut()>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -1822,15 +1922,23 @@ impl SpaceDropStrip {
         inner: Box<dyn Element>,
         drag: Option<PaneDrag>,
         tab_rects: Rc<RefCell<Vec<Option<RectF>>>>,
+        space: SpacePress,
+        pane_bounds: Rc<RefCell<std::collections::HashMap<u64, RectF>>>,
         on_drag_move: DragMoveHandler,
-        on_drop: Rc<RefCell<dyn FnMut(Option<usize>)>>,
+        on_drop: DropHandler,
+        on_space_reorder: Rc<RefCell<dyn FnMut(usize, usize)>>,
+        on_space_release: Rc<RefCell<dyn FnMut()>>,
     ) -> Self {
         Self {
             inner,
             drag,
             tab_rects,
+            space,
+            pane_bounds,
             on_drag_move,
             on_drop,
+            on_space_reorder,
+            on_space_release,
             size: None,
             origin: None,
         }
@@ -1857,6 +1965,37 @@ impl SpaceDropStrip {
             return None;
         }
         Some(insertion_index(&self.drawn_tabs(), position.x))
+    }
+
+    /// The pane the lifted pane would land beside for a pointer at `position`,
+    /// or `None` while it is over no other pane. Over the strip itself there is
+    /// no in-area target: a release there gives the pane a tab of its own.
+    fn drop_target_at(&self, position: Vector2F) -> Option<PaneDropTarget> {
+        let drag = self.drag.as_ref()?;
+        if self
+            .bounds()
+            .map(|bounds| contains(bounds, position))
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let bounds = self.pane_bounds.borrow();
+        super::super::pane::pane_drop_target(&bounds, position, drag.pane_id)
+    }
+
+    /// The workspace tab being dragged for a pointer at `position`: the tab the
+    /// last reorder named, or — before the first crossing — the pressed tab once
+    /// the pointer has travelled far enough to make the press a drag.
+    fn dragged_tab(&self, position: Vector2F) -> Option<usize> {
+        if let Some(index) = self.space.drag {
+            return Some(index);
+        }
+        let press = self.space.press?;
+        let origin = self.space.pressed_at?;
+        let travelled = (position.x - origin.x)
+            .abs()
+            .max((position.y - origin.y).abs());
+        (travelled > TAB_DRAG_THRESHOLD).then_some(press)
     }
 }
 
@@ -1919,27 +2058,80 @@ impl Element for SpaceDropStrip {
         ctx: &mut EventContext,
         app: &AppContext,
     ) -> bool {
+        // A lifted pane owns every pointer move and the release that ends it,
+        // wherever the pointer has travelled.
         if self.drag.is_some() {
             match event {
                 DispatchedEvent::MouseMove { position } => {
                     let index = self.drop_index_at(*position);
-                    (self.on_drag_move.borrow_mut())(*position, index);
+                    let target = self.drop_target_at(*position);
+                    (self.on_drag_move.borrow_mut())(*position, index, target);
                     return true;
                 }
                 DispatchedEvent::MouseUp { position, .. } => {
                     let index = self.drop_index_at(*position);
-                    (self.on_drop.borrow_mut())(index);
+                    let target = self.drop_target_at(*position);
+                    (self.on_drop.borrow_mut())(index, target);
                     return true;
                 }
                 // A second press while a pane is in flight ends the drag, the
                 // way a release off the strip would, instead of starting a
                 // second lift.
                 DispatchedEvent::MouseDown { .. } => {
-                    (self.on_drop.borrow_mut())(None);
+                    (self.on_drop.borrow_mut())(None, None);
                     return true;
                 }
                 _ => {}
             }
+        }
+        match event {
+            // A pressed tab that has travelled far enough is a drag: the tab
+            // follows the pointer, moving one place whenever it crosses a
+            // neighbouring tab's center.
+            DispatchedEvent::MouseMove { position } => {
+                if let Some(from) = self.dragged_tab(*position) {
+                    let tabs = self.drawn_tabs();
+                    if tabs.get(from).is_some() {
+                        let to = reorder_target_index(&tabs, from, position.x);
+                        (self.on_space_reorder.borrow_mut())(from, to);
+                        return true;
+                    }
+                }
+            }
+            // A release ends the press. A plain click is left to the tab under
+            // the pointer (its own hit test fires the select); a drag is ended
+            // here so the tab that was dragged is never also selected or
+            // renamed, and the press is cleared either way so a pointer move
+            // after the button came up can never start a drag by itself.
+            DispatchedEvent::MouseUp { position, button } => {
+                if *button == BUTTON_PRIMARY {
+                    if self.dragged_tab(*position).is_some() {
+                        (self.on_space_release.borrow_mut())();
+                        return true;
+                    }
+                    let handled = self.inner.dispatch_event(event, ctx, app);
+                    if self.space.press.is_some() {
+                        (self.on_space_release.borrow_mut())();
+                    }
+                    return handled;
+                }
+            }
+            // A press while a tab is already being dragged ends the drag here
+            // rather than letting the tab under the pointer take it. A stale
+            // press — one whose release was lost with the window's focus — is
+            // cleared the same way, so it can never turn a later pointer move
+            // into a drag; the press that ended it still reaches the tab it
+            // landed on.
+            DispatchedEvent::MouseDown { button, .. } => {
+                if *button == BUTTON_PRIMARY && self.space.press.is_some() {
+                    let dragging = self.space.drag.is_some();
+                    (self.on_space_release.borrow_mut())();
+                    if dragging {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
         }
         self.inner.dispatch_event(event, ctx, app)
     }

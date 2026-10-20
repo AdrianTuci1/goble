@@ -32,7 +32,7 @@ use crate::emulator::VisibleBlock;
 use crate::terminal::TerminalRegistry;
 use crate::ui::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, FloatingDrag, HarnessEntry, LayoutKind,
-    LlmFormField, Pane, PaneChatSnapshot, PaneKind, SearchRow, SettingsCategory,
+    LlmFormField, Pane, PaneChatSnapshot, PaneDropTarget, PaneKind, SearchRow, SettingsCategory,
     SettingsControl, SettingsFocus, SidebarView, Space, TaskEntry, TimelineEntry, WorkflowEntry,
     WorkflowStepEntry, WorkerPaneSnapshot, WorkspaceRouting, SIDEBAR_WIDTH,
 };

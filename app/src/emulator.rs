@@ -56,6 +56,10 @@ pub struct VisibleBlock {
     /// How long the command took: its finished duration, or how long it has been
     /// running so far. `None` before the shell reported the command.
     pub duration: Option<Duration>,
+    /// The prompt line this command was typed at, drawn as the block's header:
+    /// the shell's own prompt when it drew one, otherwise the prompt its shell
+    /// would draw at this directory. The body never repeats it.
+    pub prompt: Option<String>,
     /// Set when this block is a conversation card rather than a shell block.
     pub card: Option<AgentViewCard>,
 }
@@ -314,6 +318,16 @@ impl Emulator {
     /// conversation's agent view. The filter is the per-block visibility the
     /// owner set, so the two views agree on who ran what.
     pub fn visible_blocks(&self, view: &BlockView) -> Vec<VisibleBlock> {
+        // The prompt a block's header draws is built from the session the shell
+        // reported, so a shell that hides its own prompt still has one the view
+        // can show above the command instead of a prompt row in the output.
+        let session = self.blocks.session();
+        let host = session
+            .host
+            .as_deref()
+            .map(short_host)
+            .filter(|host| !host.is_empty());
+        let shell = session.shell.as_deref();
         self.blocks
             .visible_blocks(view)
             .into_iter()
@@ -327,6 +341,9 @@ impl Emulator {
                 pwd: block.metadata().pwd.clone(),
                 git_branch: block.metadata().git_branch.clone(),
                 duration: block.duration().or_else(|| block.elapsed()),
+                prompt: block
+                    .prompt_text()
+                    .or_else(|| synthesized_prompt(block, host, shell)),
                 card: block
                     .conversation_id()
                     .map(|conversation_id| AgentViewCard {
@@ -437,6 +454,38 @@ impl Emulator {
     }
 }
 
+/// The host a shell prompt names: the short name, the way zsh's `%m` and bash's
+/// `\h` write it.
+fn short_host(host: &str) -> &str {
+    host.split('.').next().unwrap_or(host)
+}
+
+/// The prompt a block's header carries when the shell has hidden its own: the
+/// default prompt its shell would draw at the command's directory,
+/// `user@host cwd %`. The directory comes from the block's pre-exec metadata, so
+/// a command that changed directories keeps the prompt it ran under.
+fn synthesized_prompt(block: &Block, host: Option<&str>, shell: Option<&str>) -> Option<String> {
+    let pwd = block.metadata().pwd.as_deref()?;
+    let cwd = crate::state::display_path(pwd);
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .ok()?;
+    let sigil = match shell {
+        Some(shell) if shell.starts_with("bash") => {
+            if user == "root" {
+                "#"
+            } else {
+                "$"
+            }
+        }
+        _ => "%",
+    };
+    Some(match host {
+        Some(host) => format!("{user}@{host} {cwd} {sigil}"),
+        None => format!("{cwd} {sigil}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,6 +518,108 @@ mod tests {
         emulator.feed(&stream);
         assert_eq!(emulator.take_hook_events().len(), 1);
         assert_eq!(rows_text(&emulator)[0], "after");
+    }
+
+    /// A command carries the prompt it was typed at: the shell's own line when
+    /// it drew one, otherwise the prompt its shell would draw at the block's
+    /// directory. The view draws it in the block's header, so the body never
+    /// has to repeat it.
+    #[test]
+    fn a_command_carries_the_prompt_it_was_typed_at() {
+        use goble_terminal::hooks::{
+            encode_hook, CommandFinishedValue, InitShellValue, PrecmdValue, PreexecValue,
+        };
+
+        let mut emulator = Emulator::new(80, 6);
+        emulator.feed(&encode_hook(&HookEvent::InitShell(InitShellValue {
+            shell: Some("zsh".into()),
+            host: Some("Adrians-MacBook-Pro.local".into()),
+            ..Default::default()
+        })));
+        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+        emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
+            pwd: Some("/tmp".into()),
+            ..Default::default()
+        })));
+        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+            command: Some("echo hi".into()),
+        })));
+        emulator.feed(b"echo hi\r\nhi\r\n");
+        emulator.feed(&encode_hook(&HookEvent::CommandFinished(
+            CommandFinishedValue {
+                exit_code: 0,
+                ..Default::default()
+            },
+        )));
+
+        let blocks = emulator.visible_blocks(&BlockView::Terminal);
+        let block = blocks
+            .iter()
+            .rev()
+            .find(|block| block.command == "echo hi")
+            .expect("the command's block");
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .expect("a user for the prompt");
+        assert_eq!(
+            block.prompt.as_deref(),
+            Some(format!("{user}@Adrians-MacBook-Pro /tmp %").as_str()),
+            "the header prompt names the short host, the directory and the zsh sigil"
+        );
+    }
+
+    /// When the shell draws its own prompt (`honor_ps1`), the block's header
+    /// takes that exact line rather than inventing one, and the command's text
+    /// stays the shell-reported command without it.
+    #[test]
+    fn an_honored_ps1_is_the_blocks_prompt() {
+        use goble_terminal::hooks::{
+            encode_hook, CommandFinishedValue, InitShellValue, PrecmdValue, PreexecValue,
+        };
+
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .expect("a user for the prompt");
+        let typed_prompt = format!("{user}@box ~/code % ");
+        let mut emulator = Emulator::new(80, 6);
+        emulator.feed(&encode_hook(&HookEvent::InitShell(InitShellValue {
+            shell: Some("zsh".into()),
+            host: Some("box".into()),
+            honor_ps1: Some(true),
+            ..Default::default()
+        })));
+        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+        emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
+            pwd: Some("/home/me/code".into()),
+            ..Default::default()
+        })));
+        emulator.feed(format!("{typed_prompt}echo hi\r\n").as_bytes());
+        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+            command: Some("echo hi".into()),
+        })));
+        emulator.feed(b"hi\r\n");
+        emulator.feed(&encode_hook(&HookEvent::CommandFinished(
+            CommandFinishedValue {
+                exit_code: 0,
+                ..Default::default()
+            },
+        )));
+
+        let blocks = emulator.visible_blocks(&BlockView::Terminal);
+        let block = blocks
+            .iter()
+            .rev()
+            .find(|block| block.command == "echo hi")
+            .expect("the command's block");
+        assert_eq!(
+            block.prompt.as_deref(),
+            Some(typed_prompt.trim_end()),
+            "the shell's own prompt is the header, not a body row"
+        );
+        assert_eq!(
+            block.command, "echo hi",
+            "the command is the shell-reported line, without the prompt"
+        );
     }
 
     #[test]

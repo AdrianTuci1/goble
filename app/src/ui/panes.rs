@@ -24,10 +24,10 @@ use super::settings;
 use super::shell::TOPBAR_HEIGHT;
 use super::terminal;
 use super::worker;
-use super::pane::{default_floating_rect, master_stack_regions};
+use super::pane::{default_floating_rect, drop_ghost_rect, master_stack_regions};
 use super::{
-    FloatStartHandler, FloatingDrag, FloatingDragMode, LayoutKind, Pane, PaneKind, PaneRect, Space,
-    SplitDir, UiActions, UiSnapshot,
+    FloatStartHandler, FloatingDrag, FloatingDragMode, LayoutKind, Pane, PaneDropTarget, PaneKind,
+    PaneRect, Space, SplitDir, UiActions, UiSnapshot,
 };
 
 /// The corner mark the focused pane carries, and the room its own topbar leaves
@@ -43,7 +43,7 @@ pub(crate) const FOCUS_MARKER_SIZE: f32 = 16.0;
 /// could arise from a corrupt persisted pane layout): the caller falls back to
 /// an empty chat pane rather than panicking on user-controlled state.
 pub fn build_active_space(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    match state.spaces.get(state.active_space) {
+    let content = match state.spaces.get(state.active_space) {
         Some(space) => {
             // One pane at a time is drawn over the whole panes space: the leaf
             // the header's expand control names, instead of the tree. The tree
@@ -52,10 +52,13 @@ pub fn build_active_space(app: &AppContext, state: &UiSnapshot, actions: &UiActi
             // closed, or it belongs to another space) falls through to the tree.
             if let Some(id) = state.maximized_pane {
                 if let Some(kind) = leaf_kind_of(&space.root, id) {
-                    return build_leaf(app, state, actions, id, kind);
+                    build_leaf(app, state, actions, id, kind)
+                } else {
+                    build_space(app, state, actions, space)
                 }
+            } else {
+                build_space(app, state, actions, space)
             }
-            build_space(app, state, actions, space)
         }
         None => {
             let id = 0u64;
@@ -71,7 +74,20 @@ pub fn build_active_space(app: &AppContext, state: &UiSnapshot, actions: &UiActi
                 .with_border(app.theme.color(ColorToken::Border).into())
                 .finish()
         }
-    }
+    };
+    // The drop ghost is drawn with the pane area but after its panes, so it
+    // covers the pane the pointer is over and stays under the bar's floating
+    // drag card (the bar paints above the body).
+    let target = state
+        .pane_drag
+        .as_ref()
+        .filter(|drag| drag.moved())
+        .and_then(|drag| drag.drop_target);
+    Box::new(PaneDropGhost::new(
+        content,
+        target,
+        state.pane_bounds.clone(),
+    ))
 }
 
 /// The kind of the leaf pane `target` holds in this subtree, or `None` when the
@@ -222,6 +238,10 @@ struct PaneBody {
     /// pane's header moves the pane instead, so the gesture is owned by the
     /// region layer above it.
     lift: bool,
+    /// Where this pane was drawn, shared with app state so a lifted pane's
+    /// drop target can be resolved against it (see
+    /// [`UiSnapshot::pane_bounds`]).
+    bounds: Rc<RefCell<std::collections::HashMap<u64, RectF>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -233,6 +253,7 @@ impl PaneBody {
         on_activate: Rc<RefCell<dyn FnMut(u64)>>,
         on_lift: Rc<RefCell<dyn FnMut(u64, Vector2F)>>,
         lift: bool,
+        bounds: Rc<RefCell<std::collections::HashMap<u64, RectF>>>,
     ) -> Self {
         Self {
             pane_id,
@@ -240,6 +261,7 @@ impl PaneBody {
             on_activate,
             on_lift,
             lift,
+            bounds,
             size: None,
             origin: None,
         }
@@ -267,6 +289,11 @@ impl Element for PaneBody {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         self.content.paint(origin, ctx, app);
+        // Recorded at paint time, so the strip resolves a drop against the
+        // rectangles the user can actually see, exactly as the tab strip does.
+        if let Some(bounds) = self.bounds() {
+            self.bounds.borrow_mut().insert(self.pane_id, bounds);
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -309,6 +336,94 @@ impl Element for PaneBody {
             }
         }
         handled || activated
+    }
+}
+
+/// The pane area with the drop ghost drawn over it: while a pane is lifted over
+/// another pane, the half the lifted pane would fill is filled with a
+/// translucent accent and bounded by an accent line, so the drop reads as a
+/// place rather than as a release the user has to guess at.
+///
+/// It wraps the pane tree instead of living in the tree, because the ghost is
+/// not a pane: it is one flat overlay whose rectangle comes from the bounds the
+/// panes recorded while painting (see [`PaneBody`]). The bar's floating drag
+/// card is drawn after the whole body, so it stays above this ghost.
+struct PaneDropGhost {
+    inner: Box<dyn Element>,
+    target: Option<PaneDropTarget>,
+    bounds: Rc<RefCell<std::collections::HashMap<u64, RectF>>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+/// How opaque the drop ghost's fill is: enough to read against a pane's surface,
+/// light enough that the pane under it stays legible.
+const DROP_GHOST_ALPHA: u8 = 48;
+
+impl PaneDropGhost {
+    fn new(
+        inner: Box<dyn Element>,
+        target: Option<PaneDropTarget>,
+        bounds: Rc<RefCell<std::collections::HashMap<u64, RectF>>>,
+    ) -> Self {
+        Self {
+            inner,
+            target,
+            bounds,
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for PaneDropGhost {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.inner.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.inner.paint(origin, ctx, app);
+        let Some(target) = self.target else {
+            return;
+        };
+        let Some(pane) = self.bounds.borrow().get(&target.pane_id).copied() else {
+            return;
+        };
+        let ghost = drop_ghost_rect(pane, target.side);
+        let accent = app.theme.color(ColorToken::Accent);
+        let Some(renderer) = ctx.renderer.as_mut() else {
+            return;
+        };
+        renderer.fill_rect(
+            ghost,
+            goble_ui::ColorU::new(accent.r, accent.g, accent.b, DROP_GHOST_ALPHA),
+        );
+        renderer.stroke_rect(ghost, accent, 2.0, 0.0);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.inner.dispatch_event(event, ctx, app)
     }
 }
 
@@ -556,7 +671,14 @@ fn build_leaf_with_lift(
     // still get the event forwarded to them.
     let on_activate = actions.on_pane_activate.clone();
     let on_lift = actions.on_pane_lift.clone();
-    let content = Box::new(PaneBody::new(id, content, on_activate, on_lift, lift));
+    let content = Box::new(PaneBody::new(
+        id,
+        content,
+        on_activate,
+        on_lift,
+        lift,
+        state.pane_bounds.clone(),
+    ));
     // Every surface draws the one topbar a pane has, so nothing is stacked
     // above the content here: the agent header is the pane's topbar, and the
     // terminal pane draws it for its shell view too (see `build_terminal`).

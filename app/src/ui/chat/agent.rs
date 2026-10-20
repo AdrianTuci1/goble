@@ -672,62 +672,67 @@ mod link_action_tests {
         }))
     }
 
-    /// Build the pane's transcript, lay it out, and click the run `label`.
+    /// Build the pane's transcript, lay it out, and click each run `label` in
+    /// turn, repainting between clicks so a row revealed by an earlier click is
+    /// a target of the next one.
     fn click_message(
         message: ChatMessage,
         on_open_url: Rc<RefCell<dyn FnMut(String)>>,
         label: &str,
     ) {
         let ignored: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(|_| {}));
-        click_transcript(message, Default::default(), on_open_url, ignored, label)
+        click_transcript(message, Default::default(), on_open_url, ignored, &[label])
     }
 
-    /// The same click through a transcript that holds `sub_agents` for the pane
+    /// The same clicks through a transcript that holds `sub_agents` for the pane
     /// and routes a sub-agent row's action to `on_open_sub_agent`.
+    #[allow(clippy::too_many_arguments)]
     fn click_transcript(
         message: ChatMessage,
         sub_agents: std::collections::HashMap<String, goble_ui::SubAgentRow>,
         on_open_url: Rc<RefCell<dyn FnMut(String)>>,
         on_open_sub_agent: Rc<RefCell<dyn FnMut(String)>>,
-        label: &str,
+        labels: &[&str],
     ) {
         let app = AppContext::default();
         let mut view = ChatView::new()
             .with_messages(vec![message])
             .with_sub_agents(sub_agents)
             .with_on_action(chat_action_relay(on_open_url, on_open_sub_agent));
-        view.layout(
-            SizeConstraint::loose(vec2f(600.0, 400.0)),
-            &mut LayoutContext,
-            &app,
-        );
-        let mut paint_ctx = PaintContext::new(Renderer::new());
-        view.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
-        let commands = paint_ctx
-            .renderer
-            .take()
-            .map(|r| r.commands().to_vec())
-            .unwrap_or_default();
-        let origin = commands
-            .iter()
-            .find_map(|c| match c {
-                RenderCommand::DrawText { origin, text, .. } if text == label => Some(*origin),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the transcript must draw the link run {label:?}"));
-        let position = origin + vec2f(2.0, 4.0);
-        let mut ctx = EventContext;
-        for event in [
-            DispatchedEvent::MouseDown {
-                position,
-                button: 0,
-            },
-            DispatchedEvent::MouseUp {
-                position,
-                button: 0,
-            },
-        ] {
-            view.dispatch_event(&event, &mut ctx, &app);
+        for label in labels {
+            view.layout(
+                SizeConstraint::loose(vec2f(600.0, 400.0)),
+                &mut LayoutContext,
+                &app,
+            );
+            let mut paint_ctx = PaintContext::new(Renderer::new());
+            view.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+            let commands = paint_ctx
+                .renderer
+                .take()
+                .map(|r| r.commands().to_vec())
+                .unwrap_or_default();
+            let origin = commands
+                .iter()
+                .find_map(|c| match c {
+                    RenderCommand::DrawText { origin, text, .. } if text == *label => Some(*origin),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the transcript must draw the run {label:?}"));
+            let position = origin + vec2f(2.0, 4.0);
+            let mut ctx = EventContext;
+            for event in [
+                DispatchedEvent::MouseDown {
+                    position,
+                    button: 0,
+                },
+                DispatchedEvent::MouseUp {
+                    position,
+                    button: 0,
+                },
+            ] {
+                view.dispatch_event(&event, &mut ctx, &app);
+            }
         }
     }
 
@@ -821,7 +826,7 @@ mod link_action_tests {
             HashMap::from([("call_spawn".to_string(), record)]),
             ignored,
             opener,
-            "open child",
+            &["Running 1 subagent", "open child"],
         );
         assert_eq!(
             *opened.borrow(),
@@ -956,11 +961,23 @@ mod agent_pill_tests {
                     },
                 },
             );
+            // The groupable calls start folded into their runs; opening each
+            // run is what draws the member rows this lock measures. The fold
+            // map is the same app-owned one a header click writes.
+            s.tool_fold.borrow_mut().insert(
+                format!("verb-group:{}", goble_ui::tool_fold_key(&read, 0)),
+                goble_ui::ToolDisplayMode::Expanded,
+            );
+            s.tool_fold.borrow_mut().insert(
+                format!("verb-group:{}", goble_ui::tool_fold_key(&search, 2)),
+                goble_ui::ToolDisplayMode::Expanded,
+            );
             s.pane_runtime.insert(1, runtime);
         }
 
         let mut root: Box<dyn Element> = Box::new(view);
-        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        // Taller than the window so every row this lock measures is on screen.
+        let commands = render_element(&mut root, vec2f(1024.0, 1400.0), &app);
 
         // The rows the transcript drew, as the runs they own. A pill is a
         // rounded box (or a border) drawn over the row its run belongs to.
@@ -1034,6 +1051,7 @@ mod conversation_command_tests {
             pwd: Some("/tmp".to_string()),
             git_branch: None,
             duration: None,
+            prompt: None,
             card: None,
         }
     }

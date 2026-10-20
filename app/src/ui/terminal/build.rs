@@ -684,18 +684,26 @@ impl TerminalView {
             .flatten()
             .filter(|(row, _)| *row < screen_rows);
 
-        let body: Box<dyn Element> = if !show_grid && listed > 0 {
+        let body: Box<dyn Element> = if !show_grid && (listed > 0 || screen.bootstrapped) {
             // No grid means no cell under the pointer: a section is not a
             // terminal cell, so the program hears no pointer reports from here.
             *self.geometry.borrow_mut() = None;
-            Scrollable::new(list.finish(), Axis::Vertical)
-                .with_state(Rc::clone(&self.scroll))
-                // The shell's history grows upwards from the rich input below
-                // it (warp-new), so a history shorter than the pane ends on the
-                // input instead of floating at the top. A full-screen program
-                // painted its own layout; its rows stay where it put them.
-                .with_bottom_anchor(!screen.alt_screen)
-                .finish()
+            if listed == 0 {
+                // A bootstrapped shell with no command yet has nothing to draw
+                // above the input. The live screen is not that surface: its
+                // prompt row belongs in each command block's header, so it is
+                // never painted as the pane's body.
+                Empty::new().finish()
+            } else {
+                Scrollable::new(list.finish(), Axis::Vertical)
+                    .with_state(Rc::clone(&self.scroll))
+                    // The shell's history grows upwards from the rich input below
+                    // it (warp-new), so a history shorter than the pane ends on the
+                    // input instead of floating at the top. A full-screen program
+                    // painted its own layout; its rows stay where it put them.
+                    .with_bottom_anchor(!screen.alt_screen)
+                    .finish()
+            }
         } else if show_grid || screen.has_content {
             // The grid is the only surface that can paint an image, so an
             // image-only viewport takes it even when every cell is blank.

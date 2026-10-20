@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, EdgeInsets, Element,
+    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, EdgeInsets, Element, Empty,
     EventContext, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize,
     PaintContext, Point, SizeConstraint, Text, TopbarButton,
 };
@@ -25,6 +25,11 @@ const DOTS_SIZE: f32 = 16.0;
 /// is measured with no width to wrap against (it is one line, cut at the card's
 /// edge), so the clip is what stops the title short of the dots.
 const DOTS_CLEARANCE: f32 = 6.0;
+
+/// The status square the card leads with. It is a marker, not a badge: half
+/// the linear space of the environment avatar it replaces, so the subject's
+/// text stays the card's widest element.
+const STATUS_SIZE: f32 = 12.0;
 
 /// The widest the card's tray grows before its rows' own width is what it takes.
 const TRAY_MAX_WIDTH: f32 = 168.0;
@@ -51,9 +56,26 @@ pub struct AgentCardUi {
 pub enum ConversationStatus {
     #[default]
     Default,
+    /// A turn is running, or the agent is waiting on the user (an approval or
+    /// a question).
+    Waiting,
     Success,
     Error,
     Stopped,
+}
+
+impl ConversationStatus {
+    /// The colour the card's status square carries: gray for the quiet states,
+    /// yellow while the agent is working or waiting, red for a failed turn and
+    /// green for one that finished.
+    pub fn color_token(self) -> ColorToken {
+        match self {
+            Self::Waiting => ColorToken::Warning,
+            Self::Success => ColorToken::Success,
+            Self::Error => ColorToken::Error,
+            Self::Stopped | Self::Default => ColorToken::Muted,
+        }
+    }
 }
 
 pub struct ConversationListItem {
@@ -69,9 +91,9 @@ pub struct ConversationListItem {
     /// Whether the conversation is starred, which the card marks and the
     /// sidebar's Starred section lists.
     starred: bool,
-    /// The work environment this conversation runs in (`"local"` / `"remote"`),
-    /// used to pick the environment SVG shown in the card.
-    workspace_routing: String,
+    /// What the card's status square reports. [`ConversationStatus::Default`]
+    /// and [`ConversationStatus::Stopped`] draw the neutral gray square.
+    status: ConversationStatus,
     ui: Rc<RefCell<AgentCardUi>>,
     on_select: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_delete: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -82,8 +104,8 @@ pub struct ConversationListItem {
     /// dots sit 5 pt inside the sidebar's width whatever the card's own inset
     /// from that edge is.
     dots_inset: f32,
-    /// The row: the avatar and the conversation's own text, painted clipped
-    /// clear of the control.
+    /// The row: the status square and the conversation's own text, painted
+    /// clipped clear of the control.
     row: Option<Box<dyn Element>>,
     /// The card's tray: star/unstar and delete, in a card of its own anchored to
     /// the 3-dot control. Held as a shared handle because the frame's last paint
@@ -125,7 +147,7 @@ impl ConversationListItem {
             directory: None,
             selected,
             starred: false,
-            workspace_routing: "local".to_string(),
+            status: ConversationStatus::Default,
             ui,
             on_select: None,
             on_delete: None,
@@ -166,10 +188,17 @@ impl ConversationListItem {
         self
     }
 
-    /// Set the conversation's work environment, which picks the SVG shown in
-    /// the card (local vs remote avatar).
-    pub fn with_workspace_routing(mut self, routing: impl Into<String>) -> Self {
-        self.workspace_routing = routing.into();
+    /// Set what the card's status square reports: gray, yellow, red or green,
+    /// one per [`ConversationStatus`].
+    pub fn with_status(mut self, status: ConversationStatus) -> Self {
+        self.status = status;
+        self
+    }
+
+    /// Set the conversation's work environment. The card no longer draws it —
+    /// the environment is chosen in the topbar and only filters the list — so
+    /// the value is accepted for callers that still carry it and not stored.
+    pub fn with_workspace_routing(self, _routing: impl Into<String>) -> Self {
         self
     }
 
@@ -297,29 +326,24 @@ impl ConversationListItem {
         }
         let text_column = text_column.with_child(last_row).finish();
 
-        // Environment SVG badge: the conversation's work medium (Local or
-        // Remote) is shown directly on the card, mirroring the topbar medium
-        // selector so it is obvious where the conversation runs.
-        let icon_name = if self.workspace_routing == "remote" {
-            "conversation-remote"
-        } else {
-            "conversation-local"
-        };
-        let avatar = Container::new(
-            Icon::new(icon_name)
-                .with_size(16.0)
-                .with_theme_color(ColorToken::Text, app)
+        // Status square: the conversation's last turn reads at a glance —
+        // gray when there is nothing to report, yellow while the agent is
+        // working or waiting on the user, red when the last turn failed and
+        // green when it finished. Square and unbacked, like the rest of the
+        // sidebar's marks; the environment avatar it replaces is gone.
+        let status = Container::new(
+            Empty::new()
+                .with_size(vec2f(STATUS_SIZE, STATUS_SIZE))
                 .finish(),
         )
-        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-        .with_padding(crate::style::EdgeInsets::new(5.0, 5.0, 5.0, 5.0))
+        .with_background(Fill::Solid(app.theme.color(self.status.color_token())))
         .finish();
 
         let row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(spacing)
-            .with_child(avatar)
+            .with_child(status)
             .with_child(Expanded::new(text_column).finish());
 
         // Square: the sidebar is a flat surface, so a card is a full-width band
@@ -1065,5 +1089,59 @@ mod tests {
 
         assert_eq!(*toggled.borrow(), 1, "the star row ran the toggle");
         assert!(!ui.borrow().menu_open, "starring closes the menu");
+    }
+
+    /// The status square the card paints: its box and its fill.
+    fn status_square(commands: &[RenderCommand]) -> Option<(RectF, crate::color::ColorU)> {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if rect.width() == STATUS_SIZE && rect.height() == STATUS_SIZE =>
+            {
+                Some((*rect, *color))
+            }
+            _ => None,
+        })
+    }
+
+    /// Every conversation's card leads with a 12x12 filled square, and its
+    /// colour is the status: gray when idle or stopped, yellow while the agent
+    /// works or waits, red for a failed turn and green for a finished one. The
+    /// environment icon the card used to draw is gone.
+    #[test]
+    fn the_card_draws_a_status_square_in_its_status_colour() {
+        let app = AppContext::default();
+
+        for (status, token) in [
+            (ConversationStatus::Default, ColorToken::Muted),
+            (ConversationStatus::Stopped, ColorToken::Muted),
+            (ConversationStatus::Waiting, ColorToken::Warning),
+            (ConversationStatus::Error, ColorToken::Error),
+            (ConversationStatus::Success, ColorToken::Success),
+        ] {
+            let item = ConversationListItem::new(
+                "c1",
+                "Ada",
+                "I finished the task.",
+                "40 min ago",
+                Rc::new(RefCell::new(AgentCardUi::default())),
+                false,
+            )
+            .with_status(status);
+            let mut element: Box<dyn Element> = Box::new(item);
+            let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
+
+            let (square, color) =
+                status_square(&commands).unwrap_or_else(|| panic!("{status:?}: no square"));
+            assert_eq!((square.width(), square.height()), (STATUS_SIZE, STATUS_SIZE));
+            assert_eq!(color, app.theme.color(token), "{status:?} colour");
+            assert!(square.min_x() < 1.0, "{status:?}: the square leads the card");
+            assert!(
+                !commands.iter().any(|command| matches!(
+                    command,
+                    RenderCommand::DrawIcon { name, .. } if name.starts_with("conversation-")
+                )),
+                "{status:?}: the environment icon is not drawn any more"
+            );
+        }
     }
 }

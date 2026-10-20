@@ -48,8 +48,8 @@ mod types;
 pub use actions::{AiActions, FloatStartHandler, MediaActions, ProjectsActions, UiActions};
 pub use build::{build_ui, BuildContext};
 pub use pane::{
-    FloatingDrag, FloatingDragMode, FloatingPane, LayoutKind, NavDir, Pane, PaneKind, PaneRect,
-    Space, SplitDir,
+    DropSide, FloatingDrag, FloatingDragMode, FloatingPane, LayoutKind, NavDir, Pane, PaneDropTarget,
+    PaneKind, PaneRect, Space, SplitDir,
 };
 pub use tab_menu::{TabMenuAction, TabMenuTab};
 pub use snapshot::{

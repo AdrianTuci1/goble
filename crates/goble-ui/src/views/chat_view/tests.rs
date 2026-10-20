@@ -521,8 +521,8 @@ fn e_cycles_the_transcript_tool_folds_and_survives_a_rebuild() {
     let mut view = build(&fold);
     let collapsed = render_element(&mut view, vec2f(600.0, 800.0), &app);
     assert!(
-        has_text(&collapsed, "src/lib.rs"),
-        "the folded read's header carries its path"
+        has_text(&collapsed, "Read 1 file"),
+        "the folded read stacks into its run's aggregated header"
     );
     assert!(
         !has_text(&collapsed, "line 1"),
@@ -743,7 +743,7 @@ fn the_transcript_draws_the_tool_rows_the_lock_covers() {
             _ => None,
         })
         .collect();
-    for expected in ["Read ", "src/lib.rs", "Edit "] {
+    for expected in ["Read 1 file", "Edit "] {
         assert!(
             texts.iter().any(|text| text == expected),
             "the transcript draws {expected:?}, got {texts:?}"

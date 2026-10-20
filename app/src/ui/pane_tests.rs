@@ -1,5 +1,9 @@
 use super::*;
-use super::pane::default_floating_rect;
+use super::pane::{
+    default_floating_rect, drop_ghost_rect, drop_side_in, pane_drop_target, DROP_SIDE_THRESHOLD,
+};
+
+use std::collections::HashMap;
 
 fn chat_leaf(id: u64) -> Pane {
     Pane::Leaf { id, kind: PaneKind::Chat }
@@ -296,4 +300,170 @@ fn the_layout_cycle_is_bsp_master_stack_floating() {
     assert_eq!(LayoutKind::Bsp.cycle(), LayoutKind::MasterStack);
     assert_eq!(LayoutKind::MasterStack.cycle(), LayoutKind::Floating);
     assert_eq!(LayoutKind::Floating.cycle(), LayoutKind::Bsp);
+}
+
+/// The drop side of a pane is read from the pointer relative to the pane's own
+/// center: each edge names itself, and the middle names none, so a release
+/// there cancels instead of splitting on a gesture the user did not finish.
+#[test]
+fn the_drop_side_follows_the_pointer_around_the_pane() {
+    let pane = goble_ui::geometry::rectf(100.0, 100.0, 400.0, 200.0);
+    let centre = goble_ui::geometry::vec2f(pane.center().x, pane.center().y);
+    assert_eq!(
+        drop_side_in(pane, goble_ui::geometry::vec2f(120.0, centre.y)),
+        Some(DropSide::Left)
+    );
+    assert_eq!(
+        drop_side_in(pane, goble_ui::geometry::vec2f(480.0, centre.y)),
+        Some(DropSide::Right)
+    );
+    assert_eq!(
+        drop_side_in(pane, goble_ui::geometry::vec2f(centre.x, 120.0)),
+        Some(DropSide::Top)
+    );
+    assert_eq!(
+        drop_side_in(pane, goble_ui::geometry::vec2f(centre.x, 280.0)),
+        Some(DropSide::Bottom)
+    );
+    assert_eq!(
+        drop_side_in(pane, centre),
+        None,
+        "the middle of the pane names no side"
+    );
+    // Just inside the threshold is still the middle: the split must not be so
+    // sensitive that a pressed header splits on the way past it.
+    let almost = goble_ui::geometry::vec2f(
+        centre.x + pane.width() * (DROP_SIDE_THRESHOLD - 0.01),
+        centre.y,
+    );
+    assert_eq!(drop_side_in(pane, almost), None);
+}
+
+/// The pane under the pointer is the target, and the pane being dragged is not
+/// a target of its own move.
+#[test]
+fn the_drop_target_is_the_pane_under_the_pointer_but_never_the_dragged_one() {
+    let mut bounds = HashMap::new();
+    bounds.insert(1u64, goble_ui::geometry::rectf(0.0, 0.0, 400.0, 300.0));
+    bounds.insert(2u64, goble_ui::geometry::rectf(400.0, 0.0, 400.0, 300.0));
+
+    let target = pane_drop_target(&bounds, goble_ui::geometry::vec2f(760.0, 150.0), 1)
+        .expect("the pointer is over pane 2");
+    assert_eq!(target.pane_id, 2);
+    assert_eq!(target.side, DropSide::Right);
+
+    assert_eq!(
+        pane_drop_target(&bounds, goble_ui::geometry::vec2f(20.0, 150.0), 1),
+        None,
+        "a pane is not a target of its own move"
+    );
+    assert_eq!(
+        pane_drop_target(&bounds, goble_ui::geometry::vec2f(200.0, 150.0), 1),
+        None,
+        "the other pane's centre names no side"
+    );
+}
+
+/// The ghost covers the half of the target pane the moved pane would fill.
+#[test]
+fn the_drop_ghost_covers_the_half_the_pane_would_fill() {
+    let pane = goble_ui::geometry::rectf(100.0, 50.0, 400.0, 200.0);
+    let left = drop_ghost_rect(pane, DropSide::Left);
+    assert_eq!((left.min_x(), left.width()), (100.0, 200.0));
+    assert_eq!((left.min_y(), left.height()), (50.0, 200.0));
+    let right = drop_ghost_rect(pane, DropSide::Right);
+    assert_eq!((right.min_x(), right.width()), (300.0, 200.0));
+    let top = drop_ghost_rect(pane, DropSide::Top);
+    assert_eq!((top.min_y(), top.height()), (50.0, 100.0));
+    let bottom = drop_ghost_rect(pane, DropSide::Bottom);
+    assert_eq!((bottom.min_y(), bottom.height()), (150.0, 100.0));
+}
+
+/// Moving a pane leaves its place and arrives beside the target, carrying its
+/// own id and kind: the move reuses the leaf, it never re-creates it.
+#[test]
+fn moving_a_pane_reinserts_the_same_leaf_beside_the_target() {
+    // [1 | 2]: the second pane is a terminal, and it moves to the left of 1.
+    let mut space = Space::new("S", chat_leaf(1));
+    let mut next = 2;
+    let terminal = space.split(1, SplitDir::Horizontal, &mut next).unwrap();
+    space.set_leaf_kind(terminal, PaneKind::Terminal);
+
+    assert!(space.move_pane(terminal, 1, DropSide::Left, &mut next));
+    let Pane::Split {
+        dir,
+        first,
+        second,
+        ..
+    } = &space.root
+    else {
+        panic!("the root is the split the move made");
+    };
+    assert_eq!(*dir, SplitDir::Horizontal);
+    assert_eq!(first.first_leaf_id(), terminal, "the moved pane leads");
+    assert_eq!(second.first_leaf_id(), 1, "the target follows it");
+    assert_eq!(
+        space.root.leaf_kind(terminal),
+        Some(&PaneKind::Terminal),
+        "the moved pane is the same terminal leaf"
+    );
+    assert_eq!(space.root.leaf_count(), 2, "no pane was lost or duplicated");
+}
+
+/// A move that would only rebuild the split its sibling already occupies is a
+/// no-op: the ratio the user set survives it.
+#[test]
+fn moving_a_pane_onto_its_own_sibling_is_a_no_op() {
+    let mut space = Space::new("S", chat_leaf(1));
+    let mut next = 2;
+    let second = space.split(1, SplitDir::Horizontal, &mut next).unwrap();
+    let split_id = space.root.id();
+    assert!(space.set_ratio(split_id, 0.3));
+
+    assert!(!space.move_pane(second, 1, DropSide::Right, &mut next));
+    assert_eq!(space.root.id(), split_id, "the split is the one it was");
+    match &space.root {
+        Pane::Split { ratio, .. } => assert!((*ratio - 0.3).abs() < 1e-6),
+        _ => panic!("expected the split"),
+    }
+    // And the mirror case: the left pane cannot be moved to the left of its
+    // own sibling.
+    assert!(!space.move_pane(1, second, DropSide::Left, &mut next));
+}
+
+/// A move onto a pane the space does not hold, or onto itself, changes nothing.
+#[test]
+fn an_unknown_move_target_changes_nothing() {
+    let mut space = Space::new("S", chat_leaf(1));
+    let mut next = 2;
+    space.split(1, SplitDir::Horizontal, &mut next).unwrap();
+
+    assert!(!space.move_pane(1, 1, DropSide::Left, &mut next));
+    assert!(!space.move_pane(99, 1, DropSide::Left, &mut next));
+    assert!(!space.move_pane(1, 99, DropSide::Left, &mut next));
+    assert_eq!(space.root.leaf_count(), 2);
+    assert_eq!(space.root.max_id(), 3);
+}
+
+/// Dropping above or below the target makes a vertical split, with the moved
+/// pane on the side the pointer named.
+#[test]
+fn a_vertical_drop_makes_a_vertical_split() {
+    let mut space = Space::new("S", chat_leaf(1));
+    let mut next = 2;
+    let second = space.split(1, SplitDir::Horizontal, &mut next).unwrap();
+
+    assert!(space.move_pane(1, second, DropSide::Bottom, &mut next));
+    let Pane::Split {
+        dir,
+        first,
+        second: below,
+        ..
+    } = &space.root
+    else {
+        panic!("the move made a split");
+    };
+    assert_eq!(*dir, SplitDir::Vertical);
+    assert_eq!(first.first_leaf_id(), second, "the target stays on top");
+    assert_eq!(below.first_leaf_id(), 1, "the moved pane lands below it");
 }

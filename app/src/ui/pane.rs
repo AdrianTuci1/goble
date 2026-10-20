@@ -199,6 +199,93 @@ pub enum SplitDir {
     Vertical,
 }
 
+/// The side of a pane a lifted pane would be inserted on: the edge of the pane
+/// under the pointer. Read from where the pointer is relative to that pane's
+/// center (warp-new's `calculate_pane_move_direction`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl DropSide {
+    /// The split a pane inserted on this side makes.
+    pub fn split_dir(self) -> SplitDir {
+        match self {
+            DropSide::Left | DropSide::Right => SplitDir::Horizontal,
+            DropSide::Top | DropSide::Bottom => SplitDir::Vertical,
+        }
+    }
+
+    /// Whether the inserted pane becomes the split's first (left/top) child.
+    pub fn leads(self) -> bool {
+        matches!(self, DropSide::Left | DropSide::Top)
+    }
+}
+
+/// The pane a lifted pane would land beside, and on which side of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaneDropTarget {
+    pub pane_id: u64,
+    pub side: DropSide,
+}
+
+/// How far the pointer must leave a pane's center, as a share of the pane's own
+/// width/height, before an edge is named: warp-new's `DRAG_SPLIT_THRESHOLD`.
+/// Closer than this to the center the drop names no side at all, so a release
+/// there cancels instead of splitting on a gesture the user did not finish.
+pub const DROP_SIDE_THRESHOLD: f32 = 0.18;
+
+/// The side of `pane` that `position` is on, or `None` while the pointer is
+/// within [`DROP_SIDE_THRESHOLD`] of the pane's center.
+pub fn drop_side_in(pane: RectF, position: Vector2F) -> Option<DropSide> {
+    let center = pane.center();
+    let dx = (position.x - center.x) / pane.width().max(1.0);
+    let dy = (position.y - center.y) / pane.height().max(1.0);
+    if dx.abs().max(dy.abs()) < DROP_SIDE_THRESHOLD {
+        return None;
+    }
+    if dy.abs() > dx.abs() {
+        Some(if dy > 0.0 { DropSide::Bottom } else { DropSide::Top })
+    } else {
+        Some(if dx > 0.0 { DropSide::Right } else { DropSide::Left })
+    }
+}
+
+/// The pane under `position` and the side the pointer names on it, ignoring the
+/// pane being dragged (it is not a target of its own move). `None` when the
+/// pointer is over no other pane, or too close to one's center.
+pub fn pane_drop_target(
+    bounds: &std::collections::HashMap<u64, RectF>,
+    position: Vector2F,
+    dragged: u64,
+) -> Option<PaneDropTarget> {
+    bounds.iter().find_map(|(id, rect)| {
+        if *id == dragged || !goble_ui::elements::interactive::contains(*rect, position) {
+            return None;
+        }
+        drop_side_in(*rect, position).map(|side| PaneDropTarget {
+            pane_id: *id,
+            side,
+        })
+    })
+}
+
+/// The rectangle the drop ghost covers inside `pane` for `side`: the half of
+/// the pane the moved pane would fill.
+pub fn drop_ghost_rect(pane: RectF, side: DropSide) -> RectF {
+    let half_w = pane.width() / 2.0;
+    let half_h = pane.height() / 2.0;
+    match side {
+        DropSide::Left => rectf(pane.min_x(), pane.min_y(), half_w, pane.height()),
+        DropSide::Right => rectf(pane.min_x() + half_w, pane.min_y(), half_w, pane.height()),
+        DropSide::Top => rectf(pane.min_x(), pane.min_y(), pane.width(), half_h),
+        DropSide::Bottom => rectf(pane.min_x(), pane.min_y() + half_h, pane.width(), half_h),
+    }
+}
+
 /// A compass direction used to move focus between panes (Ctrl/Cmd+Arrow).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavDir {
@@ -300,6 +387,71 @@ impl Pane {
 
     fn is_leaf(&self, target: u64) -> bool {
         matches!(self, Pane::Leaf { id, .. } if *id == target)
+    }
+
+    /// The leaf that already sits immediately on `target`'s `side`, if it is a
+    /// leaf. What makes a move a no-op: dropping a pane back onto the side of
+    /// its own sibling would only rebuild the same split.
+    fn sibling_on_side(&self, target: u64, side: DropSide) -> Option<u64> {
+        let Pane::Split {
+            dir, first, second, ..
+        } = self
+        else {
+            return None;
+        };
+        if *dir == side.split_dir() {
+            // `target` must be the child on the far side of the split: the near
+            // child is then the pane already sitting where the move would land.
+            let sibling = match side {
+                DropSide::Left | DropSide::Top => second.is_leaf(target).then_some(first.as_ref()),
+                DropSide::Right | DropSide::Bottom => {
+                    first.is_leaf(target).then_some(second.as_ref())
+                }
+            };
+            if let Some(sibling) = sibling {
+                let id = sibling.id();
+                return sibling.is_leaf(id).then_some(id);
+            }
+        }
+        first
+            .sibling_on_side(target, side)
+            .or_else(|| second.sibling_on_side(target, side))
+    }
+
+    /// Replace the leaf `target` with a `Split` whose first child is `moved`
+    /// when `moved_first` is set (and `target` otherwise). The target leaf keeps
+    /// its own id and kind; the moved pane arrives as the very same leaf.
+    fn insert_leaf_beside(
+        &mut self,
+        target: u64,
+        dir: SplitDir,
+        moved_first: bool,
+        split_id: u64,
+        moved: Pane,
+    ) -> bool {
+        match self {
+            Pane::Leaf { id, kind } if *id == target => {
+                let target_leaf = Pane::leaf(*id, kind.clone());
+                let (first, second) = if moved_first {
+                    (moved, target_leaf)
+                } else {
+                    (target_leaf, moved)
+                };
+                *self = Pane::Split {
+                    id: split_id,
+                    dir,
+                    ratio: 0.5,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                };
+                true
+            }
+            Pane::Split { first, second, .. } => {
+                first.insert_leaf_beside(target, dir, moved_first, split_id, moved.clone())
+                    || second.insert_leaf_beside(target, dir, moved_first, split_id, moved)
+            }
+            _ => false,
+        }
     }
 
     /// The first leaf of kind [`PaneKind::Settings`] under this pane, in
@@ -761,6 +913,51 @@ impl Space {
             self.recompute_layout();
         }
         next
+    }
+
+    /// Move the leaf `pane_id` beside the leaf `target_id`, on `side`: the pane
+    /// leaves its place in the tree and arrives as a new split of the target,
+    /// carrying its own id and kind, so its session follows it. The split it
+    /// left collapses onto its surviving sibling the way closing it would.
+    ///
+    /// Returns whether the tree changed. A move onto the side its own sibling
+    /// already occupies is a no-op — rebuilding that split would only reset its
+    /// ratio — as is a move onto itself or to a pane this space does not hold.
+    pub fn move_pane(
+        &mut self,
+        pane_id: u64,
+        target_id: u64,
+        side: DropSide,
+        next_id: &mut u64,
+    ) -> bool {
+        if pane_id == target_id {
+            return false;
+        }
+        let Some(kind) = self.root.leaf_kind(pane_id).cloned() else {
+            return false;
+        };
+        if self.root.leaf_kind(target_id).is_none() {
+            return false;
+        }
+        if self.root.sibling_on_side(target_id, side) == Some(pane_id) {
+            return false;
+        }
+        if self.root.remove_leaf(pane_id).is_none() {
+            return false;
+        }
+        let split_id = *next_id;
+        *next_id += 1;
+        let inserted = self.root.insert_leaf_beside(
+            target_id,
+            side.split_dir(),
+            side.leads(),
+            split_id,
+            Pane::leaf(pane_id, kind),
+        );
+        if inserted {
+            self.recompute_layout();
+        }
+        inserted
     }
 
     /// Find the leaf pane spatially adjacent to `from` in the given `dir`,

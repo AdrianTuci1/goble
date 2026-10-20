@@ -54,6 +54,10 @@ impl RootView {
         // sitting at a prompt; fold that into the pane's agent state before the
         // snapshot draws it.
         self.state.borrow_mut().refresh_tui_agent_states();
+        // The sidebar's status squares are live pane state: a turn settling or
+        // a pane stopping changes them without writing to the store, so they
+        // are re-read here, before the snapshot takes them.
+        self.state.borrow_mut().refresh_conversation_statuses();
         // A pane's daemon session is created while it paints, after the layout
         // save that opened it. Fold the live ids into the pane state and write
         // the layout once when one changes, so the next app start can reattach
@@ -322,8 +326,10 @@ impl RootView {
                 active_space: s.active_space,
                 space_hover: s.space_hover,
                 space_press: s.space_press,
+                space_press_at: s.space_press_at,
                 space_drag: s.space_drag,
                 pane_drag: s.pane_drag.clone(),
+                pane_bounds: s.pane_bounds.clone(),
                 floating_drag: s.floating_drag.clone(),
                 ssh_host_entries: s.ssh_host_entries.clone(),
                 ssh_host_picker_open: s.ssh_host_picker_open,

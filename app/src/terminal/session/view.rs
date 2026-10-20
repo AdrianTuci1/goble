@@ -26,6 +26,10 @@ pub struct TerminalViewState {
     /// Whether any cell holds something. A session that has not drawn yet gets
     /// the pane's own hint line instead of a black rectangle.
     pub has_content: bool,
+    /// Whether the shell's integration has bootstrapped. A bootstrapped shell
+    /// reports blocks, so the pane draws those instead of the live screen —
+    /// the screen's prompt row belongs in each block's header, not in its body.
+    pub bootstrapped: bool,
 }
 
 impl TerminalSession {
@@ -78,6 +82,7 @@ impl TerminalSession {
         };
         let rows = state.rows();
         let has_content = rows.iter().any(|row| !row.is_blank());
+        let bootstrapped = state.bootstrapped();
         TerminalViewState {
             rows,
             images: state.images(),
@@ -88,6 +93,7 @@ impl TerminalSession {
             scrollback: state.history_size(),
             title: self.title.clone(),
             has_content,
+            bootstrapped,
         }
     }
 
@@ -215,6 +221,7 @@ impl TerminalViewState {
             scrollback: 0,
             title: None,
             has_content: false,
+            bootstrapped: false,
         }
     }
 }

@@ -5,7 +5,7 @@ use goble_ui::geometry::Vector2F;
 use goble_ui::SettingsPage;
 
 use super::color_picker;
-use super::pane::{FloatingDragMode, NavDir, PaneRect};
+use super::pane::{FloatingDragMode, NavDir, PaneDropTarget, PaneRect};
 use super::tab_menu::TabMenuAction;
 use super::types::{AppTab, SettingsCategory, SidebarView, WorkspaceRouting};
 
@@ -18,8 +18,11 @@ pub type AnswerAskHandler = Rc<RefCell<dyn FnMut(String, Option<(String, String)
 /// Answer a suspended command proposal from a pane.
 pub type CommandDecisionHandler =
     Rc<RefCell<dyn FnMut(u64, String, goble_core::harness::CommandDecision)>>;
-/// Move a lifted pane with the pointer, over the space's tab strip.
-pub type PaneLiftMoveHandler = Rc<RefCell<dyn FnMut(Vector2F, Option<usize>)>>;
+/// Move a lifted pane with the pointer: the position, the tab-strip insertion
+/// point it names (`None` off the strip), and the pane it is over in the pane
+/// area (`None` over no other pane).
+pub type PaneLiftMoveHandler =
+    Rc<RefCell<dyn FnMut(Vector2F, Option<usize>, Option<PaneDropTarget>)>>;
 /// Save the LLM form's five fields.
 pub type SaveLlmHandler = Rc<RefCell<dyn FnMut(String, String, String, String, String)>>;
 /// A callback carrying three strings.
@@ -337,8 +340,9 @@ pub struct UiActions {
     pub on_add_medium_focus_change: Rc<RefCell<dyn FnMut(bool)>>,
     /// Close the add-medium dialog without saving.
     pub on_add_medium_close: Rc<RefCell<dyn FnMut()>>,
-    /// Pointer pressed down on a space tab (begins a potential drag).
-    pub on_space_press: Rc<RefCell<dyn FnMut(usize)>>,
+    /// Pointer pressed down on a space tab (begins a potential drag), with the
+    /// point it landed on.
+    pub on_space_press: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
     /// Pointer moved over the space bar (updates the hovered tab).
     pub on_space_hover: Rc<RefCell<dyn FnMut(Option<usize>)>>,
     /// Drag a space tab to a new position (reorder in the tab list).
@@ -360,12 +364,14 @@ pub struct UiActions {
     /// strip, where a release gives it a tab of its own.
     pub on_pane_lift: Rc<RefCell<dyn FnMut(u64, Vector2F)>>,
     /// Track the pointer while a pane is lifted, with the tab index the drop
-    /// would land at (`None` while the pointer is off the tab strip).
+    /// would land at (`None` while the pointer is off the tab strip) and the
+    /// pane it is over in the pane area (`None` over no other pane).
     pub on_pane_lift_move: PaneLiftMoveHandler,
     /// Release a lifted pane: `Some(index)` gives it a tab of its own at that
-    /// insertion point, `None` — a release anywhere but the strip — cancels the
-    /// drag with no change to the workspace.
-    pub on_pane_drop: Rc<RefCell<dyn FnMut(Option<usize>)>>,
+    /// insertion point; `None` with a pane target moves it beside that pane;
+    /// neither — a release over no target — cancels the drag with no change to
+    /// the workspace.
+    pub on_pane_drop: Rc<RefCell<dyn FnMut(Option<usize>, Option<PaneDropTarget>)>>,
     /// Delete a conversation/agent card from the list.
     pub on_agent_delete: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: return to the previous view (chat).

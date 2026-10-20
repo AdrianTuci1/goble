@@ -2028,9 +2028,10 @@ pub fn make_actions(
             state.add_medium_draft.clear();
             state.add_medium_focused = false;
         })),
-        on_space_press: Rc::new(RefCell::new(move |index: usize| {
+        on_space_press: Rc::new(RefCell::new(move |index: usize, at: Vector2F| {
             let mut state = on_space_press.borrow_mut();
             state.space_press = Some(index);
+            state.space_press_at = Some(at);
             state.space_hover = Some(index);
             // The press, not the release, is what the double click is counted
             // from: the count is warp-new's own rule (`SpacePressRun`), read
@@ -2059,13 +2060,18 @@ pub fn make_actions(
         on_space_reorder: Rc::new(RefCell::new(move |from: usize, to: usize| {
             let mut state = on_space_reorder.borrow_mut();
             let len = state.spaces.len();
-            if from == to || from >= len || to >= len {
+            if from >= len || to >= len {
+                return;
+            }
+            // The tab follows the pointer from `to` on, even while it has not
+            // crossed a neighbour yet: that is what tells the release this was
+            // a drag and not a click. A move that changes nothing still records
+            // it, so a press that travelled never turns into a select.
+            state.space_drag = Some(to);
+            if from == to {
                 return;
             }
             state.reorder_space(from, to);
-            // Track the dragged tab at its new index so the drag continues to
-            // follow the pointer across the per-frame rebuild.
-            state.space_drag = Some(to);
             if let Some(desktop) = &desktop_space_reorder {
                 state.save_panes(desktop);
             }
@@ -2073,6 +2079,7 @@ pub fn make_actions(
         on_space_release: Rc::new(RefCell::new(move || {
             let mut state = on_space_release.borrow_mut();
             state.space_press = None;
+            state.space_press_at = None;
             state.space_drag = None;
             state.space_hover = None;
         })),
@@ -2134,34 +2141,48 @@ pub fn make_actions(
             on_pane_lift.borrow_mut().begin_pane_lift(pane_id, position);
         })),
         on_pane_lift_move: Rc::new(RefCell::new(
-            move |position: Vector2F, drop_index: Option<usize>| {
+            move |position: Vector2F, drop_index: Option<usize>, drop_target| {
                 on_pane_lift_move
                     .borrow_mut()
-                    .drag_pane_to(position, drop_index);
+                    .drag_pane_to(position, drop_index, drop_target);
             },
         )),
-        // Drop the lifted pane on the tab strip: it becomes a tab of its own
-        // there, carrying the pane itself (its id and its kind, so its PTY, its
-        // conversation and its file follow it). The space it left collapses
-        // onto its surviving pane, is consumed when it held nothing else, or —
-        // the last one — resets to a fresh empty chat pane exactly as closing
-        // it would, so the window is never left without a tab.
-        on_pane_drop: Rc::new(RefCell::new(move |drop_index: Option<usize>| {
-            let mut state = on_pane_drop.borrow_mut();
-            let Some(moved) = state.drop_pane(drop_index) else {
-                return;
-            };
-            if let Some(fresh) = moved.reset_pane {
-                ensure_pane_hover(&mut state, fresh);
-                state.bind_pane_new_conversation(fresh, desktop_pane_drop.as_deref());
-            }
-            state.refresh_space_labels();
-            state.sync_active_view();
-            if let Some(desktop) = &desktop_pane_drop {
-                state.refresh_messages(desktop);
-                state.save_panes(desktop);
-            }
-        })),
+        // Drop the lifted pane on the tab strip, where it becomes a tab of its
+        // own carrying the pane itself (its id and its kind, so its PTY, its
+        // conversation and its file follow it), or beside the pane it was
+        // released over in the active space, where it becomes a new split. A
+        // release over neither cancels. The space it left collapses onto its
+        // surviving pane, is consumed when it held nothing else, or — the last
+        // one — resets to a fresh empty chat pane exactly as closing it would,
+        // so the window is never left without a tab.
+        on_pane_drop: Rc::new(RefCell::new(
+            move |drop_index: Option<usize>, drop_target| {
+                let mut state = on_pane_drop.borrow_mut();
+                match state.release_pane_drag(drop_index, drop_target) {
+                    crate::state::PaneDrop::MovedInSpace => {
+                        state.refresh_space_labels();
+                        state.sync_active_view();
+                        if let Some(desktop) = &desktop_pane_drop {
+                            state.refresh_messages(desktop);
+                            state.save_panes(desktop);
+                        }
+                    }
+                    crate::state::PaneDrop::NewTab(moved) => {
+                        if let Some(fresh) = moved.reset_pane {
+                            ensure_pane_hover(&mut state, fresh);
+                            state.bind_pane_new_conversation(fresh, desktop_pane_drop.as_deref());
+                        }
+                        state.refresh_space_labels();
+                        state.sync_active_view();
+                        if let Some(desktop) = &desktop_pane_drop {
+                            state.refresh_messages(desktop);
+                            state.save_panes(desktop);
+                        }
+                    }
+                    crate::state::PaneDrop::Cancelled => {}
+                }
+            },
+        )),
         on_agent_delete: Rc::new(RefCell::new(move |id: String| {
             let mut state = on_agent_delete.borrow_mut();
             state.conversations.retain(|c| c.id != id);

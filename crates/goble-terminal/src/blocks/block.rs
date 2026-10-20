@@ -155,6 +155,21 @@ impl Block {
         &self.command_text
     }
 
+    /// The prompt line the command was typed at, when the shell drew one on
+    /// the command screen (`honor_ps1`). The view draws it as the block's
+    /// header rather than as a row of the command's body, so an honored PS1 is
+    /// never printed twice.
+    pub fn prompt_text(&self) -> Option<String> {
+        let command = self.command_text.trim_end();
+        if command.is_empty() {
+            return None;
+        }
+        let screen = self.command.text();
+        let line = screen.trim_end();
+        let prompt = line.strip_suffix(command)?.trim_end();
+        (!prompt.is_empty()).then(|| prompt.to_string())
+    }
+
     pub fn exit_code(&self) -> Option<i32> {
         self.exit_code
     }

@@ -9,7 +9,9 @@ use goble_ui::event::{DispatchedEvent, ModifiersState};
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::{ColorToken, TabColor};
 
-use super::topbar::{build_live_indicator, insertion_index, WorkspaceChip, WorkspaceChipParts};
+use super::topbar::{
+    build_live_indicator, insertion_index, reorder_target_index, WorkspaceChip, WorkspaceChipParts,
+};
 
 use super::*;
 use crate::root_view::RootView;
@@ -152,7 +154,8 @@ fn tab_colored(
     on_click: Rc<RefCell<dyn FnMut(usize)>>,
     close: Box<dyn Element>,
 ) -> Box<dyn Element> {
-    let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
+    let noop_press: Rc<RefCell<dyn FnMut(usize, Vector2F)>> =
+        Rc::new(RefCell::new(|_: usize, _: Vector2F| {}));
     let noop_at: Rc<RefCell<dyn FnMut(usize, Vector2F)>> =
         Rc::new(RefCell::new(|_: usize, _: Vector2F| {}));
     Box::new(WorkspaceChip::new(WorkspaceChipParts {
@@ -164,7 +167,7 @@ fn tab_colored(
         active,
         color,
         on_click,
-        on_press: noop,
+        on_press: noop_press,
         on_right_click: noop_at,
         close,
     }))
@@ -848,6 +851,52 @@ fn the_drop_index_counts_the_drawn_tab_centers_left_of_the_pointer() {
         "just left of the strip is still before every tab"
     );
     assert_eq!(insertion_index(&[], 42.0), 0, "no tabs, no other place to go");
+}
+
+/// A tab drag names the place the dragged tab belongs at: how many of the
+/// *other* tabs' centers the pointer has passed. The dragged tab is left out of
+/// the count, so the number is the tab's own new index, and it never decreases
+/// as the pointer moves right — a drag follows the pointer instead of swapping
+/// back and forth around a midpoint.
+#[test]
+fn a_tab_drag_names_the_place_it_has_dragged_the_tab_to() {
+    let tabs = three_drawn_tabs();
+    let from = 0;
+    assert_eq!(reorder_target_index(&tabs, from, 0.0), 0, "left of the strip");
+    assert_eq!(
+        reorder_target_index(&tabs, from, 140.0),
+        0,
+        "not past another tab's center yet"
+    );
+    assert_eq!(
+        reorder_target_index(&tabs, from, 200.0),
+        1,
+        "past the second tab's center"
+    );
+    assert_eq!(
+        reorder_target_index(&tabs, from, 300.0),
+        2,
+        "past the third's, and no further: the dragged tab is not counted"
+    );
+    assert_eq!(reorder_target_index(&tabs, from, 400.0), 2, "right of the strip");
+
+    // Dragging the last tab back to the front counts only the two others.
+    let last = 2;
+    assert_eq!(reorder_target_index(&tabs, last, 0.0), 0);
+    assert_eq!(reorder_target_index(&tabs, last, 140.0), 1, "past the first");
+    assert_eq!(reorder_target_index(&tabs, last, 200.0), 2, "past the second");
+    assert_eq!(reorder_target_index(&tabs, last, 400.0), 2);
+
+    // Monotonic in the pointer: a drag never moves the tab backwards.
+    let mut previous = 0;
+    for x in 0..=400 {
+        let target = reorder_target_index(&tabs, 1, x as f32);
+        assert!(
+            target >= previous,
+            "the target went backwards at x={x}: {target} after {previous}"
+        );
+        previous = target;
+    }
 }
 
 /// Ctrl+Tab, the chord that walks the tab strip forwards.

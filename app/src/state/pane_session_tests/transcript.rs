@@ -282,8 +282,12 @@ use super::*;
 
         let collapsed = render(&state);
         assert!(
-            has_text(&collapsed, "src/lib.rs"),
-            "a read starts folded, showing its path"
+            has_text(&collapsed, "Read 1 file"),
+            "a read starts folded under its run header"
+        );
+        assert!(
+            !has_text(&collapsed, "src/lib.rs"),
+            "the folded run hides the call's own row"
         );
         assert!(
             !has_text(&collapsed, "line 1"),

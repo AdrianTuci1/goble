@@ -436,6 +436,7 @@ fn conversation_card(
         selected,
     )
     .with_workspace_routing(entry.workspace_routing.clone())
+    .with_status(entry.status)
     .with_directory(entry.directory.clone())
     .with_starred(state.starred.iter().any(|id| id == &entry.id))
     .with_dots_inset(dots_inset)

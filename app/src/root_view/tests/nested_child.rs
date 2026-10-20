@@ -174,6 +174,10 @@ use super::*;
                 .collect()
         };
 
+        // The parent's spawn call starts folded into its run; opening the run
+        // draws the row that enters the child.
+        click_run(&mut root, &app, "Running 1 subagent");
+
         // Trip one: the parent's row opens its child.
         click_run(&mut root, &app, "open child");
         assert_eq!(
@@ -190,6 +194,10 @@ use super::*;
                 .any(|t| t.contains("CHILD CONVERSATION MARKER")),
             "the first child's conversation is drawn: {texts:?}"
         );
+        // The nested call is folded into its own run in the child's transcript;
+        // opening that run draws the row.
+        click_run(&mut root, &app, "Running 1 subagent");
+        let texts = pane_texts(&mut root, &app);
         // The nested row lives in the child's own transcript, so the child view
         // has to hand the pane's live records to the renderer for it to be
         // enterable — without the record there is no open target at all.

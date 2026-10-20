@@ -389,11 +389,20 @@ pub struct UiSnapshot {
     pub space_hover: Option<usize>,
     /// Space tab currently pressed (MouseDown), used to detect a drag start.
     pub space_press: Option<usize>,
+    /// Where that press landed, in window coordinates (see
+    /// [`crate::state::UiState::space_press_at`]).
+    pub space_press_at: Option<goble_ui::Vector2F>,
     /// Space tab currently being dragged (reordering in progress).
     pub space_drag: Option<usize>,
     /// The pane lifted out of its grid toward the tab strip, if any: the strip
     /// draws the insertion marker from it and the bar draws its ghost card.
     pub pane_drag: Option<PaneDrag>,
+    /// The bounds each pane leaf was drawn at on the last frame, in window
+    /// coordinates, keyed by pane id: what the drag handlers resolve the pane
+    /// under the pointer against, and where the drop ghost is drawn. Shared with
+    /// app state, so the frame that reads it is one paint behind the pointer's
+    /// own frame.
+    pub pane_bounds: Rc<RefCell<HashMap<u64, goble_ui::geometry::RectF>>>,
     /// The floating pane drag in progress. Shared with app state so a gesture
     /// that began in one frame continues in the next.
     pub floating_drag: Rc<RefCell<Option<FloatingDrag>>>,

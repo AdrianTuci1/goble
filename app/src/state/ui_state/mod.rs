@@ -26,7 +26,7 @@ mod worker;
 
 pub use agents::{PaneAgentState, TurnOutcome};
 pub use inbox::{InboxItem, InboxKind};
-pub use pane_move::{PaneDrag, PaneMove};
+pub use pane_move::{PaneDrag, PaneDrop, PaneMove};
 
 /// The title a conversation gets when it is created without a subject of its
 /// own. It is a placeholder, not a subject: a tab whose agent holds such a
@@ -362,12 +362,22 @@ pub struct UiState {
     pub space_hover: Option<usize>,
     /// Space tab currently pressed (MouseDown), used to detect a drag start.
     pub space_press: Option<usize>,
+    /// Where that press landed, in window coordinates: the drag starts only
+    /// once the pointer has travelled away from it, so a click that wobbles a
+    /// pixel still selects.
+    pub space_press_at: Option<goble_ui::Vector2F>,
     /// Space tab currently being dragged (reordering in progress).
     pub space_drag: Option<usize>,
     /// The pane lifted out of its grid toward the topbar's tab strip (dropped
     /// there, it becomes a tab of its own). Owned here because the element tree
     /// is rebuilt every frame, so the drag has to survive the rebuild.
     pub pane_drag: Option<PaneDrag>,
+    /// The bounds each pane leaf was drawn at on the last frame, in window
+    /// coordinates, keyed by pane id. Written while the panes paint; read by
+    /// the drag handlers, which have to know what pane the pointer is over and
+    /// where the drop ghost belongs. A pane the last frame did not draw has no
+    /// entry, so it cannot be a drop target.
+    pub pane_bounds: Rc<RefCell<HashMap<u64, goble_ui::geometry::RectF>>>,
     /// Monotonic id counter so new panes never collision with existing ones.
     pub next_pane_id: u64,
     /// The leaf pane currently focused (target for splits/closes, highlighted).

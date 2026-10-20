@@ -267,6 +267,17 @@ pub struct UiState {
     /// Settings → Agent & Approval: the `[remote_agents.<name>]` tables read
     /// from the config, refreshed at startup and by the page's reload row.
     pub remote_agents: Vec<RemoteAgentEntry>,
+    /// `[remote] mode`: a sandbox platform, or a gateway server.
+    pub remote_mode: goble_core::config::RemoteMode,
+    /// `[remote] gateway_url`, as configured.
+    pub remote_gateway_url: String,
+    /// `[remote] worker_token`, as configured. Stored beside the URL so the
+    /// form on the page can show what is already there.
+    pub remote_gateway_token: String,
+    /// Settings → Agent & Approval: the `config.toml` that holds `[remote]`
+    /// and `[remote_agents.*]`, named on the page so the configuration has a
+    /// visible home.
+    pub remote_config_path: String,
     /// First-run: whether the model-provider dialog is open over the chat.
     pub llm_dialog_open: bool,
     /// Editable model-provider form values + focus, held here so text/focus

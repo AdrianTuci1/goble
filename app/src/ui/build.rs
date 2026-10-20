@@ -9,8 +9,8 @@ use super::actions::{AiActions, MediaActions, ProjectsActions, UiActions};
 use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, UiSnapshot};
 use super::types::AppTab;
 use super::{
-    chat, connectors, crons, hosts, inbox, media, model_form, shell, shortcuts_help, sidebar,
-    task_workflow, vault, CONNECTORS_WIDTH,
+    chat, connectors, crons, hosts, inbox, media, model_form, shell,
+    shortcuts_help, sidebar, task_workflow, vault, CONNECTORS_WIDTH,
 };
 
 /// The snapshots and callbacks one frame is built from.
@@ -208,7 +208,6 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         media::build_add_medium_dialog(app, state, media_actions, actions),
         vec2f(0.0, 0.0),
     );
-
     Container::new(stack.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
         .finish()

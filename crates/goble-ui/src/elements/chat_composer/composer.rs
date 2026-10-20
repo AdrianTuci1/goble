@@ -48,6 +48,10 @@ pub struct ChatComposer {
     /// editor instead of under it. A shell pane's bar keeps its own context
     /// over the draft, where the command it describes is typed.
     context_above_editor: bool,
+    /// Draw the bar with no horizontal gutter of its own: the card's edge is
+    /// the pane's edge. A host that pins the bar to the bottom of a pane uses
+    /// it so the input spans the pane instead of sitting in an inset card.
+    edge_to_edge: bool,
     /// The instructions drawn in the rich input's own bottom row, under the
     /// editor and the action row — the gestures this surface answers that the
     /// host keeps inside the input. An empty list draws nothing.
@@ -74,6 +78,10 @@ pub struct ChatComposer {
     /// and the git branch, each with its own dropdown selector. The working
     /// directory reuses `path_label` (set via `with_path_label`) as its label.
     harness_label: Option<String>,
+    /// The glyph beside the environment label: the computer for a local
+    /// environment and the cloud for a worker. The host names it, so the pill
+    /// says where the work runs as well as what it is called.
+    harness_icon: &'static str,
     harness_menu_items: Vec<PopupMenuItem>,
     harness_menu_open: Rc<RefCell<bool>>,
     on_select_harness_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
@@ -149,6 +157,7 @@ impl ChatComposer {
             focused: false,
             blur_on_outside_click: true,
             context_above_editor: false,
+            edge_to_edge: false,
             hints: Vec::new(),
             slash_enabled: false,
             slash_items: Vec::new(),
@@ -179,6 +188,7 @@ impl ChatComposer {
             vim: None,
             clipboard: None,
             harness_label: None,
+            harness_icon: "computer",
             harness_menu_items: Vec::new(),
             harness_menu_open: Rc::new(RefCell::new(false)),
             on_select_harness_item: None,
@@ -239,6 +249,14 @@ impl ChatComposer {
     /// that passes no label draws no pill.
     pub fn with_harness_label(mut self, label: impl Into<String>) -> Self {
         self.harness_label = Some(label.into());
+        self
+    }
+
+    /// The glyph that names the environment beside its label (see
+    /// [`Self::with_harness_label`]): a computer for a local environment and a
+    /// cloud for a worker. The host knows which; the composer only draws it.
+    pub fn with_harness_icon(mut self, icon: &'static str) -> Self {
+        self.harness_icon = icon;
         self
     }
 
@@ -502,6 +520,13 @@ impl ChatComposer {
         self
     }
 
+    /// Draw the bar with no horizontal gutter of its own, so it spans the
+    /// surface that pins it. The composer's rows keep their vertical padding.
+    pub fn with_edge_to_edge(mut self, edge_to_edge: bool) -> Self {
+        self.edge_to_edge = edge_to_edge;
+        self
+    }
+
     /// The instructions to draw in the input's own bottom row, under the editor
     /// and the action row. The strip that belongs over the input is the host's;
     /// this is the one entry the host keeps inside the input.
@@ -734,7 +759,7 @@ impl ChatComposer {
         {
             children.push(self.context_pill(
                 app,
-                "computer",
+                self.harness_icon,
                 &label,
                 &self.harness_menu_items,
                 self.harness_menu_open.clone(),
@@ -1174,15 +1199,21 @@ impl ChatComposer {
         // editor's text lines up with the conversation's text column, while the
         // vertical is `xs`: the rows hug the card instead of floating in a
         // gutter of their own.
+        let horizontal = if self.edge_to_edge { 0.0 } else { md };
         let card = Container::new(column.finish())
-            .with_padding(EdgeInsets::new(md, xs, md, xs))
+            .with_padding(EdgeInsets::new(horizontal, xs, horizontal, xs))
             .with_corner_radius(COMPOSER_CONTROL_RADIUS)
             .finish();
         // The input's own horizontal margin is the transcript rows' margin
         // (`xs`), so the block sits as close to the pane's side edges as the
         // conversation does; it carries no vertical margin of its own, so the
-        // rows are only `xs` from the top and bottom of the block.
-        let card = Padding::new(card, EdgeInsets::new(xs, 0.0, xs, 0.0)).finish();
+        // rows are only `xs` from the top and bottom of the block. A bar pinned
+        // edge to edge has no such margin.
+        let card = if self.edge_to_edge {
+            card
+        } else {
+            Padding::new(card, EdgeInsets::new(xs, 0.0, xs, 0.0)).finish()
+        };
         // The two bands share one slot over the input, and both are the host's
         // to draw (the command list and the model list, in that order): while
         // the draft is a command that list holds the slot, so the model band is

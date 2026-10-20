@@ -11,7 +11,10 @@ use goble_ui::platform::WindowControl;
 
 use crate::media::MediaState;
 use crate::state::UiState;
-use crate::ui::{AppTab, Pane, PaneKind, UiActions, WorkspaceRouting};
+use crate::ui::{
+    AppTab, Pane, PaneKind, SettingsCategory, SettingsControl, SettingsFocus, UiActions,
+    WorkspaceRouting,
+};
 
 fn desktop_state() -> (Arc<DesktopState>, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -35,6 +38,18 @@ fn build(
         Rc::new(RefCell::new(1.0)),
     );
     (state, actions, media)
+}
+
+/// Give Remote somewhere to run, so choosing it selects the environment
+/// instead of opening its configuration. A gateway is the fixture with no
+/// provider API behind it.
+fn configure_remote(desktop: &Arc<DesktopState>, dir: &tempfile::TempDir) {
+    desktop.set_config_path(dir.path().join("config.toml"));
+    let mut config = desktop.config();
+    config.remote.mode = goble_core::config::RemoteMode::Gateway;
+    config.remote.gateway_url = Some("https://gateway.example.com".to_string());
+    config.remote.worker_token = Some("wt-test".to_string());
+    desktop.save_config(&config).expect("save the remote config");
 }
 
 /// Make the app a configured one — provider `mock` plus a key, so a turn
@@ -558,7 +573,8 @@ fn on_select_harness_selects_medium() {
     // The composer's left pill selects the work environment (medium), not a
     // registered harness: picking a medium resets the project to its default
     // and closes the menu; an unknown id leaves the selection unchanged.
-    let (desktop, _dir) = desktop_state();
+    let (desktop, dir) = desktop_state();
+    configure_remote(&desktop, &dir);
     let (_state, actions, media) = build(&desktop);
     assert_eq!(media.borrow().selected_medium_id(), "local");
 
@@ -634,7 +650,8 @@ fn first_agent_turn_in_a_pty_workspace_creates_its_conversation() {
 
 #[test]
 fn add_space_with_medium_sets_medium_and_workspace_routing() {
-    let (desktop, _dir) = desktop_state();
+    let (desktop, dir) = desktop_state();
+    configure_remote(&desktop, &dir);
     let (state, actions, media) = build(&desktop);
 
     (actions.on_add_space_with_medium.borrow_mut())("remote".to_string());
@@ -654,6 +671,153 @@ fn add_space_with_medium_sets_medium_and_workspace_routing() {
         "remote",
         "the chosen environment becomes the active medium"
     );
+}
+
+/// The environment selector belongs to the tab on screen: switching tabs
+/// brings that tab's environment (and so its conversations) back, instead of
+/// leaving the previous tab's selection in the sidebar and the topbar.
+#[test]
+fn switching_tabs_brings_that_tabs_environment_back() {
+    let (desktop, dir) = desktop_state();
+    configure_remote(&desktop, &dir);
+    let (state, actions, media) = build(&desktop);
+
+    (actions.on_add_space_with_medium.borrow_mut())("remote".to_string());
+    let remote_space = state.borrow().active_space;
+    (actions.on_add_space_with_medium.borrow_mut())("local".to_string());
+    let local_space = state.borrow().active_space;
+    assert_eq!(media.borrow().selected_medium_id(), "local");
+
+    (actions.on_select_space.borrow_mut())(remote_space);
+    assert_eq!(
+        media.borrow().selected_medium_id(),
+        "remote",
+        "the remote tab brings its environment with it"
+    );
+    assert_eq!(
+        state.borrow().workspace_routing,
+        Some(WorkspaceRouting::Remote),
+        "and the turns on it route there"
+    );
+
+    (actions.on_select_space.borrow_mut())(local_space);
+    assert_eq!(
+        media.borrow().selected_medium_id(),
+        "local",
+        "opening the local tab brings the local conversations back"
+    );
+    assert_eq!(
+        state.borrow().workspace_routing,
+        Some(WorkspaceRouting::Local),
+        "and the turns on it run locally"
+    );
+
+    // The keyboard walk over the strip reads the same tab medium.
+    (actions.on_switch_space.borrow_mut())(-1);
+    assert_eq!(media.borrow().selected_medium_id(), "remote");
+}
+
+/// Every chooser that names Remote before anything is configured opens its
+/// configuration in Settings → Agent & Approval, where the YAML file is named,
+/// and leaves the choice unmade.
+#[test]
+fn choosing_remote_without_a_configuration_opens_the_remote_settings() {
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, media) = build(&desktop);
+    assert!(!state.borrow().remote_configured());
+
+    let assert_on_remote_section = |state: &Rc<RefCell<UiState>>| {
+        let s = state.borrow();
+        assert_eq!(s.settings_page(), SettingsCategory::AgentApproval);
+        assert_eq!(s.settings_focus, SettingsFocus::Pane);
+        assert_eq!(
+            s.settings_focused_control(),
+            Some(SettingsControl::ReloadRemoteAgents),
+            "the keyboard lands on the row that re-reads the file"
+        );
+        assert!(
+            s.remote_config_path.ends_with("config.toml"),
+            "the page names the config file: {}",
+            s.remote_config_path
+        );
+    };
+
+    // The composer's environment pill.
+    (actions.on_select_harness.borrow_mut())(1, "remote".to_string());
+    assert_on_remote_section(&state);
+    assert_eq!(
+        media.borrow().selected_medium_id(),
+        "local",
+        "the environment did not move"
+    );
+
+    // The topbar "+" menu.
+    let before = state.borrow().spaces.len();
+    (actions.on_add_space_with_medium.borrow_mut())("remote".to_string());
+    assert_on_remote_section(&state);
+    assert_eq!(state.borrow().spaces.len(), before, "no space opened");
+
+    // The run-route choice in Settings.
+    (actions.on_choose_workspace.borrow_mut())(WorkspaceRouting::Remote);
+    assert_on_remote_section(&state);
+    assert_eq!(state.borrow().workspace_routing, None, "the route did not move");
+}
+
+/// `[remote]` in the config file configures Remote: a gateway URL and token
+/// make it ready, and the next chooser goes straight through.
+#[test]
+fn the_config_file_configures_the_gateway() {
+    let (desktop, dir) = desktop_state();
+    desktop.set_config_path(dir.path().join("config.toml"));
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[remote]\nmode = \"gateway\"\ngateway_url = \"https://gateway.example.com\"\nworker_token = \"wt-test\"\n",
+    )
+    .expect("write config.toml");
+    let (state, actions, media) = build(&desktop);
+
+    (actions.on_reload_remote_agents.borrow_mut())();
+
+    {
+        let s = state.borrow();
+        assert!(s.remote_configured(), "the gateway is ready");
+        assert_eq!(
+            s.remote_gateway_url, "https://gateway.example.com",
+            "the page reads the file"
+        );
+        assert!(
+            s.remote_config_path.ends_with("config.toml"),
+            "and names it: {}",
+            s.remote_config_path
+        );
+    }
+
+    (actions.on_select_harness.borrow_mut())(1, "remote".to_string());
+    assert_eq!(media.borrow().selected_medium_id(), "remote");
+}
+
+/// A platform table in the config file becomes the page's row, with the key
+/// the provider reads already filled in.
+#[test]
+fn the_config_file_lists_a_sandbox_platform() {
+    let (desktop, dir) = desktop_state();
+    desktop.set_config_path(dir.path().join("config.toml"));
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[remote_agents.builder]\nprovider = \"e2b\"\napi_key = \"e2b-key\"\n",
+    )
+    .expect("write config.toml");
+    let (state, actions, _media) = build(&desktop);
+
+    (actions.on_reload_remote_agents.borrow_mut())();
+
+    let s = state.borrow();
+    assert!(s.remote_configured(), "the platform is ready");
+    assert_eq!(s.remote_agents.len(), 1);
+    assert_eq!(s.remote_agents[0].name, "builder");
+    assert_eq!(s.remote_agents[0].provider, "e2b");
+    assert_eq!(s.remote_agents[0].status, "ready");
+    assert_eq!(s.workspace_routing, None);
 }
 
 #[test]

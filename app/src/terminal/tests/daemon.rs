@@ -293,3 +293,70 @@ fn shell_integration_hooks_reach_the_emulator_from_replayed_bytes() {
         "the bootstrapped handshake came through the replay"
     );
 }
+
+/// A pane that detaches and comes back sees the command it ran and that
+/// command's output again: the daemon replays the bytes, and the fresh
+/// emulator rebuilds the same block from the hooks in them.
+#[test]
+fn a_reattached_pane_rebuilds_the_command_and_its_output_from_the_replay() {
+    use goble_terminal::blocks::BlockView;
+    use goble_terminal::hooks::{CommandFinishedValue, PreexecValue};
+
+    let daemon = TestDaemon::start();
+    let shell_cwd = tempfile::tempdir().expect("create a shell cwd");
+
+    let stream: Vec<u8> = [
+        encode_hook(&HookEvent::Bootstrapped(Default::default())),
+        encode_hook(&HookEvent::Precmd(PrecmdValue {
+            pwd: Some("/replayed".to_string()),
+            ..Default::default()
+        })),
+        encode_hook(&HookEvent::Preexec(PreexecValue {
+            command: Some("echo persisted".to_string()),
+        })),
+        b"persisted output\r\n".to_vec(),
+        encode_hook(&HookEvent::CommandFinished(CommandFinishedValue {
+            exit_code: 0,
+            ..Default::default()
+        })),
+    ]
+    .concat();
+    let script_file = shell_cwd.path().join("stream.bin");
+    std::fs::write(&script_file, stream).expect("write the replay stream");
+
+    let info = daemon.create(
+        "pane-replay-output",
+        "/bin/sh",
+        vec![
+            "-c".to_string(),
+            "cat \"$GOBLE_HOOKS\"; printf 'F5C-READY\\n'; exec sleep 30".to_string(),
+        ],
+        vec![(
+            "GOBLE_HOOKS".to_string(),
+            script_file.display().to_string(),
+        )],
+        shell_cwd.path(),
+    );
+    daemon.wait_for_output(&info.session_id, b"F5C-READY");
+
+    let mut session = daemon.open(
+        8,
+        shell_cwd.path().to_str().expect("a path"),
+        Some(&info.session_id),
+    );
+    let rebuilt = wait_for(|| {
+        session.pump();
+        session.visible_blocks(&BlockView::Terminal).iter().any(|block| {
+            block.command.contains("echo persisted") && block.output.contains("persisted output")
+        })
+    });
+    assert!(
+        rebuilt,
+        "the replayed block keeps its command and output; blocks held: {:?}",
+        session
+            .visible_blocks(&BlockView::Terminal)
+            .iter()
+            .map(|block| (block.command.clone(), block.output.clone()))
+            .collect::<Vec<_>>()
+    );
+}

@@ -35,6 +35,16 @@ pub fn medium_routing(medium_id: &str) -> &'static str {
     }
 }
 
+/// The glyph that names where a medium runs: the computer for a local
+/// environment and the cloud for a worker. Custom mediums route locally (see
+/// [`medium_routing`]), so they wear the computer too.
+pub fn medium_icon(medium_id: &str) -> &'static str {
+    match medium_routing(medium_id) {
+        "remote" => "cloud",
+        _ => "conversation-local",
+    }
+}
+
 /// The medium a conversation's routing implies: a conversation routed to a
 /// worker runs on the remote environment until the user picks another one in
 /// its composer, and a local conversation runs on the local medium. It is the
@@ -588,6 +598,20 @@ mod tests {
         assert_eq!(medium_routing("vm"), "local");
         // A user-added medium routes to `local` by default.
         assert_eq!(medium_routing("staging-vps"), "local");
+    }
+
+    /// The environment glyph follows the routing, so the picture and the
+    /// sidebar's filter never name different places: a computer for local and
+    /// a cloud for a worker.
+    #[test]
+    fn medium_icon_names_the_place_a_medium_runs() {
+        assert_eq!(medium_icon("local"), "conversation-local");
+        assert_eq!(medium_icon("remote"), "cloud");
+        assert_eq!(
+            medium_icon("staging-vps"),
+            "conversation-local",
+            "a custom medium routes locally and wears the computer"
+        );
     }
 
     /// The inverse: the medium a routing implies until the user picks one in a

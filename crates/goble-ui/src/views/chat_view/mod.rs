@@ -104,6 +104,9 @@ pub struct ChatView {
     /// height, so it costs nothing when nothing is in flight.
     turn_status: TurnStatus,
     composer_harness_label: Option<String>,
+    /// The glyph beside the environment label: the computer for a local
+    /// environment and the cloud for a worker.
+    composer_harness_icon: Option<&'static str>,
     composer_branch_label: Option<String>,
     on_composer_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_composer_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
@@ -219,6 +222,7 @@ impl ChatView {
             composer_model_index: Rc::new(RefCell::new(0)),
             on_select_model_item: None,
             composer_harness_label: None,
+            composer_harness_icon: None,
             composer_branch_label: None,
             composer_harness_items: Vec::new(),
             composer_harness_menu_open: Rc::new(RefCell::new(false)),

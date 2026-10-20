@@ -21,6 +21,8 @@ use goble_ui::elements::{
 use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::{Dialog, DIALOG_DEFAULT_WIDTH};
 
+use crate::media::medium_icon;
+
 use super::{MediaActions, MediaSnapshot, UiActions, UiSnapshot};
 
 /// The topbar's medium controls: a compact environment selector + a "+" menu
@@ -70,7 +72,7 @@ fn build_compact_medium_selector(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(sm * 0.5)
             .with_child(
-                Icon::new("computer")
+                Icon::new(medium_icon(&media.selected_medium))
                     .with_size(13.0)
                     .with_theme_color(ColorToken::Muted, app)
                     .finish(),
@@ -97,7 +99,8 @@ fn build_compact_medium_selector(
     let mut items = Vec::new();
     let mut ids = Vec::new();
     for m in &media.mediums {
-        let mut item = PopupMenuItem::new(m.label.clone()).with_icon("computer");
+        let mut item =
+            PopupMenuItem::new(m.label.clone()).with_icon(medium_icon(&m.id));
         if m.id == media.selected_medium {
             item = item.selected();
         }
@@ -141,7 +144,7 @@ fn build_add_space_menu(
     let mut items = Vec::new();
     let mut ids = Vec::new();
     for m in &media.mediums {
-        items.push(PopupMenuItem::new(m.label.clone()).with_icon("computer"));
+        items.push(PopupMenuItem::new(m.label.clone()).with_icon(medium_icon(&m.id)));
         ids.push(m.id.clone());
     }
     // The trailing "Add new medium…" entry; its index is `ids.len()`.

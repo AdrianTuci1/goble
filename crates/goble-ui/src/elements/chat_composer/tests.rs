@@ -162,6 +162,72 @@ fn composer_puts_every_control_in_the_footer_below_the_editor() {
     );
 }
 
+/// The environment pill's glyph is the host's to name, so the pill can say
+/// where the work runs: a cloud for a worker and the computer for a local
+/// environment.
+#[test]
+fn composer_draws_the_environment_glyph_its_host_names() {
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let icons = |commands: &[RenderCommand]| -> Vec<String> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let mut remote = ChatComposer::new()
+        .with_harness_label("Remote (worker)")
+        .with_harness_icon("cloud");
+    let drawn = icons(&paint_composer(&app, &mut remote));
+    assert!(
+        drawn.iter().any(|name| name == "cloud"),
+        "the host's cloud is the pill's glyph: {drawn:?}"
+    );
+
+    let mut local = ChatComposer::new()
+        .with_harness_label("Local")
+        .with_harness_icon("conversation-local");
+    let drawn = icons(&paint_composer(&app, &mut local));
+    assert!(
+        drawn.iter().any(|name| name == "conversation-local"),
+        "the host's computer is the pill's glyph: {drawn:?}"
+    );
+}
+
+/// The agent and the shell bars span the surface they pin to: the edge-to-edge
+/// composer drops the gutter the default card keeps, so both surfaces space
+/// their input the same way.
+#[test]
+fn an_edge_to_edge_composer_drops_its_outer_gutter() {
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let first_pill_x = |composer: &mut ChatComposer| -> f32 {
+        paint_composer(&app, composer)
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { origin, name, .. } if name == "folder" => {
+                    Some(origin.x)
+                }
+                _ => None,
+            })
+            .expect("the directory pill draws")
+    };
+    let mut default = ChatComposer::new().with_path_label("/work/project");
+    let mut spanning = ChatComposer::new()
+        .with_path_label("/work/project")
+        .with_edge_to_edge(true);
+    assert!(
+        first_pill_x(&mut spanning) < first_pill_x(&mut default),
+        "the edge-to-edge bar starts at the surface, the default card keeps its gutter"
+    );
+}
+
 /// The environment pill is the host's to give. A composer whose host wires a
 /// label and a menu draws it as the first context pill — the environment the
 /// draft's turn runs on, ahead of the directory and the branch that describe

@@ -32,6 +32,17 @@ fn build(desktop: &Arc<DesktopState>) -> (Rc<RefCell<UiState>>, UiActions) {
     (state, actions)
 }
 
+/// Give Remote somewhere to run, so choosing it sets the route instead of
+/// opening the setup dialog.
+fn configure_remote(desktop: &Arc<DesktopState>, dir: &tempfile::TempDir) {
+    desktop.set_config_path(dir.path().join("config.toml"));
+    let mut config = desktop.config();
+    config.remote.mode = goble_core::config::RemoteMode::Gateway;
+    config.remote.gateway_url = Some("https://gateway.example.com".to_string());
+    config.remote.worker_token = Some("wt-test".to_string());
+    desktop.save_config(&config).expect("save the remote config");
+}
+
 /// Configure a model key through the settings save action, as the LLM pane does.
 fn save_key(actions: &UiActions, api_key: &str) {
     (actions.on_save_llm.borrow_mut())(
@@ -266,7 +277,8 @@ fn choosing_local_sets_routing_and_continues_conversation() {
 
 #[test]
 fn choosing_remote_sets_routing() {
-    let (desktop, _dir) = common::desktop_state();
+    let (desktop, dir) = common::desktop_state();
+    configure_remote(&desktop, &dir);
     let (state, actions) = build(&desktop);
 
     (actions.on_send_message.borrow_mut())("Hi".to_string());
@@ -330,7 +342,8 @@ fn workspace_routing_persists_and_reloads_per_conversation() {
 
 #[test]
 fn choosing_remote_persists_on_conversation() {
-    let (desktop, _dir) = common::desktop_state();
+    let (desktop, dir) = common::desktop_state();
+    configure_remote(&desktop, &dir);
     let chat_id = desktop
         .create_chat("Demo", None, None)
         .expect("create chat");

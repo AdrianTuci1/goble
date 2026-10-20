@@ -10,78 +10,141 @@ use goble_ui::event::{DispatchedEvent, ModifiersState};
 use goble_ui::theme::FontFamily;
 use std::collections::HashMap;
 
-    use super::*;
-    use crate::emulator::Emulator;
-    use crate::state::UiState;
-    use goble_core::harness::ToolCallStatus;
-    use goble_ui::elements::{
-        terminal_block, ChatFragment, ChatMessageBubble, ChatRole, TerminalFilter, ToolCall,
-        CARD_RAIL_WIDTH,
+use super::*;
+use crate::emulator::Emulator;
+use crate::state::UiState;
+use goble_core::harness::ToolCallStatus;
+use goble_ui::elements::{
+    terminal_block, ChatFragment, ChatMessageBubble, ChatRole, TerminalFilter, ToolCall,
+    CARD_RAIL_WIDTH,
+};
+use goble_ui::geometry::vec2f;
+use goble_ui::platform::text_atlas::{mono_advance, FontWeight};
+use goble_ui::render::RenderCommand;
+use goble_ui::test_util::render_element;
+use goble_ui::{ChatComposer, ColorU};
+
+fn key(key: &str, modifiers: ModifiersState) -> DispatchedEvent {
+    DispatchedEvent::KeyDown {
+        key: key.to_string(),
+        modifiers,
+    }
+}
+
+/// In a plain pty pane Cmd+Enter turns the harness on for this pane only.
+#[test]
+fn cmd_enter_activates_harness_mode_on_a_shell_pane() {
+    let app = AppContext::default();
+    let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
+    terminal
+        .borrow_mut()
+        .set_input(3, "summarize the diff".to_string());
+    let routed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let harness: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+    let routed_cb = Rc::clone(&routed);
+    let harness_cb = Rc::clone(&harness);
+    let mut view = TerminalView::new(
+        Rc::clone(&terminal),
+        3,
+        "/tmp".to_string(),
+        true,
+        BlockView::Terminal,
+        false,
+        Text::new("bar").finish(),
+        Rc::new(RefCell::new(|_: u64| {})),
+        Rc::new(RefCell::new(move |_: u64, text: String| {
+            routed_cb.borrow_mut().push(text)
+        })),
+        Rc::new(RefCell::new(move |_: u64, on: bool| {
+            harness_cb.borrow_mut().push(on)
+        })),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: String| {})),
+    );
+    let mut ctx = EventContext;
+    let cmd_enter = ModifiersState {
+        command: true,
+        ..ModifiersState::default()
     };
-    use goble_ui::geometry::vec2f;
-    use goble_ui::platform::text_atlas::{mono_advance, FontWeight};
-    use goble_ui::render::RenderCommand;
-    use goble_ui::test_util::render_element;
-    use goble_ui::{ChatComposer, ColorU};
+    assert!(view.dispatch_event(&key("Enter", cmd_enter), &mut ctx, &app));
+    assert_eq!(*harness.borrow(), vec![true], "Cmd+Enter activates it");
+    assert_eq!(*routed.borrow(), vec!["summarize the diff".to_string()]);
+}
 
-    fn key(key: &str, modifiers: ModifiersState) -> DispatchedEvent {
-        DispatchedEvent::KeyDown {
-            key: key.to_string(),
-            modifiers,
-        }
-    }
+/// A background pane must not take keystrokes from the active one.
+#[test]
+fn an_inactive_pane_ignores_keystrokes() {
+    let app = AppContext::default();
+    let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
+    let mut view = TerminalView::new(
+        terminal,
+        1,
+        "/tmp".to_string(),
+        false,
+        BlockView::Terminal,
+        false,
+        Text::new("bar").finish(),
+        Rc::new(RefCell::new(|_: u64| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: u64, _: bool| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: String| {})),
+    );
+    let mut ctx = EventContext;
+    assert!(!view.dispatch_event(&key("a", ModifiersState::none()), &mut ctx, &app));
+}
 
-    /// In a plain pty pane Cmd+Enter turns the harness on for this pane only.
-    #[test]
-    fn cmd_enter_activates_harness_mode_on_a_shell_pane() {
-        let app = AppContext::default();
-        let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
-        terminal
-            .borrow_mut()
-            .set_input(3, "summarize the diff".to_string());
-        let routed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-        let harness: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
-        let routed_cb = Rc::clone(&routed);
-        let harness_cb = Rc::clone(&harness);
-        let mut view = TerminalView::new(
+/// The pointer becomes a cell against the grid that was painted, not
+/// against a second guess at the flex layout.
+#[test]
+fn a_pointer_position_maps_to_the_cell_it_is_over() {
+    let geometry = GridGeometry {
+        origin: Vector2F::new(10.0, 20.0),
+        columns: 80,
+        rows: 24,
+    };
+    let pitch = TerminalGrid::cell_width(FONT_SIZE);
+    let row_pitch = TerminalGrid::row_pitch(FONT_SIZE, LINE_HEIGHT);
+
+    assert_eq!(geometry.cell_at(Vector2F::new(10.0, 20.0)), Some((0, 0)));
+    assert_eq!(
+        geometry.cell_at(Vector2F::new(10.0 + pitch * 3.5, 20.0 + row_pitch * 4.5)),
+        Some((4, 3))
+    );
+    // Outside the box, on either side, is not a cell.
+    assert_eq!(geometry.cell_at(Vector2F::new(9.0, 20.0)), None);
+    assert_eq!(geometry.cell_at(Vector2F::new(10.0, 19.0)), None);
+    assert_eq!(
+        geometry.cell_at(Vector2F::new(10.0 + pitch * 81.0, 20.0)),
+        None
+    );
+    assert_eq!(
+        geometry.cell_at(Vector2F::new(10.0, 20.0 + row_pitch * 25.0)),
+        None
+    );
+}
+
+#[test]
+fn mouse_button_ids_map_to_the_buttons_the_platform_numbers() {
+    assert_eq!(mouse_button(0), Some(MouseButton::Left));
+    assert_eq!(mouse_button(1), Some(MouseButton::Right));
+    assert_eq!(mouse_button(2), Some(MouseButton::Middle));
+    assert_eq!(mouse_button(7), None);
+}
+
+/// Focus is reported to the program only when the pane is the active one and
+/// only after the program asked for it (mode 1004).
+#[test]
+fn only_an_active_pane_with_the_mode_on_reports_focus() {
+    let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
+    let view = |active: bool| {
+        TerminalView::new(
             Rc::clone(&terminal),
-            3,
-            "/tmp".to_string(),
-            true,
-            BlockView::Terminal,
-            false,
-            Text::new("bar").finish(),
-            Rc::new(RefCell::new(|_: u64| {})),
-            Rc::new(RefCell::new(move |_: u64, text: String| {
-                routed_cb.borrow_mut().push(text)
-            })),
-            Rc::new(RefCell::new(move |_: u64, on: bool| {
-                harness_cb.borrow_mut().push(on)
-            })),
-            Rc::new(RefCell::new(|_: u64, _: String| {})),
-            Rc::new(RefCell::new(|_: u64, _: String| {})),
-            Rc::new(RefCell::new(|_: String| {})),
-        );
-        let mut ctx = EventContext;
-        let cmd_enter = ModifiersState {
-            command: true,
-            ..ModifiersState::default()
-        };
-        assert!(view.dispatch_event(&key("Enter", cmd_enter), &mut ctx, &app));
-        assert_eq!(*harness.borrow(), vec![true], "Cmd+Enter activates it");
-        assert_eq!(*routed.borrow(), vec!["summarize the diff".to_string()]);
-    }
-
-    /// A background pane must not take keystrokes from the active one.
-    #[test]
-    fn an_inactive_pane_ignores_keystrokes() {
-        let app = AppContext::default();
-        let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
-        let mut view = TerminalView::new(
-            terminal,
             1,
             "/tmp".to_string(),
-            false,
+            active,
             BlockView::Terminal,
             false,
             Text::new("bar").finish(),
@@ -91,2669 +154,2677 @@ use std::collections::HashMap;
             Rc::new(RefCell::new(|_: u64, _: String| {})),
             Rc::new(RefCell::new(|_: u64, _: String| {})),
             Rc::new(RefCell::new(|_: String| {})),
-        );
-        let mut ctx = EventContext;
-        assert!(!view.dispatch_event(&key("a", ModifiersState::none()), &mut ctx, &app));
-    }
-
-    /// The pointer becomes a cell against the grid that was painted, not
-    /// against a second guess at the flex layout.
-    #[test]
-    fn a_pointer_position_maps_to_the_cell_it_is_over() {
-        let geometry = GridGeometry {
-            origin: Vector2F::new(10.0, 20.0),
-            columns: 80,
-            rows: 24,
-        };
-        let pitch = TerminalGrid::cell_width(FONT_SIZE);
-        let row_pitch = TerminalGrid::row_pitch(FONT_SIZE, LINE_HEIGHT);
-
-        assert_eq!(geometry.cell_at(Vector2F::new(10.0, 20.0)), Some((0, 0)));
-        assert_eq!(
-            geometry.cell_at(Vector2F::new(10.0 + pitch * 3.5, 20.0 + row_pitch * 4.5)),
-            Some((4, 3))
-        );
-        // Outside the box, on either side, is not a cell.
-        assert_eq!(geometry.cell_at(Vector2F::new(9.0, 20.0)), None);
-        assert_eq!(geometry.cell_at(Vector2F::new(10.0, 19.0)), None);
-        assert_eq!(
-            geometry.cell_at(Vector2F::new(10.0 + pitch * 81.0, 20.0)),
-            None
-        );
-        assert_eq!(
-            geometry.cell_at(Vector2F::new(10.0, 20.0 + row_pitch * 25.0)),
-            None
-        );
-    }
-
-    #[test]
-    fn mouse_button_ids_map_to_the_buttons_the_platform_numbers() {
-        assert_eq!(mouse_button(0), Some(MouseButton::Left));
-        assert_eq!(mouse_button(1), Some(MouseButton::Right));
-        assert_eq!(mouse_button(2), Some(MouseButton::Middle));
-        assert_eq!(mouse_button(7), None);
-    }
-
-    /// Focus is reported to the program only when the pane is the active one and
-    /// only after the program asked for it (mode 1004).
-    #[test]
-    fn only_an_active_pane_with_the_mode_on_reports_focus() {
-        let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
-        let view = |active: bool| {
-            TerminalView::new(
-                Rc::clone(&terminal),
-                1,
-                "/tmp".to_string(),
-                active,
-                BlockView::Terminal,
-                false,
-                Text::new("bar").finish(),
-                Rc::new(RefCell::new(|_: u64| {})),
-                Rc::new(RefCell::new(|_: u64, _: String| {})),
-                Rc::new(RefCell::new(|_: u64, _: bool| {})),
-                Rc::new(RefCell::new(|_: u64, _: String| {})),
-                Rc::new(RefCell::new(|_: u64, _: String| {})),
-                Rc::new(RefCell::new(|_: String| {})),
-            )
-        };
-
-        // No session, so the mode is unknown and the encoder declines either way.
-        assert!(!view(true).report_focus(true), "1004 is not on");
-        assert!(
-            !view(false).report_focus(true),
-            "a background pane is not the focused one"
-        );
-    }
-
-    /// The drawn text runs as `(text, colour, family, size)`, so two elements
-    /// can be compared without depending on where each was laid out.
-    fn text_runs(commands: &[RenderCommand]) -> Vec<(String, ColorU, FontFamily, f32)> {
-        commands
-            .iter()
-            .filter_map(|c| match c {
-                RenderCommand::DrawText {
-                    text,
-                    color,
-                    font_family,
-                    font_size,
-                    ..
-                } => Some((text.clone(), *color, *font_family, *font_size)),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Paint an element headlessly at a fixed size.
-    fn paint(element: Box<dyn Element>, app: &AppContext) -> Vec<RenderCommand> {
-        let mut element = element;
-        render_element(&mut element, vec2f(600.0, 200.0), app)
-    }
-
-    /// Q8: a command the *user* ran is one block, drawn by the same element in
-    /// the transcript and in the terminal pane. A command the *agent* ran is
-    /// not: an agent's call is part of its reply, drawn continuously under the
-    /// row that names it, and it takes no block. Both sides of the distinction
-    /// are pinned here.
-    #[test]
-    fn a_command_block_renders_identically_in_the_transcript_and_the_pane() {
-        let app = AppContext::default();
-
-        // The pane's block, from a session that ran `echo hi`.
-        let mut emulator = Emulator::new(80, 24);
-        emulator.feed(b"echo hi\r\nhi\r\n");
-        let session = TerminalSession::with_emulator(emulator);
-        let pane_data = executed_command_block(&session).expect("the pane drew its block");
-        let pane_runs = text_runs(&paint(
-            terminal_block(&pane_data, TerminalFilter::default(), None, None),
-            &app,
-        ));
-        assert!(
-            !pane_runs.is_empty(),
-            "the pane's block draws the session's output"
-        );
-
-        // The transcript draws the pane's block as the same element.
-        let transcript = ChatMessageBubble::new(
-            ChatRole::Tool,
-            vec![ChatFragment::terminal(pane_data.clone())],
-        );
-        let transcript_runs = text_runs(&paint(Box::new(transcript), &app));
-        assert_eq!(
-            transcript_runs, pane_runs,
-            "the same block must render in the transcript"
-        );
-
-        // The same command the agent ran is not that block: the transcript
-        // draws the row that names it and then its output, with no block
-        // prompt line and no block header of its own.
-        let call = ToolCall {
-            id: "call-1".to_string(),
-            name: "run_command".to_string(),
-            arguments: r#"{"command":"echo hi"}"#.to_string(),
-            status: ToolCallStatus::Finished,
-            result: Some("hi".to_string()),
-        };
-        // The command starts folded; expand it so the transcript draws the
-        // output under the row.
-        let fold = Rc::new(RefCell::new(std::collections::HashMap::from([(
-            goble_ui::tool_fold_key(&call, 0),
-            goble_ui::ToolDisplayMode::Expanded,
-        )])));
-        let bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
-            .with_tool_calls(vec![call])
-            .with_tool_fold(fold);
-        let bubble_runs = text_runs(&paint(Box::new(bubble), &app));
-        assert!(
-            bubble_runs.iter().any(|(text, _, _, _)| text == "echo hi"),
-            "the row names the command, got {bubble_runs:?}"
-        );
-        assert!(
-            bubble_runs.iter().any(|(text, _, _, _)| text == "hi"),
-            "the output is drawn under the row, got {bubble_runs:?}"
-        );
-        assert!(
-            !bubble_runs.iter().any(|(text, _, _, _)| text == "❯ "),
-            "the agent's call carries no block prompt line, got {bubble_runs:?}"
-        );
-        assert!(
-            bubble_runs.iter().all(|(_, _, _, size)| *size == 13.0),
-            "the row and its body are the tool row's own size, got {bubble_runs:?}"
-        );
-    }
-
-    /// R5: a command block is drawn from the block's lifecycle, never from a
-    /// guess. `block_status` is the one status map the pane's executed-command
-    /// block uses, and it feeds the one `terminal_block` the transcript draws,
-    /// so a still-running command is painted as running and a failure is the
-    /// exit code. (This replaces the assertion that used to run through the
-    /// deleted pty-only agent view `TerminalView::build_agent_view`; the
-    /// behaviour it encoded is the same, on the surface that survives. It read
-    /// the status off the block's title colour, which warp's failing block does
-    /// not use: the status is now the block's own pole — accent while running,
-    /// error on failure — and the failure's wash, so that is what it asserts.)
-    #[test]
-    fn a_command_block_is_drawn_from_its_lifecycle_not_a_guess() {
-        use goble_terminal::{BlockId, BlockOwner, BlockState};
-        use goble_ui::theme::ColorToken;
-
-        let app = AppContext::default();
-        let block = |command: &str, state: BlockState, exit_code: Option<i32>| VisibleBlock {
-            id: BlockId(1),
-            owner: BlockOwner::Agent {
-                conversation_id: "c1".to_string(),
-                call_id: "call-1".to_string(),
-            },
-            command: command.to_string(),
-            output: String::new(),
-            state,
-            exit_code,
-            pwd: None,
-            git_branch: None,
-            duration: None,
-            prompt: None,
-            card: None,
-        };
-
-        let running = block("sleep 30", BlockState::Executing, None);
-        let background = block("tail -f log", BlockState::Background, None);
-        let done = block("ls", BlockState::DoneWithExecution, Some(0));
-        let failed = block("boom", BlockState::DoneWithExecution, Some(2));
-        assert_eq!(block_status(&running), TerminalStatus::Running);
-        assert_eq!(block_status(&background), TerminalStatus::Running);
-        assert_eq!(block_status(&done), TerminalStatus::Success);
-        assert_eq!(block_status(&failed), TerminalStatus::Error);
-
-        // The drawn block, built the way the transcript builds it: the block's
-        // own status, through the one shared renderer.
-        let marks_of = |block: &VisibleBlock| {
-            let data =
-                TerminalData::for_command(block.command.clone(), &block.output, block_status(block));
-            status_marks(&paint(
-                terminal_block(&data, TerminalFilter::default(), None, None),
-                &app,
-            ))
-        };
-        for (block, what) in [
-            (&running, "a still-running block"),
-            (&background, "a promoted-to-background block"),
-        ] {
-            assert_eq!(
-                marks_of(block).0,
-                Some(app.theme.color(ColorToken::Accent)),
-                "{what} stands an accent pole, not a success"
-            );
-            assert!(!marks_of(block).1, "{what} is not washed as a failure");
-        }
-        assert_eq!(
-            marks_of(&done).0,
-            None,
-            "a finished zero-exit block draws no pole"
-        );
-        assert!(!marks_of(&done).1, "and no failure wash");
-        assert_eq!(
-            marks_of(&failed).0,
-            Some(app.theme.color(ColorToken::Error)),
-            "a finished non-zero-exit block stands the error pole"
-        );
-        assert!(
-            marks_of(&failed).1,
-            "and washes the block in the error colour"
-        );
-    }
-
-    /// R8: the pane's executed-command block reads the block's own status
-    /// instead of asserting success. A command that is still running draws as
-    /// running, and a finished non-zero exit draws as an error.
-    #[test]
-    fn the_executed_command_block_reads_the_blocks_status() {
-        use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PreexecValue};
-        use goble_terminal::HookEvent;
-
-        let session = |command: &str, exit: Option<i32>| {
-            let mut emulator = Emulator::new(80, 24);
-            emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
-            emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
-                command: Some(command.to_string()),
-            })));
-            emulator.feed(format!("{command}\r\noutput\r\n").as_bytes());
-            if let Some(exit_code) = exit {
-                emulator.feed(&encode_hook(&HookEvent::CommandFinished(
-                    CommandFinishedValue {
-                        exit_code,
-                        ..Default::default()
-                    },
-                )));
-            }
-            TerminalSession::with_emulator(emulator)
-        };
-
-        let running = executed_command_block(&session("sleep 30", None))
-            .expect("a running command still draws its block");
-        assert_eq!(running.status, Some(TerminalStatus::Running));
-
-        let failed = executed_command_block(&session("boom", Some(2)))
-            .expect("a failed command draws its block");
-        assert_eq!(failed.status, Some(TerminalStatus::Error));
-    }
-
-    /// A `RootView` mounted on a single shell (PTY) space, so the pane's own
-    /// events, the app's real actions and the per-frame rebuild are what the
-    /// test drives. The pane's session is detached (no pty): the pane has a
-    /// real grid/session to draw and route against without spawning a shell.
-    fn shell_root() -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir) {
-        use crate::root_view::RootView;
-        use crate::ui::{Pane, PaneKind, Space};
-        use goble_core::store::Store;
-        use goble_desktop_service::{DesktopState, ThreadStore};
-        use std::sync::Arc;
-
-        let dir = tempfile::tempdir().expect("temp thread-store dir");
-        let desktop = Arc::new(DesktopState::new(
-            Store::open_in_memory().expect("in-memory store"),
-            ThreadStore::new(dir.path()).expect("thread store"),
-        ));
-        let root = RootView::new(&AppContext::default(), &desktop, None);
-        let state = root.state_rc();
-        {
-            let mut s = state.borrow_mut();
-            s.show_workspace_choice = false;
-            s.show_llm_key_banner = false;
-            s.right_sidebar_open = false;
-            s.crons_open = false;
-            s.spaces = vec![Space::new(
-                "Shell",
-                Pane::Leaf {
-                    id: 1,
-                    kind: PaneKind::Terminal,
-                },
-            )];
-            s.active_space = 0;
-            s.active_pane_id = 1;
-            // The fixture turns the default chat pane into a terminal: a
-            // terminal owns no conversation until its first agent turn, and
-            // has no sidebar selection to fall back to.
-            if let Some(session) = s.pane_sessions.get_mut(&1) {
-                session.conversation_id.clear();
-            }
-            s.selected_id = None;
-            s.ensure_pane_controls();
-            s.terminal
-                .borrow_mut()
-                .sessions
-                .insert(1, TerminalSession::with_emulator(Emulator::new(80, 24)));
-        }
-        (Box::new(root) as Box<dyn Element>, state, dir)
-    }
-
-    /// A `RootView` on the default space (the chat pane), the surface the shell
-    /// pane must match.
-    fn chat_root() -> (Box<dyn Element>, tempfile::TempDir) {
-        use crate::root_view::RootView;
-        use goble_core::store::Store;
-        use goble_desktop_service::{DesktopState, ThreadStore};
-        use std::sync::Arc;
-
-        let dir = tempfile::tempdir().expect("temp thread-store dir");
-        let desktop = Arc::new(DesktopState::new(
-            Store::open_in_memory().expect("in-memory store"),
-            ThreadStore::new(dir.path()).expect("thread store"),
-        ));
-        let root = RootView::new(&AppContext::default(), &desktop, None);
-        let state = root.state_rc();
-        {
-            let mut s = state.borrow_mut();
-            s.show_workspace_choice = false;
-            s.show_llm_key_banner = false;
-            s.right_sidebar_open = false;
-            s.crons_open = false;
-            s.terminal
-                .borrow_mut()
-                .sessions
-                .insert(1, TerminalSession::with_emulator(Emulator::new(80, 24)));
-        }
-        (Box::new(root) as Box<dyn Element>, dir)
-    }
-
-    /// The drawn runs of the pane's own area: a run left of the sidebar is the
-    /// sidebar quoting a conversation, not the pane.
-    fn pane_runs(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<(String, Vector2F)> {
-        render_element(root, vec2f(1024.0, 768.0), app)
-            .iter()
-            .filter_map(|c| match c {
-                RenderCommand::DrawText { origin, text, .. }
-                    if origin.x >= crate::ui::SIDEBAR_WIDTH =>
-                {
-                    Some((text.clone(), *origin))
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn pane_has(runs: &[(String, Vector2F)], text: &str) -> bool {
-        runs.iter().any(|(t, _)| t == text)
-    }
-
-    /// The pane-wide rules of the pane's own area, top down: its separators.
-    fn pane_rules(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<f32> {
-        render_element(root, vec2f(1024.0, 768.0), app)
-            .iter()
-            .filter_map(|c| match c {
-                RenderCommand::FillRect { rect, .. }
-                    if rect.height() <= 2.0
-                        && rect.width() > 200.0
-                        && rect.min_x() >= crate::ui::SIDEBAR_WIDTH =>
-                {
-                    Some(rect.min_y())
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Dispatch one plain key through the whole app tree, so the pane's own
-    /// routing is exercised where the app runs it.
-    fn press(root: &mut Box<dyn Element>, app: &AppContext, name: &str) -> bool {
-        let mut ctx = EventContext;
-        root.dispatch_event(&key(name, ModifiersState::none()), &mut ctx, app)
-    }
-
-    /// Type `text` at whatever holds the keys, one character per key event, the
-    /// way the window delivers it. Every character must be taken, so a surface
-    /// that swallowed one cannot pass for one that typed the line.
-    fn type_line(root: &mut Box<dyn Element>, app: &AppContext, text: &str) {
-        for c in text.chars() {
-            assert!(press(root, app, &c.to_string()), "{c:?} was taken by the surface");
-        }
-    }
-
-    /// R5: the shell pane's bottom bar is the chat surface's own composer, not a
-    /// bespoke second one. It draws the shared `ChatComposer`'s placeholder —
-    /// the very string the chat pane's composer draws — and the pty-only `❯`
-    /// input line this replaces is gone.
-    #[test]
-    fn the_shells_bottom_bar_is_the_shared_composer() {
-        let app = AppContext::default();
-        let (mut root, _state, _dir) = shell_root();
-        let (mut chat, _chat_dir) = chat_root();
-        let placeholder = ChatComposer::new().placeholder().to_string();
-
-        let shell_runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&shell_runs, &placeholder),
-            "the shell pane draws the shared composer's placeholder {placeholder:?}: {shell_runs:?}"
-        );
-        assert!(
-            !pane_has(&shell_runs, "❯"),
-            "the bespoke terminal input line is gone: {shell_runs:?}"
-        );
-
-        let chat_runs = pane_runs(&mut chat, &app);
-        assert!(
-            pane_has(&chat_runs, &placeholder),
-            "the chat pane draws that same composer: {chat_runs:?}"
-        );
-
-        // The bar carries the one instruction that applies to a command line:
-        // Cmd/Ctrl+Enter leaves the shell for a new agent conversation, and that
-        // chord is named under the bar. The agent rich input's own vocabulary —
-        // what Enter runs, what `!` runs — does not describe this line, which is
-        // a command already.
-        assert!(
-            pane_has(&shell_runs, "new conversation"),
-            "the shell bar names the gesture that opens a new conversation: {shell_runs:?}"
-        );
-        for label in ["run", "agent", "send", "shell", "commands", "tasks"] {
-            assert!(
-                !pane_has(&shell_runs, label),
-                "the shell bar draws no instruction {label:?}: {shell_runs:?}"
-            );
-        }
-        assert!(
-            pane_has(&chat_runs, "send") && pane_has(&chat_runs, "send to cloud"),
-            "the chat pane draws its own instructions: {chat_runs:?}"
-        );
-
-        // The shell's one instruction is the exception to the pane's rule that
-        // its instructions are the strip over the input's separator: it is
-        // drawn inside the bar, under that separator, where the line it opens
-        // from is typed.
-        let hint = pane_runs(&mut root, &app)
-            .into_iter()
-            .find(|(text, _)| text == "new conversation")
-            .map(|(_, origin)| origin.y)
-            .expect("the shell bar names the gesture that opens a conversation");
-        let separator = pane_rules(&mut root, &app)
-            .into_iter()
-            .filter(|y| *y < hint)
-            .fold(f32::NEG_INFINITY, f32::max);
-        assert!(
-            separator.is_finite(),
-            "the bar has a separator over it (hint at {hint})"
-        );
-        assert!(
-                separator < hint,
-                "the shell's instruction is inside the input, under its separator ({separator} against {hint})"
-            );
-    }
-
-    /// S2: the shell bar names the host a submitted `ssh` line bound the pane
-    /// to, driven by the bound session itself — and a pane at a local shell
-    /// draws no such chip, because the absence is the statement. Clearing the
-    /// binding (`exit`) takes the chip away again.
-    #[test]
-    fn a_bound_shell_pane_names_its_host_and_clearing_the_binding_removes_it() {
-        /// What the fixture's `web` alias resolves to, as the chip reads it.
-        const CHIP: &str = "deploy@web (web.example.com)";
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        // The machine's `~/.ssh/config` is a fixture here, so the address on the
-        // chip is the file's and never the developer's own.
-        let home = tempfile::tempdir().expect("temp home");
-        std::fs::create_dir_all(home.path().join(".ssh")).expect("fixture .ssh");
-        std::fs::write(
-            home.path().join(".ssh/config"),
-            "Host web\n    HostName web.example.com\n    User deploy\n    Port 2222\n",
         )
-        .expect("fixture config");
-        state.borrow_mut().settings_ssh_home = Some(home.path().to_path_buf());
+    };
 
-        // A local shell: no chip anywhere in the pane.
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            !pane_has(&runs, CHIP),
-            "a local shell names no host: {runs:?}"
-        );
+    // No session, so the mode is unknown and the encoder declines either way.
+    assert!(!view(true).report_focus(true), "1004 is not on");
+    assert!(
+        !view(false).report_focus(true),
+        "a background pane is not the focused one"
+    );
+}
 
-        // The line the user submits at the bar binds the pane to the host it
-        // names (S1) ...
-        type_line(&mut root, &app, "ssh web");
-        assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
-        assert_eq!(
-            state
-                .borrow()
-                .terminal
-                .borrow()
-                .ssh_session(1)
-                .map(|session| session.host.clone()),
-            Some("web.example.com".to_string()),
-            "the submitted line bound this pane's shell to the host it named"
-        );
+/// The drawn text runs as `(text, colour, family, size)`, so two elements
+/// can be compared without depending on where each was laid out.
+fn text_runs(commands: &[RenderCommand]) -> Vec<(String, ColorU, FontFamily, f32)> {
+    commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawText {
+                text,
+                color,
+                font_family,
+                font_size,
+                ..
+            } => Some((text.clone(), *color, *font_family, *font_size)),
+            _ => None,
+        })
+        .collect()
+}
 
-        // ... and the chip over the input names it.
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&runs, CHIP),
-            "the bound pane's bar names the host it is on: {runs:?}"
-        );
+/// Paint an element headlessly at a fixed size.
+fn paint(element: Box<dyn Element>, app: &AppContext) -> Vec<RenderCommand> {
+    let mut element = element;
+    render_element(&mut element, vec2f(600.0, 200.0), app)
+}
 
-        // The pane's other surface is the same pane on the same session, so its
-        // agent view (Cmd+Enter) names the same host over its own input.
-        let cmd_enter = key(
-            "Enter",
-            ModifiersState {
-                command: true,
-                ..ModifiersState::default()
-            },
-        );
-        assert!(
-            root.dispatch_event(&cmd_enter, &mut EventContext, &app),
-            "Cmd+Enter is taken by the bar"
-        );
-        assert!(
-            state.borrow().pane_controls(1).harness_mode,
-            "Cmd+Enter opened the pane's harness"
-        );
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&runs, CHIP),
-            "the pane's agent view names the same host: {runs:?}"
-        );
-        assert!(press(&mut root, &app, "Escape"), "Esc is the way back to the shell");
-        assert!(
-            !state.borrow().pane_controls(1).harness_mode,
-            "Escape put the harness away"
-        );
-        // The shell's own bar is the surface again, and it still names the host:
-        // the pane never left the session.
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&runs, CHIP),
-            "the shell's bar names the host again: {runs:?}"
-        );
+/// Q8: a command the *user* ran is one block, drawn by the same element in
+/// the transcript and in the terminal pane. A command the *agent* ran is
+/// not: an agent's call is part of its reply, drawn continuously under the
+/// row that names it, and it takes no block. Both sides of the distinction
+/// are pinned here.
+#[test]
+fn a_command_block_renders_identically_in_the_transcript_and_the_pane() {
+    let app = AppContext::default();
 
-        // `exit` is the way back to a local shell, and the chip goes with the
-        // binding instead of lingering as a stale name.
-        type_line(&mut root, &app, "exit");
-        assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
-        assert!(
-            state.borrow().terminal.borrow().ssh_session(1).is_none(),
-            "exit returned the pane to a local shell"
-        );
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            !pane_has(&runs, CHIP),
-            "the chip goes with the binding: {runs:?}"
-        );
-    }
+    // The pane's block, from a session that ran `echo hi`.
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(b"echo hi\r\nhi\r\n");
+    let session = TerminalSession::with_emulator(emulator);
+    let pane_data = executed_command_block(&session).expect("the pane drew its block");
+    let pane_runs = text_runs(&paint(
+        terminal_block(&pane_data, TerminalFilter::default(), None, None),
+        &app,
+    ));
+    assert!(
+        !pane_runs.is_empty(),
+        "the pane's block draws the session's output"
+    );
 
-    /// The directory pill's menu is a window onto the machine: while it is open
-    /// it lists the directories under this pane's working directory — sorted,
-    /// hidden entries and plain files left out, the way up last — and while it is
-    /// closed it reads nothing at all, so a dropped menu costs no disk.
-    #[test]
-    fn the_directory_menu_lists_the_panes_subdirectories_and_the_way_up() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        let home = tempfile::tempdir().expect("temp home");
-        std::fs::create_dir(home.path().join("goble")).unwrap();
-        std::fs::create_dir(home.path().join(".hidden")).unwrap();
-        std::fs::write(home.path().join("notes.txt"), "not a directory").unwrap();
-        let cwd = home.path().to_string_lossy().to_string();
-        {
-            let mut s = state.borrow_mut();
-            s.set_pane_path(1, cwd);
-        }
+    // The transcript draws the pane's block as the same element.
+    let transcript = ChatMessageBubble::new(
+        ChatRole::Tool,
+        vec![ChatFragment::terminal(pane_data.clone())],
+    );
+    let transcript_runs = text_runs(&paint(Box::new(transcript), &app));
+    assert_eq!(
+        transcript_runs, pane_runs,
+        "the same block must render in the transcript"
+    );
 
-        let closed = pane_runs(&mut root, &app);
-        assert!(
-            !pane_has(&closed, "goble"),
-            "a closed menu lists nothing: {closed:?}"
-        );
+    // The same command the agent ran is not that block: the transcript
+    // draws the row that names it and then its output, with no block
+    // prompt line and no block header of its own.
+    let call = ToolCall {
+        id: "call-1".to_string(),
+        name: "run_command".to_string(),
+        arguments: r#"{"command":"echo hi"}"#.to_string(),
+        status: ToolCallStatus::Finished,
+        result: Some("hi".to_string()),
+    };
+    // The command starts folded; expand it so the transcript draws the
+    // output under the row.
+    let fold = Rc::new(RefCell::new(std::collections::HashMap::from([(
+        goble_ui::tool_fold_key(&call, 0),
+        goble_ui::ToolDisplayMode::Expanded,
+    )])));
+    let bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(vec![call])
+        .with_tool_fold(fold);
+    let bubble_runs = text_runs(&paint(Box::new(bubble), &app));
+    assert!(
+        bubble_runs.iter().any(|(text, _, _, _)| text == "echo hi"),
+        "the row names the command, got {bubble_runs:?}"
+    );
+    assert!(
+        bubble_runs.iter().any(|(text, _, _, _)| text == "hi"),
+        "the output is drawn under the row, got {bubble_runs:?}"
+    );
+    assert!(
+        !bubble_runs.iter().any(|(text, _, _, _)| text == "❯ "),
+        "the agent's call carries no block prompt line, got {bubble_runs:?}"
+    );
+    assert!(
+        bubble_runs.iter().all(|(_, _, _, size)| *size == 13.0),
+        "the row and its body are the tool row's own size, got {bubble_runs:?}"
+    );
+}
 
-        {
-            let mut s = state.borrow_mut();
-            let flag = s.pane_controls_mut(1).dir_menu_open.clone();
-            *flag.borrow_mut() = true;
-        }
-        let open = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&open, "goble"),
-            "the subdirectory is a row: {open:?}"
-        );
-        assert!(
-            pane_has(&open, crate::ui::pickers::PARENT_LABEL),
-            "the way up is a row: {open:?}"
-        );
-        assert!(
-            !pane_has(&open, ".hidden") && !pane_has(&open, "notes.txt"),
-            "only visible directories are rows: {open:?}"
-        );
-    }
+/// R5: a command block is drawn from the block's lifecycle, never from a
+/// guess. `block_status` is the one status map the pane's executed-command
+/// block uses, and it feeds the one `terminal_block` the transcript draws,
+/// so a still-running command is painted as running and a failure is the
+/// exit code. (This replaces the assertion that used to run through the
+/// deleted pty-only agent view `TerminalView::build_agent_view`; the
+/// behaviour it encoded is the same, on the surface that survives. It read
+/// the status off the block's title colour, which warp's failing block does
+/// not use: the status is now the block's own pole — accent while running,
+/// error on failure — and the failure's wash, so that is what it asserts.)
+#[test]
+fn a_command_block_is_drawn_from_its_lifecycle_not_a_guess() {
+    use goble_terminal::{BlockId, BlockOwner, BlockState};
+    use goble_ui::theme::ColorToken;
 
-    /// The branch pill's menu is the repository's own branch list, read while the
-    /// menu is open: every local branch is a row, not just the one the pane is
-    /// on. The other branch's name is the discriminator — the pill draws the
-    /// current one whether the menu is open or not.
-    #[test]
-    fn the_branch_menu_lists_the_repositorys_local_branches() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        let Some(repo) = repository_on_two_branches() else {
-            return; // no git on this machine: there is no list to read
-        };
-        let cwd = repo.path().to_string_lossy().to_string();
-        {
-            let mut s = state.borrow_mut();
-            s.set_pane_path(1, cwd);
-        }
-
-        let closed = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&closed, "feature/x"),
-            "the pill names the branch the repository is on: {closed:?}"
-        );
-        assert!(
-            !pane_has(&closed, "main"),
-            "a closed menu lists nothing: {closed:?}"
-        );
-
-        {
-            let mut s = state.borrow_mut();
-            let flag = s.pane_controls_mut(1).branch_menu_open.clone();
-            *flag.borrow_mut() = true;
-        }
-        let open = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&open, "main") && pane_has(&open, "feature/x"),
-            "both local branches are rows: {open:?}"
-        );
-    }
-
-    /// A scratch repository with a commit on `main` and `feature/x` checked out.
-    /// `None` when git is not on this machine, so the case has nothing to read
-    /// rather than a failure to report.
-    fn repository_on_two_branches() -> Option<tempfile::TempDir> {
-        let dir = tempfile::tempdir().ok()?;
-        let git = |args: &[&str]| -> bool {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(dir.path())
-                .args(args)
-                .output()
-                .map(|out| out.status.success())
-                .unwrap_or(false)
-        };
-        if !git(&["init", "--initial-branch=main"]) {
-            return None;
-        }
-        if !git(&[
-            "-c",
-            "user.email=test@example.com",
-            "-c",
-            "user.name=Test",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "init",
-        ]) {
-            return None;
-        }
-        if !git(&["checkout", "-b", "feature/x"]) {
-            return None;
-        }
-        Some(dir)
-    }
-
-    /// The wheel over the shell's grid follows the platform's sign, the same
-    /// way the transcript and the sidebar do: winit reports how far the
-    /// *content* should move and positive is down (AppKit's `scrollingDeltaY`
-    /// and X11's button 4 both mean "content down"), so a positive delta walks
-    /// back into the scrollback — the wheel-up a pager calls "scroll up" — and
-    /// a negative one returns towards the live screen.
-    #[test]
-    fn the_wheels_sign_scrolls_the_panes_scrollback() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        {
-            let s = state.borrow_mut();
-            // More lines than the grid holds, so there is history to walk into.
-            let mut emulator = Emulator::new(80, 24);
-            for line in 0..120 {
-                emulator.feed(format!("line {line}\r\n").as_bytes());
-            }
-            s.terminal
-                .borrow_mut()
-                .sessions
-                .insert(1, TerminalSession::with_emulator(emulator));
-        }
-        // One frame, so the pane has bounds and the wheel has somewhere to land.
-        let _ = render_element(&mut root, vec2f(1024.0, 768.0), &app);
-
-        let offset = || {
-            state
-                .borrow()
-                .terminal
-                .borrow()
-                .sessions
-                .get(&1)
-                .map(|session| session.view().display_offset)
-                .expect("the pane's session")
-        };
-        let wheel = |root: &mut Box<dyn Element>, dy: f32| {
-            let mut ctx = EventContext;
-            root.dispatch_event(
-                &DispatchedEvent::MouseMove {
-                    position: vec2f(600.0, 300.0),
-                },
-                &mut ctx,
-                &app,
-            );
-            root.dispatch_event(
-                &DispatchedEvent::Scroll {
-                    delta: vec2f(0.0, dy),
-                },
-                &mut ctx,
-                &app,
-            );
-        };
-
-        assert_eq!(offset(), 0, "the pane opens at the live screen");
-        wheel(&mut root, 60.0);
-        let back = offset();
-        assert!(
-            back > 0,
-            "a positive delta walks back into the scrollback: {back}"
-        );
-        wheel(&mut root, -60.0);
-        assert!(
-            offset() < back,
-            "and a negative one returns towards the live screen: {} then {}",
-            back,
-            offset()
-        );
-    }
-
-    /// The pane's bar carries one control beside the close X: the expand
-    /// control that grows the pane over the panes space. Nothing opens a tray
-    /// over the shell's output any more, so the shell keeps the pane's surface
-    /// and the bar keeps one control.
-    #[test]
-    fn the_panes_bar_draws_the_expand_control_and_no_tray() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        {
-            let s = state.borrow_mut();
-            let mut emulator = Emulator::new(80, 24);
-            emulator.feed(b"echo the-pane-keeps-its-output\r\nthe-pane-keeps-its-output\r\n");
-            s.terminal
-                .borrow_mut()
-                .sessions
-                .insert(1, TerminalSession::with_emulator(emulator));
-        }
-
-        let window = vec2f(1024.0, 768.0);
-        let commands = render_element(&mut root, window, &app);
-
-        // The shell's output is on screen as the grid's per-glyph runs.
-        let painted: String = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } if text.chars().count() == 1 => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            painted.contains("the-pane-keeps-its-output"),
-            "the pane paints the shell's output: {painted:?}"
-        );
-
-        let icons: Vec<&String> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawIcon { name, .. } => Some(name),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            icons.iter().any(|name| *name == "maximize-01"),
-            "the pane's bar draws the expand control: {icons:?}"
-        );
-        assert!(
-            !icons.iter().any(|name| *name == "dots-horizontal"),
-            "and no tray trigger: {icons:?}"
-        );
-
-        let drawn: Vec<&String> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text),
-                _ => None,
-            })
-            .collect();
-        for gone in ["Copy", "Restart", "Rename", "Clear transcript", "Fullscreen"] {
-            assert!(
-                !drawn.iter().any(|text| *text == gone),
-                "the tray label {gone} is not drawn over the output: {drawn:?}"
-            );
-        }
-    }
-
-    /// R5: the bar is the pane's only typing surface. An active shell pane hands
-    /// it the keyboard in its own build, a click on the editor keeps it, and a
-    /// click on the output above leaves it where it is: the terminal is where
-    /// commands print, not where they are typed.
-    #[test]
-    fn an_active_shell_pane_keeps_the_keys_in_its_bar() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-
-        // Lay the tree out first: a click is dispatched against the bounds the
-        // bar was laid out with, and the placeholder's own origin is a point
-        // inside the editor that drew it.
-        let runs = pane_runs(&mut root, &app);
-        let placeholder = ChatComposer::new().placeholder().to_string();
-        let editor = runs
-            .iter()
-            .find(|(text, _)| text == &placeholder)
-            .map(|(_, origin)| *origin)
-            .expect("the bar drew its placeholder");
-
-        // The pane's own build decided who holds the keys, and it chose the bar:
-        // the keystroke edits the draft and the shell never sees it.
-        assert!(press(&mut root, &app, "l"), "the bar takes the keystroke");
-        assert_eq!(
-            state.borrow().pane_sessions.get(&1).unwrap().draft,
-            "l",
-            "typing edits this pane's own draft"
-        );
-        assert_eq!(
-            state.borrow().terminal.borrow().input(1),
-            "",
-            "the terminal never receives typed characters"
-        );
-
-        // A click on the bar's editor keeps the keys there.
-        let mut ctx = EventContext;
-        let click = DispatchedEvent::MouseDown {
-            position: Vector2F::new(editor.x + 4.0, editor.y + 4.0),
-            button: 0,
-        };
-        assert!(
-            root.dispatch_event(&click, &mut ctx, &app),
-            "the click lands on the bar"
-        );
-        assert!(
-            press(&mut root, &app, "s"),
-            "the editor still holds the keys"
-        );
-
-        // And a click on the shell's own grid is not a way to type either: the
-        // editor keeps the keys, so the click cannot become terminal input.
-        let grid = Vector2F::new(editor.x, editor.y - 200.0);
-        let click = DispatchedEvent::MouseDown {
-            position: grid,
-            button: 0,
-        };
-        let _ = root.dispatch_event(&click, &mut ctx, &app);
-        assert!(
-            press(&mut root, &app, "a"),
-            "a click on the output does not take the keys from the bar"
-        );
-        assert_eq!(
-            state.borrow().pane_sessions.get(&1).unwrap().draft,
-            "lsa",
-            "every keystroke landed in the bar"
-        );
-        assert_eq!(
-            state.borrow().terminal.borrow().input(1),
-            "",
-            "the click never reaches the shell as input"
-        );
-    }
-
-    /// No runnable model: Cmd+Enter at the shell's bar still opens the agent
-    /// view. The view needs a transcript to draw, so a conversation is bound —
-    /// but nothing is sent into it, and the notice band is what names the
-    /// missing model. The bar keeps the draft, since no turn can take it.
-    #[test]
-    fn a_prompt_with_no_model_still_opens_the_agent_view() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        let _ = pane_runs(&mut root, &app);
-
-        let typed = "explain the last command";
-        for ch in typed.chars() {
-            assert!(press(&mut root, &app, &ch.to_string()));
-        }
-        let cmd_enter = key(
-            "Enter",
-            ModifiersState {
-                command: true,
-                ..ModifiersState::default()
-            },
-        );
-        let mut ctx = EventContext;
-        assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
-
-        let s = state.borrow();
-        assert!(
-            s.pane_controls(1).harness_mode,
-            "the switch to terminal + agent works with no model configured"
-        );
-        let conversation_id = s
-            .pane_conversation_id(1)
-            .expect("the agent view has a conversation of its own to draw");
-        assert_eq!(
-            s.pane_view(1),
-            BlockView::Agent { conversation_id },
-            "the pane shows the agent view"
-        );
-        assert!(
-            s.show_llm_key_banner,
-            "the notice band names the missing model"
-        );
-        assert_eq!(s.llm_notice_heading(), "No API key configured");
-        assert_eq!(
-            s.pane_sessions.get(&1).unwrap().draft,
-            typed,
-            "the bar keeps what was typed"
-        );
-    }
-
-    /// A `cd` typed at the pane's own prompt prints nothing, so the move reaches
-    /// the rich input on the shell-integration channel alone: the prompt that
-    /// followed reports its directory, the frame's pump reads it into the pane's
-    /// session, and the directory pill — which draws that session's path —
-    /// follows on the frame after. Nothing reads the typed line or the output.
-    #[test]
-    fn a_reported_cwd_reaches_the_panes_directory_pill() {
-        use goble_terminal::hooks::{encode_hook, PrecmdValue};
-        use goble_terminal::HookEvent;
-
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        {
-            // The hook the shell sends at the prompt that followed its `cd`,
-            // already in the session the pane draws from.
-            let mut emulator = Emulator::new(80, 24);
-            emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
-                pwd: Some("/b".to_string()),
-                ..Default::default()
-            })));
-            let s = state.borrow_mut();
-            s.terminal
-                .borrow_mut()
-                .sessions
-                .insert(1, TerminalSession::with_emulator(emulator));
-        }
-
-        // The first frame's pump is where the session reads the report; the frame
-        // after it is where the pane's snapshot is built from what it read.
-        let _ = pane_runs(&mut root, &app);
-        let runs = pane_runs(&mut root, &app);
-
-        assert_eq!(
-            state.borrow().composer_path,
-            "/b",
-            "the pane's directory followed its own shell"
-        );
-        assert!(
-            pane_has(&runs, "/b"),
-            "the rich input's directory pill draws it: {runs:?}"
-        );
-    }
-
-    /// The shell's bar is the pane's submit line for *commands*: Enter runs the
-    /// draft in this pane's own PTY and leaves the pane on the shell — it does
-    /// not open the harness, because the agent view has a composer of its own
-    /// that takes prompts. Cmd+Enter is what opens that view. The bar is the
-    /// pane's only typing surface, so it holds the keys whenever the pane is
-    /// active and no full-screen program owns the screen; Esc puts the shell
-    /// back with the conversation's card left behind.
-    #[test]
-    fn the_shells_bar_runs_its_draft_as_a_command_and_cmd_enter_opens_the_agent_view() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-
-        // A model is configured here, because Cmd+Enter below opens a *new*
-        // conversation and nothing is created while nothing could answer it
-        // (that refusal is covered in `terminal/tests::a_prompt_with_no_model`).
-        let rt = tokio::runtime::Runtime::new().expect("build runtime");
-        let _guard = rt.enter();
-        {
-            let mut s = state.borrow_mut();
-            s.settings_llm_provider = "mock".to_string();
-            s.settings_llm_api_key = "test-key".to_string();
-        }
-
-        // No focus flag is set by hand: an active shell pane's own build gives
-        // the bar the keyboard, because typing happens only there.
-        let _ = pane_runs(&mut root, &app);
-        let typed = "ls -la";
-        for ch in typed.chars() {
-            assert!(
-                press(&mut root, &app, &ch.to_string()),
-                "the focused bar takes {ch:?}"
-            );
-        }
-        assert_eq!(
-            state.borrow().pane_sessions.get(&1).unwrap().draft,
-            typed,
-            "typing edits this pane's own draft"
-        );
-
-        // Enter is the command affordance: the draft is submitted to this
-        // pane's PTY and the pane stays on the shell. An agent turn here would
-        // have opened the harness and bound this pane a conversation.
-        assert!(press(&mut root, &app, "Enter"));
-        assert!(
-            !state.borrow().pane_controls(1).harness_mode,
-            "Enter runs a command instead of opening the harness"
-        );
-        assert_eq!(
-            state.borrow().pane_view(1),
-            BlockView::Terminal,
-            "the pane is still the shell after a command"
-        );
-        assert!(
-            state.borrow().pane_conversation_id(1).is_none(),
-            "a command does not bind this pane an agent conversation"
-        );
-        assert_eq!(
-            state.borrow().pane_sessions.get(&1).unwrap().draft,
-            "",
-            "the bar clears after the command"
-        );
-
-        // Cmd+Enter is the way to the agent view: a draft typed at the same bar
-        // opens the harness on this pane's conversation and goes to the agent.
-        for ch in "explain the last command".chars() {
-            assert!(press(&mut root, &app, &ch.to_string()));
-        }
-        let cmd_enter = key(
-            "Enter",
-            ModifiersState {
-                command: true,
-                ..ModifiersState::default()
-            },
-        );
-        let mut ctx = EventContext;
-        assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
-        assert!(
-            state.borrow().pane_controls(1).harness_mode,
-            "Cmd+Enter opens the harness"
-        );
-        let conversation_id = state
-            .borrow()
-            .pane_conversation_id(1)
-            .expect("the pane bound a conversation of its own");
-        assert_eq!(
-            state.borrow().pane_view(1),
-            BlockView::Agent {
-                conversation_id: conversation_id.clone()
-            },
-            "the harness draws the conversation's agent view"
-        );
-        // The open harness is the shared agent view, and the shared composer is
-        // still pinned at the bottom of it.
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&runs, ChatComposer::new().placeholder()),
-            "the agent view carries the shared composer: {runs:?}"
-        );
-
-        // Esc returns the pane to the shell; the card stays in its block list.
-        assert!(press(&mut root, &app, "Escape"));
-        assert_eq!(
-            state.borrow().pane_view(1),
-            BlockView::Terminal,
-            "Esc puts the shell back"
-        );
-        let cards: Vec<String> = state
-            .borrow()
-            .pane_terminal_view(1)
-            .into_iter()
-            .filter_map(|block| block.card.map(|card| card.conversation_id))
-            .collect();
-        assert_eq!(
-            cards,
-            vec![conversation_id.clone()],
-            "the conversation's card stays in the terminal scrollback"
-        );
-
-        // The bar takes the keys back: it is the pane's only typing surface, so
-        // the keystrokes that once reached the shell now edit the draft, and the
-        // shell's input mirror stays empty.
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&runs, ChatComposer::new().placeholder()),
-            "the shell's bar is back at the bottom: {runs:?}"
-        );
-        assert!(press(&mut root, &app, "l"));
-        assert!(press(&mut root, &app, "s"));
-        assert_eq!(
-            state.borrow().pane_sessions.get(&1).unwrap().draft,
-            "ls",
-            "the bar takes the keys"
-        );
-        assert_eq!(
-            state.borrow().terminal.borrow().input(1),
-            "",
-            "the terminal never receives typed characters"
-        );
-
-        // Clicking the card reopens that conversation's agent view. The card's
-        // accent rail is where the card landed.
-        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
-        let rail = commands
-            .iter()
-            .find_map(|c| match c {
-                RenderCommand::FillRect { rect, .. }
-                    if rect.width() == CARD_RAIL_WIDTH && rect.min_x() >= crate::ui::SIDEBAR_WIDTH =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .expect("the terminal view draws the conversation card");
-        let position = Vector2F::new(rail.min_x() + 20.0, rail.min_y() + 8.0);
-        let mut ctx = EventContext;
-        assert!(root.dispatch_event(
-            &DispatchedEvent::MouseDown {
-                position,
-                button: 0
-            },
-            &mut ctx,
-            &app
-        ));
-        assert_eq!(
-            state.borrow().pane_view(1),
-            BlockView::Agent { conversation_id },
-            "clicking the card reopens the conversation's agent view"
-        );
-    }
-
-    /// The runs only the agent surface draws, in the pane's own area: the agent
-    /// rich input's instruction strip and the `esc for terminal` cue the open
-    /// harness leads its bar with. A shell pane draws none of them, and the
-    /// shell's own bar draws the one instruction that belongs to a command line
-    /// (the shared-composer test above pins that side).
-    const AGENT_SURFACE_RUNS: [&str; 4] = ["send", "send to cloud", "tasks", "for terminal"];
-
-    /// S4: a shell pane in terminal mode builds no agent surface and dispatches
-    /// no agent action. Nothing about the pane's kind has made it an agent
-    /// session — its mode is off — so the pane draws the shell, and a
-    /// prompt-shaped line submitted at its bar stays a shell command: no
-    /// conversation is bound to the pane, the pane does not switch itself into
-    /// agent mode, and no turn is attempted (a turn that could not run is what
-    /// would raise the missing-model notice, and it is never reached).
-    #[test]
-    fn a_shell_pane_in_terminal_mode_builds_no_agent_surface_and_dispatches_no_agent_action() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        let _ = pane_runs(&mut root, &app);
-
-        // The pane is a terminal leaf with its own session, out of agent mode.
-        assert!(
-            !state.borrow().pane_controls(1).harness_mode,
-            "a fresh shell pane is not in agent mode"
-        );
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&runs, "new conversation"),
-            "the pane draws its shell's bar: {runs:?}"
-        );
-        for label in AGENT_SURFACE_RUNS {
-            assert!(
-                !pane_has(&runs, label),
-                "a shell pane draws no agent surface, so no {label:?}: {runs:?}"
-            );
-        }
-
-        // A line that reads like a prompt is a command like any other at this
-        // bar. (That the submitted line really ran in the pane's shell is pinned
-        // where the shell reports it — `a_bound_shell_pane_names_its_host...`
-        // above binds the pane from the line it types — and by
-        // `the_shells_bar_runs_its_draft_as_a_command...`.)
-        type_line(&mut root, &app, "explain the last command");
-        assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
-        let s = state.borrow();
-        assert!(
-            !s.pane_controls(1).harness_mode,
-            "Enter runs the line instead of switching the pane into agent mode"
-        );
-        assert_eq!(
-            s.pane_view(1),
-            BlockView::Terminal,
-            "and the pane is still the shell"
-        );
-        assert!(
-            s.pane_conversation_id(1).is_none(),
-            "a shell command binds this pane no conversation"
-        );
-        assert!(
-            !s.show_llm_key_banner,
-            "no agent turn was dispatched (a refused one raises the notice band)"
-        );
-        assert!(
-            !s.pane_runtime.get(&1).map(|rt| rt.busy).unwrap_or(false),
-            "and no turn is running for the pane"
-        );
-        drop(s);
-        assert_eq!(
-            state.borrow().terminal.borrow().input(1),
-            "",
-            "the line was submitted at the bar, not typed into the shell's grid"
-        );
-    }
-
-    /// S4: an SSH-bound pane in terminal mode behaves the same way. Binding the
-    /// pane to a host (S1) is not the switch: the pane is still a terminal, with
-    /// a chip naming where it is, and it stays one through another line.
-    #[test]
-    fn an_ssh_bound_pane_in_terminal_mode_is_still_a_terminal() {
-        /// What the fixture's `web` alias resolves to, as the chip reads it.
-        const CHIP: &str = "deploy@web (web.example.com)";
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        let home = tempfile::tempdir().expect("temp home");
-        std::fs::create_dir_all(home.path().join(".ssh")).expect("fixture .ssh");
-        std::fs::write(
-            home.path().join(".ssh/config"),
-            "Host web\n    HostName web.example.com\n    User deploy\n    Port 2222\n",
-        )
-        .expect("fixture config");
-        state.borrow_mut().settings_ssh_home = Some(home.path().to_path_buf());
-        let _ = pane_runs(&mut root, &app);
-
-        // The line binds the pane to the host it names ...
-        type_line(&mut root, &app, "ssh web");
-        assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
-        assert_eq!(
-            state
-                .borrow()
-                .terminal
-                .borrow()
-                .ssh_session(1)
-                .map(|session| session.host.clone()),
-            Some("web.example.com".to_string()),
-            "the submitted line bound this pane's shell to the host it named"
-        );
-
-        // ... and the bound pane is still a terminal: the chip names the host,
-        // the shell's bar is the surface, and no agent surface is built.
-        assert!(
-            !state.borrow().pane_controls(1).harness_mode,
-            "binding a host does not switch the pane into agent mode"
-        );
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&runs, CHIP),
-            "the bound pane's bar names the host it is on: {runs:?}"
-        );
-        assert!(
-            pane_has(&runs, "new conversation"),
-            "and the pane is still its shell: {runs:?}"
-        );
-        for label in AGENT_SURFACE_RUNS {
-            assert!(
-                !pane_has(&runs, label),
-                "an SSH-bound terminal pane draws no agent surface, so no {label:?}: {runs:?}"
-            );
-        }
-
-        // Another line — prompt-shaped, and nothing the shell can bind — leaves
-        // the pane where it is: on the same session, out of agent mode, with no
-        // conversation and no turn.
-        type_line(&mut root, &app, "explain the last command");
-        assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
-        let s = state.borrow();
-        assert!(
-            !s.pane_controls(1).harness_mode,
-            "the line did not switch the pane into agent mode"
-        );
-        assert!(
-            s.pane_conversation_id(1).is_none(),
-            "and bound it no conversation"
-        );
-        assert!(
-            !s.show_llm_key_banner,
-            "no agent turn was dispatched for it"
-        );
-        assert!(
-            s.terminal.borrow().ssh_session(1).is_some(),
-            "the pane never left the host it is on"
-        );
-    }
-
-    /// S4: the pane's mode is what decides its content shape. A block list
-    /// filtered to a conversation is not an agent pane — the filter says which
-    /// blocks the agent view would draw, not that this pane is one — so with the
-    /// mode off the pane still draws the shell; Cmd+Enter's switch is what puts
-    /// the agent surface over the same session.
-    #[test]
-    fn the_panes_mode_decides_its_surface_and_the_switch_puts_the_agent_surface_up() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        let _ = pane_runs(&mut root, &app);
-
-        // The pane's filter points at a conversation while the mode is off —
-        // the view filter alone, which is what a pane routed to a worker is
-        // left with when the shape takes its harness switch away
-        // (`UiState::viewer_shape`). The switch is the surface decision, so the
-        // filter is written on its own here rather than through
-        // `enter_agent_view`, which enters the agent surface and turns the
-        // switch on with it.
-        state.borrow_mut().pane_controls_mut(1).view = BlockView::Agent {
+    let app = AppContext::default();
+    let block = |command: &str, state: BlockState, exit_code: Option<i32>| VisibleBlock {
+        id: BlockId(1),
+        owner: BlockOwner::Agent {
             conversation_id: "c1".to_string(),
-        };
-        assert!(
-            !state.borrow().pane_controls(1).harness_mode,
-            "the filter was pointed at a conversation without the switch"
-        );
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&runs, "new conversation"),
-            "the pane is still the shell, filter or no filter: {runs:?}"
-        );
-        for label in AGENT_SURFACE_RUNS {
-            assert!(
-                !pane_has(&runs, label),
-                "no agent surface is mounted for it, so no {label:?}: {runs:?}"
-            );
-        }
+            call_id: "call-1".to_string(),
+        },
+        command: command.to_string(),
+        output: String::new(),
+        state,
+        exit_code,
+        pwd: None,
+        git_branch: None,
+        duration: None,
+        prompt: None,
+        card: None,
+    };
 
-        // Cmd+Enter is the switch, and the agent surface is what it draws.
-        type_line(&mut root, &app, "explain");
-        let cmd_enter = key(
-            "Enter",
-            ModifiersState {
-                command: true,
-                ..ModifiersState::default()
-            },
+    let running = block("sleep 30", BlockState::Executing, None);
+    let background = block("tail -f log", BlockState::Background, None);
+    let done = block("ls", BlockState::DoneWithExecution, Some(0));
+    let failed = block("boom", BlockState::DoneWithExecution, Some(2));
+    assert_eq!(block_status(&running), TerminalStatus::Running);
+    assert_eq!(block_status(&background), TerminalStatus::Running);
+    assert_eq!(block_status(&done), TerminalStatus::Success);
+    assert_eq!(block_status(&failed), TerminalStatus::Error);
+
+    // The drawn block, built the way the transcript builds it: the block's
+    // own status, through the one shared renderer.
+    let marks_of = |block: &VisibleBlock| {
+        let data =
+            TerminalData::for_command(block.command.clone(), &block.output, block_status(block));
+        status_marks(&paint(
+            terminal_block(&data, TerminalFilter::default(), None, None),
+            &app,
+        ))
+    };
+    for (block, what) in [
+        (&running, "a still-running block"),
+        (&background, "a promoted-to-background block"),
+    ] {
+        assert_eq!(
+            marks_of(block).0,
+            Some(app.theme.color(ColorToken::Accent)),
+            "{what} stands an accent pole, not a success"
         );
-        assert!(
-            root.dispatch_event(&cmd_enter, &mut EventContext, &app),
-            "Cmd+Enter is taken by the bar"
-        );
-        assert!(
-            state.borrow().pane_controls(1).harness_mode,
-            "Cmd+Enter put the pane in agent mode"
-        );
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&runs, "send to cloud"),
-            "the agent surface's own instruction strip is drawn: {runs:?}"
-        );
-        assert!(
-            pane_has(&runs, "for terminal"),
-            "and its bar leads with the way back to the shell: {runs:?}"
-        );
-        assert!(
-            !pane_has(&runs, "new conversation"),
-            "the shell bar's own instruction is gone with the shell: {runs:?}"
-        );
+        assert!(!marks_of(block).1, "{what} is not washed as a failure");
     }
+    assert_eq!(
+        marks_of(&done).0,
+        None,
+        "a finished zero-exit block draws no pole"
+    );
+    assert!(!marks_of(&done).1, "and no failure wash");
+    assert_eq!(
+        marks_of(&failed).0,
+        Some(app.theme.color(ColorToken::Error)),
+        "a finished non-zero-exit block stands the error pole"
+    );
+    assert!(
+        marks_of(&failed).1,
+        "and washes the block in the error colour"
+    );
+}
 
-    /// S3: the words the busy shell's refusal draws. They are the reference's
-    /// own (`EnterAgentViewError::LongRunningCommand`), and the pane draws them
-    /// over the shell it stayed on, so the chord never does nothing silently.
-    const BUSY_REFUSAL: &str = "Cannot enter agent mode while a command is running.";
+/// R8: the pane's executed-command block reads the block's own status
+/// instead of asserting success. A command that is still running draws as
+/// running, and a finished non-zero exit draws as an error.
+#[test]
+fn the_executed_command_block_reads_the_blocks_status() {
+    use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PreexecValue};
+    use goble_terminal::HookEvent;
 
-    /// A pane's session with a finished command's output on it and the pane's
-    /// current shell line still running: the state a pane is in while a local
-    /// `ssh` holds the shell, since the command that is running *is* the
-    /// session. The output is what the switch must not cost the pane.
-    fn session_holding_a_line(output: &str) -> TerminalSession {
-        use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PreexecValue};
-        use goble_terminal::HookEvent;
-
+    let session = |command: &str, exit: Option<i32>| {
         let mut emulator = Emulator::new(80, 24);
         emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
         emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
-            command: Some("echo S3-MARKER".to_string()),
+            command: Some(command.to_string()),
         })));
-        emulator.feed(format!("echo S3-MARKER\r\n{output}\r\n").as_bytes());
-        emulator.feed(&encode_hook(&HookEvent::CommandFinished(
-            CommandFinishedValue {
-                exit_code: 0,
-                ..Default::default()
-            },
-        )));
-        // The line the shell is inside now: no `CommandFinished` follows it
-        // while the user is on the host.
-        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
-            command: Some("ssh web".to_string()),
-        })));
-        TerminalSession::with_emulator(emulator)
-    }
-
-    /// S3: `Cmd+Enter` on a shell pane bound to an SSH session enters terminal +
-    /// agent mode on the **same** session, and Esc brings it back out on that
-    /// same session: the binding is the one from before the switch in both
-    /// directions, and the output the shell had already printed is still on the
-    /// pane afterwards. The bound pane is the one the switch exists for, and the
-    /// command its shell is running is the `ssh` line itself, so the busy guard
-    /// must not refuse it.
-    #[test]
-    fn cmd_enter_switches_an_ssh_bound_pane_to_the_agent_view_on_the_same_session() {
-        /// What the fixture's `web` alias resolves to, as the chip reads it.
-        const CHIP: &str = "deploy@web (web.example.com)";
-        const MARKER: &str = "S3-MARKER";
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        let home = tempfile::tempdir().expect("temp home");
-        std::fs::create_dir_all(home.path().join(".ssh")).expect("fixture .ssh");
-        std::fs::write(
-            home.path().join(".ssh/config"),
-            "Host web\n    HostName web.example.com\n    User deploy\n    Port 2222\n",
-        )
-        .expect("fixture config");
-        {
-            let mut s = state.borrow_mut();
-            s.settings_ssh_home = Some(home.path().to_path_buf());
-            s.terminal
-                .borrow_mut()
-                .sessions
-                .insert(1, session_holding_a_line(MARKER));
+        emulator.feed(format!("{command}\r\noutput\r\n").as_bytes());
+        if let Some(exit_code) = exit {
+            emulator.feed(&encode_hook(&HookEvent::CommandFinished(
+                CommandFinishedValue {
+                    exit_code,
+                    ..Default::default()
+                },
+            )));
         }
-        let _ = pane_runs(&mut root, &app);
+        TerminalSession::with_emulator(emulator)
+    };
 
-        // The line the user submits at the bar binds the pane to its host, and
-        // the shell it runs in is inside that line from then on.
-        type_line(&mut root, &app, "ssh web");
-        assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
-        let before = state
+    let running = executed_command_block(&session("sleep 30", None))
+        .expect("a running command still draws its block");
+    assert_eq!(running.status, Some(TerminalStatus::Running));
+
+    let failed = executed_command_block(&session("boom", Some(2)))
+        .expect("a failed command draws its block");
+    assert_eq!(failed.status, Some(TerminalStatus::Error));
+}
+
+/// A `RootView` mounted on a single shell (PTY) space, so the pane's own
+/// events, the app's real actions and the per-frame rebuild are what the
+/// test drives. The pane's session is detached (no pty): the pane has a
+/// real grid/session to draw and route against without spawning a shell.
+fn shell_root() -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir) {
+    use crate::root_view::RootView;
+    use crate::ui::{Pane, PaneKind, Space};
+    use goble_core::store::Store;
+    use goble_desktop_service::{DesktopState, ThreadStore};
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().expect("temp thread-store dir");
+    let desktop = Arc::new(DesktopState::new(
+        Store::open_in_memory().expect("in-memory store"),
+        ThreadStore::new(dir.path()).expect("thread store"),
+    ));
+    let root = RootView::new(&AppContext::default(), &desktop, None);
+    let state = root.state_rc();
+    {
+        let mut s = state.borrow_mut();
+        s.show_workspace_choice = false;
+        s.show_llm_key_banner = false;
+        s.right_sidebar_open = false;
+        s.crons_open = false;
+        s.spaces = vec![Space::new(
+            "Shell",
+            Pane::Leaf {
+                id: 1,
+                kind: PaneKind::Terminal,
+            },
+        )];
+        s.active_space = 0;
+        s.active_pane_id = 1;
+        // The fixture turns the default chat pane into a terminal: a
+        // terminal owns no conversation until its first agent turn, and
+        // has no sidebar selection to fall back to.
+        if let Some(session) = s.pane_sessions.get_mut(&1) {
+            session.conversation_id.clear();
+        }
+        s.selected_id = None;
+        s.ensure_pane_controls();
+        s.terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, TerminalSession::with_emulator(Emulator::new(80, 24)));
+    }
+    (Box::new(root) as Box<dyn Element>, state, dir)
+}
+
+/// A `RootView` on the default space (the chat pane), the surface the shell
+/// pane must match.
+fn chat_root() -> (Box<dyn Element>, tempfile::TempDir) {
+    use crate::root_view::RootView;
+    use goble_core::store::Store;
+    use goble_desktop_service::{DesktopState, ThreadStore};
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().expect("temp thread-store dir");
+    let desktop = Arc::new(DesktopState::new(
+        Store::open_in_memory().expect("in-memory store"),
+        ThreadStore::new(dir.path()).expect("thread store"),
+    ));
+    let root = RootView::new(&AppContext::default(), &desktop, None);
+    let state = root.state_rc();
+    {
+        let mut s = state.borrow_mut();
+        s.show_workspace_choice = false;
+        s.show_llm_key_banner = false;
+        s.right_sidebar_open = false;
+        s.crons_open = false;
+        s.terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, TerminalSession::with_emulator(Emulator::new(80, 24)));
+    }
+    (Box::new(root) as Box<dyn Element>, dir)
+}
+
+/// The drawn runs of the pane's own area: a run left of the sidebar is the
+/// sidebar quoting a conversation, not the pane.
+fn pane_runs(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<(String, Vector2F)> {
+    render_element(root, vec2f(1024.0, 768.0), app)
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawText { origin, text, .. }
+                if origin.x >= crate::ui::SIDEBAR_WIDTH =>
+            {
+                Some((text.clone(), *origin))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn pane_has(runs: &[(String, Vector2F)], text: &str) -> bool {
+    runs.iter().any(|(t, _)| t == text)
+}
+
+/// The pane-wide rules of the pane's own area, top down: its separators.
+fn pane_rules(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<f32> {
+    render_element(root, vec2f(1024.0, 768.0), app)
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::FillRect { rect, .. }
+                if rect.height() <= 2.0
+                    && rect.width() > 200.0
+                    && rect.min_x() >= crate::ui::SIDEBAR_WIDTH =>
+            {
+                Some(rect.min_y())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Dispatch one plain key through the whole app tree, so the pane's own
+/// routing is exercised where the app runs it.
+fn press(root: &mut Box<dyn Element>, app: &AppContext, name: &str) -> bool {
+    let mut ctx = EventContext;
+    root.dispatch_event(&key(name, ModifiersState::none()), &mut ctx, app)
+}
+
+/// Type `text` at whatever holds the keys, one character per key event, the
+/// way the window delivers it. Every character must be taken, so a surface
+/// that swallowed one cannot pass for one that typed the line.
+fn type_line(root: &mut Box<dyn Element>, app: &AppContext, text: &str) {
+    for c in text.chars() {
+        assert!(
+            press(root, app, &c.to_string()),
+            "{c:?} was taken by the surface"
+        );
+    }
+}
+
+/// R5: the shell pane's bottom bar is the chat surface's own composer, not a
+/// bespoke second one. It draws the shared `ChatComposer`'s placeholder —
+/// the very string the chat pane's composer draws — and the pty-only `❯`
+/// input line this replaces is gone.
+#[test]
+fn the_shells_bottom_bar_is_the_shared_composer() {
+    let app = AppContext::default();
+    let (mut root, _state, _dir) = shell_root();
+    let (mut chat, _chat_dir) = chat_root();
+    let placeholder = ChatComposer::new().placeholder().to_string();
+
+    let shell_runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&shell_runs, &placeholder),
+        "the shell pane draws the shared composer's placeholder {placeholder:?}: {shell_runs:?}"
+    );
+    assert!(
+        !pane_has(&shell_runs, "❯"),
+        "the bespoke terminal input line is gone: {shell_runs:?}"
+    );
+
+    let chat_runs = pane_runs(&mut chat, &app);
+    assert!(
+        pane_has(&chat_runs, &placeholder),
+        "the chat pane draws that same composer: {chat_runs:?}"
+    );
+
+    // The bar carries the one instruction that applies to a command line:
+    // Cmd/Ctrl+Enter leaves the shell for a new agent conversation, and that
+    // chord is named under the bar. The agent rich input's own vocabulary —
+    // what Enter runs, what `!` runs — does not describe this line, which is
+    // a command already.
+    assert!(
+        pane_has(&shell_runs, "new conversation"),
+        "the shell bar names the gesture that opens a new conversation: {shell_runs:?}"
+    );
+    for label in ["run", "agent", "send", "shell", "commands", "tasks"] {
+        assert!(
+            !pane_has(&shell_runs, label),
+            "the shell bar draws no instruction {label:?}: {shell_runs:?}"
+        );
+    }
+    assert!(
+        pane_has(&chat_runs, "send") && pane_has(&chat_runs, "send to cloud"),
+        "the chat pane draws its own instructions: {chat_runs:?}"
+    );
+
+    // The shell's one instruction is the exception to the pane's rule that
+    // its instructions are the strip over the input's separator: it is
+    // drawn inside the bar, under that separator, where the line it opens
+    // from is typed.
+    let hint = pane_runs(&mut root, &app)
+        .into_iter()
+        .find(|(text, _)| text == "new conversation")
+        .map(|(_, origin)| origin.y)
+        .expect("the shell bar names the gesture that opens a conversation");
+    let separator = pane_rules(&mut root, &app)
+        .into_iter()
+        .filter(|y| *y < hint)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        separator.is_finite(),
+        "the bar has a separator over it (hint at {hint})"
+    );
+    assert!(
+                separator < hint,
+                "the shell's instruction is inside the input, under its separator ({separator} against {hint})"
+            );
+}
+
+/// The shell pane's rich input is pinned to the bottom of the pane, the
+/// same way the chat surface pins its own: the shell's history can be empty
+/// or long, and the bar stays on the last row either way.
+#[test]
+fn the_shells_composer_sits_at_the_bottom_of_the_pane() {
+    let app = AppContext::default();
+    let (mut root, _state, _dir) = shell_root();
+    let placeholder = ChatComposer::new().placeholder().to_string();
+    let y = pane_runs(&mut root, &app)
+        .into_iter()
+        .find(|(text, _)| *text == placeholder)
+        .map(|(_, origin)| origin.y)
+        .expect("the shell draws the shared composer");
+    assert!(
+        y > 768.0 * 0.6,
+        "the shell's rich input sits at the bottom of the pane: {y} of 768"
+    );
+
+    let (mut chat, _chat_dir) = chat_root();
+    let y = pane_runs(&mut chat, &app)
+        .into_iter()
+        .find(|(text, _)| *text == placeholder)
+        .map(|(_, origin)| origin.y)
+        .expect("the chat draws the shared composer");
+    assert!(
+        y > 768.0 * 0.6,
+        "the chat's rich input sits at the bottom of the pane: {y} of 768"
+    );
+}
+
+/// A shell that has bootstrapped but has not run a command yet draws an empty
+/// body. The body still takes the space above the bar, so the rich input stays
+/// on the pane's last row instead of rising to the top.
+#[test]
+fn a_bootstrapped_shell_with_no_command_keeps_its_composer_at_the_bottom() {
+    use goble_terminal::hooks::encode_hook;
+    use goble_terminal::HookEvent;
+
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    {
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+        state
+            .borrow()
+            .terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, TerminalSession::with_emulator(emulator));
+    }
+    let placeholder = ChatComposer::new().placeholder().to_string();
+    let y = pane_runs(&mut root, &app)
+        .into_iter()
+        .find(|(text, _)| *text == placeholder)
+        .map(|(_, origin)| origin.y)
+        .expect("the bootstrapped shell draws the shared composer");
+    assert!(
+        y > 768.0 * 0.6,
+        "the empty shell's rich input still sits at the bottom: {y} of 768"
+    );
+}
+
+/// S2: the shell bar names the host a submitted `ssh` line bound the pane
+/// to, driven by the bound session itself — and a pane at a local shell
+/// draws no such chip, because the absence is the statement. Clearing the
+/// binding (`exit`) takes the chip away again.
+#[test]
+fn a_bound_shell_pane_names_its_host_and_clearing_the_binding_removes_it() {
+    /// What the fixture's `web` alias resolves to, as the chip reads it.
+    const CHIP: &str = "deploy@web (web.example.com)";
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    // The machine's `~/.ssh/config` is a fixture here, so the address on the
+    // chip is the file's and never the developer's own.
+    let home = tempfile::tempdir().expect("temp home");
+    std::fs::create_dir_all(home.path().join(".ssh")).expect("fixture .ssh");
+    std::fs::write(
+        home.path().join(".ssh/config"),
+        "Host web\n    HostName web.example.com\n    User deploy\n    Port 2222\n",
+    )
+    .expect("fixture config");
+    state.borrow_mut().settings_ssh_home = Some(home.path().to_path_buf());
+
+    // A local shell: no chip anywhere in the pane.
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        !pane_has(&runs, CHIP),
+        "a local shell names no host: {runs:?}"
+    );
+
+    // The line the user submits at the bar binds the pane to the host it
+    // names (S1) ...
+    type_line(&mut root, &app, "ssh web");
+    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+    assert_eq!(
+        state
             .borrow()
             .terminal
             .borrow()
             .ssh_session(1)
-            .cloned()
-            .expect("the submitted line bound this pane's shell to its host");
-        assert_eq!(before.host, "web.example.com");
+            .map(|session| session.host.clone()),
+        Some("web.example.com".to_string()),
+        "the submitted line bound this pane's shell to the host it named"
+    );
 
-        // What the pane is before the switch: a terminal on that host, with the
-        // output the shell already printed still on it.
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&runs, CHIP),
-            "the bound pane names the host it is on: {runs:?}"
-        );
-        assert!(
-            pane_has(&runs, MARKER),
-            "and the shell's earlier output is still drawn: {runs:?}"
-        );
+    // ... and the chip over the input names it.
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&runs, CHIP),
+        "the bound pane's bar names the host it is on: {runs:?}"
+    );
 
-        // Cmd+Enter is the switch. It is not a restart and not a second
-        // connection: the pane's binding and its history are the same objects.
-        let cmd_enter = key(
-            "Enter",
-            ModifiersState {
-                command: true,
-                ..ModifiersState::default()
-            },
-        );
-        assert!(
-            root.dispatch_event(&cmd_enter, &mut EventContext, &app),
-            "Cmd+Enter is taken by the bar"
-        );
-        let s = state.borrow();
-        assert!(
-            s.pane_controls(1).harness_mode,
-            "Cmd+Enter put the SSH-bound pane in agent mode"
-        );
-        let conversation_id = s
-            .pane_conversation_id(1)
-            .expect("the agent view has a conversation of its own to draw");
-        assert_eq!(
-            s.pane_view(1),
-            BlockView::Agent { conversation_id },
-            "the pane shows the agent view over the shell it was on"
-        );
-        assert_eq!(
-            s.terminal.borrow().ssh_session(1),
-            Some(&before),
-            "the session is the one from before the switch, not a reconnected one"
-        );
-        assert!(
-            s.pane_controls(1).harness_refusal.is_none(),
-            "the switch was made, so there is no refusal to draw"
-        );
-        assert!(
-            s.pane_terminal_view(1)
-                .iter()
-                .any(|block| block.command == "echo S3-MARKER"),
-            "the shell's earlier command is still the pane's history"
-        );
-        drop(s);
+    // The pane's other surface is the same pane on the same session, so its
+    // agent view (Cmd+Enter) names the same host over its own input.
+    let cmd_enter = key(
+        "Enter",
+        ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        },
+    );
+    assert!(
+        root.dispatch_event(&cmd_enter, &mut EventContext, &app),
+        "Cmd+Enter is taken by the bar"
+    );
+    assert!(
+        state.borrow().pane_controls(1).harness_mode,
+        "Cmd+Enter opened the pane's harness"
+    );
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&runs, CHIP),
+        "the pane's agent view names the same host: {runs:?}"
+    );
+    assert!(
+        press(&mut root, &app, "Escape"),
+        "Esc is the way back to the shell"
+    );
+    assert!(
+        !state.borrow().pane_controls(1).harness_mode,
+        "Escape put the harness away"
+    );
+    // The shell's own bar is the surface again, and it still names the host:
+    // the pane never left the session.
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&runs, CHIP),
+        "the shell's bar names the host again: {runs:?}"
+    );
 
-        let runs = pane_runs(&mut root, &app);
-        for label in AGENT_SURFACE_RUNS {
-            assert!(
-                pane_has(&runs, label),
-                "the agent surface is up over the same shell, so {label:?} is drawn: {runs:?}"
-            );
-        }
-        assert!(
-            pane_has(&runs, CHIP),
-            "and its input names the same host: {runs:?}"
-        );
+    // `exit` is the way back to a local shell, and the chip goes with the
+    // binding instead of lingering as a stale name.
+    type_line(&mut root, &app, "exit");
+    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+    assert!(
+        state.borrow().terminal.borrow().ssh_session(1).is_none(),
+        "exit returned the pane to a local shell"
+    );
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        !pane_has(&runs, CHIP),
+        "the chip goes with the binding: {runs:?}"
+    );
+}
 
-        // Esc is the way back out, and it does not drop the session either.
-        assert!(
-            press(&mut root, &app, "Escape"),
-            "Esc is taken by the agent view"
-        );
-        let s = state.borrow();
-        assert!(
-            !s.pane_controls(1).harness_mode,
-            "Esc returned the pane to its shell"
-        );
-        assert_eq!(
-            s.pane_view(1),
-            BlockView::Terminal,
-            "and pointed it back at the shell's own history"
-        );
-        assert_eq!(
-            s.terminal.borrow().ssh_session(1),
-            Some(&before),
-            "the session outlived the round trip"
-        );
-        drop(s);
-
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&runs, "new conversation"),
-            "the shell's own bar is back: {runs:?}"
-        );
-        assert!(
-            pane_has(&runs, MARKER),
-            "and the output from before the switch is still drawn: {runs:?}"
-        );
-        assert!(
-            pane_has(&runs, CHIP),
-            "with the chip still naming the host: {runs:?}"
-        );
+/// The directory pill's menu is a window onto the machine: while it is open
+/// it lists the directories under this pane's working directory — sorted,
+/// hidden entries and plain files left out, the way up last — and while it is
+/// closed it reads nothing at all, so a dropped menu costs no disk.
+#[test]
+fn the_directory_menu_lists_the_panes_subdirectories_and_the_way_up() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let home = tempfile::tempdir().expect("temp home");
+    std::fs::create_dir(home.path().join("goble")).unwrap();
+    std::fs::create_dir(home.path().join(".hidden")).unwrap();
+    std::fs::write(home.path().join("notes.txt"), "not a directory").unwrap();
+    let cwd = home.path().to_string_lossy().to_string();
+    {
+        let mut s = state.borrow_mut();
+        s.set_pane_path(1, cwd);
     }
 
-    /// S3: the entry guard. A pane that is already in the agent view enters no
-    /// second one. A click on a conversation card enters that conversation's
-    /// view, and a `Cmd+Enter` that arrives before the next frame's rebuild
-    /// lands on the tree that drew the shell — so the chord really does reach
-    /// the entry point twice. The second entry must bind no second conversation
-    /// and point the pane at no second view: the reference's guard for this
-    /// direction is `AlreadyInAgentView`.
-    #[test]
-    fn cmd_enter_on_a_pane_already_in_the_agent_view_pushes_nothing_again() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        // The tree in hand drew the shell: it is what the card click left
-        // behind, and its bar is the shell's.
-        let _ = pane_runs(&mut root, &app);
-        {
-            let mut s = state.borrow_mut();
-            s.pane_controls_mut(1).harness_mode = true;
-            s.enter_agent_view(1, "c1", "A conversation");
-        }
-        assert!(
-            !state.borrow().pane_owns_conversation(1),
-            "the card's conversation is not the pane's own"
-        );
+    let closed = pane_runs(&mut root, &app);
+    assert!(
+        !pane_has(&closed, "goble"),
+        "a closed menu lists nothing: {closed:?}"
+    );
 
-        let cmd_enter = key(
-            "Enter",
-            ModifiersState {
-                command: true,
-                ..ModifiersState::default()
-            },
-        );
-        assert!(
-            root.dispatch_event(&cmd_enter, &mut EventContext, &app),
-            "the tree's bar takes the chord"
-        );
+    {
+        let mut s = state.borrow_mut();
+        let flag = s.pane_controls_mut(1).dir_menu_open.clone();
+        *flag.borrow_mut() = true;
+    }
+    let open = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&open, "goble"),
+        "the subdirectory is a row: {open:?}"
+    );
+    assert!(
+        pane_has(&open, crate::ui::pickers::PARENT_LABEL),
+        "the way up is a row: {open:?}"
+    );
+    assert!(
+        !pane_has(&open, ".hidden") && !pane_has(&open, "notes.txt"),
+        "only visible directories are rows: {open:?}"
+    );
+}
 
-        let s = state.borrow();
-        assert!(
-            s.pane_controls(1).harness_mode,
-            "the pane is still in agent mode"
-        );
-        assert_eq!(
-            s.pane_view(1),
-            BlockView::Agent {
-                conversation_id: "c1".to_string()
-            },
-            "and still shows the conversation it was already showing"
-        );
-        assert!(
-            !s.pane_owns_conversation(1),
-            "no second conversation was bound behind the one on screen"
-        );
-        assert!(
-            s.pane_controls(1).harness_refusal.is_none(),
-            "and nothing was refused: the entry was already made"
-        );
+/// The branch pill's menu is the repository's own branch list, read while the
+/// menu is open: every local branch is a row, not just the one the pane is
+/// on. The other branch's name is the discriminator — the pill draws the
+/// current one whether the menu is open or not.
+#[test]
+fn the_branch_menu_lists_the_repositorys_local_branches() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let Some(repo) = repository_on_two_branches() else {
+        return; // no git on this machine: there is no list to read
+    };
+    let cwd = repo.path().to_string_lossy().to_string();
+    {
+        let mut s = state.borrow_mut();
+        s.set_pane_path(1, cwd);
     }
 
-    /// S3: the busy guard, and the fact that it speaks. A pane whose own shell
-    /// is running a command does not switch — the harness could not run in it,
-    /// since its command could not be claimed — and the pane says why over the
-    /// shell it stayed on. The reason is only good while the state that produced
-    /// it holds: once the shell is back at a prompt the switch is made and the
-    /// line is not drawn again.
-    #[test]
-    fn a_command_running_in_the_panes_own_shell_refuses_the_switch_and_says_so() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        {
-            let s = state.borrow();
-            let mut registry = s.terminal.borrow_mut();
-            // A local shell inside `cargo build`: `Preexec` arrived, no
-            // `CommandFinished` yet.
-            registry
-                .sessions
-                .insert(1, session_with_a_command_running("cargo build"));
+    let closed = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&closed, "feature/x"),
+        "the pill names the branch the repository is on: {closed:?}"
+    );
+    assert!(
+        !pane_has(&closed, "main"),
+        "a closed menu lists nothing: {closed:?}"
+    );
+
+    {
+        let mut s = state.borrow_mut();
+        let flag = s.pane_controls_mut(1).branch_menu_open.clone();
+        *flag.borrow_mut() = true;
+    }
+    let open = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&open, "main") && pane_has(&open, "feature/x"),
+        "both local branches are rows: {open:?}"
+    );
+}
+
+/// A scratch repository with a commit on `main` and `feature/x` checked out.
+/// `None` when git is not on this machine, so the case has nothing to read
+/// rather than a failure to report.
+fn repository_on_two_branches() -> Option<tempfile::TempDir> {
+    let dir = tempfile::tempdir().ok()?;
+    let git = |args: &[&str]| -> bool {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    };
+    if !git(&["init", "--initial-branch=main"]) {
+        return None;
+    }
+    if !git(&[
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=Test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "init",
+    ]) {
+        return None;
+    }
+    if !git(&["checkout", "-b", "feature/x"]) {
+        return None;
+    }
+    Some(dir)
+}
+
+/// The wheel over the shell's grid follows the platform's sign, the same
+/// way the transcript and the sidebar do: winit reports how far the
+/// *content* should move and positive is down (AppKit's `scrollingDeltaY`
+/// and X11's button 4 both mean "content down"), so a positive delta walks
+/// back into the scrollback — the wheel-up a pager calls "scroll up" — and
+/// a negative one returns towards the live screen.
+#[test]
+fn the_wheels_sign_scrolls_the_panes_scrollback() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    {
+        let s = state.borrow_mut();
+        // More lines than the grid holds, so there is history to walk into.
+        let mut emulator = Emulator::new(80, 24);
+        for line in 0..120 {
+            emulator.feed(format!("line {line}\r\n").as_bytes());
         }
-        let _ = pane_runs(&mut root, &app);
-
-        let cmd_enter = key(
-            "Enter",
-            ModifiersState {
-                command: true,
-                ..ModifiersState::default()
-            },
-        );
-        assert!(
-            root.dispatch_event(&cmd_enter, &mut EventContext, &app),
-            "Cmd+Enter is taken by the bar"
-        );
-        let s = state.borrow();
-        assert!(
-            !s.pane_controls(1).harness_mode,
-            "a shell that is running a command does not switch"
-        );
-        assert!(
-            !s.pane_owns_conversation(1),
-            "and the refusal binds the pane no conversation"
-        );
-        assert_eq!(
-            s.pane_view(1),
-            BlockView::Terminal,
-            "the pane is still the shell it was"
-        );
-        drop(s);
-
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            pane_has(&runs, BUSY_REFUSAL),
-            "the refusal is drawn over the shell the pane stayed on: {runs:?}"
-        );
-        assert!(
-            pane_has(&runs, "new conversation"),
-            "which is still that shell: {runs:?}"
-        );
-
-        // The command finishes. The pane is ready for the switch now, so the
-        // reason is no longer drawn — and the same chord makes the switch.
-        state
-            .borrow_mut()
-            .terminal
+        s.terminal
             .borrow_mut()
             .sessions
-            .insert(1, session_that_ran("cargo build", "Compiling goble v0.1.0"));
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            !pane_has(&runs, BUSY_REFUSAL),
-            "a reason that no longer holds is never drawn: {runs:?}"
-        );
-        assert!(
-            root.dispatch_event(&cmd_enter, &mut EventContext, &app),
-            "Cmd+Enter is taken by the bar"
-        );
-        assert!(
-            state.borrow().pane_controls(1).harness_mode,
-            "the switch the command was holding up is made once it is done"
-        );
+            .insert(1, TerminalSession::with_emulator(emulator));
     }
+    // One frame, so the pane has bounds and the wheel has somewhere to land.
+    let _ = render_element(&mut root, vec2f(1024.0, 768.0), &app);
 
-    /// The session of a local shell that is mid-command: the integration
-    /// handshake, a `Preexec` and no `CommandFinished`, so the command's block
-    /// is still executing and the shell is not at a prompt.
-    fn session_with_a_command_running(command: &str) -> TerminalSession {
-        use goble_terminal::hooks::{encode_hook, PreexecValue};
-        use goble_terminal::HookEvent;
-
-        let mut emulator = Emulator::new(80, 24);
-        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
-        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
-            command: Some(command.to_string()),
-        })));
-        emulator.feed(format!("{command}\r\n").as_bytes());
-        TerminalSession::with_emulator(emulator)
-    }
-
-    /// The focused pane's corner mark is drawn over the left end of the pane's
-    /// own bar, so the bar starts past it. The harness's "esc for terminal" hint
-    /// leads that bar, and without the room the mark leaves it would sit under
-    /// the mark and read as one glyph with it.
-    #[test]
-    fn the_harness_hint_starts_past_the_focus_mark() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        // One frame first: the bar takes the keys once it is on screen.
-        let _ = pane_runs(&mut root, &app);
-        // Cmd+Enter is what opens the pane's harness, and the open harness is
-        // the only view whose bar leads with the hint.
-        for ch in "explain".chars() {
-            assert!(press(&mut root, &app, &ch.to_string()));
-        }
-        let cmd_enter = key(
-            "Enter",
-            ModifiersState {
-                command: true,
-                ..ModifiersState::default()
-            },
-        );
+    let offset = || {
+        state
+            .borrow()
+            .terminal
+            .borrow()
+            .sessions
+            .get(&1)
+            .map(|session| session.view().display_offset)
+            .expect("the pane's session")
+    };
+    let wheel = |root: &mut Box<dyn Element>, dy: f32| {
         let mut ctx = EventContext;
-        assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
-        assert!(
-            state.borrow().pane_controls(1).harness_mode,
-            "the harness is open, so its bar is the one on screen"
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: vec2f(600.0, 300.0),
+            },
+            &mut ctx,
+            &app,
         );
-        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        root.dispatch_event(
+            &DispatchedEvent::Scroll {
+                delta: vec2f(0.0, dy),
+            },
+            &mut ctx,
+            &app,
+        );
+    };
 
-        let (mark, mark_size) = commands
-            .iter()
-            .find_map(|c| match c {
-                RenderCommand::DrawIcon {
-                    origin, name, size, ..
-                } if name == "upper-left-triangle" => Some((*origin, *size)),
-                _ => None,
-            })
-            .expect("the focused pane draws its corner mark");
-        let esc = commands
-            .iter()
-            .find_map(|c| match c {
-                RenderCommand::DrawText { origin, text, .. } if text == "esc" => Some(*origin),
-                _ => None,
-            })
-            .expect("the harness bar leads with the esc hint");
-        assert!(
-            esc.x >= mark.x + mark_size,
-            "the hint starts past the mark: esc at {esc:?}, mark at {mark:?} sized {mark_size}"
-        );
+    assert_eq!(offset(), 0, "the pane opens at the live screen");
+    wheel(&mut root, 60.0);
+    let back = offset();
+    assert!(
+        back > 0,
+        "a positive delta walks back into the scrollback: {back}"
+    );
+    wheel(&mut root, -60.0);
+    assert!(
+        offset() < back,
+        "and a negative one returns towards the live screen: {} then {}",
+        back,
+        offset()
+    );
+}
+
+/// The pane's bar carries one control beside the close X: the expand
+/// control that grows the pane over the panes space. Nothing opens a tray
+/// over the shell's output any more, so the shell keeps the pane's surface
+/// and the bar keeps one control.
+#[test]
+fn the_panes_bar_draws_the_expand_control_and_no_tray() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    {
+        let s = state.borrow_mut();
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(b"echo the-pane-keeps-its-output\r\nthe-pane-keeps-its-output\r\n");
+        s.terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, TerminalSession::with_emulator(emulator));
     }
 
-    /// R6: the app's conversation card is A8's `ConversationCard` element, not
-    /// a private bordered container. It paints its status rail and no border.
-    #[test]
-    fn the_conversation_card_is_card_free() {
-        let app = AppContext::default();
-        let mut card = build_card(&AgentViewCard {
-            conversation_id: "c1".to_string(),
-            label: "Fix the build".to_string(),
-        });
-        let commands = render_element(&mut card, vec2f(420.0, 40.0), &app);
+    let window = vec2f(1024.0, 768.0);
+    let commands = render_element(&mut root, window, &app);
 
-        let strokes = commands
-            .iter()
-            .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
-            .count();
-        assert_eq!(strokes, 0, "the conversation card draws no border");
-
-        // The accent rail is the card element's own mark, not a bordered box.
-        let rail = commands.iter().find_map(|c| match c {
-            RenderCommand::FillRect {
-                rect,
-                corner_radius,
-                ..
-            } if rect.width() == CARD_RAIL_WIDTH => Some(*corner_radius),
-            _ => None,
-        });
-        assert_eq!(
-            rail,
-            Some(0.0),
-            "the card element paints its square status rail"
-        );
-    }
-
-    /// R3/B3: a terminal command is a section of its own, headed by warp-new's
-    /// block label — one mono prompt row carrying the directory it ran in, the
-    /// branch and how long it took — with the command itself drawn once, on the
-    /// section's `❯` line. (This replaces the assertion that each part was its
-    /// own label: the header is one prompt row now, so it asserts that row.)
-    #[test]
-    fn a_command_is_drawn_as_a_section_with_its_directory_and_duration() {
-        use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PrecmdValue, PreexecValue};
-        use goble_terminal::HookEvent;
-
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        let home = std::env::var("HOME").expect("a home directory for the ~ path");
-        let workdir = format!("{home}/Projects/goble");
-        {
-            let mut emulator = Emulator::new(80, 24);
-            emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
-            emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
-                pwd: Some(workdir.clone()),
-                git_branch: Some("main".to_string()),
-                ..Default::default()
-            })));
-            emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
-                command: Some("cargo test".to_string()),
-            })));
-            emulator.feed(b"42 passed\r\n");
-            emulator.feed(&encode_hook(&HookEvent::CommandFinished(
-                CommandFinishedValue {
-                    exit_code: 0,
-                    ..Default::default()
-                },
-            )));
-            state
-                .borrow_mut()
-                .terminal
-                .borrow_mut()
-                .sessions
-                .insert(1, TerminalSession::with_emulator(emulator));
-        }
-
-        let runs = pane_runs(&mut root, &app);
-        let prompt = runs
-            .iter()
-            .map(|(text, _)| text.clone())
-            .find(|text| text.starts_with("~/Projects/goble"))
-            .unwrap_or_else(|| panic!("the section header is one prompt row: {runs:?}"));
-        assert!(
-            prompt.contains("git:(main)"),
-            "the prompt row names the branch it ran on: {prompt:?}"
-        );
-        assert!(
-            prompt.ends_with("s)") && prompt.contains(" ("),
-            "the prompt row carries the command's duration in parentheses: {prompt:?}"
-        );
-        for separate in ["~/Projects/goble", "git:(main)"] {
-            assert!(
-                !pane_has(&runs, separate),
-                "the prompt row is one row, not a label per part, but {separate} was drawn alone: {runs:?}"
-            );
-        }
-        assert!(
-            runs.iter().any(|(text, _)| text.contains("cargo")),
-            "the section draws the command: {runs:?}"
-        );
-        assert!(
-            runs.iter().any(|(text, _)| text.contains("42 passed")),
-            "the section draws the command's output: {runs:?}"
-        );
-        // The shell's own prompt is hidden: the block view draws sections, not
-        // the raw screen, so no bare `$` prompt line is left in the pane.
-        assert!(
-            !pane_has(&runs, "$"),
-            "the block view hides the shell's prompt: {runs:?}"
-        );
-    }
-
-    /// The prompt a command was typed at is drawn once, in the block's header.
-    /// The body starts at the command's own `❯` line, so the shell prompt is
-    /// never a row above the command inside the pane.
-    #[test]
-    fn a_typed_command_shows_its_prompt_in_the_header_not_the_body() {
-        use goble_terminal::hooks::{
-            encode_hook, CommandFinishedValue, InitShellValue, PrecmdValue, PreexecValue,
-        };
-        use goble_terminal::HookEvent;
-
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        let user = std::env::var("USER")
-            .or_else(|_| std::env::var("LOGNAME"))
-            .expect("a user for the prompt");
-        let prompt = format!("{user}@Adrians-MacBook-Pro /tmp %");
-        {
-            let mut emulator = Emulator::new(80, 24);
-            emulator.feed(&encode_hook(&HookEvent::InitShell(InitShellValue {
-                shell: Some("zsh".to_string()),
-                host: Some("Adrians-MacBook-Pro.local".to_string()),
-                honor_ps1: Some(true),
-                ..Default::default()
-            })));
-            emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
-            emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
-                pwd: Some("/tmp".to_string()),
-                ..Default::default()
-            })));
-            // The shell typed its own prompt and echoed the line before Preexec.
-            emulator.feed(format!("{prompt} echo hi\r\n").as_bytes());
-            emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
-                command: Some("echo hi".to_string()),
-            })));
-            emulator.feed(b"hi\r\n");
-            emulator.feed(&encode_hook(&HookEvent::CommandFinished(
-                CommandFinishedValue {
-                    exit_code: 0,
-                    ..Default::default()
-                },
-            )));
-            state
-                .borrow_mut()
-                .terminal
-                .borrow_mut()
-                .sessions
-                .insert(1, TerminalSession::with_emulator(emulator));
-        }
-
-        let runs = pane_runs(&mut root, &app);
-        let header = runs
-            .iter()
-            .find(|(text, _)| text.starts_with(&prompt))
-            .unwrap_or_else(|| panic!("the header carries the prompt: {runs:?}"));
-        assert!(
-            !pane_has(&runs, &prompt),
-            "the prompt is part of the header row, not a row of its own: {runs:?}"
-        );
-        let body: String = runs.iter().map(|(text, _)| text.as_str()).collect();
-        assert!(
-            body.contains("echo hi"),
-            "the body draws the command alone: {runs:?}"
-        );
-        assert!(
-            header.0.len() > prompt.len(),
-            "the header keeps the block's context beside the prompt: {:?}",
-            header.0
-        );
-    }
-
-    /// A bootstrapped shell waiting at its prompt has no command block to
-    /// draw. The pane leaves that space empty rather than painting the live
-    /// screen, whose only content is the prompt line the block header owns.
-    #[test]
-    fn a_bare_shell_prompt_is_not_drawn_in_the_pane() {
-        use goble_terminal::hooks::{encode_hook, InitShellValue, PrecmdValue};
-        use goble_terminal::HookEvent;
-
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        let user = std::env::var("USER")
-            .or_else(|_| std::env::var("LOGNAME"))
-            .expect("a user for the prompt");
-        let prompt = format!("{user}@Adrians-MacBook-Pro /tmp %");
-        {
-            let mut emulator = Emulator::new(80, 24);
-            emulator.feed(&encode_hook(&HookEvent::InitShell(InitShellValue {
-                shell: Some("zsh".to_string()),
-                host: Some("Adrians-MacBook-Pro.local".to_string()),
-                honor_ps1: Some(true),
-                ..Default::default()
-            })));
-            emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
-            emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
-                pwd: Some("/tmp".to_string()),
-                ..Default::default()
-            })));
-            emulator.feed(format!("{prompt} ").as_bytes());
-            state
-                .borrow_mut()
-                .terminal
-                .borrow_mut()
-                .sessions
-                .insert(1, TerminalSession::with_emulator(emulator));
-        }
-
-        let runs = pane_runs(&mut root, &app);
-        assert!(
-            !runs.iter().any(|(text, _)| text.contains(&prompt)),
-            "a shell at its prompt draws no prompt row in the pane: {runs:?}"
-        );
-    }
-
-    /// The duration reads the way warp's block label writes it: seconds under a
-    /// minute, minutes and seconds under an hour, hours above.
-    #[test]
-    fn a_duration_reads_in_seconds_minutes_and_hours() {
-        use super::blocks::duration_text;
-        use std::time::Duration;
-
-        assert_eq!(duration_text(Duration::from_millis(1240)), "(1.240s)");
-        assert_eq!(duration_text(Duration::from_millis(68_920)), "(1m 8.92s)");
-        assert_eq!(
-            duration_text(Duration::from_secs(3 * 3600 + 4 * 60 + 12)),
-            "(3h 4m 12s)"
-        );
-    }
-
-    /// Every drawn text, in draw order.
-    fn texts(commands: &[RenderCommand]) -> Vec<String> {
-        commands
-            .iter()
-            .filter_map(|c| match c {
-                RenderCommand::DrawText { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// The block's own status marks as `(pole colour, washed)`: the pole a block
-    /// stands on its left edge and whether the whole block is tinted under its
-    /// content. A block that is neither running nor failed draws neither.
-    fn status_marks(commands: &[RenderCommand]) -> (Option<ColorU>, bool) {
-        let mut pole = None;
-        let mut wash = false;
-        for command in commands {
-            if let RenderCommand::FillRect { rect, color, .. } = command {
-                if (rect.width() - 3.0).abs() < 0.01 {
-                    pole = Some(*color);
-                } else if rect.width() > 500.0 && rect.height() > 20.0 {
-                    wash = true;
-                }
+    // The shell's output is on screen as the grid's per-glyph runs.
+    let painted: String = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } if text.chars().count() == 1 => {
+                Some(text.as_str())
             }
-        }
-        (pole, wash)
+            _ => None,
+        })
+        .collect();
+    assert!(
+        painted.contains("the-pane-keeps-its-output"),
+        "the pane paints the shell's output: {painted:?}"
+    );
+
+    let icons: Vec<&String> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawIcon { name, .. } => Some(name),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        icons.iter().any(|name| *name == "maximize-01"),
+        "the pane's bar draws the expand control: {icons:?}"
+    );
+    assert!(
+        !icons.iter().any(|name| *name == "dots-horizontal"),
+        "and no tray trigger: {icons:?}"
+    );
+
+    let drawn: Vec<&String> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    for gone in [
+        "Copy",
+        "Restart",
+        "Rename",
+        "Clear transcript",
+        "Fullscreen",
+    ] {
+        assert!(
+            !drawn.iter().any(|text| *text == gone),
+            "the tray label {gone} is not drawn over the output: {drawn:?}"
+        );
+    }
+}
+
+/// R5: the bar is the pane's only typing surface. An active shell pane hands
+/// it the keyboard in its own build, a click on the editor keeps it, and a
+/// click on the output above leaves it where it is: the terminal is where
+/// commands print, not where they are typed.
+#[test]
+fn an_active_shell_pane_keeps_the_keys_in_its_bar() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+
+    // Lay the tree out first: a click is dispatched against the bounds the
+    // bar was laid out with, and the placeholder's own origin is a point
+    // inside the editor that drew it.
+    let runs = pane_runs(&mut root, &app);
+    let placeholder = ChatComposer::new().placeholder().to_string();
+    let editor = runs
+        .iter()
+        .find(|(text, _)| text == &placeholder)
+        .map(|(_, origin)| *origin)
+        .expect("the bar drew its placeholder");
+
+    // The pane's own build decided who holds the keys, and it chose the bar:
+    // the keystroke edits the draft and the shell never sees it.
+    assert!(press(&mut root, &app, "l"), "the bar takes the keystroke");
+    assert_eq!(
+        state.borrow().pane_sessions.get(&1).unwrap().draft,
+        "l",
+        "typing edits this pane's own draft"
+    );
+    assert_eq!(
+        state.borrow().terminal.borrow().input(1),
+        "",
+        "the terminal never receives typed characters"
+    );
+
+    // A click on the bar's editor keeps the keys there.
+    let mut ctx = EventContext;
+    let click = DispatchedEvent::MouseDown {
+        position: Vector2F::new(editor.x + 4.0, editor.y + 4.0),
+        button: 0,
+    };
+    assert!(
+        root.dispatch_event(&click, &mut ctx, &app),
+        "the click lands on the bar"
+    );
+    assert!(
+        press(&mut root, &app, "s"),
+        "the editor still holds the keys"
+    );
+
+    // And a click on the shell's own grid is not a way to type either: the
+    // editor keeps the keys, so the click cannot become terminal input.
+    let grid = Vector2F::new(editor.x, editor.y - 200.0);
+    let click = DispatchedEvent::MouseDown {
+        position: grid,
+        button: 0,
+    };
+    let _ = root.dispatch_event(&click, &mut ctx, &app);
+    assert!(
+        press(&mut root, &app, "a"),
+        "a click on the output does not take the keys from the bar"
+    );
+    assert_eq!(
+        state.borrow().pane_sessions.get(&1).unwrap().draft,
+        "lsa",
+        "every keystroke landed in the bar"
+    );
+    assert_eq!(
+        state.borrow().terminal.borrow().input(1),
+        "",
+        "the click never reaches the shell as input"
+    );
+}
+
+/// No runnable model: Cmd+Enter at the shell's bar still opens the agent
+/// view. The view needs a transcript to draw, so a conversation is bound —
+/// but nothing is sent into it, and the notice band is what names the
+/// missing model. The bar keeps the draft, since no turn can take it.
+#[test]
+fn a_prompt_with_no_model_still_opens_the_agent_view() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let _ = pane_runs(&mut root, &app);
+
+    let typed = "explain the last command";
+    for ch in typed.chars() {
+        assert!(press(&mut root, &app, &ch.to_string()));
+    }
+    let cmd_enter = key(
+        "Enter",
+        ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        },
+    );
+    let mut ctx = EventContext;
+    assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
+
+    let s = state.borrow();
+    assert!(
+        s.pane_controls(1).harness_mode,
+        "the switch to terminal + agent works with no model configured"
+    );
+    let conversation_id = s
+        .pane_conversation_id(1)
+        .expect("the agent view has a conversation of its own to draw");
+    assert_eq!(
+        s.pane_view(1),
+        BlockView::Agent { conversation_id },
+        "the pane shows the agent view"
+    );
+    assert!(
+        s.show_llm_key_banner,
+        "the notice band names the missing model"
+    );
+    assert_eq!(s.llm_notice_heading(), "No API key configured");
+    assert_eq!(
+        s.pane_sessions.get(&1).unwrap().draft,
+        typed,
+        "the bar keeps what was typed"
+    );
+}
+
+/// A `cd` typed at the pane's own prompt prints nothing, so the move reaches
+/// the rich input on the shell-integration channel alone: the prompt that
+/// followed reports its directory, the frame's pump reads it into the pane's
+/// session, and the directory pill — which draws that session's path —
+/// follows on the frame after. Nothing reads the typed line or the output.
+#[test]
+fn a_reported_cwd_reaches_the_panes_directory_pill() {
+    use goble_terminal::hooks::{encode_hook, PrecmdValue};
+    use goble_terminal::HookEvent;
+
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    {
+        // The hook the shell sends at the prompt that followed its `cd`,
+        // already in the session the pane draws from.
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
+            pwd: Some("/b".to_string()),
+            ..Default::default()
+        })));
+        let s = state.borrow_mut();
+        s.terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, TerminalSession::with_emulator(emulator));
     }
 
-    /// The session a pane draws a section from: one command that ran and printed
-    /// `output`, delimited by the shell-integration hooks a real shell sends, so
-    /// the pane's block list has a section with a lifecycle of its own.
-    fn session_that_ran(command: &str, output: &str) -> TerminalSession {
-        use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PreexecValue};
-        use goble_terminal::HookEvent;
+    // The first frame's pump is where the session reads the report; the frame
+    // after it is where the pane's snapshot is built from what it read.
+    let _ = pane_runs(&mut root, &app);
+    let runs = pane_runs(&mut root, &app);
 
+    assert_eq!(
+        state.borrow().composer_path,
+        "/b",
+        "the pane's directory followed its own shell"
+    );
+    assert!(
+        pane_has(&runs, "/b"),
+        "the rich input's directory pill draws it: {runs:?}"
+    );
+}
+
+/// The shell's bar is the pane's submit line for *commands*: Enter runs the
+/// draft in this pane's own PTY and leaves the pane on the shell — it does
+/// not open the harness, because the agent view has a composer of its own
+/// that takes prompts. Cmd+Enter is what opens that view. The bar is the
+/// pane's only typing surface, so it holds the keys whenever the pane is
+/// active and no full-screen program owns the screen; Esc puts the shell
+/// back with the conversation's card left behind.
+#[test]
+fn the_shells_bar_runs_its_draft_as_a_command_and_cmd_enter_opens_the_agent_view() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+
+    // A model is configured here, because Cmd+Enter below opens a *new*
+    // conversation and nothing is created while nothing could answer it
+    // (that refusal is covered in `terminal/tests::a_prompt_with_no_model`).
+    let rt = tokio::runtime::Runtime::new().expect("build runtime");
+    let _guard = rt.enter();
+    {
+        let mut s = state.borrow_mut();
+        s.settings_llm_provider = "mock".to_string();
+        s.settings_llm_api_key = "test-key".to_string();
+    }
+
+    // No focus flag is set by hand: an active shell pane's own build gives
+    // the bar the keyboard, because typing happens only there.
+    let _ = pane_runs(&mut root, &app);
+    let typed = "ls -la";
+    for ch in typed.chars() {
+        assert!(
+            press(&mut root, &app, &ch.to_string()),
+            "the focused bar takes {ch:?}"
+        );
+    }
+    assert_eq!(
+        state.borrow().pane_sessions.get(&1).unwrap().draft,
+        typed,
+        "typing edits this pane's own draft"
+    );
+
+    // Enter is the command affordance: the draft is submitted to this
+    // pane's PTY and the pane stays on the shell. An agent turn here would
+    // have opened the harness and bound this pane a conversation.
+    assert!(press(&mut root, &app, "Enter"));
+    assert!(
+        !state.borrow().pane_controls(1).harness_mode,
+        "Enter runs a command instead of opening the harness"
+    );
+    assert_eq!(
+        state.borrow().pane_view(1),
+        BlockView::Terminal,
+        "the pane is still the shell after a command"
+    );
+    assert!(
+        state.borrow().pane_conversation_id(1).is_none(),
+        "a command does not bind this pane an agent conversation"
+    );
+    assert_eq!(
+        state.borrow().pane_sessions.get(&1).unwrap().draft,
+        "",
+        "the bar clears after the command"
+    );
+
+    // Cmd+Enter is the way to the agent view: a draft typed at the same bar
+    // opens the harness on this pane's conversation and goes to the agent.
+    for ch in "explain the last command".chars() {
+        assert!(press(&mut root, &app, &ch.to_string()));
+    }
+    let cmd_enter = key(
+        "Enter",
+        ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        },
+    );
+    let mut ctx = EventContext;
+    assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
+    assert!(
+        state.borrow().pane_controls(1).harness_mode,
+        "Cmd+Enter opens the harness"
+    );
+    let conversation_id = state
+        .borrow()
+        .pane_conversation_id(1)
+        .expect("the pane bound a conversation of its own");
+    assert_eq!(
+        state.borrow().pane_view(1),
+        BlockView::Agent {
+            conversation_id: conversation_id.clone()
+        },
+        "the harness draws the conversation's agent view"
+    );
+    // The open harness is the shared agent view, and the shared composer is
+    // still pinned at the bottom of it.
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&runs, ChatComposer::new().placeholder()),
+        "the agent view carries the shared composer: {runs:?}"
+    );
+
+    // Esc returns the pane to the shell; the card stays in its block list.
+    assert!(press(&mut root, &app, "Escape"));
+    assert_eq!(
+        state.borrow().pane_view(1),
+        BlockView::Terminal,
+        "Esc puts the shell back"
+    );
+    let cards: Vec<String> = state
+        .borrow()
+        .pane_terminal_view(1)
+        .into_iter()
+        .filter_map(|block| block.card.map(|card| card.conversation_id))
+        .collect();
+    assert_eq!(
+        cards,
+        vec![conversation_id.clone()],
+        "the conversation's card stays in the terminal scrollback"
+    );
+
+    // The bar takes the keys back: it is the pane's only typing surface, so
+    // the keystrokes that once reached the shell now edit the draft, and the
+    // shell's input mirror stays empty.
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&runs, ChatComposer::new().placeholder()),
+        "the shell's bar is back at the bottom: {runs:?}"
+    );
+    assert!(press(&mut root, &app, "l"));
+    assert!(press(&mut root, &app, "s"));
+    assert_eq!(
+        state.borrow().pane_sessions.get(&1).unwrap().draft,
+        "ls",
+        "the bar takes the keys"
+    );
+    assert_eq!(
+        state.borrow().terminal.borrow().input(1),
+        "",
+        "the terminal never receives typed characters"
+    );
+
+    // Clicking the card reopens that conversation's agent view. The card's
+    // accent rail is where the card landed.
+    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+    let rail = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::FillRect { rect, .. }
+                if rect.width() == CARD_RAIL_WIDTH && rect.min_x() >= crate::ui::SIDEBAR_WIDTH =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the terminal view draws the conversation card");
+    let position = Vector2F::new(rail.min_x() + 20.0, rail.min_y() + 8.0);
+    let mut ctx = EventContext;
+    assert!(root.dispatch_event(
+        &DispatchedEvent::MouseDown {
+            position,
+            button: 0
+        },
+        &mut ctx,
+        &app
+    ));
+    assert_eq!(
+        state.borrow().pane_view(1),
+        BlockView::Agent { conversation_id },
+        "clicking the card reopens the conversation's agent view"
+    );
+}
+
+/// The runs only the agent surface draws, in the pane's own area: the agent
+/// rich input's instruction strip and the `esc for terminal` cue the open
+/// harness leads its bar with. A shell pane draws none of them, and the
+/// shell's own bar draws the one instruction that belongs to a command line
+/// (the shared-composer test above pins that side).
+const AGENT_SURFACE_RUNS: [&str; 4] = ["send", "send to cloud", "tasks", "for terminal"];
+
+/// S4: a shell pane in terminal mode builds no agent surface and dispatches
+/// no agent action. Nothing about the pane's kind has made it an agent
+/// session — its mode is off — so the pane draws the shell, and a
+/// prompt-shaped line submitted at its bar stays a shell command: no
+/// conversation is bound to the pane, the pane does not switch itself into
+/// agent mode, and no turn is attempted (a turn that could not run is what
+/// would raise the missing-model notice, and it is never reached).
+#[test]
+fn a_shell_pane_in_terminal_mode_builds_no_agent_surface_and_dispatches_no_agent_action() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let _ = pane_runs(&mut root, &app);
+
+    // The pane is a terminal leaf with its own session, out of agent mode.
+    assert!(
+        !state.borrow().pane_controls(1).harness_mode,
+        "a fresh shell pane is not in agent mode"
+    );
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&runs, "new conversation"),
+        "the pane draws its shell's bar: {runs:?}"
+    );
+    for label in AGENT_SURFACE_RUNS {
+        assert!(
+            !pane_has(&runs, label),
+            "a shell pane draws no agent surface, so no {label:?}: {runs:?}"
+        );
+    }
+
+    // A line that reads like a prompt is a command like any other at this
+    // bar. (That the submitted line really ran in the pane's shell is pinned
+    // where the shell reports it — `a_bound_shell_pane_names_its_host...`
+    // above binds the pane from the line it types — and by
+    // `the_shells_bar_runs_its_draft_as_a_command...`.)
+    type_line(&mut root, &app, "explain the last command");
+    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+    let s = state.borrow();
+    assert!(
+        !s.pane_controls(1).harness_mode,
+        "Enter runs the line instead of switching the pane into agent mode"
+    );
+    assert_eq!(
+        s.pane_view(1),
+        BlockView::Terminal,
+        "and the pane is still the shell"
+    );
+    assert!(
+        s.pane_conversation_id(1).is_none(),
+        "a shell command binds this pane no conversation"
+    );
+    assert!(
+        !s.show_llm_key_banner,
+        "no agent turn was dispatched (a refused one raises the notice band)"
+    );
+    assert!(
+        !s.pane_runtime.get(&1).map(|rt| rt.busy).unwrap_or(false),
+        "and no turn is running for the pane"
+    );
+    drop(s);
+    assert_eq!(
+        state.borrow().terminal.borrow().input(1),
+        "",
+        "the line was submitted at the bar, not typed into the shell's grid"
+    );
+}
+
+/// S4: an SSH-bound pane in terminal mode behaves the same way. Binding the
+/// pane to a host (S1) is not the switch: the pane is still a terminal, with
+/// a chip naming where it is, and it stays one through another line.
+#[test]
+fn an_ssh_bound_pane_in_terminal_mode_is_still_a_terminal() {
+    /// What the fixture's `web` alias resolves to, as the chip reads it.
+    const CHIP: &str = "deploy@web (web.example.com)";
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let home = tempfile::tempdir().expect("temp home");
+    std::fs::create_dir_all(home.path().join(".ssh")).expect("fixture .ssh");
+    std::fs::write(
+        home.path().join(".ssh/config"),
+        "Host web\n    HostName web.example.com\n    User deploy\n    Port 2222\n",
+    )
+    .expect("fixture config");
+    state.borrow_mut().settings_ssh_home = Some(home.path().to_path_buf());
+    let _ = pane_runs(&mut root, &app);
+
+    // The line binds the pane to the host it names ...
+    type_line(&mut root, &app, "ssh web");
+    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+    assert_eq!(
+        state
+            .borrow()
+            .terminal
+            .borrow()
+            .ssh_session(1)
+            .map(|session| session.host.clone()),
+        Some("web.example.com".to_string()),
+        "the submitted line bound this pane's shell to the host it named"
+    );
+
+    // ... and the bound pane is still a terminal: the chip names the host,
+    // the shell's bar is the surface, and no agent surface is built.
+    assert!(
+        !state.borrow().pane_controls(1).harness_mode,
+        "binding a host does not switch the pane into agent mode"
+    );
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&runs, CHIP),
+        "the bound pane's bar names the host it is on: {runs:?}"
+    );
+    assert!(
+        pane_has(&runs, "new conversation"),
+        "and the pane is still its shell: {runs:?}"
+    );
+    for label in AGENT_SURFACE_RUNS {
+        assert!(
+            !pane_has(&runs, label),
+            "an SSH-bound terminal pane draws no agent surface, so no {label:?}: {runs:?}"
+        );
+    }
+
+    // Another line — prompt-shaped, and nothing the shell can bind — leaves
+    // the pane where it is: on the same session, out of agent mode, with no
+    // conversation and no turn.
+    type_line(&mut root, &app, "explain the last command");
+    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+    let s = state.borrow();
+    assert!(
+        !s.pane_controls(1).harness_mode,
+        "the line did not switch the pane into agent mode"
+    );
+    assert!(
+        s.pane_conversation_id(1).is_none(),
+        "and bound it no conversation"
+    );
+    assert!(
+        !s.show_llm_key_banner,
+        "no agent turn was dispatched for it"
+    );
+    assert!(
+        s.terminal.borrow().ssh_session(1).is_some(),
+        "the pane never left the host it is on"
+    );
+}
+
+/// S4: the pane's mode is what decides its content shape. A block list
+/// filtered to a conversation is not an agent pane — the filter says which
+/// blocks the agent view would draw, not that this pane is one — so with the
+/// mode off the pane still draws the shell; Cmd+Enter's switch is what puts
+/// the agent surface over the same session.
+#[test]
+fn the_panes_mode_decides_its_surface_and_the_switch_puts_the_agent_surface_up() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let _ = pane_runs(&mut root, &app);
+
+    // The pane's filter points at a conversation while the mode is off —
+    // the view filter alone, which is what a pane routed to a worker is
+    // left with when the shape takes its harness switch away
+    // (`UiState::viewer_shape`). The switch is the surface decision, so the
+    // filter is written on its own here rather than through
+    // `enter_agent_view`, which enters the agent surface and turns the
+    // switch on with it.
+    state.borrow_mut().pane_controls_mut(1).view = BlockView::Agent {
+        conversation_id: "c1".to_string(),
+    };
+    assert!(
+        !state.borrow().pane_controls(1).harness_mode,
+        "the filter was pointed at a conversation without the switch"
+    );
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&runs, "new conversation"),
+        "the pane is still the shell, filter or no filter: {runs:?}"
+    );
+    for label in AGENT_SURFACE_RUNS {
+        assert!(
+            !pane_has(&runs, label),
+            "no agent surface is mounted for it, so no {label:?}: {runs:?}"
+        );
+    }
+
+    // Cmd+Enter is the switch, and the agent surface is what it draws.
+    type_line(&mut root, &app, "explain");
+    let cmd_enter = key(
+        "Enter",
+        ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        },
+    );
+    assert!(
+        root.dispatch_event(&cmd_enter, &mut EventContext, &app),
+        "Cmd+Enter is taken by the bar"
+    );
+    assert!(
+        state.borrow().pane_controls(1).harness_mode,
+        "Cmd+Enter put the pane in agent mode"
+    );
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&runs, "send to cloud"),
+        "the agent surface's own instruction strip is drawn: {runs:?}"
+    );
+    assert!(
+        pane_has(&runs, "for terminal"),
+        "and its bar leads with the way back to the shell: {runs:?}"
+    );
+    assert!(
+        !pane_has(&runs, "new conversation"),
+        "the shell bar's own instruction is gone with the shell: {runs:?}"
+    );
+}
+
+/// S3: the words the busy shell's refusal draws. They are the reference's
+/// own (`EnterAgentViewError::LongRunningCommand`), and the pane draws them
+/// over the shell it stayed on, so the chord never does nothing silently.
+const BUSY_REFUSAL: &str = "Cannot enter agent mode while a command is running.";
+
+/// A pane's session with a finished command's output on it and the pane's
+/// current shell line still running: the state a pane is in while a local
+/// `ssh` holds the shell, since the command that is running *is* the
+/// session. The output is what the switch must not cost the pane.
+fn session_holding_a_line(output: &str) -> TerminalSession {
+    use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PreexecValue};
+    use goble_terminal::HookEvent;
+
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+    emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+        command: Some("echo S3-MARKER".to_string()),
+    })));
+    emulator.feed(format!("echo S3-MARKER\r\n{output}\r\n").as_bytes());
+    emulator.feed(&encode_hook(&HookEvent::CommandFinished(
+        CommandFinishedValue {
+            exit_code: 0,
+            ..Default::default()
+        },
+    )));
+    // The line the shell is inside now: no `CommandFinished` follows it
+    // while the user is on the host.
+    emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+        command: Some("ssh web".to_string()),
+    })));
+    TerminalSession::with_emulator(emulator)
+}
+
+/// S3: `Cmd+Enter` on a shell pane bound to an SSH session enters terminal +
+/// agent mode on the **same** session, and Esc brings it back out on that
+/// same session: the binding is the one from before the switch in both
+/// directions, and the output the shell had already printed is still on the
+/// pane afterwards. The bound pane is the one the switch exists for, and the
+/// command its shell is running is the `ssh` line itself, so the busy guard
+/// must not refuse it.
+#[test]
+fn cmd_enter_switches_an_ssh_bound_pane_to_the_agent_view_on_the_same_session() {
+    /// What the fixture's `web` alias resolves to, as the chip reads it.
+    const CHIP: &str = "deploy@web (web.example.com)";
+    const MARKER: &str = "S3-MARKER";
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let home = tempfile::tempdir().expect("temp home");
+    std::fs::create_dir_all(home.path().join(".ssh")).expect("fixture .ssh");
+    std::fs::write(
+        home.path().join(".ssh/config"),
+        "Host web\n    HostName web.example.com\n    User deploy\n    Port 2222\n",
+    )
+    .expect("fixture config");
+    {
+        let mut s = state.borrow_mut();
+        s.settings_ssh_home = Some(home.path().to_path_buf());
+        s.terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, session_holding_a_line(MARKER));
+    }
+    let _ = pane_runs(&mut root, &app);
+
+    // The line the user submits at the bar binds the pane to its host, and
+    // the shell it runs in is inside that line from then on.
+    type_line(&mut root, &app, "ssh web");
+    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+    let before = state
+        .borrow()
+        .terminal
+        .borrow()
+        .ssh_session(1)
+        .cloned()
+        .expect("the submitted line bound this pane's shell to its host");
+    assert_eq!(before.host, "web.example.com");
+
+    // What the pane is before the switch: a terminal on that host, with the
+    // output the shell already printed still on it.
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&runs, CHIP),
+        "the bound pane names the host it is on: {runs:?}"
+    );
+    assert!(
+        pane_has(&runs, MARKER),
+        "and the shell's earlier output is still drawn: {runs:?}"
+    );
+
+    // Cmd+Enter is the switch. It is not a restart and not a second
+    // connection: the pane's binding and its history are the same objects.
+    let cmd_enter = key(
+        "Enter",
+        ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        },
+    );
+    assert!(
+        root.dispatch_event(&cmd_enter, &mut EventContext, &app),
+        "Cmd+Enter is taken by the bar"
+    );
+    let s = state.borrow();
+    assert!(
+        s.pane_controls(1).harness_mode,
+        "Cmd+Enter put the SSH-bound pane in agent mode"
+    );
+    let conversation_id = s
+        .pane_conversation_id(1)
+        .expect("the agent view has a conversation of its own to draw");
+    assert_eq!(
+        s.pane_view(1),
+        BlockView::Agent { conversation_id },
+        "the pane shows the agent view over the shell it was on"
+    );
+    assert_eq!(
+        s.terminal.borrow().ssh_session(1),
+        Some(&before),
+        "the session is the one from before the switch, not a reconnected one"
+    );
+    assert!(
+        s.pane_controls(1).harness_refusal.is_none(),
+        "the switch was made, so there is no refusal to draw"
+    );
+    assert!(
+        s.pane_terminal_view(1)
+            .iter()
+            .any(|block| block.command == "echo S3-MARKER"),
+        "the shell's earlier command is still the pane's history"
+    );
+    drop(s);
+
+    let runs = pane_runs(&mut root, &app);
+    for label in AGENT_SURFACE_RUNS {
+        assert!(
+            pane_has(&runs, label),
+            "the agent surface is up over the same shell, so {label:?} is drawn: {runs:?}"
+        );
+    }
+    assert!(
+        pane_has(&runs, CHIP),
+        "and its input names the same host: {runs:?}"
+    );
+
+    // Esc is the way back out, and it does not drop the session either.
+    assert!(
+        press(&mut root, &app, "Escape"),
+        "Esc is taken by the agent view"
+    );
+    let s = state.borrow();
+    assert!(
+        !s.pane_controls(1).harness_mode,
+        "Esc returned the pane to its shell"
+    );
+    assert_eq!(
+        s.pane_view(1),
+        BlockView::Terminal,
+        "and pointed it back at the shell's own history"
+    );
+    assert_eq!(
+        s.terminal.borrow().ssh_session(1),
+        Some(&before),
+        "the session outlived the round trip"
+    );
+    drop(s);
+
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&runs, "new conversation"),
+        "the shell's own bar is back: {runs:?}"
+    );
+    assert!(
+        pane_has(&runs, MARKER),
+        "and the output from before the switch is still drawn: {runs:?}"
+    );
+    assert!(
+        pane_has(&runs, CHIP),
+        "with the chip still naming the host: {runs:?}"
+    );
+}
+
+/// S3: the entry guard. A pane that is already in the agent view enters no
+/// second one. A click on a conversation card enters that conversation's
+/// view, and a `Cmd+Enter` that arrives before the next frame's rebuild
+/// lands on the tree that drew the shell — so the chord really does reach
+/// the entry point twice. The second entry must bind no second conversation
+/// and point the pane at no second view: the reference's guard for this
+/// direction is `AlreadyInAgentView`.
+#[test]
+fn cmd_enter_on_a_pane_already_in_the_agent_view_pushes_nothing_again() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    // The tree in hand drew the shell: it is what the card click left
+    // behind, and its bar is the shell's.
+    let _ = pane_runs(&mut root, &app);
+    {
+        let mut s = state.borrow_mut();
+        s.pane_controls_mut(1).harness_mode = true;
+        s.enter_agent_view(1, "c1", "A conversation");
+    }
+    assert!(
+        !state.borrow().pane_owns_conversation(1),
+        "the card's conversation is not the pane's own"
+    );
+
+    let cmd_enter = key(
+        "Enter",
+        ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        },
+    );
+    assert!(
+        root.dispatch_event(&cmd_enter, &mut EventContext, &app),
+        "the tree's bar takes the chord"
+    );
+
+    let s = state.borrow();
+    assert!(
+        s.pane_controls(1).harness_mode,
+        "the pane is still in agent mode"
+    );
+    assert_eq!(
+        s.pane_view(1),
+        BlockView::Agent {
+            conversation_id: "c1".to_string()
+        },
+        "and still shows the conversation it was already showing"
+    );
+    assert!(
+        !s.pane_owns_conversation(1),
+        "no second conversation was bound behind the one on screen"
+    );
+    assert!(
+        s.pane_controls(1).harness_refusal.is_none(),
+        "and nothing was refused: the entry was already made"
+    );
+}
+
+/// S3: the busy guard, and the fact that it speaks. A pane whose own shell
+/// is running a command does not switch — the harness could not run in it,
+/// since its command could not be claimed — and the pane says why over the
+/// shell it stayed on. The reason is only good while the state that produced
+/// it holds: once the shell is back at a prompt the switch is made and the
+/// line is not drawn again.
+#[test]
+fn a_command_running_in_the_panes_own_shell_refuses_the_switch_and_says_so() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    {
+        let s = state.borrow();
+        let mut registry = s.terminal.borrow_mut();
+        // A local shell inside `cargo build`: `Preexec` arrived, no
+        // `CommandFinished` yet.
+        registry
+            .sessions
+            .insert(1, session_with_a_command_running("cargo build"));
+    }
+    let _ = pane_runs(&mut root, &app);
+
+    let cmd_enter = key(
+        "Enter",
+        ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        },
+    );
+    assert!(
+        root.dispatch_event(&cmd_enter, &mut EventContext, &app),
+        "Cmd+Enter is taken by the bar"
+    );
+    let s = state.borrow();
+    assert!(
+        !s.pane_controls(1).harness_mode,
+        "a shell that is running a command does not switch"
+    );
+    assert!(
+        !s.pane_owns_conversation(1),
+        "and the refusal binds the pane no conversation"
+    );
+    assert_eq!(
+        s.pane_view(1),
+        BlockView::Terminal,
+        "the pane is still the shell it was"
+    );
+    drop(s);
+
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&runs, BUSY_REFUSAL),
+        "the refusal is drawn over the shell the pane stayed on: {runs:?}"
+    );
+    assert!(
+        pane_has(&runs, "new conversation"),
+        "which is still that shell: {runs:?}"
+    );
+
+    // The command finishes. The pane is ready for the switch now, so the
+    // reason is no longer drawn — and the same chord makes the switch.
+    state
+        .borrow_mut()
+        .terminal
+        .borrow_mut()
+        .sessions
+        .insert(1, session_that_ran("cargo build", "Compiling goble v0.1.0"));
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        !pane_has(&runs, BUSY_REFUSAL),
+        "a reason that no longer holds is never drawn: {runs:?}"
+    );
+    assert!(
+        root.dispatch_event(&cmd_enter, &mut EventContext, &app),
+        "Cmd+Enter is taken by the bar"
+    );
+    assert!(
+        state.borrow().pane_controls(1).harness_mode,
+        "the switch the command was holding up is made once it is done"
+    );
+}
+
+/// The session of a local shell that is mid-command: the integration
+/// handshake, a `Preexec` and no `CommandFinished`, so the command's block
+/// is still executing and the shell is not at a prompt.
+fn session_with_a_command_running(command: &str) -> TerminalSession {
+    use goble_terminal::hooks::{encode_hook, PreexecValue};
+    use goble_terminal::HookEvent;
+
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+    emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+        command: Some(command.to_string()),
+    })));
+    emulator.feed(format!("{command}\r\n").as_bytes());
+    TerminalSession::with_emulator(emulator)
+}
+
+/// The focused pane's corner mark is drawn over the left end of the pane's
+/// own bar, so the bar starts past it. The harness's "esc for terminal" hint
+/// leads that bar, and without the room the mark leaves it would sit under
+/// the mark and read as one glyph with it.
+#[test]
+fn the_harness_hint_starts_past_the_focus_mark() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    // One frame first: the bar takes the keys once it is on screen.
+    let _ = pane_runs(&mut root, &app);
+    // Cmd+Enter is what opens the pane's harness, and the open harness is
+    // the only view whose bar leads with the hint.
+    for ch in "explain".chars() {
+        assert!(press(&mut root, &app, &ch.to_string()));
+    }
+    let cmd_enter = key(
+        "Enter",
+        ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        },
+    );
+    let mut ctx = EventContext;
+    assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
+    assert!(
+        state.borrow().pane_controls(1).harness_mode,
+        "the harness is open, so its bar is the one on screen"
+    );
+    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+
+    let (mark, mark_size) = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::DrawIcon {
+                origin, name, size, ..
+            } if name == "upper-left-triangle" => Some((*origin, *size)),
+            _ => None,
+        })
+        .expect("the focused pane draws its corner mark");
+    let esc = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::DrawText { origin, text, .. } if text == "esc" => Some(*origin),
+            _ => None,
+        })
+        .expect("the harness bar leads with the esc hint");
+    assert!(
+        esc.x >= mark.x + mark_size,
+        "the hint starts past the mark: esc at {esc:?}, mark at {mark:?} sized {mark_size}"
+    );
+}
+
+/// R6: the app's conversation card is A8's `ConversationCard` element, not
+/// a private bordered container. It paints its status rail and no border.
+#[test]
+fn the_conversation_card_is_card_free() {
+    let app = AppContext::default();
+    let mut card = build_card(&AgentViewCard {
+        conversation_id: "c1".to_string(),
+        label: "Fix the build".to_string(),
+    });
+    let commands = render_element(&mut card, vec2f(420.0, 40.0), &app);
+
+    let strokes = commands
+        .iter()
+        .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
+        .count();
+    assert_eq!(strokes, 0, "the conversation card draws no border");
+
+    // The accent rail is the card element's own mark, not a bordered box.
+    let rail = commands.iter().find_map(|c| match c {
+        RenderCommand::FillRect {
+            rect,
+            corner_radius,
+            ..
+        } if rect.width() == CARD_RAIL_WIDTH => Some(*corner_radius),
+        _ => None,
+    });
+    assert_eq!(
+        rail,
+        Some(0.0),
+        "the card element paints its square status rail"
+    );
+}
+
+/// R3/B3: a terminal command is a section of its own, headed by warp-new's
+/// block label — one mono prompt row carrying the directory it ran in, the
+/// branch and how long it took — with the command itself drawn once, on the
+/// section's `❯` line. (This replaces the assertion that each part was its
+/// own label: the header is one prompt row now, so it asserts that row.)
+#[test]
+fn a_command_is_drawn_as_a_section_with_its_directory_and_duration() {
+    use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PrecmdValue, PreexecValue};
+    use goble_terminal::HookEvent;
+
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let home = std::env::var("HOME").expect("a home directory for the ~ path");
+    let workdir = format!("{home}/Projects/goble");
+    {
         let mut emulator = Emulator::new(80, 24);
         emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
-        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
-            command: Some(command.to_string()),
+        emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
+            pwd: Some(workdir.clone()),
+            git_branch: Some("main".to_string()),
+            ..Default::default()
         })));
-        emulator.feed(format!("{command}\r\n{output}\r\n").as_bytes());
+        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+            command: Some("cargo test".to_string()),
+        })));
+        emulator.feed(b"42 passed\r\n");
         emulator.feed(&encode_hook(&HookEvent::CommandFinished(
             CommandFinishedValue {
                 exit_code: 0,
                 ..Default::default()
             },
         )));
-        TerminalSession::with_emulator(emulator)
-    }
-
-    /// A pane's own view over one session, drawing through `plumbing` — the
-    /// app's own per-block filter map and this pane's whole-output filter. The
-    /// registry comes back with it, so a test can read what reached the shell.
-    fn view_over(
-        session: TerminalSession,
-        pane_id: u64,
-        plumbing: TerminalBlockPlumbing,
-    ) -> (TerminalView, Rc<RefCell<TerminalRegistry>>) {
-        let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
-        terminal.borrow_mut().sessions.insert(pane_id, session);
-        let view = TerminalView::new(
-            Rc::clone(&terminal),
-            pane_id,
-            "/tmp".to_string(),
-            true,
-            BlockView::Terminal,
-            // The shell's own state: the rich input holds the keyboard.
-            true,
-            Text::new("bar").finish(),
-            Rc::new(RefCell::new(|_: u64| {})),
-            Rc::new(RefCell::new(|_: u64, _: String| {})),
-            Rc::new(RefCell::new(|_: u64, _: bool| {})),
-            Rc::new(RefCell::new(|_: u64, _: String| {})),
-            Rc::new(RefCell::new(|_: u64, _: String| {})),
-            Rc::new(RefCell::new(|_: String| {})),
-        )
-        .with_block_plumbing(plumbing);
-        (view, terminal)
-    }
-
-    fn block_filters() -> Rc<RefCell<HashMap<String, TerminalFilter>>> {
-        Rc::new(RefCell::new(HashMap::new()))
-    }
-
-    /// C: Cmd+F opens the scrollback find bar — a real field the keys go into
-    /// — and what is typed searches the history and the visible screen. Enter
-    /// and `n` walk the matches, Esc closes.
-    #[test]
-    fn cmd_f_opens_the_find_bar_and_its_query_searches_the_scrollback() {
-        let app = AppContext::default();
-        let global = TerminalFilter::default();
-        let (pane, terminal) = view_over(
-            session_that_ran("printf hi", "alpha line\r\nbeta line"),
-            7,
-            TerminalBlockPlumbing::new(block_filters(), Some(global.clone()), None),
-        );
-        let mut pane: Box<dyn Element> = Box::new(pane);
-        let mut ctx = EventContext;
-        let window = vec2f(900.0, 500.0);
-        let _ = render_element(&mut pane, window, &app);
-
-        // Cmd+F: the pane takes the chord before the tree, so the composer it
-        // hands the keys to cannot swallow it.
-        let cmd_f = key(
-            "f",
-            ModifiersState {
-                command: true,
-                ..ModifiersState::default()
-            },
-        );
-        assert!(
-            pane.dispatch_event(&cmd_f, &mut ctx, &app),
-            "the pane takes Cmd+F"
-        );
-        let find = terminal
-            .borrow()
-            .pane_ui(7)
-            .map(|ui| ui.find.clone())
-            .expect("the pane has a find bar");
-        assert!(find.open, "Cmd+F opens the find bar");
-        assert!(find.focused, "and puts the caret in its field");
-        assert_eq!(find.count_label(), "0/0", "an empty query matches nothing");
-        assert!(
-            !global.is_open(),
-            "the block filter is not what Cmd+F opens any more"
-        );
-        // The bar is part of the next frame's tree, which is where its field
-        // lives; the per-frame rebuild is what mounts it.
-        let open = texts(&render_element(&mut pane, window, &app));
-        assert!(
-            open.iter().any(|t| t == "Find in terminal"),
-            "the bar names what it searches: {open:?}"
-        );
-
-        // Typing goes into the bar's field — the pane routes the keys into the
-        // tree while that field holds the caret — never to the shell.
-        for ch in ["b", "e", "t", "a"] {
-            assert!(
-                pane.dispatch_event(&key(ch, ModifiersState::none()), &mut ctx, &app),
-                "the bar's field takes the keystroke {ch:?}"
-            );
-        }
-        let find = terminal.borrow().pane_ui(7).unwrap().find.clone();
-        assert_eq!(find.query, "beta");
-        assert_eq!(find.matches.len(), 1, "{:?}", find.matches);
-        assert_eq!(find.count_label(), "1/1");
-        assert!(
-            find.matches[0].text == "beta",
-            "the match carries the text and its cell"
-        );
-        assert_eq!(
-            terminal.borrow().input(7),
-            "",
-            "the shell never receives a keystroke meant for the find bar"
-        );
-
-        let drawn = texts(&render_element(&mut pane, window, &app));
-        assert!(
-            drawn.iter().any(|t| t == "1/1"),
-            "the bar shows current/total: {drawn:?}"
-        );
-
-        // Enter walks to the next match and drops the field's caret, so `n`
-        // and `N` navigate rather than type.
-        assert!(pane.dispatch_event(&key("Enter", ModifiersState::none()), &mut ctx, &app));
-        assert!(
-            !terminal.borrow().pane_ui(7).unwrap().find.focused,
-            "Enter leaves the field so the navigation keys work"
-        );
-        assert!(pane.dispatch_event(&key("n", ModifiersState::none()), &mut ctx, &app));
-        assert_eq!(
-            terminal.borrow().pane_ui(7).unwrap().find.count_label(),
-            "1/1",
-            "a single match wraps to itself"
-        );
-        assert!(pane.dispatch_event(&key("Escape", ModifiersState::none()), &mut ctx, &app));
-        assert!(
-            !terminal.borrow().find_open(7),
-            "Esc closes the find bar"
-        );
-    }
-
-    type CopyFixture = (
-        TerminalView,
-        Rc<RefCell<TerminalRegistry>>,
-        Rc<RefCell<Vec<String>>>,
-    );
-
-    /// A pane over `session` whose copy handler records what it was given.
-    fn view_over_copy(session: TerminalSession, pane_id: u64) -> CopyFixture {
-        let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
-        terminal.borrow_mut().sessions.insert(pane_id, session);
-        let copied = Rc::new(RefCell::new(Vec::new()));
-        let copied_cb = Rc::clone(&copied);
-        let view = TerminalView::new(
-            Rc::clone(&terminal),
-            pane_id,
-            "/tmp".to_string(),
-            true,
-            BlockView::Terminal,
-            // The test's bar is a label, not the rich composer: with no editor
-            // in the tree the pane's own key path is the one under test.
-            false,
-            Text::new("bar").finish(),
-            Rc::new(RefCell::new(|_: u64| {})),
-            Rc::new(RefCell::new(|_: u64, _: String| {})),
-            Rc::new(RefCell::new(|_: u64, _: bool| {})),
-            Rc::new(RefCell::new(|_: u64, _: String| {})),
-            Rc::new(RefCell::new(|_: u64, _: String| {})),
-            Rc::new(RefCell::new(move |text: String| {
-                copied_cb.borrow_mut().push(text)
-            })),
-        );
-        (view, terminal, copied)
-    }
-
-    /// The painted origin of a terminal glyph, so a mouse gesture lands on the
-    /// cell the user sees.
-    fn glyph_origin(commands: &[RenderCommand], text: &str) -> Vector2F {
-        commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawText { origin, text: drawn, .. } if drawn == text => {
-                    Some(*origin)
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the glyph {text:?} is drawn: {commands:?}"))
-    }
-
-    #[test]
-    fn mouse_drag_selects_cells_and_cmd_c_copies_them() {
-        let app = AppContext::default();
-        let mut emulator = Emulator::new(80, 24);
-        emulator.feed(b"hello world");
-        let (pane, _terminal, copied) =
-            view_over_copy(TerminalSession::with_emulator(emulator), 7);
-        let mut pane: Box<dyn Element> = Box::new(pane);
-        let window = vec2f(900.0, 500.0);
-        let commands = render_element(&mut pane, window, &app);
-        let origin = glyph_origin(&commands, "h");
-        let column = TerminalGrid::cell_width(FONT_SIZE);
-        let row = TerminalGrid::row_pitch(FONT_SIZE, LINE_HEIGHT);
-
-        let mut ctx = EventContext;
-        let start = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
-        let end = Vector2F::new(origin.x + column * 8.5, origin.y + row * 0.5);
-        assert!(pane.dispatch_event(
-            &DispatchedEvent::MouseDown {
-                position: start,
-                button: 0,
-            },
-            &mut ctx,
-            &app
-        ));
-        // Motion is never consumed: it extends the drag and keeps travelling.
-        let _ = pane.dispatch_event(
-            &DispatchedEvent::MouseMove { position: end },
-            &mut ctx,
-            &app,
-        );
-        assert!(pane.dispatch_event(
-            &DispatchedEvent::MouseUp {
-                position: end,
-                button: 0,
-            },
-            &mut ctx,
-            &app
-        ));
-        assert!(
-            pane.dispatch_event(
-                &key(
-                    "c",
-                    ModifiersState {
-                        command: true,
-                        ..ModifiersState::default()
-                    }
-                ),
-                &mut ctx,
-                &app
-            ),
-            "Cmd+C copies the selection"
-        );
-        assert_eq!(*copied.borrow(), vec!["hello wor".to_string()]);
-    }
-
-    /// The same drag on the normal shell surface, whose body is the command
-    /// blocks rather than the cell grid: the selection is over the block text
-    /// the user sees, and it is highlighted there.
-    #[test]
-    fn mouse_drag_selects_block_text_and_cmd_c_copies_it() {
-        let app = AppContext::default();
-        let (pane, terminal, copied) = view_over_copy(
-            session_that_ran("echo hello world", "hello world"),
-            7,
-        );
-        let mut pane: Box<dyn Element> = Box::new(pane);
-        let window = vec2f(900.0, 500.0);
-        let commands = render_element(&mut pane, window, &app);
-        let origin = glyph_origin(&commands, "hello world");
-        let column = mono_advance(13.0, FontWeight::Regular);
-        let row = 13.0 * 1.4;
-
-        let mut ctx = EventContext;
-        let start = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
-        let end = Vector2F::new(origin.x + column * 8.5, origin.y + row * 0.5);
-        assert!(pane.dispatch_event(
-            &DispatchedEvent::MouseDown {
-                position: start,
-                button: 0,
-            },
-            &mut ctx,
-            &app
-        ));
-        let _ = pane.dispatch_event(
-            &DispatchedEvent::MouseMove { position: end },
-            &mut ctx,
-            &app,
-        );
-        assert!(pane.dispatch_event(
-            &DispatchedEvent::MouseUp {
-                position: end,
-                button: 0,
-            },
-            &mut ctx,
-            &app
-        ));
-        assert!(
-            terminal.borrow().block_selection(7).is_some(),
-            "the drag selects block text"
-        );
-
-        let highlighted = render_element(&mut pane, window, &app);
-        assert!(
-            highlighted.iter().any(|command| matches!(
-                command,
-                RenderCommand::FillRect { color, .. } if color.a == 70
-            )),
-            "the block selection is drawn over the text: {highlighted:?}"
-        );
-
-        assert!(
-            pane.dispatch_event(
-                &key(
-                    "c",
-                    ModifiersState {
-                        command: true,
-                        ..ModifiersState::default()
-                    }
-                ),
-                &mut ctx,
-                &app
-            ),
-            "Cmd+C copies the block selection"
-        );
-        assert_eq!(*copied.borrow(), vec!["hello wor".to_string()]);
-    }
-
-    /// A double click selects the word under the pointer; a third click in the
-    /// same run selects its whole line.
-    #[test]
-    fn block_mouse_double_and_triple_click_select_word_and_line() {
-        let app = AppContext::default();
-        let (pane, _terminal, copied) = view_over_copy(
-            session_that_ran("echo hello world", "hello world"),
-            7,
-        );
-        let mut pane: Box<dyn Element> = Box::new(pane);
-        let commands = render_element(&mut pane, vec2f(900.0, 500.0), &app);
-        let origin = glyph_origin(&commands, "hello world");
-        let column = mono_advance(13.0, FontWeight::Regular);
-        let row = 13.0 * 1.4;
-        let position = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
-        let mut ctx = EventContext;
-        let click = |pane: &mut Box<dyn Element>, ctx: &mut EventContext| {
-            assert!(pane.dispatch_event(
-                &DispatchedEvent::MouseDown {
-                    position,
-                    button: 0,
-                },
-                ctx,
-                &app
-            ));
-            assert!(pane.dispatch_event(
-                &DispatchedEvent::MouseUp {
-                    position,
-                    button: 0,
-                },
-                ctx,
-                &app
-            ));
-        };
-        let copy = |pane: &mut Box<dyn Element>, ctx: &mut EventContext| {
-            assert!(pane.dispatch_event(
-                &key(
-                    "c",
-                    ModifiersState {
-                        command: true,
-                        ..ModifiersState::default()
-                    }
-                ),
-                ctx,
-                &app
-            ));
-        };
-
-        click(&mut pane, &mut ctx);
-        click(&mut pane, &mut ctx);
-        copy(&mut pane, &mut ctx);
-        assert_eq!(*copied.borrow(), vec!["hello".to_string()]);
-
-        click(&mut pane, &mut ctx);
-        copy(&mut pane, &mut ctx);
-        assert_eq!(
-            *copied.borrow(),
-            vec!["hello".to_string(), "hello world".to_string()],
-            "the third click selects the line"
-        );
-    }
-
-    #[test]
-    fn copy_mode_chord_moves_the_cursor_and_yanks_the_line() {
-        let app = AppContext::default();
-        let mut emulator = Emulator::new(80, 24);
-        emulator.feed(b"one\r\ntwo");
-        let (pane, terminal, copied) =
-            view_over_copy(TerminalSession::with_emulator(emulator), 7);
-        let mut pane: Box<dyn Element> = Box::new(pane);
-        let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
-        let mut ctx = EventContext;
-
-        let chord = |pressed: &str| {
-            key(
-                pressed,
-                ModifiersState {
-                    command: true,
-                    shift: true,
-                    ..ModifiersState::default()
-                },
-            )
-        };
-        assert!(pane.dispatch_event(&chord(" "), &mut ctx, &app));
-        assert!(terminal.borrow().copy_active(7), "the chord enters copy mode");
-        for pressed in ["g", "0", "v", "$"] {
-            assert!(
-                pane.dispatch_event(&key(pressed, ModifiersState::none()), &mut ctx, &app),
-                "copy mode takes {pressed:?}"
-            );
-        }
-        // The visual range `v` anchored is drawn in the grid's selection
-        // colour, not only yanked: three cells of "one".
-        let drawn = render_element(&mut pane, vec2f(900.0, 500.0), &app);
-        let pitch = TerminalGrid::cell_width(FONT_SIZE);
-        let blue = goble_terminal::Palette::xterm().ansi[4];
-        let selection = ColorU::new(blue.0, blue.1, blue.2, 255);
-        assert!(
-            drawn.iter().any(|command| matches!(
-                command,
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == selection && (rect.width() - pitch * 3.0).abs() < 0.01
-            )),
-            "the copy-mode visual selection is drawn: {drawn:?}"
-        );
-        assert!(pane.dispatch_event(&key("y", ModifiersState::none()), &mut ctx, &app));
-        assert_eq!(*copied.borrow(), vec!["one".to_string()]);
-        assert!(!terminal.borrow().copy_active(7), "y leaves copy mode");
-    }
-
-    #[test]
-    fn the_find_bar_takes_keys_only_while_it_is_open() {
-        let app = AppContext::default();
-        let mut emulator = Emulator::new(80, 24);
-        emulator.feed(b"\x1b[?1049hfull screen");
-        let (pane, terminal, _copied) =
-            view_over_copy(TerminalSession::with_emulator(emulator), 7);
-        let mut pane: Box<dyn Element> = Box::new(pane);
-        let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
-        let mut ctx = EventContext;
-
-        // The TUI owns the screen and the keys while the find bar is closed.
-        assert!(pane.dispatch_event(&key("x", ModifiersState::none()), &mut ctx, &app));
-        assert_eq!(terminal.borrow().input(7), "x");
-
-        assert!(pane.dispatch_event(
-            &key(
-                "f",
-                ModifiersState {
-                    command: true,
-                    ..ModifiersState::default()
-                }
-            ),
-            &mut ctx,
-            &app
-        ));
-        assert!(terminal.borrow().find_open(7));
-        let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
-        assert!(pane.dispatch_event(&key("a", ModifiersState::none()), &mut ctx, &app));
-        assert_eq!(
-            terminal.borrow().input(7),
-            "x",
-            "the find bar's field owns the key, not the TUI"
-        );
-        assert_eq!(
-            terminal.borrow().pane_ui(7).unwrap().find.query,
-            "a",
-            "and the query reached the bar"
-        );
-    }
-
-    /// C: each pane reads its own whole-output filter, so a query typed in one
-    /// pane leaves its sibling's output alone.
-    #[test]
-    fn a_general_filter_in_one_pane_leaves_another_panes_output_alone() {
-        let app = AppContext::default();
-        let filters = block_filters();
-        let mine = TerminalFilter::default();
-        mine.set_query("beta");
-        let (mine_pane, _mine_terminal) = view_over(
-            session_that_ran("printf hi", "alpha line\r\nbeta line"),
-            7,
-            TerminalBlockPlumbing::new(filters.clone(), Some(mine), None),
-        );
-        let (theirs_pane, _theirs_terminal) = view_over(
-            session_that_ran("printf hi", "alpha line\r\nbeta line"),
-            8,
-            TerminalBlockPlumbing::new(filters, Some(TerminalFilter::default()), None),
-        );
-        let mut mine_pane: Box<dyn Element> = Box::new(mine_pane);
-        let mut theirs_pane: Box<dyn Element> = Box::new(theirs_pane);
-
-        let window = vec2f(900.0, 500.0);
-        let mine_drawn = texts(&render_element(&mut mine_pane, window, &app));
-        assert!(
-            mine_drawn.iter().any(|t| t == "beta line")
-                && !mine_drawn.iter().any(|t| t == "alpha line"),
-            "the queried pane keeps only its matching lines: {mine_drawn:?}"
-        );
-        let theirs_drawn = texts(&render_element(&mut theirs_pane, window, &app));
-        assert!(
-            theirs_drawn.iter().any(|t| t == "alpha line")
-                && theirs_drawn.iter().any(|t| t == "beta line"),
-            "the sibling pane draws every line: {theirs_drawn:?}"
-        );
-    }
-
-    /// B: Cmd+Shift+F (warp's per-block chord) opens the filter of the block the
-    /// pointer is over, and the bar's field takes what is typed into it.
-    #[test]
-    fn cmd_shift_f_opens_the_filter_of_the_block_under_the_pointer() {
-        let app = AppContext::default();
-        let plumbing = TerminalBlockPlumbing::new(block_filters(), None, None);
-        let (pane, _terminal) = view_over(
-            session_that_ran("printf hi", "alpha line\r\nbeta line"),
-            7,
-            plumbing.clone(),
-        );
-        let mut pane: Box<dyn Element> = Box::new(pane);
-        let window = vec2f(900.0, 500.0);
-        let mut ctx = EventContext;
-        let chord = key(
-            "f",
-            ModifiersState {
-                command: true,
-                shift: true,
-                ..ModifiersState::default()
-            },
-        );
-
-        // With the pointer off every block there is nothing to filter.
-        let commands = render_element(&mut pane, window, &app);
-        pane.dispatch_event(
-            &DispatchedEvent::MouseMove {
-                position: vec2f(450.0, 4.0),
-            },
-            &mut ctx,
-            &app,
-        );
-        assert!(plumbing.hovered_filter().is_none());
-        pane.dispatch_event(&chord, &mut ctx, &app);
-        assert!(
-            plumbing.hovered_filter().is_none(),
-            "a chord with no block under the pointer opens nothing"
-        );
-
-        // Over the block: the chord opens that block's own filter bar.
-        let at = commands
-            .iter()
-            .find_map(|c| match c {
-                RenderCommand::DrawText { origin, text, .. } if text == "beta line" => Some(*origin),
-                _ => None,
-            })
-            .expect("the pane draws its block's output");
-        pane.dispatch_event(
-            &DispatchedEvent::MouseMove {
-                position: vec2f(at.x + 2.0, at.y + 4.0),
-            },
-            &mut ctx,
-            &app,
-        );
-        let block = plumbing
-            .hovered_filter()
-            .expect("the pointer is over the block");
-        assert!(
-            pane.dispatch_event(&chord, &mut ctx, &app),
-            "the pane takes Cmd+Shift+F"
-        );
-        assert!(
-            block.is_open(),
-            "the chord shows the filter of the block under the pointer"
-        );
-
-        let drawn = texts(&render_element(&mut pane, window, &app));
-        assert!(
-            drawn.iter().any(|t| t == "Filter block output"),
-            "the block's own bar is drawn with its placeholder: {drawn:?}"
-        );
-    }
-
-    /// An image is pane content even though every cell is blank. The pane must
-    /// paint the grid for it instead of falling back to the empty-shell hint.
-    #[test]
-    fn an_image_only_viewport_is_painted() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = shell_root();
-        let mut emulator = Emulator::new(80, 24);
-        emulator.feed(b"\x1b_Ga=T,f=32,s=1,v=1,i=12;/wAA/w==\x1b\\");
-        assert_eq!(emulator.images().len(), 1, "the fixture placed an image");
-        assert!(
-            emulator.rows().iter().all(|row| row.is_blank()),
-            "the image is the viewport's only content"
-        );
         state
             .borrow_mut()
             .terminal
             .borrow_mut()
             .sessions
             .insert(1, TerminalSession::with_emulator(emulator));
-
-        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
-        let drawn = commands
-            .iter()
-            .filter(|command| matches!(command, RenderCommand::DrawImage { .. }))
-            .count();
-        assert_eq!(drawn, 1, "the pane paints its only content: {commands:?}");
     }
+
+    let runs = pane_runs(&mut root, &app);
+    let prompt = runs
+        .iter()
+        .map(|(text, _)| text.clone())
+        .find(|text| text.starts_with("~/Projects/goble"))
+        .unwrap_or_else(|| panic!("the section header is one prompt row: {runs:?}"));
+    assert!(
+        prompt.contains("git:(main)"),
+        "the prompt row names the branch it ran on: {prompt:?}"
+    );
+    assert!(
+        prompt.ends_with("s)") && prompt.contains(" ("),
+        "the prompt row carries the command's duration in parentheses: {prompt:?}"
+    );
+    for separate in ["~/Projects/goble", "git:(main)"] {
+        assert!(
+                !pane_has(&runs, separate),
+                "the prompt row is one row, not a label per part, but {separate} was drawn alone: {runs:?}"
+            );
+    }
+    assert!(
+        runs.iter().any(|(text, _)| text.contains("cargo")),
+        "the section draws the command: {runs:?}"
+    );
+    assert!(
+        runs.iter().any(|(text, _)| text.contains("42 passed")),
+        "the section draws the command's output: {runs:?}"
+    );
+    // The shell's own prompt is hidden: the block view draws sections, not
+    // the raw screen, so no bare `$` prompt line is left in the pane.
+    assert!(
+        !pane_has(&runs, "$"),
+        "the block view hides the shell's prompt: {runs:?}"
+    );
+}
+
+/// The prompt a command was typed at is drawn once, in the block's header.
+/// The body starts at the command's own `❯` line, so the shell prompt is
+/// never a row above the command inside the pane.
+#[test]
+fn a_typed_command_shows_its_prompt_in_the_header_not_the_body() {
+    use goble_terminal::hooks::{
+        encode_hook, CommandFinishedValue, InitShellValue, PrecmdValue, PreexecValue,
+    };
+    use goble_terminal::HookEvent;
+
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .expect("a user for the prompt");
+    let prompt = format!("{user}@Adrians-MacBook-Pro /tmp %");
+    {
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(&encode_hook(&HookEvent::InitShell(InitShellValue {
+            shell: Some("zsh".to_string()),
+            host: Some("Adrians-MacBook-Pro.local".to_string()),
+            honor_ps1: Some(true),
+            ..Default::default()
+        })));
+        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+        emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
+            pwd: Some("/tmp".to_string()),
+            ..Default::default()
+        })));
+        // The shell typed its own prompt and echoed the line before Preexec.
+        emulator.feed(format!("{prompt} echo hi\r\n").as_bytes());
+        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+            command: Some("echo hi".to_string()),
+        })));
+        emulator.feed(b"hi\r\n");
+        emulator.feed(&encode_hook(&HookEvent::CommandFinished(
+            CommandFinishedValue {
+                exit_code: 0,
+                ..Default::default()
+            },
+        )));
+        state
+            .borrow_mut()
+            .terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, TerminalSession::with_emulator(emulator));
+    }
+
+    let runs = pane_runs(&mut root, &app);
+    let header = runs
+        .iter()
+        .find(|(text, _)| text.starts_with(&user) && text.ends_with('…'))
+        .unwrap_or_else(|| panic!("the header carries the prompt, cut to its row: {runs:?}"));
+    assert!(
+        !pane_has(&runs, &prompt),
+        "the prompt is part of the header row, not a row of its own: {runs:?}"
+    );
+    let body: String = runs.iter().map(|(text, _)| text.as_str()).collect();
+    assert!(
+        body.contains("echo hi"),
+        "the body draws the command alone: {runs:?}"
+    );
+    assert!(
+        header.0.len() > user.len(),
+        "the header keeps the prompt's context on its one row: {:?}",
+        header.0
+    );
+}
+
+/// A bootstrapped shell waiting at its prompt has no command block to
+/// draw. The pane leaves that space empty rather than painting the live
+/// screen, whose only content is the prompt line the block header owns.
+#[test]
+fn a_bare_shell_prompt_is_not_drawn_in_the_pane() {
+    use goble_terminal::hooks::{encode_hook, InitShellValue, PrecmdValue};
+    use goble_terminal::HookEvent;
+
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .expect("a user for the prompt");
+    let prompt = format!("{user}@Adrians-MacBook-Pro /tmp %");
+    {
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(&encode_hook(&HookEvent::InitShell(InitShellValue {
+            shell: Some("zsh".to_string()),
+            host: Some("Adrians-MacBook-Pro.local".to_string()),
+            honor_ps1: Some(true),
+            ..Default::default()
+        })));
+        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+        emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
+            pwd: Some("/tmp".to_string()),
+            ..Default::default()
+        })));
+        emulator.feed(format!("{prompt} ").as_bytes());
+        state
+            .borrow_mut()
+            .terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, TerminalSession::with_emulator(emulator));
+    }
+
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        !runs.iter().any(|(text, _)| text.contains(&prompt)),
+        "a shell at its prompt draws no prompt row in the pane: {runs:?}"
+    );
+}
+
+/// The duration reads the way warp's block label writes it: seconds under a
+/// minute, minutes and seconds under an hour, hours above.
+#[test]
+fn a_duration_reads_in_seconds_minutes_and_hours() {
+    use super::blocks::duration_text;
+    use std::time::Duration;
+
+    assert_eq!(duration_text(Duration::from_millis(1240)), "(1.240s)");
+    assert_eq!(duration_text(Duration::from_millis(68_920)), "(1m 8.92s)");
+    assert_eq!(
+        duration_text(Duration::from_secs(3 * 3600 + 4 * 60 + 12)),
+        "(3h 4m 12s)"
+    );
+}
+
+/// Every drawn text, in draw order.
+fn texts(commands: &[RenderCommand]) -> Vec<String> {
+    commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The block's own status marks as `(pole colour, washed)`: the pole a block
+/// stands on its left edge and whether the whole block is tinted under its
+/// content. A block that is neither running nor failed draws neither.
+fn status_marks(commands: &[RenderCommand]) -> (Option<ColorU>, bool) {
+    let mut pole = None;
+    let mut wash = false;
+    for command in commands {
+        if let RenderCommand::FillRect { rect, color, .. } = command {
+            if (rect.width() - 3.0).abs() < 0.01 {
+                pole = Some(*color);
+            } else if rect.width() > 500.0 && rect.height() > 20.0 {
+                wash = true;
+            }
+        }
+    }
+    (pole, wash)
+}
+
+/// The session a pane draws a section from: one command that ran and printed
+/// `output`, delimited by the shell-integration hooks a real shell sends, so
+/// the pane's block list has a section with a lifecycle of its own.
+fn session_that_ran(command: &str, output: &str) -> TerminalSession {
+    use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PreexecValue};
+    use goble_terminal::HookEvent;
+
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+    emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+        command: Some(command.to_string()),
+    })));
+    emulator.feed(format!("{command}\r\n{output}\r\n").as_bytes());
+    emulator.feed(&encode_hook(&HookEvent::CommandFinished(
+        CommandFinishedValue {
+            exit_code: 0,
+            ..Default::default()
+        },
+    )));
+    TerminalSession::with_emulator(emulator)
+}
+
+/// A pane's own view over one session, drawing through `plumbing` — the
+/// app's own per-block filter map and this pane's whole-output filter. The
+/// registry comes back with it, so a test can read what reached the shell.
+fn view_over(
+    session: TerminalSession,
+    pane_id: u64,
+    plumbing: TerminalBlockPlumbing,
+) -> (TerminalView, Rc<RefCell<TerminalRegistry>>) {
+    let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
+    terminal.borrow_mut().sessions.insert(pane_id, session);
+    let view = TerminalView::new(
+        Rc::clone(&terminal),
+        pane_id,
+        "/tmp".to_string(),
+        true,
+        BlockView::Terminal,
+        // The shell's own state: the rich input holds the keyboard.
+        true,
+        Text::new("bar").finish(),
+        Rc::new(RefCell::new(|_: u64| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: u64, _: bool| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: String| {})),
+    )
+    .with_block_plumbing(plumbing);
+    (view, terminal)
+}
+
+fn block_filters() -> Rc<RefCell<HashMap<String, TerminalFilter>>> {
+    Rc::new(RefCell::new(HashMap::new()))
+}
+
+/// C: Cmd+F opens the scrollback find bar — a real field the keys go into
+/// — and what is typed searches the history and the visible screen. Enter
+/// and `n` walk the matches, Esc closes.
+#[test]
+fn cmd_f_opens_the_find_bar_and_its_query_searches_the_scrollback() {
+    let app = AppContext::default();
+    let global = TerminalFilter::default();
+    let (pane, terminal) = view_over(
+        session_that_ran("printf hi", "alpha line\r\nbeta line"),
+        7,
+        TerminalBlockPlumbing::new(block_filters(), Some(global.clone()), None),
+    );
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let mut ctx = EventContext;
+    let window = vec2f(900.0, 500.0);
+    let _ = render_element(&mut pane, window, &app);
+
+    // Cmd+F: the pane takes the chord before the tree, so the composer it
+    // hands the keys to cannot swallow it.
+    let cmd_f = key(
+        "f",
+        ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        },
+    );
+    assert!(
+        pane.dispatch_event(&cmd_f, &mut ctx, &app),
+        "the pane takes Cmd+F"
+    );
+    let find = terminal
+        .borrow()
+        .pane_ui(7)
+        .map(|ui| ui.find.clone())
+        .expect("the pane has a find bar");
+    assert!(find.open, "Cmd+F opens the find bar");
+    assert!(find.focused, "and puts the caret in its field");
+    assert_eq!(find.count_label(), "0/0", "an empty query matches nothing");
+    assert!(
+        !global.is_open(),
+        "the block filter is not what Cmd+F opens any more"
+    );
+    // The bar is part of the next frame's tree, which is where its field
+    // lives; the per-frame rebuild is what mounts it.
+    let open = texts(&render_element(&mut pane, window, &app));
+    assert!(
+        open.iter().any(|t| t == "Find in terminal"),
+        "the bar names what it searches: {open:?}"
+    );
+
+    // Typing goes into the bar's field — the pane routes the keys into the
+    // tree while that field holds the caret — never to the shell.
+    for ch in ["b", "e", "t", "a"] {
+        assert!(
+            pane.dispatch_event(&key(ch, ModifiersState::none()), &mut ctx, &app),
+            "the bar's field takes the keystroke {ch:?}"
+        );
+    }
+    let find = terminal.borrow().pane_ui(7).unwrap().find.clone();
+    assert_eq!(find.query, "beta");
+    assert_eq!(find.matches.len(), 1, "{:?}", find.matches);
+    assert_eq!(find.count_label(), "1/1");
+    assert!(
+        find.matches[0].text == "beta",
+        "the match carries the text and its cell"
+    );
+    assert_eq!(
+        terminal.borrow().input(7),
+        "",
+        "the shell never receives a keystroke meant for the find bar"
+    );
+
+    let drawn = texts(&render_element(&mut pane, window, &app));
+    assert!(
+        drawn.iter().any(|t| t == "1/1"),
+        "the bar shows current/total: {drawn:?}"
+    );
+
+    // Enter walks to the next match and drops the field's caret, so `n`
+    // and `N` navigate rather than type.
+    assert!(pane.dispatch_event(&key("Enter", ModifiersState::none()), &mut ctx, &app));
+    assert!(
+        !terminal.borrow().pane_ui(7).unwrap().find.focused,
+        "Enter leaves the field so the navigation keys work"
+    );
+    assert!(pane.dispatch_event(&key("n", ModifiersState::none()), &mut ctx, &app));
+    assert_eq!(
+        terminal.borrow().pane_ui(7).unwrap().find.count_label(),
+        "1/1",
+        "a single match wraps to itself"
+    );
+    assert!(pane.dispatch_event(&key("Escape", ModifiersState::none()), &mut ctx, &app));
+    assert!(!terminal.borrow().find_open(7), "Esc closes the find bar");
+}
+
+type CopyFixture = (
+    TerminalView,
+    Rc<RefCell<TerminalRegistry>>,
+    Rc<RefCell<Vec<String>>>,
+);
+
+/// A pane over `session` whose copy handler records what it was given.
+fn view_over_copy(session: TerminalSession, pane_id: u64) -> CopyFixture {
+    let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
+    terminal.borrow_mut().sessions.insert(pane_id, session);
+    let copied = Rc::new(RefCell::new(Vec::new()));
+    let copied_cb = Rc::clone(&copied);
+    let view = TerminalView::new(
+        Rc::clone(&terminal),
+        pane_id,
+        "/tmp".to_string(),
+        true,
+        BlockView::Terminal,
+        // The test's bar is a label, not the rich composer: with no editor
+        // in the tree the pane's own key path is the one under test.
+        false,
+        Text::new("bar").finish(),
+        Rc::new(RefCell::new(|_: u64| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: u64, _: bool| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(move |text: String| {
+            copied_cb.borrow_mut().push(text)
+        })),
+    );
+    (view, terminal, copied)
+}
+
+/// The painted origin of a terminal glyph, so a mouse gesture lands on the
+/// cell the user sees.
+fn glyph_origin(commands: &[RenderCommand], text: &str) -> Vector2F {
+    commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText {
+                origin,
+                text: drawn,
+                ..
+            } if drawn == text => Some(*origin),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the glyph {text:?} is drawn: {commands:?}"))
+}
+
+#[test]
+fn mouse_drag_selects_cells_and_cmd_c_copies_them() {
+    let app = AppContext::default();
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(b"hello world");
+    let (pane, _terminal, copied) = view_over_copy(TerminalSession::with_emulator(emulator), 7);
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let window = vec2f(900.0, 500.0);
+    let commands = render_element(&mut pane, window, &app);
+    let origin = glyph_origin(&commands, "h");
+    let column = TerminalGrid::cell_width(FONT_SIZE);
+    let row = TerminalGrid::row_pitch(FONT_SIZE, LINE_HEIGHT);
+
+    let mut ctx = EventContext;
+    let start = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
+    let end = Vector2F::new(origin.x + column * 8.5, origin.y + row * 0.5);
+    assert!(pane.dispatch_event(
+        &DispatchedEvent::MouseDown {
+            position: start,
+            button: 0,
+        },
+        &mut ctx,
+        &app
+    ));
+    // Motion is never consumed: it extends the drag and keeps travelling.
+    let _ = pane.dispatch_event(
+        &DispatchedEvent::MouseMove { position: end },
+        &mut ctx,
+        &app,
+    );
+    assert!(pane.dispatch_event(
+        &DispatchedEvent::MouseUp {
+            position: end,
+            button: 0,
+        },
+        &mut ctx,
+        &app
+    ));
+    assert!(
+        pane.dispatch_event(
+            &key(
+                "c",
+                ModifiersState {
+                    command: true,
+                    ..ModifiersState::default()
+                }
+            ),
+            &mut ctx,
+            &app
+        ),
+        "Cmd+C copies the selection"
+    );
+    assert_eq!(*copied.borrow(), vec!["hello wor".to_string()]);
+}
+
+/// The same drag on the normal shell surface, whose body is the command
+/// blocks rather than the cell grid: the selection is over the block text
+/// the user sees, and it is highlighted there.
+#[test]
+fn mouse_drag_selects_block_text_and_cmd_c_copies_it() {
+    let app = AppContext::default();
+    let (pane, terminal, copied) =
+        view_over_copy(session_that_ran("echo hello world", "hello world"), 7);
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let window = vec2f(900.0, 500.0);
+    let commands = render_element(&mut pane, window, &app);
+    let origin = glyph_origin(&commands, "hello world");
+    let column = mono_advance(13.0, FontWeight::Regular);
+    let row = 13.0 * 1.4;
+
+    let mut ctx = EventContext;
+    let start = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
+    let end = Vector2F::new(origin.x + column * 8.5, origin.y + row * 0.5);
+    assert!(pane.dispatch_event(
+        &DispatchedEvent::MouseDown {
+            position: start,
+            button: 0,
+        },
+        &mut ctx,
+        &app
+    ));
+    let _ = pane.dispatch_event(
+        &DispatchedEvent::MouseMove { position: end },
+        &mut ctx,
+        &app,
+    );
+    assert!(pane.dispatch_event(
+        &DispatchedEvent::MouseUp {
+            position: end,
+            button: 0,
+        },
+        &mut ctx,
+        &app
+    ));
+    assert!(
+        terminal.borrow().block_selection(7).is_some(),
+        "the drag selects block text"
+    );
+
+    let highlighted = render_element(&mut pane, window, &app);
+    assert!(
+        highlighted.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { color, .. } if color.a == 70
+        )),
+        "the block selection is drawn over the text: {highlighted:?}"
+    );
+
+    assert!(
+        pane.dispatch_event(
+            &key(
+                "c",
+                ModifiersState {
+                    command: true,
+                    ..ModifiersState::default()
+                }
+            ),
+            &mut ctx,
+            &app
+        ),
+        "Cmd+C copies the block selection"
+    );
+    assert_eq!(*copied.borrow(), vec!["hello wor".to_string()]);
+}
+
+/// A double click selects the word under the pointer; a third click in the
+/// same run selects its whole line.
+#[test]
+fn block_mouse_double_and_triple_click_select_word_and_line() {
+    let app = AppContext::default();
+    let (pane, _terminal, copied) =
+        view_over_copy(session_that_ran("echo hello world", "hello world"), 7);
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let commands = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+    let origin = glyph_origin(&commands, "hello world");
+    let column = mono_advance(13.0, FontWeight::Regular);
+    let row = 13.0 * 1.4;
+    let position = Vector2F::new(origin.x + column * 0.5, origin.y + row * 0.5);
+    let mut ctx = EventContext;
+    let click = |pane: &mut Box<dyn Element>, ctx: &mut EventContext| {
+        assert!(pane.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position,
+                button: 0,
+            },
+            ctx,
+            &app
+        ));
+        assert!(pane.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position,
+                button: 0,
+            },
+            ctx,
+            &app
+        ));
+    };
+    let copy = |pane: &mut Box<dyn Element>, ctx: &mut EventContext| {
+        assert!(pane.dispatch_event(
+            &key(
+                "c",
+                ModifiersState {
+                    command: true,
+                    ..ModifiersState::default()
+                }
+            ),
+            ctx,
+            &app
+        ));
+    };
+
+    click(&mut pane, &mut ctx);
+    click(&mut pane, &mut ctx);
+    copy(&mut pane, &mut ctx);
+    assert_eq!(*copied.borrow(), vec!["hello".to_string()]);
+
+    click(&mut pane, &mut ctx);
+    copy(&mut pane, &mut ctx);
+    assert_eq!(
+        *copied.borrow(),
+        vec!["hello".to_string(), "hello world".to_string()],
+        "the third click selects the line"
+    );
+}
+
+#[test]
+fn copy_mode_chord_moves_the_cursor_and_yanks_the_line() {
+    let app = AppContext::default();
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(b"one\r\ntwo");
+    let (pane, terminal, copied) = view_over_copy(TerminalSession::with_emulator(emulator), 7);
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+    let mut ctx = EventContext;
+
+    let chord = |pressed: &str| {
+        key(
+            pressed,
+            ModifiersState {
+                command: true,
+                shift: true,
+                ..ModifiersState::default()
+            },
+        )
+    };
+    assert!(pane.dispatch_event(&chord(" "), &mut ctx, &app));
+    assert!(
+        terminal.borrow().copy_active(7),
+        "the chord enters copy mode"
+    );
+    for pressed in ["g", "0", "v", "$"] {
+        assert!(
+            pane.dispatch_event(&key(pressed, ModifiersState::none()), &mut ctx, &app),
+            "copy mode takes {pressed:?}"
+        );
+    }
+    // The visual range `v` anchored is drawn in the grid's selection
+    // colour, not only yanked: three cells of "one".
+    let drawn = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+    let pitch = TerminalGrid::cell_width(FONT_SIZE);
+    let blue = goble_terminal::Palette::xterm().ansi[4];
+    let selection = ColorU::new(blue.0, blue.1, blue.2, 255);
+    assert!(
+        drawn.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == selection && (rect.width() - pitch * 3.0).abs() < 0.01
+        )),
+        "the copy-mode visual selection is drawn: {drawn:?}"
+    );
+    assert!(pane.dispatch_event(&key("y", ModifiersState::none()), &mut ctx, &app));
+    assert_eq!(*copied.borrow(), vec!["one".to_string()]);
+    assert!(!terminal.borrow().copy_active(7), "y leaves copy mode");
+}
+
+#[test]
+fn the_find_bar_takes_keys_only_while_it_is_open() {
+    let app = AppContext::default();
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(b"\x1b[?1049hfull screen");
+    let (pane, terminal, _copied) = view_over_copy(TerminalSession::with_emulator(emulator), 7);
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+    let mut ctx = EventContext;
+
+    // The TUI owns the screen and the keys while the find bar is closed.
+    assert!(pane.dispatch_event(&key("x", ModifiersState::none()), &mut ctx, &app));
+    assert_eq!(terminal.borrow().input(7), "x");
+
+    assert!(pane.dispatch_event(
+        &key(
+            "f",
+            ModifiersState {
+                command: true,
+                ..ModifiersState::default()
+            }
+        ),
+        &mut ctx,
+        &app
+    ));
+    assert!(terminal.borrow().find_open(7));
+    let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+    assert!(pane.dispatch_event(&key("a", ModifiersState::none()), &mut ctx, &app));
+    assert_eq!(
+        terminal.borrow().input(7),
+        "x",
+        "the find bar's field owns the key, not the TUI"
+    );
+    assert_eq!(
+        terminal.borrow().pane_ui(7).unwrap().find.query,
+        "a",
+        "and the query reached the bar"
+    );
+}
+
+/// C: each pane reads its own whole-output filter, so a query typed in one
+/// pane leaves its sibling's output alone.
+#[test]
+fn a_general_filter_in_one_pane_leaves_another_panes_output_alone() {
+    let app = AppContext::default();
+    let filters = block_filters();
+    let mine = TerminalFilter::default();
+    mine.set_query("beta");
+    let (mine_pane, _mine_terminal) = view_over(
+        session_that_ran("printf hi", "alpha line\r\nbeta line"),
+        7,
+        TerminalBlockPlumbing::new(filters.clone(), Some(mine), None),
+    );
+    let (theirs_pane, _theirs_terminal) = view_over(
+        session_that_ran("printf hi", "alpha line\r\nbeta line"),
+        8,
+        TerminalBlockPlumbing::new(filters, Some(TerminalFilter::default()), None),
+    );
+    let mut mine_pane: Box<dyn Element> = Box::new(mine_pane);
+    let mut theirs_pane: Box<dyn Element> = Box::new(theirs_pane);
+
+    let window = vec2f(900.0, 500.0);
+    let mine_drawn = texts(&render_element(&mut mine_pane, window, &app));
+    assert!(
+        mine_drawn.iter().any(|t| t == "beta line")
+            && !mine_drawn.iter().any(|t| t == "alpha line"),
+        "the queried pane keeps only its matching lines: {mine_drawn:?}"
+    );
+    let theirs_drawn = texts(&render_element(&mut theirs_pane, window, &app));
+    assert!(
+        theirs_drawn.iter().any(|t| t == "alpha line")
+            && theirs_drawn.iter().any(|t| t == "beta line"),
+        "the sibling pane draws every line: {theirs_drawn:?}"
+    );
+}
+
+/// B: Cmd+Shift+F (warp's per-block chord) opens the filter of the block the
+/// pointer is over, and the bar's field takes what is typed into it.
+#[test]
+fn cmd_shift_f_opens_the_filter_of_the_block_under_the_pointer() {
+    let app = AppContext::default();
+    let plumbing = TerminalBlockPlumbing::new(block_filters(), None, None);
+    let (pane, _terminal) = view_over(
+        session_that_ran("printf hi", "alpha line\r\nbeta line"),
+        7,
+        plumbing.clone(),
+    );
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let window = vec2f(900.0, 500.0);
+    let mut ctx = EventContext;
+    let chord = key(
+        "f",
+        ModifiersState {
+            command: true,
+            shift: true,
+            ..ModifiersState::default()
+        },
+    );
+
+    // With the pointer off every block there is nothing to filter.
+    let commands = render_element(&mut pane, window, &app);
+    pane.dispatch_event(
+        &DispatchedEvent::MouseMove {
+            position: vec2f(450.0, 4.0),
+        },
+        &mut ctx,
+        &app,
+    );
+    assert!(plumbing.hovered_filter().is_none());
+    pane.dispatch_event(&chord, &mut ctx, &app);
+    assert!(
+        plumbing.hovered_filter().is_none(),
+        "a chord with no block under the pointer opens nothing"
+    );
+
+    // Over the block: the chord opens that block's own filter bar.
+    let at = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::DrawText { origin, text, .. } if text == "beta line" => Some(*origin),
+            _ => None,
+        })
+        .expect("the pane draws its block's output");
+    pane.dispatch_event(
+        &DispatchedEvent::MouseMove {
+            position: vec2f(at.x + 2.0, at.y + 4.0),
+        },
+        &mut ctx,
+        &app,
+    );
+    let block = plumbing
+        .hovered_filter()
+        .expect("the pointer is over the block");
+    assert!(
+        pane.dispatch_event(&chord, &mut ctx, &app),
+        "the pane takes Cmd+Shift+F"
+    );
+    assert!(
+        block.is_open(),
+        "the chord shows the filter of the block under the pointer"
+    );
+
+    let drawn = texts(&render_element(&mut pane, window, &app));
+    assert!(
+        drawn.iter().any(|t| t == "Filter block output"),
+        "the block's own bar is drawn with its placeholder: {drawn:?}"
+    );
+}
+
+/// An image is pane content even though every cell is blank. The pane must
+/// paint the grid for it instead of falling back to the empty-shell hint.
+#[test]
+fn an_image_only_viewport_is_painted() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(b"\x1b_Ga=T,f=32,s=1,v=1,i=12;/wAA/w==\x1b\\");
+    assert_eq!(emulator.images().len(), 1, "the fixture placed an image");
+    assert!(
+        emulator.rows().iter().all(|row| row.is_blank()),
+        "the image is the viewport's only content"
+    );
+    state
+        .borrow_mut()
+        .terminal
+        .borrow_mut()
+        .sessions
+        .insert(1, TerminalSession::with_emulator(emulator));
+
+    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+    let drawn = commands
+        .iter()
+        .filter(|command| matches!(command, RenderCommand::DrawImage { .. }))
+        .count();
+    assert_eq!(drawn, 1, "the pane paints its only content: {commands:?}");
+}

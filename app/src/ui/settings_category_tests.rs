@@ -45,7 +45,13 @@ fn connections_sits_after_environment() {
     assert_eq!(labels[at - 1], "Environment");
     assert_eq!(
         labels[..at],
-        ["Appearance", "Mouse", "Editor & Input", "Agent & Approval", "Environment"]
+        [
+            "Appearance",
+            "Mouse",
+            "Editor & Input",
+            "Agent & Approval",
+            "Environment"
+        ]
     );
     assert_eq!(&labels[at..], ["Connections", "Models", "Advanced"]);
 }
@@ -130,11 +136,7 @@ fn press(root: &mut Box<dyn Element>, app: &AppContext, name: &str) -> bool {
 }
 
 /// The same round trip for a key carrying modifiers.
-fn press_event(
-    root: &mut Box<dyn Element>,
-    app: &AppContext,
-    event: &DispatchedEvent,
-) -> bool {
+fn press_event(root: &mut Box<dyn Element>, app: &AppContext, event: &DispatchedEvent) -> bool {
     let constraint = SizeConstraint::loose(vec2f(1024.0, 768.0));
     let _ = root.layout(constraint, &mut LayoutContext, app);
     let mut paint_ctx = PaintContext::new(goble_ui::render::Renderer::new());
@@ -151,7 +153,10 @@ fn the_arrow_keys_move_the_page_and_escape_leaves_the_tab_open() {
     assert!(press(&mut root, &app, "ArrowDown"));
     assert_eq!(state.borrow().settings_page(), SettingsCategory::Mouse);
     press(&mut root, &app, "ArrowDown");
-    assert_eq!(state.borrow().settings_page(), SettingsCategory::EditorInput);
+    assert_eq!(
+        state.borrow().settings_page(),
+        SettingsCategory::EditorInput
+    );
     press(&mut root, &app, "ArrowUp");
     assert_eq!(state.borrow().settings_page(), SettingsCategory::Mouse);
 
@@ -169,7 +174,9 @@ fn the_arrow_keys_move_the_page_and_escape_leaves_the_tab_open() {
     }
 
     // Stepping up from the first page wraps to the last and back.
-    state.borrow_mut().settings_set_page(SettingsCategory::Appearance);
+    state
+        .borrow_mut()
+        .settings_set_page(SettingsCategory::Appearance);
     press(&mut root, &app, "ArrowUp");
     assert_eq!(state.borrow().settings_page(), SettingsCategory::Advanced);
     press(&mut root, &app, "ArrowDown");
@@ -325,7 +332,11 @@ fn a_settings_tab_in_a_background_space_is_brought_to_the_front() {
         SettingsCategory::Models,
         "on the page it was left on"
     );
-    assert_eq!(s.settings_focus, SettingsFocus::Rail, "ready for the arrows");
+    assert_eq!(
+        s.settings_focus,
+        SettingsFocus::Rail,
+        "ready for the arrows"
+    );
 }
 
 /// Closing the tab takes its space with it, so the next press opens exactly one
@@ -394,7 +405,11 @@ fn a_layout_with_two_settings_leaves_focuses_the_first_and_normalises_nothing() 
     (actions.on_settings.borrow_mut())();
     {
         let s = state.borrow();
-        assert_eq!(s.settings_pane(), Some((space, first)), "the first leaf wins");
+        assert_eq!(
+            s.settings_pane(),
+            Some((space, first)),
+            "the first leaf wins"
+        );
         assert_eq!(s.active_pane_id, first, "and it takes the keyboard");
         assert_eq!(
             s.settings_page(),
@@ -407,10 +422,19 @@ fn a_layout_with_two_settings_leaves_focuses_the_first_and_normalises_nothing() 
     {
         let s = state.borrow();
         match &s.spaces[space].root {
-            Pane::Split { first: a, second: b, .. } => {
+            Pane::Split {
+                first: a,
+                second: b,
+                ..
+            } => {
                 assert!(matches!(
                     **a,
-                    Pane::Leaf { kind: PaneKind::Settings { page: SettingsCategory::Appearance }, .. }
+                    Pane::Leaf {
+                        kind: PaneKind::Settings {
+                            page: SettingsCategory::Appearance
+                        },
+                        ..
+                    }
                 ));
                 assert!(matches!(
                     **b,
@@ -481,12 +505,21 @@ fn the_settings_body_fills_the_pane() {
         // pane, told apart from the window's background by being shorter than
         // it (the sidebar is hidden, so the pane is the whole main column).
         let panel = pane_panel(&commands, &app, window);
-        assert_eq!(panel.min_x(), 0.0, "the settings pane is the main column");
-        assert_eq!(panel.width(), window.x, "and as wide as the window");
+        let inset = crate::ui::panes::PANE_INSET;
+        assert_eq!(
+            panel.min_x(),
+            inset,
+            "the settings pane is the main column, past the frame inset"
+        );
+        assert_eq!(
+            panel.width(),
+            window.x - inset * 2.0,
+            "and as wide as the window, less the frame inset"
+        );
         assert_eq!(
             panel.max_y(),
-            window.y,
-            "and it reaches the window's bottom"
+            window.y - inset,
+            "and it reaches the window's bottom, less the frame inset"
         );
 
         // The rail draws at its own fixed width, hard against the pane's left
@@ -588,7 +621,10 @@ fn the_window_chords_still_answer_while_the_settings_tab_is_open() {
 fn pane_panel(commands: &[RenderCommand], app: &AppContext, window: Vector2F) -> RectF {
     bg_fills(commands, app)
         .into_iter()
-        .find(|rect| rect.min_x() == 0.0 && rect.height() < window.y - 0.5)
+        .find(|rect| {
+            (rect.min_x() - crate::ui::panes::PANE_INSET).abs() < 0.01
+                && rect.height() < window.y - 0.5
+        })
         .unwrap_or_else(|| {
             panic!(
                 "the settings body paints its pane in {window:?}: {:?}",
@@ -677,7 +713,10 @@ fn the_appearance_pane_has_one_wheel_wired_to_the_selected_channel() {
         "a click inside the square is handled"
     );
     let state = state.borrow();
-    let accent = state.theme_accent.clone().expect("Accent got the new color");
+    let accent = state
+        .theme_accent
+        .clone()
+        .expect("Accent got the new color");
     assert_ne!(accent, "#000000", "the picked color is a real color");
     assert!(state.theme_primary.is_none(), "Primary was not touched");
     assert!(state.theme_secondary.is_none(), "Secondary was not touched");
@@ -733,7 +772,6 @@ fn clicking_a_swatch_retargets_the_wheel() {
     assert_eq!(state.borrow().theme_color_target, ColorTarget::Accent);
 }
 
-
 // ---- The settings tab's two-region keyboard model --------------------------
 
 /// The rail's arrows still move the page; `Right` moves the keyboard into
@@ -746,8 +784,13 @@ fn the_arrows_move_the_region_that_holds_the_keyboard() {
 
     // The rail, as before: Down/Up step the page.
     assert!(press(&mut root, &app, "ArrowDown"));
-    assert_eq!(state.borrow().settings_page(), SettingsCategory::EditorInput);
-    state.borrow_mut().settings_select_category(SettingsCategory::Mouse);
+    assert_eq!(
+        state.borrow().settings_page(),
+        SettingsCategory::EditorInput
+    );
+    state
+        .borrow_mut()
+        .settings_select_category(SettingsCategory::Mouse);
 
     // Right moves into the pane, onto its first control.
     assert!(press(&mut root, &app, "ArrowRight"));
@@ -765,7 +808,10 @@ fn the_arrows_move_the_region_that_holds_the_keyboard() {
     press(&mut root, &app, "ArrowDown");
     {
         let s = state.borrow();
-        assert_eq!(s.settings_focused_control(), Some(SettingsControl::ScrollSpeed));
+        assert_eq!(
+            s.settings_focused_control(),
+            Some(SettingsControl::ScrollSpeed)
+        );
         assert_eq!(
             s.settings_page(),
             SettingsCategory::Mouse,
@@ -785,13 +831,18 @@ fn the_arrows_move_the_region_that_holds_the_keyboard() {
     // The switch holds no discrete value, so Left is "back to the rail".
     press(&mut root, &app, "ArrowLeft");
     assert_eq!(state.borrow().settings_focus, SettingsFocus::Rail);
-    assert!(state.borrow().settings_pane().is_some(), "the tab stayed open");
+    assert!(
+        state.borrow().settings_pane().is_some(),
+        "the tab stayed open"
+    );
 
     // Tab goes back in, and a page change resets the pane's focus.
     press(&mut root, &app, "Tab");
     press(&mut root, &app, "ArrowDown");
     assert_eq!(state.borrow().settings_pane_focus, 1);
-    state.borrow_mut().settings_select_category(SettingsCategory::EditorInput);
+    state
+        .borrow_mut()
+        .settings_select_category(SettingsCategory::EditorInput);
     assert_eq!(
         state.borrow().settings_pane_focus,
         0,
@@ -897,11 +948,17 @@ fn a_pane_text_field_takes_the_caret_and_escape_puts_the_value_back() {
         state.borrow().settings_focused_control(),
         Some(SettingsControl::EnvironmentGroupName)
     );
-    assert!(state.borrow().settings_pane().is_some(), "the tab is still open");
+    assert!(
+        state.borrow().settings_pane().is_some(),
+        "the tab is still open"
+    );
 
     // Enter again edits, and a second Enter commits: what was typed stays.
     press(&mut root, &app, "Enter");
-    assert!(state.borrow().settings_pane_field_active, "the caret is back");
+    assert!(
+        state.borrow().settings_pane_field_active,
+        "the caret is back"
+    );
     for c in ["p", "r", "o", "d"] {
         press(&mut root, &app, c);
     }
@@ -963,10 +1020,41 @@ fn enter_advances_a_stepper_and_selects_a_choice() {
         state.borrow().settings_focused_control(),
         Some(SettingsControl::Route(WorkspaceRouting::Remote))
     );
+    // Remote has somewhere to run, so choosing it routes the window there.
+    state.borrow_mut().settings_workers.push((
+        "w1".to_string(),
+        "worker".to_string(),
+        "ws://worker".to_string(),
+        true,
+    ));
     press(&mut root, &app, "Enter");
     assert_eq!(
         state.borrow().workspace_routing,
         Some(WorkspaceRouting::Remote)
+    );
+}
+
+/// The routing choice names where the agent runs with a picture of it: the
+/// computer for a local turn and a cloud for a remote worker.
+#[test]
+fn the_routing_choices_draw_a_computer_and_a_cloud() {
+    let app = AppContext::default();
+    let (mut root, _state, _dir) = settings_root(SettingsCategory::AgentApproval);
+    let commands = frame(&mut root, &app, vec2f(1024.0, 768.0));
+    let icons: Vec<&str> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        icons.contains(&"conversation-local"),
+        "Local draws the computer icon: {icons:?}"
+    );
+    assert!(
+        icons.contains(&"cloud"),
+        "Remote draws the cloud icon: {icons:?}"
     );
 }
 
@@ -983,11 +1071,7 @@ fn the_footer_says_what_the_focused_row_answers() {
     let rail = footer_hints(SettingsFocus::Rail, None, false);
     assert_eq!(words(&rail), vec!["page", "open the page"]);
 
-    let toggle = footer_hints(
-        SettingsFocus::Pane,
-        Some(&SettingsControl::DarkMode),
-        false,
-    );
+    let toggle = footer_hints(SettingsFocus::Pane, Some(&SettingsControl::DarkMode), false);
     assert_eq!(words(&toggle), vec!["row", "toggle", "back"]);
 
     let stepper = footer_hints(
@@ -997,7 +1081,11 @@ fn the_footer_says_what_the_focused_row_answers() {
     );
     assert_eq!(words(&stepper), vec!["row", "change", "increase", "back"]);
 
-    let choice = footer_hints(SettingsFocus::Pane, Some(&SettingsControl::Route(WorkspaceRouting::Local)), false);
+    let choice = footer_hints(
+        SettingsFocus::Pane,
+        Some(&SettingsControl::Route(WorkspaceRouting::Local)),
+        false,
+    );
     assert_eq!(words(&choice), vec!["row", "choose", "select", "back"]);
 
     let field = footer_hints(
@@ -1129,9 +1217,13 @@ fn a_long_page_scrolls_inside_the_pane() {
         "lambda", "mu", "nu", "xi",
     ];
     for name in names {
-        desktop.create_environment_group(name).expect("create group");
+        desktop
+            .create_environment_group(name)
+            .expect("create group");
     }
-    state.borrow_mut().refresh_environment_groups(Some(&desktop));
+    state
+        .borrow_mut()
+        .refresh_environment_groups(Some(&desktop));
     assert_eq!(
         state.borrow().settings_environment_groups.len(),
         names.len()
@@ -1145,7 +1237,10 @@ fn a_long_page_scrolls_inside_the_pane() {
     let max = state.borrow().settings_scroll.borrow().max_offset();
     assert!(max > 0.0, "the page is taller than the viewport");
     let clip = clip_in_panel(&commands, &app, window);
-    assert!(clip.max_y() <= window.y, "the viewport is inside the window");
+    assert!(
+        clip.max_y() <= window.y,
+        "the viewport is inside the window"
+    );
 
     let mut ctx = EventContext;
     assert!(
@@ -1186,7 +1281,9 @@ fn the_settings_tab_still_answers_the_mouse() {
     assert_eq!(state.borrow().settings_page(), SettingsCategory::Models);
 
     // A switch: the 44x24 track in the content pane.
-    state.borrow_mut().settings_select_category(SettingsCategory::Mouse);
+    state
+        .borrow_mut()
+        .settings_select_category(SettingsCategory::Mouse);
     let commands = frame(&mut root, &app, window);
     let switch = switch_track(&commands, window).expect("the pane draws its switch");
     click(&mut root, &app, switch.center().to_vector());
@@ -1204,9 +1301,9 @@ fn the_settings_tab_still_answers_the_mouse() {
     let close = commands
         .iter()
         .find_map(|c| match c {
-            RenderCommand::DrawIcon { origin, name, size, .. }
-                if name == "x-close" && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
-            {
+            RenderCommand::DrawIcon {
+                origin, name, size, ..
+            } if name == "x-close" && origin.y > crate::ui::shell::TOPBAR_HEIGHT => {
                 Some(*origin + vec2f(size * 0.5, size * 0.5))
             }
             _ => None,
@@ -1236,13 +1333,17 @@ fn click(root: &mut Box<dyn Element>, app: &AppContext, at: Vector2F) {
 
 /// Whether a run of text is painted.
 fn drawn(commands: &[RenderCommand], text: &str) -> bool {
-    commands.iter().any(|c| matches!(c, RenderCommand::DrawText { text: run, .. } if run == text))
+    commands
+        .iter()
+        .any(|c| matches!(c, RenderCommand::DrawText { text: run, .. } if run == text))
 }
 
 /// The origin of a run of text.
 fn drawn_text(commands: &[RenderCommand], text: &str) -> Option<Vector2F> {
     commands.iter().find_map(|c| match c {
-        RenderCommand::DrawText { origin, text: run, .. } if run == text => Some(*origin),
+        RenderCommand::DrawText {
+            origin, text: run, ..
+        } if run == text => Some(*origin),
         _ => None,
     })
 }
@@ -1266,11 +1367,9 @@ fn footer_text(commands: &[RenderCommand], app: &AppContext, window: Vector2F) -
 /// cannot be confused with a tab's own.
 fn pane_text(commands: &[RenderCommand], text: &str) -> Option<Vector2F> {
     commands.iter().find_map(|c| match c {
-        RenderCommand::DrawText { origin, text: run, .. }
-            if run == text && origin.y > PANE_TOP =>
-        {
-            Some(*origin)
-        }
+        RenderCommand::DrawText {
+            origin, text: run, ..
+        } if run == text && origin.y > PANE_TOP => Some(*origin),
         _ => None,
     })
 }
@@ -1344,7 +1443,9 @@ fn pane_left(_window: Vector2F) -> f32 {
 fn switch_track(commands: &[RenderCommand], window: Vector2F) -> Option<RectF> {
     commands.iter().find_map(|c| match c {
         RenderCommand::FillRect { rect, .. }
-            if rect.width() == 44.0 && rect.height() == 24.0 && rect.min_x() >= pane_left(window) =>
+            if rect.width() == 44.0
+                && rect.height() == 24.0
+                && rect.min_x() >= pane_left(window) =>
         {
             Some(*rect)
         }
@@ -1490,7 +1591,10 @@ fn the_environment_pane_creates_adds_and_deletes_through_the_store() {
     );
     press(&mut root, &app, "Enter");
     assert!(
-        desktop.environment_groups().expect("read the store back").is_empty(),
+        desktop
+            .environment_groups()
+            .expect("read the store back")
+            .is_empty(),
         "the group and everything in it is gone"
     );
     assert!(state.borrow().settings_environment_open_group.is_none());
@@ -1639,7 +1743,10 @@ fn the_connections_page_draws_a_row_per_host_with_its_target_and_key() {
         let s = state.borrow();
         let ssh = s.settings_ssh_hosts.as_ref().expect("the page read it");
         assert_eq!(
-            ssh.hosts.iter().map(|h| h.alias.as_str()).collect::<Vec<_>>(),
+            ssh.hosts
+                .iter()
+                .map(|h| h.alias.as_str())
+                .collect::<Vec<_>>(),
             vec!["db", "web"],
             "one row per concrete block, sorted by alias"
         );
@@ -1706,7 +1813,10 @@ Host real
         let s = state.borrow();
         let ssh = s.settings_ssh_hosts.as_ref().expect("the page read it");
         assert_eq!(
-            ssh.hosts.iter().map(|h| h.alias.as_str()).collect::<Vec<_>>(),
+            ssh.hosts
+                .iter()
+                .map(|h| h.alias.as_str())
+                .collect::<Vec<_>>(),
             vec!["real"],
             "only the concrete block is a connection"
         );
@@ -1908,7 +2018,8 @@ fn the_connection_rows_are_focusable_in_order_and_enter_selects() {
         let ring = focused_row_ring(&commands, &app, window);
         if let Some((previous_y, previous_x)) = previous {
             assert!(
-                ring.min_y() > previous_y || (ring.min_y() == previous_y && ring.min_x() > previous_x),
+                ring.min_y() > previous_y
+                    || (ring.min_y() == previous_y && ring.min_x() > previous_x),
                 "{:?} is drawn after the row before it",
                 controls[slot]
             );
@@ -2104,17 +2215,66 @@ fn no_remote_agents_draws_the_explanatory_row() {
     let commands = frame(&mut root, &app, window);
 
     assert!(state.borrow().remote_agents.is_empty());
-    assert!(drawn(&commands, "Remote agents"));
+    assert!(drawn(&commands, "Remote"), "the heading is drawn");
     assert!(
-        any_run_contains(&commands, "[remote_agents.<name>]"),
-        "the page names the table to add"
+        any_run_contains(&commands, "No remote configured"),
+        "the page says Remote has nowhere to run"
+    );
+    assert!(drawn(&commands, "Config file"), "the page names the file");
+    assert!(
+        any_run_contains(&commands, "config.toml"),
+        "the file is the config"
+    );
+    assert!(
+        any_run_contains(&commands, "Edit [remote]"),
+        "the page says what the file is for"
     );
     assert!(drawn(&commands, "Reload remote agents"));
 }
 
-/// The reload row is reachable with the keyboard — it is the fifth slot of the
-/// Agent & Approval order — and `Enter` re-reads the config file, so an agent
-/// added under the page shows up on the next frame.
+/// The reload row re-reads the config file, so a `[remote]` gateway written
+/// there becomes what the page reports — and what choosing Remote uses.
+#[test]
+fn the_reload_row_reads_the_config_file() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, dir, _desktop) = remote_agents_root("");
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[remote]\nmode = \"gateway\"\ngateway_url = \"https://gateway.example.com\"\nworker_token = \"wt-test\"\n",
+    )
+    .expect("write config.toml");
+
+    frame(&mut root, &app, window);
+    assert!(
+        !state.borrow().remote_configured(),
+        "nothing is read until the row runs"
+    );
+
+    {
+        let mut s = state.borrow_mut();
+        let controls = s.settings_pane_controls();
+        let slot = controls
+            .iter()
+            .position(|c| *c == SettingsControl::ReloadRemoteAgents)
+            .expect("the reload row is in the order");
+        s.settings_focus = SettingsFocus::Pane;
+        s.settings_pane_focus = slot;
+    }
+    frame(&mut root, &app, window);
+    assert!(press(&mut root, &app, "Enter"));
+
+    assert!(state.borrow().remote_configured());
+    let commands = frame(&mut root, &app, window);
+    assert!(
+        any_run_contains(&commands, "Gateway server · https://gateway.example.com"),
+        "the page reports the gateway the file names"
+    );
+}
+
+/// The reload row is reachable with the keyboard — it closes the Agent &
+/// Approval order — and `Enter` re-reads the config file, so an agent added
+/// under the page shows up on the next frame.
 #[test]
 fn the_reload_row_is_in_the_focus_order_and_enter_reloads_the_config() {
     let app = AppContext::default();
@@ -2122,8 +2282,8 @@ fn the_reload_row_is_in_the_focus_order_and_enter_reloads_the_config() {
     let (mut root, state, dir, _desktop) = remote_agents_root("");
 
     press(&mut root, &app, "ArrowRight"); // into the pane: Auto-approve
-    for _ in 0..4 {
-        press(&mut root, &app, "ArrowDown"); // Vim mode, Local, Remote, Reload
+    for _ in 0..5 {
+        press(&mut root, &app, "ArrowDown"); // Vim, Local, Remote, Reload
     }
     assert_eq!(
         state.borrow().settings_focused_control(),

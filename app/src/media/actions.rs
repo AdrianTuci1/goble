@@ -21,6 +21,8 @@ pub fn make_media_actions(
     let on_select_session = Rc::clone(&state);
     let on_select_medium = Rc::clone(&state);
     let ui_select_session = Rc::clone(&ui);
+    let ui_select_medium = Rc::clone(&ui);
+    let desktop_select_medium = desktop.clone();
     let ui_add_medium = Rc::clone(&ui);
     let add_medium_desktop = desktop.clone();
 
@@ -44,8 +46,17 @@ pub fn make_media_actions(
             },
         )),
         // Select a work environment (medium) by id, resetting the project and
-        // session to that medium's defaults.
+        // session to that medium's defaults. Remote with nowhere to run opens
+        // its configuration in Settings instead of selecting an environment
+        // whose panes could only report "no paired worker".
         on_select_medium: Rc::new(RefCell::new(move |medium_id: String| {
+            if medium_id == "remote" {
+                let mut ui = ui_select_medium.borrow_mut();
+                if !ui.remote_configured() {
+                    ui.open_remote_settings_tab(desktop_select_medium.as_deref());
+                    return;
+                }
+            }
             let _ = on_select_medium.borrow_mut().select_medium(&medium_id);
         })),
         // Add a custom environment medium by label: derive a distinct id from

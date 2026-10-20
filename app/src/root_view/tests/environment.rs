@@ -16,7 +16,7 @@
 //! is sent that the worker would ignore.
 
 use super::*;
-use crate::ui::{PaneKind, SplitDir};
+use crate::ui::{PaneKind, SplitDir, WorkspaceRouting};
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::vec2f;
 use goble_ui::render::RenderCommand;
@@ -188,8 +188,59 @@ fn clear_overlays(state: &Rc<RefCell<UiState>>) {
     state.show_onboarding_tip = false;
 }
 
+/// A layout restored on startup keeps the tab it was left on, and with it that
+/// tab's environment: the selector and the sidebar start on the tab's medium
+/// instead of the environment tree's default.
 #[test]
-fn a_remote_conversation_draws_the_environment_control_and_a_local_one_draws_none() {
+fn a_restored_tab_starts_on_its_own_environment() {
+    use crate::ui::{Pane, Space};
+
+    let dir = tempfile::tempdir().expect("temp thread-store dir");
+    let desktop = DesktopState::new(
+        Store::open_in_memory().expect("in-memory store"),
+        ThreadStore::new(dir.path()).expect("thread store"),
+    );
+    let app = AppContext::default();
+
+    {
+        let view = RootView::new(&app, &desktop, None);
+        let state = view.state_rc();
+        let mut s = state.borrow_mut();
+        s.show_workspace_choice = false;
+        s.show_llm_key_banner = false;
+        s.show_onboarding_tip = false;
+        let id = s.next_pane_id;
+        s.next_pane_id += 1;
+        s.spaces.push(
+            Space::new(
+                "Remote",
+                Pane::Leaf {
+                    id,
+                    kind: PaneKind::Terminal,
+                },
+            )
+            .with_medium("remote"),
+        );
+        s.active_space = s.spaces.len() - 1;
+        s.active_pane_id = id;
+        s.save_panes(&desktop);
+    }
+
+    let view = RootView::new(&app, &desktop, None);
+    assert_eq!(
+        view.media_state_rc().borrow().selected_medium_id(),
+        "remote",
+        "the restored tab is the environment the window starts on"
+    );
+    assert_eq!(
+        view.state_rc().borrow().workspace_routing,
+        Some(WorkspaceRouting::Remote),
+        "and its turns route there"
+    );
+}
+
+#[test]
+fn each_pane_draws_the_environment_its_work_runs_on() {
     let (root, desktop, _dir) = root_with_backend();
     pair_worker(&desktop, "vps");
     let here = conversation(&desktop, "Run it here", "local");
@@ -225,19 +276,30 @@ fn a_remote_conversation_draws_the_environment_control_and_a_local_one_draws_non
     let mut root: Box<dyn Element> = Box::new(root);
     let cmds = render_element(&mut root, vec2f(1024.0, 768.0), &AppContext::default());
 
-    // The environment control is drawn once, in the pane area, and it names the
-    // environment the remote conversation's turns run on.
+    // The environment control is the pane's own, so each pane names where its
+    // work runs: the computer for the local conversation and the cloud for the
+    // worker one, each once in the pane area.
     assert!(
-        pane_icon_center(&cmds, "agentmode").is_some(),
-        "the remote conversation's pane draws the environment control: {cmds:?}"
+        pane_icon_center(&cmds, "cloud").is_some(),
+        "the remote conversation's pane draws the cloud: {cmds:?}"
     );
-    assert_eq!(
+    assert!(
+        pane_icon_center(&cmds, "conversation-local").is_some(),
+        "the local conversation's pane draws the computer: {cmds:?}"
+    );
+    let pane_icon_count = |name: &str| {
         cmds.iter()
-            .filter(|c| matches!(c, RenderCommand::DrawIcon { origin, name, .. }
-                if name == "agentmode" && origin.x >= crate::ui::SIDEBAR_WIDTH))
-            .count(),
+            .filter(|c| {
+                matches!(c, RenderCommand::DrawIcon { origin, name: n, .. }
+                    if n == name && origin.x >= crate::ui::SIDEBAR_WIDTH)
+            })
+            .count()
+    };
+    assert_eq!(pane_icon_count("cloud"), 1, "one cloud for the worker pane");
+    assert_eq!(
+        pane_icon_count("conversation-local"),
         1,
-        "and only the pane that has an environment to choose draws one"
+        "one computer for the local pane"
     );
     let texts = pane_texts(&cmds);
     assert_eq!(
@@ -248,12 +310,10 @@ fn a_remote_conversation_draws_the_environment_control_and_a_local_one_draws_non
         1,
         "the control names the environment: {texts:?}"
     );
-    // The local pane draws no environment control of its own: no environment
-    // glyph, and no environment name in the pane area from it.
     assert_eq!(
         texts.iter().filter(|t| t.as_str() == "Local").count(),
-        0,
-        "the local conversation's pane draws no environment control: {texts:?}"
+        1,
+        "the local conversation's pane names its own environment: {texts:?}"
     );
     // The model is the client's own choice, so it is drawn only where the
     // client's choice is the one the turn runs on: the local conversation's
@@ -279,7 +339,7 @@ fn the_chosen_environment_is_remembered_on_the_conversation() {
 
     clear_overlays(&root.state_rc());
     let cmds = render(&mut root, &app, None);
-    let pill = pane_icon_center(&cmds, "agentmode").expect("the environment control is drawn");
+    let pill = pane_icon_center(&cmds, "cloud").expect("the environment control is drawn");
 
     // The pill opens the host's menu, the same popup every other pill opens.
     click(&mut root, &app, pill);
@@ -361,7 +421,7 @@ fn the_submitted_turn_carries_the_chosen_environment() {
 
     // Choose the pane's own environment through its control.
     let cmds = render(&mut root, &app, None);
-    let pill = pane_icon_center(&cmds, "agentmode").expect("the environment control is drawn");
+    let pill = pane_icon_center(&cmds, "cloud").expect("the environment control is drawn");
     click(&mut root, &app, pill);
     let cmds = render(&mut root, &app, None);
     let row = pane_text_positions(&cmds, "Local")

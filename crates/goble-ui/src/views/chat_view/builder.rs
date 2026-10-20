@@ -261,6 +261,13 @@ impl ChatView {
         self
     }
 
+    /// The glyph that names the pane's environment beside its label: a
+    /// computer for a local environment and a cloud for a worker.
+    pub fn with_composer_harness_icon(mut self, icon: &'static str) -> Self {
+        self.composer_harness_icon = Some(icon);
+        self
+    }
+
     pub fn with_composer_branch_label(mut self, label: impl Into<String>) -> Self {
         self.composer_branch_label = Some(label.into());
         self

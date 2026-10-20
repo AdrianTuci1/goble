@@ -12,6 +12,7 @@ use goble_ui::elements::interactive::contains;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken, TabColor, TabTint};
 
+use crate::media::medium_icon;
 use crate::state::PaneDrag;
 
 use super::super::tab_menu::{build_tab_menu, TabMenuTab, TabMenuAction};
@@ -1647,7 +1648,8 @@ fn build_add_workspace_control(
     // `(medium id, label)` per environment row, in item order.
     let mut envs: Vec<(String, String)> = Vec::new();
     for m in &media.mediums {
-        let mut item = PopupMenuItem::new(m.label.clone()).with_icon("computer");
+        let mut item =
+            PopupMenuItem::new(m.label.clone()).with_icon(medium_icon(&m.id));
         if m.id == media.selected_medium {
             item = item.selected();
         }
@@ -2613,6 +2615,32 @@ mod tests {
         assert!(
             settings.x < window().x,
             "and Settings stays inside the window: {settings:?}"
+        );
+    }
+
+    /// The environment menu names where each row runs with the same two
+    /// glyphs the rest of the app uses: the computer for a local environment
+    /// and the cloud for a worker.
+    #[test]
+    fn the_environment_menu_marks_the_computer_and_the_cloud() {
+        let app = AppContext::default();
+        let (mut root, state, _threads) = app_with_workspaces(vec!["One".to_string()]);
+        *state.borrow().env_selector_open.borrow_mut() = true;
+        let commands = render_element(&mut root, window(), &app);
+        let icons: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            icons.contains(&"conversation-local"),
+            "the local row draws the computer: {icons:?}"
+        );
+        assert!(
+            icons.contains(&"cloud"),
+            "the remote row draws the cloud: {icons:?}"
         );
     }
 

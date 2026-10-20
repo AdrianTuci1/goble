@@ -395,6 +395,42 @@ fn a_section_header_draws_one_prompt_row_above_the_command() {
     }
 }
 
+/// A shell prompt is the user's own string and can be longer than the header
+/// row. The row stays one line and cuts the prompt with an ellipsis; drawing it
+/// wrapped would paint its second line over the command below.
+#[test]
+fn a_long_shell_prompt_is_elided_to_the_headers_one_row() {
+    let app = app();
+    let prompt = "adrian.tucicovencogmail.com@Adrians-MacBook-Pro ~/Projects/goble %";
+    let data = TerminalData::for_section(
+        "ls",
+        "target\n",
+        TerminalMeta::new("~/Projects/goble")
+            .with_prompt(prompt)
+            .with_branch("terminal-first"),
+        TerminalStatus::Success,
+    );
+    let commands = crate::test_util::render_element(
+        &mut terminal_block(&data, TerminalFilter::default(), None, None),
+        vec2f(600.0, 300.0),
+        &app,
+    );
+    let texts = drawn_texts(&commands);
+    let full = format!("{prompt} git:(terminal-first)");
+    assert!(
+        !texts.iter().any(|text| *text == full),
+        "the prompt is cut to the row instead of drawn whole: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text.ends_with('…')),
+        "the cut prompt ends in an ellipsis: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text.contains("ls")),
+        "the command is still drawn once: {texts:?}"
+    );
+}
+
 /// A block that knows the prompt its command was typed at draws that prompt in
 /// the header, in place of the bare directory: the shell's line belongs above
 /// the command, and the body draws the command alone.

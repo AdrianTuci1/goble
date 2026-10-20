@@ -777,14 +777,23 @@ impl TerminalView {
         // element, taken by this frame's build (the tree is rebuilt per frame).
         // A rule separates it from the shell's output, so the input reads as its
         // own surface rather than another line of the transcript.
+        // The pane's output carries the pane's padding; the rich input below it
+        // runs edge to edge, so the input is the pane's width rather than an
+        // inset card inside it.
+        let body = Container::new(column.finish())
+            .with_padding(EdgeInsets::new(lg, lg, lg, 0.0))
+            .finish();
+        let mut outer = Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(Expanded::new(body).finish());
         if let Some(bar) = self.bar.take() {
-            column = column.with_child(Divider::horizontal().finish());
-            column = column.with_child(bar);
+            outer = outer.with_child(Divider::horizontal().finish());
+            outer = outer.with_child(bar);
         }
 
-        let content = Container::new(column.finish())
+        let content = Container::new(outer.finish())
             .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-            .with_padding(EdgeInsets::uniform(lg))
             .finish();
         self.root = Some(content);
     }

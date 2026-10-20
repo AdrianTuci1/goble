@@ -24,7 +24,7 @@ impl Element for TerminalView {
         let height = constraint.max.y.max(constraint.min.y);
         let size = Vector2F::new(width, height);
         if let Some(root) = self.root.as_mut() {
-            let _ = root.layout(
+            root.layout(
                 SizeConstraint::new(Vector2F::zero(), Vector2F::new(width, height)),
                 ctx,
                 app,

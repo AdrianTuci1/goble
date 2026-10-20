@@ -12,8 +12,8 @@ use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     file_icon_name, AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment,
     Divider, EdgeInsets, Element, EventContext, Expanded, Fill, Flex, HoverButton, Icon,
-    LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, Spacer, SplitNode, Stack,
-    Text, TopbarButton,
+    LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Spacer, SplitNode,
+    Stack, Text, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -43,7 +43,11 @@ pub(crate) const FOCUS_MARKER_SIZE: f32 = 16.0;
 /// Guards against an empty space list or an out-of-range active index (which
 /// could arise from a corrupt persisted pane layout): the caller falls back to
 /// an empty chat pane rather than panicking on user-controlled state.
-pub fn build_active_space(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+pub fn build_active_space(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
     let content = match state.spaces.get(state.active_space) {
         Some(space) => {
             // One pane at a time is drawn over the whole panes space: the leaf
@@ -53,7 +57,12 @@ pub fn build_active_space(app: &AppContext, state: &UiSnapshot, actions: &UiActi
             // closed, or it belongs to another space) falls through to the tree.
             if let Some(id) = state.maximized_pane {
                 if let Some(kind) = leaf_kind_of(&space.root, id) {
-                    build_leaf(app, state, actions, id, kind)
+                    let leaf = build_leaf(app, state, actions, id, kind);
+                    if is_lifted(state, id) {
+                        Box::new(HiddenInPlace::new(leaf))
+                    } else {
+                        leaf
+                    }
                 } else {
                     build_space(app, state, actions, space)
                 }
@@ -142,6 +151,7 @@ fn build_space(
                 true,
                 actions,
                 state.floating_drag.clone(),
+                lifted_pane(state),
             ))
         }
         LayoutKind::Floating => {
@@ -180,8 +190,14 @@ fn build_space(
                     build_window(app, state, actions, id, kind, true),
                 ));
             }
-            let layer =
-                RegionLayer::new(children, true, true, actions, state.floating_drag.clone());
+            let layer = RegionLayer::new(
+                children,
+                true,
+                true,
+                actions,
+                state.floating_drag.clone(),
+                lifted_pane(state),
+            );
             let docked = space.minimized_panes();
             if docked.is_empty() {
                 return Box::new(layer);
@@ -227,6 +243,7 @@ fn build_space(
                 true,
                 actions,
                 state.floating_drag.clone(),
+                lifted_pane(state),
             ))
         }
     }
@@ -300,7 +317,21 @@ fn build_pane(
     match pane {
         Pane::Leaf { id, kind } => {
             let leaf = build_leaf(app, state, actions, *id, kind.clone());
-            Box::new(PaneShadow::new(leaf))
+            // The frame sits a few pixels inside its split slot, so the
+            // outline stays visible where two panes meet instead of being
+            // clipped by the divider or the window edge.
+            let framed: Box<dyn Element> = Padding::new(
+                Box::new(PaneShadow::new(leaf)),
+                EdgeInsets::uniform(PANE_INSET),
+            )
+            .finish();
+            // Hide the frame and its shadow together while the pane is lifted,
+            // not just the content: nothing may stay behind in the slot.
+            if is_lifted(state, *id) {
+                Box::new(HiddenInPlace::new(framed))
+            } else {
+                framed
+            }
         }
         Pane::Split {
             id,
@@ -452,6 +483,74 @@ impl Element for PaneBody {
     }
 }
 
+/// A pane lifted by its header keeps its slot in the layout but paints
+/// nothing: the drag card under the pointer is the pane's only visible part
+/// until the drop lands. Layout still runs, so cancelling the drag restores
+/// the same geometry, and events are dropped while the ghost is in flight.
+struct HiddenInPlace {
+    content: Box<dyn Element>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl HiddenInPlace {
+    fn new(content: Box<dyn Element>) -> Self {
+        Self {
+            content,
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for HiddenInPlace {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.content.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, _ctx: &mut PaintContext, _app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        _event: &DispatchedEvent,
+        _ctx: &mut EventContext,
+        _app: &AppContext,
+    ) -> bool {
+        false
+    }
+}
+
+/// The pane currently lifted far enough to read as a drag, if any.
+fn lifted_pane(state: &UiSnapshot) -> Option<u64> {
+    state
+        .pane_drag
+        .as_ref()
+        .filter(|drag| drag.moved())
+        .map(|drag| drag.pane_id)
+}
+
+/// Whether `id` is the pane currently lifted far enough to read as a drag.
+fn is_lifted(state: &UiSnapshot, id: u64) -> bool {
+    lifted_pane(state) == Some(id)
+}
+
 /// The pane area with the drop ghost drawn over it: while a pane is lifted over
 /// another pane, the half the lifted pane would fill is filled with a
 /// translucent accent and bounded by an accent line, so the drop reads as a
@@ -559,6 +658,22 @@ impl RegionChild {
     }
 }
 
+/// The gap between a pane's frame and the slot it occupies, in pixels. It
+/// keeps the outline visible at split boundaries and against the window edge.
+pub(crate) const PANE_INSET: f32 = 4.0;
+
+/// `rect` shrunk by `amount` on every side, never past half its width or
+/// height. Pane frames are painted and hit-tested against this rectangle.
+fn inset_rect(rect: RectF, amount: f32) -> RectF {
+    let amount = amount.min(rect.width() * 0.5).min(rect.height() * 0.5);
+    rectf(
+        rect.min_x() + amount,
+        rect.min_y() + amount,
+        (rect.width() - amount * 2.0).max(1.0),
+        (rect.height() - amount * 2.0).max(1.0),
+    )
+}
+
 /// The corner grip a floating pane resizes from, in pixels.
 const FLOAT_RESIZE_GRIP: f32 = 16.0;
 
@@ -653,6 +768,9 @@ struct RegionLayer {
     /// anywhere on a window focuses it.
     windows: bool,
     floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
+    /// The pane lifted out of this layer, if any: it keeps its slot and layout
+    /// but paints no frame and no shadow, and takes no pointer.
+    lifted: Option<u64>,
     on_float_start: FloatStartHandler,
     on_float_rect: Rc<RefCell<dyn FnMut(u64, PaneRect)>>,
     on_float_rect_end: Rc<RefCell<dyn FnMut()>>,
@@ -668,12 +786,14 @@ impl RegionLayer {
         windows: bool,
         actions: &UiActions,
         floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
+        lifted: Option<u64>,
     ) -> Self {
         Self {
             children,
             floating,
             windows,
             floating_drag,
+            lifted,
             on_float_start: actions.on_float_start.clone(),
             on_float_rect: actions.on_float_rect.clone(),
             on_float_rect_end: actions.on_float_rect_end.clone(),
@@ -683,10 +803,18 @@ impl RegionLayer {
         }
     }
 
+    /// The pixels a child occupies: its stored rect, inset by [`PANE_INSET`].
+    /// Layout, painting, shadow and hit testing all read this one rectangle.
+    fn child_pixels(child: &RegionChild, area: Vector2F) -> RectF {
+        inset_rect(child.rect.to_pixels(area), PANE_INSET)
+    }
+
     fn child_bounds(&self, child: &RegionChild) -> Option<RectF> {
+        if self.lifted == Some(child.pane_id) {
+            return None;
+        }
         let origin = self.origin?;
-        let area = self.size?;
-        let px = child.rect.to_pixels(area);
+        let px = Self::child_pixels(child, self.size?);
         Some(rectf(
             origin.x() + px.min_x(),
             origin.y() + px.min_y(),
@@ -705,7 +833,7 @@ impl Element for RegionLayer {
     ) -> Vector2F {
         let area = vec2f(constraint.max.x.max(1.0), constraint.max.y.max(1.0));
         for child in &mut self.children {
-            let px = child.rect.to_pixels(area);
+            let px = Self::child_pixels(child, area);
             let _ = child.content.layout(
                 SizeConstraint::tight(vec2f(px.width().max(1.0), px.height().max(1.0))),
                 ctx,
@@ -722,7 +850,10 @@ impl Element for RegionLayer {
             return;
         };
         for child in &mut self.children {
-            let px = child.rect.to_pixels(area);
+            if self.lifted == Some(child.pane_id) {
+                continue;
+            }
+            let px = Self::child_pixels(child, area);
             let child_origin = origin + vec2f(px.min_x(), px.min_y());
             if self.windows {
                 // A soft drop shadow under every window, so overlapping panes
@@ -811,9 +942,7 @@ impl Element for RegionLayer {
                             );
                         }
                     }
-                    let _ = self.children[index]
-                        .content
-                        .dispatch_event(event, ctx, app);
+                    let _ = self.children[index].content.dispatch_event(event, ctx, app);
                     return true;
                 }
                 if self.windows {
@@ -821,15 +950,17 @@ impl Element for RegionLayer {
                         (self.on_activate.borrow_mut())(self.children[index].pane_id);
                     }
                 }
-                return self.children[index]
-                    .content
-                    .dispatch_event(event, ctx, app);
+                return self.children[index].content.dispatch_event(event, ctx, app);
             }
             return false;
         }
         // Keys, focus changes and scrolling go to the topmost pane first, the
-        // same order a stack dispatches to its overlays.
+        // same order a stack dispatches to its overlays. The lifted pane is in
+        // flight and takes nothing while its card is under the pointer.
         for child in self.children.iter_mut().rev() {
+            if self.lifted == Some(child.pane_id) {
+                continue;
+            }
             if child.content.dispatch_event(event, ctx, app) {
                 return true;
             }
@@ -885,11 +1016,18 @@ fn build_window(
     } else {
         ColorToken::Border
     };
-    Container::new(column.finish())
+    let window: Box<dyn Element> = Container::new(column.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
         .with_border(Border::all(1.0).with_border_color(app.theme.color(border)))
         .with_corner_radius(WINDOW_CORNER_RADIUS)
-        .finish()
+        .finish();
+    // The same lifted-pane rule as a tiled leaf: keep the slot, paint only the
+    // drag card.
+    if is_lifted(state, id) {
+        Box::new(HiddenInPlace::new(window))
+    } else {
+        window
+    }
 }
 
 /// The titlebar row of one window. Presses on the band outside the controls are
@@ -1032,20 +1170,28 @@ fn build_leaf_with_lift(
         .with_border(app.theme.color(border_color).into())
         .with_corner_radius(WINDOW_CORNER_RADIUS)
         .finish();
-    if !active {
-        return pane;
+    let framed: Box<dyn Element> = if active {
+        // The focused pane's mark: the accent triangle sits in the pane's own
+        // top-left corner, which is where the pane the keyboard is in is read
+        // from. The pane's bar starts past it (see `chat::build_agent_header`).
+        let marker = Icon::new("upper-left-triangle")
+            .with_size(FOCUS_MARKER_SIZE)
+            .with_theme_color(ColorToken::Accent, app)
+            .finish();
+        Stack::new()
+            .with_children(vec![pane])
+            .with_overlay(marker, vec2f(0.0, 0.0))
+            .finish()
+    } else {
+        pane
+    };
+    // A pane lifted by its header leaves its slot visually: the drag card is
+    // the only thing the user sees until the drop lands.
+    if is_lifted(state, id) {
+        Box::new(HiddenInPlace::new(framed))
+    } else {
+        framed
     }
-    // The focused pane's mark: the accent triangle sits in the pane's own
-    // top-left corner, which is where the pane the keyboard is in is read from.
-    // The pane's bar starts past it (see `chat::build_agent_header`).
-    let marker = Icon::new("upper-left-triangle")
-        .with_size(FOCUS_MARKER_SIZE)
-        .with_theme_color(ColorToken::Accent, app)
-        .finish();
-    Stack::new()
-        .with_children(vec![pane])
-        .with_overlay(marker, vec2f(0.0, 0.0))
-        .finish()
 }
 
 /// The pane's content as a column: the click-focus wrapper around the surface,
@@ -1147,4 +1293,26 @@ pub(crate) fn build_esc_hint<F: FnMut() + 'static>(
         .with_padding(EdgeInsets::new(xs, 2.0, xs, 2.0))
         .with_on_click(on_click)
         .finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pane_frames_are_inset_from_their_slots() {
+        let slot = rectf(0.0, 0.0, 100.0, 50.0);
+        assert_eq!(PANE_INSET, 4.0);
+        assert_eq!(
+            inset_rect(slot, PANE_INSET),
+            rectf(4.0, 4.0, 92.0, 42.0),
+            "the frame leaves room for the outline on every side"
+        );
+    }
+
+    #[test]
+    fn the_inset_clamps_on_a_slot_smaller_than_the_frame() {
+        let frame = inset_rect(rectf(10.0, 20.0, 6.0, 4.0), PANE_INSET);
+        assert_eq!(frame, rectf(12.0, 22.0, 2.0, 1.0));
+    }
 }

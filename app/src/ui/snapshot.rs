@@ -20,8 +20,9 @@ use super::color_picker;
 use super::pane::Space;
 use super::types::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, LlmFormField,
-    McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow, SettingsCategory, SettingsFocus,
-    SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkspaceRouting,
+    McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow,
+    SettingsCategory, SettingsFocus, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
+    WorkflowEntry, WorkspaceRouting,
 };
 
 /// What a pane's sub-agent child view (S6) shows: the child's own conversation,
@@ -144,6 +145,9 @@ pub struct PaneChatSnapshot {
 #[derive(Clone, Debug)]
 pub struct ComposerContext {
     pub harness_label: String,
+    /// The glyph that names the pane's environment: the computer for a local
+    /// pane and the cloud for one running on a worker.
+    pub harness_icon: &'static str,
     pub harness_ids: Vec<String>,
     pub harness_items: Vec<PopupMenuItem>,
     pub harness_menu_open: Rc<RefCell<bool>>,
@@ -325,6 +329,17 @@ pub struct UiSnapshot {
     /// config declares, in name order, with the credentials each still lacks.
     /// Read from app state every frame, so a reload shows up at once.
     pub remote_agents: Vec<RemoteAgentEntry>,
+    /// `[remote] mode`: a sandbox platform, or a gateway server.
+    pub remote_mode: goble_core::config::RemoteMode,
+    /// `[remote] gateway_url`, as configured.
+    pub remote_gateway_url: String,
+    /// Whether Remote has somewhere to run (gateway, ready platform table, or a
+    /// paired worker). Choosers open Remote's settings when it is false.
+    pub remote_configured: bool,
+    /// What the settings page's Remote section says under its heading.
+    pub remote_status: String,
+    /// The `config.toml` the page names as Remote's configuration file.
+    pub remote_config_path: String,
     /// First-run: whether the model-provider dialog is open over the chat.
     pub llm_dialog_open: bool,
     /// Editable model-form fields, held in app-owned ref cells so the text and

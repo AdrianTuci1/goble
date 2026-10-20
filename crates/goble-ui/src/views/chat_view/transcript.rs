@@ -651,6 +651,10 @@ impl ChatView {
             // switching a pane between the shell and its agent view moves
             // nothing but the text in the editor.
             .with_context_above_editor(true)
+            // The agent bar is the pane's bottom surface, like the shell bar:
+            // it spans the pane instead of carrying a gutter of its own, so
+            // both surfaces space the input the same way.
+            .with_edge_to_edge(true)
             .with_on_change(move |text| {
                 *composer_value_for_change.borrow_mut() = text.clone();
                 if let Some(cb) = on_composer_change.as_ref() {
@@ -689,6 +693,9 @@ impl ChatView {
         }
         if let Some(label) = self.composer_harness_label.clone() {
             composer = composer.with_harness_label(label);
+        }
+        if let Some(icon) = self.composer_harness_icon {
+            composer = composer.with_harness_icon(icon);
         }
         if let Some(label) = self.composer_branch_label.clone() {
             composer = composer.with_branch_label(label);

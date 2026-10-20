@@ -43,6 +43,41 @@ const SELECTION_ALPHA: u8 = 70;
 
 const PROMPT_PREFIX: &str = "❯ ";
 
+/// `text` cut with an ellipsis so it measures at most `max_width` in the
+/// header's mono font. A shell prompt is the user's own string and can be
+/// longer than the row it is drawn in; cutting it here keeps the row one line,
+/// which is the height the layout reserves for it.
+fn elide_to_width(text: &str, max_width: f32) -> String {
+    let width = |candidate: &str| {
+        measure_text_family(
+            candidate,
+            FONT_SIZE,
+            LINE_HEIGHT,
+            f32::INFINITY,
+            FontWeight::Regular,
+            FontFamily::Mono,
+            false,
+        )
+        .x
+    };
+    if width(text) <= max_width {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut low = 0usize;
+    let mut high = chars.len();
+    while low < high {
+        let mid = (low + high + 1) / 2;
+        let candidate: String = chars[..mid].iter().chain(std::iter::once(&'…')).collect();
+        if width(&candidate) <= max_width {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    chars[..low].iter().chain(std::iter::once(&'…')).collect()
+}
+
 /// A selected range of a block's display text, in line and character
 /// coordinates. Both ends are inclusive. The lines are the block's own
 /// [`TerminalLine`]s, before any filter hides one.
@@ -460,8 +495,14 @@ impl TerminalBlock {
     /// [`PROMPT_MAX_WIDTH`] so a deep path ellipsizes instead of pushing the
     /// block's controls off the edge. The block's state is not in this label:
     /// a failure is the wash and the pole under it.
-    fn prompt_element(&self, app: &AppContext) -> Box<dyn Element> {
-        let text = Text::new(self.prompt_label())
+    ///
+    /// The label is cut to the row's width before it is drawn. A shell prompt
+    /// is the user's own string and can be longer than the row; a text box that
+    /// wraps paints its extra lines past the one-line height the layout
+    /// reserved, over the command below it.
+    fn prompt_element(&self, app: &AppContext, max_width: f32) -> Box<dyn Element> {
+        let label = elide_to_width(&self.prompt_label(), max_width.min(PROMPT_MAX_WIDTH));
+        let text = Text::new(label)
             .with_theme_color(ColorToken::Muted, app)
             .with_font_size(FONT_SIZE)
             .with_line_height(LINE_HEIGHT)
@@ -492,7 +533,7 @@ impl TerminalBlock {
             .join("\n")
     }
 
-    fn rebuild(&mut self, app: &AppContext) {
+    fn rebuild(&mut self, app: &AppContext, block_width: f32) {
         let sm = app.theme.spacing_px(crate::theme::SpacingToken::Sm);
         let muted = ColorToken::Muted;
 
@@ -506,7 +547,7 @@ impl TerminalBlock {
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(HEADER_SPACING)
-            .with_child(self.prompt_element(app))
+            .with_child(self.prompt_element(app, block_width))
             .with_child(Spacer::new().finish());
 
         let controls_shown = self.filter.is_hovered() || self.filter.is_open();
@@ -721,7 +762,7 @@ impl Element for TerminalBlock {
         } else {
             self.resolve_width(f32::INFINITY)
         };
-        self.rebuild(app);
+        self.rebuild(app, block_width);
         let mut root = ConstrainedBox::new(self.root.take().expect("rebuild set root"))
             .with_width(block_width);
         let size = root.layout(constraint, ctx, app);

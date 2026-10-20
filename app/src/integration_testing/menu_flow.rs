@@ -38,6 +38,15 @@ const H: f32 = 768.0;
 /// thread-store path the state owns is not removed mid-test.
 fn build_root() -> (RootView, Arc<DesktopState>, tempfile::TempDir) {
     let (desktop, dir) = common::desktop_state();
+    // These tests exercise choosing the remote environment. Give Remote a
+    // gateway so the choosers select it instead of opening the setup dialog;
+    // the dialog itself is covered where it is built.
+    desktop.set_config_path(dir.path().join("config.toml"));
+    let mut config = desktop.config();
+    config.remote.mode = goble_core::config::RemoteMode::Gateway;
+    config.remote.gateway_url = Some("https://gateway.example.com".to_string());
+    config.remote.worker_token = Some("wt-test".to_string());
+    desktop.save_config(&config).expect("save the remote config");
     let view = RootView::new(&AppContext::default(), &desktop, None);
     (view, desktop, dir)
 }

@@ -66,14 +66,32 @@ pub const CONFIG_HEADER: &str = "\
 # [theme] is goble's own section and grok has no equivalent: `dark`, `accent`,
 # and the optional `primary` / `secondary`.
 #
+# Remote runs a harness somewhere other than this machine. It is configured
+# here, by hand: Settings -> Agent & Approval reports what these sections say,
+# what is missing, and where this file is. Nothing on that page writes them.
+#
+# [remote] names how this machine reaches a worker:
+#   mode = \"platform\"  ships a worker to one of the [remote_agents.*] tables
+#   mode = \"gateway\"   points at a goble-gateway server; workers connect out
+#                      to it, so no inbound port is needed here
+#
+#   [remote]
+#   mode = \"gateway\"
+#   gateway_url = \"https://gateway.example.com\"
+#   worker_token = \"the token goble-gateway was started with\"
+#
+# or, to ship a worker to a platform below:
+#
+#   [remote]
+#   mode = \"platform\"
+#
 # A remote agent declares a sandbox provider the harness can be shipped to.
 # The table's name is the agent's. `provider` is one of modal, e2b, daytona,
 # box, docker or ssh; `enabled` is true unless it says otherwise. Modal reads
-# `token_id` and `token_secret`, the hosted providers read `api_key`, and
-# docker and ssh need no credentials. `api_url`, `image`, `region` and
-# `environment` are optional. Settings -> Agent & Approval reports what each
-# table declares and what it is missing; `goble-remote` provisions it through
-# the provider API and passes the worker the gateway URL and token.
+# `token_id` and `token_secret`; e2b, daytona and box read `api_key`; docker
+# and ssh need no credentials. `api_url`, `image`, `region` and
+# `environment` are optional. `goble-remote` provisions the platform through
+# its provider API and passes the worker the gateway URL and token.
 #
 #   [remote_agents.builder]
 #   provider = \"modal\"
@@ -86,6 +104,9 @@ pub const CONFIG_HEADER: &str = "\
 #   api_key = \"...\"
 #   region = \"us-east-1\"
 #
+#   [remote_agents.local]
+#   provider = \"docker\"
+#
 # Sections this app does not model (grok's [cli], [ui], [privacy], the
 # marketplace) are kept exactly as they were written. Editing this file by hand
 # is expected: the app reads it when it starts, and writes it back — this header
@@ -96,13 +117,14 @@ pub const CONFIG_HEADER: &str = "\
 /// The top-level sections this schema models. Everything else a file carries
 /// (grok's `[cli]`, `[ui]`, `[marketplace]`, `[privacy]`, …) is kept verbatim in
 /// [`GobleConfig::extra`] so a save does not drop another tool's settings.
-const SECTIONS: [&str; 6] = [
+const SECTIONS: [&str; 7] = [
     "model",
     "models",
     "mcp_servers",
     "theme",
     "llm",
     "remote_agents",
+    "remote",
 ];
 
 /// `~/.goble/config.toml`.
@@ -130,6 +152,10 @@ pub struct GobleConfig {
     /// shipped to, keyed by the name the user gave the agent.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub remote_agents: BTreeMap<String, RemoteAgentConfig>,
+    /// `[remote]` — how this machine reaches a worker: a sandbox platform
+    /// from `[remote_agents.*]`, or a gateway server workers connect to.
+    #[serde(skip_serializing_if = "RemoteConfig::is_unset")]
+    pub remote: RemoteConfig,
     /// Sections this schema does not model, kept as they were parsed so saving
     /// does not drop them.
     #[serde(flatten)]
@@ -201,9 +227,10 @@ impl ModelConfig {
 
 /// A sandbox provider a remote agent can run on. The serialized names are the
 /// ones written in `config.toml`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RemoteAgentProvider {
+    #[default]
     Modal,
     E2b,
     Daytona,
@@ -213,6 +240,43 @@ pub enum RemoteAgentProvider {
 }
 
 impl RemoteAgentProvider {
+    /// Every provider this build knows, in the order the settings page offers
+    /// them: the hosted sandboxes first, then the two that run on machines the
+    /// user already owns.
+    pub const ALL: [RemoteAgentProvider; 6] = [
+        RemoteAgentProvider::Modal,
+        RemoteAgentProvider::E2b,
+        RemoteAgentProvider::Daytona,
+        RemoteAgentProvider::Box,
+        RemoteAgentProvider::Docker,
+        RemoteAgentProvider::Ssh,
+    ];
+
+    /// The provider's name as the settings page labels it.
+    pub fn label(self) -> &'static str {
+        match self {
+            RemoteAgentProvider::Modal => "Modal",
+            RemoteAgentProvider::E2b => "E2B",
+            RemoteAgentProvider::Daytona => "Daytona",
+            RemoteAgentProvider::Box => "Box",
+            RemoteAgentProvider::Docker => "Docker",
+            RemoteAgentProvider::Ssh => "SSH",
+        }
+    }
+
+    /// Whether the provider reads a single `api_key`.
+    pub fn uses_api_key(self) -> bool {
+        matches!(
+            self,
+            RemoteAgentProvider::E2b | RemoteAgentProvider::Daytona | RemoteAgentProvider::Box
+        )
+    }
+
+    /// Whether the provider reads Modal's token id and secret pair.
+    pub fn uses_modal_tokens(self) -> bool {
+        matches!(self, RemoteAgentProvider::Modal)
+    }
+
     /// The provider's name as the config file writes it.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -313,6 +377,79 @@ impl RemoteAgentConfig {
             format!("missing {}", missing.join(", "))
         }
     }
+}
+
+/// How this machine reaches a worker for turns routed to Remote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteMode {
+    /// Ship a worker to a sandbox provider declared under
+    /// `[remote_agents.<name>]`.
+    #[default]
+    Platform,
+    /// Workers connect out to a `goble-gateway` server this app points at.
+    Gateway,
+}
+
+impl RemoteMode {
+    fn is_platform(&self) -> bool {
+        matches!(self, RemoteMode::Platform)
+    }
+}
+
+/// `[remote]` — how this machine reaches a worker.
+///
+/// `mode` picks between a sandbox platform and a gateway server. A gateway is
+/// named by its public URL and the worker token it was started with; a platform
+/// is declared by the `[remote_agents.<name>]` tables and needs nothing here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RemoteConfig {
+    /// `platform` (the default) or `gateway`.
+    #[serde(skip_serializing_if = "RemoteMode::is_platform")]
+    pub mode: RemoteMode,
+    /// The gateway's public URL, when `mode = "gateway"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_url: Option<String>,
+    /// The token the gateway was started with, when `mode = "gateway"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_token: Option<String>,
+}
+
+impl RemoteConfig {
+    /// Whether the section says nothing at all, so a save can leave it out.
+    fn is_unset(&self) -> bool {
+        self.mode.is_platform()
+            && self.gateway_url.is_none()
+            && self.worker_token.is_none()
+    }
+
+    /// Whether the gateway is both chosen and named: a URL and a worker token.
+    pub fn gateway_ready(&self) -> bool {
+        self.mode == RemoteMode::Gateway
+            && non_empty(&self.gateway_url)
+            && non_empty(&self.worker_token)
+    }
+
+    /// The gateway's URL when the mode names one.
+    pub fn gateway_url(&self) -> Option<&str> {
+        self.gateway_url.as_deref().map(str::trim).filter(|u| !u.is_empty())
+    }
+
+    /// The worker token when the mode names one.
+    pub fn worker_token(&self) -> Option<&str> {
+        self.worker_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+    }
+}
+
+fn non_empty(value: &Option<String>) -> bool {
+    value
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
 }
 
 /// One `[mcp_servers.<name>]` table. Either an HTTP endpoint (`url`) or a stdio
@@ -429,6 +566,7 @@ impl GobleConfig {
         section!("mcp_servers", config.mcp_servers);
         section!("theme", config.theme);
         section!("llm", config.llm);
+        section!("remote", config.remote);
 
         // The remote agents are read one table at a time: a provider name this
         // build does not know costs that agent, not the others and not the

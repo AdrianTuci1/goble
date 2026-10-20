@@ -41,6 +41,7 @@ mod environment;
 mod llm;
 mod load;
 mod mcp;
+mod remote;
 mod sandboxes;
 mod settings;
 mod translator;
@@ -54,6 +55,10 @@ mod workers;
 mod tests;
 
 pub use attach::{AttachedSession, SessionAttach};
+pub use remote::{
+    deploy, sandbox_request, RemoteDeploy, GATEWAY_URL_ENV, PROJECT_ID_ENV, REPO_BRANCH_ENV,
+    REPO_URL_ENV, WORKER_ID_ENV, WORKER_TOKEN_ENV, WORKSPACE_PATH_ENV,
+};
 pub use sandboxes::{binding_for_local_project, binding_for_project};
 pub use types::{
     AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, CommandProposedEvent, ExecutionInfo, Intent,

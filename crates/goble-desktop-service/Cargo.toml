@@ -26,6 +26,7 @@ goble-harness-runtime = { path = "../goble-harness-runtime" }
 goble-harness-internal = { path = "../goble-harness-internal" }
 goble-replay = { path = "../goble-replay" }
 goble-persistence = { path = "../goble-persistence" }
+goble-remote = { path = "../goble-remote" }
 hex = "0.4"
 log = "0.4"
 once_cell = "1"
@@ -38,6 +39,7 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+async-trait.workspace = true
 tempfile = "3"
 tokio-test = "0.4"
 

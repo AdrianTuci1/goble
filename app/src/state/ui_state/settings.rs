@@ -68,7 +68,29 @@ impl UiState {
             }
         }
         self.refresh_llm_models(desktop);
+        self.refresh_remote_agents(Some(desktop));
         self.refresh_environment_groups(Some(desktop));
+    }
+
+    /// Copy the `[remote_agents.<name>]` tables out of the in-memory config the
+    /// desktop state read. This is the page's whole view of them: nothing here
+    /// provisions a sandbox or reaches a provider.
+    pub fn refresh_remote_agents(&mut self, desktop: Option<&DesktopState>) {
+        let Some(desktop) = desktop else {
+            return;
+        };
+        let config = desktop.config();
+        self.remote_agents = config
+            .remote_agents
+            .iter()
+            .map(|(name, agent)| RemoteAgentEntry::from_config(name, agent))
+            .collect();
+        // A reload can shorten the pane's order; keep the focused slot inside
+        // it instead of leaving it past the end.
+        let len = self.settings_pane_controls().len();
+        if len > 0 {
+            self.settings_pane_focus = self.settings_pane_focus.min(len - 1);
+        }
     }
 
     /// Populate the composer's model dropdown from the configured provider and

@@ -128,6 +128,7 @@ pub fn make_actions(
     let on_set_scroll_speed = Rc::clone(&state);
     let on_set_font_size = Rc::clone(&state);
     let on_reload_model_config = Rc::clone(&state);
+    let on_reload_remote_agents = Rc::clone(&state);
     let on_reload_ssh_hosts = Rc::clone(&state);
     let on_projects = Rc::clone(&state);
     let on_workflows = Rc::clone(&state);
@@ -249,6 +250,7 @@ pub fn make_actions(
     let desktop_theme_secondary = desktop.clone();
     let desktop_theme_accent = desktop.clone();
     let desktop_reload_model = desktop.clone();
+    let desktop_reload_remote_agents = desktop.clone();
     let ui_zoom_font = ui_zoom.clone();
     let desktop_add_worker = desktop.clone();
     let desktop_remove_worker = desktop.clone();
@@ -330,6 +332,28 @@ pub fn make_actions(
             state.models = desktop.available_models(&state.settings_llm_provider);
         }
     }));
+    // Remote agents are read by the same config reader the models use: reload
+    // the file into the desktop state, then copy its `[remote_agents.*]` map
+    // into the page's rows. The state's own pinned path wins, so a test or a
+    // tool that names a file is read instead of the user's home.
+    let action_reload_remote_agents: Rc<RefCell<dyn FnMut()>> =
+        Rc::new(RefCell::new(move || {
+            let mut state = on_reload_remote_agents.borrow_mut();
+            let Some(desktop) = &desktop_reload_remote_agents else {
+                return;
+            };
+            let path = desktop.config_path().or_else(|| {
+                goble_core::app_home::GobleHome::locate()
+                    .ok()
+                    .map(|home| home.config_path())
+            });
+            if let Some(path) = path {
+                if let Err(e) = desktop.reload_config(&path) {
+                    log::error!("reload_config (remote agents) failed: {e}");
+                }
+            }
+            state.refresh_remote_agents(Some(desktop));
+        }));
     // `~/.ssh` is read by the state (which owns the Connections page's cache),
     // so the row and `Enter` on it take one path.
     let action_reload_ssh_hosts: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new({
@@ -1348,6 +1372,7 @@ pub fn make_actions(
             let on_vim = action_toggle_vim_mode.clone();
             let on_route = action_choose_workspace.clone();
             let on_reload = action_reload_model_config.clone();
+            let on_reload_agents = action_reload_remote_agents.clone();
             let on_step = action_settings_step.clone();
             let desktop_activate = desktop.clone();
             move || {
@@ -1383,6 +1408,9 @@ pub fn make_actions(
                     }
                     Some(SettingsControl::Route(routing)) => (on_route.borrow_mut())(routing),
                     Some(SettingsControl::ReloadModels) => (on_reload.borrow_mut())(),
+                    Some(SettingsControl::ReloadRemoteAgents) => {
+                        (on_reload_agents.borrow_mut())()
+                    }
                     // Everything else belongs to the state: the environment
                     // rows, and a text field taking the caret or committing it.
                     _ => activate_state
@@ -1447,6 +1475,7 @@ pub fn make_actions(
         on_set_scroll_speed: action_set_scroll_speed.clone(),
         on_set_font_size: action_set_font_size.clone(),
         on_reload_model_config: action_reload_model_config.clone(),
+        on_reload_remote_agents: action_reload_remote_agents.clone(),
         on_reload_ssh_hosts: action_reload_ssh_hosts.clone(),
         on_ssh_select_host: action_ssh_select_host.clone(),
         on_projects: Rc::new(RefCell::new(move || {

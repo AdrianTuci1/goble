@@ -264,6 +264,9 @@ pub struct UiState {
     pub show_workspace_choice: bool,
     /// First-run routing decision once the user picks Local or Remote.
     pub workspace_routing: Option<WorkspaceRouting>,
+    /// Settings → Agent & Approval: the `[remote_agents.<name>]` tables read
+    /// from the config, refreshed at startup and by the page's reload row.
+    pub remote_agents: Vec<RemoteAgentEntry>,
     /// First-run: whether the model-provider dialog is open over the chat.
     pub llm_dialog_open: bool,
     /// Editable model-provider form values + focus, held here so text/focus

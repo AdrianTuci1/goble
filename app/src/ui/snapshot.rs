@@ -20,8 +20,8 @@ use super::color_picker;
 use super::pane::Space;
 use super::types::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, LlmFormField,
-    McpSearchEntry, McpServerEntry, SearchRow, SettingsCategory, SettingsFocus, SidebarView,
-    TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkspaceRouting,
+    McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow, SettingsCategory, SettingsFocus,
+    SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkspaceRouting,
 };
 
 /// What a pane's sub-agent child view (S6) shows: the child's own conversation,
@@ -321,6 +321,10 @@ pub struct UiSnapshot {
     pub show_workspace_choice: bool,
     /// First-run routing decision once the user picks Local or Remote.
     pub workspace_routing: Option<WorkspaceRouting>,
+    /// Settings → Agent & Approval: the `[remote_agents.<name>]` tables the
+    /// config declares, in name order, with the credentials each still lacks.
+    /// Read from app state every frame, so a reload shows up at once.
+    pub remote_agents: Vec<RemoteAgentEntry>,
     /// First-run: whether the model-provider dialog is open over the chat.
     pub llm_dialog_open: bool,
     /// Editable model-form fields, held in app-owned ref cells so the text and

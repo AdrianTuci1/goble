@@ -219,6 +219,9 @@ pub struct UiActions {
     pub on_set_font_size: Rc<RefCell<dyn FnMut(f32)>>,
     /// Models: reload the model list from the global config file.
     pub on_reload_model_config: Rc<RefCell<dyn FnMut()>>,
+    /// Agent & Approval: re-read `[remote_agents.<name>]` from the global
+    /// config file and refresh the page's rows.
+    pub on_reload_remote_agents: Rc<RefCell<dyn FnMut()>>,
     /// Connections: re-read `~/.ssh` and replace the cached read.
     pub on_reload_ssh_hosts: Rc<RefCell<dyn FnMut()>>,
     /// Connections: select a connection by alias (the row's own click). It

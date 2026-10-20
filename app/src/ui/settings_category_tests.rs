@@ -2019,3 +2019,130 @@ Host two
         2
     );
 }
+
+// ---- Settings -> Agent & Approval: remote agents --------------------------
+
+/// A settings tab on Agent & Approval whose desktop state has read `config`
+/// from the test's own directory, with the page's rows refreshed from it.
+fn remote_agents_root(
+    config: &str,
+) -> (
+    Box<dyn Element>,
+    Rc<RefCell<crate::state::UiState>>,
+    tempfile::TempDir,
+    std::sync::Arc<goble_desktop_service::DesktopState>,
+) {
+    let (root, state, dir, desktop) = settings_root_with_desktop(SettingsCategory::AgentApproval);
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, config).expect("fixture config");
+    desktop.set_config_path(&path);
+    desktop
+        .reload_config(&path)
+        .expect("load the fixture config");
+    state.borrow_mut().refresh_remote_agents(Some(&desktop));
+    (root, state, dir, desktop)
+}
+
+/// One read-only row per `[remote_agents.<name>]` table: the user's name on
+/// the left, `provider · status` on the right, ready or the credentials the
+/// provider still needs. The reload row is the page's own control.
+#[test]
+fn the_agent_page_draws_a_row_per_remote_agent_and_its_status() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir, _desktop) = remote_agents_root(
+        r#"
+[remote_agents.builder]
+provider = "modal"
+
+[remote_agents.local]
+provider = "docker"
+
+[remote_agents.reviewer]
+provider = "e2b"
+enabled = false
+"#,
+    );
+    let commands = frame(&mut root, &app, window);
+
+    assert!(drawn(&commands, "Remote agents"), "the heading is drawn");
+    assert!(drawn(&commands, "builder"));
+    assert!(
+        any_run_contains(
+            &commands,
+            "modal · missing MODAL_TOKEN_ID, MODAL_TOKEN_SECRET"
+        ),
+        "the row names both missing Modal credentials"
+    );
+    assert!(drawn(&commands, "local"));
+    assert!(any_run_contains(&commands, "docker · ready"));
+    assert!(drawn(&commands, "reviewer"));
+    assert!(any_run_contains(&commands, "e2b · disabled"));
+    assert!(drawn(&commands, "Reload remote agents"));
+
+    let s = state.borrow();
+    let names: Vec<&str> = s.remote_agents.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["builder", "local", "reviewer"], "in name order");
+    assert_eq!(
+        s.remote_agents[0].missing,
+        vec!["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]
+    );
+    assert_eq!(
+        s.settings_pane_controls().last(),
+        Some(&SettingsControl::ReloadRemoteAgents),
+        "the reload row closes the pane's order"
+    );
+}
+
+/// With no `[remote_agents.<name>]` tables the page explains the table to add
+/// and still offers the reload, rather than drawing an empty section.
+#[test]
+fn no_remote_agents_draws_the_explanatory_row() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir) = settings_root(SettingsCategory::AgentApproval);
+    let commands = frame(&mut root, &app, window);
+
+    assert!(state.borrow().remote_agents.is_empty());
+    assert!(drawn(&commands, "Remote agents"));
+    assert!(
+        any_run_contains(&commands, "[remote_agents.<name>]"),
+        "the page names the table to add"
+    );
+    assert!(drawn(&commands, "Reload remote agents"));
+}
+
+/// The reload row is reachable with the keyboard — it is the fifth slot of the
+/// Agent & Approval order — and `Enter` re-reads the config file, so an agent
+/// added under the page shows up on the next frame.
+#[test]
+fn the_reload_row_is_in_the_focus_order_and_enter_reloads_the_config() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, dir, _desktop) = remote_agents_root("");
+
+    press(&mut root, &app, "ArrowRight"); // into the pane: Auto-approve
+    for _ in 0..4 {
+        press(&mut root, &app, "ArrowDown"); // Vim mode, Local, Remote, Reload
+    }
+    assert_eq!(
+        state.borrow().settings_focused_control(),
+        Some(SettingsControl::ReloadRemoteAgents)
+    );
+    assert!(state.borrow().remote_agents.is_empty());
+
+    // The file grows under the page; nothing is drawn until the row runs.
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[remote_agents.fresh]\nprovider = \"ssh\"\n",
+    )
+    .expect("rewrite the fixture config");
+    let commands = frame(&mut root, &app, window);
+    assert!(!drawn(&commands, "fresh"), "the page draws the last read");
+
+    assert!(press(&mut root, &app, "Enter"));
+    let commands = frame(&mut root, &app, window);
+    assert!(drawn(&commands, "fresh"), "the reload row re-read the file");
+    assert!(any_run_contains(&commands, "ssh · ready"));
+    assert_eq!(state.borrow().remote_agents.len(), 1);
+}

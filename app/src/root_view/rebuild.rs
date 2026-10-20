@@ -302,6 +302,7 @@ impl RootView {
                 settings_environment_editing: s.settings_environment_editing.clone(),
                 settings_ssh_hosts: s.settings_ssh_hosts.clone(),
                 settings_ssh_selected: s.settings_ssh_selected.clone(),
+                remote_agents: s.remote_agents.clone(),
                 settings_invert_scroll: s.settings_invert_scroll,
                 settings_scroll_speed: s.settings_scroll_speed,
                 settings_font_size: s.settings_font_size,

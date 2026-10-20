@@ -107,6 +107,7 @@ impl UiState {
             show_llm_key_banner: false,
             show_workspace_choice: false,
             workspace_routing: None,
+            remote_agents: Vec::new(),
             llm_dialog_open: false,
             llm_dialog_provider: Rc::new(RefCell::new(String::new())),
             llm_dialog_model: Rc::new(RefCell::new(String::new())),

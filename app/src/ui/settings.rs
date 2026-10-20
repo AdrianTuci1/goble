@@ -136,6 +136,7 @@ pub fn pane_controls(
             VimMode,
             Route(WorkspaceRouting::Local),
             Route(WorkspaceRouting::Remote),
+            ReloadRemoteAgents,
         ],
         SettingsCategory::Models => vec![ReloadModels],
         // Nothing in Advanced is interactive: the pane reports the SSH and
@@ -1036,7 +1037,7 @@ fn build_agent(
     let on_vim: Rc<RefCell<dyn FnMut(bool)>> = Rc::new(RefCell::new(move |v: bool| {
         (on_vim_action.borrow_mut())(v)
     }));
-    let rows = Flex::column()
+    let mut col = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min)
         .with_child(heading(app, "Behaviour"))
@@ -1061,10 +1062,46 @@ fn build_agent(
             Container::new(routing)
                 .with_padding(EdgeInsets::uniform(app.theme.spacing_px(SpacingToken::Sm)))
                 .finish(),
-        )
+        );
+
+    // What `[remote_agents.<name>]` declares. These rows are read-only — phase
+    // one reports the configuration and provisions nothing — so none of them
+    // takes a focus slot; the reload row is the page's only control here.
+    col = col.with_child(rule());
+    col = col.with_child(heading(app, "Remote agents"));
+    if state.remote_agents.is_empty() {
+        col = col.with_child(note(
+            app,
+            "No remote agents configured. Add a [remote_agents.<name>] table with a provider to \
+             ~/.goble/config.toml, then reload.",
+        ));
+    } else {
+        for agent in &state.remote_agents {
+            col = col.with_child(rule());
+            col = col.with_child(setting_row(
+                app,
+                &agent.name,
+                Text::new(agent.detail())
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_font_size(11.0)
+                    .with_max_lines(1)
+                    .finish(),
+                false,
+            ));
+        }
+    }
+
+    let reload_focused = order.take(SettingsControl::ReloadRemoteAgents);
+    let on_reload = actions.on_reload_remote_agents.clone();
+    let reload = Button::new(Text::new("Reload remote agents").finish())
+        .with_variant(ButtonVariant::Primary)
+        .with_on_click(move || (on_reload.borrow_mut())())
         .finish();
+    col = col.with_child(rule());
+    col = col.with_child(action_row(app, reload, reload_focused));
+
     order.finish();
-    Container::new(rows).finish()
+    Container::new(col.finish()).finish()
 }
 
 /// Settings → Environment: the groups of secrets, and the group that is open.

@@ -258,6 +258,7 @@ pub enum LayoutKindArg {
     Bsp,
     MasterStack,
     Floating,
+    Carousel,
 }
 
 #[cfg(unix)]
@@ -270,6 +271,7 @@ impl From<LayoutKindArg> for goble_control::LayoutKind {
             LayoutKindArg::Bsp => Self::Bsp,
             LayoutKindArg::MasterStack => Self::MasterStack,
             LayoutKindArg::Floating => Self::Floating,
+            LayoutKindArg::Carousel => Self::Carousel,
         }
     }
 }

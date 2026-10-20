@@ -10,7 +10,9 @@ use super::SettingsCategory;
 /// its own direction and ratio and a divider the user can drag. `MasterStack`
 /// draws the first leaf at ~60% of the width and stacks every other leaf in
 /// the remaining column. `Floating` gives each leaf a rect of its own, in a
-/// persisted z-order; a click raises the pane it lands on.
+/// persisted z-order; a click raises the pane it lands on. `Carousel` fans
+/// every leaf out horizontally like a coverflow: the focused pane sits
+/// centered and on top, and clicking a neighbour brings it to the center.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayoutKind {
@@ -18,6 +20,7 @@ pub enum LayoutKind {
     Bsp,
     MasterStack,
     Floating,
+    Carousel,
 }
 
 impl LayoutKind {
@@ -26,7 +29,8 @@ impl LayoutKind {
         match self {
             Self::Bsp => Self::MasterStack,
             Self::MasterStack => Self::Floating,
-            Self::Floating => Self::Bsp,
+            Self::Floating => Self::Carousel,
+            Self::Carousel => Self::Bsp,
         }
     }
 
@@ -36,6 +40,7 @@ impl LayoutKind {
             Self::Bsp => "BSP",
             Self::MasterStack => "Master stack",
             Self::Floating => "Floating",
+            Self::Carousel => "Carousel",
         }
     }
 }
@@ -117,11 +122,21 @@ impl PaneRect {
 pub struct FloatingPane {
     pub pane_id: u64,
     pub rect: PaneRect,
+    /// A minimized window keeps its rect and its place in the z-order, but is
+    /// drawn as a chip in the dock rather than over the pane area. The flag
+    /// defaults to false so layouts saved before the dock existed load as
+    /// ordinary windows.
+    #[serde(default)]
+    pub minimized: bool,
 }
 
 impl FloatingPane {
     pub fn new(pane_id: u64, rect: PaneRect) -> Self {
-        Self { pane_id, rect }
+        Self {
+            pane_id,
+            rect,
+            minimized: false,
+        }
     }
 }
 
@@ -813,8 +828,17 @@ impl Space {
     /// [`LayoutKind::Floating`] gives every leaf a rect; switching into
     /// [`LayoutKind::Bsp`] keeps the tree the space already had, so no pane is
     /// lost by changing how it is arranged.
+    ///
+    /// Minimizing is a floating-layout gesture: leaving the floating layout
+    /// brings every docked window back, so no pane is missing from a layout
+    /// that has no dock to find it in.
     pub fn set_layout(&mut self, layout: LayoutKind) {
         self.layout = layout;
+        if layout != LayoutKind::Floating {
+            for pane in &mut self.floating {
+                pane.minimized = false;
+            }
+        }
         self.recompute_layout();
     }
 
@@ -866,10 +890,68 @@ impl Space {
         }
     }
 
+    /// Hide the floating pane `pane_id` into the dock, keeping its rect and its
+    /// place in the z-order so restoring it puts it back where it was.
+    pub fn minimize_pane(&mut self, pane_id: u64) {
+        if let Some(pane) = self
+            .floating
+            .iter_mut()
+            .find(|pane| pane.pane_id == pane_id)
+        {
+            pane.minimized = true;
+        }
+    }
+
+    /// Bring the minimized floating pane `pane_id` back onto the pane area and
+    /// raise it, so the window the dock was clicked for is the one in front.
+    pub fn restore_pane(&mut self, pane_id: u64) {
+        if let Some(pane) = self
+            .floating
+            .iter_mut()
+            .find(|pane| pane.pane_id == pane_id)
+        {
+            pane.minimized = false;
+        }
+        self.raise_pane(pane_id);
+    }
+
+    /// Whether the floating pane `pane_id` is currently docked.
+    pub fn pane_minimized(&self, pane_id: u64) -> bool {
+        self.floating
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .is_some_and(|pane| pane.minimized)
+    }
+
+    /// The docks of this space, in z-order: the windows a minimized chip stands
+    /// for. Empty outside the floating layout, where no window is docked.
+    pub fn minimized_panes(&self) -> Vec<(u64, PaneRect)> {
+        if self.layout != LayoutKind::Floating {
+            return Vec::new();
+        }
+        self.floating
+            .iter()
+            .filter(|pane| pane.minimized && self.root.contains_leaf(pane.pane_id))
+            .map(|pane| (pane.pane_id, pane.rect))
+            .collect()
+    }
+
+    /// The leaves that are on screen in the space's current layout: every leaf
+    /// except the windows docked in the floating layout.
+    pub fn visible_leaf_ids(&self) -> Vec<u64> {
+        let mut leaves = Vec::new();
+        self.root.leaves(&mut leaves);
+        leaves
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| !self.pane_minimized(*id))
+            .collect()
+    }
+
     /// The normalized region every leaf occupies under the space's current
     /// layout, in draw order (floating panes are bottom to top). Spatial focus
-    /// navigation reads this, and it is the one place the three layouts'
-    /// geometry is defined.
+    /// navigation reads this, and it is the one place the layouts' geometry is
+    /// defined.
     pub fn layout_regions(&self) -> Vec<(u64, goble_ui::RectF)> {
         match self.layout {
             LayoutKind::Bsp => self.root.leaf_regions(),
@@ -880,12 +962,19 @@ impl Space {
             }
             LayoutKind::Floating => {
                 // The stored order is the z-order, so the returned order is
-                // what the layer draws: bottom first.
+                // what the layer draws: bottom first. A docked window is not
+                // on the pane area, so focus navigation must skip it.
                 self.floating
                     .iter()
-                    .filter(|pane| self.root.contains_leaf(pane.pane_id))
+                    .filter(|pane| !pane.minimized && self.root.contains_leaf(pane.pane_id))
                     .map(|pane| (pane.pane_id, pane.rect.to_rect()))
                     .collect()
+            }
+            LayoutKind::Carousel => {
+                let mut leaves = Vec::new();
+                self.root.leaves(&mut leaves);
+                let focused = leaves.first().map(|(id, _)| *id).unwrap_or_default();
+                carousel_regions(&leaves, focused)
             }
         }
     }
@@ -966,6 +1055,22 @@ impl Space {
     /// broken by distance along the perpendicular axis so the nearest
     /// same-row/same-column pane wins.
     pub fn navigate(&self, from: u64, dir: NavDir) -> Option<u64> {
+        // A carousel is one ordered row, not a grid: Left/Up walks toward the
+        // front of the row and Right/Down toward the back, wrapping at either
+        // end so the fan can be cycled without stopping at an edge.
+        if self.layout == LayoutKind::Carousel {
+            let mut leaves = Vec::new();
+            self.root.leaves(&mut leaves);
+            if leaves.len() < 2 {
+                return None;
+            }
+            let index = leaves.iter().position(|(id, _)| *id == from)?;
+            let step = match dir {
+                NavDir::Left | NavDir::Up => leaves.len() - 1,
+                NavDir::Right | NavDir::Down => 1,
+            };
+            return Some(leaves[(index + step) % leaves.len()].0);
+        }
         let regions = self.layout_regions();
         let current = regions.iter().find_map(|(id, r)| (*id == from).then_some(*r))?;
 
@@ -1055,6 +1160,56 @@ pub fn master_stack_regions(leaves: &[(u64, PaneKind)]) -> Vec<(u64, goble_ui::R
         ));
     }
     out
+}
+
+/// The size of the centered carousel window, as a share of the pane area. The
+/// neighbours shrink by [`CAROUSEL_SHRINK`] per step away from it.
+pub const CAROUSEL_WINDOW_WIDTH: f32 = 0.58;
+pub const CAROUSEL_WINDOW_HEIGHT: f32 = 0.84;
+/// How far each carousel step moves a window sideways, and how much smaller it
+/// gets. The step is narrower than the window, so the fan overlaps and the
+/// centered window reads as the one in front.
+const CAROUSEL_STEP: f32 = 0.16;
+const CAROUSEL_SHRINK: f32 = 0.88;
+
+/// The carousel regions of `leaves`, centered on `focused`: the focused window
+/// at full size in the middle, every other window fanned out to its left or
+/// right, smaller and lower the farther it sits. The returned order is the draw
+/// order — farthest windows first, the focused window last and therefore on top.
+///
+/// Positions are clamped into the unit square, so a long row stacks its outer
+/// windows at the edges instead of parking them where they cannot be clicked.
+pub fn carousel_regions(
+    leaves: &[(u64, PaneKind)],
+    focused: u64,
+) -> Vec<(u64, goble_ui::RectF)> {
+    if leaves.is_empty() {
+        return Vec::new();
+    }
+    let focus_index = leaves
+        .iter()
+        .position(|(id, _)| *id == focused)
+        .unwrap_or(0);
+    let mut placed: Vec<(u64, goble_ui::RectF, f32)> = leaves
+        .iter()
+        .enumerate()
+        .map(|(index, (id, _))| {
+            let offset = index as f32 - focus_index as f32;
+            let distance = offset.abs();
+            let scale = CAROUSEL_SHRINK.powf(distance);
+            let w = (CAROUSEL_WINDOW_WIDTH * scale).min(1.0);
+            let h = (CAROUSEL_WINDOW_HEIGHT * scale).min(1.0);
+            let x = 0.5 - CAROUSEL_WINDOW_WIDTH / 2.0 + offset * CAROUSEL_STEP;
+            let y = 0.5 - h / 2.0 + distance * 0.02;
+            let x = x.clamp(0.0, (1.0 - w).max(0.0));
+            let y = y.clamp(0.0, (1.0 - h).max(0.0));
+            (*id, rectf(x, y, w, h), distance)
+        })
+        .collect();
+    // Stable sort: two neighbours at the same distance keep their row order,
+    // and the focused window (distance zero) lands last.
+    placed.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    placed.into_iter().map(|(id, rect, _)| (id, rect)).collect()
 }
 
 /// The rect a floating pane gets before the user moves it: a cascade so two

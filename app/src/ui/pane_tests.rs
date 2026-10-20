@@ -1,7 +1,8 @@
-use super::*;
 use super::pane::{
-    default_floating_rect, drop_ghost_rect, drop_side_in, pane_drop_target, DROP_SIDE_THRESHOLD,
+    carousel_regions, default_floating_rect, drop_ghost_rect, drop_side_in, pane_drop_target,
+    DROP_SIDE_THRESHOLD,
 };
+use super::*;
 
 use std::collections::HashMap;
 
@@ -296,10 +297,119 @@ fn a_floating_drag_moves_and_resizes_in_normalized_units() {
 }
 
 #[test]
-fn the_layout_cycle_is_bsp_master_stack_floating() {
+fn the_layout_cycle_is_bsp_master_stack_floating_carousel() {
     assert_eq!(LayoutKind::Bsp.cycle(), LayoutKind::MasterStack);
     assert_eq!(LayoutKind::MasterStack.cycle(), LayoutKind::Floating);
-    assert_eq!(LayoutKind::Floating.cycle(), LayoutKind::Bsp);
+    assert_eq!(LayoutKind::Floating.cycle(), LayoutKind::Carousel);
+    assert_eq!(LayoutKind::Carousel.cycle(), LayoutKind::Bsp);
+}
+
+/// The carousel puts the focused window in the middle at full size and draws
+/// it last, so it covers the neighbours it overlaps. Every other window is
+/// smaller and stays inside the pane area, where its visible sliver can be
+/// clicked.
+#[test]
+fn the_carousel_centers_the_focused_window_and_fans_the_rest_out() {
+    let leaves = vec![
+        (1, PaneKind::Chat),
+        (2, PaneKind::Terminal),
+        (3, PaneKind::Chat),
+        (4, PaneKind::Terminal),
+    ];
+    let regions = carousel_regions(&leaves, 2);
+    assert_eq!(regions.len(), 4, "every pane is in the fan");
+    assert_eq!(
+        regions.last().map(|(id, _)| *id),
+        Some(2),
+        "the focused window is drawn last, on top"
+    );
+
+    let focused = regions.last().unwrap().1;
+    assert!(close_to(focused.center().x, 0.5), "the fan is centered");
+    for (id, rect) in &regions {
+        assert!(
+            rect.min_x() >= -1e-6
+                && rect.max_x() <= 1.0 + 1e-6
+                && rect.min_y() >= -1e-6
+                && rect.max_y() <= 1.0 + 1e-6,
+            "pane {id} stays inside the pane area: {rect:?}"
+        );
+        if *id != 2 {
+            assert!(
+                rect.width() < focused.width(),
+                "pane {id} is smaller than the focused window"
+            );
+        }
+    }
+
+    let x_of = |id: u64| {
+        regions
+            .iter()
+            .find(|(pane, _)| *pane == id)
+            .map(|(_, rect)| rect.min_x())
+            .unwrap()
+    };
+    assert!(x_of(1) < x_of(2), "the pane before it fans left");
+    assert!(x_of(3) > x_of(2), "the pane after it fans right");
+    assert!(x_of(4) > x_of(3), "farther panes fan farther");
+}
+
+/// Arrow navigation walks the carousel row and wraps at both ends, so every
+/// window is reachable with the keys as well as with the pointer.
+#[test]
+fn carousel_navigation_walks_the_row_and_wraps() {
+    let mut space = Space::new("S", chat_leaf(1));
+    let mut next = 2;
+    let second = space.split(1, SplitDir::Horizontal, &mut next).unwrap();
+    let third = space
+        .split(second, SplitDir::Horizontal, &mut next)
+        .unwrap();
+    space.set_layout(LayoutKind::Carousel);
+
+    assert_eq!(space.navigate(1, NavDir::Right), Some(second));
+    assert_eq!(space.navigate(second, NavDir::Right), Some(third));
+    assert_eq!(
+        space.navigate(third, NavDir::Right),
+        Some(1),
+        "the row wraps forward"
+    );
+    assert_eq!(space.navigate(1, NavDir::Left), Some(third), "and backward");
+}
+
+/// A minimized window leaves the pane area and focus navigation, keeps its
+/// rect, and comes back raised when its dock chip is clicked.
+#[test]
+fn a_minimized_window_waits_in_the_dock_and_returns_raised() {
+    let mut space = Space::new("S", chat_leaf(1));
+    let mut next = 2;
+    let second = space.split(1, SplitDir::Horizontal, &mut next).unwrap();
+    space.set_layout(LayoutKind::Floating);
+    let rect = space.floating_rect(second).unwrap();
+
+    space.minimize_pane(second);
+    assert!(space.pane_minimized(second));
+    assert!(
+        !space.layout_regions().iter().any(|(id, _)| *id == second),
+        "a docked window is not on the pane area"
+    );
+    assert!(
+        !space.visible_leaf_ids().contains(&second),
+        "focus skips a docked window"
+    );
+    assert_eq!(
+        space.minimized_panes(),
+        vec![(second, rect)],
+        "the dock keeps the rect it was docked with"
+    );
+
+    space.restore_pane(second);
+    assert!(!space.pane_minimized(second));
+    assert_eq!(space.floating_rect(second), Some(rect));
+    assert_eq!(
+        space.layout_regions().last().map(|(id, _)| *id),
+        Some(second),
+        "the restored window is raised"
+    );
 }
 
 /// The drop side of a pane is read from the pointer relative to the pane's own

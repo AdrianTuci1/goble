@@ -10,9 +10,10 @@ use std::rc::Rc;
 
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
-    AppContext, Axis, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Expanded,
-    Fill, Flex, HoverButton, Icon, LayoutContext, MainAxisSize, PaintContext, Point,
-    SizeConstraint, SplitNode, Stack, Text,
+    file_icon_name, AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment,
+    Divider, EdgeInsets, Element, EventContext, Expanded, Fill, Flex, HoverButton, Icon,
+    LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, Spacer, SplitNode, Stack,
+    Text, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -20,11 +21,11 @@ use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::chat;
 use super::file_view;
+use super::pane::{carousel_regions, default_floating_rect, drop_ghost_rect, master_stack_regions};
 use super::settings;
 use super::shell::TOPBAR_HEIGHT;
 use super::terminal;
 use super::worker;
-use super::pane::{default_floating_rect, drop_ghost_rect, master_stack_regions};
 use super::{
     FloatStartHandler, FloatingDrag, FloatingDragMode, LayoutKind, Pane, PaneDropTarget, PaneKind,
     PaneRect, Space, SplitDir, UiActions, UiSnapshot,
@@ -138,6 +139,7 @@ fn build_space(
             Box::new(RegionLayer::new(
                 children,
                 false,
+                false,
                 actions,
                 state.floating_drag.clone(),
             ))
@@ -145,18 +147,25 @@ fn build_space(
         LayoutKind::Floating => {
             // The stored order is the z-order; a leaf the space has not given a
             // rect yet falls back to the cascade, so nothing is drawn twice or
-            // left invisible.
+            // left invisible. A minimized window is not drawn over the pane
+            // area: its chip in the dock below stands for it.
             let mut children = Vec::new();
             let mut placed = Vec::new();
             for pane in &space.floating {
                 let Some(kind) = leaf_kind_of(&space.root, pane.pane_id) else {
                     continue;
                 };
+                // A minimized window is accounted for even though it is not
+                // drawn: its chip in the dock stands for it, and the fallback
+                // below must not put it back on the pane area.
                 placed.push(pane.pane_id);
+                if pane.minimized {
+                    continue;
+                }
                 children.push(RegionChild::new(
                     pane.pane_id,
                     pane.rect,
-                    build_leaf_with_lift(app, state, actions, pane.pane_id, kind, false),
+                    build_window(app, state, actions, pane.pane_id, kind, true),
                 ));
             }
             let mut leaves = Vec::new();
@@ -168,17 +177,118 @@ fn build_space(
                 children.push(RegionChild::new(
                     id,
                     default_floating_rect(index),
-                    build_leaf_with_lift(app, state, actions, id, kind, false),
+                    build_window(app, state, actions, id, kind, true),
                 ));
             }
+            let layer =
+                RegionLayer::new(children, true, true, actions, state.floating_drag.clone());
+            let docked = space.minimized_panes();
+            if docked.is_empty() {
+                return Box::new(layer);
+            }
+            // The dock is a strip below the pane area: one chip per minimized
+            // window, each one click away from coming back. It only exists
+            // while something is docked, so the windows keep the whole area
+            // otherwise.
+            let dock = build_window_dock(app, actions, &space.root, &docked);
+            Flex::column()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(Expanded::new(Box::new(layer)).finish())
+                .with_child(dock)
+                .finish()
+        }
+        LayoutKind::Carousel => {
+            // The fan is centered on the app's focused pane; clicking any
+            // visible sliver of a neighbour focuses it and the next frame puts
+            // it in the middle. Every window carries the same chrome a floating
+            // window has, including maximize and close.
+            let mut leaves = Vec::new();
+            space.root.leaves(&mut leaves);
+            let focused = if leaves.iter().any(|(id, _)| *id == state.active_pane_id) {
+                state.active_pane_id
+            } else {
+                leaves.first().map(|(id, _)| *id).unwrap_or_default()
+            };
+            let children = carousel_regions(&leaves, focused)
+                .into_iter()
+                .filter_map(|(id, rect)| {
+                    let kind = leaf_kind_of(&space.root, id)?;
+                    Some(RegionChild::new(
+                        id,
+                        PaneRect::new(rect.min_x(), rect.min_y(), rect.width(), rect.height()),
+                        build_window(app, state, actions, id, kind, false),
+                    ))
+                })
+                .collect();
             Box::new(RegionLayer::new(
                 children,
+                false,
                 true,
                 actions,
                 state.floating_drag.clone(),
             ))
         }
     }
+}
+
+/// The strip of minimized windows under the floating pane area. Each chip names
+/// the window it stands for and puts it back on click; the dock itself is the
+/// surface of the strip, so the chips read as windows waiting below the desk.
+fn build_window_dock(
+    app: &AppContext,
+    actions: &UiActions,
+    root: &Pane,
+    docked: &[(u64, PaneRect)],
+) -> Box<dyn Element> {
+    let spacing = app.theme.spacing_px(SpacingToken::Sm);
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(spacing * 0.5);
+    row = row.with_child(
+        Text::new("Minimized")
+            .with_font_size(10.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    );
+    for (id, _) in docked {
+        let Some(kind) = leaf_kind_of(root, *id) else {
+            continue;
+        };
+        let on_restore = actions.on_float_restore.clone();
+        let pane_id = *id;
+        let label = window_title(&kind);
+        let chip = HoverButton::new(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(4.0)
+                .with_child(
+                    Icon::new("terminal")
+                        .with_size(12.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_child(
+                    Text::new(label)
+                        .with_font_size(11.0)
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                )
+                .finish(),
+            Rc::new(RefCell::new(false)),
+        )
+        .with_padding(EdgeInsets::new(8.0, 2.0, 8.0, 2.0))
+        .with_corner_radius(4.0)
+        .with_on_click(move || (on_restore.borrow_mut())(pane_id))
+        .finish();
+        row = row.with_child(chip);
+    }
+    Container::new(row.finish())
+        .with_padding(EdgeInsets::new(spacing, 2.0, spacing, 2.0))
+        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+        .finish()
 }
 
 fn build_pane(
@@ -451,11 +561,17 @@ const FLOAT_RESIZE_GRIP: f32 = 16.0;
 
 struct RegionLayer {
     children: Vec<RegionChild>,
+    /// Whether presses on a window's titlebar move it and the corner grip
+    /// resizes it. Only the floating layout owns stored rects to change.
     floating: bool,
+    /// Whether the children are windows: shadow under each one, and a press
+    /// anywhere on a window focuses it.
+    windows: bool,
     floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
     on_float_start: FloatStartHandler,
     on_float_rect: Rc<RefCell<dyn FnMut(u64, PaneRect)>>,
     on_float_rect_end: Rc<RefCell<dyn FnMut()>>,
+    on_activate: Rc<RefCell<dyn FnMut(u64)>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -464,16 +580,19 @@ impl RegionLayer {
     fn new(
         children: Vec<RegionChild>,
         floating: bool,
+        windows: bool,
         actions: &UiActions,
         floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
     ) -> Self {
         Self {
             children,
             floating,
+            windows,
             floating_drag,
             on_float_start: actions.on_float_start.clone(),
             on_float_rect: actions.on_float_rect.clone(),
             on_float_rect_end: actions.on_float_rect_end.clone(),
+            on_activate: actions.on_pane_activate.clone(),
             size: None,
             origin: None,
         }
@@ -519,9 +638,24 @@ impl Element for RegionLayer {
         };
         for child in &mut self.children {
             let px = child.rect.to_pixels(area);
-            child
-                .content
-                .paint(origin + vec2f(px.min_x(), px.min_y()), ctx, app);
+            let child_origin = origin + vec2f(px.min_x(), px.min_y());
+            if self.windows {
+                // A soft drop shadow under every window, so overlapping panes
+                // read as separate surfaces the way OS windows do. It is drawn
+                // before the child, so the window covers all but its edges.
+                if let Some(renderer) = ctx.renderer.as_mut() {
+                    renderer.fill_rect(
+                        rectf(
+                            child_origin.x + 4.0,
+                            child_origin.y + 6.0,
+                            px.width(),
+                            px.height(),
+                        ),
+                        goble_ui::ColorU::new(0, 0, 0, 72),
+                    );
+                }
+            }
+            child.content.paint(child_origin, ctx, app);
         }
     }
 
@@ -578,7 +712,11 @@ impl Element for RegionLayer {
                         let pane = &self.children[index];
                         let on_grip = position.x >= bounds.max_x() - FLOAT_RESIZE_GRIP
                             && position.y >= bounds.max_y() - FLOAT_RESIZE_GRIP;
-                        let on_header = position.y - bounds.min_y() <= TOPBAR_HEIGHT;
+                        // The controls own their presses: a press on close must
+                        // not also start dragging the window behind it.
+                        let on_controls = position.x >= bounds.max_x() - WINDOW_CONTROLS_WIDTH
+                            && position.y - bounds.min_y() <= WINDOW_TITLEBAR_HEIGHT;
+                        let on_header = position.y - bounds.min_y() <= WINDOW_TITLEBAR_HEIGHT;
                         if on_grip {
                             (self.on_float_start.borrow_mut())(
                                 pane.pane_id,
@@ -586,7 +724,7 @@ impl Element for RegionLayer {
                                 position,
                                 area,
                             );
-                        } else if on_header {
+                        } else if on_header && !on_controls {
                             (self.on_float_start.borrow_mut())(
                                 pane.pane_id,
                                 FloatingDragMode::Move,
@@ -599,6 +737,11 @@ impl Element for RegionLayer {
                         .content
                         .dispatch_event(event, ctx, app);
                     return true;
+                }
+                if self.windows {
+                    if let DispatchedEvent::MouseDown { .. } = event {
+                        (self.on_activate.borrow_mut())(self.children[index].pane_id);
+                    }
                 }
                 return self.children[index]
                     .content
@@ -617,6 +760,168 @@ impl Element for RegionLayer {
     }
 }
 
+/// The titlebar a floating or carousel window wears: a title on the left and
+/// the three window controls on the right. The band is the drag handle the
+/// region layer reads; the controls are wide enough that a press on them never
+/// starts a move (see [`WINDOW_CONTROLS_WIDTH`]).
+pub(crate) const WINDOW_TITLEBAR_HEIGHT: f32 = 26.0;
+/// The room the window controls take at the titlebar's right end: three 20 px
+/// buttons, the 6 px gaps between them and the bar's right padding. A press in
+/// this band belongs to the control under it and never starts a window move.
+pub(crate) const WINDOW_CONTROLS_WIDTH: f32 = 80.0;
+const WINDOW_CONTROL_SIZE: f32 = 20.0;
+
+/// A pane as an operating-system window: its titlebar and controls above its
+/// content, a border that turns accent when it is focused, and the shadow the
+/// region layer paints under it. The content is the same leaf every layout
+/// draws, so moving between layouts never remounts a shell or a conversation.
+///
+/// `minimize` is offered in the floating layout, whose dock can hold the
+/// window; the carousel has no dock, so its windows carry maximize and close
+/// only.
+fn build_window(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    id: u64,
+    kind: PaneKind,
+    minimize: bool,
+) -> Box<dyn Element> {
+    let active = state.active_pane_id == id;
+    let titlebar = build_window_titlebar(app, actions, id, &kind, active, minimize);
+    let body = build_leaf_column(app, state, actions, id, kind, false);
+    let column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(
+            ConstrainedBox::new(titlebar)
+                .with_height(WINDOW_TITLEBAR_HEIGHT)
+                .finish(),
+        )
+        .with_child(Divider::horizontal().with_thickness(1.0).finish())
+        .with_child(Expanded::new(body).finish());
+    let border = if active {
+        ColorToken::Accent
+    } else {
+        ColorToken::Border
+    };
+    Container::new(column.finish())
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .with_border(Border::all(1.0).with_border_color(app.theme.color(border)))
+        .with_corner_radius(6.0)
+        .finish()
+}
+
+/// The titlebar row of one window. Presses on the band outside the controls are
+/// the region layer's move gesture; the controls themselves are ordinary
+/// buttons, which is why the move never starts on them.
+fn build_window_titlebar(
+    app: &AppContext,
+    actions: &UiActions,
+    id: u64,
+    kind: &PaneKind,
+    active: bool,
+    minimize: bool,
+) -> Box<dyn Element> {
+    let text_color = if active {
+        ColorToken::Text
+    } else {
+        ColorToken::Muted
+    };
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(6.0)
+        .with_child(
+            Icon::new(window_icon(kind))
+                .with_size(12.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_child(
+            Text::new(window_title(kind))
+                .with_font_size(11.0)
+                .with_theme_color(text_color, app)
+                .finish(),
+        )
+        .with_child(Spacer::new().finish());
+
+    if minimize {
+        let on_minimize = actions.on_float_minimize.clone();
+        let pane_id = id;
+        row = row.with_child(
+            TopbarButton::new(
+                Icon::new("minimize")
+                    .with_size(12.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_size(WINDOW_CONTROL_SIZE)
+            .with_on_click(move || (on_minimize.borrow_mut())(pane_id))
+            .finish(),
+        );
+    }
+
+    let on_toggle_maximized = actions.on_toggle_pane_maximized.clone();
+    let pane_id = id;
+    row = row.with_child(
+        TopbarButton::new(
+            Icon::new("maximize")
+                .with_size(12.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(WINDOW_CONTROL_SIZE)
+        .with_on_click(move || (on_toggle_maximized.borrow_mut())(pane_id))
+        .finish(),
+    );
+
+    // Close is the app's close rule, which names a pane by making it active
+    // first: the window clicked and the pane closed are then the same one.
+    let on_activate = actions.on_pane_activate.clone();
+    let on_close = actions.on_close_pane.clone();
+    let pane_id = id;
+    row = row.with_child(
+        TopbarButton::new(
+            Icon::new("x")
+                .with_size(12.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(WINDOW_CONTROL_SIZE)
+        .with_on_click(move || {
+            (on_activate.borrow_mut())(pane_id);
+            (on_close.borrow_mut())();
+        })
+        .finish(),
+    );
+
+    Container::new(row.finish())
+        .with_padding(EdgeInsets::new(8.0, 0.0, 4.0, 0.0))
+        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+        .finish()
+}
+
+/// The icon a window's titlebar carries for the pane's kind.
+fn window_icon(kind: &PaneKind) -> &'static str {
+    match kind {
+        PaneKind::Chat | PaneKind::Worker => "agent",
+        PaneKind::Terminal => "terminal",
+        PaneKind::File { path } => file_icon_name(&file_view::file_name(path)),
+        PaneKind::Settings { .. } => "settings",
+    }
+}
+
+/// The title a window's titlebar draws.
+fn window_title(kind: &PaneKind) -> String {
+    match kind {
+        PaneKind::Chat | PaneKind::Worker => "Agent".to_string(),
+        PaneKind::Terminal => "Terminal".to_string(),
+        PaneKind::File { path } => file_view::file_name(path),
+        PaneKind::Settings { .. } => "Settings".to_string(),
+    }
+}
+
 fn build_leaf(
     app: &AppContext,
     state: &UiSnapshot,
@@ -628,6 +933,44 @@ fn build_leaf(
 }
 
 fn build_leaf_with_lift(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    id: u64,
+    kind: PaneKind,
+    lift: bool,
+) -> Box<dyn Element> {
+    let active = state.active_pane_id == id;
+    let column = build_leaf_column(app, state, actions, id, kind, lift);
+    let border_color = if active {
+        ColorToken::Accent
+    } else {
+        ColorToken::Border
+    };
+    let pane = Container::new(column)
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .with_border(app.theme.color(border_color).into())
+        .finish();
+    if !active {
+        return pane;
+    }
+    // The focused pane's mark: the accent triangle sits in the pane's own
+    // top-left corner, which is where the pane the keyboard is in is read from.
+    // The pane's bar starts past it (see `chat::build_agent_header`).
+    let marker = Icon::new("upper-left-triangle")
+        .with_size(FOCUS_MARKER_SIZE)
+        .with_theme_color(ColorToken::Accent, app)
+        .finish();
+    Stack::new()
+        .with_children(vec![pane])
+        .with_overlay(marker, vec2f(0.0, 0.0))
+        .finish()
+}
+
+/// The pane's content as a column: the click-focus wrapper around the surface,
+/// with no border or focus mark. A tiled leaf and a window frame both build on
+/// this, so the two share exactly one definition of what a pane holds.
+fn build_leaf_column(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
@@ -682,34 +1025,10 @@ fn build_leaf_with_lift(
     // Every surface draws the one topbar a pane has, so nothing is stacked
     // above the content here: the agent header is the pane's topbar, and the
     // terminal pane draws it for its shell view too (see `build_terminal`).
-    let column = Flex::column()
+    Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_child(Expanded::new(content).finish());
-
-    let active = state.active_pane_id == id;
-    let border_color = if active {
-        ColorToken::Accent
-    } else {
-        ColorToken::Border
-    };
-    let pane = Container::new(column.finish())
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-        .with_border(app.theme.color(border_color).into())
-        .finish();
-    if !active {
-        return pane;
-    }
-    // The focused pane's mark: the accent triangle sits in the pane's own
-    // top-left corner, which is where the pane the keyboard is in is read from.
-    // The pane's bar starts past it (see `chat::build_agent_header`).
-    let marker = Icon::new("upper-left-triangle")
-        .with_size(FOCUS_MARKER_SIZE)
-        .with_theme_color(ColorToken::Accent, app)
-        .finish();
-    Stack::new()
-        .with_children(vec![pane])
-        .with_overlay(marker, vec2f(0.0, 0.0))
+        .with_child(Expanded::new(content).finish())
         .finish()
 }
 

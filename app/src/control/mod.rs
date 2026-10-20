@@ -617,6 +617,7 @@ fn space_layout_kind(space: &crate::ui::Space) -> LayoutKind {
         UiLayoutKind::Bsp => layout_kind(&space.root),
         UiLayoutKind::MasterStack => LayoutKind::MasterStack,
         UiLayoutKind::Floating => LayoutKind::Floating,
+        UiLayoutKind::Carousel => LayoutKind::Carousel,
     }
 }
 
@@ -704,6 +705,9 @@ fn layout_set(
         }
         LayoutKind::Floating => {
             state.spaces[space_id].set_layout(UiLayoutKind::Floating);
+        }
+        LayoutKind::Carousel => {
+            state.spaces[space_id].set_layout(UiLayoutKind::Carousel);
         }
     }
     if state.active_space == space_id

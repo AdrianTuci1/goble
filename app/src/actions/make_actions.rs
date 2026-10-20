@@ -162,6 +162,8 @@ pub fn make_actions(
     let on_float_start = Rc::clone(&state);
     let on_float_rect = Rc::clone(&state);
     let on_float_rect_end = Rc::clone(&state);
+    let on_float_minimize = Rc::clone(&state);
+    let on_float_restore = Rc::clone(&state);
     let on_open_ssh_host_picker = Rc::clone(&state);
     let on_close_ssh_host_picker = Rc::clone(&state);
     let on_ssh_host_move = Rc::clone(&state);
@@ -260,6 +262,8 @@ pub fn make_actions(
     let desktop_split_down = desktop.clone();
     let desktop_cycle_layout = desktop.clone();
     let desktop_float_rect_end = desktop.clone();
+    let desktop_float_minimize = desktop.clone();
+    let desktop_float_restore = desktop.clone();
     let desktop_ssh_host = desktop.clone();
     let desktop_ssh_reconnect = desktop.clone();
     let desktop_file_view = desktop.clone();
@@ -1697,8 +1701,9 @@ pub fn make_actions(
                 state.save_panes(desktop);
             }
         })),
-        // Cmd+Shift+L and the palette: BSP → master-stack → floating. The
-        // space keeps its tree, so switching back never loses a pane.
+        // Cmd+Shift+L and the palette: BSP → master-stack → floating →
+        // carousel. The space keeps its tree, so switching back never loses a
+        // pane.
         on_cycle_layout: Rc::new(RefCell::new(move || {
             let mut state = on_cycle_layout.borrow_mut();
             state.cycle_space_layout(desktop_cycle_layout.as_deref());
@@ -1741,6 +1746,52 @@ pub fn make_actions(
             let state = on_float_rect_end.borrow_mut();
             state.floating_drag.borrow_mut().take();
             if let Some(desktop) = &desktop_float_rect_end {
+                state.save_panes(desktop);
+            }
+        })),
+        // A window's minimize control: the window keeps its rect and its place
+        // in the z-order and becomes a chip in the dock. When it was the pane
+        // the keyboard was in, focus moves to the next visible window, so the
+        // keys never stay on a window nobody can see.
+        on_float_minimize: Rc::new(RefCell::new(move |pane_id: u64| {
+            let mut state = on_float_minimize.borrow_mut();
+            let space_idx = state.active_space;
+            let active_id = state.active_pane_id;
+            let mut next = None;
+            if let Some(space) = state.spaces.get_mut(space_idx) {
+                space.minimize_pane(pane_id);
+                if active_id == pane_id {
+                    next = space.visible_leaf_ids().first().copied();
+                }
+            }
+            let dragged = state
+                .floating_drag
+                .borrow()
+                .as_ref()
+                .is_some_and(|drag| drag.pane_id == pane_id);
+            if dragged {
+                state.floating_drag.borrow_mut().take();
+            }
+            if let Some(next) = next {
+                state.focus_pane(next);
+                state.sync_active_view();
+            }
+            if let Some(desktop) = &desktop_float_minimize {
+                state.save_panes(desktop);
+            }
+        })),
+        // A dock chip: the window comes back at the rect it was docked with and
+        // takes the focus, exactly as clicking an OS window's taskbar button
+        // does.
+        on_float_restore: Rc::new(RefCell::new(move |pane_id: u64| {
+            let mut state = on_float_restore.borrow_mut();
+            let space_idx = state.active_space;
+            if let Some(space) = state.spaces.get_mut(space_idx) {
+                space.restore_pane(pane_id);
+            }
+            state.focus_pane(pane_id);
+            state.sync_active_view();
+            if let Some(desktop) = &desktop_float_restore {
                 state.save_panes(desktop);
             }
         })),

@@ -62,6 +62,10 @@ pub(crate) fn sections() -> Vec<(&'static str, Vec<ShortcutHint>)> {
                 ShortcutHint::new(&["⌘", "←", "→"], "previous / next pane"),
                 ShortcutHint::new(&["⌘", "↑", "↓"], "pane above / below"),
                 ShortcutHint::new(&["⌃", "⇥"], "next / previous space"),
+                ShortcutHint::new(
+                    &["⌘", "⇧", "L"],
+                    "window layout: BSP / stack / floating / carousel",
+                ),
             ],
         ),
         (
@@ -941,6 +945,20 @@ mod tests {
                         );
                     }
                 }
+                "window layout: BSP / stack / floating / carousel" => {
+                    // The chord cycles the active space; prove the layout it
+                    // lands on is the next one the cycle names.
+                    let before = state.borrow().spaces[0].layout;
+                    assert!(
+                        chord(&mut root, &app, &keys[0], modifiers),
+                        "⌘⇧L answers"
+                    );
+                    assert_eq!(
+                        state.borrow().spaces[0].layout,
+                        before.cycle(),
+                        "⌘⇧L cycles the active space's layout"
+                    );
+                }
                 "next / previous space" => {
                     // The chord walks the tab strip, so there has to be a second
                     // tab: a second space, with the first one on screen.
@@ -1016,6 +1034,10 @@ mod tests {
                 ("⌘ ← →".to_string(), "previous / next pane".to_string()),
                 ("⌘ ↑ ↓".to_string(), "pane above / below".to_string()),
                 ("⌃ ⇥".to_string(), "next / previous space".to_string()),
+                (
+                    "⌘ ⇧ L".to_string(),
+                    "window layout: BSP / stack / floating / carousel".to_string()
+                ),
                 (
                     "↵".to_string(),
                     "send (queues while a turn runs)".to_string()
@@ -1287,7 +1309,7 @@ mod tests {
         let (mut root, state, _dir, app) = open_panel();
 
         // Walk to the end of the table: the list has to scroll to follow.
-        for _ in 0..11 {
+        for _ in 0..12 {
             assert!(chord(&mut root, &app, "ArrowDown", ModifiersState::none()));
         }
         let commands = frame(&mut root, &app);
@@ -1317,7 +1339,7 @@ mod tests {
         clear_filter(&mut root, &app);
         let commands = frame(&mut root, &app);
         let visible = visible_row_count("");
-        assert_eq!(visible, 12, "the whole table is back");
+        assert_eq!(visible, 13, "the whole table is back");
         assert!(state.borrow().shortcuts_help_index < visible);
         let (top, bottom) = the_highlighted_band(&commands, &app);
         let y = label_y(&commands, "keyboard shortcuts");

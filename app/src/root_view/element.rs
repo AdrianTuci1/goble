@@ -116,7 +116,7 @@ impl Element for RootView {
                     return true;
                 }
                 // Cmd/Ctrl+Shift+L cycles the active space's layout through
-                // BSP, master-stack and floating.
+                // BSP, master-stack, floating and carousel.
                 if has_ctrl_cmd && modifiers.shift && key.eq_ignore_ascii_case("l") {
                     (actions.on_cycle_layout.borrow_mut())();
                     return true;

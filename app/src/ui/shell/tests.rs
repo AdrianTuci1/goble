@@ -16,7 +16,7 @@ use super::topbar::{
 use super::*;
 use crate::root_view::RootView;
 use crate::state::{PaneSession, UiState, NEW_CONVERSATION_TITLE};
-use crate::ui::{Pane, PaneKind, Space, SplitDir};
+use crate::ui::{LayoutKind, Pane, PaneKind, Space, SplitDir};
 use goble_ui::elements::running_indicator::SPINNER_FRAMES;
 use goble_ui::elements::{EventContext, LayoutContext, PaintContext, SizeConstraint};
 use goble_ui::render::RenderCommand;
@@ -519,6 +519,206 @@ fn pane_at(path: &str) -> PaneSession {
         path: path.to_string(),
         daemon_session_id: String::new(),
     }
+}
+
+/// A floating space draws every pane as an OS window: each one has its own
+/// titlebar above the content, so the window titles are drawn once per pane and
+/// the window controls exist for each. This is the whole app's frame, not a
+/// helper's output, so it proves the chrome reached the screen.
+#[test]
+fn floating_panes_draw_their_own_window_chrome() {
+    let app = AppContext::default();
+    let (mut root, state, _desktop, _dir) = app_root();
+    {
+        let mut s = state.borrow_mut();
+        s.spaces = vec![Space::unnamed(Pane::Leaf {
+            id: 7,
+            kind: PaneKind::Terminal,
+        })];
+        let mut next = 8;
+        s.spaces[0]
+            .split(7, SplitDir::Horizontal, &mut next)
+            .expect("the pane splits");
+        s.spaces[0].set_layout(LayoutKind::Floating);
+        s.active_space = 0;
+        s.active_pane_id = 7;
+        s.next_pane_id = next;
+    }
+
+    let commands = render_element(&mut root, window(), &app);
+    let titles = commands
+        .iter()
+        .filter(|c| matches!(c, RenderCommand::DrawText { text, .. } if text == "Terminal"))
+        .count();
+    assert_eq!(
+        titles, 2,
+        "each floating window draws its own titlebar: {commands:?}"
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name == "minimize-01")),
+        "the window carries a minimize control"
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name == "maximize-01")),
+        "the window carries a maximize control"
+    );
+}
+
+/// A press on a floating window's titlebar starts a move, and the pointer
+/// carries the window with it until the release: the rect the space stores is
+/// the one the drag ended on. This is the OS-window gesture, through the whole
+/// app's frame.
+#[test]
+fn dragging_a_window_titlebar_moves_the_floating_pane() {
+    let app = AppContext::default();
+    let (mut root, state, _desktop, _dir) = app_root();
+    {
+        let mut s = state.borrow_mut();
+        s.spaces = vec![Space::unnamed(Pane::Leaf {
+            id: 7,
+            kind: PaneKind::Terminal,
+        })];
+        s.spaces[0].set_layout(LayoutKind::Floating);
+        s.active_space = 0;
+        s.active_pane_id = 7;
+    }
+
+    let commands = render_element(&mut root, window(), &app);
+    let title = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::DrawText { text, origin, .. } if text == "Terminal" => Some(*origin),
+            _ => None,
+        })
+        .expect("the window titlebar is drawn");
+    let before = state.borrow().spaces[0]
+        .floating_rect(7)
+        .expect("the floating pane has a rect");
+
+    let press = title + vec2f(12.0, 6.0);
+    let mut ctx = EventContext;
+    assert!(root.dispatch_event(
+        &DispatchedEvent::MouseDown {
+            position: press,
+            button: 0,
+        },
+        &mut ctx,
+        &app,
+    ));
+    assert!(root.dispatch_event(
+        &DispatchedEvent::MouseMove {
+            position: press + vec2f(120.0, 90.0),
+        },
+        &mut ctx,
+        &app,
+    ));
+    assert!(root.dispatch_event(
+        &DispatchedEvent::MouseUp {
+            position: press + vec2f(120.0, 90.0),
+            button: 0,
+        },
+        &mut ctx,
+        &app,
+    ));
+
+    let after = state.borrow().spaces[0]
+        .floating_rect(7)
+        .expect("the pane is still floating");
+    assert!(
+        after.x > before.x + 0.05,
+        "the window moved right: {before:?} -> {after:?}"
+    );
+    assert!(
+        after.y > before.y + 0.03,
+        "the window moved down: {before:?} -> {after:?}"
+    );
+    assert!(
+        (after.w - before.w).abs() < 1e-6 && (after.h - before.h).abs() < 1e-6,
+        "a move does not resize the window: {before:?} -> {after:?}"
+    );
+}
+
+/// Minimizing a floating window takes it off the pane area and leaves a chip in
+/// the dock below it, so the space keeps a visible way back to the pane.
+#[test]
+fn a_minimized_window_waits_in_the_dock() {
+    let app = AppContext::default();
+    let (mut root, state, _desktop, _dir) = app_root();
+    {
+        let mut s = state.borrow_mut();
+        s.spaces = vec![Space::unnamed(Pane::Leaf {
+            id: 7,
+            kind: PaneKind::Terminal,
+        })];
+        let mut next = 8;
+        let second = s.spaces[0]
+            .split(7, SplitDir::Horizontal, &mut next)
+            .expect("the pane splits");
+        s.spaces[0].set_layout(LayoutKind::Floating);
+        s.spaces[0].minimize_pane(7);
+        s.active_space = 0;
+        s.active_pane_id = second;
+        s.next_pane_id = next;
+    }
+
+    let commands = render_element(&mut root, window(), &app);
+    assert!(
+        drawn_texts(&commands)
+            .iter()
+            .any(|text| text == "Minimized"),
+        "the dock names itself: {:?}",
+        drawn_texts(&commands)
+    );
+    // Only the window that is not docked carries the minimize control; the
+    // docked one is the chip beside "Minimized" instead.
+    let minimized_controls = commands
+        .iter()
+        .filter(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name == "minimize-01"))
+        .count();
+    assert_eq!(
+        minimized_controls, 1,
+        "the docked window is not drawn on the pane area: {commands:?}"
+    );
+}
+
+/// The carousel is built from the same window frame: every pane is drawn, and
+/// the focused one is the window the fan centers.
+#[test]
+fn carousel_draws_every_pane_as_a_window() {
+    let app = AppContext::default();
+    let (mut root, state, _desktop, _dir) = app_root();
+    {
+        let mut s = state.borrow_mut();
+        s.spaces = vec![Space::unnamed(Pane::Leaf {
+            id: 7,
+            kind: PaneKind::Terminal,
+        })];
+        let mut next = 8;
+        let second = s.spaces[0]
+            .split(7, SplitDir::Horizontal, &mut next)
+            .expect("the pane splits");
+        s.spaces[0]
+            .split(second, SplitDir::Horizontal, &mut next)
+            .expect("the second pane splits");
+        s.spaces[0].set_layout(LayoutKind::Carousel);
+        s.active_space = 0;
+        s.active_pane_id = second;
+        s.next_pane_id = next;
+    }
+
+    let commands = render_element(&mut root, window(), &app);
+    let titles = commands
+        .iter()
+        .filter(|c| matches!(c, RenderCommand::DrawText { text, .. } if text == "Terminal"))
+        .count();
+    assert_eq!(
+        titles, 3,
+        "every carousel window draws its own titlebar: {commands:?}"
+    );
 }
 
 /// Every text run drawn in the topbar band, which is where the tab labels live.

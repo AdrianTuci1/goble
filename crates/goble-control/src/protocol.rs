@@ -243,6 +243,8 @@ pub enum LayoutKind {
     MasterStack,
     /// Every pane has a rect of its own, with move/resize and a z-order.
     Floating,
+    /// Windows fanned out horizontally around the focused pane.
+    Carousel,
 }
 
 /// The typed verbs. Parameters are the fields of each variant.

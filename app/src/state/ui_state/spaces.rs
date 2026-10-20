@@ -73,6 +73,18 @@ impl UiState {
         } else {
             self.active_pane_id = root.first_leaf_id();
         }
+        // A docked window is not on screen: restore the keyboard to the first
+        // window the dock leaves visible, so the first keys typed after a
+        // restart do not land in a pane the user cannot see.
+        if self.spaces[self.active_space].pane_minimized(self.active_pane_id) {
+            if let Some(next) = self.spaces[self.active_space]
+                .visible_leaf_ids()
+                .first()
+                .copied()
+            {
+                self.active_pane_id = next;
+            }
+        }
         // Rebuild the per-pane hover flags so pane-header hover survives the
         // per-frame element rebuild for the restored tree.
         let mut ids = Vec::new();
@@ -444,8 +456,8 @@ impl UiState {
         true
     }
 
-    /// Cycle the active space through BSP → master-stack → floating, the
-    /// gesture Cmd+Shift+L and the palette entry run.
+    /// Cycle the active space through BSP → master-stack → floating →
+    /// carousel, the gesture Cmd+Shift+L and the palette entry run.
     pub fn cycle_space_layout(&mut self, desktop: Option<&DesktopState>) -> LayoutKind {
         let index = self.active_space;
         let Some(space) = self.spaces.get(index) else {

@@ -48,6 +48,7 @@ fn the_selected_layout_and_its_floating_rects_survive_a_restart() {
     assert!(state.set_space_layout(0, LayoutKind::Floating, Some(desktop.as_ref())));
     let placed = PaneRect::new(0.25, 0.15, 0.5, 0.4);
     state.spaces[0].set_floating_rect(3, placed);
+    state.spaces[0].minimize_pane(3);
     state.save_panes(&desktop);
 
     let mut restored = UiState::mock();
@@ -55,6 +56,10 @@ fn the_selected_layout_and_its_floating_rects_survive_a_restart() {
     assert_eq!(restored.spaces[0].layout, LayoutKind::Floating);
     assert_eq!(restored.spaces[0].root.leaf_count(), 3, "no pane is lost");
     assert_eq!(restored.spaces[0].floating_rect(3), Some(placed));
+    assert!(
+        restored.spaces[0].pane_minimized(3),
+        "a docked window comes back in the dock"
+    );
     assert!(
         restored.spaces[0].floating_rect(1).is_some(),
         "every leaf comes back with a rect"
@@ -84,9 +89,17 @@ fn cycling_the_layout_recomputes_every_leaf_and_keeps_the_tree() {
     assert_eq!(state.spaces[0].close(fourth), Some(3));
     assert_eq!(state.spaces[0].floating.len(), 3);
 
+    assert_eq!(state.cycle_space_layout(None), LayoutKind::Carousel);
+    assert_eq!(state.spaces[0].layout, LayoutKind::Carousel);
+    assert_eq!(state.spaces[0].root.leaf_count(), 3);
+
     assert_eq!(state.cycle_space_layout(None), LayoutKind::Bsp);
     assert_eq!(state.spaces[0].layout, LayoutKind::Bsp);
-    assert_eq!(state.spaces[0].root.leaf_count(), 3, "the tree is untouched");
+    assert_eq!(
+        state.spaces[0].root.leaf_count(),
+        3,
+        "the tree is untouched"
+    );
 }
 
 #[test]

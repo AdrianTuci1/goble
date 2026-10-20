@@ -278,8 +278,8 @@ pub struct UiActions {
     pub on_split_right: Rc<RefCell<dyn FnMut()>>,
     /// Split the active pane downward (Cmd+Shift+D).
     pub on_split_down: Rc<RefCell<dyn FnMut()>>,
-    /// Cycle the active space's layout: BSP → master-stack → floating
-    /// (Cmd+Shift+L and the palette).
+    /// Cycle the active space's layout: BSP → master-stack → floating →
+    /// carousel (Cmd+Shift+L and the palette).
     pub on_cycle_layout: Rc<RefCell<dyn FnMut()>>,
     /// Start a floating pane drag: the pane, the mode, the pointer where the
     /// press landed and the space's pane area in pixels.
@@ -288,6 +288,10 @@ pub struct UiActions {
     pub on_float_rect: Rc<RefCell<dyn FnMut(u64, PaneRect)>>,
     /// The floating drag ended; persist the rect it settled on.
     pub on_float_rect_end: Rc<RefCell<dyn FnMut()>>,
+    /// Put a floating window in the dock (its titlebar's minimize control).
+    pub on_float_minimize: Rc<RefCell<dyn FnMut(u64)>>,
+    /// Bring a docked window back and raise it (a dock chip's click).
+    pub on_float_restore: Rc<RefCell<dyn FnMut(u64)>>,
     /// Open the saved-host picker (Cmd+Shift+N).
     pub on_open_ssh_host_picker: Rc<RefCell<dyn FnMut()>>,
     /// Close the saved-host picker without opening anything.

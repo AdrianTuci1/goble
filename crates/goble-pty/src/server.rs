@@ -576,6 +576,13 @@ fn finish_session(state: &SharedState, session_id: &str, code: i32) {
     session
         .subscribers
         .retain(|subscriber| subscriber.tx.try_send(event.clone()).is_ok());
+    // The shell is gone and its pty is at EOF. Keeping the session would hold
+    // the master and writer descriptors for the life of the daemon — one leak
+    // per closed pane, until no pty can be opened. The exit event is the last
+    // thing the session owes its clients; the replay ring goes with it.
+    let removed = inner.sessions.remove(session_id);
+    drop(inner);
+    drop(removed);
 }
 
 fn attach(

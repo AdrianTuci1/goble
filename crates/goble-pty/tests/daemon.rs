@@ -438,3 +438,48 @@ fn a_stale_socket_is_cleaned_and_the_daemon_auto_starts() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+/// A shell that exits releases its pty and its session. Holding either would
+/// leak one master descriptor per closed pane until the machine runs out of
+/// ptys; a pane that has finished must also not look attachable.
+#[test]
+fn a_finished_session_is_released() {
+    let server = TestServer::start();
+    let shell_cwd = tempfile::tempdir().unwrap();
+
+    let mut client = server.connect("a");
+    let info = create(&mut client, "pane-done", shell_cwd.path());
+    attach(&mut client, &info.session_id, 0);
+
+    input(&mut client, &info.session_id, b"exit 7\n");
+    assert_eq!(wait_for_exit(&mut client), 7);
+
+    let id = client.next_id();
+    match client.request(Request::List { id }).unwrap() {
+        ServerMessage::Sessions { sessions, .. } => {
+            assert!(
+                sessions.is_empty(),
+                "the exited session is no longer kept: {sessions:?}"
+            );
+        }
+        other => panic!("list failed: {other:?}"),
+    }
+
+    let id = client.next_id();
+    match client
+        .request(Request::Attach {
+            id,
+            session_id: info.session_id,
+            from_seq: 0,
+        })
+        .unwrap()
+    {
+        ServerMessage::Error { message, .. } => {
+            assert!(
+                message.contains("no session"),
+                "attaching a released session reports it: {message}"
+            );
+        }
+        other => panic!("attach should fail after exit: {other:?}"),
+    }
+}

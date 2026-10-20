@@ -104,7 +104,7 @@ mod rich_input_tests {
     fn frame(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<RenderCommand> {
         let _ = root.layout(
             SizeConstraint::loose(vec2f(1024.0, 768.0)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             app,
         );
         let mut ctx = PaintContext::new(Renderer::new());
@@ -163,6 +163,19 @@ mod rich_input_tests {
     fn the_agent_strip_sits_over_the_inputs_separator() {
         let (mut root, state, _dir) = workspace();
         let app = AppContext::default();
+        // The pill reads the pane's working directory. Give it a short project
+        // under the home directory, so the shortened label the composer draws
+        // is the same wherever the test process itself runs.
+        let home = crate::state::home_directory().expect("a home directory");
+        let project = format!("{home}/Projects/goble/app");
+        {
+            let mut s = state.borrow_mut();
+            s.composer_path = project.clone();
+            let pane_id = s.active_pane_id;
+            if let Some(session) = s.pane_sessions.get_mut(&pane_id) {
+                session.path = project;
+            }
+        }
         let commands = frame(&mut root, &app);
 
         // The editor is on screen, so the strip's place over it means
@@ -185,9 +198,7 @@ mod rich_input_tests {
                 _ => None,
             })
             .collect();
-        for key in ["W"] {
-            above(&commands, key, editor, case);
-        }
+        above(&commands, "W", editor, case);
         for icon in ["key-command", "key-option", "key-return", "key-shift"] {
             assert!(
                 drawn_icons.contains(&icon),

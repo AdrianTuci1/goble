@@ -18,6 +18,7 @@ Cross-cutting: the low-level platform (window, swapchain, wgpu render engine, te
 
 - [`wgpu-renderer-platform.md`](wgpu-renderer-platform.md) — the platform layer components.
 - [`performance.md`](performance.md) — the performance budget and measurement approach.
+- [`testing-and-ci.md`](testing-and-ci.md) — what runs where, and what only a real host or a container can settle.
 
 ## Related
 

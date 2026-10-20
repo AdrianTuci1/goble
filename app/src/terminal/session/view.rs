@@ -1,7 +1,9 @@
-use portable_pty::PtySize;
+use goble_terminal::{
+    CursorState, ImagePlacement, Palette, ScreenLine, SearchError, SearchMatch, SearchOptions,
+    TermMode,
+};
 
-use goble_terminal::{CursorState, Palette, ScreenLine, TermMode};
-
+use crate::terminal::copy::{selection_text, Cell, Selection};
 use crate::terminal::TerminalSnapshot;
 
 use super::TerminalSession;
@@ -11,6 +13,8 @@ use super::TerminalSession;
 pub struct TerminalViewState {
     /// The visible rows, top row first.
     pub rows: Vec<ScreenLine>,
+    /// Image placements in the same viewport, anchored to cells.
+    pub images: Vec<ImagePlacement>,
     pub cursor: CursorState,
     /// How the program wants keys and pointer reports encoded.
     pub mode: TermMode,
@@ -22,6 +26,10 @@ pub struct TerminalViewState {
     /// Whether any cell holds something. A session that has not drawn yet gets
     /// the pane's own hint line instead of a black rectangle.
     pub has_content: bool,
+    /// Whether the shell's integration has bootstrapped. A bootstrapped shell
+    /// reports blocks, so the pane draws those instead of the live screen —
+    /// the screen's prompt row belongs in each block's header, not in its body.
+    pub bootstrapped: bool,
 }
 
 impl TerminalSession {
@@ -42,14 +50,15 @@ impl TerminalSession {
         if let Ok(mut state) = self.state.lock() {
             state.resize(cols as usize, rows as usize);
         }
-        if let Some(master) = self._master.as_mut() {
-            let _ = master.resize(PtySize {
-                rows,
-                cols,
-                pixel_width: cols.saturating_mul(cell_width),
-                pixel_height: rows.saturating_mul(cell_height),
-            });
-        }
+        #[cfg(unix)]
+        self.resize_daemon(rows, cols, cell_width, cell_height);
+    }
+
+    /// Reshape the grid to `cols` × `rows`, keeping the font cell metrics the
+    /// pane last reported. The control surface resizes by cells only.
+    pub fn set_grid_size(&mut self, rows: u16, cols: u16) {
+        let (cell_width, cell_height) = self.cell;
+        self.set_size(rows, cols, cell_width, cell_height);
     }
 
     /// The palette the pane paints with, which is also what colour queries are
@@ -73,8 +82,10 @@ impl TerminalSession {
         };
         let rows = state.rows();
         let has_content = rows.iter().any(|row| !row.is_blank());
+        let bootstrapped = state.bootstrapped();
         TerminalViewState {
             rows,
+            images: state.images(),
             cursor: state.cursor(),
             mode: state.input_mode(),
             alt_screen: state.is_alt_screen(),
@@ -82,6 +93,7 @@ impl TerminalSession {
             scrollback: state.history_size(),
             title: self.title.clone(),
             has_content,
+            bootstrapped,
         }
     }
 
@@ -90,6 +102,86 @@ impl TerminalSession {
         if let Ok(mut state) = self.state.lock() {
             state.scroll(lines);
         }
+    }
+
+    /// Rows of scrollback held above the visible screen.
+    pub fn history_len(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.history_len())
+            .unwrap_or(0)
+    }
+
+    /// Every row the screen holds: history followed by the visible screen.
+    pub fn total_lines(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.total_lines())
+            .unwrap_or(0)
+    }
+
+    /// Changes whenever the grid's content changes.
+    pub fn revision(&self) -> u64 {
+        self.state.lock().map(|state| state.revision()).unwrap_or(0)
+    }
+
+    /// One row by absolute index, oldest first.
+    pub fn line_at(&self, index: usize) -> Option<ScreenLine> {
+        self.state.lock().ok().and_then(|state| state.line_at(index))
+    }
+
+    /// The last occupied column count of a row.
+    pub fn line_len(&self, index: usize) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.line_len(index))
+            .unwrap_or(0)
+    }
+
+    /// Search history and the visible screen.
+    pub fn search(
+        &self,
+        query: &str,
+        options: SearchOptions,
+    ) -> Result<Vec<SearchMatch>, SearchError> {
+        self.state
+            .lock()
+            .map(|state| state.search(query, options))
+            .unwrap_or(Ok(Vec::new()))
+    }
+
+    /// Where copy mode starts: the shell's cursor, clamped to the content.
+    pub fn copy_start_cell(&self) -> Cell {
+        self.state
+            .lock()
+            .map(|state| {
+                let (line, column) = state.copy_start_cell();
+                Cell::new(line, column)
+            })
+            .unwrap_or_default()
+    }
+
+    /// Convert a viewport row into an absolute content row.
+    pub fn absolute_line(&self, row: usize) -> Option<usize> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.absolute_line(row))
+    }
+
+    /// Scroll until `line` is visible.
+    pub fn scroll_to_line(&mut self, line: usize) {
+        if let Ok(mut state) = self.state.lock() {
+            state.scroll_to_line(line);
+        }
+    }
+
+    /// The text a selection covers.
+    pub fn selection_text(&self, selection: Selection) -> String {
+        let Ok(state) = self.state.lock() else {
+            return String::new();
+        };
+        selection_text(selection, |index| state.line_at(index))
     }
 
     /// Coalesce the newest output into a snapshot for painting.
@@ -116,6 +208,7 @@ impl TerminalViewState {
     pub fn empty() -> Self {
         Self {
             rows: Vec::new(),
+            images: Vec::new(),
             cursor: CursorState {
                 line: 0,
                 column: 0,
@@ -128,6 +221,7 @@ impl TerminalViewState {
             scrollback: 0,
             title: None,
             has_content: false,
+            bootstrapped: false,
         }
     }
 }

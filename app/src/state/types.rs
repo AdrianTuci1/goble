@@ -16,6 +16,131 @@ pub struct PaneSession {
     pub draft: String,
     /// This pane's working directory (shown as the composer's path label).
     pub path: String,
+    /// The daemon session the pane's shell was last attached to, so the app
+    /// can reattach to the same shell after a restart. Empty for a pane that
+    /// has never had a shell; a session the daemon no longer holds is replaced
+    /// by a fresh one, never reused by id.
+    #[serde(default)]
+    pub daemon_session_id: String,
+}
+
+/// The SSH binding a pane has, persisted with the layout.
+///
+/// A pane opened from the saved-host picker remembers the entry's `name`; a
+/// pane the user moved with a typed `ssh …` line remembers only the resolved
+/// session. When the session ends (`exit`), a named host keeps its name here as
+/// the reconnect offer, while an anonymous one leaves nothing behind.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SshPaneBinding {
+    /// The `~/.goble/hosts.toml` entry this pane was opened from, when it was.
+    #[serde(default)]
+    pub host_name: Option<String>,
+    /// The session the pane's shell is on, as the chip and command routing read
+    /// it. `None` once the session ended.
+    #[serde(default)]
+    pub session: Option<goble_core::ssh_command::SshSession>,
+    /// The saved host to offer reconnecting to after its session ended.
+    #[serde(default)]
+    pub reconnect: Option<String>,
+}
+
+/// How a viewer pane's session stands with the worker its conversation runs
+/// on.
+///
+/// A viewer pane ([`crate::ui::PaneKind::Worker`]) has no local shell, so these
+/// are the whole of what a connection can become: the pane reports the state it
+/// is in and never degrades into a terminal. The transition rule lives in
+/// [`crate::state::UiState::worker_status_serving`] and its siblings — the
+/// app sets these from what the worker itself reported, never by guessing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaneAttach {
+    /// The pane's conversation is routed to a worker and its session is being
+    /// opened; nothing has come back from the worker yet.
+    Connecting,
+    /// The worker's channel is live: the session's transcript is what the
+    /// worker streams.
+    Attached,
+    /// The connection dropped. The run outlives the client — the worker drives
+    /// its own daemon — so the pane keeps the conversation and reports the
+    /// drop; re-attaching is what brings the stream back, never a shell.
+    Detached { reason: String },
+    /// The connection could not be established at all: no worker is paired for
+    /// the routing, or the connect was refused. Never retried silently.
+    Failed { message: String },
+}
+
+impl PaneAttach {
+    /// The line the pane draws for this state, naming the worker it is about.
+    ///
+    /// The words live here, beside the state they describe, so the pane's
+    /// surface and the tests that read it cannot come to say different things.
+    pub fn words(&self, worker_id: &str) -> String {
+        let worker = if worker_id.trim().is_empty() {
+            "no paired worker".to_string()
+        } else {
+            worker_id.to_string()
+        };
+        match self {
+            PaneAttach::Connecting => format!("connecting to {worker}…"),
+            PaneAttach::Attached => format!("{worker} · connected"),
+            PaneAttach::Detached { reason } => format!("{worker} · disconnected: {reason}"),
+            PaneAttach::Failed { message } => format!("{worker} · not connected: {message}"),
+        }
+    }
+
+    /// Whether the worker's stream is up for this pane.
+    pub fn is_attached(&self) -> bool {
+        matches!(self, PaneAttach::Attached)
+    }
+}
+
+/// A viewer pane's session: the worker its conversation runs on, how that
+/// connection stands, and the session the pane rejoined on it. Keyed by pane id
+/// in [`crate::state::UiState::pane_workers`], which holds an entry for a viewer
+/// pane and for no other kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkerSession {
+    /// The paired worker the conversation's turns run on. Empty while none has
+    /// been resolved — no worker is paired yet, so the pane's state is
+    /// [`PaneAttach::Failed`] and says so.
+    pub worker_id: String,
+    pub attach: PaneAttach,
+    /// What the conversation's session on that worker is, as the last
+    /// (re-)attach found it. `None` while no attach has run yet.
+    pub session: Option<WorkerPaneSession>,
+}
+
+/// What a viewer pane's conversation has on the worker, as the pane's last
+/// (re-)attach found it.
+///
+/// The run lives on the worker, so a pane that opens — or comes back after a
+/// drop — rejoins the session and replays the turns it missed
+/// ([`crate::state::UiState::attach_worker_session`]). A conversation with no
+/// session says so: the pane neither starts one nor draws an empty transcript as
+/// if the conversation were new.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkerPaneSession {
+    /// The pane rejoined the session: the session's own id, and how many of its
+    /// turns the pane has replayed. A re-attach hands back the same id, which is
+    /// what makes a drop-and-return a rejoin and not a new session.
+    Attached { session_id: String, turns: usize },
+    /// The conversation has no session to rejoin. The pane says so instead of
+    /// starting one.
+    NoSession,
+}
+
+impl WorkerPaneSession {
+    /// The line the pane adds to its connection report. The words live here,
+    /// beside the state they describe, as [`PaneAttach`]'s do.
+    pub fn words(&self) -> String {
+        match self {
+            Self::Attached { session_id, turns } => format!(
+                "session {session_id} · {turns} {} replayed",
+                if *turns == 1 { "turn" } else { "turns" }
+            ),
+            Self::NoSession => "no session to rejoin".to_string(),
+        }
+    }
 }
 
 /// One worker agent execution the app has seen start and not yet seen finish,
@@ -121,6 +246,12 @@ impl PaneWorkKind {
 #[derive(Clone, Debug, Default)]
 pub struct PaneRuntime {
     pub messages: Vec<ChatMessage>,
+    /// A viewer pane's transcript as the session itself recorded it: the rows
+    /// the pane replayed when it (re-)attached, in session order. Kept so the
+    /// pane's transcript can be re-resolved from the session's own recording
+    /// instead of this machine's rows about a conversation that runs elsewhere
+    /// (see [`crate::state::UiState::attach_worker_session`]).
+    pub session_rows: Vec<goble_desktop_service::ChatMessage>,
     /// Parsed-message cache, so a refresh re-parses only the rows whose content
     /// changed instead of every message on every event.
     pub parse_cache: MessageParseCache,
@@ -133,14 +264,14 @@ pub struct PaneRuntime {
     pub command_selection: Option<Rc<RefCell<usize>>>,
     pub queued_prompt: Option<String>,
     pub busy: bool,
+    /// What this pane's agent is doing, derived from the real turn/approval/ask
+    /// events (and, for a TUI agent, the terminal's own mode and running
+    /// command). [`PaneAgentState::Unknown`] until an event reports otherwise.
+    pub agent_state: PaneAgentState,
     /// When this pane's current turn started, when the app observed it (it
     /// issued the turn). `None` means the start was not observed — the chrome
     /// must not invent an elapsed time for it.
     pub turn_started_at: Option<std::time::Instant>,
-    /// The screen source the harness handed off to (shown inline in chat).
-    pub inline_screen_source: Option<String>,
-    /// A detected BYOH handoff URI from the assistant output.
-    pub screen_link: Option<String>,
     /// Live tool calls still running for this pane, keyed by call id. Fed by the
     /// `chat:tool` event and overlaid on the transcript immediately, so a
     /// running call is visible before the turn ends. A finish/error clears the
@@ -155,6 +286,10 @@ pub struct PaneRuntime {
     /// The parent transcript's rows read their status, activity and elapsed time
     /// from here, never from the call's arguments.
     pub sub_agents: HashMap<String, SubAgentRecord>,
+    /// The message the last turn failed on (`chat:error`), kept so the
+    /// transcript can show it in the conversation that failed. Cleared when the
+    /// next turn starts or a turn succeeds.
+    pub turn_error: Option<String>,
 }
 
 /// One live sub-agent child, held by the pane that spawned it: the row the
@@ -383,16 +518,35 @@ pub struct PaneControls {
     pub auto_approve: bool,
     /// This pane's model (shown as the composer's model label).
     pub model: String,
+    /// The environment (medium) this pane's conversation runs on, as the
+    /// conversation's own row holds it: the medium id chosen in the composer at
+    /// submit time, or empty while nothing has been chosen — the pane then draws
+    /// the environment its routing implies and the turn carries that same one
+    /// (see [`crate::state::UiState::pane_environment`]). Only a conversation
+    /// running on a worker draws the control, so only a viewer pane ever fills
+    /// it in.
+    pub environment: String,
     /// This pane's git branch pill value.
     pub branch: String,
     /// Whether the harness is active for this pane: the rich input routes
     /// turns to the agent instead of the plain shell. Toggled at the rich
     /// input with Cmd+Enter; Esc returns the pane to the plain pty.
+    ///
+    /// This is the **one flag** that decides which surface the pane draws —
+    /// [`Self::surface`] is that decision, and every reader takes it from there
+    /// — so a pane that goes back to its shell clears this together with
+    /// [`Self::view`] (`UiState::leave_agent_view`).
     pub harness_mode: bool,
-    /// Which view this pane's terminal surface shows: the shell's own history
-    /// (the terminal filter) or one conversation's agent view. Cmd+Enter and a
-    /// click on a conversation's card enter that view; Esc returns to the
-    /// terminal.
+    /// Why this pane last refused to enter agent mode, when it refused. A
+    /// refusal is never silent — the pane draws the reason over the shell it
+    /// stayed on — and it is cleared by a switch that succeeds.
+    pub harness_refusal: Option<String>,
+    /// Which conversation's agent view this pane's agent surface shows, while
+    /// [`Self::harness_mode`] is on. Cmd+Enter and a click on a conversation's
+    /// card enter a view; Esc returns the pane to the shell. It is never the
+    /// answer to "which surface is this pane drawing" on its own — ask
+    /// [`Self::surface`] — which is what keeps a shell pane from being read as
+    /// an agent one after its mode went off.
     pub view: BlockView,
     pub model_menu_open: Rc<RefCell<bool>>,
     /// The row this pane's model menu has selected. App-owned like the caret
@@ -432,8 +586,10 @@ impl PaneControls {
         Self {
             auto_approve,
             model,
+            environment: String::new(),
             branch,
             harness_mode: false,
+            harness_refusal: None,
             view: BlockView::Terminal,
             model_menu_open: Rc::new(RefCell::new(false)),
             model_index: Rc::new(RefCell::new(0)),
@@ -445,6 +601,23 @@ impl PaneControls {
             vim: Rc::new(RefCell::new(VimState::new())),
             slash_index: Rc::new(RefCell::new(0)),
             slash_dismissed: Rc::new(RefCell::new(false)),
+        }
+    }
+
+    /// The surface this pane draws: the agent view of [`Self::view`]'s
+    /// conversation while the pane's harness is on, the shell otherwise.
+    ///
+    /// One decision, read by the pane that draws the surface
+    /// (`crate::ui::terminal::build_terminal`) and by every reader of
+    /// [`crate::state::UiState::pane_view`], so what a caller sees and what the
+    /// pane paints can never name different surfaces. A pane is only in agent
+    /// mode with a conversation's view in hand: the writes go through
+    /// `UiState::enter_agent_view` / `UiState::leave_agent_view`.
+    pub fn surface(&self) -> BlockView {
+        if self.harness_mode {
+            self.view.clone()
+        } else {
+            BlockView::Terminal
         }
     }
 }

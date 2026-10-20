@@ -138,7 +138,7 @@ use super::*;
                 })
                 .unwrap_or_else(|| panic!("the pane draws the {needle:?} run"));
             let position = origin + vec2f(2.0, 4.0);
-            let mut ctx = EventContext::default();
+            let mut ctx = EventContext;
             for event in [
                 DispatchedEvent::MouseDown {
                     position,
@@ -153,7 +153,7 @@ use super::*;
             }
         };
         let press_escape = |root: &mut Box<dyn Element>| {
-            let mut ctx = EventContext::default();
+            let mut ctx = EventContext;
             root.dispatch_event(
                 &DispatchedEvent::KeyDown {
                     key: "Escape".to_string(),
@@ -184,6 +184,10 @@ use super::*;
                 .any(|t| t.contains("CHILD CONVERSATION MARKER")),
             "the child's conversation is not on screen yet: {texts:?}"
         );
+        // The spawn call starts folded into its run; opening the run is what
+        // draws the row that carries the target.
+        click_run(&mut root, "Running 1 subagent");
+        let texts = pane_texts(&mut root);
         assert!(
             texts.iter().any(|t| t == "open child"),
             "the row carries the target that enters the child: {texts:?}"

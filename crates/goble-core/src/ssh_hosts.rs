@@ -373,8 +373,9 @@ fn read_lossy(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// The `User` fallback for a block that sets none.
-fn current_user() -> String {
+/// The `User` fallback for a block that sets none, and the account an `ssh`
+/// command that names no user authenticates as.
+pub fn current_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_else(|_| "root".to_string())

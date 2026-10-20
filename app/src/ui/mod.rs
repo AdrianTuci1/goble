@@ -19,13 +19,14 @@ pub mod explorer;
 pub mod file_view;
 pub mod global_search;
 pub mod harness;
+pub mod hosts;
+pub mod inbox;
 pub mod media;
 pub mod model_form;
 pub mod palette;
 pub mod panes;
 pub mod pickers;
 pub mod projects;
-pub mod screen;
 pub mod settings;
 pub mod shell;
 pub mod shortcuts_help;
@@ -35,6 +36,7 @@ pub mod tab_menu;
 pub mod task_workflow;
 pub mod terminal;
 pub mod vault;
+pub mod worker;
 
 mod actions;
 mod build;
@@ -43,20 +45,23 @@ mod shortcut_hints;
 mod snapshot;
 mod types;
 
-pub use actions::{AiActions, MediaActions, ProjectsActions, ScreenActions, UiActions};
-pub use build::build_ui;
-pub use pane::{NavDir, Pane, PaneKind, Space, SplitDir};
+pub use actions::{AiActions, FloatStartHandler, MediaActions, ProjectsActions, UiActions};
+pub use build::{build_ui, BuildContext};
+pub use pane::{
+    DropSide, FloatingDrag, FloatingDragMode, FloatingPane, LayoutKind, NavDir, Pane, PaneDropTarget,
+    PaneKind, PaneRect, Space, SplitDir,
+};
 pub use tab_menu::{TabMenuAction, TabMenuTab};
 pub use snapshot::{
     AiSnapshot, ComposerContext, MediaNode, MediaProject, MediaSession, MediaSnapshot,
-    PaneChatSnapshot, ProjectEntry, ProjectSessionEntry, ProjectsSnapshot, ScreenFrameSnapshot,
-    ScreenSnapshot, ScreenSourceEntry, SubAgentViewSnapshot, UiSnapshot,
+    PaneChatSnapshot, ProjectEntry, ProjectSessionEntry, ProjectsSnapshot, SubAgentViewSnapshot,
+    UiSnapshot, WorkerPaneSnapshot,
 };
 pub use types::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, HarnessKind,
-    LlmFormField, McpSearchEntry, McpServerEntry, SearchRow, SettingsCategory, SettingsControl,
-    SettingsFocus, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry,
-    WorkflowStepEntry,
+    LlmFormField, McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow, SettingsCategory,
+    SettingsControl, SettingsFocus, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
+    WorkflowEntry, WorkflowStepEntry,
     WorkspaceRouting,
 };
 

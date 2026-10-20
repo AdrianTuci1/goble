@@ -13,13 +13,17 @@
 #   WINDOWS_SIGN_CERT_THUMBPRINT   certificate thumbprint in the user's store
 #   WINDOWS_SIGN_TIMESTAMP_URL     RFC 3161 timestamp URL (default DigiCert)
 #
-# This script never builds Rust. Run `cargo build --release -p goble-app`
-# first, or point -SourceBinary at an existing exe.
+# This script never builds Rust. Run
+# `cargo build --release -p goble-app -p goble-pty -p goble-cli -p goble-mcp`
+# first, or point the binary parameters at existing executables.
 
 [CmdletBinding()]
 param(
     [string]$Version,
     [string]$SourceBinary,
+    [string]$PtyDaemonBinary,
+    [string]$CliBinary,
+    [string]$McpBinary,
     [string]$OutDir,
     [string]$AppName = 'Goble',
     [ValidateSet('x64', 'arm64')]
@@ -73,6 +77,24 @@ if (-not (Test-Path $SourceBinary)) {
     throw "source binary not found: $SourceBinary`nbuild it first: cargo build --release -p goble-app"
 }
 $SourceBinary = (Resolve-Path $SourceBinary).Path
+
+# The daemon and the control clients ship in the same {app} directory as the
+# app, which is the sibling path the PTY client looks in. They are separate
+# executables, so the installer must carry all of them; a partial package
+# would install an app whose terminal panes cannot start a session.
+function Resolve-CompanionBinary {
+    param([string]$Explicit, [string]$Name)
+    if (-not $Explicit) {
+        $Explicit = Join-Path (Split-Path -Parent $SourceBinary) ($Name + '.exe')
+    }
+    if (-not (Test-Path $Explicit)) {
+        throw "companion binary not found: $Explicit`nbuild all four first: cargo build --release -p goble-app -p goble-pty -p goble-cli -p goble-mcp"
+    }
+    return (Resolve-Path $Explicit).Path
+}
+$PtyDaemonBinary = Resolve-CompanionBinary -Explicit $PtyDaemonBinary -Name 'goble-pty-daemon'
+$CliBinary = Resolve-CompanionBinary -Explicit $CliBinary -Name 'goble-cli'
+$McpBinary = Resolve-CompanionBinary -Explicit $McpBinary -Name 'goble-mcp'
 
 foreach ($required in @($IssPath, $EulaPath, $IconPath, $LicensePath)) {
     if (-not (Test-Path $required)) { throw "required file missing: $required" }
@@ -231,27 +253,45 @@ try {
     $utf8Bom = New-Object System.Text.UTF8Encoding($true)
     [System.IO.File]::WriteAllText((Join-Path $stage 'EULA.txt'), $eula, $utf8Bom)
 
-    # Sign the application executable before it is packaged, so the file users
-    # end up running carries the publisher too, not just the installer around
-    # it. The copy is signed rather than target/release/'s file, so a build
-    # output is never modified in place.
-    $SourceToPackage = $SourceBinary
-    if ($signArgs) {
-        $SourceToPackage = Join-Path $stage (Split-Path -Leaf $SourceBinary)
-        Copy-Item $SourceBinary $SourceToPackage -Force
-        Write-Step "Signing application binary: $(Split-Path -Leaf $SourceToPackage)"
-        & $SignToolExe @signArgs $SourceToPackage
-        if ($LASTEXITCODE -ne 0) {
-            throw "signtool failed to sign $SourceToPackage (exit $LASTEXITCODE)"
-        }
-        Test-SignedFile $SourceToPackage
+    # Sign every executable before it is packaged, so the files users end up
+    # running carry the publisher too, not just the installer around them. The
+    # copies are signed rather than target/release's files, so build output is
+    # never modified in place.
+    $BinariesToPackage = [ordered]@{
+        'goble-app'        = $SourceBinary
+        'goble-pty-daemon' = $PtyDaemonBinary
+        'goble-cli'        = $CliBinary
+        'goble-mcp'        = $McpBinary
     }
+    $StagedBinaries = @{}
+    foreach ($name in $BinariesToPackage.Keys) {
+        $source = $BinariesToPackage[$name]
+        $dest = $source
+        if ($signArgs) {
+            $dest = Join-Path $stage (Split-Path -Leaf $source)
+            Copy-Item $source $dest -Force
+            Write-Step "Signing binary: $(Split-Path -Leaf $dest)"
+            & $SignToolExe @signArgs $dest
+            if ($LASTEXITCODE -ne 0) {
+                throw "signtool failed to sign $dest (exit $LASTEXITCODE)"
+            }
+            Test-SignedFile $dest
+        }
+        $StagedBinaries[$name] = $dest
+    }
+    $SourceToPackage = $StagedBinaries['goble-app']
+    $PtyDaemonToPackage = $StagedBinaries['goble-pty-daemon']
+    $CliToPackage = $StagedBinaries['goble-cli']
+    $McpToPackage = $StagedBinaries['goble-mcp']
 
     $isccArgs = @(
         '/Q'
         "/DMyAppVersion=$Version"
         "/DMyAppName=$AppName"
         "/DSourceBinary=$SourceToPackage"
+        "/DPtyDaemonBinary=$PtyDaemonToPackage"
+        "/DCliBinary=$CliToPackage"
+        "/DMcpBinary=$McpToPackage"
         "/DOutDir=$OutDir"
         "/DAppIconPath=$IconPath"
         "/DRepoLicense=$LicensePath"

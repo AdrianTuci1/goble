@@ -136,10 +136,10 @@ fn press_event(
     event: &DispatchedEvent,
 ) -> bool {
     let constraint = SizeConstraint::loose(vec2f(1024.0, 768.0));
-    let _ = root.layout(constraint, &mut LayoutContext::default(), app);
+    let _ = root.layout(constraint, &mut LayoutContext, app);
     let mut paint_ctx = PaintContext::new(goble_ui::render::Renderer::new());
     root.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     root.dispatch_event(event, &mut ctx, app)
 }
 
@@ -194,7 +194,7 @@ fn the_arrow_keys_move_the_page_and_escape_leaves_the_tab_open() {
 fn a_modified_arrow_does_not_move_the_page() {
     let app = AppContext::default();
     let (mut root, state, _dir) = settings_root(SettingsCategory::Mouse);
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     root.dispatch_event(
         &DispatchedEvent::KeyDown {
             key: "ArrowDown".to_string(),
@@ -255,7 +255,7 @@ fn a_settings_leaf_draws_the_rail_and_the_page() {
     );
     assert!(pane_text(&commands, "Scroll speed").is_some());
     assert!(
-        !pane_text(&commands, "Font size").is_some(),
+        pane_text(&commands, "Font size").is_none(),
         "and only the selected page's"
     );
     // The tab itself is an ordinary entry in the strip.
@@ -553,7 +553,7 @@ fn the_settings_body_fills_the_pane() {
 }
 
 /// The settings tab's own keys answer while it is up, and the window-level
-/// chords are the window's: `⌘K` and `⌘⇧W` still answer, a plain `Enter`
+/// chords are the window's: `Ctrl+.` and `⌘⇧W` still answer, a plain `Enter`
 /// reaches the page and nothing under it, and the tab stays open throughout.
 #[test]
 fn the_window_chords_still_answer_while_the_settings_tab_is_open() {
@@ -567,18 +567,6 @@ fn the_window_chords_still_answer_while_the_settings_tab_is_open() {
     assert!(press(&mut root, &app, "Enter"), "the page consumes Enter");
     assert_eq!(state.borrow().settings_focus, SettingsFocus::Pane);
     assert_eq!(state.borrow().settings_pane_focus, before);
-    assert!(!state.borrow().command_palette_open);
-
-    let command = ModifiersState {
-        command: true,
-        ..Default::default()
-    };
-    assert!(press_event(&mut root, &app, &chord("k", command)));
-    assert!(
-        state.borrow().command_palette_open,
-        "⌘K opens the palette over the settings tab"
-    );
-    press_event(&mut root, &app, &chord("k", command));
 
     let shift_command = ModifiersState {
         command: true,
@@ -633,7 +621,7 @@ fn rail_fill(commands: &[RenderCommand], app: &AppContext, panel: RectF) -> Opti
 /// happen before a dispatch: the pane learns its own origin while painting.
 fn frame(root: &mut Box<dyn Element>, app: &AppContext, window: Vector2F) -> Vec<RenderCommand> {
     let constraint = SizeConstraint::loose(window);
-    let _ = root.layout(constraint, &mut LayoutContext::default(), app);
+    let _ = root.layout(constraint, &mut LayoutContext, app);
     let mut paint_ctx = PaintContext::new(goble_ui::render::Renderer::new());
     root.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
     paint_ctx
@@ -676,7 +664,7 @@ fn the_appearance_pane_has_one_wheel_wired_to_the_selected_channel() {
         ring.min_x() + ring.width() * 0.5 + 40.0,
         ring.min_y() + ring.height() * 0.5 - 40.0,
     );
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     assert!(
         root.dispatch_event(
             &DispatchedEvent::MouseDown {
@@ -720,7 +708,7 @@ fn clicking_a_swatch_retargets_the_wheel() {
             _ => None,
         })
         .expect("the Accent swatch row is drawn");
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     // Buttons fire on release, so the click is a down/up pair on the row.
     let at = accent + vec2f(2.0, 2.0);
     assert!(root.dispatch_event(
@@ -1095,7 +1083,7 @@ fn the_focus_order_walks_down_the_rows_the_page_draws() {
         let controls = state.borrow().settings_pane_controls();
         assert!(!controls.is_empty(), "{category:?} has a row to focus");
         let mut previous: Option<(f32, f32)> = None;
-        for slot in 0..controls.len() {
+        for (slot, _control) in controls.iter().enumerate() {
             {
                 let mut s = state.borrow_mut();
                 s.settings_focus = SettingsFocus::Pane;
@@ -1159,7 +1147,7 @@ fn a_long_page_scrolls_inside_the_pane() {
     let clip = clip_in_panel(&commands, &app, window);
     assert!(clip.max_y() <= window.y, "the viewport is inside the window");
 
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     assert!(
         root.dispatch_event(
             &DispatchedEvent::Scroll {
@@ -1373,7 +1361,7 @@ fn frame_at(
     at: Vector2F,
 ) -> Vec<RenderCommand> {
     let constraint = SizeConstraint::loose(window);
-    let _ = root.layout(constraint, &mut LayoutContext::default(), app);
+    let _ = root.layout(constraint, &mut LayoutContext, app);
     let mut paint_ctx = PaintContext::new(goble_ui::render::Renderer::new());
     paint_ctx.cursor_inside = true;
     paint_ctx.cursor_position = at;
@@ -1537,7 +1525,7 @@ fn the_environment_rows_answer_the_mouse_as_well_as_the_keys() {
             _ => None,
         })
         .expect("the group row is drawn");
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     let click = at + vec2f(2.0, 2.0);
     root.dispatch_event(
         &DispatchedEvent::MouseDown {
@@ -1910,7 +1898,7 @@ fn the_connection_rows_are_focusable_in_order_and_enter_selects() {
     );
 
     let mut previous: Option<(f32, f32)> = None;
-    for slot in 0..controls.len() {
+    for (slot, _control) in controls.iter().enumerate() {
         {
             let mut s = state.borrow_mut();
             s.settings_focus = SettingsFocus::Pane;
@@ -1938,8 +1926,11 @@ fn the_connection_rows_are_focusable_in_order_and_enter_selects() {
     assert!(drawn(&commands, "select"), "the row's own verb");
     assert!(!drawn(&commands, "connect"), "no row offers a connection");
     assert!(
-        any_run_contains(&commands, "This build opens no session over SSH"),
-        "and the page says so in its own words"
+        any_run_contains(
+            &commands,
+            "Cmd+Shift+N opens a saved host from ~/.goble/hosts.toml in a pane"
+        ),
+        "and the page says where a host pane is opened"
     );
 
     let spaces = state.borrow().spaces.len();
@@ -2027,4 +2018,131 @@ Host two
             .len(),
         2
     );
+}
+
+// ---- Settings -> Agent & Approval: remote agents --------------------------
+
+/// A settings tab on Agent & Approval whose desktop state has read `config`
+/// from the test's own directory, with the page's rows refreshed from it.
+fn remote_agents_root(
+    config: &str,
+) -> (
+    Box<dyn Element>,
+    Rc<RefCell<crate::state::UiState>>,
+    tempfile::TempDir,
+    std::sync::Arc<goble_desktop_service::DesktopState>,
+) {
+    let (root, state, dir, desktop) = settings_root_with_desktop(SettingsCategory::AgentApproval);
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, config).expect("fixture config");
+    desktop.set_config_path(&path);
+    desktop
+        .reload_config(&path)
+        .expect("load the fixture config");
+    state.borrow_mut().refresh_remote_agents(Some(&desktop));
+    (root, state, dir, desktop)
+}
+
+/// One read-only row per `[remote_agents.<name>]` table: the user's name on
+/// the left, `provider · status` on the right, ready or the credentials the
+/// provider still needs. The reload row is the page's own control.
+#[test]
+fn the_agent_page_draws_a_row_per_remote_agent_and_its_status() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir, _desktop) = remote_agents_root(
+        r#"
+[remote_agents.builder]
+provider = "modal"
+
+[remote_agents.local]
+provider = "docker"
+
+[remote_agents.reviewer]
+provider = "e2b"
+enabled = false
+"#,
+    );
+    let commands = frame(&mut root, &app, window);
+
+    assert!(drawn(&commands, "Remote agents"), "the heading is drawn");
+    assert!(drawn(&commands, "builder"));
+    assert!(
+        any_run_contains(
+            &commands,
+            "modal · missing MODAL_TOKEN_ID, MODAL_TOKEN_SECRET"
+        ),
+        "the row names both missing Modal credentials"
+    );
+    assert!(drawn(&commands, "local"));
+    assert!(any_run_contains(&commands, "docker · ready"));
+    assert!(drawn(&commands, "reviewer"));
+    assert!(any_run_contains(&commands, "e2b · disabled"));
+    assert!(drawn(&commands, "Reload remote agents"));
+
+    let s = state.borrow();
+    let names: Vec<&str> = s.remote_agents.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["builder", "local", "reviewer"], "in name order");
+    assert_eq!(
+        s.remote_agents[0].missing,
+        vec!["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]
+    );
+    assert_eq!(
+        s.settings_pane_controls().last(),
+        Some(&SettingsControl::ReloadRemoteAgents),
+        "the reload row closes the pane's order"
+    );
+}
+
+/// With no `[remote_agents.<name>]` tables the page explains the table to add
+/// and still offers the reload, rather than drawing an empty section.
+#[test]
+fn no_remote_agents_draws_the_explanatory_row() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir) = settings_root(SettingsCategory::AgentApproval);
+    let commands = frame(&mut root, &app, window);
+
+    assert!(state.borrow().remote_agents.is_empty());
+    assert!(drawn(&commands, "Remote agents"));
+    assert!(
+        any_run_contains(&commands, "[remote_agents.<name>]"),
+        "the page names the table to add"
+    );
+    assert!(drawn(&commands, "Reload remote agents"));
+}
+
+/// The reload row is reachable with the keyboard — it is the fifth slot of the
+/// Agent & Approval order — and `Enter` re-reads the config file, so an agent
+/// added under the page shows up on the next frame.
+#[test]
+fn the_reload_row_is_in_the_focus_order_and_enter_reloads_the_config() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, dir, _desktop) = remote_agents_root("");
+
+    press(&mut root, &app, "ArrowRight"); // into the pane: Auto-approve
+    for _ in 0..4 {
+        press(&mut root, &app, "ArrowDown"); // Vim mode, Local, Remote, Reload
+    }
+    assert_eq!(
+        state.borrow().settings_focused_control(),
+        Some(SettingsControl::ReloadRemoteAgents)
+    );
+    assert!(state.borrow().remote_agents.is_empty());
+
+    // The file grows under the page; nothing is drawn until the row runs.
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[remote_agents.fresh]\nprovider = \"ssh\"\n",
+    )
+    .expect("rewrite the fixture config");
+    let commands = frame(&mut root, &app, window);
+    assert!(!drawn(&commands, "fresh"), "the page draws the last read");
+
+    assert!(press(&mut root, &app, "Enter"));
+    let commands = frame(&mut root, &app, window);
+    assert!(drawn(&commands, "fresh"), "the reload row re-read the file");
+    assert!(any_run_contains(&commands, "ssh · ready"));
+    assert_eq!(state.borrow().remote_agents.len(), 1);
 }

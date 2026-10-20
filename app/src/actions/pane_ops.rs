@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use goble_core::hosts::HostEntry;
 use goble_desktop_service::DesktopState;
 
 use crate::media::MediaState;
@@ -32,6 +33,82 @@ pub(super) fn split_active_pane(
             state.set_active_pane_path(path);
             state.sync_active_view();
         }
+    }
+}
+
+/// Open a saved SSH host in a new terminal pane and run the host's `ssh -t`
+/// line in it. The pane is bound through [`TerminalRegistry::set_ssh_session`]
+/// before the line is written, so the existing chip and the agent's shell route
+/// read the session from the same place a typed `ssh host` line puts it.
+pub(super) fn open_ssh_host_pane(
+    state: &mut UiState,
+    desktop: Option<&Arc<DesktopState>>,
+    media: &MediaState,
+    host: &HostEntry,
+) {
+    split_active_pane(state, SplitDir::Vertical, desktop, media, PaneKind::Terminal);
+    let pane_id = state.active_pane_id;
+    let cwd = state
+        .pane_sessions
+        .get(&pane_id)
+        .map(|session| session.path.clone())
+        .unwrap_or_default();
+    let session = host.ssh_session();
+    state.bind_ssh_pane(pane_id, Some(host.name.clone()), session);
+    run_saved_host_line(state, pane_id, &cwd, host);
+    if let Some(desktop) = desktop {
+        state.save_panes(desktop);
+    }
+}
+
+/// Reconnect `pane_id` to the saved host `name` after its session ended. The
+/// shell is restarted first: an `exit` leaves a dead pty behind, and writing
+/// the ssh line into that would do nothing.
+pub(super) fn reconnect_ssh_host(
+    state: &mut UiState,
+    desktop: Option<&Arc<DesktopState>>,
+    pane_id: u64,
+    name: &str,
+) -> bool {
+    let Some(host) = state
+        .ssh_host_entries
+        .iter()
+        .find(|host| host.name == name)
+        .cloned()
+    else {
+        // The entry was removed from hosts.toml since the pane opened. There is
+        // no command to run, so the offer is dropped rather than drawing a
+        // reconnect that cannot.
+        state.pane_ssh.remove(&pane_id);
+        return false;
+    };
+    let cwd = state
+        .pane_sessions
+        .get(&pane_id)
+        .map(|session| session.path.clone())
+        .unwrap_or_default();
+    let session = host.ssh_session();
+    state.bind_ssh_pane(pane_id, Some(host.name.clone()), session);
+    {
+        let mut terminal = state.terminal.borrow_mut();
+        terminal.restart_session(pane_id, &cwd);
+    }
+    run_saved_host_line(state, pane_id, &cwd, &host);
+    if let Some(desktop) = desktop {
+        state.save_panes(desktop);
+    }
+    true
+}
+
+/// Write the host's command line into the pane's shell. The session is already
+/// bound by the caller; this only gives the shell the line to run.
+fn run_saved_host_line(state: &mut UiState, pane_id: u64, cwd: &str, host: &HostEntry) {
+    let mut terminal = state.terminal.borrow_mut();
+    terminal.ensure_session(pane_id, cwd);
+    if let Some(session) = terminal.sessions.get_mut(&pane_id) {
+        let mut line = host.command_line();
+        line.push('\n');
+        session.write(line.as_bytes());
     }
 }
 
@@ -85,6 +162,12 @@ pub(super) fn ensure_pane_hover(state: &mut UiState, pane_id: u64) {
         .or_insert_with(|| Rc::new(RefCell::new(false)));
 }
 
+/// The reason a busy shell gives for refusing the switch into agent mode, word
+/// for word the reference's own `EnterAgentViewError::LongRunningCommand`
+/// (`Cannot enter agent mode while a command is running.`). The pane draws it
+/// over the shell it stayed on, so the chord never does nothing silently.
+pub(super) const HARNESS_BUSY_REFUSAL: &str = "Cannot enter agent mode while a command is running.";
+
 /// Open `pane_id`'s harness: the pane shows its agent view over its own shell.
 ///
 /// A pane with no conversation of its own gets one bound first, so the view
@@ -98,11 +181,40 @@ pub(super) fn ensure_pane_hover(state: &mut UiState, pane_id: u64) {
 /// transcript's notice band names the missing key or model. Refusing the switch
 /// instead left the pane on its shell with nothing to say why the chord (or the
 /// sidebar's "New conversation" row, which lands here) did nothing.
+///
+/// Two guards, both on this one entry point, both the reference's own:
+///
+/// * **Already in the agent view** — entering again pushes nothing (no second
+///   conversation, no second card, no second view). `AlreadyInAgentView` is
+///   warp-new's guard for the same direction, and the pane really is entered
+///   twice: a card click and a `Cmd+Enter` that arrive before the next frame's
+///   rebuild both land on the tree that drew the shell.
+/// * **A command running in the pane's shell** — the switch is refused and says
+///   so (`HARNESS_BUSY_REFUSAL`), because the agent's own commands cannot run in
+///   a shell that is not at a prompt: the claim attaches to the block that is
+///   waiting for a command, and a running command's block is not one. The pane
+///   records the reason and draws it over the shell it stayed on. An SSH-bound
+///   pane is exempt — see `TerminalRegistry::running_a_command` — so the
+///   switch works on exactly the session it exists for.
 pub(super) fn open_pane_harness(
     state: &mut UiState,
     pane_id: u64,
     desktop: Option<&Arc<DesktopState>>,
 ) {
+    // A viewer pane has no shell to switch from: its conversation runs on a
+    // worker, so mounting the agent view over a pty it does not have would
+    // invent a terminal for it. The pane already reports its own state.
+    if state.pane_is_viewer(pane_id) {
+        return;
+    }
+    if state.pane_controls(pane_id).harness_mode {
+        return;
+    }
+    if state.terminal.borrow().running_a_command(pane_id) {
+        state.pane_controls_mut(pane_id).harness_refusal = Some(HARNESS_BUSY_REFUSAL.to_string());
+        return;
+    }
+    state.pane_controls_mut(pane_id).harness_refusal = None;
     state.pane_controls_mut(pane_id).harness_mode = true;
     if !state.pane_owns_conversation(pane_id) {
         state.bind_pane_new_conversation(pane_id, desktop.map(|d| d.as_ref()));
@@ -129,12 +241,14 @@ pub(super) fn close_space_at(state: &mut UiState, index: usize, desktop: Option<
     // Drop every pane session/runtime/hover for the space's leaves and kill any
     // terminal sessions along with them.
     let closed = state.spaces.remove(index);
-    for id in collect_leaf_ids(&closed.root) {
-        state.pane_sessions.remove(&id);
-        state.pane_runtime.remove(&id);
-        state.pane_hover.remove(&id);
-        state.sub_agent_views.remove(&id);
-        state.terminal.borrow_mut().drop_pane(id);
+    let leaves = collect_leaf_ids(&closed.root);
+    // A pane in the closed tab owns nothing any more: its session, runtime,
+    // hover flag, child view, shell and viewer session all go with it — the last
+    // one because the worker's status path finds the panes a report is about by
+    // the viewer sessions alone, so a session left behind is a dead pane id it
+    // would keep reporting on.
+    for id in leaves {
+        state.forget_pane(id);
     }
     // If the space being closed was the last one, restore a fresh empty chat
     // space so the window is never left with zero tabs.

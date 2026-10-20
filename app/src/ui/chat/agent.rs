@@ -4,7 +4,7 @@ use std::rc::Rc;
 use goble_terminal::blocks::BlockView;
 use goble_terminal::BlockOwner;
 use goble_ui::elements::{
-    AppContext, Element, PopupMenuItem,
+    AppContext, Container, EdgeInsets, Element, PopupMenuItem,
 };
 use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView};
 
@@ -12,7 +12,7 @@ use crate::emulator::VisibleBlock;
 use crate::state::PaneControls;
 
 use super::super::{UiActions, UiSnapshot};
-use super::{build_agent_error, build_agent_header, build_sub_agent_child_view, chat_action_relay, pane_session_snapshot};
+use super::{build_agent_error, build_agent_header, build_sub_agent_child_view, chat_action_relay, pane_session_snapshot, PaneChatSnapshot};
 
 /// If `pane_id` has a live PTY session with output, append it as an inline
 /// terminal block after the transcript so a terminal command (`!cmd`) actually
@@ -83,6 +83,39 @@ fn with_conversation_commands(
     messages
 }
 
+/// The notice a pane leads its transcript with.
+///
+/// A viewer pane draws its worker connection's state there: the pane has no
+/// shell to show, so the state of the session is the one thing it must report
+/// (connecting, connected, and — if the connection drops — that it dropped).
+/// Every other pane draws the missing-model-key notice it had before, from the
+/// window-level banner flag.
+fn notice_for(
+    session: &PaneChatSnapshot,
+    state: &UiSnapshot,
+    app: &AppContext,
+    actions: &UiActions,
+) -> Option<Box<dyn Element>> {
+    match &session.worker {
+        Some(worker) => Some(crate::ui::worker::build_worker_notice(app, worker)),
+        None => state
+            .show_llm_key_banner
+            .then(|| build_agent_error(app, actions, state.llm_notice_heading)),
+    }
+}
+
+/// What the composer's directory control reads for this pane.
+///
+/// A viewer pane has no local working directory — its conversation runs on a
+/// worker — so it names where the work actually runs instead of drawing this
+/// machine's path under a conversation that is not on it.
+fn composer_path(session: &PaneChatSnapshot) -> String {
+    match &session.worker {
+        Some(worker) => worker.location_label(),
+        None => crate::state::display_path(&session.composer_path),
+    }
+}
+
 /// Agent chat tab: a header row with the agent identity/status/copy/restart,
 /// then the message transcript + composer (which fills the remaining space).
 ///
@@ -101,6 +134,11 @@ pub fn build_agent_chat(
     on_escape: Option<Rc<RefCell<dyn FnMut()>>>,
 ) -> Box<dyn Element> {
     let session = pane_session_snapshot(state, pane_id);
+    // The host this pane's shell is on, when a submitted `ssh` line bound it
+    // (S1). The agent view is the same pane's other surface, so it names the
+    // same session over its own input; a local shell has no entry and draws no
+    // chip.
+    let ssh_session = state.terminal.borrow().ssh_session(pane_id).cloned();
 
     // A pane showing a sub-agent's child view (S6) shows that child's own
     // conversation, not its own: the child's transcript under a title naming the
@@ -135,8 +173,6 @@ pub fn build_agent_chat(
     let on_command_decision = actions.on_command_decision.clone();
     let on_send_queued = actions.on_send_queued.clone();
     let on_dismiss_queued = actions.on_dismiss_queued.clone();
-    let on_close_inline_screen = actions.on_close_inline_screen.clone();
-    let on_open_screen_link = actions.on_open_screen_link.clone();
     let on_open_url = actions.on_open_url.clone();
     // The row is drawn in this pane, so the child view (S6) opens in this pane:
     // the pane id is baked into the handler here rather than carried by the
@@ -195,13 +231,15 @@ pub fn build_agent_chat(
     };
     let mut chat = ChatView::new()
         .with_header(header)
-        // No key configured: the error shows at the top of this pane's chat
-        // area, with the button that opens the model-provider dialog.
-        .with_notice(
-            state
-                .show_llm_key_banner
-                .then(|| build_agent_error(app, actions, state.llm_notice_heading)),
-        )
+        // A viewer pane leads its transcript with the worker connection's own
+        // state — what the worker streamed is the whole of what this pane has,
+        // and a dropped connection has to be readable where the conversation is.
+        // Every other pane leads with the missing-model-key notice, if it has
+        // one.
+        .with_notice(notice_for(&session, state, app, actions))
+        // A failed turn is reported in the conversation it failed in, under
+        // the last message, as well as in the inbox.
+        .with_turn_error(session.turn_error.clone())
         .with_messages(messages)
         // The transcript scrolls and follows the stream; the state is
         // app-owned per pane so a chosen scrollback position is held.
@@ -234,8 +272,8 @@ pub fn build_agent_chat(
         .with_composer_caret(controls.caret.clone())
         // The transcript's own fold key (`e`) is the active pane's too.
         .with_pane_active(active)
-        .with_composer_path(crate::state::display_path(&session.composer_path))
-        .with_composer_model_label(controls.model.clone())
+        .with_composer_path(composer_path(&session))
+        .with_composer_ssh_session(ssh_session)
         .with_composer_attachments(session.composer_attachments.clone())
         .with_composer_stop_visible(session.agent_busy)
         // The instructions the composer draws above its editor: grok-build's
@@ -270,9 +308,6 @@ pub fn build_agent_chat(
         .with_queued_prompt(session.queued_prompt.clone())
         .with_on_send_queued(move || (on_send_queued.borrow_mut())())
         .with_on_dismiss_queued(move || (on_dismiss_queued.borrow_mut())())
-        .with_screen_link(session.screen_link.clone())
-        .with_on_open_screen_link(move |uri| (on_open_screen_link.borrow_mut())(uri))
-        .with_on_close_inline_screen(move || (on_close_inline_screen.borrow_mut())())
         .with_composer_model_menu(model_items, model_menu_open, model_index, move |index| {
             if let Some(name) = models_for_select.get(index) {
                 (on_model_select.borrow_mut())(pane_id, name.clone());
@@ -282,6 +317,17 @@ pub fn build_agent_chat(
         .with_composer_on_cmd_enter(move |text| (on_cmd_enter.borrow_mut())(text))
         // `⌘⌥↵`: the same submit, routed to the cloud medium.
         .with_composer_on_send_to_cloud(move |text| (on_send_to_cloud.borrow_mut())(text));
+
+    // The model control is the client's own choice, so it is drawn only where
+    // the client's choice is the one the turn runs on. A viewer pane's
+    // conversation runs on a worker, which resolves its own model
+    // (`LLM_MODEL`), and the remote turn carries none (`build_remote_turn`), so
+    // the pane draws no control whose selection the route would drop: the
+    // environment it can honestly choose is its only submit-time control (A3,
+    // model half).
+    if session.worker.is_none() {
+        chat = chat.with_composer_model_label(controls.model.clone());
+    }
 
     // Modal (vim) editing of the agent composer, when the user turned it on.
     if state.vim_mode {
@@ -296,19 +342,6 @@ pub fn build_agent_chat(
             .with_usage(session.usage)
             .with_usage_open(session.usage_open.clone())
             .with_on_fork(move || (on_fork.borrow_mut())(pane_id));
-    }
-
-    // A live remote-desktop handoff renders inline at the end of the
-    // transcript. The frame's texture key is stable per pane so the screen
-    // stream updates in place across rebuilds.
-    if let Some(frame) = &session.inline_screen {
-        chat = chat.with_inline_screen(
-            format!("inline-{pane_id}"),
-            frame.frame_seq,
-            frame.width,
-            frame.height,
-            std::sync::Arc::clone(&frame.data),
-        );
     }
 
     // warp-new context pills: harness (the selected medium), working directory
@@ -379,13 +412,16 @@ pub fn build_agent_chat(
     if let Some(on_escape) = on_escape {
         chat = chat.with_on_escape(move || (on_escape.borrow_mut())());
     }
-    let chat = chat.finish();
-
     // The right "agent panel" (routines + scheduled tasks) is now a floating
     // overlay layered over the whole app in `build_ui`, not a docked sidebar
     // that shrinks the pane. It is toggled from the chat header's "Toggle
     // panel" item and closed via its X button / backdrop click.
-    chat
+    //
+    // The agent surface keeps a 10 px gutter on each side, so its prose does
+    // not run flush into the pane's edges.
+    Container::new(chat.finish())
+        .with_padding(EdgeInsets::new(10.0, 0.0, 10.0, 0.0))
+        .finish()
 }
 
 #[cfg(test)]
@@ -422,7 +458,7 @@ mod transcript_scroll_tests {
     fn layout_pane(view: &mut ChatView, app: &AppContext) {
         let _ = view.layout(
             SizeConstraint::loose(vec2f(600.0, 480.0)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             app,
         );
     }
@@ -590,13 +626,13 @@ mod chat_geometry_tests {
         assert_eq!(band.1, 0.0, "the user's band has square corners");
         assert_eq!(
             band.0.min_x(),
-            crate::ui::SIDEBAR_WIDTH,
-            "the user's band starts at the pane's left edge"
+            crate::ui::SIDEBAR_WIDTH + 10.0,
+            "the agent surface keeps its 10 px gutter at the pane's left edge"
         );
         assert_eq!(
             band.0.max_x(),
-            1024.0,
-            "the user's band runs to the pane's right edge"
+            1024.0 - 10.0,
+            "the agent surface keeps its 10 px gutter at the pane's right edge"
         );
         let padded = user_x - band.0.min_x();
         assert!(
@@ -636,62 +672,67 @@ mod link_action_tests {
         }))
     }
 
-    /// Build the pane's transcript, lay it out, and click the run `label`.
+    /// Build the pane's transcript, lay it out, and click each run `label` in
+    /// turn, repainting between clicks so a row revealed by an earlier click is
+    /// a target of the next one.
     fn click_message(
         message: ChatMessage,
         on_open_url: Rc<RefCell<dyn FnMut(String)>>,
         label: &str,
     ) {
         let ignored: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(|_| {}));
-        click_transcript(message, Default::default(), on_open_url, ignored, label)
+        click_transcript(message, Default::default(), on_open_url, ignored, &[label])
     }
 
-    /// The same click through a transcript that holds `sub_agents` for the pane
+    /// The same clicks through a transcript that holds `sub_agents` for the pane
     /// and routes a sub-agent row's action to `on_open_sub_agent`.
+    #[allow(clippy::too_many_arguments)]
     fn click_transcript(
         message: ChatMessage,
         sub_agents: std::collections::HashMap<String, goble_ui::SubAgentRow>,
         on_open_url: Rc<RefCell<dyn FnMut(String)>>,
         on_open_sub_agent: Rc<RefCell<dyn FnMut(String)>>,
-        label: &str,
+        labels: &[&str],
     ) {
         let app = AppContext::default();
         let mut view = ChatView::new()
             .with_messages(vec![message])
             .with_sub_agents(sub_agents)
             .with_on_action(chat_action_relay(on_open_url, on_open_sub_agent));
-        view.layout(
-            SizeConstraint::loose(vec2f(600.0, 400.0)),
-            &mut LayoutContext::default(),
-            &app,
-        );
-        let mut paint_ctx = PaintContext::new(Renderer::new());
-        view.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
-        let commands = paint_ctx
-            .renderer
-            .take()
-            .map(|r| r.commands().to_vec())
-            .unwrap_or_default();
-        let origin = commands
-            .iter()
-            .find_map(|c| match c {
-                RenderCommand::DrawText { origin, text, .. } if text == label => Some(*origin),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the transcript must draw the link run {label:?}"));
-        let position = origin + vec2f(2.0, 4.0);
-        let mut ctx = EventContext::default();
-        for event in [
-            DispatchedEvent::MouseDown {
-                position,
-                button: 0,
-            },
-            DispatchedEvent::MouseUp {
-                position,
-                button: 0,
-            },
-        ] {
-            view.dispatch_event(&event, &mut ctx, &app);
+        for label in labels {
+            view.layout(
+                SizeConstraint::loose(vec2f(600.0, 400.0)),
+                &mut LayoutContext,
+                &app,
+            );
+            let mut paint_ctx = PaintContext::new(Renderer::new());
+            view.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+            let commands = paint_ctx
+                .renderer
+                .take()
+                .map(|r| r.commands().to_vec())
+                .unwrap_or_default();
+            let origin = commands
+                .iter()
+                .find_map(|c| match c {
+                    RenderCommand::DrawText { origin, text, .. } if text == *label => Some(*origin),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the transcript must draw the run {label:?}"));
+            let position = origin + vec2f(2.0, 4.0);
+            let mut ctx = EventContext;
+            for event in [
+                DispatchedEvent::MouseDown {
+                    position,
+                    button: 0,
+                },
+                DispatchedEvent::MouseUp {
+                    position,
+                    button: 0,
+                },
+            ] {
+                view.dispatch_event(&event, &mut ctx, &app);
+            }
         }
     }
 
@@ -785,7 +826,7 @@ mod link_action_tests {
             HashMap::from([("call_spawn".to_string(), record)]),
             ignored,
             opener,
-            "open child",
+            &["Running 1 subagent", "open child"],
         );
         assert_eq!(
             *opened.borrow(),
@@ -881,21 +922,23 @@ mod agent_pill_tests {
             s.right_sidebar_open = false;
             s.crons_open = false;
             s.active_pane_id = 1;
-            let mut runtime = PaneRuntime::default();
-            runtime.busy = true;
-            runtime.messages = vec![
-                ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Fix the build")]),
-                ChatMessage::new(
-                    ChatRole::Assistant,
-                    vec![ChatFragment::text("Reading the sidebar, then the panes.")],
-                )
-                .with_tool_calls(vec![
-                    read.clone(),
-                    edit.clone(),
-                    search.clone(),
-                    spawn.clone(),
-                ]),
-            ];
+            let mut runtime = PaneRuntime {
+                busy: true,
+                messages: vec![
+                    ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Fix the build")]),
+                    ChatMessage::new(
+                        ChatRole::Assistant,
+                        vec![ChatFragment::text("Reading the sidebar, then the panes.")],
+                    )
+                    .with_tool_calls(vec![
+                        read.clone(),
+                        edit.clone(),
+                        search.clone(),
+                        spawn.clone(),
+                    ]),
+                ],
+                ..PaneRuntime::default()
+            };
             runtime
                 .in_flight_tools
                 .insert(search.id.clone(), search.clone());
@@ -918,11 +961,23 @@ mod agent_pill_tests {
                     },
                 },
             );
+            // The groupable calls start folded into their runs; opening each
+            // run is what draws the member rows this lock measures. The fold
+            // map is the same app-owned one a header click writes.
+            s.tool_fold.borrow_mut().insert(
+                format!("verb-group:{}", goble_ui::tool_fold_key(&read, 0)),
+                goble_ui::ToolDisplayMode::Expanded,
+            );
+            s.tool_fold.borrow_mut().insert(
+                format!("verb-group:{}", goble_ui::tool_fold_key(&search, 2)),
+                goble_ui::ToolDisplayMode::Expanded,
+            );
             s.pane_runtime.insert(1, runtime);
         }
 
         let mut root: Box<dyn Element> = Box::new(view);
-        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        // Taller than the window so every row this lock measures is on screen.
+        let commands = render_element(&mut root, vec2f(1024.0, 1400.0), &app);
 
         // The rows the transcript drew, as the runs they own. A pill is a
         // rounded box (or a border) drawn over the row its run belongs to.
@@ -996,6 +1051,7 @@ mod conversation_command_tests {
             pwd: Some("/tmp".to_string()),
             git_branch: None,
             duration: None,
+            prompt: None,
             card: None,
         }
     }

@@ -38,6 +38,8 @@ impl Theme {
                 focus: ColorU::hex(0x19aad8),
                 success: ColorU::hex(0x10b981),
                 warning: ColorU::hex(0xf59e0b),
+                path: ColorU::hex(0xff9e64),
+                command: ColorU::hex(0xe0af68),
                 error: ColorU::hex(0xef4444),
                 badge: ColorU::hex(0xe01e5a),
                 diff_insert_bg: ColorU::hex(0x0f3d20),
@@ -70,6 +72,8 @@ impl Theme {
                 focus: ColorU::hex(0x00c2ff),
                 success: ColorU::hex(0x10b981),
                 warning: ColorU::hex(0xf59e0b),
+                path: ColorU::hex(0xff9e64),
+                command: ColorU::hex(0xe0af68),
                 error: ColorU::hex(0xef4444),
                 badge: ColorU::hex(0xe01e5a),
                 diff_insert_bg: ColorU::hex(0xd6f5e0),
@@ -102,6 +106,8 @@ impl Theme {
                 focus: ColorU::hex(0x19aad8),
                 success: ColorU::hex(0x10b981),
                 warning: ColorU::hex(0xf59e0b),
+                path: ColorU::hex(0xff9e64),
+                command: ColorU::hex(0xe0af68),
                 error: ColorU::hex(0xef4444),
                 badge: ColorU::hex(0xe01e5a),
                 diff_insert_bg: ColorU::hex(0x0f3d20),
@@ -152,6 +158,8 @@ impl Theme {
             ColorToken::Accent => self.custom_accent.unwrap_or_else(|| self.accent.color()),
             ColorToken::Success => self.colors.success,
             ColorToken::Warning => self.colors.warning,
+            ColorToken::Path => self.colors.path,
+            ColorToken::Command => self.colors.command,
             ColorToken::Error => self.colors.error,
             ColorToken::Badge => self.colors.badge,
             ColorToken::DiffInsertBg => self.colors.diff_insert_bg,
@@ -199,6 +207,11 @@ pub struct ColorScheme {
     pub focus: ColorU,
     pub success: ColorU,
     pub warning: ColorU,
+    /// File paths on a tool row, kept apart from `warning` so a path reads in
+    /// the pager's orange rather than the UI's amber.
+    pub path: ColorU,
+    /// Shell commands on a tool row, in the pager's yellow.
+    pub command: ColorU,
     pub error: ColorU,
     pub badge: ColorU,
     /// Background band behind an added line of a diff.
@@ -222,6 +235,10 @@ pub enum ColorToken {
     Accent,
     Success,
     Warning,
+    /// A tool row's file path — grok-build's warm orange (`theme.path`).
+    Path,
+    /// A tool row's shell command — grok-build's yellow (`theme.command`).
+    Command,
     Error,
     Badge,
     DiffInsertBg,

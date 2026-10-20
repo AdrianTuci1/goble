@@ -169,3 +169,19 @@ use goble_terminal::hooks::{InitShellValue, PrecmdValue};
         session.retire_reported_cwds();
         assert_eq!(session.take_cwd_move(), None);
     }
+
+    /// The pane's snapshot carries the image placements with the rows, so the
+    /// grid can paint a kitty image on the cell the cursor was on.
+    #[test]
+    fn the_view_carries_a_kitty_image_at_its_cursor_cell() {
+        let session = detached();
+        {
+            let mut state = session.state.lock().unwrap();
+            state.feed(b"ab\x1b_Ga=T,f=32,s=1,v=1,i=3;/wAA/w==\x1b\\");
+        }
+        let view = session.view();
+        assert_eq!(view.images.len(), 1);
+        assert_eq!((view.images[0].row, view.images[0].column), (0, 2));
+        assert_eq!(view.images[0].id, 3);
+        assert_eq!(&*view.images[0].rgba, &[255u8, 0, 0, 255]);
+    }

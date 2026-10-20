@@ -86,6 +86,11 @@ impl GobleHome {
         self.root.join("environment.toml")
     }
 
+    /// The saved SSH hosts the host picker offers (Cmd+Shift+N).
+    pub fn hosts_path(&self) -> PathBuf {
+        self.root.join(crate::hosts::HOSTS_FILE_NAME)
+    }
+
     pub fn threads_dir(&self) -> PathBuf {
         self.root.join("threads")
     }
@@ -108,6 +113,7 @@ impl GobleHome {
         }
         self.seed_config_if_missing()?;
         self.seed_environment_if_missing()?;
+        self.seed_file_if_missing(crate::hosts::HOSTS_FILE_NAME, &crate::hosts::empty_toml())?;
         self.seed_file_if_missing("README.md", "# Goble home\n\nUser home on this machine. Mirrors the `~/.grok` structure.\n")?;
         self.seed_file_if_missing(
             "version.json",

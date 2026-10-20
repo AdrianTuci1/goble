@@ -27,55 +27,6 @@ fn test_state_add_worker() {
 }
 
 #[test]
-fn screen_registry_has_local_capturer_and_controller() {
-    let (_dir, state) = tmp_state();
-    let reg = state.screen_registry();
-    assert!(
-        reg.capturer(goble_screen_adapter::LOCAL_SOURCE).is_some(),
-        "a local capturer must be registered on DesktopState"
-    );
-    assert!(
-        reg.controller(goble_screen_adapter::LOCAL_SOURCE).is_some(),
-        "a local controller must be registered on DesktopState"
-    );
-    assert_eq!(
-        reg.capturer_sources(),
-        vec![goble_screen_adapter::LOCAL_SOURCE.to_string()]
-    );
-}
-
-#[test]
-#[cfg(not(feature = "remote-screen"))]
-fn open_remote_screen_without_feature_errors() {
-    let (_dir, state) = tmp_state();
-    let err = state
-        .open_remote_screen(goble_harness_types::RemoteScreenConfig::new("vm", "u", "p"))
-        .unwrap_err();
-    assert!(
-        err.to_string().contains("remote-screen"),
-        "the error should name the missing feature, got: {err}"
-    );
-}
-
-#[test]
-#[cfg(feature = "remote-screen")]
-fn open_remote_screen_registers_a_remote_pair() {
-    // The client connects lazily on its own thread; registering the
-    // capturer+controller is synchronous, so a dead endpoint still yields a
-    // registered (blank) source. A connection-refused endpoint fails fast.
-    let (_dir, state) = tmp_state();
-    let source = state
-        .open_remote_screen(goble_harness_types::RemoteScreenConfig::new(
-            "127.0.0.1", "u", "p",
-        ))
-        .unwrap();
-    let reg = state.screen_registry();
-    assert!(reg.capturer(&source).is_some(), "remote capturer registered");
-    assert!(reg.controller(&source).is_some(), "remote controller registered");
-    assert!(reg.capturer_sources().contains(&source));
-}
-
-#[test]
 fn test_state_logs_and_chat() {
     let (_dir, state) = tmp_state();
     state.add_log("hello");

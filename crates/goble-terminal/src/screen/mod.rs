@@ -20,8 +20,9 @@ mod cell;
 mod config;
 mod cursor;
 mod event;
-mod screen;
+mod search;
 mod size;
+mod surface;
 
 #[cfg(test)]
 mod tests;
@@ -30,5 +31,6 @@ pub use cell::{CellAttrs, ScreenCell, ScreenColor, ScreenLine, Underline};
 pub use config::{ScreenConfig, BLOCK_HISTORY};
 pub use cursor::{CursorShape, CursorState};
 pub use event::{ScreenEvent, ScreenEvents, ScreenQuery};
-pub use screen::Screen;
+pub use surface::Screen;
+pub use search::{SearchError, SearchMatch, SearchOptions};
 pub use size::ScreenSize;

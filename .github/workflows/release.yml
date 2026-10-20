@@ -195,14 +195,20 @@ jobs:
           # GitHub runners have no FUSE device; make appimagetool extract itself.
           echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
 
-      - name: Build app
+      - name: Build app and control binaries
+        # The whole shipping set goes together: the app, the attachable PTY
+        # daemon (the binary target owned by the goble-pty package), the
+        # control CLI, and the MCP server. `-p goble-pty` selects the package
+        # that produces goble-pty-daemon.
         # Baked in with `option_env!`: the channel decides whether the build
         # reports crashes and accepts updates, and the version is what a crash
         # report and an update check compare against.
         env:
           GOBLE_CHANNEL: ${{ inputs.channel }}
           GOBLE_RELEASE_VERSION: ${{ env.GOBLE_VERSION }}
-        run: cargo build --release -p goble-app --target ${{ matrix.target }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            -p goble-app -p goble-pty -p goble-cli -p goble-mcp
 
       # --- macOS --------------------------------------------------------------
       - name: Import Apple signing certificate
@@ -238,8 +244,12 @@ jobs:
           # rather than publishing a download Gatekeeper refuses.
           GOBLE_REQUIRE_SIGNING: ${{ !inputs.allow_unsigned && '1' || '0' }}
         run: |
+          TARGET_DIR="target/${{ matrix.target }}/release"
           packaging/macos/make-bundle.sh \
-            --binary "target/${{ matrix.target }}/release/goble-app" \
+            --binary "$TARGET_DIR/goble-app" \
+            --pty-daemon-binary "$TARGET_DIR/goble-pty-daemon" \
+            --cli-binary "$TARGET_DIR/goble-cli" \
+            --mcp-binary "$TARGET_DIR/goble-mcp" \
             --outdir dist --version "$GOBLE_VERSION" --arch ${{ matrix.arch }}
           packaging/macos/make-dmg.sh \
             --app "dist/Goble.app" --outdir dist \
@@ -254,18 +264,29 @@ jobs:
       - name: Build AppImage
         if: matrix.platform == 'linux'
         run: |
+          TARGET_DIR="target/${{ matrix.target }}/release"
           packaging/linux/make-appimage.sh \
-            --binary "target/${{ matrix.target }}/release/goble-app" \
+            --binary "$TARGET_DIR/goble-app" \
+            --pty-daemon-binary "$TARGET_DIR/goble-pty-daemon" \
+            --cli-binary "$TARGET_DIR/goble-cli" \
+            --mcp-binary "$TARGET_DIR/goble-mcp" \
             --outdir dist --version "$GOBLE_VERSION" --arch x86_64
 
       - name: Build .deb and .tar.gz
         if: matrix.platform == 'linux'
         run: |
+          TARGET_DIR="target/${{ matrix.target }}/release"
           packaging/linux/make-deb.sh \
-            --binary "target/${{ matrix.target }}/release/goble-app" \
+            --binary "$TARGET_DIR/goble-app" \
+            --pty-daemon-binary "$TARGET_DIR/goble-pty-daemon" \
+            --cli-binary "$TARGET_DIR/goble-cli" \
+            --mcp-binary "$TARGET_DIR/goble-mcp" \
             --outdir dist --version "$GOBLE_VERSION" --arch amd64
           packaging/linux/make-tarball.sh \
-            --binary "target/${{ matrix.target }}/release/goble-app" \
+            --binary "$TARGET_DIR/goble-app" \
+            --pty-daemon-binary "$TARGET_DIR/goble-pty-daemon" \
+            --cli-binary "$TARGET_DIR/goble-cli" \
+            --mcp-binary "$TARGET_DIR/goble-mcp" \
             --outdir dist --version "$GOBLE_VERSION" --arch x86_64
 
       # --- Windows ------------------------------------------------------------
@@ -285,9 +306,13 @@ jobs:
           # than publishing an installer SmartScreen flags.
           GOBLE_REQUIRE_SIGNING: ${{ !inputs.allow_unsigned && '1' || '0' }}
         run: |
+          $targetDir = "target/${{ matrix.target }}/release"
           ./packaging/windows/build-installer.ps1 `
             -Version "$env:GOBLE_VERSION" `
-            -SourceBinary "target/${{ matrix.target }}/release/goble-app.exe" `
+            -SourceBinary "$targetDir/goble-app.exe" `
+            -PtyDaemonBinary "$targetDir/goble-pty-daemon.exe" `
+            -CliBinary "$targetDir/goble-cli.exe" `
+            -McpBinary "$targetDir/goble-mcp.exe" `
             -OutDir dist -Arch x64
 
       # --- checksums + upload -------------------------------------------------

@@ -1,11 +1,9 @@
-use std::sync::Arc;
-
 use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind};
 use crate::elements::terminal_block::{terminal_filter_bar, TerminalFilter};
 use crate::elements::{
     slash_menu_open, AppContext, AskUserCard, Axis, Border, Button, ButtonVariant, ChatComposer,
     ChatMessageBubble, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    Empty, Expanded, Fill, Flex, FrameView, HoverRow, Icon, MainAxisAlignment, MainAxisSize,
+    Empty, Expanded, Fill, Flex, HoverRow, Icon, MainAxisAlignment, MainAxisSize,
     ModelMenu, Padding, QuickActionButton, Scrollable, ShortcutHints, SlashMenu, Spacer, Stack,
     Text, Tooltip, TooltipPosition, TurnStatusFooter,
 };
@@ -436,9 +434,8 @@ impl ChatView {
 
         let message_area: Box<dyn Element> = if self.messages.is_empty()
             && self.pending_ask.is_none()
-            && self.inline_screen.is_none()
-            && self.screen_link.is_none()
             && self.notice.is_none()
+            && self.turn_error.is_none()
         {
             // The empty state claims the remaining height itself, so the
             // composer stays pinned to the bottom of the window.
@@ -470,6 +467,38 @@ impl ChatView {
                     })
                     .finish();
                 message_column = message_column.with_child(bubble);
+            }
+            // A failed turn says why under the messages it belongs to. The
+            // inbox names the conversation; the transcript carries the reason,
+            // where the user is already looking when the agent goes quiet.
+            if let Some(error) = self.turn_error.clone() {
+                let sm = app.theme.spacing_px(SpacingToken::Sm);
+                let md = app.theme.spacing_px(SpacingToken::Md);
+                message_column = message_column.with_child(
+                    Container::new(
+                        Flex::column()
+                            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                            .with_spacing(sm)
+                            .with_child(
+                                Text::new("Agent turn failed")
+                                    .with_theme_color(ColorToken::Error, app)
+                                    .with_font_size(12.0)
+                                    .finish(),
+                            )
+                            .with_child(
+                                Text::new(error)
+                                    .with_theme_color(ColorToken::Text, app)
+                                    .with_font_size(13.0)
+                                    .finish(),
+                            )
+                            .finish(),
+                    )
+                    .with_background(Fill::Solid(
+                        app.theme.color(ColorToken::SurfaceRaised),
+                    ))
+                    .with_padding(EdgeInsets::uniform(md))
+                    .finish(),
+                );
             }
             // The conversation's own footer closes the transcript: fork it, and
             // the tokens it has spent.
@@ -548,97 +577,6 @@ impl ChatView {
                 .with_padding(EdgeInsets::uniform(md))
                 .finish();
                 message_column = message_column.with_child(queued_band);
-            }
-            // A live remote-desktop handoff renders inline at the end of the
-            // transcript (the harness takes over control). It scrolls with the
-            // conversation and carries a close button to clear it.
-            if let Some(screen) = &self.inline_screen {
-                let md = app.theme.spacing_px(SpacingToken::Md);
-                let sm = app.theme.spacing_px(SpacingToken::Sm);
-                let mut header = Flex::row()
-                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_child(
-                        Text::new("Component desktop · harness in control")
-                            .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(12.0)
-                            .finish(),
-                    );
-                if let Some(cb) = self.on_close_inline_screen.clone() {
-                    let close = Button::new(
-                        Icon::new("x-close")
-                            .with_size(11.0)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .finish(),
-                    )
-                    .with_variant(ButtonVariant::Ghost)
-                    .with_on_click(move || (cb.borrow_mut())())
-                    .finish();
-                    header = header.with_child(close);
-                }
-                let frame = FrameView::new(
-                    screen.source.clone(),
-                    screen.frame_seq,
-                    screen.width,
-                    screen.height,
-                    Arc::clone(&screen.data),
-                );
-                let block = Container::new(
-                    Flex::column()
-                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                        .with_spacing(sm)
-                        .with_child(header.finish())
-                        .with_child(frame.finish())
-                        .finish(),
-                )
-                // A full-width band of rows: no border and no rounded card.
-                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                .with_padding(EdgeInsets::uniform(md))
-                .finish();
-                message_column = message_column.with_child(block);
-            }
-            // A detected BYOH handoff hyperlink (no live frame yet): show a
-            // clickable affordance so the user can take over the harness's
-            // desktop.
-            if self.inline_screen.is_none() {
-                if let Some(link) = &self.screen_link {
-                    let md = app.theme.spacing_px(SpacingToken::Md);
-                    let sm = app.theme.spacing_px(SpacingToken::Sm);
-                    let mut row = Flex::row()
-                        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                        .with_child(
-                            Text::new("Harness handed off a desktop")
-                                .with_theme_color(ColorToken::Muted, app)
-                                .with_font_size(12.0)
-                                .finish(),
-                        );
-                    if let Some(cb) = self.on_open_screen_link.clone() {
-                        let link_for_cb = link.clone();
-                        let open = Button::new(
-                            Text::new("Open remote desktop")
-                                .with_theme_color(ColorToken::Bg, app)
-                                .with_font_size(12.0)
-                                .finish(),
-                        )
-                        .with_variant(ButtonVariant::Primary)
-                        .with_on_click(move || (cb.borrow_mut())(link_for_cb.clone()))
-                        .finish();
-                        row = row.with_child(open);
-                    }
-                    let band = Container::new(
-                        Flex::column()
-                            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                            .with_spacing(sm)
-                            .with_child(row.finish())
-                            .finish(),
-                    )
-                    // A full-width band of rows: no border and no rounded card.
-                    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                    .with_padding(EdgeInsets::uniform(md))
-                    .finish();
-                    message_column = message_column.with_child(band);
-                }
             }
             // The transcript scrolls (clipped to the viewport, wheel handled)
             // and tails the stream: the state is app-owned, so new content
@@ -742,6 +680,12 @@ impl ChatView {
         }
         if let Some(path) = self.composer_path.clone() {
             composer = composer.with_path_label(path);
+        }
+        // The host a bound shell session is on, named over the editor with the
+        // directory and branch it belongs beside (S2). A local session draws
+        // nothing, the same as everywhere else.
+        if let Some(session) = self.composer_ssh_session.clone() {
+            composer = composer.with_ssh_session(Some(session));
         }
         if let Some(label) = self.composer_harness_label.clone() {
             composer = composer.with_harness_label(label);

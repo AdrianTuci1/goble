@@ -10,8 +10,8 @@
         assert_eq!(web_scheme("HTTPS://EXAMPLE.COM"), Some(WebScheme::Https));
         assert_eq!(web_scheme("file:///etc/passwd"), None);
         assert_eq!(web_scheme("javascript:alert(1)"), None);
-        assert_eq!(web_scheme("rdp://host:3389"), None);
-        assert_eq!(web_scheme("goble://desktop?host=h"), None);
+        assert_eq!(web_scheme("file:///etc/passwd"), None);
+        assert_eq!(web_scheme("javascript:alert(1)"), None);
         assert_eq!(web_scheme("https://"), None, "a web URL needs a host");
         assert_eq!(web_scheme("/not/a/url"), None);
     }

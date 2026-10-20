@@ -484,7 +484,7 @@ impl FileBuffer {
 
     /// Why the pane cannot edit this file, when it cannot.
     pub fn read_only(&self) -> Option<&str> {
-        self.read_only.as_deref()
+        self.read_only
     }
 
     /// What the pane says about the buffer beside the file's name: how much text
@@ -1477,7 +1477,7 @@ mod tests {
         buffer.borrow_mut().set_text("changed\n".to_string());
 
         let app = AppContext::default();
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         let chord = DispatchedEvent::KeyDown {
             key: "s".to_string(),
             modifiers: ModifiersState {
@@ -1567,7 +1567,7 @@ mod tests {
         let frame = |root: &mut Box<dyn Element>| -> Vec<RenderCommand> {
             let _ = root.layout(
                 SizeConstraint::loose(vec2f(1024.0, 768.0)),
-                &mut LayoutContext::default(),
+                &mut LayoutContext,
                 &app,
             );
             let mut ctx = PaintContext::new(Renderer::new());
@@ -1581,7 +1581,7 @@ mod tests {
 
         // No press anywhere: the pane is the space's active pane, which is all
         // the field's focus and the save chord read.
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         assert!(
             root.dispatch_event(
                 &DispatchedEvent::KeyDown {
@@ -1737,7 +1737,7 @@ mod tests {
         let mut frame = || -> Vec<RenderCommand> {
             let _ = root.layout(
                 SizeConstraint::loose(vec2f(1024.0, 2400.0)),
-                &mut LayoutContext::default(),
+                &mut LayoutContext,
                 app,
             );
             let mut ctx = PaintContext::new(Renderer::new());
@@ -1889,7 +1889,7 @@ mod tests {
         let line = "let value = compute(1);";
         let runs = highlight(&[line.to_string()], "a.rs").expect("rust resolves");
         let constraint = SizeConstraint::loose(Vector2F::new(600.0, 400.0));
-        let mut ctx = LayoutContext::default();
+        let mut ctx = LayoutContext;
 
         let mut plain = line_row(&app, 1, line, None);
         let mut highlighted = line_row(&app, 1, line, Some(&runs[0]));

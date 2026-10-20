@@ -2,16 +2,18 @@
 //!
 //! The struct's fields are declared here; its methods live one module per
 //! concern ([`refresh`], [`pane_move`], [`panes`], [`agents`], [`session`],
-//! [`settings`], [`mock`], [`spaces`]) as separate `impl UiState` blocks, which
-//! are the same block to the compiler as one. [`title`] is not one of them: the
-//! subject a conversation is named with is derived from the conversation, not
-//! held by the state machine.
+//! [`settings`], [`mock`], [`spaces`], [`worker`]) as separate
+//! `impl UiState` blocks, which are the same block to the compiler as one.
+//! [`title`] is not one of them: the subject a conversation is named with is
+//! derived from the conversation, not held by the state machine.
 
 use super::*;
 
+use goble_core::hosts::HostEntry;
 use goble_core::ssh_hosts::SshHosts;
 
 mod agents;
+mod inbox;
 mod mock;
 mod pane_move;
 mod panes;
@@ -20,8 +22,11 @@ mod session;
 mod settings;
 mod spaces;
 mod title;
+mod worker;
 
-pub use pane_move::{PaneDrag, PaneMove};
+pub use agents::{PaneAgentState, TurnOutcome};
+pub use inbox::{InboxItem, InboxKind};
+pub use pane_move::{PaneDrag, PaneDrop, PaneMove};
 
 /// The title a conversation gets when it is created without a subject of its
 /// own. It is a placeholder, not a subject: a tab whose agent holds such a
@@ -95,9 +100,6 @@ pub struct UiState {
     pub harnesses: Vec<HarnessEntry>,
     /// The harness the active pane routes turns to (default `internal`).
     pub selected_harness: String,
-    /// A detected BYOH handoff URI the user clicked to open; the root view
-    /// performs the open (screen sheet) then clears this.
-    pub pending_screen_link_open: Option<String>,
     /// App-owned open flag for the composer model menu.
     pub model_menu_open: Rc<RefCell<bool>>,
     /// App-owned open flags for the composer harness / dir / branch menus.
@@ -262,6 +264,9 @@ pub struct UiState {
     pub show_workspace_choice: bool,
     /// First-run routing decision once the user picks Local or Remote.
     pub workspace_routing: Option<WorkspaceRouting>,
+    /// Settings → Agent & Approval: the `[remote_agents.<name>]` tables read
+    /// from the config, refreshed at startup and by the page's reload row.
+    pub remote_agents: Vec<RemoteAgentEntry>,
     /// First-run: whether the model-provider dialog is open over the chat.
     pub llm_dialog_open: bool,
     /// Editable model-provider form values + focus, held here so text/focus
@@ -360,12 +365,22 @@ pub struct UiState {
     pub space_hover: Option<usize>,
     /// Space tab currently pressed (MouseDown), used to detect a drag start.
     pub space_press: Option<usize>,
+    /// Where that press landed, in window coordinates: the drag starts only
+    /// once the pointer has travelled away from it, so a click that wobbles a
+    /// pixel still selects.
+    pub space_press_at: Option<goble_ui::Vector2F>,
     /// Space tab currently being dragged (reordering in progress).
     pub space_drag: Option<usize>,
     /// The pane lifted out of its grid toward the topbar's tab strip (dropped
     /// there, it becomes a tab of its own). Owned here because the element tree
     /// is rebuilt every frame, so the drag has to survive the rebuild.
     pub pane_drag: Option<PaneDrag>,
+    /// The bounds each pane leaf was drawn at on the last frame, in window
+    /// coordinates, keyed by pane id. Written while the panes paint; read by
+    /// the drag handlers, which have to know what pane the pointer is over and
+    /// where the drop ghost belongs. A pane the last frame did not draw has no
+    /// entry, so it cannot be a drop target.
+    pub pane_bounds: Rc<RefCell<HashMap<u64, goble_ui::geometry::RectF>>>,
     /// Monotonic id counter so new panes never collision with existing ones.
     pub next_pane_id: u64,
     /// The leaf pane currently focused (target for splits/closes, highlighted).
@@ -382,6 +397,31 @@ pub struct UiState {
     pub pane_sessions: HashMap<u64, PaneSession>,
     /// Runtime per-pane transcript/ask/queued/busy state (not persisted).
     pub pane_runtime: HashMap<u64, PaneRuntime>,
+    /// Per-pane viewer sessions, keyed by pane id: which worker the pane's
+    /// conversation runs on and how that connection stands. An entry exists for
+    /// a viewer pane (a [`crate::ui::PaneKind::Worker`] leaf) and for no other
+    /// kind — a pane that leaves viewer shape drops its entry, because it no
+    /// longer has a connection to report. Not persisted: which worker a routing
+    /// resolves to is the worker pool's answer, re-resolved when the pane adopts
+    /// the routing again.
+    pub pane_workers: HashMap<u64, WorkerSession>,
+    /// Per-pane SSH bindings, keyed by pane id and persisted with the layout.
+    /// A saved-host pane keeps its host name here so its session chip and the
+    /// reconnect offer survive a restart; a pane the user moved with a typed
+    /// `ssh` line keeps the resolved session.
+    pub pane_ssh: HashMap<u64, SshPaneBinding>,
+    /// The saved hosts read from `~/.goble/hosts.toml`, in file order. Filled
+    /// when the host picker opens, never while the window draws.
+    pub ssh_host_entries: Vec<HostEntry>,
+    /// Whether the Cmd+Shift+N host picker is up and the row it highlights.
+    pub ssh_host_picker_open: bool,
+    pub ssh_host_picker_index: usize,
+    /// A saved host whose session just ended, offered for reconnect: the pane
+    /// it ran in and the entry's name. Cleared by reconnecting or dismissing.
+    pub ssh_reconnect_prompt: Option<(u64, String)>,
+    /// The floating pane drag in progress, shared with the pane elements so it
+    /// survives the per-frame tree rebuild.
+    pub floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
     /// Worker agent executions observed live from the `agent:*` events, keyed
     /// by trace id. `agent:started` inserts, `agent:finished` removes (it is no
     /// longer in flight); the product pages are still re-read from the service
@@ -422,6 +462,21 @@ pub struct UiState {
     pub command_palette_query: String,
     /// The palette's selected row index.
     pub command_palette_index: usize,
+    /// The global inbox: approvals, questions and terminal reports from every
+    /// pane, newest first. Owned here because the inbox is app-wide, not a
+    /// property of the pane on screen.
+    pub inbox: Vec<InboxItem>,
+    /// Whether the inbox overlay is up.
+    pub inbox_open: bool,
+    /// The row the inbox overlay highlights (an index into [`Self::inbox`]).
+    pub inbox_index: usize,
+    /// Why the last jump did not land (its pane closed, or nothing was
+    /// selected), shown by the overlay instead of failing silently.
+    pub inbox_error: Option<String>,
+    /// Scroll offset of the inbox overlay's list.
+    pub inbox_scroll: Rc<RefCell<ScrollState>>,
+    /// Monotonic id source for event-derived inbox items.
+    pub next_inbox_id: u64,
     /// First run: a compact "getting started" hint shown once the workspace
     /// choice is made.
     pub show_onboarding_tip: bool,

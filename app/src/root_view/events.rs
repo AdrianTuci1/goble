@@ -7,6 +7,9 @@ impl RootView {
     /// changed (chats, messages, workflows, agents). Called on every frame
     /// before the tree is rebuilt, so backend updates show up live.
     pub(super) fn drain_events(&mut self) {
+        let Some(desktop) = self.desktop.clone() else {
+            return;
+        };
         let Some(bus) = self.event_bus.clone() else {
             return;
         };
@@ -14,23 +17,34 @@ impl RootView {
         if events.is_empty() {
             return;
         }
-        let Some(desktop) = self.desktop.clone() else {
-            return;
-        };
         let mut state = self.state.borrow_mut();
         for (name, payload) in events {
             match name.as_str() {
                 "chats:updated" | "chat:updated" => state.refresh_conversations(&desktop),
                 "chat:turn_finished" => {
-                    // Route the finished turn to the pane that owns its
-                    // conversation (falling back to the active pane).
-                    let pane_id = payload
-                        .get("chat_id")
-                        .and_then(|v| v.as_str())
-                        .and_then(|cid| state.pane_id_for_conversation(cid))
-                        .unwrap_or(state.active_pane_id);
+                    // The conversation names the pane that started the turn and
+                    // is authoritative even after the focus moved. Only a
+                    // finish event that carries no conversation id at all has
+                    // nothing to resolve and falls back to the active pane; one
+                    // naming a conversation no pane owns is not attributed to
+                    // whichever pane happens to be focused.
+                    let pane_id = match payload.get("chat_id").and_then(|v| v.as_str()) {
+                        Some(chat_id) => state.pane_for_chat_event(chat_id),
+                        None => Some(state.active_pane_id),
+                    };
+                    let Some(pane_id) = pane_id else {
+                        continue;
+                    };
                     let conv = state.pane_conversation_id(pane_id);
-                    state.finish_turn(pane_id);
+                    let outcome = match payload.get("status").and_then(|v| v.as_str()) {
+                        Some("success") => crate::state::TurnOutcome::Success,
+                        Some("failed") => crate::state::TurnOutcome::Failed(None),
+                        Some(other) => {
+                            crate::state::TurnOutcome::Failed(Some(other.to_string()))
+                        }
+                        None => crate::state::TurnOutcome::Unknown,
+                    };
+                    state.finish_turn(pane_id, outcome);
                     // A prompt queued while the agent was running is submitted
                     // automatically now that the turn finished (warp-new model).
                     let queued = state
@@ -85,14 +99,24 @@ impl RootView {
                     }
                     state.sync_active_view();
                 }
-                // The agent suspended to ask the user a question; render the
-                // inline ask card in the transcript.
-                "chat:ask_user" => {
-                    let pane_id = payload
+                // A terminal error from the harness: the turn failed with the
+                // message the event carries. The following `turn_finished`
+                // settles the same turn and dedupes the inbox item.
+                "chat:error" => {
+                    let chat_id = payload
                         .get("chat_id")
                         .and_then(|v| v.as_str())
-                        .and_then(|cid| state.pane_id_for_conversation(cid))
-                        .unwrap_or(state.active_pane_id);
+                        .unwrap_or_default();
+                    let message = payload
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    if !chat_id.is_empty() {
+                        state.apply_turn_error(chat_id, message);
+                    }
+                    state.sync_active_view();
+                }
+                "chat:ask_user" => {
                     if let Some(question) = payload.get("question").and_then(|v| v.as_str()) {
                         let quick: Vec<String> = payload
                             .get("quick_replies")
@@ -103,12 +127,12 @@ impl RootView {
                                     .collect()
                             })
                             .unwrap_or_default();
-                        if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                            rt.pending_ask = Some(goble_ui::AskUserUi::new(
-                                question.to_string(),
-                                quick,
-                            ));
-                        }
+                        let chat_id = payload
+                            .get("chat_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        state.apply_ask_user(&chat_id, question, quick);
                     }
                     state.refresh_messages(&desktop);
                 }
@@ -208,6 +232,27 @@ impl RootView {
                         state.apply_agent_finished(trace);
                     }
                 }
+                // A worker's own report of itself. A report that says it can
+                // still serve work means the channel is live, so the viewer
+                // panes on it re-join the sessions they run on — the run lives
+                // on the worker, so a drop and a return is a re-attach, not a
+                // new session. Any other report is that connection gone, so the
+                // panes on it detach and say so. Neither turns a viewer pane
+                // into a terminal — there is no local shell behind one.
+                "worker:status" => {
+                    let worker = payload.get("worker_id").and_then(|v| v.as_str());
+                    let status = payload.get("status").and_then(|v| v.as_str());
+                    if let (Some(worker), Some(status)) = (worker, status) {
+                        if worker_status_serving(status) {
+                            state.worker_status_serving(worker, &desktop);
+                        } else {
+                            state.worker_connection_dropped(
+                                worker,
+                                &format!("worker {worker} reported {status}"),
+                            );
+                        }
+                    }
+                }
                 "agent:state_update" => {
                     if let (Some(trace), Some(reported)) = (
                         payload.get("trace_id").and_then(|v| v.as_str()),
@@ -249,42 +294,24 @@ impl RootView {
                     self.media_state.borrow_mut().refresh(&desktop);
                     state.refresh_observability(&desktop);
                 }
-                // The agent handed the desktop to a remote screen: open the
-                // screen panel, refresh the source list (so the fresh remote
-                // source shows up), then select it. The same source is marked
-                // as this conversation's inline handoff, so its live frame
-                // renders inside the chat's harness area too.
-                "screen:handoff" => {
-                    if let Some(source) = payload.get("source").and_then(|v| v.as_str()) {
-                        let mut s = self.screen_state.borrow_mut();
-                        s.open = true;
-                        s.refresh_sources(&desktop);
-                        s.select_source(source);
-                        let pane_id = payload
-                            .get("chat_id")
-                            .and_then(|v| v.as_str())
-                            .and_then(|cid| state.pane_id_for_conversation(cid))
-                            .unwrap_or(state.active_pane_id);
-                        if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                            rt.inline_screen_source = Some(source.to_string());
-                        }
-                    }
-                }
                 _ => {}
             }
         }
-
-        // A clicked BYOH handoff link: open the screen sheet, selecting the
-        // source derived from the URI. The root owns the screen sheet, so the
-        // action only stashes the URI here.
-        if let Some(link) = state.pending_screen_link_open.take() {
-            let source = crate::state::screen_source_from_link(&link);
-            let mut s = self.screen_state.borrow_mut();
-            s.open = true;
-            s.refresh_sources(&desktop);
-            if let Some(src) = source {
-                s.select_source(&src);
-            }
-        }
     }
+}
+
+/// Whether a `worker:status` report says the worker is still serving sessions.
+///
+/// The desktop service sends the status as [`goble_core::worker::WorkerStatus`]'s
+/// own form (its debug words), so it parses back here; the two states that can
+/// run work are `Online` and `Idle` (`WorkerSnapshot::is_available`). Anything
+/// else — `Offline`, `Unknown`, `Pairing`, `Error(..)`, or a report this build
+/// cannot parse — is a connection a viewer pane has lost, since the pane may
+/// only claim a live channel when the worker reported one.
+fn worker_status_serving(status: &str) -> bool {
+    use goble_core::worker::WorkerStatus;
+    matches!(
+        serde_json::from_value::<WorkerStatus>(serde_json::Value::String(status.to_string())),
+        Ok(WorkerStatus::Online | WorkerStatus::Idle)
+    )
 }

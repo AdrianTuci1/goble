@@ -84,9 +84,16 @@ impl Element for RootView {
         if let Some(actions) = &self.actions {
             if let DispatchedEvent::KeyDown { key, modifiers } = event {
                 let has_ctrl_cmd = modifiers.ctrl || modifiers.command;
-                // Cmd+K toggles the command palette (no other modifier).
+                // Cmd+K opens the keyboard shortcuts panel, the one menu that
+                // lists the chords. Ctrl+. is the same panel's own chord.
                 if has_ctrl_cmd && !modifiers.shift && key.eq_ignore_ascii_case("k") {
-                    (actions.on_toggle_command_palette.borrow_mut())();
+                    (actions.on_toggle_shortcuts_help.borrow_mut())();
+                    return true;
+                }
+                // Cmd/Ctrl+Shift+I toggles the global inbox: approvals,
+                // questions and terminal reports from every pane.
+                if has_ctrl_cmd && modifiers.shift && key.eq_ignore_ascii_case("i") {
+                    (actions.on_inbox.borrow_mut())();
                     return true;
                 }
                 if has_ctrl_cmd && !modifiers.shift && key == " " {
@@ -106,6 +113,18 @@ impl Element for RootView {
                 }
                 if has_ctrl_cmd && modifiers.shift && key.eq_ignore_ascii_case("t") {
                     (actions.on_new_terminal.borrow_mut())();
+                    return true;
+                }
+                // Cmd/Ctrl+Shift+L cycles the active space's layout through
+                // BSP, master-stack, floating and carousel.
+                if has_ctrl_cmd && modifiers.shift && key.eq_ignore_ascii_case("l") {
+                    (actions.on_cycle_layout.borrow_mut())();
+                    return true;
+                }
+                // Cmd/Ctrl+Shift+N opens the saved-host picker: a new terminal
+                // pane bound to an arbitrary `ssh -t` host.
+                if has_ctrl_cmd && modifiers.shift && key.eq_ignore_ascii_case("n") {
+                    (actions.on_open_ssh_host_picker.borrow_mut())();
                     return true;
                 }
                 // Cmd/Ctrl+Shift+W toggles the workflow-runs overlay: the
@@ -221,7 +240,7 @@ mod tests {
                 Axis::Vertical,
             )
             .with_state(Rc::clone(&scroll))
-            .layout(constraint, &mut LayoutContext::default(), &app);
+            .layout(constraint, &mut LayoutContext, &app);
         };
 
         // The pane opens on its transcript, at the end of it.

@@ -1,5 +1,6 @@
 //! Lifting a pane out of its grid and dropping it into the tab strip, where it
-//! becomes a tab of its own (warp-new's "drag a pane onto the tab bar").
+//! becomes a tab of its own (warp-new's "drag a pane onto the tab bar"), or
+//! beside another pane of the same space, where it becomes a new split.
 //!
 //! The pane that moves is the same `Pane::Leaf` — its id and its kind — so
 //! everything the app keys by that id follows it: a terminal keeps its PTY
@@ -8,8 +9,8 @@
 //!
 //! The drag lives in app state ([`PaneDrag`]) because the element tree is
 //! rebuilt every frame, and the reshaping it performs on release is a plain
-//! function over the space list ([`move_pane_to_new_space`]) so the rules can
-//! be tested without a pointer.
+//! function over the space list ([`move_pane_to_new_space`]) or over a space's
+//! tree ([`Space::move_pane`]) so the rules can be tested without a pointer.
 
 use super::*;
 
@@ -39,6 +40,10 @@ pub struct PaneDrag {
     /// drawn tabs — or `None` while the pointer is off the strip, where a
     /// release cancels the drag and changes nothing.
     pub drop_index: Option<usize>,
+    /// The pane the pointer is over in the space's own pane area, and the side
+    /// of it the pane would land on. `None` while the pointer is over no other
+    /// pane (or too near one's center), where a release cancels.
+    pub drop_target: Option<PaneDropTarget>,
 }
 
 impl PaneDrag {
@@ -59,6 +64,18 @@ pub struct PaneMove {
     /// source space was reset in place instead of being consumed. The caller
     /// gives it a conversation of its own, as closing a space would.
     pub reset_pane: Option<u64>,
+}
+
+/// What a released pane drag did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneDrop {
+    /// The pane became a tab of its own at [`PaneMove::tab`].
+    NewTab(PaneMove),
+    /// The pane left its place in the active space's tree and arrived as a new
+    /// split beside the pane it was dropped on.
+    MovedInSpace,
+    /// A release with no valid target: the workspace is exactly as it was.
+    Cancelled,
 }
 
 /// Move the leaf `pane_id` out of the space at `source_space` and back in as a
@@ -137,37 +154,96 @@ impl UiState {
             origin: position,
             position,
             drop_index: None,
+            drop_target: None,
         });
     }
 
     /// Track the pointer while a pane is lifted, with the tab index the drop
-    /// would land at (`None` while the pointer is off the tab strip).
-    pub fn drag_pane_to(&mut self, position: Vector2F, drop_index: Option<usize>) {
+    /// would land at (`None` while the pointer is off the tab strip) and the
+    /// pane it is over in the space's own pane area (`None` while it is over no
+    /// other pane). A target that names the lifted pane itself, or a pane the
+    /// active space does not hold, is not kept: a release there cancels.
+    pub fn drag_pane_to(
+        &mut self,
+        position: Vector2F,
+        drop_index: Option<usize>,
+        drop_target: Option<PaneDropTarget>,
+    ) {
+        let Some(space) = self.spaces.get(self.active_space) else {
+            return;
+        };
+        let valid = drop_target.filter(|target| {
+            space.root.contains_leaf(target.pane_id)
+                && self
+                    .pane_drag
+                    .as_ref()
+                    .map(|drag| target.pane_id != drag.pane_id)
+                    .unwrap_or(false)
+        });
         if let Some(drag) = self.pane_drag.as_mut() {
             drag.position = position;
             drag.drop_index = drop_index;
+            drag.drop_target = valid;
         }
     }
 
-    /// End a pane lift. `Some(index)` gives the pane a tab of its own at that
-    /// insertion point, `None` — a release anywhere but the strip — cancels
-    /// with no change to the workspace.
+    /// Release a lifted pane, resolving the target the pointer ended on with
+    /// the tab index the strip resolved for the same release.
+    ///
+    /// A release on the strip gives the pane a tab of its own ([`PaneDrop::NewTab`]);
+    /// a release over another pane of the active space moves it to a new split
+    /// there ([`PaneDrop::MovedInSpace`]); a release with neither cancels with
+    /// no change to the workspace.
+    pub fn release_pane_drag(
+        &mut self,
+        drop_index: Option<usize>,
+        drop_target: Option<PaneDropTarget>,
+    ) -> PaneDrop {
+        let Some(drag) = self.pane_drag.take() else {
+            return PaneDrop::Cancelled;
+        };
+        if let Some(index) = drop_index {
+            return match move_pane_to_new_space(
+                &mut self.spaces,
+                drag.source_space,
+                drag.pane_id,
+                index,
+                &mut self.next_pane_id,
+            ) {
+                Some(moved) => {
+                    self.active_space = moved.tab;
+                    self.active_pane_id = drag.pane_id;
+                    PaneDrop::NewTab(moved)
+                }
+                None => PaneDrop::Cancelled,
+            };
+        }
+        let Some(target) = drop_target else {
+            return PaneDrop::Cancelled;
+        };
+        let Some(space) = self.spaces.get_mut(drag.source_space) else {
+            return PaneDrop::Cancelled;
+        };
+        if !space.move_pane(drag.pane_id, target.pane_id, target.side, &mut self.next_pane_id) {
+            return PaneDrop::Cancelled;
+        }
+        self.active_space = drag.source_space;
+        self.active_pane_id = drag.pane_id;
+        PaneDrop::MovedInSpace
+    }
+
+    /// End a pane lift whose target is the tab strip. `Some(index)` gives the
+    /// pane a tab of its own at that insertion point; `None` falls back to the
+    /// pane target the drag last tracked, and cancels when it has none.
     ///
     /// The moved pane is the tab that is on screen and holds the focus
     /// afterwards, whether or not the source space survived the move.
     pub fn drop_pane(&mut self, drop_index: Option<usize>) -> Option<PaneMove> {
-        let drag = self.pane_drag.take()?;
-        let index = drop_index?;
-        let moved = move_pane_to_new_space(
-            &mut self.spaces,
-            drag.source_space,
-            drag.pane_id,
-            index,
-            &mut self.next_pane_id,
-        )?;
-        self.active_space = moved.tab;
-        self.active_pane_id = drag.pane_id;
-        Some(moved)
+        let target = self.pane_drag.as_ref().and_then(|drag| drag.drop_target);
+        match self.release_pane_drag(drop_index, target) {
+            PaneDrop::NewTab(moved) => Some(moved),
+            _ => None,
+        }
     }
 }
 
@@ -175,7 +251,7 @@ impl UiState {
 mod tests {
     use super::*;
 
-    use crate::ui::SplitDir;
+    use crate::ui::{DropSide, SplitDir};
 
     /// A chat leaf with `id`.
     fn chat(id: u64) -> Pane {
@@ -338,7 +414,7 @@ mod tests {
         assert_eq!(drag.source_space, 0);
         assert!(!drag.moved(), "a press that has not travelled is not a drag yet");
 
-        state.drag_pane_to(Vector2F::new(300.0, 10.0), None);
+        state.drag_pane_to(Vector2F::new(300.0, 10.0), None, None);
         assert!(
             state.pane_drag.as_ref().unwrap().moved(),
             "the pointer travelled, so the lift is a drag"
@@ -369,11 +445,12 @@ mod tests {
                 conversation_id: "conv-moved".to_string(),
                 draft: "draft".to_string(),
                 path: "/tmp/moved".to_string(),
+                daemon_session_id: String::new(),
             },
         );
 
         state.begin_pane_lift(5, Vector2F::new(200.0, 100.0));
-        state.drag_pane_to(Vector2F::new(300.0, 10.0), Some(1));
+        state.drag_pane_to(Vector2F::new(300.0, 10.0), Some(1), None);
         let moved = state.drop_pane(Some(1)).expect("the pane moved");
 
         assert_eq!(moved.tab, 1);
@@ -416,11 +493,12 @@ mod tests {
                 conversation_id: String::new(),
                 draft: String::new(),
                 path: "/tmp/pty".to_string(),
+                daemon_session_id: String::new(),
             },
         );
 
         state.begin_pane_lift(5, Vector2F::new(200.0, 100.0));
-        state.drag_pane_to(Vector2F::new(300.0, 10.0), Some(1));
+        state.drag_pane_to(Vector2F::new(300.0, 10.0), Some(1), None);
         let moved = state.drop_pane(Some(1)).expect("the pane moved");
 
         assert_eq!(state.spaces.len(), 2, "the window keeps a tab and gains one");
@@ -452,5 +530,119 @@ mod tests {
             Some(&PaneKind::Chat),
             "the reset tab is a fresh empty chat pane"
         );
+    }
+
+    /// A pane released over another pane of the same space becomes a new split
+    /// beside it — the same leaf, still in the same tab, no tab added.
+    #[test]
+    fn a_release_over_another_pane_moves_it_there() {
+        let (spaces, next_id) = split_source();
+        let mut state = UiState::mock();
+        state.spaces = spaces.clone();
+        state.active_space = 0;
+        state.active_pane_id = 1;
+        state.next_pane_id = next_id;
+
+        state.begin_pane_lift(5, Vector2F::new(600.0, 200.0));
+        let target = PaneDropTarget {
+            pane_id: 1,
+            side: DropSide::Left,
+        };
+        state.drag_pane_to(Vector2F::new(300.0, 200.0), None, Some(target));
+        assert_eq!(
+            state.pane_drag.as_ref().unwrap().drop_target,
+            Some(target),
+            "the pane under the pointer is the drop target"
+        );
+
+        let drop = state.release_pane_drag(None, Some(target));
+        assert_eq!(drop, PaneDrop::MovedInSpace);
+        assert!(state.pane_drag.is_none(), "the drag is over");
+        assert_eq!(state.spaces.len(), 2, "no tab was added");
+        assert_eq!(
+            state.spaces[0].root.first_leaf_id(),
+            5,
+            "the moved pane leads the split it landed in"
+        );
+        assert!(
+            state.spaces[0].root.contains_leaf(1),
+            "the pane it landed beside is still there"
+        );
+        assert_eq!(state.active_space, 0, "the tab on screen did not change");
+        assert_eq!(state.active_pane_id, 5, "the moved pane holds the focus");
+    }
+
+    /// A target that names the lifted pane, or a pane the active space does not
+    /// hold, is not kept: moving there would drop the pane on itself or into a
+    /// tree it is not part of.
+    #[test]
+    fn a_target_outside_the_active_space_is_not_kept() {
+        let (spaces, next_id) = split_source();
+        let mut state = UiState::mock();
+        state.spaces = spaces.clone();
+        state.active_space = 0;
+        state.active_pane_id = 1;
+        state.next_pane_id = next_id;
+
+        state.begin_pane_lift(5, Vector2F::new(600.0, 200.0));
+        for target in [
+            PaneDropTarget {
+                pane_id: 5,
+                side: DropSide::Left,
+            },
+            PaneDropTarget {
+                pane_id: 2,
+                side: DropSide::Right,
+            },
+            PaneDropTarget {
+                pane_id: 99,
+                side: DropSide::Top,
+            },
+        ] {
+            state.drag_pane_to(Vector2F::new(300.0, 200.0), None, Some(target));
+            assert_eq!(
+                state.pane_drag.as_ref().unwrap().drop_target,
+                None,
+                "a target outside the active space is dropped"
+            );
+        }
+        assert_eq!(
+            state.release_pane_drag(None, None),
+            PaneDrop::Cancelled,
+            "the release has no target to land on"
+        );
+        assert_eq!(state.spaces.len(), 2, "the tab list is untouched");
+        assert_eq!(state.spaces[0].root.max_id(), 5, "the split is untouched");
+    }
+
+    /// A pane dropped on the strip still becomes a tab of its own when the strip
+    /// resolved an insertion point, whatever pane the pointer last passed over.
+    #[test]
+    fn a_strip_insertion_point_wins_over_a_pane_target() {
+        let (spaces, next_id) = split_source();
+        let mut state = UiState::mock();
+        state.spaces = spaces.clone();
+        state.active_space = 0;
+        state.active_pane_id = 1;
+        state.next_pane_id = next_id;
+
+        state.begin_pane_lift(5, Vector2F::new(600.0, 200.0));
+        let target = PaneDropTarget {
+            pane_id: 1,
+            side: DropSide::Left,
+        };
+        state.drag_pane_to(Vector2F::new(300.0, 10.0), Some(1), Some(target));
+        let drop = state.release_pane_drag(Some(1), Some(target));
+        assert_eq!(
+            drop,
+            PaneDrop::NewTab(PaneMove {
+                tab: 1,
+                reset_pane: None
+            }),
+            "the strip's insertion point is what the release acts on"
+        );
+        assert_eq!(state.spaces.len(), 3, "the pane became a tab of its own");
+        assert_eq!(state.active_space, 1);
+        assert_eq!(state.active_pane_id, 5);
     }
 }

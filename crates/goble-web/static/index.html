@@ -1,0 +1,728 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0d0f12">
+<title>Goble</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d0f12;
+    --panel: #15181d;
+    --panel-2: #1a1e24;
+    --fg: #c8ccd4;
+    --muted: #7b8494;
+    --accent: #f2b38a;
+    --border: rgba(255, 255, 255, 0.10);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --green: #7bcf8f;
+    --amber: #e5c07b;
+    --red: #e06c75;
+    --radius: 6px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.4;
+    overscroll-behavior: none;
+  }
+
+  body { overflow: hidden; }
+  button { font: inherit; color: inherit; }
+
+  #goble-boot { height: 100%; }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+  }
+
+  /* ------------------------------------------------------------- top bar */
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 42px;
+    flex: 0 0 42px;
+    padding: 0 8px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    min-width: 0;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 6px 0 2px;
+    user-select: none;
+  }
+
+  .mark {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    background: var(--accent);
+    display: inline-block;
+  }
+
+  .brand-name {
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    color: var(--fg);
+  }
+
+  .tabstrip {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    flex: 0 1 auto;
+    padding: 4px 0;
+  }
+  .tabstrip::-webkit-scrollbar { display: none; }
+
+  .tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 29px;
+    max-width: 190px;
+    padding: 0 7px 0 9px;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    white-space: nowrap;
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  .tab:hover { background: var(--panel-2); color: var(--fg); }
+
+  .tab.active {
+    background: var(--panel-2);
+    border-color: var(--border);
+    color: var(--fg);
+  }
+
+  .tab.active::after {
+    content: "";
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: -1px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+
+  .tab-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  .tab-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    border-radius: 3px;
+    color: var(--muted);
+    opacity: 0;
+    flex: 0 0 auto;
+  }
+  .tab:hover .tab-close, .tab.active .tab-close { opacity: 0.75; }
+  .tab-close:hover { background: rgba(255, 255, 255, 0.10); color: var(--fg); }
+
+  .new-tab {
+    width: 26px;
+    height: 26px;
+    flex: 0 0 auto;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    line-height: 1;
+    font-size: 15px;
+  }
+  .new-tab:hover { color: var(--accent); border-color: var(--accent); }
+
+  .top-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    min-width: 0;
+    flex: 0 0 auto;
+  }
+
+  .active-worker {
+    font-size: 11px;
+    color: var(--muted);
+    max-width: 170px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #4a515c;
+    flex: 0 0 auto;
+  }
+  .dot.online { background: var(--green); }
+  .dot.warn { background: var(--amber); }
+  .dot.error { background: var(--red); }
+  .dot.off { background: #4a515c; }
+  .dot.idle { background: #5b6472; }
+
+  .icon {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-weight: 600;
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    line-height: 1;
+  }
+  .icon:hover { color: var(--fg); border-color: var(--border); background: var(--panel-2); }
+
+  .ghost {
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 3px 6px;
+    font-size: 10px;
+  }
+  .ghost:hover { color: var(--fg); border-color: var(--border); background: var(--panel-2); }
+
+  .logout { flex: 0 0 auto; }
+  .drawer-toggle { display: none; }
+
+  /* -------------------------------------------------------------- layout */
+
+  .body {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    width: 238px;
+    flex: 0 0 238px;
+    min-height: 0;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+  }
+
+  .sidebar-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 10px 6px;
+    font-size: 10px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .worker-list {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 2px 6px 8px;
+    min-height: 0;
+  }
+
+  .worker {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 8px;
+    margin-bottom: 2px;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .worker:hover { background: var(--panel-2); border-color: var(--border); }
+  .worker .dot { margin-top: 4px; }
+
+  .worker-body {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .worker-id {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg);
+  }
+
+  .worker-meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 10px;
+  }
+
+  .worker-empty {
+    margin: 8px 6px 2px;
+    color: var(--fg);
+    font-size: 11px;
+  }
+
+  .worker-hint {
+    margin: 0 6px;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.55;
+  }
+
+  .retry-workers { margin: 8px 6px; }
+
+  .sidebar-note {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--border);
+    padding: 7px 10px;
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .main {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    position: relative;
+  }
+
+  .terminal-wrap {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    background: var(--bg);
+    overflow: hidden;
+  }
+
+  #terminal {
+    display: block;
+    width: 100%;
+    height: 100%;
+    outline: none;
+    cursor: text;
+  }
+
+  .key-input {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    resize: none;
+    pointer-events: none;
+    font-family: var(--mono);
+  }
+
+  /* ------------------------------------------------------------- overlay */
+
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(13, 15, 18, 0.88);
+    padding: 20px;
+  }
+
+  .overlay-card {
+    max-width: 330px;
+    text-align: center;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
+  }
+
+  .overlay-card h2 {
+    margin: 10px 0 4px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .overlay-card p {
+    margin: 0 0 14px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .overlay-spinner {
+    width: 15px;
+    height: 15px;
+    margin: 0 auto;
+    border: 2px solid var(--border-strong);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .primary {
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--panel-2);
+    color: var(--fg);
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .primary:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* --------------------------------------------------------- empty state */
+
+  .empty-state {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 24px;
+    text-align: center;
+  }
+
+  .empty-mark {
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--border-strong);
+    border-radius: 5px;
+    position: relative;
+    margin-bottom: 2px;
+  }
+  .empty-mark::after {
+    content: "";
+    position: absolute;
+    inset: 6px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+
+  .empty-state h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .empty-state p {
+    margin: 0 0 8px;
+    max-width: 360px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  /* ---------------------------------------------------------- status bar */
+
+  .statusbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 24px;
+    flex: 0 0 24px;
+    padding: 0 10px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .statusbar .sep {
+    width: 1px;
+    height: 10px;
+    background: var(--border);
+    flex: 0 0 auto;
+  }
+
+  .statusbar .grow { flex: 1 1 auto; }
+
+  .status-state { color: var(--muted); }
+  .status-state.live { color: var(--accent); }
+  .status-state.connecting,
+  .status-state.opening,
+  .status-state.reconnecting { color: var(--amber); }
+  .status-state.failed { color: var(--red); }
+
+  .status-worker {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ---------------------------------------------------------- misc chrome */
+
+  .scrim { display: none; }
+
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 36px;
+    transform: translateX(-50%);
+    max-width: min(420px, 88vw);
+    padding: 6px 11px;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    color: var(--fg);
+    font-size: 11px;
+    z-index: 30;
+    text-align: center;
+  }
+
+  .help {
+    position: fixed;
+    top: 46px;
+    right: 10px;
+    width: min(330px, calc(100vw - 20px));
+    max-height: calc(100dvh - 70px);
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 11px 12px 12px;
+    z-index: 25;
+  }
+
+  .help-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+
+  .help h2 { margin: 0; font-size: 12px; font-weight: 600; }
+
+  .help dl { margin: 0; }
+
+  .help dl > div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 4px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .help dt { color: var(--muted); font-size: 11px; }
+  .help dd { margin: 0; display: flex; gap: 3px; align-items: center; }
+
+  kbd {
+    border: 1px solid var(--border-strong);
+    border-radius: 3px;
+    background: var(--panel-2);
+    padding: 1px 4px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--fg);
+  }
+
+  .help-note {
+    margin: 8px 0 0;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.5;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* ------------------------------------------------------------ boot/error */
+
+  .boot {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--muted);
+  }
+
+  .boot .overlay-spinner { width: 18px; height: 18px; }
+  .boot p { margin: 0; font-size: 11px; }
+
+  .fatal {
+    max-width: 460px;
+    margin: 12vh auto 0;
+    padding: 0 20px;
+  }
+
+  .fatal h1 { font-size: 15px; font-weight: 600; color: var(--fg); }
+  .fatal p { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+  .fatal code { color: var(--accent); }
+
+  /* ------------------------------------------------------------ responsive */
+
+  @media (max-width: 760px) {
+    .drawer-toggle { display: inline-flex; }
+
+    .brand-name { display: none; }
+
+    .active-worker { max-width: 92px; }
+
+    .top-right { gap: 5px; }
+    .topbar { gap: 5px; padding: 0 6px; }
+
+    .sidebar {
+      position: fixed;
+      top: 42px;
+      bottom: 0;
+      left: 0;
+      width: min(84vw, 300px);
+      z-index: 20;
+      transform: translateX(-100%);
+      transition: transform 120ms ease-out;
+      border-right: 1px solid var(--border-strong);
+    }
+
+    .app.drawer-open .sidebar { transform: translateX(0); }
+
+    .scrim {
+      position: fixed;
+      inset: 42px 0 0 0;
+      background: rgba(0, 0, 0, 0.45);
+      z-index: 19;
+    }
+
+    .app.drawer-open .scrim { display: block; }
+
+    .tab { max-width: 132px; }
+
+    .help { top: 44px; }
+
+    .status-worker { max-width: 92px; }
+    .statusbar { gap: 6px; padding: 0 8px; }
+  }
+
+  @media (max-width: 460px) {
+    .status-worker,
+    .statusbar .sep.worker-sep { display: none; }
+    .logout { padding: 3px 4px; }
+    .active-worker { display: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .overlay-spinner { animation: none; }
+    .sidebar { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div id="goble-boot">
+  <div class="boot" role="status" aria-live="polite">
+    <div class="overlay-spinner" aria-hidden="true"></div>
+    <p>Loading terminal…</p>
+  </div>
+</div>
+<noscript>
+  <div class="fatal"><h1>JavaScript is required</h1><p>The Goble browser terminal needs JavaScript and WebAssembly.</p></div>
+</noscript>
+<script type="module">
+  import init, { start } from './goble_web.js';
+
+  function fail(error) {
+    const mount = document.getElementById('goble-boot');
+    if (!mount) return;
+    mount.textContent = '';
+    const box = document.createElement('div');
+    box.className = 'fatal';
+    const title = document.createElement('h1');
+    title.textContent = 'Goble could not start';
+    const detail = document.createElement('p');
+    detail.textContent = String((error && error.message) || error || 'Unknown error');
+    const hint = document.createElement('p');
+    hint.textContent = 'Reload the page. If this persists, rebuild the client with scripts/build-web.sh.';
+    box.appendChild(title);
+    box.appendChild(detail);
+    box.appendChild(hint);
+    mount.appendChild(box);
+  }
+
+  (async () => {
+    try {
+      await init();
+      start();
+    } catch (error) {
+      console.error(error);
+      fail(error);
+    }
+  })();
+</script>
+</body>
+</html>

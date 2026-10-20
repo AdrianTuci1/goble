@@ -43,18 +43,17 @@ semantics. It talks to the daemon across a boundary (`DaemonClient`).
 | `ui/mod.rs` | `UiSnapshot`, `AiSnapshot`, `UiActions`, `AiActions`, `enum AppTab { Threads, Chat, Settings }`, `build_ui(...)` |
 | `ui/shell.rs` | `build_topbar`, `build_main`, `build_settings_disabled`, `SidebarLayout` |
 | `ui/sidebar.rs` | `build_sidebar` (search + conversation list + plugins footer) |
-| `ui/chat.rs` | `build_agent_chat`, `build_agent_header`, right chat-sidebar (Computer Use + Routines) |
+| `ui/chat.rs` | `build_agent_chat`, `build_agent_header`, right chat-sidebar (Routines) |
 | `ui/crons.rs` | `build_crons_drawer`, `build_cron_row` — **template for "what's running"** |
 | `ui/connectors.rs` | `build_connectors_sheet`, `build_install_drawer` — **domain panel template** |
 | `ui/vault.rs`, `ui/model_form.rs` | sheets/dialogs |
-| `integration_testing/` | headless UI tests (not browser): `ui_render`, `chat_flow`, `cron_flow`, `vault_flow`, `connector_flow`, `first_run_flow`, `harness_flow`, `projects_flow`, `screen_flow`, `common` |
+| `integration_testing/` | headless UI tests (not browser): `ui_render`, `chat_flow`, `cron_flow`, `vault_flow`, `connector_flow`, `first_run_flow`, `harness_flow`, `projects_flow`, `common` |
 
 ### New domains in `app/` (warp-new pattern: one domain = `app/src/<domain>/`)
 
 ```
 app/src/projects/    # [implemented] per-directory observability: projects + sessions + "what's running"
-app/src/media/       # [implemented] medium selector (Local / VM / RemoteXrdp / Browser / Container)
-app/src/screen/      # [implemented] broadcast window + computer-use mode
+app/src/media/       # [implemented] medium selector (Local / VM / Remote / Browser / Container)
 app/src/voice/       # [model-only] microphone + live STT→TTS transcript (kept on hold)
 ```
 
@@ -92,18 +91,6 @@ Thick-app rule: a module goes into `crates/` if it **does not depend on `app/`/w
 | `goble-voice` | `[new]` voice capability (`types` layer): `AudioChunk`, `StreamingSttEvent`, `SttClient`/`TtsClient`, `VoiceProvider` trait + `MockProvider`; `audio` feature (off by default) |
 | `goble-sandbox` | `[new]` profile-driven isolation: `SandboxProfile`/`SandboxLevel`, `Sandbox` trait + `NoopSandbox` (default-safe); `unix-{seatbelt,landlock,seccomp,bwrap}` backends; real `bwrap` subprocess backend for Hardened profiles (flags enforced, no `unsafe`) |
 | `goble-workflow` | `[new]` scripted engine: `Workflow`/`Step`/`Trigger`, `WorkflowEngine`, `WorkflowRun`, `WorkflowHostRequest`, `MockStep`; framework-agnostic; wired into the daemon via `StepExecutor` + `WorkflowHost` + `DaemonPort::run_workflow` |
-| `goble-screen-core` | `[new]` screen abstractions (`types` layer): `ScreenFrame`, `ScreenCapturer`/`ScreenController`, `ScreenRegistry`, mocks; `platform` feature |
-| `goble-screen-adapter` | `[new]` local capture adapter: macOS `screencapture` → RGBA8 `ScreenFrame` (via workspace `image` crate), synthetic/mock elsewhere; factory + `ScreenRegistry` wired into `DesktopState` |
-| `goble-screen-sdk` | `[new]` **remote** screen source (`runtime` layer, `rdp` feature gate): IronRDP-backed `RdpRemoteSource::connect` decodes a real xrdp/RDP desktop into an RGBA8 `ScreenFrame` and drives input through a `ScreenController` (`click`/`type_text`/`scroll`); registers into the same `ScreenRegistry`, so a remote source is handled identically to the local adapter |
-
-### Screen handoff (agent → live desktop)
-
-```
-open_screen tool (goble-core) → HarnessServerEvent::ScreenHandoff (goble-harness-protocol)
-  → DaemonEvent::ScreenHandoff (goble-daemon → GUI)  → DesktopState::open_remote_screen (goble-desktop-service, `remote-screen` feature)
-  → goble-screen-sdk::RdpRemoteSource::connect registers capturer+controller in the screen registry
-  → app renders the live stream (`FrameView`) and routes input back through the controller
-```
 
 ---
 
@@ -117,14 +104,14 @@ open_screen tool (goble-core) → HarnessServerEvent::ScreenHandoff (goble-harne
       ┌─────────────────────────── Daemon ---------------------------------─┐
       │  goble-daemon (framework-agnostic):                                 │
       │    state · harness-registry · scheduler · executions                │
-      │    + capability crates (voice/screen/replay/workflow/sandbox)       │
+      │    + capability crates (voice/replay/workflow/sandbox)              │
       └─────────────────────────────────────────────────────────────────────┘
         │ embedded (in-process, in the GUI binary)   │ headless/remote (goblin-worker on a VPS)
 ```
 
 - **`goble-daemon`** = the reusable core, without `wgpu`/`winit`. Compiled in BOTH:
   - daemon **embedded** — runs in-process in the GUI binary; the **local** functions live here
-    (voice STT/TTS, local machine screen capture).
+    (voice STT/TTS).
   - daemon **headless/remote** — `goblin-worker` on a VPS, over mTLS WebSocket.
 - **The seam** = `DaemonPort`: the same set of commands/events, realized in-process or over WS.
   The GUI doesn't know whether the daemon is local or on a VPS — the "medium" is just which daemon listens.

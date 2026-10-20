@@ -3,8 +3,11 @@
 //!
 //! [`drain`] covers the live-event path, [`sub_agent_events`] the parent's
 //! transcript row, [`topbar`] the live count cue, [`child_view`] entering a
-//! child's conversation and [`nested_child`] a child entered from inside a
-//! child view. The fixtures every case shares live here.
+//! child's conversation, [`nested_child`] a child entered from inside a
+//! child view, [`return_to_shell`] the pane a conversation switch or an agent
+//! delete sends back to its shell (U1), and [`worker_pane`] the viewer pane a
+//! remote-routed conversation gets and its re-attach to the session it runs on.
+//! The fixtures every case shares live here.
 
 use goble_ui::event::DispatchedEvent;
 use goble_ui::EventContext;
@@ -29,8 +32,11 @@ use goble_ui::EventContext;
 
 mod child_view;
 mod drain;
+mod environment;
 mod filter_chord;
 mod hover_chip;
 mod nested_child;
+mod return_to_shell;
 mod sub_agent_events;
 mod topbar;
+mod worker_pane;

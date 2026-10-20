@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
@@ -11,8 +10,9 @@ use crate::elements::{
 use crate::vim::{Clipboard, VimState};
 use goble_core::harness::CommandDecision;
 use goble_core::llm::TokenUsage;
+use goble_core::ssh_command::SshSession;
 
-use super::{ChatView, InlineScreen};
+use super::ChatView;
 
 impl ChatView {
     /// Attach the app-owned transcript scroll state, so the offset (and the
@@ -53,6 +53,13 @@ impl ChatView {
     /// Render `notice` at the top of the transcript, inside the chat area.
     pub fn with_notice(mut self, notice: Option<Box<dyn Element>>) -> Self {
         self.notice = notice;
+        self
+    }
+
+    /// Draw `error` at the end of the transcript: the message the last turn
+    /// failed on.
+    pub fn with_turn_error(mut self, error: Option<String>) -> Self {
+        self.turn_error = error;
         self
     }
 
@@ -229,6 +236,15 @@ impl ChatView {
 
     pub fn with_composer_path(mut self, path: impl Into<String>) -> Self {
         self.composer_path = Some(path.into());
+        self
+    }
+
+    /// The SSH session this pane's shell is bound to, when a submitted `ssh`
+    /// line put it on a host. The composer names it above its editor, so the
+    /// pane's agent view says where the session under it is; a local session
+    /// carries no chip.
+    pub fn with_composer_ssh_session(mut self, session: Option<SshSession>) -> Self {
+        self.composer_ssh_session = session;
         self
     }
 
@@ -453,44 +469,6 @@ impl ChatView {
     /// Fired when the user dismisses a queued prompt.
     pub fn with_on_dismiss_queued<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_dismiss_queued = Some(Rc::new(RefCell::new(callback)));
-        self
-    }
-
-    /// Set a live remote-desktop frame to render inline at the end of the
-    /// transcript, marking the harness's handoff of control (computer use).
-    pub fn with_inline_screen(
-        mut self,
-        source: impl Into<String>,
-        frame_seq: u64,
-        width: u32,
-        height: u32,
-        data: Arc<[u8]>,
-    ) -> Self {
-        self.inline_screen = Some(InlineScreen {
-            source: source.into(),
-            frame_seq,
-            width,
-            height,
-            data,
-        });
-        self
-    }
-
-    /// Fired when the user closes the inline remote-desktop block.
-    pub fn with_on_close_inline_screen<F: FnMut() + 'static>(mut self, callback: F) -> Self {
-        self.on_close_inline_screen = Some(Rc::new(RefCell::new(callback)));
-        self
-    }
-
-    /// A detected BYOH desktop-handoff URI, rendered as an open-roremote action.
-    pub fn with_screen_link(mut self, link: Option<String>) -> Self {
-        self.screen_link = link;
-        self
-    }
-
-    /// Fired when the user clicks the detected handoff link to open the desktop.
-    pub fn with_on_open_screen_link<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
-        self.on_open_screen_link = Some(Rc::new(RefCell::new(callback)));
         self
     }
 }

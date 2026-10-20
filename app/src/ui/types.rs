@@ -258,6 +258,8 @@ pub enum SettingsControl {
     Route(WorkspaceRouting),
     /// Models: reload the list from `~/.goble/config.toml`.
     ReloadModels,
+    /// Agent & Approval: re-read `[remote_agents.<name>]` from the config file.
+    ReloadRemoteAgents,
     /// Environment: the new-group name field.
     EnvironmentGroupName,
     /// Environment: create the group the name field holds.
@@ -277,8 +279,8 @@ pub enum SettingsControl {
     /// Environment: remove one secret.
     EnvironmentDeleteSecret(String),
     /// Connections: one concrete host from `~/.ssh/config`; Enter selects the
-    /// row and names it. Nothing connects: this build cannot open a session
-    /// over SSH.
+    /// row and names it. The row records a target, while a saved host from
+    /// `~/.goble/hosts.toml` opens in a pane from Cmd+Shift+N.
     SshHost(String),
     /// Connections: re-read `~/.ssh` and replace the cached read.
     ReloadSshHosts,
@@ -397,6 +399,39 @@ impl WorkspaceRouting {
         } else {
             WorkspaceRouting::Local
         }
+    }
+}
+
+/// One `[remote_agents.<name>]` table as Settings → Agent & Approval draws it:
+/// the name the user gave the agent, the provider behind it, and the
+/// credentials that provider still needs. Nothing here provisions a sandbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteAgentEntry {
+    pub name: String,
+    pub provider: String,
+    pub enabled: bool,
+    /// The credential keys the table has not set, named as environment
+    /// variables a user would supply them as.
+    pub missing: Vec<&'static str>,
+    /// `ready`, `disabled`, or the missing keys: the config's own words, so
+    /// the page cannot come to say something the config does not.
+    pub status: String,
+}
+
+impl RemoteAgentEntry {
+    pub fn from_config(name: &str, config: &goble_core::config::RemoteAgentConfig) -> Self {
+        Self {
+            name: name.to_string(),
+            provider: config.provider.as_str().to_string(),
+            enabled: config.enabled,
+            missing: config.missing_credentials(),
+            status: config.status_label(),
+        }
+    }
+
+    /// The right of the row: `provider · status`.
+    pub fn detail(&self) -> String {
+        format!("{} · {}", self.provider, self.status)
     }
 }
 

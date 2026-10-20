@@ -87,7 +87,6 @@ fn family_calls() -> Vec<ToolCall> {
         ("edit_file", r#"{"path":"src/lib.rs","old_text":"let a = 1;","new_text":"let a = 2;"}"#, "edited"),
         ("memory_write", r#"{"agent_id":"researcher","content":"prefers tabs"}"#, "stored"),
         ("memory_read", r#"{"agent_id":"researcher"}"#, "prefers tabs"),
-        ("open_screen", r#"{"host":"mac-mini"}"#, "opened"),
     ];
     let mut calls: Vec<ToolCall> = cases
         .iter()

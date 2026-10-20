@@ -11,6 +11,10 @@ pub(crate) struct PersistedPaneState {
     /// saved before per-pane sessions existed still parse.
     #[serde(default)]
     pub(crate) pane_sessions: HashMap<u64, PaneSession>,
+    /// Per-pane SSH bindings (the saved host and the resolved session).
+    /// `#[serde(default)]` so a layout written before saved hosts still parses.
+    #[serde(default)]
+    pub(crate) pane_ssh: HashMap<u64, SshPaneBinding>,
 }
 
 /// Collect every pane id (leaves and splits) in a pane tree.
@@ -39,17 +43,36 @@ pub(crate) fn collect_leaf_pane_ids(pane: &Pane, out: &mut Vec<u64>) {
     }
 }
 
+/// Collect the ids of the chat leaves in a pane tree. Only a chat pane has a
+/// conversation of its own at creation; a terminal or file pane gains one when
+/// its harness starts a turn.
+pub(crate) fn collect_chat_leaf_pane_ids(pane: &Pane, out: &mut Vec<u64>) {
+    match pane {
+        Pane::Leaf {
+            id,
+            kind: PaneKind::Chat,
+        } => out.push(*id),
+        Pane::Leaf { .. } => {}
+        Pane::Split { first, second, .. } => {
+            collect_chat_leaf_pane_ids(first, out);
+            collect_chat_leaf_pane_ids(second, out);
+        }
+    }
+}
+
 /// Ensure every leaf pane has a [`PaneSession`] entry so it is an independent
 /// session — a chat pane needs a transcript/cwd, and a terminal pane needs a
-/// cwd to spawn its shell. A pane that is not yet bound keeps an empty
-/// conversation id and lazily follows the selected conversation (this is how
-/// the initial single pane tracks the sidebar); panes created by splitting /
-/// adding a space are bound to a distinct conversation in
-/// [`UiState::bind_pane_new_conversation`].
-pub(crate) fn ensure_all_chat_pane_sessions(state: &mut UiState, _desktop: Option<&DesktopState>) {
+/// cwd to spawn its shell. Every chat leaf is also bound to a conversation of
+/// its own, the initial pane included: a pane that starts a turn must be
+/// resolvable by that conversation when its `chat:*` events arrive, whatever
+/// pane has focus by then. A restored pane keeps the conversation it persisted;
+/// only an empty binding is given a new one.
+pub(crate) fn ensure_all_chat_pane_sessions(state: &mut UiState, desktop: Option<&DesktopState>) {
     let mut leaf_ids = Vec::new();
+    let mut chat_ids = Vec::new();
     for space in &state.spaces {
         collect_leaf_pane_ids(&space.root, &mut leaf_ids);
+        collect_chat_leaf_pane_ids(&space.root, &mut chat_ids);
     }
     let default_path = current_dir_display();
     for id in leaf_ids {
@@ -57,7 +80,34 @@ pub(crate) fn ensure_all_chat_pane_sessions(state: &mut UiState, _desktop: Optio
             conversation_id: String::new(),
             draft: String::new(),
             path: default_path.clone(),
+            daemon_session_id: String::new(),
         });
+    }
+    let mut created = false;
+    let mut adopted_selection = false;
+    for id in chat_ids {
+        if state.pane_owns_conversation(id) {
+            continue;
+        }
+        // The initial pane keeps tracking the sidebar: the conversation on
+        // screen becomes its own binding. A second unbound chat pane gets a
+        // distinct conversation instead of sharing that one.
+        if !adopted_selection && id == state.active_pane_id {
+            if let Some(selected) = state.selected_id.clone().filter(|id| !id.is_empty()) {
+                state.record_pane_conversation(id, &selected);
+                adopted_selection = true;
+                continue;
+            }
+        }
+        state.bind_pane_new_conversation(id, desktop);
+        created = true;
+    }
+    // A conversation created here is a real one in the store, so the sidebar
+    // lists it now rather than only after the first turn's update event.
+    if created {
+        if let Some(desktop) = desktop {
+            state.refresh_conversations(desktop);
+        }
     }
 }
 

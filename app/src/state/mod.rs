@@ -31,10 +31,10 @@ use goble_terminal::blocks::{BlockId, BlockView};
 use crate::emulator::VisibleBlock;
 use crate::terminal::TerminalRegistry;
 use crate::ui::{
-    AppTab, CostEntry, CronEntry, ExecutionEntry, HarnessEntry, LlmFormField, Pane,
-    PaneChatSnapshot, PaneKind, SearchRow, SettingsCategory, SettingsControl, SettingsFocus,
-    SidebarView, Space, TaskEntry, TimelineEntry, WorkflowEntry, WorkflowStepEntry,
-    WorkspaceRouting, SIDEBAR_WIDTH,
+    AppTab, CostEntry, CronEntry, ExecutionEntry, FloatingDrag, HarnessEntry, LayoutKind,
+    LlmFormField, Pane, PaneChatSnapshot, PaneDropTarget, PaneKind, RemoteAgentEntry, SearchRow,
+    SettingsCategory, SettingsControl, SettingsFocus, SidebarView, Space, TaskEntry, TimelineEntry,
+    WorkflowEntry, WorkflowStepEntry, WorkerPaneSnapshot, WorkspaceRouting, SIDEBAR_WIDTH,
 };
 use crate::ui::global_search::SearchWorker;
 
@@ -58,6 +58,6 @@ mod pane_session_tests;
 #[cfg(test)]
 mod space_reorder_tests;
 #[cfg(test)]
-mod screen_link_tests;
+mod layout_host_tests;
 #[cfg(test)]
 mod external_url_tests;

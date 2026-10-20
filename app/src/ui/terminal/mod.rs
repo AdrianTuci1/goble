@@ -24,7 +24,7 @@ use std::rc::Rc;
 
 use goble_terminal::blocks::BlockView;
 use goble_terminal::MouseButton;
-use goble_ui::elements::{Element, Point, TerminalBlockPlumbing};
+use goble_ui::elements::{Element, Point, TerminalBlockPlumbing, TerminalLineGeometry};
 use goble_ui::geometry::Vector2F;
 use goble_ui::ScrollState;
 
@@ -60,6 +60,11 @@ struct TerminalView {
     /// The shared rich input bar pinned to the bottom of the pane, taken by the
     /// frame that draws it (the tree is rebuilt from scratch every frame).
     bar: Option<Box<dyn Element>>,
+    /// Why the pane last refused the switch into agent mode, when it refused.
+    /// The pane stayed on its shell, so the reason is drawn over that shell —
+    /// the chord never does nothing silently. Taken by the frame that draws it,
+    /// like the bar, and handed back by that frame's build.
+    harness_refusal: Option<String>,
     /// Whether the bar's editor holds the keyboard, so the pane hands keys to
     /// the bar instead of encoding them for the shell. While they disagree the
     /// grid keeps the keys, which is what a click on the grid restores.
@@ -68,6 +73,13 @@ struct TerminalView {
     on_route: Rc<RefCell<dyn FnMut(u64, String)>>,
     on_harness_mode: Rc<RefCell<dyn FnMut(u64, bool)>>,
     on_open_agent_view: Rc<RefCell<dyn FnMut(u64, String)>>,
+    /// A line submitted at the shell's own prompt, before the mirror clears —
+    /// the path that binds a typed `ssh` line and notices `exit` when the user
+    /// types in the grid instead of the rich input bar.
+    on_shell_submit: Rc<RefCell<dyn FnMut(u64, String)>>,
+    /// The app's copy path (the same handler a terminal block's copy button
+    /// uses), fired by Cmd+C, `y` in copy mode and a search bar's copy.
+    on_copy: Rc<RefCell<dyn FnMut(String)>>,
     /// Where the grid ended up, written by the grid as it paints; a pointer
     /// event is turned into a cell against this, not against a second guess at
     /// the flex layout.
@@ -75,6 +87,9 @@ struct TerminalView {
     /// The conversation cards drawn in the terminal view this frame, with where
     /// each landed, so a click on a card reopens its conversation.
     cards: Rc<RefCell<Vec<CardRect>>>,
+    /// Where each block line landed this frame, so a drag over the block view
+    /// selects the text the user is actually pointing at.
+    block_geometry: Rc<RefCell<Vec<TerminalLineGeometry>>>,
     /// The scroll offset of the pane's command sections (its block view), owned
     /// by app state so a scrollback position the user chose survives the
     /// per-frame rebuild.

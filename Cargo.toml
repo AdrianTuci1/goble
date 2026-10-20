@@ -64,6 +64,9 @@ crossterm = "0.28"
 ratatui = "0.29"
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# unix process/signal helpers
+nix = { version = "0.28", features = ["signal", "process"] }
+
 # db / time
 rusqlite = { version = "0.34", features = ["bundled", "chrono"] }
 chrono = { version = "0.4", features = ["serde"] }

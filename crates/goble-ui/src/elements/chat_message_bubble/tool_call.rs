@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::color::ColorU;
-use crate::elements::chat_content::{tool_fold_key, ChatAction, InlineSpan as ModelSpan, InlineStyle, SubAgentRow, ToolCall, ToolDisplayMode};
+use crate::elements::chat_content::{tool_fold_key, ChatAction, InlineSpan as ModelSpan, InlineStyle, SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode};
 use crate::elements::{resolve_inline_span, Chip, CrossAxisAlignment, Element, Empty, Flex, Text, TextSpan};
 use crate::geometry::vec2f;
 use crate::platform::text_atlas::FontWeight;
@@ -16,6 +16,14 @@ use super::tool_body::build_tool_call_body;
 /// glyph, so a call's row has the same shape before, while and after it runs.
 pub(super) const TOOL_MARK: &str = "◆";
 
+/// The chrome before a folded run's aggregated label: grok-build's dotted
+/// diamond, drawn in the run's state colour (error, running or quiet).
+const VERB_GROUP_MARK: &str = "◈";
+
+/// The prefix the app-owned fold map uses for a folded run, so a group's fold
+/// state never collides with the call that anchors the run.
+const VERB_GROUP_KEY_PREFIX: &str = "verb-group:";
+
 /// The rail drawn down the left of a call that is open. A collapsed call draws
 /// none: the rail is what says the rows under a header belong to it.
 pub(super) const TOOL_RAIL: &str = "┃";
@@ -25,7 +33,7 @@ pub(super) const TOOL_RAIL: &str = "┃";
 /// keeps its action hints off the row entirely, in the shortcuts bar, and
 /// goble draws the one action a row owns — opening a sub-agent's own view — at
 /// 10 px while the row is retracted.
-pub(super) const TOOL_ROW_FONT_SIZE: f32 = 12.0;
+pub(super) const TOOL_ROW_FONT_SIZE: f32 = 13.0;
 
 pub(super) const TOOL_ACTION_FONT_SIZE: f32 = 10.0;
 
@@ -76,7 +84,9 @@ fn tool_mark_token(kind: ToolKind, status: ToolCallStatus) -> ColorToken {
         ToolCallStatus::Error => ColorToken::Error,
         ToolCallStatus::Finished => match kind {
             ToolKind::Execute => ColorToken::Success,
-            _ => ColorToken::Muted,
+            // A read-shaped tool's bullet is the pager's default: primary while
+            // the row is open, dimmed into gray while it is folded.
+            _ => ColorToken::Text,
         },
     }
 }
@@ -108,17 +118,25 @@ fn tool_mark_color(
     }
 }
 
-/// The colour of the operand a row names: a path, a command and a URL take the
-/// warm colour grok-build paints them, a search's pattern and glob the success
-/// colour, and a row with no operand class the row's own text colour.
-fn tool_subject_color(kind: ToolKind, app: &crate::elements::AppContext) -> ColorU {
+/// The colour of the operand a row names: a path takes grok-build's warm
+/// orange, a command its yellow, a search's pattern and glob the success
+/// colour, and a row with no operand class the row's own text colour. A
+/// collapsed row is muted whole, exactly as the pager folds it.
+fn tool_subject_color(
+    kind: ToolKind,
+    mode: ToolDisplayMode,
+    app: &crate::elements::AppContext,
+) -> ColorU {
+    if mode == ToolDisplayMode::Collapsed {
+        return app.theme.color(ColorToken::Muted);
+    }
     match kind {
         ToolKind::Read
         | ToolKind::Create
         | ToolKind::Edit
         | ToolKind::List
-        | ToolKind::Execute
-        | ToolKind::WebFetch => app.theme.color(ColorToken::Warning),
+        | ToolKind::WebFetch => app.theme.color(ColorToken::Path),
+        ToolKind::Execute => app.theme.color(ColorToken::Command),
         ToolKind::Search | ToolKind::WebSearch => app.theme.color(ColorToken::Success),
         _ => app.theme.color(ColorToken::Text),
     }
@@ -134,6 +152,290 @@ fn label_color(mode: ToolDisplayMode, app: &crate::elements::AppContext) -> Colo
     }
 }
 
+/// The buckets grok-build folds into an aggregated run header. The label-only
+/// kinds (`Command`, `EditFile`, `McpCall`, `OtherTool`) are deliberately
+/// absent: those calls render their own rows and end a run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VerbGroupKind {
+    File,
+    Skill,
+    Search,
+    Dir,
+    WebFetch,
+    WebSearch,
+    MemorySearch,
+    IntegrationSearch,
+    Subagent,
+}
+
+impl VerbGroupKind {
+    /// The verb the run's header uses: present tense while any member runs,
+    /// past tense once the run is still.
+    fn verb(self, running: bool) -> &'static str {
+        let (past, present) = match self {
+            Self::File | Self::Skill => ("Read", "Reading"),
+            Self::Search
+            | Self::WebSearch
+            | Self::MemorySearch
+            | Self::IntegrationSearch => ("Searched", "Searching"),
+            Self::Dir => ("Listed", "Listing"),
+            Self::WebFetch => ("Fetched", "Fetching"),
+            Self::Subagent => ("Ran", "Running"),
+        };
+        if running { present } else { past }
+    }
+
+    /// The noun, pluralized by the bucket's count.
+    fn noun(self, count: usize) -> &'static str {
+        let (one, many) = match self {
+            Self::File => ("file", "files"),
+            Self::Skill => ("skill", "skills"),
+            Self::Search => ("pattern", "patterns"),
+            Self::Dir => ("dir", "dirs"),
+            Self::WebFetch | Self::WebSearch => ("website", "websites"),
+            Self::MemorySearch => ("memory", "memories"),
+            Self::IntegrationSearch => ("MCP tool", "MCP tools"),
+            Self::Subagent => ("subagent", "subagents"),
+        };
+        if count == 1 { one } else { many }
+    }
+}
+
+/// One call's place in a run, grok-build's [`RunStep`]: a folded call anchors
+/// and counts; a call the user opened keeps its own rows and stays transparent;
+/// anything else ends the run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunStep {
+    Member(VerbGroupKind),
+    Transparent(VerbGroupKind),
+    Break,
+}
+
+/// Classify one call for a run walk. The group a call belongs to comes from the
+/// same parse the row uses, so a skill read buckets as a skill and a plain read
+/// as a file. A call's own fold decides membership: collapsed calls are what a
+/// run folds, and a call the user opened is transparent exactly as it is in
+/// grok-build, so opening a member never dissolves its group.
+fn run_step(call: &ToolCall, mode: ToolDisplayMode) -> RunStep {
+    let Some(kind) = verb_group_kind(call) else {
+        return RunStep::Break;
+    };
+    if mode == ToolDisplayMode::Collapsed {
+        RunStep::Member(kind)
+    } else {
+        RunStep::Transparent(kind)
+    }
+}
+
+/// The bucket a call joins, read from the row's parsed family. `None` for the
+/// action kinds a run must not fold across: a command, an edit, a tool
+/// dispatch, or a call no family claims.
+fn verb_group_kind(call: &ToolCall) -> Option<VerbGroupKind> {
+    let arguments: serde_json::Value =
+        serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
+    let row = tool_row(&call.name, &arguments, call.result.as_deref());
+    match row.kind {
+        ToolKind::Read => Some(VerbGroupKind::File),
+        ToolKind::Skill => Some(VerbGroupKind::Skill),
+        ToolKind::List => Some(VerbGroupKind::Dir),
+        ToolKind::Search => Some(VerbGroupKind::Search),
+        ToolKind::WebFetch => Some(VerbGroupKind::WebFetch),
+        ToolKind::WebSearch => Some(VerbGroupKind::WebSearch),
+        ToolKind::MemorySearch => Some(VerbGroupKind::MemorySearch),
+        ToolKind::SearchTools => Some(VerbGroupKind::IntegrationSearch),
+        ToolKind::SubAgent => Some(VerbGroupKind::Subagent),
+        ToolKind::Execute | ToolKind::Create | ToolKind::Edit | ToolKind::UseTool | ToolKind::Other => None,
+    }
+}
+
+/// Whether a member is still running, with a sub-agent's live record taking
+/// precedence over the spawn call's own status.
+fn member_running(call: &ToolCall, record: Option<&SubAgentRow>) -> bool {
+    match record {
+        Some(record) => record.status == SubAgentRowStatus::Running,
+        None => matches!(call.status, ToolCallStatus::Pending | ToolCallStatus::Running),
+    }
+}
+
+/// Whether a member failed. A cancelled child is deliberate, not a failure, so
+/// only a failed record feeds the header's red count.
+fn member_failed(call: &ToolCall, record: Option<&SubAgentRow>) -> bool {
+    match record {
+        Some(record) => record.status == SubAgentRowStatus::Failed,
+        None => call.status == ToolCallStatus::Error,
+    }
+}
+
+/// The aggregated label a folded run draws: buckets in first-appearance order,
+/// each `Verb N noun`, plus grok-build's ` · N failed` suffix. Running flips
+/// every bucket's tense, as one flag for the run rather than per member.
+fn verb_group_label(
+    calls: &[ToolCall],
+    start: usize,
+    fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    sub_agents: &HashMap<String, SubAgentRow>,
+) -> (String, bool, usize) {
+    let mut buckets: Vec<(VerbGroupKind, usize)> = Vec::new();
+    let mut running = false;
+    let mut failed = 0usize;
+    for (offset, call) in calls.iter().enumerate() {
+        let index = start + offset;
+        let key = tool_fold_key(call, index);
+        let mode = fold
+            .borrow()
+            .get(&key)
+            .copied()
+            .unwrap_or_else(|| call.default_display_mode());
+        let RunStep::Member(kind) = run_step(call, mode) else {
+            continue;
+        };
+        let record = sub_agents.get(&call.id);
+        running |= member_running(call, record);
+        if member_failed(call, record) {
+            failed += 1;
+        }
+        match buckets.iter_mut().find(|(bucket, _)| *bucket == kind) {
+            Some((_, count)) => *count += 1,
+            None => buckets.push((kind, 1)),
+        }
+    }
+    let mut label = String::new();
+    for (index, (kind, count)) in buckets.iter().enumerate() {
+        if index > 0 {
+            label.push_str(", ");
+        }
+        label.push_str(kind.verb(running));
+        label.push(' ');
+        label.push_str(&count.to_string());
+        label.push(' ');
+        label.push_str(kind.noun(*count));
+    }
+    (label, running, failed)
+}
+
+/// The app-owned key of the run anchored by `calls[start]`, stable while the
+/// run's first call is: the group's fold survives the per-frame rebuild exactly
+/// as a call's own fold does.
+fn verb_group_key(calls: &[ToolCall], start: usize) -> String {
+    format!(
+        "{VERB_GROUP_KEY_PREFIX}{}",
+        tool_fold_key(&calls[start], start)
+    )
+}
+
+/// Whether a run is open. The group has two states — folded into its header, or
+/// opened to its member rows — so anything but `Expanded` is folded.
+fn verb_group_open(fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>, key: &str) -> bool {
+    fold.borrow().get(key).copied() == Some(ToolDisplayMode::Expanded)
+}
+
+/// The folded run's header: grok-build's dotted diamond in the run's state
+/// colour and the bold aggregated label, with the failed suffix in the error
+/// colour. A click on the row opens or folds the whole run.
+fn verb_group_header(
+    label: &str,
+    running: bool,
+    failed: usize,
+    key: &str,
+    fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    app: &crate::elements::AppContext,
+) -> Box<dyn Element> {
+    let token = if failed > 0 {
+        ColorToken::Error
+    } else if running {
+        ColorToken::Accent
+    } else {
+        ColorToken::Muted
+    };
+    let run = |text: String, color: ColorU, weight: FontWeight| -> Box<dyn Element> {
+        Text::new(text)
+            .with_color(color)
+            .with_font_family(FontFamily::Mono)
+            .with_font_size(TOOL_ROW_FONT_SIZE)
+            .with_weight(weight)
+            .finish()
+    };
+    let mut row = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_child(run(
+            format!("{VERB_GROUP_MARK} "),
+            app.theme.color(token),
+            FontWeight::Regular,
+        ))
+        .with_child(run(
+            label.to_string(),
+            app.theme.color(ColorToken::Text),
+            FontWeight::Bold,
+        ));
+    if failed > 0 {
+        row = row.with_child(run(
+            format!(" · {failed} failed"),
+            app.theme.color(ColorToken::Error),
+            FontWeight::Regular,
+        ));
+    }
+
+    let toggle = fold.clone();
+    let key = key.to_string();
+    Chip::new(row.finish())
+        .with_on_click(move || {
+            let mut folds = toggle.borrow_mut();
+            let open = folds.get(&key).copied() == Some(ToolDisplayMode::Expanded);
+            folds.insert(
+                key.clone(),
+                if open {
+                    ToolDisplayMode::Collapsed
+                } else {
+                    ToolDisplayMode::Expanded
+                },
+            );
+        })
+        .finish()
+}
+
+/// One call drawn on its own: its header (with the sub-agent open target) and
+/// the body its own fold calls for.
+fn single_call_column(
+    call: &ToolCall,
+    index: usize,
+    fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    sub_agents: &HashMap<String, SubAgentRow>,
+    on_action: &Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
+    app: &crate::elements::AppContext,
+) -> (Box<dyn Element>, bool) {
+    let key = tool_fold_key(call, index);
+    let fallback = call.default_display_mode();
+    let mode = fold.borrow().get(&key).copied().unwrap_or(fallback);
+    // The record S4 holds for the child a call spawned, found by the call's
+    // own id (`parent_call_id` is the spawn call's id). It exists only for a
+    // sub-agent-shaped call, so one lookup serves the row and its target.
+    let record = sub_agents.get(&call.id);
+    let header = tool_call_header(call, &key, fallback, mode, fold, record, app);
+    // A sub-agent's row carries a second hit target beside the fold toggle:
+    // the one that opens the child's own view.
+    let header = match sub_agent_open_target(record, on_action, mode, app) {
+        Some(open) => Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(2.0)
+            .with_child(header)
+            .with_child(open)
+            .finish(),
+        None => header,
+    };
+    let mut call_column = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(2.0)
+        .with_child(header);
+
+    for row in build_tool_call_body(call, mode, record, app) {
+        call_column = call_column.with_child(row);
+    }
+    (
+        call_column.finish(),
+        mode == ToolDisplayMode::Collapsed,
+    )
+}
+
 /// Tool invocations drawn as inline rows in the pager idiom: a status mark and
 /// the tool on the first row, then the body its own definition calls for.
 /// Nothing is wrapped in a border, a box or a card, and a call never carries a
@@ -144,6 +446,12 @@ fn label_color(mode: ToolDisplayMode, app: &crate::elements::AppContext) -> Colo
 /// Each call carries the three-state fold (`Collapsed -> Truncated -> Expanded`)
 /// its shape starts in; the state lives in the app-owned `fold` map so it
 /// survives the per-frame rebuild, and clicking the header advances it.
+///
+/// Consecutive folded calls that belong to a verb-groupable family stack into
+/// one run header, exactly as grok-build folds them: `◈ Read 3 files, Searched
+/// 1 pattern`. A command, edit or unclassified tool ends the run and keeps its
+/// own row. Opening the run shows its members, and a member the user opened
+/// stays visible without splitting the run.
 pub(super) fn build_tool_call_rows(
     tool_calls: &[ToolCall],
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
@@ -153,47 +461,96 @@ pub(super) fn build_tool_call_rows(
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Sm);
     let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-    // The gap between two calls is a child rather than the column's own spacing,
-    // because it is not the same for every pair: two consecutive collapsed calls
+    // The gap between two rows is a child rather than the column's own spacing,
+    // because it is not the same for every pair: two consecutive collapsed rows
     // touch, and every other pair keeps the block's gap.
     let mut previous_was_collapsed: Option<bool> = None;
-
-    for (index, call) in tool_calls.iter().enumerate() {
-        let key = tool_fold_key(call, index);
-        let fallback = call.default_display_mode();
-        let mode = fold.borrow().get(&key).copied().unwrap_or(fallback);
-        // The record S4 holds for the child a call spawned, found by the call's
-        // own id (`parent_call_id` is the spawn call's id). It exists only for a
-        // sub-agent-shaped call, so one lookup serves the row and its target.
-        let record = sub_agents.get(&call.id);
-        let header = tool_call_header(call, &key, fallback, mode, fold, record, app);
-        // A sub-agent's row carries a second hit target beside the fold toggle:
-        // the one that opens the child's own view.
-        let header = match sub_agent_open_target(record, on_action, mode, app) {
-            Some(open) => Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(2.0)
-                .with_child(header)
-                .with_child(open)
-                .finish(),
-            None => header,
-        };
-        let mut call_column = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_spacing(2.0)
-            .with_child(header);
-
-        for row in build_tool_call_body(call, mode, record, app) {
-            call_column = call_column.with_child(row);
-        }
-        let collapsed = mode == ToolDisplayMode::Collapsed;
+    let mut push = |mut column: Flex, element: Box<dyn Element>, collapsed: bool| {
         if let Some(previous) = previous_was_collapsed {
             if !previous || !collapsed {
                 column = column.with_child(Empty::new().with_size(vec2f(0.0, spacing)).finish());
             }
         }
         previous_was_collapsed = Some(collapsed);
-        column = column.with_child(call_column.finish());
+        column.with_child(element)
+    };
+
+    let mut index = 0usize;
+    while index < tool_calls.len() {
+        let key = tool_fold_key(&tool_calls[index], index);
+        let mode = fold
+            .borrow()
+            .get(&key)
+            .copied()
+            .unwrap_or_else(|| tool_calls[index].default_display_mode());
+        // A transparent call — one the user opened — cannot anchor a run; it
+        // keeps its own rows, and the next folded call starts a fresh run.
+        if !matches!(run_step(&tool_calls[index], mode), RunStep::Member(_)) {
+            let (element, collapsed) =
+                single_call_column(&tool_calls[index], index, fold, sub_agents, on_action, app);
+            column = push(column, element, collapsed);
+            index += 1;
+            continue;
+        }
+
+        // Walk forward to the last folded member, exactly as `scan_run_forward`:
+        // a transparent member inside the span is claimed but does not extend
+        // it, so a trailing opened call stays outside the run.
+        let start = index;
+        let mut end = start + 1;
+        let mut stop = start + 1;
+        while stop < tool_calls.len() {
+            let key = tool_fold_key(&tool_calls[stop], stop);
+            let mode = fold
+                .borrow()
+                .get(&key)
+                .copied()
+                .unwrap_or_else(|| tool_calls[stop].default_display_mode());
+            match run_step(&tool_calls[stop], mode) {
+                RunStep::Member(_) => {
+                    end = stop + 1;
+                }
+                RunStep::Transparent(_) => {}
+                RunStep::Break => break,
+            }
+            stop += 1;
+        }
+
+        let group_key = verb_group_key(tool_calls, start);
+        let open = verb_group_open(fold, &group_key);
+        let (label, running, failed) =
+            verb_group_label(&tool_calls[start..end], start, fold, sub_agents);
+        let mut group = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_spacing(2.0)
+            .with_child(verb_group_header(
+                &label, running, failed, &group_key, fold, app,
+            ));
+        // Folded, a run shows only its header — except for a member the user
+        // already opened, which grok-build keeps on screen and transparent.
+        // Opened, every member is drawn, its own fold deciding its body.
+        for member in start..end {
+            let member_key = tool_fold_key(&tool_calls[member], member);
+            let member_mode = fold
+                .borrow()
+                .get(&member_key)
+                .copied()
+                .unwrap_or_else(|| tool_calls[member].default_display_mode());
+            if !open && member_mode == ToolDisplayMode::Collapsed {
+                continue;
+            }
+            let (element, _) = single_call_column(
+                &tool_calls[member],
+                member,
+                fold,
+                sub_agents,
+                on_action,
+                app,
+            );
+            group = group.with_child(element);
+        }
+        column = push(column, group.finish(), !open);
+        index = end.max(start + 1);
     }
     column.finish()
 }
@@ -269,7 +626,7 @@ pub(super) fn tool_call_header(
         // folded row is read for.
         row = row.with_child(run(
             parsed.subject.clone(),
-            tool_subject_color(parsed.kind, app),
+            tool_subject_color(parsed.kind, mode, app),
             FontWeight::Regular,
         ));
     }

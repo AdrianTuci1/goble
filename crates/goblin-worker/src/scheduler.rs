@@ -167,11 +167,7 @@ impl Scheduler {
                         if let Trigger::Heartbeat { .. } = &task.trigger {
                             last_heartbeat.insert(task.id.clone(), Instant::now());
                         }
-                        let _ = self
-                            .store
-                            .lock()
-                            .unwrap()
-                            .mark_run(&task.id, "running");
+                        let _ = self.store.lock().unwrap().mark_run(&task.id, "running");
                         let scheduler = Arc::clone(&self);
                         let task_id = task.id.clone();
                         tokio::spawn(async move {
@@ -185,11 +181,8 @@ impl Scheduler {
                                         .mark_run(&task_id, "success");
                                 }
                                 Err(e) => {
-                                    let _ = scheduler
-                                        .store
-                                        .lock()
-                                        .unwrap()
-                                        .mark_run(&task_id, "error");
+                                    let _ =
+                                        scheduler.store.lock().unwrap().mark_run(&task_id, "error");
                                     scheduler.state.emit(WorkerMessage::AgentLog {
                                         trace_id: task_id,
                                         step_id: "scheduler".to_string(),

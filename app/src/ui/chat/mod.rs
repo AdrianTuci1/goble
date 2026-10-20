@@ -53,6 +53,10 @@ fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneChatSnapshot {
             messages: state.chat_messages.clone(),
             composer_draft: state.composer_draft.clone(),
             composer_path: state.composer_path.clone(),
+            // A pane with no snapshot entry draws no connection line; it is only
+            // ever a pane that has not been refreshed yet, never a viewer pane
+            // whose state went missing.
+            worker: None,
             composer_attachments: Vec::new(),
             pending_ask: state.pending_ask.clone(),
             pending_command: None,
@@ -60,9 +64,8 @@ fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneChatSnapshot {
             queued_prompt: state.queued_prompt.clone(),
             agent_busy: state.agent_busy,
             turn_status: goble_ui::TurnStatus::Idle,
-            inline_screen: None,
-            screen_link: None,
             sub_agents: std::collections::HashMap::new(),
+            turn_error: None,
             sub_agent_view: None,
             scroll: Rc::new(RefCell::new(goble_ui::ScrollState::following())),
             usage: Default::default(),

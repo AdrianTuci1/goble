@@ -13,25 +13,37 @@ use goble_desktop_service::DesktopState;
 use goble_harness_types::MediumKind;
 use goble_persistence::{Project, Session};
 
-use crate::ui::{MediaNode, MediaProject, MediaSession};
+use crate::ui::{MediaNode, MediaProject, MediaSession, WorkspaceRouting};
 
 /// The top-level mediums, in display order: `(kind, id, label)`.
 const MEDIUM_META: &[(MediumKind, &str, &str)] = &[
     (MediumKind::Local, "local", "Local"),
-    (MediumKind::RemoteXrdp, "remote-xrdp", "Remote (xrdp)"),
+    (MediumKind::Remote, "remote", "Remote (worker)"),
 ];
 
 /// The default project a medium's turns are scoped to before any session is
 /// picked: `(medium_id, project_id)`.
-const DEFAULT_PROJECTS: &[(&str, &str)] = &[("local", "default"), ("remote-xrdp", "remote")];
+const DEFAULT_PROJECTS: &[(&str, &str)] = &[("local", "default"), ("remote", "remote")];
 
 /// Map a medium id to the conversation `workspace_routing` value (`"local"` /
 /// `"remote"`) so the sidebar can show the folders + conversations that belong
 /// to the selected environment.
 pub fn medium_routing(medium_id: &str) -> &'static str {
     match medium_id {
-        "remote-xrdp" => "remote",
+        "remote" => "remote",
         _ => "local",
+    }
+}
+
+/// The medium a conversation's routing implies: a conversation routed to a
+/// worker runs on the remote environment until the user picks another one in
+/// its composer, and a local conversation runs on the local medium. It is the
+/// inverse of [`medium_routing`], so a pane draws — and its turn carries — the
+/// environment its routing already says.
+pub fn medium_for_routing(routing: WorkspaceRouting) -> &'static str {
+    match routing {
+        WorkspaceRouting::Remote => "remote",
+        WorkspaceRouting::Local => "local",
     }
 }
 
@@ -308,14 +320,20 @@ impl MediaState {
         self.selected_project = project_id.to_string();
         self.selected_session = session_id.to_string();
         let mk = medium_key(medium_id);
-        if !self.expanded.iter().any(|k| *k == mk) {
+        if !self.expanded.contains(&mk) {
             self.expanded.push(mk);
         }
         let pk = project_key(medium_id, project_id);
-        if !self.expanded.iter().any(|k| *k == pk) {
+        if !self.expanded.contains(&pk) {
             self.expanded.push(pk);
         }
         true
+    }
+
+    /// Whether the tree holds a medium under `id`. The environment control lists
+    /// the tree's own mediums, so an id it does not hold is not a choice.
+    pub fn has_medium(&self, medium_id: &str) -> bool {
+        self.mediums.iter().any(|m| m.id == medium_id)
     }
 
     /// Select only a medium (used by the composer's harness pill): resets the
@@ -329,7 +347,7 @@ impl MediaState {
         self.selected_project = default_project_for(medium_id);
         self.selected_session.clear();
         let mk = medium_key(medium_id);
-        if !self.expanded.iter().any(|k| *k == mk) {
+        if !self.expanded.contains(&mk) {
             self.expanded.push(mk);
         }
         true
@@ -470,33 +488,33 @@ mod tests {
     #[test]
     fn toggle_expands_and_collapses_a_branch() {
         let mut state = MediaState::mock();
-        assert!(!state.is_expanded(&medium_key("remote-xrdp")));
+        assert!(!state.is_expanded(&medium_key("remote")));
 
-        state.toggle(&medium_key("remote-xrdp"));
-        assert!(state.is_expanded(&medium_key("remote-xrdp")));
+        state.toggle(&medium_key("remote"));
+        assert!(state.is_expanded(&medium_key("remote")));
 
         // Selecting a session also auto-expands its branch.
-        state.select_session("remote-xrdp", "remote", "s-remote-xrdp");
-        assert!(state.is_expanded(&project_key("remote-xrdp", "remote")));
+        state.select_session("remote", "remote", "s-remote");
+        assert!(state.is_expanded(&project_key("remote", "remote")));
 
-        state.toggle(&project_key("remote-xrdp", "remote"));
-        assert!(!state.is_expanded(&project_key("remote-xrdp", "remote")));
+        state.toggle(&project_key("remote", "remote"));
+        assert!(!state.is_expanded(&project_key("remote", "remote")));
     }
 
     #[test]
     fn select_session_sets_medium_project_and_session() {
         let mut state = MediaState::mock();
-        state.select_session("remote-xrdp", "remote", "s-remote-xrdp");
-        assert_eq!(state.selected_medium_id(), "remote-xrdp");
+        state.select_session("remote", "remote", "s-remote");
+        assert_eq!(state.selected_medium_id(), "remote");
         assert_eq!(state.selected_project_id(), "remote");
-        assert_eq!(state.selected_session_id(), "s-remote-xrdp");
+        assert_eq!(state.selected_session_id(), "s-remote");
         assert_eq!(state.selected_session_path(), "/workspace/remote");
     }
 
     #[test]
     fn select_session_ignores_unknown_leaf() {
         let mut state = MediaState::mock();
-        state.select_session("remote-xrdp", "remote", "not-a-session");
+        state.select_session("remote", "remote", "not-a-session");
         assert_eq!(state.selected_medium_id(), "local");
         assert_eq!(state.selected_session_id(), "");
     }
@@ -504,21 +522,21 @@ mod tests {
     #[test]
     fn select_medium_resets_project_and_session() {
         let mut state = MediaState::mock();
-        state.select_session("remote-xrdp", "remote", "s-remote-xrdp");
-        assert!(state.select_medium("remote-xrdp"));
-        assert_eq!(state.selected_medium_id(), "remote-xrdp");
+        state.select_session("remote", "remote", "s-remote");
+        assert!(state.select_medium("remote"));
+        assert_eq!(state.selected_medium_id(), "remote");
         assert_eq!(state.selected_session_id(), "");
         // Unknown mediums are ignored.
         assert!(!state.select_medium("vm"));
-        assert_eq!(state.selected_medium_id(), "remote-xrdp");
+        assert_eq!(state.selected_medium_id(), "remote");
     }
 
     #[test]
     fn session_location_finds_leaf_anywhere_in_tree() {
         let state = MediaState::mock();
         assert_eq!(
-            state.session_location("s-remote-xrdp"),
-            Some(("remote-xrdp".to_string(), "remote".to_string(), "s-remote-xrdp".to_string()))
+            state.session_location("s-remote"),
+            Some(("remote".to_string(), "remote".to_string(), "s-remote".to_string()))
         );
         assert_eq!(state.session_location("not-a-session"), None);
     }
@@ -532,8 +550,8 @@ mod tests {
         let sessions = vec![
             session("s-a", "alpha", "local"),
             session("s-b", "", "local"),
-            session("s-c", "alpha", "remote-xrdp"),
-            session("s-d", "beta", "remote-xrdp"),
+            session("s-c", "alpha", "remote"),
+            session("s-d", "beta", "remote"),
         ];
         let nodes = build_from_backend(&projects, &sessions);
 
@@ -546,7 +564,7 @@ mod tests {
         let default = local.projects.iter().find(|p| p.id == "default").unwrap();
         assert_eq!(default.sessions[0].id, "s-b");
 
-        let remote = nodes.iter().find(|m| m.id == "remote-xrdp").unwrap();
+        let remote = nodes.iter().find(|m| m.id == "remote").unwrap();
         assert_eq!(remote.projects.len(), 2);
         assert_eq!(remote.projects[0].sessions[0].id, "s-c");
         assert_eq!(remote.projects[1].sessions[0].id, "s-d");
@@ -565,11 +583,29 @@ mod tests {
 
     #[test]
     fn medium_routing_maps_remote_and_defaults_to_local() {
-        assert_eq!(medium_routing("remote-xrdp"), "remote");
+        assert_eq!(medium_routing("remote"), "remote");
         assert_eq!(medium_routing("local"), "local");
         assert_eq!(medium_routing("vm"), "local");
         // A user-added medium routes to `local` by default.
         assert_eq!(medium_routing("staging-vps"), "local");
+    }
+
+    /// The inverse: the medium a routing implies until the user picks one in a
+    /// conversation's composer. The pair must agree, or a pane would draw an
+    /// environment whose routing is not the one the pane is shaped by.
+    #[test]
+    fn medium_for_routing_is_the_inverse_of_medium_routing() {
+        assert_eq!(medium_for_routing(WorkspaceRouting::Remote), "remote");
+        assert_eq!(medium_for_routing(WorkspaceRouting::Local), "local");
+        for routing in [WorkspaceRouting::Local, WorkspaceRouting::Remote] {
+            assert_eq!(
+                medium_routing(medium_for_routing(routing)),
+                match routing {
+                    WorkspaceRouting::Local => "local",
+                    WorkspaceRouting::Remote => "remote",
+                }
+            );
+        }
     }
 
     #[test]

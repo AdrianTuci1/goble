@@ -6,7 +6,7 @@
 //! in the transcript ([`presentation`]) and the routing from a tool call to its
 //! handler ([`dispatch`]). The handlers themselves are one module per tool
 //! family: [`agents`], [`workflows`], [`credentials`], [`guide`], [`entities`],
-//! [`files`], [`commands`], [`handoff`], [`mcp`] and [`web`]. What the surfaces
+//! [`files`], [`commands`], [`mcp`] and [`web`]. What the surfaces
 //! share — [`Harness`] itself, its builder, its turn loop and its sub-agent
 //! accessors — lives here.
 
@@ -35,7 +35,6 @@ mod dispatch;
 mod entities;
 mod files;
 mod guide;
-mod handoff;
 mod mcp;
 mod presentation;
 mod runner;

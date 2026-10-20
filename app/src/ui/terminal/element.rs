@@ -1,6 +1,6 @@
 //! The [`Element`] impl: the pane's layout, painting and event dispatch.
 
-use goble_terminal::MouseAction;
+use goble_terminal::{MouseAction, MouseButton};
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
@@ -89,6 +89,20 @@ impl Element for TerminalView {
                 let Some(button) = mouse_button(*button) else {
                     return true;
                 };
+                // A plain drag over the grid selects cells; a program that
+                // negotiated mouse reporting keeps its pointer reports.
+                if button == MouseButton::Left && self.mouse_selects() {
+                    self.pressed = Some(button);
+                    // The grid selects cells; the block view selects the text
+                    // its sections draw, on the line the pointer is over.
+                    if self.cell_at(*position).is_some() {
+                        if self.begin_mouse_selection(*position) {
+                            return true;
+                        }
+                    } else if self.begin_block_mouse_selection(*position) {
+                        return true;
+                    }
+                }
                 if let Some(cell) = self.cell_at(*position) {
                     self.last_cell = Some(cell);
                     self.pressed = Some(button);
@@ -101,6 +115,15 @@ impl Element for TerminalView {
                 // release is over it; otherwise the release is the grid's.
                 if let Some(root) = self.root.as_mut() {
                     if root.dispatch_event(event, ctx, app) {
+                        return true;
+                    }
+                }
+                if mouse_button(*button) == Some(MouseButton::Left) {
+                    let cells = self.end_mouse_selection();
+                    let blocks = self.end_block_mouse_selection();
+                    if cells || blocks {
+                        self.pressed = None;
+                        self.last_cell = self.cell_at(*position).or(self.last_cell);
                         return true;
                     }
                 }
@@ -154,6 +177,22 @@ impl Element for TerminalView {
                 // pane must not steal them from the active pane.
                 if !self.active {
                     return false;
+                }
+                // Selection, copy mode and the find bar are handled before the
+                // tree and before the shell. Copy mode and the find bar are
+                // modal; with neither on, the terminal's normal input is
+                // untouched.
+                if self.handle_copy_key(key, *modifiers) {
+                    return true;
+                }
+                // While the find bar is up its query field is the pane's typing
+                // surface, so the keys are routed into the tree, where that
+                // field sits ahead of the composer.
+                if self.find_open() {
+                    if let Some(root) = self.root.as_mut() {
+                        return root.dispatch_event(event, ctx, app);
+                    }
+                    return true;
                 }
                 // The pane's filter keys are handled before the tree, the way the
                 // app's own global chords are: the rich input is this pane's

@@ -6,13 +6,13 @@ use super::filter::{terminal_filter_bar, TerminalCopyHandler, TerminalFilter, FI
 use super::line::{TerminalLine, TerminalLineKind};
 use crate::color::ColorU;
 use crate::elements::{
-    AppContext, Clipped, ConstrainedBox, CrossAxisAlignment, Divider, Element, Flex, Icon,
-    InlineText, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point,
-    SizeConstraint, Spacer, Text, TextSpan, TopbarButton,
+    AfterLayoutContext, AppContext, Clipped, ConstrainedBox, CrossAxisAlignment, Divider, Element,
+    EventContext, Flex, Icon, InlineText, LayoutContext, MainAxisAlignment, MainAxisSize,
+    PaintContext, Point, SizeConstraint, Spacer, Text, TextSpan, TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, Vector2F};
-use crate::platform::text_atlas::{measure_text_family, FontWeight};
+use crate::platform::text_atlas::{measure_text_family, mono_advance, FontWeight};
 use crate::theme::{ColorToken, FontFamily};
 
 const FONT_SIZE: f32 = 13.0;
@@ -37,7 +37,138 @@ pub(crate) const HEADER_SPACING: f32 = 8.0;
 
 pub(crate) const BUTTON_SIZE: f32 = 24.0;
 
+/// How opaque the text selection is over the block's own background, so the
+/// glyphs under it stay readable.
+const SELECTION_ALPHA: u8 = 70;
+
 const PROMPT_PREFIX: &str = "❯ ";
+
+/// A selected range of a block's display text, in line and character
+/// coordinates. Both ends are inclusive. The lines are the block's own
+/// [`TerminalLine`]s, before any filter hides one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalTextSelection {
+    pub anchor: (usize, usize),
+    pub cursor: (usize, usize),
+}
+
+impl TerminalTextSelection {
+    pub const fn new(anchor: (usize, usize), cursor: (usize, usize)) -> Self {
+        Self { anchor, cursor }
+    }
+
+    /// The selection ends in reading order.
+    pub fn ordered(&self) -> ((usize, usize), (usize, usize)) {
+        if self.anchor <= self.cursor {
+            (self.anchor, self.cursor)
+        } else {
+            (self.cursor, self.anchor)
+        }
+    }
+
+    /// The selected character columns on `line`, clamped to the line's own
+    /// length. `None` when the line carries no selected text.
+    pub fn columns_on(&self, line: usize, text_columns: usize) -> Option<(usize, usize)> {
+        if text_columns == 0 {
+            return None;
+        }
+        let (start, end) = self.ordered();
+        if line < start.0 || line > end.0 {
+            return None;
+        }
+        let from = if line == start.0 { start.1 } else { 0 };
+        let to = if line == end.0 {
+            end.1.min(text_columns - 1)
+        } else {
+            text_columns - 1
+        };
+        (from <= to).then_some((from.min(text_columns - 1), to))
+    }
+}
+
+/// Where one of a block's lines landed in the window, so a pane can turn a
+/// pointer into a line and column of the block's own text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TerminalLineGeometry {
+    /// The line's index in its block's own lines.
+    pub line: usize,
+    /// The pane's flattened line offset for the block this line belongs to.
+    pub base: usize,
+    pub origin: Vector2F,
+    pub size: Vector2F,
+    /// Columns the drawn line spends on a prefix before its text (the `❯ ` on
+    /// a command line).
+    pub prefix_columns: usize,
+    /// The line's text length in characters.
+    pub text_columns: usize,
+    /// The horizontal pitch of one character in the line's font.
+    pub column_width: f32,
+}
+
+/// Records a line's painted box and paints the line through the inner element.
+struct LineProbe {
+    inner: Box<dyn Element>,
+    line: usize,
+    base: usize,
+    prefix_columns: usize,
+    text_columns: usize,
+    column_width: f32,
+    geometry: Rc<RefCell<Vec<TerminalLineGeometry>>>,
+}
+
+impl Element for LineProbe {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        self.inner.layout(constraint, ctx, app)
+    }
+
+    fn after_layout(&mut self, ctx: &mut AfterLayoutContext, app: &AppContext) {
+        self.inner.after_layout(ctx, app);
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        let size = self.inner.size().unwrap_or_default();
+        self.geometry.borrow_mut().push(TerminalLineGeometry {
+            line: self.line,
+            base: self.base,
+            origin,
+            size,
+            prefix_columns: self.prefix_columns,
+            text_columns: self.text_columns,
+            column_width: self.column_width,
+        });
+        self.inner.paint(origin, ctx, app);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.inner.size()
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.inner.origin()
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.inner.wants_animation()
+    }
+
+    fn flex_grow(&self) -> Option<f32> {
+        self.inner.flex_grow()
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.inner.dispatch_event(event, ctx, app)
+    }
+}
 
 /// The block filter bar's field, named the way warp names it.
 const FILTER_PLACEHOLDER: &str = "Filter block output";
@@ -68,6 +199,36 @@ pub fn terminal_block(
         .finish()
 }
 
+/// Build a terminal block that also draws `selection` over its own lines and
+/// records where those lines landed for `line_base` in the caller's flattened
+/// block text. A pane that turns a pointer into a block line builds this; the
+/// transcript keeps [`terminal_block`], which draws no selection.
+pub fn terminal_block_with_selection(
+    data: &TerminalData,
+    filter: TerminalFilter,
+    global_filter: Option<TerminalFilter>,
+    on_copy: Option<TerminalCopyHandler>,
+    selection: Option<TerminalTextSelection>,
+    line_base: usize,
+    geometry: Rc<RefCell<Vec<TerminalLineGeometry>>>,
+) -> Box<dyn Element> {
+    TerminalBlock::new()
+        .with_title(data.title.clone())
+        .with_status(data.status.unwrap_or_default())
+        .with_lines(data.lines.clone())
+        .with_meta(data.meta.clone())
+        .with_filter(filter)
+        .with_global_filter(global_filter)
+        .with_on_copy(move |text| {
+            if let Some(cb) = on_copy.as_ref() {
+                (cb.borrow_mut())(text);
+            }
+        })
+        .with_text_selection(selection)
+        .with_line_geometry(geometry, line_base)
+        .finish()
+}
+
 /// A terminal-style command block matching warp's layout: one mono prompt row
 /// (the block's identity and the context it ran in) with the copy and filter
 /// controls shown while the pointer is over the block, a filter bar over the
@@ -84,6 +245,15 @@ pub struct TerminalBlock {
     filter: TerminalFilter,
     global_filter: Option<TerminalFilter>,
     on_copy: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    /// The selection drawn over the block's text, in this block's line
+    /// coordinates.
+    selection: Option<TerminalTextSelection>,
+    /// Where the block's lines landed, shared with the pane that owns the
+    /// pointer state.
+    line_geometry: Option<Rc<RefCell<Vec<TerminalLineGeometry>>>>,
+    /// The flattened line offset this block starts at in its pane's block
+    /// text.
+    line_base: usize,
     root: Option<Box<dyn Element>>,
     pub(super) size: Option<Vector2F>,
     origin: Option<Point>,
@@ -105,6 +275,9 @@ impl TerminalBlock {
             filter: TerminalFilter::default(),
             global_filter: None,
             on_copy: None,
+            selection: None,
+            line_geometry: None,
+            line_base: 0,
             root: None,
             size: None,
             origin: None,
@@ -156,6 +329,24 @@ impl TerminalBlock {
     /// Set the copy callback; it receives the block's full display text.
     pub fn with_on_copy<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
         self.on_copy = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Draw a text selection over the block's own lines.
+    pub fn with_text_selection(mut self, selection: Option<TerminalTextSelection>) -> Self {
+        self.selection = selection;
+        self
+    }
+
+    /// Record where each drawn line lands, and the flattened offset this
+    /// block's first line has in the pane's block text.
+    pub fn with_line_geometry(
+        mut self,
+        geometry: Rc<RefCell<Vec<TerminalLineGeometry>>>,
+        line_base: usize,
+    ) -> Self {
+        self.line_geometry = Some(geometry);
+        self.line_base = line_base;
         self
     }
 
@@ -379,17 +570,22 @@ impl TerminalBlock {
         // block width so a too-long line wraps at the block edge rather than
         // overflowing the card.
         let global = self.global_filter.clone();
+        let geometry = self.line_geometry.clone();
+        let line_base = self.line_base;
+        let column_width = mono_advance(FONT_SIZE, FontWeight::Regular);
         let mut body = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(sm / 2.0);
-        for line in self
+        for (line_index, line) in self
             .lines
             .iter()
-            .filter(|line| Self::line_shown(&self.filter, global.as_ref(), line))
+            .enumerate()
+            .filter(|(_, line)| Self::line_shown(&self.filter, global.as_ref(), line))
         {
             let color = Self::color_token(line);
-            if line.kind == TerminalLineKind::Command {
-                let row = Flex::row()
+            let command = line.kind == TerminalLineKind::Command;
+            let element: Box<dyn Element> = if command {
+                Flex::row()
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_child(
                         Text::new(PROMPT_PREFIX.to_string())
@@ -399,11 +595,28 @@ impl TerminalBlock {
                             .finish(),
                     )
                     .with_child(Self::line_element(line, color, app))
-                    .finish();
-                body = body.with_child(row);
+                    .finish()
             } else {
-                body = body.with_child(Self::line_element(line, color, app));
-            }
+                Self::line_element(line, color, app)
+            };
+            let element = match &geometry {
+                Some(geometry) => LineProbe {
+                    inner: element,
+                    line: line_index,
+                    base: line_base,
+                    prefix_columns: if command {
+                        PROMPT_PREFIX.chars().count()
+                    } else {
+                        0
+                    },
+                    text_columns: line.text.chars().count(),
+                    column_width,
+                    geometry: Rc::clone(geometry),
+                }
+                .finish(),
+                None => element,
+            };
+            body = body.with_child(element);
         }
 
         // A section of the page, not a card: a hairline over the header
@@ -444,6 +657,31 @@ impl TerminalBlock {
             );
         }
         renderer.fill_rect(rectf(origin.x, origin.y, FLAG_POLE_WIDTH, size.y), color);
+    }
+
+    /// Draw the text selection over the block's lines. The lines recorded their
+    /// boxes as they painted, so this runs after the root and a selected line is
+    /// highlighted in place, from the first selected character to the last.
+    fn paint_selection(&self, ctx: &mut PaintContext, app: &AppContext) {
+        let Some(selection) = self.selection else {
+            return;
+        };
+        let Some(geometry) = &self.line_geometry else {
+            return;
+        };
+        let accent = app.theme.color(ColorToken::Accent);
+        let color = ColorU::new(accent.r, accent.g, accent.b, SELECTION_ALPHA);
+        let Some(renderer) = ctx.renderer.as_mut() else {
+            return;
+        };
+        for line in geometry.borrow().iter() {
+            let Some((from, to)) = selection.columns_on(line.line, line.text_columns) else {
+                continue;
+            };
+            let x = line.origin.x + (line.prefix_columns + from) as f32 * line.column_width;
+            let width = (to - from + 1) as f32 * line.column_width;
+            renderer.fill_rect(rectf(x, line.origin.y, width, line.size.y), color);
+        }
     }
 
     fn resolve_width(&self, max_text_width: f32) -> f32 {
@@ -498,6 +736,7 @@ impl Element for TerminalBlock {
         if let Some(root) = self.root.as_mut() {
             root.paint(origin, ctx, app);
         }
+        self.paint_selection(ctx, app);
     }
 
     fn size(&self) -> Option<Vector2F> {

@@ -223,6 +223,52 @@ fn send_routes_to_active_pane_conversation() {
     assert_eq!(messages1.len(), 0, "pane 1's conversation stays untouched");
 }
 
+/// A plain-Enter send into a pane with no binding of its own (a restored
+/// layout, or a pane the store no longer knows) runs on the sidebar's
+/// selection, and records that conversation on the pane before the turn
+/// starts. The turn's `chat:*` events then resolve to this pane even if the
+/// focus moves elsewhere before they arrive.
+#[test]
+fn plain_enter_records_the_sidebar_fallback_on_the_pane() {
+    let (desktop, _dir) = desktop_state();
+    let previous = desktop.create_chat("Previous", None, None).expect("create chat");
+    let (state, actions, _media) = build(&desktop);
+    {
+        let mut s = state.borrow_mut();
+        s.pane_sessions.get_mut(&1).unwrap().conversation_id.clear();
+        s.selected_id = Some(previous.clone());
+        assert!(
+            !s.pane_owns_conversation(1),
+            "pane 1 owns no conversation of its own"
+        );
+        assert_eq!(
+            s.pane_conversation_id(1).as_deref(),
+            Some(previous.as_str()),
+            "the sidebar's selection is what a send falls back to"
+        );
+    }
+
+    let rt = configured(&state);
+    let _guard = rt.enter();
+    (actions.on_send_message.borrow_mut())("continue here".to_string());
+
+    {
+        let s = state.borrow();
+        assert_eq!(
+            s.pane_sessions.get(&1).map(|x| x.conversation_id.as_str()),
+            Some(previous.as_str()),
+            "the pane records the conversation the turn actually ran on"
+        );
+        assert!(s.pane_owns_conversation(1), "the pane owns it now");
+        assert_eq!(
+            s.pane_id_for_conversation(&previous),
+            Some(1),
+            "the turn's events resolve to the pane that sent it"
+        );
+    }
+    wait_for_messages(&desktop, &previous, 2);
+}
+
 #[test]
 fn cmd_enter_appends_to_the_pane_conversation() {
     let (desktop, _dir) = desktop_state();
@@ -261,12 +307,15 @@ fn cmd_enter_appends_to_the_pane_conversation() {
 #[test]
 fn cmd_enter_opens_a_new_conversation_instead_of_adopting_the_selected_one() {
     let (desktop, _dir) = desktop_state();
-    // The conversation the sidebar has active when the app starts: a returning
-    // run lands here with the pane owning nothing.
+    // The conversation the sidebar has active. A chat pane is bound at creation
+    // now, so this case is reached by clearing that binding: a restored layout
+    // from before per-pane sessions, or a pane the store no longer knows.
     let previous = desktop.create_chat("Previous", None, None).expect("create chat");
     let (state, actions, _media) = build(&desktop);
     {
-        let s = state.borrow();
+        let mut s = state.borrow_mut();
+        s.pane_sessions.get_mut(&1).unwrap().conversation_id.clear();
+        s.selected_id = Some(previous.clone());
         assert!(
             !s.pane_owns_conversation(1),
             "pane 1 owns no conversation of its own"
@@ -487,9 +536,9 @@ fn selecting_environment_session_updates_active_pane_path() {
     // Picking the remote session leaf scopes the turn to medium+project+session
     // and points the active pane's cwd at that session's path.
     (media_actions.on_select_session.borrow_mut())(
-        "remote-xrdp".to_string(),
         "remote".to_string(),
-        "s-remote-xrdp".to_string(),
+        "remote".to_string(),
+        "s-remote".to_string(),
     );
 
     assert_eq!(state.borrow().composer_path, "/workspace/remote");
@@ -499,9 +548,9 @@ fn selecting_environment_session_updates_active_pane_path() {
         "active pane's cwd is stored per-pane"
     );
     let media_b = media.borrow();
-    assert_eq!(media_b.selected_medium_id(), "remote-xrdp");
+    assert_eq!(media_b.selected_medium_id(), "remote");
     assert_eq!(media_b.selected_project_id(), "remote");
-    assert_eq!(media_b.selected_session_id(), "s-remote-xrdp");
+    assert_eq!(media_b.selected_session_id(), "s-remote");
 }
 
 #[test]
@@ -513,15 +562,15 @@ fn on_select_harness_selects_medium() {
     let (_state, actions, media) = build(&desktop);
     assert_eq!(media.borrow().selected_medium_id(), "local");
 
-    (actions.on_select_harness.borrow_mut())(1, "remote-xrdp".to_string());
-    assert_eq!(media.borrow().selected_medium_id(), "remote-xrdp");
+    (actions.on_select_harness.borrow_mut())(1, "remote".to_string());
+    assert_eq!(media.borrow().selected_medium_id(), "remote");
     assert_eq!(media.borrow().selected_project_id(), "remote");
     assert_eq!(media.borrow().selected_session_id(), "");
 
     (actions.on_select_harness.borrow_mut())(1, "nope".to_string());
     assert_eq!(
         media.borrow().selected_medium_id(),
-        "remote-xrdp",
+        "remote",
         "an unknown medium id leaves the selection unchanged"
     );
 }
@@ -530,7 +579,9 @@ fn on_select_harness_selects_medium() {
 fn add_space_opens_a_plain_pty_without_a_conversation() {
     let (desktop, _dir) = desktop_state();
     let (state, actions, _media) = build(&desktop);
-    assert_eq!(desktop.list_chats().len(), 0, "no conversation to start with");
+    // The initial chat pane is bound at creation; the PTY about to open starts
+    // with no conversation of its own.
+    let before = desktop.list_chats().len();
 
     (actions.on_add_space.borrow_mut())();
 
@@ -547,7 +598,7 @@ fn add_space_opens_a_plain_pty_without_a_conversation() {
     drop(s);
     assert_eq!(
         desktop.list_chats().len(),
-        0,
+        before,
         "opening a workspace must not persist an empty conversation"
     );
 }
@@ -556,8 +607,9 @@ fn add_space_opens_a_plain_pty_without_a_conversation() {
 fn first_agent_turn_in_a_pty_workspace_creates_its_conversation() {
     let (desktop, _dir) = desktop_state();
     let (state, actions, _media) = build(&desktop);
+    let before = desktop.list_chats().len();
     (actions.on_add_space.borrow_mut())();
-    assert_eq!(desktop.list_chats().len(), 0);
+    assert_eq!(desktop.list_chats().len(), before);
 
     let pane_id = state.borrow().active_pane_id;
     let rt = configured(&state);
@@ -574,7 +626,7 @@ fn first_agent_turn_in_a_pty_workspace_creates_its_conversation() {
     drop(s);
     assert_eq!(
         desktop.list_chats().len(),
-        1,
+        before + 1,
         "the thread is created lazily, on the pane's first agent turn"
     );
     wait_for_messages(&desktop, &conv, 2);
@@ -585,11 +637,11 @@ fn add_space_with_medium_sets_medium_and_workspace_routing() {
     let (desktop, _dir) = desktop_state();
     let (state, actions, media) = build(&desktop);
 
-    (actions.on_add_space_with_medium.borrow_mut())("remote-xrdp".to_string());
+    (actions.on_add_space_with_medium.borrow_mut())("remote".to_string());
 
     let s = state.borrow();
     let last = s.spaces.last().expect("a new space was added");
-    assert_eq!(last.medium, "remote-xrdp", "space carries its default medium");
+    assert_eq!(last.medium, "remote", "space carries its default medium");
     assert_eq!(
         s.workspace_routing,
         Some(WorkspaceRouting::Remote),
@@ -599,7 +651,7 @@ fn add_space_with_medium_sets_medium_and_workspace_routing() {
     drop(s);
     assert_eq!(
         media.borrow().selected_medium_id(),
-        "remote-xrdp",
+        "remote",
         "the chosen environment becomes the active medium"
     );
 }
@@ -786,6 +838,29 @@ fn clear_transcript_clears_active_pane_messages() {
     assert!(
         rt.command_selection.is_none(),
         "clear drops the approval's selected candidate"
+    );
+}
+
+#[test]
+fn stop_refreshes_the_agent_state_to_idle() {
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+    {
+        let mut s = state.borrow_mut();
+        let pane_id = s.active_pane_id;
+        s.begin_turn(pane_id);
+    }
+    assert_eq!(
+        state.borrow().pane_agent_state(1),
+        crate::state::PaneAgentState::Working
+    );
+
+    (actions.on_stop.borrow_mut())();
+
+    assert_eq!(
+        state.borrow().pane_agent_state(1),
+        crate::state::PaneAgentState::Idle,
+        "Stop settles the pane's state at once, without waiting for an event"
     );
 }
 

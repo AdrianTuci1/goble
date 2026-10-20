@@ -334,8 +334,8 @@ fn agents_view(
         );
     }
 
-    // Plugins/Screen open from the Cmd+K palette ("Open connectors" /
-    // "Open screen"), not from the sidebar.
+    // Plugins open from the Cmd+K palette ("Open connectors" /
+    // "Open vault"), not from the sidebar.
 
     let mut column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
@@ -436,6 +436,7 @@ fn conversation_card(
         selected,
     )
     .with_workspace_routing(entry.workspace_routing.clone())
+    .with_status(entry.status)
     .with_directory(entry.directory.clone())
     .with_starred(state.starred.iter().any(|id| id == &entry.id))
     .with_dots_inset(dots_inset)
@@ -754,7 +755,7 @@ mod sidebar_surface_tests {
         let paint = |root: &mut Box<dyn Element>| {
             let _ = root.layout(
                 SizeConstraint::loose(window),
-                &mut LayoutContext::default(),
+                &mut LayoutContext,
                 &app,
             );
             let mut ctx = PaintContext::new(Renderer::new());
@@ -772,7 +773,7 @@ mod sidebar_surface_tests {
         assert_eq!(condition.borrow().offset(), 0.0, "it opens at the top");
 
         let wheel = |root: &mut Box<dyn Element>, dy: f32| {
-            let mut ctx = goble_ui::elements::EventContext::default();
+            let mut ctx = goble_ui::elements::EventContext;
             root.dispatch_event(
                 &DispatchedEvent::MouseMove {
                     position: over_the_band,
@@ -1002,7 +1003,7 @@ mod sidebar_surface_tests {
         let paint = |root: &mut Box<dyn Element>| -> Vec<RenderCommand> {
             let _ = root.layout(
                 SizeConstraint::loose(window),
-                &mut LayoutContext::default(),
+                &mut LayoutContext,
                 &app,
             );
             let mut ctx = PaintContext::new(Renderer::new());
@@ -1027,7 +1028,7 @@ mod sidebar_surface_tests {
                 })
                 .unwrap_or_else(|| panic!("the {name} tab's icon is drawn"));
             let at = vec2f(icon.x + 7.0, icon.y + 7.0);
-            let mut ctx = goble_ui::elements::EventContext::default();
+            let mut ctx = goble_ui::elements::EventContext;
             for event in [
                 DispatchedEvent::MouseDown {
                     position: at,
@@ -1050,7 +1051,7 @@ mod sidebar_surface_tests {
             scroll.borrow().max_offset()
         );
 
-        let mut ctx = goble_ui::elements::EventContext::default();
+        let mut ctx = goble_ui::elements::EventContext;
         root.dispatch_event(
             &DispatchedEvent::MouseMove {
                 position: over_the_band,
@@ -1168,7 +1169,7 @@ mod sidebar_surface_tests {
         let paint = |root: &mut Box<dyn Element>, at: goble_ui::geometry::Vector2F| {
             let _ = root.layout(
                 SizeConstraint::loose(window),
-                &mut LayoutContext::default(),
+                &mut LayoutContext,
                 &app,
             );
             let mut ctx = PaintContext::new(Renderer::new());
@@ -1198,7 +1199,7 @@ mod sidebar_surface_tests {
                 _ => None,
             })
             .expect("the folder header is drawn");
-        let mut ctx = goble_ui::elements::EventContext::default();
+        let mut ctx = goble_ui::elements::EventContext;
         root.dispatch_event(
             &DispatchedEvent::MouseMove {
                 position: on_a_header,
@@ -1390,7 +1391,7 @@ mod sidebar_surface_tests {
     ) -> Vec<RenderCommand> {
         let _ = root.layout(
             SizeConstraint::loose(vec2f(1024.0, 768.0)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             app,
         );
         let mut ctx = PaintContext::new(Renderer::new());
@@ -1767,7 +1768,7 @@ mod sidebar_surface_tests {
             }
         }
         let mut root: Box<dyn Element> = Box::new(view);
-        let mut ctx = goble_ui::elements::EventContext::default();
+        let mut ctx = goble_ui::elements::EventContext;
         let away = vec2f(700.0, 400.0);
 
         // The pointer arrives on the first card, and its control appears.

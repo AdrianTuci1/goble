@@ -71,10 +71,27 @@ impl WorkerClient {
         });
 
         let state_clone = state.clone();
+        let seed_tx = tx.clone();
         tokio::spawn(async move {
+            let mut seeded = false;
             while let Some(Ok(msg)) = read.next().await {
                 if let Message::Text(text) = msg {
                     if let Ok(worker_msg) = serde_json::from_str::<WorkerMessage>(&text) {
+                        // The worker's answer to the pairing request is what
+                        // says this connection is the workspace's, so it is
+                        // what the seed waits for: nothing goes out before it,
+                        // and the install never carries a key. The seed is
+                        // resolved from the workspace's own key here, and the
+                        // worker takes only the names it does not already hold
+                        // — its vault is the authority for the value.
+                        if !seeded && matches!(worker_msg, WorkerMessage::Paired) {
+                            seeded = true;
+                            if let Some(secret) = state_clone.llm_api_key_secret() {
+                                let _ = seed_tx.send(DesktopMessage::PushSecrets {
+                                    secrets: vec![secret],
+                                });
+                            }
+                        }
                         state_clone.handle_worker_message(&worker_id_clone, worker_msg);
                     }
                 }
@@ -164,5 +181,85 @@ mod tests {
         client.send(DesktopMessage::Ping).unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(state.list_workers()[0].paired);
+    }
+
+    /// A freshly provisioned worker holds no key, so the workspace's own key is
+    /// pushed once the worker answers `Paired`. The seed must not leave before
+    /// that answer, and must carry the local value under the name the worker's
+    /// `llm_factory` resolves.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_worker_client_connect_seeds_a_paired_worker_with_the_missing_key() {
+        use tokio_tungstenite::accept_async;
+
+        let state = DesktopState::new(
+            Store::open_in_memory().unwrap(),
+            crate::thread_store::ThreadStore::new(std::path::PathBuf::new()).unwrap(),
+        );
+        state
+            .set_llm_setting("openai", "sk-local", None, "gpt-4o", None)
+            .unwrap();
+        let worker_id = WorkerId::generate();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("ws://127.0.0.1:{}/ws", port);
+        state
+            .add_worker(worker_id.clone(), "mock".to_string(), url.clone())
+            .unwrap();
+
+        // Every message after the pairing request, paired with whether the
+        // mock had already answered `Paired` when it arrived: a seed that left
+        // before that answer is the thing this test exists to catch.
+        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel::<(bool, DesktopMessage)>();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            let mut answered_paired = false;
+            while let Some(Ok(msg)) = ws.next().await {
+                let Message::Text(text) = msg else {
+                    continue;
+                };
+                let Ok(desktop_msg) = serde_json::from_str::<DesktopMessage>(&text) else {
+                    continue;
+                };
+                if matches!(desktop_msg, DesktopMessage::PairRequest { .. }) {
+                    answered_paired = true;
+                    let resp = serde_json::to_string(&WorkerMessage::Paired).unwrap();
+                    let _ = ws.send(Message::Text(resp.into())).await;
+                    continue;
+                }
+                let _ = seen_tx.send((answered_paired, desktop_msg));
+            }
+        });
+
+        let client = WorkerClient::connect(
+            state.clone(),
+            worker_id.clone(),
+            &WorkerConfig::new("mock", "127.0.0.1", "")
+                .with_pairing_code("0000")
+                .with_worker_id(worker_id.clone())
+                .with_port(port),
+            "0000".to_string(),
+        )
+        .await
+        .expect("connect");
+
+        let (after_paired, msg) = tokio::time::timeout(Duration::from_secs(5), seen_rx.recv())
+            .await
+            .expect("the seed reaches the worker on the paired connection")
+            .expect("the mock worker keeps the connection open");
+        assert!(
+            after_paired,
+            "nothing is pushed before the worker answers Paired"
+        );
+        match msg {
+            DesktopMessage::PushSecrets { secrets } => {
+                assert_eq!(secrets.len(), 1, "only the name the worker resolves");
+                assert_eq!(secrets[0].name, "llm_api_key");
+                assert_eq!(secrets[0].provider, "openai");
+                assert_eq!(secrets[0].encrypted_value, b"sk-local".to_vec());
+            }
+            other => panic!("expected PushSecrets after Paired, got {other:?}"),
+        }
+        drop(client);
     }
 }

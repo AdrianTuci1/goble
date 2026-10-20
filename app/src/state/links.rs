@@ -1,70 +1,4 @@
 
-/// Detect a BYOH desktop-handoff URI in `text` (`rdp://…` or a
-/// `goble://desktop?…` link). Returns the trimmed URI substring when found, so
-/// a harness that surfaces its handoff as a hyperlink can be launched by the
-/// user even without a structured handoff event.
-pub(crate) fn detect_screen_link(text: &str) -> Option<String> {
-    let start = text.find("rdp://").or_else(|| text.find("goble://desktop"))?;
-    let rest = &text[start..];
-    let end = rest
-        .find(char::is_whitespace)
-        .map(|i| start + i)
-        .unwrap_or(text.len());
-    if end <= start {
-        return None;
-    }
-    let uri = &text[start..end];
-    // A trailing punctuation mark is not part of the URI.
-    let uri = uri.trim_end_matches(|c: char| c == ')' || c == ']' || c == '}' || c == '.' || c == ',' || c == ';');
-    if uri.is_empty() {
-        None
-    } else {
-        Some(uri.to_string())
-    }
-}
-
-/// Derive a screen-registry source id from a detected handoff URI, best-effort.
-/// Remote sources are typically identified by their `user@host:port`; when that
-/// cannot be parsed the host (or the whole URI) is used.
-pub(crate) fn screen_source_from_link(link: &str) -> Option<String> {
-    let mut candidate: Option<String> = None;
-    // goble://desktop?user=&host=&port=
-    if let Some(q) = link.split_once('?').map(|(_, q)| q) {
-        let mut user = String::new();
-        let mut host = String::new();
-        let mut port = String::new();
-        for pair in q.split('&') {
-            let mut kv = pair.splitn(2, '=');
-            let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
-            match k {
-                "user" => user = v.to_string(),
-                "host" => host = v.to_string(),
-                "port" => port = v.to_string(),
-                _ => {}
-            }
-        }
-        if !host.is_empty() {
-            candidate = Some(if user.is_empty() {
-                if port.is_empty() { host.clone() } else { format!("{host}:{port}") }
-            } else if port.is_empty() {
-                format!("{user}@{host}")
-            } else {
-                format!("{user}@{host}:{port}")
-            });
-        }
-    }
-    // rdp://[user@]host[:port] — strip scheme.
-    if candidate.is_none() {
-        if let Some(rest) = link.strip_prefix("rdp://") {
-            let rest = rest.split_whitespace().next().unwrap_or(rest);
-            let rest = rest.trim_end_matches('/');
-            let host = rest.rsplit('@').next().unwrap_or(rest);
-            candidate = Some(host.to_string());
-        }
-    }
-    candidate
-}
-
 /// The web URL schemes the app is willing to hand to the OS opener. A link
 /// that arrived in a transcript is untrusted input, so only these two are
 /// accepted.
@@ -76,7 +10,7 @@ pub(crate) enum WebScheme {
 
 /// The scheme of `url` when it is a well-formed `http`/`https` URL carrying a
 /// non-empty host; `None` for every other scheme (`file:`, `javascript:`,
-/// `data:`, `rdp:`, `goble:`, …) and for anything unparseable.
+/// `data:`, …) and for anything unparseable.
 pub(crate) fn web_scheme(url: &str) -> Option<WebScheme> {
     let (scheme, rest) = url.split_once(':')?;
     let scheme = if scheme.eq_ignore_ascii_case("http") {

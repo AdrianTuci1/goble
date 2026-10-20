@@ -23,6 +23,9 @@ source "$PACKAGING_DIR/version.env"
 APP_NAME="${APP_NAME:-Goble}"
 APP_SLUG="${APP_SLUG:-goble}"
 BIN_NAME="${BIN_NAME:-goble-app}"
+PTY_DAEMON_NAME="${PTY_DAEMON_NAME:-goble-pty-daemon}"
+CLI_NAME="${CLI_NAME:-goble-cli}"
+MCP_NAME="${MCP_NAME:-goble-mcp}"
 VERSION="${VERSION:-0.0.0}"
 
 DEFAULT_ICON="$ROOT_DIR/crates/goble-desktop-native/resources/icons/128x128@2x.png"
@@ -35,6 +38,9 @@ Build ${APP_NAME}-<version>-<arch>.AppImage from a built binary.
 
 Options:
   --binary PATH     Binary to package (default: target/release/${BIN_NAME})
+  --pty-daemon-binary PATH  PTY daemon (default: target/release/${PTY_DAEMON_NAME})
+  --cli-binary PATH         Control CLI (default: target/release/${CLI_NAME})
+  --mcp-binary PATH         MCP server (default: target/release/${MCP_NAME})
   --outdir DIR      Output directory (default: <repo>/dist)
   --version VERSION Version used in file names (default: ${VERSION})
   --arch ARCH       x86_64 | aarch64 (default: host arch)
@@ -50,6 +56,9 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool '$1' not found in PATH"; }
 
 BINARY=""
+PTY_DAEMON_BINARY=""
+CLI_BINARY=""
+MCP_BINARY=""
 OUTDIR="$ROOT_DIR/dist"
 DISPLAY_VERSION="$VERSION"
 ARCH=""
@@ -59,6 +68,9 @@ KEEP_APPDIR=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --binary)      BINARY="${2:?--binary needs a path}"; shift 2 ;;
+        --pty-daemon-binary) PTY_DAEMON_BINARY="${2:?--pty-daemon-binary needs a path}"; shift 2 ;;
+        --cli-binary)  CLI_BINARY="${2:?--cli-binary needs a path}"; shift 2 ;;
+        --mcp-binary)  MCP_BINARY="${2:?--mcp-binary needs a path}"; shift 2 ;;
         --outdir)      OUTDIR="${2:?--outdir needs a path}"; shift 2 ;;
         --version)     DISPLAY_VERSION="${2:?--version needs a value}"; shift 2 ;;
         --arch)        ARCH="${2:?--arch needs a value}"; shift 2 ;;
@@ -72,8 +84,15 @@ done
 [[ "$(uname -s)" == "Linux" ]] || die "make-appimage.sh only runs on Linux"
 
 BINARY="${BINARY:-$ROOT_DIR/target/release/$BIN_NAME}"
-[[ -f "$BINARY" ]] || die "binary not found: $BINARY
-build it first: cargo build --release -p $PKG_NAME"
+PTY_DAEMON_BINARY="${PTY_DAEMON_BINARY:-$ROOT_DIR/target/release/$PTY_DAEMON_NAME}"
+CLI_BINARY="${CLI_BINARY:-$ROOT_DIR/target/release/$CLI_NAME}"
+MCP_BINARY="${MCP_BINARY:-$ROOT_DIR/target/release/$MCP_NAME}"
+BINARY_NAMES=("$BIN_NAME" "$PTY_DAEMON_NAME" "$CLI_NAME" "$MCP_NAME")
+BINARY_PATHS=("$BINARY" "$PTY_DAEMON_BINARY" "$CLI_BINARY" "$MCP_BINARY")
+for i in "${!BINARY_NAMES[@]}"; do
+    [[ -f "${BINARY_PATHS[$i]}" ]] || die "${BINARY_NAMES[$i]} binary not found: ${BINARY_PATHS[$i]}
+build all four first: cargo build --release -p goble-app -p goble-pty -p goble-cli -p goble-mcp"
+done
 [[ -f "$ICON_SRC" ]] || die "icon not found: $ICON_SRC"
 
 if [[ -z "$ARCH" ]]; then
@@ -131,7 +150,9 @@ mkdir -p "$APPDIR/usr/bin" \
          "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
          "$APPDIR/usr/share/doc/$APP_SLUG"
 
-install -m 0755 "$BINARY" "$APPDIR/usr/bin/$BIN_NAME"
+for i in "${!BINARY_NAMES[@]}"; do
+    install -m 0755 "${BINARY_PATHS[$i]}" "$APPDIR/usr/bin/${BINARY_NAMES[$i]}"
+done
 install -m 0644 "$SCRIPT_DIR/$APP_SLUG.desktop" \
     "$APPDIR/usr/share/applications/$APP_SLUG.desktop"
 install -m 0644 "$SCRIPT_DIR/$APP_SLUG.desktop" "$APPDIR/$APP_SLUG.desktop"

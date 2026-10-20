@@ -9,6 +9,7 @@ use super::*;
                 conversation_id: "a".into(),
                 draft: "d1".into(),
                 path: "/a".into(),
+                daemon_session_id: String::new(),
             },
         );
         state.pane_sessions.insert(
@@ -17,6 +18,7 @@ use super::*;
                 conversation_id: "b".into(),
                 draft: "d2".into(),
                 path: "/b".into(),
+                daemon_session_id: String::new(),
             },
         );
         state.pane_runtime.insert(

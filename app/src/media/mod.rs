@@ -8,4 +8,4 @@ pub mod actions;
 pub mod state;
 
 pub use actions::make_media_actions;
-pub use state::{medium_routing, MediaState};
+pub use state::{medium_for_routing, medium_routing, MediaState};

@@ -1,10 +1,12 @@
 pub mod agent_memory;
 pub mod agent_runtime;
 pub mod file_vault;
+pub mod gateway_client;
 pub mod leader;
 pub mod llm_factory;
 pub mod mcp;
 pub mod pairing;
+pub mod pty;
 pub mod runner;
 pub mod scheduler;
 pub mod snapshot_runner;

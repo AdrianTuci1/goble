@@ -42,12 +42,29 @@ use super::*;
             .pending_command
             .is_none());
 
-        // The finished turn frees the pane and drops any stale proposal.
+        // The finished turn frees the pane; a proposal still awaiting a
+        // decision is not erased, and the pane keeps reporting NeedsInput.
         state.apply_command_proposed(&event);
-        state.finish_turn(1);
+        state.finish_turn(1, crate::state::TurnOutcome::Success);
         let rt = state.pane_runtime.get(&1).unwrap();
         assert!(!rt.busy, "the finished turn must not leave the pane busy");
+        assert!(
+            rt.pending_command.is_some(),
+            "a pending approval survives the turn finish"
+        );
+        assert_eq!(
+            rt.agent_state,
+            crate::state::PaneAgentState::NeedsInput,
+            "the pane still needs the user's decision"
+        );
+
+        // Once the decision is made the stale proposal can be dropped and a
+        // later finish settles the pane normally.
+        state.clear_command_proposal(1, "call-1");
+        state.finish_turn(1, crate::state::TurnOutcome::Success);
+        let rt = state.pane_runtime.get(&1).unwrap();
         assert!(rt.pending_command.is_none());
+        assert_eq!(rt.agent_state, crate::state::PaneAgentState::Done);
     }
 
     #[test]

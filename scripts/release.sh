@@ -4,10 +4,16 @@
 #
 #   version resolution:  --version > $GOBLE_VERSION > `git describe --tags`
 #                        > packaging/version.env VERSION
-#   build:               cargo build --release -p goble-app
+#   build:               cargo build --release -p goble-app -p goble-pty
+#                        -p goble-cli -p goble-mcp
 #   package:             the packaging script for the host OS
 #   outputs:             dist/<installers>, dist/SHA256SUMS, and optionally
 #                        dist/channel_versions.json for the updater
+#
+# All four release binaries ship together: the app, the attachable PTY daemon,
+# the control CLI, and the MCP server. Every packaging path installs the set in
+# one directory; the daemon and control clients are Unix-only at runtime, but
+# Windows still carries their binaries next to the app.
 #
 # This script never touches Tauri, npm or the legacy crates/goble-desktop tree:
 # the product shell is `app/` (package goble-app, binary goble-app).
@@ -24,6 +30,9 @@ source "$PKG_DIR/version.env"
 APP_NAME="${APP_NAME:-Goble}"
 PKG_NAME="${PKG_NAME:-goble-app}"
 BIN_NAME="${BIN_NAME:-goble-app}"
+PTY_DAEMON_NAME="${PTY_DAEMON_NAME:-goble-pty-daemon}"
+CLI_NAME="${CLI_NAME:-goble-cli}"
+MCP_NAME="${MCP_NAME:-goble-mcp}"
 FALLBACK_VERSION="${VERSION:-0.0.0}"
 
 usage() {
@@ -154,11 +163,22 @@ Cross-compilation is not driven from this script; use the CI matrix in
 fi
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
-if [[ "$PLATFORM" == "windows" ]]; then
-    HOST_BINARY="$TARGET_DIR/release/$BIN_NAME.exe"
-else
-    HOST_BINARY="$TARGET_DIR/release/$BIN_NAME"
-fi
+
+# Cargo writes `.exe` suffixes on Windows; every path below goes through this
+# so the same script names all four binaries on every host.
+binary_path() {
+    local name="$1" dir="$2"
+    if [[ "$PLATFORM" == "windows" ]]; then
+        printf '%s/%s.exe\n' "$dir" "$name"
+    else
+        printf '%s/%s\n' "$dir" "$name"
+    fi
+}
+
+HOST_BINARY="$(binary_path "$BIN_NAME" "$TARGET_DIR/release")"
+HOST_PTY_DAEMON_BINARY="$(binary_path "$PTY_DAEMON_NAME" "$TARGET_DIR/release")"
+HOST_CLI_BINARY="$(binary_path "$CLI_NAME" "$TARGET_DIR/release")"
+HOST_MCP_BINARY="$(binary_path "$MCP_NAME" "$TARGET_DIR/release")"
 
 # --- signing policy ---------------------------------------------------------
 # A release is signed, or it is not a release: Gatekeeper refuses an unsigned
@@ -266,31 +286,54 @@ run() {
 }
 
 # --- build -----------------------------------------------------------------
+# One build of the whole shipping set. `goble-pty` is the package that owns the
+# `goble-pty-daemon` binary, so selecting it is what produces the daemon.
+BUILD_PACKAGES=(-p "$PKG_NAME" -p goble-pty -p "$CLI_NAME" -p "$MCP_NAME")
+
 build_binary() {
     if [[ "$SKIP_BUILD" -eq 1 ]]; then
         log "Skipping cargo build (--skip-build)"
-        [[ -f "$HOST_BINARY" ]] || warn "expected binary not found: $HOST_BINARY"
+        local binary
+        for binary in "$HOST_BINARY" "$HOST_PTY_DAEMON_BINARY" "$HOST_CLI_BINARY" "$HOST_MCP_BINARY"; do
+            [[ -f "$binary" ]] || warn "expected binary not found: $binary"
+        done
         return 0
     fi
     need cargo
-    log "Building $PKG_NAME (release, channel: $CHANNEL, version: $VERSION)"
+    log "Building $PKG_NAME, $PTY_DAEMON_NAME, $CLI_NAME and $MCP_NAME (release, channel: $CHANNEL, version: $VERSION)"
     # GOBLE_CHANNEL and GOBLE_RELEASE_VERSION are baked in with `option_env!`: a
     # released build reports crashes, accepts updates, and knows its own version;
     # a developer's build does none of that and claims no version it is not.
     run env GOBLE_CHANNEL="$CHANNEL" GOBLE_RELEASE_VERSION="$VERSION" \
-        cargo build --release -p "$PKG_NAME"
+        cargo build --release "${BUILD_PACKAGES[@]}"
 }
 
 # --- packaging -------------------------------------------------------------
 package_macos() {
-    local bundle_args=(--binary "$HOST_BINARY" --outdir "$OUTDIR" --version "$VERSION")
+    local bundle_args=(
+        --binary "$HOST_BINARY"
+        --pty-daemon-binary "$HOST_PTY_DAEMON_BINARY"
+        --cli-binary "$HOST_CLI_BINARY"
+        --mcp-binary "$HOST_MCP_BINARY"
+        --outdir "$OUTDIR" --version "$VERSION"
+    )
     if [[ "$UNIVERSAL" -eq 1 ]]; then
         log "Universal build requested: compiling both macOS slices"
-        run cargo build --release -p "$PKG_NAME" --target aarch64-apple-darwin
-        run cargo build --release -p "$PKG_NAME" --target x86_64-apple-darwin
-        bundle_args+=(--universal
-            --aarch64-binary "$TARGET_DIR/aarch64-apple-darwin/release/$BIN_NAME"
-            --x86_64-binary "$TARGET_DIR/x86_64-apple-darwin/release/$BIN_NAME")
+        run cargo build --release "${BUILD_PACKAGES[@]}" --target aarch64-apple-darwin
+        run cargo build --release "${BUILD_PACKAGES[@]}" --target x86_64-apple-darwin
+        local arm_dir="$TARGET_DIR/aarch64-apple-darwin/release"
+        local intel_dir="$TARGET_DIR/x86_64-apple-darwin/release"
+        bundle_args+=(
+            --universal
+            --x86_64-binary "$intel_dir/$BIN_NAME"
+            --aarch64-binary "$arm_dir/$BIN_NAME"
+            --pty-daemon-x86_64-binary "$intel_dir/$PTY_DAEMON_NAME"
+            --pty-daemon-aarch64-binary "$arm_dir/$PTY_DAEMON_NAME"
+            --cli-x86_64-binary "$intel_dir/$CLI_NAME"
+            --cli-aarch64-binary "$arm_dir/$CLI_NAME"
+            --mcp-x86_64-binary "$intel_dir/$MCP_NAME"
+            --mcp-aarch64-binary "$arm_dir/$MCP_NAME"
+        )
     fi
     run "$PKG_DIR/macos/make-bundle.sh" "${bundle_args[@]}"
     run "$PKG_DIR/macos/make-dmg.sh" \
@@ -302,11 +345,23 @@ package_linux() {
     for format in "${LINUX_FORMATS[@]}"; do
         case "$format" in
             appimage) run "$PKG_DIR/linux/make-appimage.sh" \
-                          --binary "$HOST_BINARY" --outdir "$OUTDIR" --version "$VERSION" ;;
+                          --binary "$HOST_BINARY" \
+                          --pty-daemon-binary "$HOST_PTY_DAEMON_BINARY" \
+                          --cli-binary "$HOST_CLI_BINARY" \
+                          --mcp-binary "$HOST_MCP_BINARY" \
+                          --outdir "$OUTDIR" --version "$VERSION" ;;
             deb)      run "$PKG_DIR/linux/make-deb.sh" \
-                          --binary "$HOST_BINARY" --outdir "$OUTDIR" --version "$VERSION" ;;
+                          --binary "$HOST_BINARY" \
+                          --pty-daemon-binary "$HOST_PTY_DAEMON_BINARY" \
+                          --cli-binary "$HOST_CLI_BINARY" \
+                          --mcp-binary "$HOST_MCP_BINARY" \
+                          --outdir "$OUTDIR" --version "$VERSION" ;;
             tarball)  run "$PKG_DIR/linux/make-tarball.sh" \
-                          --binary "$HOST_BINARY" --outdir "$OUTDIR" --version "$VERSION" ;;
+                          --binary "$HOST_BINARY" \
+                          --pty-daemon-binary "$HOST_PTY_DAEMON_BINARY" \
+                          --cli-binary "$HOST_CLI_BINARY" \
+                          --mcp-binary "$HOST_MCP_BINARY" \
+                          --outdir "$OUTDIR" --version "$VERSION" ;;
         esac
     done
 }
@@ -316,7 +371,10 @@ package_windows() {
     ps="$(command -v pwsh || command -v powershell || true)"
     [[ -n "$ps" ]] || die "PowerShell (pwsh or powershell) not found; run packaging/windows/build-installer.ps1 directly"
     run "$ps" -NoProfile -ExecutionPolicy Bypass -File "$PKG_DIR/windows/build-installer.ps1" \
-        -Version "$VERSION" -SourceBinary "$HOST_BINARY" -OutDir "$OUTDIR"
+        -Version "$VERSION" -SourceBinary "$HOST_BINARY" -OutDir "$OUTDIR" \
+        -PtyDaemonBinary "$HOST_PTY_DAEMON_BINARY" \
+        -CliBinary "$HOST_CLI_BINARY" \
+        -McpBinary "$HOST_MCP_BINARY"
 }
 
 build_binary

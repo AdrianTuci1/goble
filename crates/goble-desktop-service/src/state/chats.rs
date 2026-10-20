@@ -164,6 +164,19 @@ impl DesktopState {
         self.store.lock().get_chat_workspace_routing(id)
     }
 
+    /// Persist the environment (medium) a conversation's turns run on, chosen in
+    /// that conversation's composer at submit time.
+    pub fn set_chat_medium(&self, id: &str, medium_id: Option<&str>) -> anyhow::Result<()> {
+        self.store.lock().set_chat_medium(id, medium_id)?;
+        self.emit("chats:updated", ());
+        Ok(())
+    }
+
+    /// Read the environment a conversation's turns run on, if one was chosen.
+    pub fn get_chat_medium(&self, id: &str) -> anyhow::Result<Option<String>> {
+        self.store.lock().get_chat_medium(id)
+    }
+
     /// Persist the directory a conversation works in (the pane's cwd when it
     /// ran), so its sidebar card can say where the work happens.
     pub fn set_chat_working_dir(&self, id: &str, dir: &str) -> anyhow::Result<()> {

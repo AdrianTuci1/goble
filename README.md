@@ -30,9 +30,11 @@ Three properties make Goble distinct:
 1. **Reversibility.** Execution is a Git-like trace. From the event stream any harness already emits,
    the daemon keeps a per-turn ledger, so you can fork from a turn, replay it, or revert it. The
    transcript is always reversible; a harness can opt in to environment snapshots and restore as well.
-2. **Interaction.** Live voice (speech to text and text to speech) and screen. Screen works in both
-   directions: broadcasting your screen for observation, and computer-use, where the agent drives
-   input.
+2. **A terminal window manager.** Every pane is a real terminal with command blocks from OSC 133/DCS
+   hooks, and the harness is integrated into it: an agent command is claimed and run in your own
+   shell, so the transcript, tool calls and sub-agents sit beside the prompt that produced them.
+   Panes can be local, bound to an SSH session, or fed by a remote worker. Live voice (speech to
+   text and text to speech) is the interaction layer beside it.
 3. **Per-project observability.** For each directory you can see what is running, what is scheduled,
    and what has finished. The project, not the agent, is the unit of attention.
 
@@ -45,7 +47,7 @@ Three properties make Goble distinct:
 
 | Primitive | Meaning |
 |---|---|
-| **Medium** | which daemon listens: Local / VM / RemoteXrdp / Browser / Container |
+| **Medium** | which daemon listens: Local / VM / Remote / Browser / Container |
 | **Project** | a directory; the unit of observability and isolation |
 | **Session** | a worktree or working session inside a project |
 | **Task** | a harness invocation with grants (`ReadOnly` / `ReadWrite`) and a trigger (manual / cron / http / heartbeat) |
@@ -69,8 +71,8 @@ goble-harness-protocol (BYOH seam) → HarnessRuntime (internal | cli subprocess
 ```
 
 The layering rule is `types ← protocol ← runtime`. There are two composition roots over one core: the
-daemon runs **embedded** in-process inside the GUI binary, where the local voice and screen code
-lives, or **headless** as `goblin-worker` on a remote host. The GUI does not know or care which one it
+daemon runs **embedded** in-process inside the GUI binary, where the local voice code lives, or
+**headless** as `goblin-worker` on a remote host. The GUI does not know or care which one it
 is talking to; the medium is simply which daemon listens. Reversibility is backed by `goble-replay`
 (a per-turn ledger) and `goble-persistence` (a SQLite checkpoint store), so the history survives a
 restart.
@@ -78,6 +80,12 @@ restart.
 For the full architecture, see [`docs/substrate-architecture.md`](docs/substrate-architecture.md),
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (identity, mTLS, and roles), and
 [`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md) (workspace file layout).
+
+A running window also serves a local control plane: `goble-cli ctl` exposes the
+typed verbs on the command line, and `goble-mcp` serves the same operations as
+Model Context Protocol tools over stdio. The socket, the wire protocol, the
+verbs, and the tool names are documented in
+[`docs/control-plane.md`](docs/control-plane.md).
 
 ## Installation
 
@@ -201,7 +209,7 @@ under `crates/`. The crates fall into a few groups:
 | Daemon | `goble-daemon`, `goble-daemon-protocol`, `goble-daemon-client`, `goble-desktop-service`, `goblin-worker`, `goble-cli` | The core execution seam, the embedded root, and the headless root |
 | Reversibility and persistence | `goble-replay`, `goble-persistence` | Per-turn ledger, fork/replay/revert/settlement, and the SQLite checkpoint store |
 | UI | `goble-ui` (widget library), `app/` (product shell), `goble-desktop-native` (backend-integration reference, not the product shell) | Rendering, windowing, and the application views |
-| Voice, sandbox, workflow, screen | `goble-voice`, `goble-sandbox`, `goble-workflow`, `goble-screen-core`, `goble-screen-adapter`, `goble-screen-sdk` | Capability crates behind the daemon |
+| Voice, sandbox, workflow | `goble-voice`, `goble-sandbox`, `goble-workflow` | Capability crates behind the daemon |
 | Terminal | `goble-terminal` plus the vendored `vendor/alacritty_terminal` | The VT emulator and its parser |
 | Core | `goble-core`, `goble-telemetry`, `goble-telemetry-server`, `goble-update` | Store, identity, protocol, MCP, provisioning, crash reporting, the collector that receives it, and update delivery |
 
@@ -246,8 +254,6 @@ transcript, so reversibility still works.
   its fixture binary as the reference.
 - **A UI widget.** Add a primitive to `goble-ui`, following the existing elements under
   `crates/goble-ui/src/elements/` and the preview example in `crates/goble-ui/examples/`.
-- **A screen backend.** Add a capturer or controller behind the `ScreenCapturer` / `ScreenController`
-  traits in `goble-screen-core`, with the macOS adapter in `goble-screen-adapter` as a model.
 - **A voice backend.** Implement the `VoiceProvider` trait in `goble-voice`; the crate ships a mock
   provider and an `audio` feature that is off by default.
 

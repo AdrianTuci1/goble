@@ -19,7 +19,6 @@ Required icons for the four-section UI:
 - `chevron-left`, `chevron-right`, `chevron-down`
 - `send` / `arrow-right` (for composer send)
 - `paperclip` / `plus` (for attach)
-- `computer`, `monitor` (for Computer Use section)
 - `check`, `x`, `circle`, `cancelled` (status dots)
 
 ### Runtime rendering

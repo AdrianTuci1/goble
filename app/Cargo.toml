@@ -16,8 +16,10 @@ goble-daemon-client = { path = "../crates/goble-daemon-client" }
 goble-daemon-protocol = { path = "../crates/goble-daemon-protocol" }
 goble-harness-types = { path = "../crates/goble-harness-types" }
 goble-harness-cli = { path = "../crates/goble-harness-cli" }
+# The control protocol served on a Unix socket: the CLI/MCP surface (F3b) and
+# this app's control server share these typed verbs.
+goble-control = { path = "../crates/goble-control" }
 goble-persistence = { path = "../crates/goble-persistence" }
-goble-screen-core = { path = "../crates/goble-screen-core" }
 # The VT terminal core (screen, key/mouse encoding, hooks, palette) that the
 # terminal pane drives; see `src/emulator.rs` and `src/terminal.rs`.
 goble-terminal = { path = "../crates/goble-terminal" }
@@ -32,10 +34,9 @@ serde_json = { workspace = true }
 wgpu = { version = "25.0", default-features = false, features = ["wgsl", "metal", "dx12", "vulkan", "gles"] }
 winit = { version = "0.30", features = ["rwh_06"] }
 tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time"] }
-# PTY-backed terminal pane. The terminal reads its child on a background
-# thread and coalesces output into the render buffer (never blocking the UI
-# thread); see `src/terminal.rs`.
-portable-pty = "0.9"
+# The attachable PTY daemon: a terminal pane asks it for a session and reads
+# `output` events, so the shell survives the app and a pane can reattach.
+goble-pty = { path = "../crates/goble-pty" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # The sidebar's global search: ripgrep when the machine has one, and the same
 # walk in-process when it does not (see `src/ui/global_search.rs`).
@@ -89,10 +90,6 @@ path = "src/integration_testing/projects_flow.rs"
 [[test]]
 name = "harness_pages_flow"
 path = "src/integration_testing/harness_pages_flow.rs"
-
-[[test]]
-name = "screen_flow"
-path = "src/integration_testing/screen_flow.rs"
 
 [[test]]
 name = "menu_flow"

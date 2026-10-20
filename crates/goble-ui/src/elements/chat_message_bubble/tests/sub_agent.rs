@@ -88,8 +88,10 @@ fn each_sub_agent_status_draws_its_own_line() {
     for (status, activity, elapsed, outcome, token, line) in cases {
         let call = spawn_call(ToolCallStatus::Finished);
         let record = record("conv-child-1", status, activity, elapsed, outcome);
+        // The run is folded by default; opening it draws the member row whose
+        // own line this test pins.
         let (commands, _) =
-            paint_sub_agent(vec![call.clone()], HashMap::from([(call.id, record)]), None);
+            paint_sub_agent_run_open(vec![call.clone()], HashMap::from([(call.id, record)]));
         let rows = drawn_row_texts(&commands);
         let row = rows
             .iter()
@@ -152,10 +154,9 @@ fn a_running_sub_agent_row_carries_its_activity_and_elapsed_time() {
             Duration::from_millis(elapsed),
             None,
         );
-        let (commands, _) = paint_sub_agent(
+        let (commands, _) = paint_sub_agent_run_open(
             vec![call.clone()],
             HashMap::from([(call.id.clone(), record)]),
-            None,
         );
         drawn_row_texts(&commands)
     };
@@ -193,10 +194,9 @@ fn a_running_sub_agent_row_carries_its_activity_and_elapsed_time() {
         Duration::from_secs(30),
         Some("done"),
     );
-    let (commands, _) = paint_sub_agent(
+    let (commands, _) = paint_sub_agent_run_open(
         vec![call.clone()],
         HashMap::from([("call_spawn_subagent".to_string(), record)]),
-        None,
     );
     let rows = drawn_row_texts(&commands);
     assert!(
@@ -226,29 +226,54 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
         Some("line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9"),
     );
     let fold = Rc::new(RefCell::new(HashMap::new()));
+    let calls = vec![call.clone()];
+    let group = run_key(&calls, 0);
     let (mut bubble, _) = sub_agent_bubble(
-        vec![call.clone()],
+        calls,
         HashMap::from([(call.id.clone(), record)]),
         fold.clone(),
     );
 
+    let open_run = |bubble: &mut ChatMessageBubble| {
+        let commands = paint_bubble(bubble, &app);
+        let origin = run_origin(&commands, "Ran 1 subagent");
+        click_at(bubble, &app, origin + vec2f(2.0, 4.0));
+    };
     let header_click = |bubble: &mut ChatMessageBubble| {
         let commands = paint_bubble(bubble, &app);
         let origin = run_origin(&commands, "Subagent ");
         click_at(bubble, &app, origin + vec2f(2.0, 4.0));
     };
 
-    // Folded it is the one header row, like every other shape's default. The
-    // open target sits beside it as its own, smaller run.
+    // Folded, the sub-agent is part of its run's aggregated header: the member
+    // row, its child line and the open target are all one expansion away.
     let folded = drawn_row_texts(&paint_bubble(&mut bubble, &app));
-    assert_eq!(
-        folded.iter().filter(|row| row.contains("Subagent")).count(),
-        1,
-        "a folded sub-agent draws one header line, got {folded:?}"
+    assert!(
+        folded.iter().any(|row| row.contains("Ran 1 subagent")),
+        "a folded sub-agent joins its run header, got {folded:?}"
+    );
+    assert!(
+        !folded.iter().any(|row| row.contains("Subagent")),
+        "the member row is hidden while the run is folded, got {folded:?}"
     );
     assert!(
         !folded.iter().any(|row| row.contains("tool calls")),
-        "a folded row draws none of the record's counters, got {folded:?}"
+        "a folded run draws none of the record's counters, got {folded:?}"
+    );
+
+    // Opening the run draws the member row. Its own fold then cycles like every
+    // other shape's.
+    open_run(&mut bubble);
+    assert_eq!(
+        fold.borrow().get(&group),
+        Some(&ToolDisplayMode::Expanded),
+        "the run's header opens the run"
+    );
+    let opened = drawn_row_texts(&paint_bubble(&mut bubble, &app));
+    assert_eq!(
+        opened.iter().filter(|row| row.contains("Subagent")).count(),
+        1,
+        "the opened run draws its member's one header line, got {opened:?}"
     );
 
     header_click(&mut bubble);
@@ -334,9 +359,13 @@ fn clicking_a_sub_agent_row_fires_the_open_action() {
         Duration::from_secs(4),
         None,
     );
-    let fold = Rc::new(RefCell::new(HashMap::new()));
+    let calls = vec![call.clone()];
+    let fold = Rc::new(RefCell::new(HashMap::from([(
+        run_key(&calls, 0),
+        ToolDisplayMode::Expanded,
+    )])));
     let (mut bubble, actions) = sub_agent_bubble(
-        vec![call.clone()],
+        calls,
         HashMap::from([(call.id.clone(), record.clone())]),
         fold.clone(),
     );
@@ -371,7 +400,7 @@ fn status_affordance_reflects_the_persisted_status() {
     let cases = [
         (ToolCallStatus::Pending, ColorToken::Accent),
         (ToolCallStatus::Running, ColorToken::Accent),
-        (ToolCallStatus::Finished, ColorToken::Muted),
+        (ToolCallStatus::Finished, ColorToken::Text),
         (ToolCallStatus::Error, ColorToken::Error),
     ];
     for (status, token) in cases {

@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{AgentId, AgentSpec, McpServer};
@@ -107,6 +108,28 @@ pub enum DesktopMessage {
     // this protocol crate stays decoupled from the workflow engine crate.
     RunWorkflow {
         request: serde_json::Value,
+    },
+    // --- pty transport ---
+    // A browser client opens a terminal in the sandbox. Panes are owned by the
+    // WebSocket connection that opened them and are closed when it goes away.
+    // `PtyInput::data` is base64 of the raw keystrokes; see `encode_pty_bytes`.
+    OpenPty {
+        pane_id: String,
+        cwd: String,
+        cols: u16,
+        rows: u16,
+    },
+    PtyInput {
+        pane_id: String,
+        data: String,
+    },
+    PtyResize {
+        pane_id: String,
+        cols: u16,
+        rows: u16,
+    },
+    ClosePty {
+        pane_id: String,
     },
     Ping,
 }
@@ -249,6 +272,38 @@ pub enum WorkerMessage {
     WorkflowRun {
         run: serde_json::Value,
     },
+    // --- pty transport ---
+    PtyOpened {
+        pane_id: String,
+    },
+    // `data` is base64 of the raw pty bytes; see `encode_pty_bytes`.
+    PtyOutput {
+        pane_id: String,
+        data: String,
+    },
+    // `code` is `None` when the child ended without a status (for example when
+    // the worker could not reap it).
+    PtyExit {
+        pane_id: String,
+        code: Option<i32>,
+    },
+    PtyError {
+        pane_id: String,
+        message: String,
+    },
+}
+
+/// Base64 the raw bytes of a pty stream for `PtyInput::data` / `PtyOutput::data`.
+///
+/// A pty carries bytes that are not necessarily UTF-8, so the JSON field is
+/// base64 rather than a string of the bytes.
+pub fn encode_pty_bytes(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Decode `PtyInput::data` / `PtyOutput::data` back to raw pty bytes.
+pub fn decode_pty_bytes(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    base64::engine::general_purpose::STANDARD.decode(data)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,5 +407,90 @@ mod tests {
         let bytes = env.serialize().unwrap();
         let decoded = Envelope::deserialize(&bytes).unwrap();
         assert_eq!(decoded.payload, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_roundtrip_desktop_pty_messages() {
+        let messages = vec![
+            DesktopMessage::OpenPty {
+                pane_id: "pane-1".to_string(),
+                cwd: "/workspace".to_string(),
+                cols: 120,
+                rows: 40,
+            },
+            DesktopMessage::PtyInput {
+                pane_id: "pane-1".to_string(),
+                data: encode_pty_bytes(b"echo hi\n"),
+            },
+            DesktopMessage::PtyResize {
+                pane_id: "pane-1".to_string(),
+                cols: 80,
+                rows: 24,
+            },
+            DesktopMessage::ClosePty {
+                pane_id: "pane-1".to_string(),
+            },
+        ];
+        for msg in messages {
+            let json = serde_json::to_string(&msg).unwrap();
+            let decoded: DesktopMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, msg, "wire form: {json}");
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_worker_pty_messages() {
+        let messages = vec![
+            WorkerMessage::PtyOpened {
+                pane_id: "pane-1".to_string(),
+            },
+            WorkerMessage::PtyOutput {
+                pane_id: "pane-1".to_string(),
+                data: encode_pty_bytes(b"hello\n"),
+            },
+            WorkerMessage::PtyExit {
+                pane_id: "pane-1".to_string(),
+                code: Some(0),
+            },
+            WorkerMessage::PtyExit {
+                pane_id: "pane-1".to_string(),
+                code: None,
+            },
+            WorkerMessage::PtyError {
+                pane_id: "pane-1".to_string(),
+                message: "no such pane".to_string(),
+            },
+        ];
+        for msg in messages {
+            let json = serde_json::to_string(&msg).unwrap();
+            let decoded: WorkerMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, msg, "wire form: {json}");
+        }
+    }
+
+    #[test]
+    fn test_pty_kind_tags_are_snake_case() {
+        let json = serde_json::to_value(DesktopMessage::OpenPty {
+            pane_id: "p".to_string(),
+            cwd: "/w".to_string(),
+            cols: 1,
+            rows: 1,
+        })
+        .unwrap();
+        assert_eq!(json["kind"], "open_pty");
+        let json = serde_json::to_value(WorkerMessage::PtyExit {
+            pane_id: "p".to_string(),
+            code: None,
+        })
+        .unwrap();
+        assert_eq!(json["kind"], "pty_exit");
+    }
+
+    #[test]
+    fn test_pty_bytes_codec_keeps_non_utf8() {
+        let bytes = vec![0u8, 159, 146, 150, b'\n'];
+        let encoded = encode_pty_bytes(&bytes);
+        assert_eq!(decode_pty_bytes(&encoded).unwrap(), bytes);
+        assert!(decode_pty_bytes("not base64!").is_err());
     }
 }

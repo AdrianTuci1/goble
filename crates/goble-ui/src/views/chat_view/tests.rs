@@ -5,6 +5,35 @@ use crate::geometry::vec2f;
 use crate::theme::{ColorToken, SpacingToken};
 
 #[test]
+fn a_failed_turn_draws_its_reason_in_the_transcript() {
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::text("Partial answer")],
+    )];
+    let mut view = ChatView::new()
+        .with_messages(messages)
+        .with_turn_error(Some("Incorrect API key provided".to_string()))
+        .finish();
+    let commands = render_element(&mut view, vec2f(600.0, 480.0), &app);
+    let texts: Vec<&str> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.iter().any(|text| *text == "Agent turn failed"));
+    assert!(
+        texts.iter().any(|text| text.contains("Incorrect API key provided")),
+        "the reason the turn failed is drawn in the transcript"
+    );
+}
+
+#[test]
 fn chat_view_layouts_with_messages() {
     let app = AppContext::default();
     let messages = vec![ChatMessage::new(
@@ -405,55 +434,6 @@ fn the_pane_header_tray_paints_over_the_transcript_and_fits_the_view() {
 }
 
 #[test]
-fn chat_view_renders_inline_screen_as_image() {
-    use crate::test_util::{command_counts, render_element};
-
-    let app = AppContext::default();
-    let pixels = vec![0u8; 200 * 120 * 4];
-    let mut view = ChatView::new()
-        .with_inline_screen("inline-1", 1, 200, 120, Arc::from(pixels))
-        .finish();
-    let commands = render_element(&mut view, vec2f(600.0, 800.0), &app);
-    let counts = command_counts(&commands);
-    assert!(
-        counts.draw_image > 0,
-        "a live inline screen should paint the frame image"
-    );
-    assert!(
-        counts.draw_text > 0,
-        "the harness-in-control header should render text"
-    );
-    assert_eq!(
-        counts.stroke_rect, 0,
-        "the inline desktop handoff paints a band, not a bordered card"
-    );
-}
-
-#[test]
-fn chat_view_renders_screen_link_card_without_frame() {
-    use crate::test_util::{command_counts, render_element};
-
-    let app = AppContext::default();
-    let mut view = ChatView::new()
-        .with_screen_link(Some("rdp://host:3389".to_string()))
-        .finish();
-    let commands = render_element(&mut view, vec2f(600.0, 800.0), &app);
-    let counts = command_counts(&commands);
-    assert_eq!(
-        counts.draw_image, 0,
-        "no live frame is drawn when only a URI link is present"
-    );
-    assert!(
-        counts.draw_text > 0,
-        "the handoff card should render a label and action"
-    );
-    assert_eq!(
-        counts.stroke_rect, 0,
-        "the screen-link handoff paints a band, not a bordered card"
-    );
-}
-
-#[test]
 fn chat_view_renders_the_queued_prompt_as_a_borderless_band() {
     use crate::test_util::{command_counts, render_element};
 
@@ -541,8 +521,8 @@ fn e_cycles_the_transcript_tool_folds_and_survives_a_rebuild() {
     let mut view = build(&fold);
     let collapsed = render_element(&mut view, vec2f(600.0, 800.0), &app);
     assert!(
-        has_text(&collapsed, "src/lib.rs"),
-        "the folded read's header carries its path"
+        has_text(&collapsed, "Read 1 file"),
+        "the folded read stacks into its run's aggregated header"
     );
     assert!(
         !has_text(&collapsed, "line 1"),
@@ -763,7 +743,7 @@ fn the_transcript_draws_the_tool_rows_the_lock_covers() {
             _ => None,
         })
         .collect();
-    for expected in ["Read ", "src/lib.rs", "Edit "] {
+    for expected in ["Read 1 file", "Edit "] {
         assert!(
             texts.iter().any(|text| text == expected),
             "the transcript draws {expected:?}, got {texts:?}"

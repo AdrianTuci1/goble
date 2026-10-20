@@ -62,7 +62,10 @@ fn create_chat_persists_and_selects() {
     let (state, actions) = build(&desktop);
     configure_model(&state);
 
-    assert!(state.borrow().conversations.is_empty());
+    // The launch pane is already bound to a conversation of its own, so a
+    // created chat is added to that one rather than replacing it.
+    let chats_before = state.borrow().conversations.len();
+    assert_eq!(chats_before, 1, "the launch pane owns a conversation");
 
     (actions.on_create_change.borrow_mut())("Planul de lansare".to_string());
     (actions.on_create_submit.borrow_mut())();
@@ -71,13 +74,22 @@ fn create_chat_persists_and_selects() {
         let state = state.borrow();
         assert_eq!(state.new_conversation_draft, "");
         assert!(state.selected_id.is_some());
-        assert_eq!(state.conversations.len(), 1);
-        assert_eq!(state.conversations[0].name, "Planul de lansare");
+        assert_eq!(state.conversations.len(), chats_before + 1);
+        let selected = state
+            .selected_id
+            .as_deref()
+            .expect("a selected conversation");
+        let created = state
+            .conversations
+            .iter()
+            .find(|chat| chat.id.as_str() == selected)
+            .expect("the created conversation is listed");
+        assert_eq!(created.name, "Planul de lansare");
     }
 
     let chats = desktop.list_chats();
-    assert_eq!(chats.len(), 1);
-    assert_eq!(chats[0].title, "Planul de lansare");
+    assert_eq!(chats.len(), chats_before + 1);
+    assert!(chats.iter().any(|chat| chat.title == "Planul de lansare"));
 }
 
 #[test]
@@ -86,16 +98,25 @@ fn blank_title_creates_default_agent() {
     let (state, actions) = build(&desktop);
     configure_model(&state);
 
+    let chats_before = state.borrow().conversations.len();
     (actions.on_create_change.borrow_mut())("   ".to_string());
     (actions.on_create_submit.borrow_mut())();
 
     {
         let state = state.borrow();
-        assert_eq!(state.conversations.len(), 1);
-        assert_eq!(state.conversations[0].name, "New conversation");
-        assert!(state.selected_id.is_some());
+        assert_eq!(state.conversations.len(), chats_before + 1);
+        let selected = state
+            .selected_id
+            .as_deref()
+            .expect("a selected conversation");
+        let created = state
+            .conversations
+            .iter()
+            .find(|chat| chat.id.as_str() == selected)
+            .expect("the created conversation is listed");
+        assert_eq!(created.name, "New conversation");
     }
-    assert_eq!(desktop.list_chats().len(), 1);
+    assert_eq!(desktop.list_chats().len(), chats_before + 1);
 }
 
 #[test]
@@ -137,7 +158,13 @@ fn a_prompt_with_no_model_is_never_persisted() {
 fn a_prompt_with_no_model_opens_the_agent_view_and_persists_no_message() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);
-    assert!(desktop.list_chats().is_empty());
+    // The launch pane owns one conversation to draw its agent view in; it is
+    // the only chat before anything is typed.
+    assert_eq!(desktop.list_chats().len(), 1);
+    let launch_conversation = state
+        .borrow()
+        .pane_conversation_id(state.borrow().active_pane_id)
+        .expect("the agent view has a conversation to draw");
 
     // Cmd+Enter at a pane is the composer's two calls: the harness switch first,
     // then the prompt. With no runnable model the switch still happens — the
@@ -168,6 +195,10 @@ fn a_prompt_with_no_model_opens_the_agent_view_and_persists_no_message() {
         s.pane_conversation_id(pane_id)
             .expect("the agent view has a conversation to draw")
     };
+    assert_eq!(
+        conversation, launch_conversation,
+        "the pane keeps the conversation it already owned"
+    );
     assert!(
         desktop
             .list_chat_messages(&conversation)
@@ -226,10 +257,11 @@ fn repeated_new_conversation_opens_a_tab_each_time() {
     let (state, actions) = build(&desktop);
     configure_model(&state);
     let tabs_before = state.borrow().spaces.len();
+    let chats_before = state.borrow().conversations.len();
 
     // The sidebar "New conversation" row opens a tab of its own every time: it
     // neither refuses nor reuses the conversation already on screen, so three
-    // clicks are three tabs with three conversations.
+    // clicks are three tabs with three new conversations.
     (actions.on_create_submit.borrow_mut())();
     (actions.on_create_submit.borrow_mut())();
     (actions.on_create_submit.borrow_mut())();
@@ -240,15 +272,23 @@ fn repeated_new_conversation_opens_a_tab_each_time() {
         tabs_before + 3,
         "each click appends one space"
     );
-    assert_eq!(s.conversations.len(), 3, "each tab has its own conversation");
-    assert_eq!(desktop.list_chats().len(), 3);
+    assert_eq!(
+        s.conversations.len(),
+        chats_before + 3,
+        "each tab has its own conversation"
+    );
+    assert_eq!(desktop.list_chats().len(), chats_before + 3);
     let ids: std::collections::HashSet<String> = s
         .pane_sessions
         .values()
         .map(|session| session.conversation_id.clone())
         .filter(|id| !id.is_empty())
         .collect();
-    assert_eq!(ids.len(), 3, "the tabs never share a transcript");
+    assert_eq!(
+        ids.len(),
+        chats_before + 3,
+        "the tabs never share a transcript"
+    );
 }
 
 #[test]
@@ -256,6 +296,7 @@ fn new_conversation_after_a_message_creates_a_fresh_one() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);
     configure_model(&state);
+    let chats_before = state.borrow().conversations.len();
 
     (actions.on_create_submit.borrow_mut())();
     let first = state.borrow().selected_id.clone().expect("first conversation");
@@ -266,7 +307,7 @@ fn new_conversation_after_a_message_creates_a_fresh_one() {
     // The pane's conversation now has content, and the click opens a tab of its
     // own with a conversation that is not the one it holds.
     (actions.on_create_submit.borrow_mut())();
-    assert_eq!(desktop.list_chats().len(), 2);
+    assert_eq!(desktop.list_chats().len(), chats_before + 2);
     assert_ne!(state.borrow().selected_id.as_deref(), Some(first.as_str()));
 }
 

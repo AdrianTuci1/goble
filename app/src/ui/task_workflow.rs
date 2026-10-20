@@ -474,7 +474,7 @@ mod tests {
     /// runs inside `layout`, so this is also what a key press lands on.
     fn frame(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<RenderCommand> {
         let constraint = SizeConstraint::loose(vec2f(WINDOW.0, WINDOW.1));
-        let _ = root.layout(constraint, &mut LayoutContext::default(), app);
+        let _ = root.layout(constraint, &mut LayoutContext, app);
         let mut ctx = PaintContext::new(Renderer::new());
         root.paint(vec2f(0.0, 0.0), &mut ctx, app);
         ctx.renderer
@@ -493,7 +493,7 @@ mod tests {
         key: &str,
         modifiers: ModifiersState,
     ) -> bool {
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         root.dispatch_event(
             &DispatchedEvent::KeyDown {
                 key: key.to_string(),
@@ -562,16 +562,6 @@ mod tests {
         let commands = frame(&mut root, &app);
         assert!(!drawn(&commands, "Workflow Runs"));
         assert!(!drawn(&commands, "Nightly digest"));
-
-        // The Cmd+K palette carries the same entry, so the overlay is reachable
-        // without the chord.
-        state.borrow_mut().command_palette_open = true;
-        let commands = frame(&mut root, &app);
-        assert!(
-            drawn(&commands, "Workflow runs"),
-            "the palette lists the overlay"
-        );
-        state.borrow_mut().command_palette_open = false;
 
         // The chord opens it.
         assert!(toggle_chord(&mut root, &app), "the chord is consumed");
@@ -643,7 +633,7 @@ mod tests {
                 _ => None,
             })
             .expect("the panel draws its close control");
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         for event in [
             DispatchedEvent::MouseDown {
                 position: close,
@@ -664,7 +654,7 @@ mod tests {
         // Re-open, and a click on the backdrop (left of the panel) closes it.
         assert!(toggle_chord(&mut root, &app));
         frame(&mut root, &app);
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         root.dispatch_event(
             &DispatchedEvent::MouseDown {
                 position: vec2f(10.0, 400.0),

@@ -6,6 +6,7 @@ use goble_core::store::Store;
 
 use super::*;
 
+mod attach;
 mod environment;
 mod service;
 mod turns;

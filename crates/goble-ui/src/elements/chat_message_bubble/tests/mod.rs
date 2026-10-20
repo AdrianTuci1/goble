@@ -159,7 +159,6 @@ fn paint_tool_calls_with_modes(
     calls: Vec<ToolCall>,
     modes: Option<&[ToolDisplayMode]>,
 ) -> (Vec<RenderCommand>, f32) {
-    let app = AppContext::default();
     let fold: HashMap<String, ToolDisplayMode> = match modes {
         Some(modes) => calls
             .iter()
@@ -168,6 +167,30 @@ fn paint_tool_calls_with_modes(
             .collect(),
         None => HashMap::new(),
     };
+    paint_tool_calls_with_fold_map(calls, fold)
+}
+
+/// The app-owned key of the verb-group run anchored by `calls[start]`, the
+/// same key the renderer toggles from the run's header.
+fn run_key(calls: &[ToolCall], start: usize) -> String {
+    format!("verb-group:{}", tool_fold_key(&calls[start], start))
+}
+
+/// Paint `calls` with the run anchored at `start` opened, so the member rows a
+/// folded run hides are on screen.
+fn paint_tool_calls_with_run_open(
+    calls: Vec<ToolCall>,
+    start: usize,
+) -> (Vec<RenderCommand>, f32) {
+    let fold = HashMap::from([(run_key(&calls, start), ToolDisplayMode::Expanded)]);
+    paint_tool_calls_with_fold_map(calls, fold)
+}
+
+fn paint_tool_calls_with_fold_map(
+    calls: Vec<ToolCall>,
+    fold: HashMap<String, ToolDisplayMode>,
+) -> (Vec<RenderCommand>, f32) {
+    let app = AppContext::default();
     let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
         .with_tool_calls(calls)
         .with_tool_fold(Rc::new(RefCell::new(fold)));
@@ -336,7 +359,6 @@ fn paint_sub_agent(
     records: HashMap<String, SubAgentRow>,
     mode: Option<ToolDisplayMode>,
 ) -> (Vec<RenderCommand>, Rc<RefCell<Vec<ChatAction>>>) {
-    let app = AppContext::default();
     let fold: HashMap<String, ToolDisplayMode> = match mode {
         Some(mode) => calls
             .iter()
@@ -345,6 +367,26 @@ fn paint_sub_agent(
             .collect(),
         None => HashMap::new(),
     };
+    paint_sub_agent_with_fold(calls, records, fold)
+}
+
+/// Paint a bubble with its first verb-group run opened, so the sub-agent member
+/// row — and the action target beside it — is on screen while the member itself
+/// stays folded.
+fn paint_sub_agent_run_open(
+    calls: Vec<ToolCall>,
+    records: HashMap<String, SubAgentRow>,
+) -> (Vec<RenderCommand>, Rc<RefCell<Vec<ChatAction>>>) {
+    let fold = HashMap::from([(run_key(&calls, 0), ToolDisplayMode::Expanded)]);
+    paint_sub_agent_with_fold(calls, records, fold)
+}
+
+fn paint_sub_agent_with_fold(
+    calls: Vec<ToolCall>,
+    records: HashMap<String, SubAgentRow>,
+    fold: HashMap<String, ToolDisplayMode>,
+) -> (Vec<RenderCommand>, Rc<RefCell<Vec<ChatAction>>>) {
+    let app = AppContext::default();
     let (mut bubble, actions) = sub_agent_bubble(calls, records, Rc::new(RefCell::new(fold)));
     bubble.layout(
         SizeConstraint::loose(vec2f(600.0, 600.0)),

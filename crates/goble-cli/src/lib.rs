@@ -7,8 +7,14 @@
 
 mod cli;
 mod commands;
+#[cfg(unix)]
+mod ctl;
 mod worker;
 
+#[cfg(unix)]
+pub use cli::{
+    AxisArg, CtlAction, LayoutKindArg, PaneKindArg,
+};
 pub use cli::{
     Args, ClusterAction, Command, DeviceAction, IdentityAction, ScheduleAction, SecretAction,
     SnapshotAction,

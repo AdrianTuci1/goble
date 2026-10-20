@@ -8,7 +8,7 @@
 //! The natural framing is newline-delimited JSON: each message is one line.
 
 use goble_harness_types::{
-    CommandDecision, HarnessTurn, MediumId, ProjectId, RemoteScreenConfig, SessionId,
+    CommandDecision, HarnessTurn, MediumId, ProjectId, SessionId,
 };
 use goble_workflow::WorkflowHostRequest;
 use serde::{Deserialize, Serialize};
@@ -217,13 +217,6 @@ pub enum DaemonEvent {
     Error {
         session_id: SessionId,
         message: String,
-    },
-    /// The harness handed off to an interactive remote desktop: the GUI should
-    /// open the stream (via `goble-screen-sdk`) in a screen pane and route input
-    /// back through it. Mirrors the harness-level [`HarnessServerEvent::ScreenHandoff`].
-    ScreenHandoff {
-        session_id: SessionId,
-        config: RemoteScreenConfig,
     },
     // --- daemon trace lifecycle ---
     TraceStarted {
@@ -511,10 +504,6 @@ mod tests {
                 session_id: SessionId::new("s1"),
                 message: "failed".into(),
             },
-            DaemonEvent::ScreenHandoff {
-                session_id: SessionId::new("s1"),
-                config: RemoteScreenConfig::new("vm.example.com", "u", "p"),
-            },
         ];
 
         for event in events {
@@ -522,6 +511,7 @@ mod tests {
             let line = msg.to_line().unwrap();
             let decoded = DaemonMessage::from_line(&line).unwrap();
             assert_eq!(decoded, msg);
+
         }
     }
 

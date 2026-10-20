@@ -77,9 +77,11 @@ const RING_BITMAP: u32 = 380;
 /// The renderer caches images per `source`; one stable name for the ring.
 const RING_SOURCE: &str = "theme-color-ring";
 
+type ColorHandler = Option<Rc<RefCell<dyn FnMut(ColorU)>>>;
+
 pub struct ColorWheel {
     color: ColorU,
-    on_change: Option<Rc<RefCell<dyn FnMut(ColorU)>>>,
+    on_change: ColorHandler,
     drag: Rc<RefCell<Option<ColorPickerDrag>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -405,10 +407,10 @@ mod tests {
         let mut wheel = ColorWheel::new(ColorU::new(255, 0, 0, 255))
             .with_on_change(move |c| *changed_clone.borrow_mut() = Some(c));
         let app = AppContext::default();
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         wheel.layout(
             SizeConstraint::loose(vec2f(WHEEL_SIZE, WHEEL_SIZE)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             &app,
         );
         wheel.paint(vec2f(0.0, 0.0), &mut PaintContext::new(goble_ui::render::Renderer::new()), &app);
@@ -423,9 +425,9 @@ mod tests {
             &app,
         ));
         let (hue, _, _) = rgb_to_hsv(changed.borrow().unwrap());
-        assert!(hue < 5.0 || hue > 355.0, "3 o'clock is red, got hue {hue}");
+        assert!(!(5.0..=355.0).contains(&hue), "3 o'clock is red, got hue {hue}");
 
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         let below = vec2f(center, center + radius);
         assert!(wheel.dispatch_event(
             &DispatchedEvent::MouseDown { position: below, button: 0 },
@@ -443,10 +445,10 @@ mod tests {
         let mut wheel = ColorWheel::new(ColorU::new(255, 0, 0, 255))
             .with_on_change(move |c| *changed_clone.borrow_mut() = Some(c));
         let app = AppContext::default();
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         wheel.layout(
             SizeConstraint::loose(vec2f(WHEEL_SIZE, WHEEL_SIZE)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             &app,
         );
         wheel.paint(vec2f(0.0, 0.0), &mut PaintContext::new(goble_ui::render::Renderer::new()), &app);
@@ -471,10 +473,10 @@ mod tests {
     fn a_click_outside_the_ring_band_is_ignored() {
         let mut wheel = ColorWheel::new(ColorU::new(255, 0, 0, 255));
         let app = AppContext::default();
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         wheel.layout(
             SizeConstraint::loose(vec2f(WHEEL_SIZE, WHEEL_SIZE)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             &app,
         );
         wheel.paint(vec2f(0.0, 0.0), &mut PaintContext::new(goble_ui::render::Renderer::new()), &app);

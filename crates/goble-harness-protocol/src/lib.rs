@@ -6,7 +6,7 @@
 //! natural transport is newline-delimited JSON over stdio (or over a socket);
 //! this crate must stay free of any transport/execution concepts.
 
-use goble_harness_types::{HarnessSnapshot, HarnessTurn, RemoteScreenConfig, SessionId};
+use goble_harness_types::{HarnessSnapshot, HarnessTurn, SessionId};
 use serde::{Deserialize, Serialize};
 
 /// A tool description exposed by a harness (wire form, JSON-schema shaped).
@@ -175,66 +175,6 @@ pub enum HarnessServerEvent {
         session_id: SessionId,
         snapshot: HarnessSnapshot,
     },
-    /// The harness asks the host to open an interactive remote desktop over the
-    /// terminal/harness window. Emitted when the agent decides to hand off to a
-    /// GUI session; the host opens the stream (via `goble-screen-sdk`) and shows
-    /// it in a screen pane, routing input back through it.
-    ScreenHandoff {
-        session_id: SessionId,
-        config: RemoteScreenConfig,
-    },
-}
-
-/// The tool a harness exposes so the agent can request the interactive handoff.
-pub const OPEN_SCREEN_TOOL: &str = "open_screen";
-
-impl HarnessServerEvent {
-    /// Build a [`HarnessServerEvent::ScreenHandoff`] from an `open_screen` tool
-    /// call. The tool arguments carry `host` (required), `port` (default 3389),
-    /// `username`, `password`, and optional `width`/`height` (default 1280x720).
-    ///
-    /// Returns `None` if the arguments are not parseable as a screen request so
-    /// the caller can surface a `ToolCallError` instead.
-    pub fn screen_handoff_from_tool_call(
-        session_id: SessionId,
-        arguments: &serde_json::Value,
-    ) -> Option<Self> {
-        let host = arguments.get("host")?.as_str()?;
-        let username = arguments
-            .get("username")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let password = arguments
-            .get("password")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let port = arguments
-            .get("port")
-            .and_then(|v| v.as_u64())
-            .map(|p| p as u16)
-            .unwrap_or(3389);
-        let width = arguments
-            .get("width")
-            .and_then(|v| v.as_u64())
-            .map(|w| w as u16)
-            .unwrap_or(1280);
-        let height = arguments
-            .get("height")
-            .and_then(|v| v.as_u64())
-            .map(|h| h as u16)
-            .unwrap_or(720);
-        Some(Self::ScreenHandoff {
-            session_id,
-            config: RemoteScreenConfig {
-                host: host.to_string(),
-                port,
-                username: username.to_string(),
-                password: password.to_string(),
-                width,
-                height,
-            },
-        })
-    }
 }
 
 /// One frame on the harness wire: either a host request or a harness event.
@@ -366,47 +306,6 @@ mod tests {
         });
         let line = restore.to_line().unwrap();
         assert_eq!(HarnessMessage::from_line(&line).unwrap(), restore);
-    }
-
-    #[test]
-    fn screen_handoff_event_roundtrips() {
-        let ev = HarnessMessage::Server(HarnessServerEvent::ScreenHandoff {
-            session_id: SessionId::new("s1"),
-            config: RemoteScreenConfig::new("vm.example.com", "user", "pass"),
-        });
-        let line = ev.to_line().unwrap();
-        let decoded = HarnessMessage::from_line(&line).unwrap();
-        assert_eq!(decoded, ev);
-    }
-
-    #[test]
-    fn screen_handoff_from_tool_call_parses_defaults() {
-        // Minimal args: only host. Ports/dims fall back to defaults.
-        let ev = HarnessServerEvent::screen_handoff_from_tool_call(
-            SessionId::new("s1"),
-            &serde_json::json!({ "host": "vm.example.com", "username": "u", "password": "p" }),
-        )
-        .unwrap();
-        match ev {
-            HarnessServerEvent::ScreenHandoff { config, .. } => {
-                assert_eq!(config.host, "vm.example.com");
-                assert_eq!(config.port, 3389);
-                assert_eq!(config.width, 1280);
-                assert_eq!(config.height, 720);
-                assert_eq!(config.username, "u");
-                assert_eq!(config.password, "p");
-            }
-            _ => panic!("expected a screen handoff"),
-        }
-    }
-
-    #[test]
-    fn screen_handoff_from_tool_call_requires_host() {
-        let ev = HarnessServerEvent::screen_handoff_from_tool_call(
-            SessionId::new("s1"),
-            &serde_json::json!({ "port": 3390 }),
-        );
-        assert!(ev.is_none());
     }
 
     #[test]

@@ -4,12 +4,6 @@
 
 ```
 +------------------+
-| Computer Use     |
-| +-------------+  |
-| | preview     |  |
-| +-------------+  |
-| (active now)     |
-+------------------+
 | Routines      +  |
 +------------------+
 | ● Morning social |
@@ -19,13 +13,6 @@
 |   Fridays 10 AM  |
 +------------------+
 ```
-
-## Computer Use section
-
-- Header row: title `Computer Use`.
-- Preview card: a rounded rectangle showing a computer/monitor image or placeholder.
-- Status text below: `Active` / `Inactive` (`Success` or `Muted`).
-- If no image asset exists, use a dark `SurfaceRaised` panel with a `computer` icon.
 
 ## Routines section
 

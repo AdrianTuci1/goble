@@ -68,7 +68,29 @@ impl UiState {
             }
         }
         self.refresh_llm_models(desktop);
+        self.refresh_remote_agents(Some(desktop));
         self.refresh_environment_groups(Some(desktop));
+    }
+
+    /// Copy the `[remote_agents.<name>]` tables out of the in-memory config the
+    /// desktop state read. This is the page's whole view of them: nothing here
+    /// provisions a sandbox or reaches a provider.
+    pub fn refresh_remote_agents(&mut self, desktop: Option<&DesktopState>) {
+        let Some(desktop) = desktop else {
+            return;
+        };
+        let config = desktop.config();
+        self.remote_agents = config
+            .remote_agents
+            .iter()
+            .map(|(name, agent)| RemoteAgentEntry::from_config(name, agent))
+            .collect();
+        // A reload can shorten the pane's order; keep the focused slot inside
+        // it instead of leaving it past the end.
+        let len = self.settings_pane_controls().len();
+        if len > 0 {
+            self.settings_pane_focus = self.settings_pane_focus.min(len - 1);
+        }
     }
 
     /// Populate the composer's model dropdown from the configured provider and
@@ -261,9 +283,9 @@ impl UiState {
             Some(SettingsControl::EnvironmentDeleteSecret(id)) => {
                 self.environment_delete_secret(&id, desktop);
             }
-            // Enter on a connection names it and stops there: this build opens
-            // no session over SSH, so the row is the source of a target rather
-            // than a thing that connects.
+            // Enter on a connection names it and stops there: the row is the
+            // source of a target, while a saved host pane opens from
+            // Cmd+Shift+N or the palette.
             Some(SettingsControl::SshHost(alias)) => self.ssh_select_host(&alias),
             Some(SettingsControl::ReloadSshHosts) => self.reload_ssh_hosts(),
             _ => {}
@@ -448,6 +470,9 @@ impl UiState {
         self.settings_ssh_hosts = self
             .ssh_home()
             .map(|home| goble_core::ssh_hosts::read_ssh_hosts(&home));
+        // The same page lists the saved hosts the picker offers, so Reload
+        // refreshes both files rather than only `~/.ssh`.
+        self.reload_saved_hosts();
         // A host that is no longer in the config cannot stay selected: the row
         // the keyboard would be on is gone.
         let selected = self.settings_ssh_selected.take();
@@ -468,8 +493,19 @@ impl UiState {
         }
     }
 
+    /// The `~/.ssh` read a submitted command's host is resolved against, from
+    /// the home directory the Connections page reads under. Read fresh rather
+    /// than out of that page's cache: the page fills its own when it is shown,
+    /// and a command must not make the page's read stale any more than the page
+    /// may hand a command an older one.
+    pub fn ssh_hosts_for_command(&self) -> Option<SshHosts> {
+        self.ssh_home()
+            .map(|home| goble_core::ssh_hosts::read_ssh_hosts(&home))
+    }
+
     /// Select a connection by alias: `Enter` names it for whatever consumes the
-    /// target next. Nothing connects — this build opens no session over SSH.
+    /// target next. The row records a target; Cmd+Shift+N opens a saved host in
+    /// a pane.
     pub fn ssh_select_host(&mut self, alias: &str) {
         let known = self
             .settings_ssh_hosts

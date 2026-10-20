@@ -21,7 +21,9 @@ use crate::geometry::{rectf, Vector2F};
 use crate::platform::text_atlas::{mono_advance, FontWeight};
 use crate::render::Renderer;
 use crate::theme::FontFamily;
-use goble_terminal::{CursorShape, CursorState, Palette, ScreenCell, ScreenLine, Underline};
+use goble_terminal::{
+    CursorShape, CursorState, ImagePlacement, Palette, ScreenCell, ScreenLine, Underline,
+};
 
 /// The font size a terminal grid uses unless told otherwise.
 pub const DEFAULT_FONT_SIZE: f32 = 12.0;
@@ -35,6 +37,22 @@ const BEAM_THICKNESS: f32 = 2.0;
 /// face, which is the only weight the bundled monospace family carries.
 const BOLD_WEIGHT: FontWeight = FontWeight::Bold;
 
+/// An inclusive span of grid cells on one or more rows.
+///
+/// The callers that draw selections and search matches build one range per
+/// row, so a multi-row selection is simply several ranges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridRange {
+    pub start: (usize, usize),
+    pub end: (usize, usize),
+}
+
+impl GridRange {
+    pub const fn new(start: (usize, usize), end: (usize, usize)) -> Self {
+        Self { start, end }
+    }
+}
+
 /// A grid of terminal cells.
 pub struct TerminalGrid {
     rows: Vec<ScreenLine>,
@@ -47,6 +65,22 @@ pub struct TerminalGrid {
     /// upwards from the input line below it (warp-new), while a full-screen
     /// program owns its own layout and must be drawn where it painted.
     bottom_anchor: bool,
+    /// The mouse selection, one range per row.
+    selection: Vec<GridRange>,
+    /// Search matches, one range per row, and which one is current.
+    highlights: Vec<GridRange>,
+    active_highlight: Option<usize>,
+    /// The copy-mode cursor, drawn as a hollow cell so the shell's own cursor
+    /// can stay hidden.
+    copy_cursor: Option<(usize, usize)>,
+    /// Images placed by the terminal, anchored to cells.
+    images: Vec<ImagePlacement>,
+    /// The source prefix for the renderer's texture cache, so two panes using
+    /// the same image id do not share a texture.
+    image_namespace: String,
+    /// The pane's font cell in device pixels, used to size an image that named
+    /// no cell span from its pixel dimensions.
+    cell_pixels: (f32, f32),
     columns: usize,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -64,6 +98,13 @@ impl TerminalGrid {
             line_height: DEFAULT_LINE_HEIGHT,
             show_cursor: true,
             bottom_anchor: false,
+            selection: Vec::new(),
+            highlights: Vec::new(),
+            active_highlight: None,
+            copy_cursor: None,
+            images: Vec::new(),
+            image_namespace: "terminal".to_string(),
+            cell_pixels: (8.0, 16.0),
             columns,
             size: None,
             origin: None,
@@ -99,6 +140,57 @@ impl TerminalGrid {
     pub fn with_bottom_anchor(mut self, anchored: bool) -> Self {
         self.bottom_anchor = anchored;
         self
+    }
+
+    /// Paint a mouse selection, one cell range per row.
+    pub fn with_selection(mut self, selection: Vec<GridRange>) -> Self {
+        self.selection = selection;
+        self
+    }
+
+    /// Paint search matches. `active` indexes the range in `highlights` that
+    /// the find bar's current match covers, so it can be drawn in the accent.
+    pub fn with_highlights(mut self, highlights: Vec<GridRange>, active: Option<usize>) -> Self {
+        self.highlights = highlights;
+        self.active_highlight = active;
+        self
+    }
+
+    /// Draw a copy-mode cursor as a hollow cell, in the palette's cursor
+    /// colour, so it is distinct from the shell's own caret.
+    pub fn with_copy_cursor(mut self, cell: Option<(usize, usize)>) -> Self {
+        self.copy_cursor = cell;
+        self
+    }
+
+    /// Draw the terminal's images in the cells they were placed on. Each
+    /// placement is a textured quad from the renderer's existing image
+    /// pipeline; the image scrolls with the rows because its row was already
+    /// mapped through the viewport's scroll offset.
+    pub fn with_images(mut self, images: Vec<ImagePlacement>) -> Self {
+        self.images = images;
+        self
+    }
+
+    /// Namespace the renderer's per-source texture cache. Two panes draw the
+    /// same kitty image id independently, so their textures must not collide.
+    pub fn with_image_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.image_namespace = namespace.into();
+        self
+    }
+
+    /// The font cell in device pixels, so an image that named no `c`/`r` span
+    /// is drawn at its natural size instead of one point per pixel.
+    pub fn with_cell_pixels(mut self, width: f32, height: f32) -> Self {
+        if width > 0.0 && height > 0.0 {
+            self.cell_pixels = (width, height);
+        }
+        self
+    }
+
+    /// The painted content origin, after the bottom anchor has moved it.
+    pub fn content_origin(&self) -> Option<Vector2F> {
+        self.origin.map(|point| point.xy())
     }
 
     /// The horizontal pitch of one cell, in points.
@@ -239,6 +331,109 @@ impl TerminalGrid {
         }
     }
 
+    /// Fill the cells of each range, one run per row, clipped to the grid.
+    fn paint_ranges(
+        &self,
+        renderer: &mut Renderer,
+        origin: Vector2F,
+        ranges: &[GridRange],
+        color: (u8, u8, u8),
+    ) {
+        let column_pitch = Self::column_pitch(self.font_size, FontWeight::Regular);
+        let row_pitch = Self::row_pitch(self.font_size, self.line_height);
+        for range in ranges {
+            let (start_row, start_column) = range.start;
+            let (end_row, end_column) = range.end;
+            if start_row > end_row || start_row >= self.rows.len() {
+                continue;
+            }
+            let end_row = end_row.min(self.rows.len() - 1);
+            for row in start_row..=end_row {
+                let columns = self.rows[row].cells.len();
+                if columns == 0 {
+                    continue;
+                }
+                // A range spanning whole rows starts at the left edge of the
+                // rows after the first and ends at the right edge before the
+                // last.
+                let from = if row == start_row {
+                    start_column
+                } else {
+                    0
+                };
+                let to = if row == end_row {
+                    end_column.min(columns - 1)
+                } else {
+                    columns - 1
+                };
+                if from > to {
+                    continue;
+                }
+                let (x, y) = self.origin_of(origin, row, from);
+                renderer.fill_rect(
+                    rectf(
+                        x,
+                        y,
+                        (to - from + 1) as f32 * column_pitch,
+                        row_pitch,
+                    ),
+                    self.color(color),
+                );
+            }
+        }
+    }
+
+    /// Selections and search matches, drawn over the cell backgrounds and
+    /// under the glyphs.
+    fn paint_overlays(&self, renderer: &mut Renderer, origin: Vector2F) {
+        for (index, range) in self.highlights.iter().enumerate() {
+            let color = if Some(index) == self.active_highlight {
+                self.palette.cursor
+            } else {
+                self.palette.ansi[8]
+            };
+            self.paint_ranges(renderer, origin, std::slice::from_ref(range), color);
+        }
+        // A selection sits on top of a match, so the range the user chose is
+        // still readable under the find bar.
+        self.paint_ranges(renderer, origin, &self.selection, self.palette.ansi[4]);
+    }
+
+    /// Images as one textured quad each, anchored to the cursor cell they were
+    /// placed on. A placed image is painted over the cell backgrounds and under
+    /// the glyphs, so program output stays legible on top of it.
+    fn paint_images(&self, renderer: &mut Renderer, origin: Vector2F) {
+        let column_pitch = Self::column_pitch(self.font_size, FontWeight::Regular);
+        let row_pitch = Self::row_pitch(self.font_size, self.line_height);
+        for image in &self.images {
+            if image.width == 0 || image.height == 0 {
+                continue;
+            }
+            let x = origin.x + image.column as f32 * column_pitch;
+            let y = origin.y + image.row as f32 * row_pitch;
+            let width = match image.columns {
+                Some(columns) => columns as f32 * column_pitch,
+                None => image.width as f32 * column_pitch / self.cell_pixels.0,
+            };
+            let height = match image.rows {
+                Some(rows) => rows as f32 * row_pitch,
+                None => image.height as f32 * row_pitch / self.cell_pixels.1,
+            };
+            if width <= 0.0 || height <= 0.0 {
+                continue;
+            }
+            let source = format!("{}-image-{}", self.image_namespace, image.id);
+            renderer.draw_image(
+                rectf(x, y, width, height),
+                source,
+                image.width,
+                image.height,
+                image.sequence,
+                std::sync::Arc::clone(&image.rgba),
+            );
+        }
+    }
+
     /// One quad per non-blank cell.
     fn paint_glyphs(&self, renderer: &mut Renderer, origin: Vector2F) {
         // A cell's ink can be a shade wider than its advance, so the wrap width
@@ -298,6 +493,7 @@ impl TerminalGrid {
                 let (x, top) = self.origin_of(origin, row_index, column);
                 let (foreground, _) = self.cell_colors(cell);
 
+
                 if cell.attrs.underline != Underline::None {
                     let color = cell
                         .attrs
@@ -352,6 +548,18 @@ impl TerminalGrid {
                 }
             }
         }
+
+        if let Some((row, column)) = self.copy_cursor {
+            if row < self.rows.len() && column < self.rows[row].cells.len() {
+                let (x, top) = self.origin_of(origin, row, column);
+                renderer.stroke_rect(
+                    rectf(x, top, column_pitch, row_pitch),
+                    self.color(self.palette.cursor),
+                    RULE_THICKNESS + 0.5,
+                    0.0,
+                );
+            }
+        }
     }
 }
 
@@ -393,6 +601,8 @@ impl Element for TerminalGrid {
         renderer.fill_rect(area, self.color(self.palette.background));
         renderer.clip_rect(area);
         self.paint_backgrounds(renderer, content_origin);
+        self.paint_overlays(renderer, content_origin);
+        self.paint_images(renderer, content_origin);
         self.paint_glyphs(renderer, content_origin);
         self.paint_rules(renderer, content_origin);
         renderer.pop_clip();
@@ -457,6 +667,45 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_terminal_image_is_a_textured_quad_on_its_cursor_cell() {
+        let mut screen = Screen::new(
+            ScreenSize::new(10, 2),
+            goble_terminal::ScreenConfig::scrolling(0),
+        );
+        screen.feed(b"ab");
+        // 1x1 red RGBA, placed two cells in, spanning two cells by one row.
+        let pixels = [255u8, 0, 0, 255];
+        screen.feed(b"\x1b_Ga=T,f=32,s=1,v=1,i=12,c=2,r=1;/wAA/w==\x1b\\");
+        let images = screen.images();
+        assert_eq!(images.len(), 1);
+
+        let mut grid = TerminalGrid::new(screen.lines(), screen.cursor())
+            .with_images(images)
+            .with_image_namespace("pane-7");
+        let commands = painted(&mut grid);
+        let (rect, source, width, height, data) = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawImage {
+                    rect,
+                    source,
+                    width,
+                    height,
+                    data,
+                    ..
+                } => Some((*rect, source.clone(), *width, *height, data.clone())),
+                _ => None,
+            })
+            .expect("the image is drawn as a textured quad");
+        assert_eq!(source, "pane-7-image-12");
+        assert_eq!((width, height), (1, 1));
+        assert_eq!(&*data, &pixels);
+        let pitch = TerminalGrid::column_pitch(DEFAULT_FONT_SIZE, FontWeight::Regular);
+        assert!((rect.origin.x - pitch * 2.0).abs() < 0.01, "{rect:?}");
+        assert!((rect.size.width - pitch * 2.0).abs() < 0.01, "{rect:?}");
     }
 
     #[test]
@@ -694,6 +943,50 @@ mod tests {
                 .iter()
                 .any(|(_, _, _, _, color)| *color == cursor),
             "a hollow cursor does not fill its cell"
+        );
+    }
+
+    #[test]
+    fn a_selection_and_a_search_match_are_painted_in_the_palette() {
+        let column = TerminalGrid::column_pitch(DEFAULT_FONT_SIZE, FontWeight::Regular);
+        let palette = Palette::xterm();
+        let mut grid = grid_from(b"hello world", 20, 1)
+            .with_cursor_visible(false)
+            .with_selection(vec![GridRange::new((0, 0), (0, 4))])
+            .with_highlights(vec![GridRange::new((0, 6), (0, 10))], Some(0));
+        let commands = painted(&mut grid);
+        let rects = rects(&commands);
+        assert!(
+            rects.iter().any(|(_, _, width, _, color)| {
+                *color == ColorU::new(palette.ansi[4].0, palette.ansi[4].1, palette.ansi[4].2, 255)
+                    && (*width - column * 5.0).abs() < 0.01
+            }),
+            "the selection is five cells in the palette's blue: {rects:?}"
+        );
+        assert!(
+            rects.iter().any(|(_, _, width, _, color)| {
+                *color == ColorU::new(
+                    palette.cursor.0,
+                    palette.cursor.1,
+                    palette.cursor.2,
+                    255,
+                ) && (*width - column * 5.0).abs() < 0.01
+            }),
+            "the active match is five cells in the accent: {rects:?}"
+        );
+    }
+
+    #[test]
+    fn a_copy_mode_cursor_is_a_hollow_cell() {
+        let mut grid = grid_from(b"hi", 4, 1)
+            .with_cursor_visible(false)
+            .with_copy_cursor(Some((0, 1)));
+        let commands = painted(&mut grid);
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, RenderCommand::StrokeRect { .. })),
+            "the copy cursor is outlined: {commands:?}"
         );
     }
 

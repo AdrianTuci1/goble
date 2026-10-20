@@ -43,40 +43,52 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
     let key = "c1:0";
 
     let collapsed = reasoning_commands(&expanded, key);
-    let texts: Vec<(String, ColorU)> = collapsed
+    let texts: Vec<(String, ColorU, FontWeight)> = collapsed
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::DrawText { text, color, .. } => Some((text.clone(), *color)),
+            RenderCommand::DrawText {
+                text,
+                color,
+                font_weight,
+                ..
+            } => Some((text.clone(), *color, *font_weight)),
             _ => None,
         })
         .collect();
 
     let header = texts
         .iter()
-        .find(|(text, _)| text.contains("Thinking"))
+        .find(|(text, _, _)| text.contains("Thought"))
         .unwrap_or_else(|| panic!("the reasoning header must be drawn, got {texts:?}"));
     assert_eq!(
         header.1,
         app.theme.color(ColorToken::Muted),
         "the reasoning row must be recessed (muted), got {header:?}"
     );
+    assert_eq!(
+        header.2,
+        FontWeight::Bold,
+        "grok-build's Thought label is bold, got {header:?}"
+    );
+    assert_eq!(header.0, "Thought", "the finished label is exactly grok-build's");
     assert!(
-        texts.iter().any(|(text, _)| text == "▸ "),
-        "a collapsed row shows the closed marker, got {texts:?}"
+        texts.iter().any(|(text, _, _)| text == "◆ "),
+        "a thinking row wears the tool diamond while its header is visible, got {texts:?}"
     );
     assert!(
         !texts
             .iter()
-            .any(|(text, _)| text.contains("weighing the options")),
+            .any(|(text, _, _)| text.contains("weighing the options")),
         "the body must be hidden while collapsed, got {texts:?}"
     );
 
     // The app-owned flag is what opens the row.
     expanded.borrow_mut().insert(key.to_string(), true);
-    let open: Vec<String> = reasoning_commands(&expanded, key)
-        .into_iter()
+    let open_commands = reasoning_commands(&expanded, key);
+    let open: Vec<String> = open_commands
+        .iter()
         .filter_map(|command| match command {
-            RenderCommand::DrawText { text, .. } => Some(text),
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
             _ => None,
         })
         .collect();
@@ -86,8 +98,11 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
         "an expanded row draws its body, got {open:?}"
     );
     assert!(
-        open.iter().any(|text| text == "▾ "),
-        "an expanded row shows the open marker, got {open:?}"
+        open_commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { rect, .. } if rect.width() == QUOTE_RAIL_WIDTH
+        )),
+        "an expanded row draws the rail beside its body, got {open_commands:?}"
     );
 }
 
@@ -274,4 +289,49 @@ fn block_quote_is_an_indent_and_a_rail() {
         texts.iter().any(|(text, ..)| text.contains("quoted line")),
         "the quoted text must be drawn, got {texts:?}"
     );
+}
+
+/// A markdown list draws grok-build's muted bullet before every item, and an
+/// ordered list keeps its source numbers. The marker is its own run so the
+/// item body keeps the paragraph colour and a wrapped item hangs under its
+/// first line.
+#[test]
+fn lists_draw_muted_bullets_and_ordered_numbers() {
+    let app = AppContext::default();
+    let message =
+        ChatMessage::from_markdown(ChatRole::Assistant, "- one\n- two\n\n1. first\n2. second");
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments);
+    bubble.layout(
+        SizeConstraint::loose(vec2f(600.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let commands = paint_ctx.renderer.take().unwrap().commands().to_vec();
+    let texts = text_runs(&commands);
+
+    let markers: Vec<(&str, ColorU)> = texts
+        .iter()
+        .filter_map(|(text, color, ..)| match text.as_str() {
+            "• " | "1. " | "2. " => Some((text.as_str(), *color)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        markers,
+        vec![
+            ("• ", app.theme.color(ColorToken::Muted)),
+            ("• ", app.theme.color(ColorToken::Muted)),
+            ("1. ", app.theme.color(ColorToken::Muted)),
+            ("2. ", app.theme.color(ColorToken::Muted)),
+        ],
+        "bullets and numbers are muted markers, got {texts:?}"
+    );
+    for item in ["one", "two", "first", "second"] {
+        assert!(
+            texts.iter().any(|(text, ..)| text == item),
+            "the item body {item:?} is drawn, got {texts:?}"
+        );
+    }
 }

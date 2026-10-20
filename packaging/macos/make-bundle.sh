@@ -6,11 +6,18 @@
 #
 #   Goble.app/Contents/Info.plist          rendered from packaging/macos/Info.plist
 #   Goble.app/Contents/MacOS/goble-app     the release binary (chmod +x)
+#   Goble.app/Contents/MacOS/goble-pty-daemon   the attachable PTY daemon
+#   Goble.app/Contents/MacOS/goble-cli          the control CLI
+#   Goble.app/Contents/MacOS/goble-mcp          the MCP stdio server
 #   Goble.app/Contents/Resources/AppIcon.icns
 #   Goble.app/Contents/PkgInfo
 #
-# The script never builds Rust. It expects `cargo build --release -p goble-app`
-# to have run already (or --binary to point at an equivalent artifact).
+# The daemon and control clients share Contents/MacOS with the app because that
+# is the sibling path `goble_pty::Client` looks in before falling back to PATH.
+#
+# The script never builds Rust. It expects
+# `cargo build --release -p goble-app -p goble-pty -p goble-cli -p goble-mcp`
+# to have run already (or --binary/--*-binary to point at equivalent artifacts).
 #
 # Signing: when APPLE_SIGNING_IDENTITY is set the bundle is hardened-runtime
 # signed with a secure timestamp. Without it the bundle is produced unsigned
@@ -30,6 +37,9 @@ source "$PACKAGING_DIR/signing.sh"
 
 APP_NAME="${APP_NAME:-Goble}"
 BIN_NAME="${BIN_NAME:-goble-app}"
+PTY_DAEMON_NAME="${PTY_DAEMON_NAME:-goble-pty-daemon}"
+CLI_NAME="${CLI_NAME:-goble-cli}"
+MCP_NAME="${MCP_NAME:-goble-mcp}"
 BUNDLE_ID="${BUNDLE_ID:-com.goble.app}"
 VERSION="${VERSION:-0.0.0}"
 
@@ -45,13 +55,22 @@ Assemble dist/${APP_NAME}.app from a built binary.
 
 Options:
   --binary PATH          Binary to bundle (default: target/release/${BIN_NAME})
+  --pty-daemon-binary PATH  PTY daemon (default: target/release/${PTY_DAEMON_NAME})
+  --cli-binary PATH         Control CLI (default: target/release/${CLI_NAME})
+  --mcp-binary PATH         MCP server (default: target/release/${MCP_NAME})
   --outdir DIR           Output directory for the bundle (default: <repo>/dist)
   --version VERSION      Version in Info.plist (default: ${VERSION})
   --arch ARCH            Label only; one of aarch64, x86_64 (informational)
   --universal            Build a universal app; requires both
-                         --x86_64-binary and --aarch64-binary
-  --x86_64-binary PATH   x86_64 slice, used with --universal
-  --aarch64-binary PATH  arm64 slice, used with --universal
+                         --x86_64-binary and --aarch64-binary for every binary
+  --x86_64-binary PATH   x86_64 slice of the app, used with --universal
+  --aarch64-binary PATH  arm64 slice of the app, used with --universal
+  --pty-daemon-x86_64-binary PATH   x86_64 PTY daemon slice
+  --pty-daemon-aarch64-binary PATH  arm64 PTY daemon slice
+  --cli-x86_64-binary PATH          x86_64 CLI slice
+  --cli-aarch64-binary PATH         arm64 CLI slice
+  --mcp-x86_64-binary PATH          x86_64 MCP slice
+  --mcp-aarch64-binary PATH         arm64 MCP slice
   --icon PATH            .icns file, or a PNG (>=512px recommended)
   --sign-identity ID     codesign identity (default: \$APPLE_SIGNING_IDENTITY)
   --entitlements PATH    Entitlements plist (default: macos/entitlements.plist)
@@ -75,12 +94,21 @@ need() { command -v "$1" >/dev/null 2>&1 || die "required tool '$1' not found in
 sed_escape() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
 
 BINARY=""
+PTY_DAEMON_BINARY=""
+CLI_BINARY=""
+MCP_BINARY=""
 OUTDIR="$ROOT_DIR/dist"
 DISPLAY_VERSION="$VERSION"
 ARCH_LABEL=""
 UNIVERSAL=0
 X86_BINARY=""
 ARM_BINARY=""
+PTY_DAEMON_X86_BINARY=""
+PTY_DAEMON_ARM_BINARY=""
+CLI_X86_BINARY=""
+CLI_ARM_BINARY=""
+MCP_X86_BINARY=""
+MCP_ARM_BINARY=""
 ICON_SRC="${APP_ICON:-$DEFAULT_ICON}"
 SIGN_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
 ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
@@ -89,12 +117,21 @@ BUILD_NUMBER="${GOBLE_BUILD_NUMBER:-}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --binary)          BINARY="${2:?--binary needs a path}"; shift 2 ;;
+        --pty-daemon-binary) PTY_DAEMON_BINARY="${2:?--pty-daemon-binary needs a path}"; shift 2 ;;
+        --cli-binary)      CLI_BINARY="${2:?--cli-binary needs a path}"; shift 2 ;;
+        --mcp-binary)      MCP_BINARY="${2:?--mcp-binary needs a path}"; shift 2 ;;
         --outdir)          OUTDIR="${2:?--outdir needs a path}"; shift 2 ;;
         --version)         DISPLAY_VERSION="${2:?--version needs a value}"; shift 2 ;;
         --arch)            ARCH_LABEL="${2:?--arch needs a value}"; shift 2 ;;
         --universal)       UNIVERSAL=1; shift ;;
         --x86_64-binary)   X86_BINARY="${2:?--x86_64-binary needs a path}"; shift 2 ;;
         --aarch64-binary)  ARM_BINARY="${2:?--aarch64-binary needs a path}"; shift 2 ;;
+        --pty-daemon-x86_64-binary)  PTY_DAEMON_X86_BINARY="${2:?--pty-daemon-x86_64-binary needs a path}"; shift 2 ;;
+        --pty-daemon-aarch64-binary) PTY_DAEMON_ARM_BINARY="${2:?--pty-daemon-aarch64-binary needs a path}"; shift 2 ;;
+        --cli-x86_64-binary)         CLI_X86_BINARY="${2:?--cli-x86_64-binary needs a path}"; shift 2 ;;
+        --cli-aarch64-binary)        CLI_ARM_BINARY="${2:?--cli-aarch64-binary needs a path}"; shift 2 ;;
+        --mcp-x86_64-binary)         MCP_X86_BINARY="${2:?--mcp-x86_64-binary needs a path}"; shift 2 ;;
+        --mcp-aarch64-binary)        MCP_ARM_BINARY="${2:?--mcp-aarch64-binary needs a path}"; shift 2 ;;
         --icon)            ICON_SRC="${2:?--icon needs a path}"; shift 2 ;;
         --sign-identity)   SIGN_IDENTITY="${2:?--sign-identity needs a value}"; shift 2 ;;
         --entitlements)    ENTITLEMENTS="${2:?--entitlements needs a path}"; shift 2 ;;
@@ -151,6 +188,41 @@ else
 fi
 chmod +x "$STAGED_BINARY"
 
+# --- companions ------------------------------------------------------------
+# The daemon and the two control clients are plain executables, not nested
+# bundles, so they sit directly in Contents/MacOS. Each is fattened separately
+# for a universal build, exactly like the app binary.
+COMPANION_NAMES=("$PTY_DAEMON_NAME" "$CLI_NAME" "$MCP_NAME")
+COMPANION_SINGLE=("$PTY_DAEMON_BINARY" "$CLI_BINARY" "$MCP_BINARY")
+COMPANION_X86=("$PTY_DAEMON_X86_BINARY" "$CLI_X86_BINARY" "$MCP_X86_BINARY")
+COMPANION_ARM=("$PTY_DAEMON_ARM_BINARY" "$CLI_ARM_BINARY" "$MCP_ARM_BINARY")
+
+stage_companion() {
+    local name="$1" single="$2" x86="$3" arm="$4"
+    local staged="$TMP_DIR/$name"
+
+    if [[ "$UNIVERSAL" -eq 1 ]]; then
+        [[ -n "$x86" && -n "$arm" ]] || die \
+            "--universal requires both x86_64 and aarch64 slices for $name"
+        [[ -f "$x86" ]] || die "slice not found: $x86"
+        [[ -f "$arm" ]] || die "slice not found: $arm"
+        log "Merging universal $name (x86_64 + arm64)"
+        lipo -create -output "$staged" "$x86" "$arm"
+    else
+        [[ -n "$single" ]] || single="$(dirname "$BINARY")/$name"
+        [[ -f "$single" ]] || die "companion binary not found: $single
+build all four first: cargo build --release -p goble-app -p goble-pty -p goble-cli -p goble-mcp"
+        [[ -x "$single" ]] || die "companion binary is not executable: $single"
+        cp "$single" "$staged"
+    fi
+    chmod +x "$staged"
+}
+
+for i in "${!COMPANION_NAMES[@]}"; do
+    stage_companion "${COMPANION_NAMES[$i]}" "${COMPANION_SINGLE[$i]}" \
+        "${COMPANION_X86[$i]}" "${COMPANION_ARM[$i]}"
+done
+
 # --- icon ------------------------------------------------------------------
 build_icns() {
     local src="$1" dest="$2"
@@ -195,6 +267,11 @@ mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$STAGED_BINARY" "$BUNDLE/Contents/MacOS/$BIN_NAME"
 chmod +x "$BUNDLE/Contents/MacOS/$BIN_NAME"
 
+for name in "${COMPANION_NAMES[@]}"; do
+    cp "$TMP_DIR/$name" "$BUNDLE/Contents/MacOS/$name"
+    chmod +x "$BUNDLE/Contents/MacOS/$name"
+done
+
 BUILD_NUMBER="${BUILD_NUMBER:-$DISPLAY_VERSION}"
 YEAR="$(date -u +%Y)"
 {
@@ -217,12 +294,18 @@ printf 'APPL????' > "$BUNDLE/Contents/PkgInfo"
 build_icns "$ICON_SRC" "$BUNDLE/Contents/Resources/AppIcon.icns"
 
 # --- sign ------------------------------------------------------------------
-# One Mach-O per bundle (Contents/MacOS/$BIN_NAME), so the bundle is signed
-# directly: --deep is not used, because Apple deprecates it for signing and it
-# would hide any nested code that needs its own signature.
+# The app and each companion are separate Mach-O files. Sign the companions
+# first, then the bundle, so the bundle seal covers already-signed code and
+# notarization sees no unsigned executable under Contents/MacOS. --deep is not
+# used, because Apple deprecates it for signing and it would hide any nested
+# code that needs its own signature.
 if [[ -n "$SIGN_IDENTITY" ]]; then
     need codesign
     log "Codesigning bundle with identity: $SIGN_IDENTITY"
+    for name in "${COMPANION_NAMES[@]}"; do
+        codesign --force --options runtime --timestamp \
+            --sign "$SIGN_IDENTITY" "$BUNDLE/Contents/MacOS/$name"
+    done
     codesign --force --options runtime --timestamp \
         --entitlements "$ENTITLEMENTS" \
         --sign "$SIGN_IDENTITY" "$BUNDLE"

@@ -237,22 +237,6 @@ function makeChatSidebar() {
   sidebar.flex.horizontalSizing = 'fix';
   sidebar.flex.verticalSizing = 'fill';
 
-  sidebar.appendChild(makeText('Computer Use label', 'Computer Use', { fontSize: 11, color: COLORS.muted }));
-
-  const preview = makeBoard('Computer Use preview', 248, 120, COLORS.surfaceRaised);
-  preview.borderRadius = 8;
-  preview.addFlexLayout();
-  preview.flex.dir = 'column';
-  preview.flex.alignItems = 'center';
-  preview.flex.justifyContent = 'center';
-  preview.flex.rowGap = 8;
-  preview.appendChild(makeText('Terminal icon', '▸_', { fontSize: 32, color: COLORS.muted }));
-  preview.appendChild(makeText('Active label', 'Active', { fontSize: 12, color: COLORS.success }));
-  sidebar.appendChild(preview);
-
-  const divider = makeBoard('Routines divider', 248, 1, COLORS.border);
-  sidebar.appendChild(divider);
-
   const routinesHeader = makeBoard('Routines header', 248, 24, COLORS.surface);
   routinesHeader.addFlexLayout();
   routinesHeader.flex.dir = 'row';

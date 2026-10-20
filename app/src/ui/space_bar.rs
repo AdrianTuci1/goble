@@ -23,20 +23,24 @@ use goble_ui::theme::{ColorToken, SpacingToken};
 /// Gap between adjacent space tabs, in logical points.
 const TAB_SPACING: f32 = 4.0;
 
+type IndexHandler = Option<Rc<RefCell<dyn FnMut(usize)>>>;
+type OptionalIndexHandler = Option<Rc<RefCell<dyn FnMut(Option<usize>)>>>;
+type ReorderHandler = Option<Rc<RefCell<dyn FnMut(usize, usize)>>>;
+
 pub struct SpaceBar {
     names: Vec<String>,
     active: usize,
     hover: Option<usize>,
     press: Option<usize>,
     drag: Option<usize>,
-    on_select: Option<Rc<RefCell<dyn FnMut(usize)>>>,
-    on_space_press: Option<Rc<RefCell<dyn FnMut(usize)>>>,
-    on_space_hover: Option<Rc<RefCell<dyn FnMut(Option<usize>)>>>,
-    on_space_reorder: Option<Rc<RefCell<dyn FnMut(usize, usize)>>>,
+    on_select: IndexHandler,
+    on_space_press: IndexHandler,
+    on_space_hover: OptionalIndexHandler,
+    on_space_reorder: ReorderHandler,
     on_space_release: Option<Rc<RefCell<dyn FnMut()>>>,
     on_add_space: Option<Rc<RefCell<dyn FnMut()>>>,
     /// Close a tab by index (reads the trailing "x" on each tab).
-    on_close_space: Option<Rc<RefCell<dyn FnMut(usize)>>>,
+    on_close_space: IndexHandler,
     /// Per-tab root elements, in row order.
     tab_roots: Vec<Box<dyn Element>>,
     /// Per-tab bounds, relative to the SpaceBar origin. Filled during `layout`.
@@ -439,7 +443,7 @@ mod tests {
         );
         bar.layout(
             SizeConstraint::loose(vec2f(400.0, 40.0)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             &app,
         );
         let centers = [
@@ -459,7 +463,7 @@ mod tests {
         bar.on_space_press = Some(Rc::new(RefCell::new(move |i| {
             *on_press.borrow_mut() = Some(i);
         })));
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         bar.dispatch_event(
             &DispatchedEvent::MouseDown {
                 position: vec2f(centers[1], 10.0),
@@ -482,7 +486,7 @@ mod tests {
         bar.on_space_reorder = Some(Rc::new(RefCell::new(move |from, to| {
             *on_reorder.borrow_mut() = Some((from, to));
         })));
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         bar.dispatch_event(
             &DispatchedEvent::MouseMove {
                 position: vec2f(centers[2] + 30.0, 10.0),
@@ -508,7 +512,7 @@ mod tests {
         bar.on_space_release = Some(Rc::new(RefCell::new(move || {
             *on_release.borrow_mut() = true;
         })));
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         bar.dispatch_event(
             &DispatchedEvent::MouseUp {
                 position: vec2f(80.0, 10.0),
@@ -532,11 +536,11 @@ mod tests {
         })));
         bar.layout(
             SizeConstraint::loose(vec2f(400.0, 40.0)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             &app,
         );
         let add_rect = bar.add_rect.expect("add button should be laid out");
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         bar.dispatch_event(
             &DispatchedEvent::MouseUp {
                 position: vec2f(add_rect.center().x, 10.0),
@@ -558,7 +562,7 @@ mod tests {
         bar.on_select = Some(Rc::new(RefCell::new(move |i| {
             *on_select.borrow_mut() = Some(i);
         })));
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         bar.dispatch_event(
             &DispatchedEvent::MouseUp {
                 position: vec2f(centers[0], 10.0),
@@ -581,11 +585,11 @@ mod tests {
         })));
         bar.layout(
             SizeConstraint::loose(vec2f(400.0, 40.0)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             &app,
         );
         let close_rect = bar.close_rects[1];
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         bar.dispatch_event(
             &DispatchedEvent::MouseUp {
                 position: vec2f(close_rect.center().x, 10.0),
@@ -617,11 +621,11 @@ mod tests {
         })));
         bar.layout(
             SizeConstraint::loose(vec2f(400.0, 40.0)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             &app,
         );
         let close_rect = bar.close_rects[0];
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         // A mouse-down on the x must not begin a tab press (so release only closes).
         assert!(
             bar.dispatch_event(

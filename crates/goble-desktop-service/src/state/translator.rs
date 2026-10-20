@@ -30,8 +30,7 @@ fn daemon_session_id(event: &goble_daemon_protocol::DaemonEvent) -> goble_harnes
         | DE::Done { session_id }
         | DE::Error { session_id, .. }
         | DE::TraceStarted { session_id, .. }
-        | DE::TraceFinished { session_id, .. }
-        | DE::ScreenHandoff { session_id, .. } => session_id.clone(),
+        | DE::TraceFinished { session_id, .. } => session_id.clone(),
     }
 }
 
@@ -298,28 +297,27 @@ impl DesktopState {
                     },
                 );
             }
-            DE::TraceFinished { session_id, .. } => {
+            DE::TraceFinished {
+                session_id, status, ..
+            } => {
+                // The status is the daemon's own terminal verdict: the app
+                // derives Done/Errored from it rather than assuming success.
                 self.emit(
                     "chat:turn_finished",
-                    serde_json::json!({ "chat_id": session_id.0 }),
+                    serde_json::json!({ "chat_id": session_id.0, "status": status }),
                 );
             }
-            DE::ScreenHandoff { session_id, config } => {
-                match self.open_remote_screen(config) {
-                    Ok(source) => {
-                        self.add_log(format!("opened remote desktop {source}"));
-                        self.emit(
-                            "screen:handoff",
-                            serde_json::json!({
-                                "chat_id": session_id.0,
-                                "source": source,
-                            }),
-                        );
-                    }
-                    Err(e) => {
-                        self.add_log(format!("screen handoff failed: {e:#}"));
-                    }
-                }
+            DE::Error {
+                session_id,
+                message,
+            } => {
+                // A terminal error is its own report (the following
+                // `TraceFinished` says only that the turn failed), so the app
+                // can carry the message into its inbox and pane state.
+                self.emit(
+                    "chat:error",
+                    serde_json::json!({ "chat_id": session_id.0, "message": message }),
+                );
             }
             _ => {}
         }

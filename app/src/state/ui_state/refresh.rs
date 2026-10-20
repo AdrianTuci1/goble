@@ -35,7 +35,6 @@ impl UiState {
             selected_model: String::new(),
             harnesses: vec![HarnessEntry::internal("internal", "Goble")],
             selected_harness: "internal".to_string(),
-            pending_screen_link_open: None,
             model_menu_open: Rc::new(RefCell::new(false)),
             harness_menu_open: Rc::new(RefCell::new(false)),
             dir_menu_open: Rc::new(RefCell::new(false)),
@@ -108,6 +107,7 @@ impl UiState {
             show_llm_key_banner: false,
             show_workspace_choice: false,
             workspace_routing: None,
+            remote_agents: Vec::new(),
             llm_dialog_open: false,
             llm_dialog_provider: Rc::new(RefCell::new(String::new())),
             llm_dialog_model: Rc::new(RefCell::new(String::new())),
@@ -147,8 +147,10 @@ impl UiState {
             active_space: 0,
             space_hover: None,
             space_press: None,
+            space_press_at: None,
             space_drag: None,
             pane_drag: None,
+            pane_bounds: Rc::new(RefCell::new(HashMap::new())),
             next_pane_id: 2,
             active_pane_id: 1,
             dragging_pane_id: None,
@@ -158,8 +160,16 @@ impl UiState {
                 conversation_id: String::new(),
                 draft: String::new(),
                 path: current_dir_display(),
+                daemon_session_id: String::new(),
             })]),
             pane_runtime: HashMap::new(),
+            pane_workers: HashMap::new(),
+            pane_ssh: HashMap::new(),
+            ssh_host_entries: Vec::new(),
+            ssh_host_picker_open: false,
+            ssh_host_picker_index: 0,
+            ssh_reconnect_prompt: None,
+            floating_drag: Rc::new(RefCell::new(None)),
             live_executions: HashMap::new(),
             pane_controls: HashMap::new(),
             pane_chat_scroll: HashMap::new(),
@@ -171,6 +181,12 @@ impl UiState {
             command_palette_open: false,
             command_palette_query: String::new(),
             command_palette_index: 0,
+            inbox: Vec::new(),
+            inbox_open: false,
+            inbox_index: 0,
+            inbox_error: None,
+            inbox_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            next_inbox_id: 1,
             show_onboarding_tip: false,
             add_space_menu_open: Rc::new(RefCell::new(false)),
             env_selector_open: Rc::new(RefCell::new(false)),
@@ -381,6 +397,67 @@ impl UiState {
         self.selected_harness = "internal".to_string();
     }
 
+    /// The status a conversation's sidebar card carries, read off the live pane
+    /// runtime that owns it.
+    ///
+    /// A running turn outranks the conversation's history: while it runs, or
+    /// while it waits on an approval or a question, the card is
+    /// [`ConversationStatus::Waiting`]; a turn that failed leaves
+    /// [`ConversationStatus::Error`]; a pane stopped at a prompt is
+    /// [`ConversationStatus::Stopped`]; a finished turn is
+    /// [`ConversationStatus::Success`]. A pane that has not reported a turn
+    /// reads its conversation's history instead, which is what keeps a
+    /// restored conversation green rather than gray until its next turn. A
+    /// conversation no pane accounts for is read the same way: an agent reply
+    /// means the last turn finished ([`ConversationStatus::Success`]), and no
+    /// reply means there is nothing to report ([`ConversationStatus::Default`]).
+    pub fn conversation_status(
+        &self,
+        conversation_id: &str,
+        has_agent_reply: bool,
+    ) -> ConversationStatus {
+        let runtime = self
+            .pane_id_for_conversation(conversation_id)
+            .and_then(|pane_id| self.pane_runtime.get(&pane_id));
+        if let Some(rt) = runtime {
+            let waiting_on_user = rt.pending_command.is_some() || rt.pending_ask.is_some();
+            if rt.busy || waiting_on_user || rt.agent_state == PaneAgentState::NeedsInput {
+                return ConversationStatus::Waiting;
+            }
+            if rt.turn_error.is_some() || rt.agent_state == PaneAgentState::Errored {
+                return ConversationStatus::Error;
+            }
+            match rt.agent_state {
+                PaneAgentState::Idle => return ConversationStatus::Stopped,
+                PaneAgentState::Done => return ConversationStatus::Success,
+                // No turn observed in this run: the conversation's own history
+                // is the only honest report (a restored pane lands here).
+                PaneAgentState::Unknown => {}
+                PaneAgentState::Working | PaneAgentState::NeedsInput | PaneAgentState::Errored => {
+                    // Already answered above; kept exhaustive on purpose.
+                }
+            }
+        }
+        if has_agent_reply {
+            ConversationStatus::Success
+        } else {
+            ConversationStatus::Default
+        }
+    }
+
+    /// Re-derive every conversation's card status from the pane runtime.
+    ///
+    /// A turn settling — or a pane stopping — changes a card's colour without
+    /// writing anything to the store, so the statuses are re-read each frame
+    /// rather than only when a conversation changes.
+    pub fn refresh_conversation_statuses(&mut self) {
+        for index in 0..self.conversations.len() {
+            let entry = &self.conversations[index];
+            let status = self.conversation_status(&entry.id, entry.has_agent_reply);
+            self.conversations[index].status = status;
+        }
+    }
+
     /// Rebuild the sidebar's conversation list from the service.
     ///
     /// A conversation the agent has answered in is also named here: the subject
@@ -437,6 +514,9 @@ impl UiState {
                     // card under the subject.
                     .with_directory(c.working_dir.clone().unwrap_or_default())
                     .with_has_agent_reply(has_agent_reply)
+                    // What the card's status square reports, from the pane
+                    // that is running the conversation right now.
+                    .with_status(self.conversation_status(&c.id, has_agent_reply))
             })
             .collect();
         // Keep one shared card-state entry per conversation id so hover / the
@@ -487,5 +567,99 @@ impl UiState {
             }
         }
         self.sync_active_view();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The card's status is the owning pane's own state: a running turn (and a
+    /// turn held on an approval or a question) is `Waiting`, the failure it
+    /// settles with is `Error`, a successful finish is `Success` and a stop is
+    /// `Stopped`. A conversation no pane owns falls back to its messages.
+    #[test]
+    fn a_conversations_status_reads_the_pane_that_owns_it() {
+        let mut state = UiState::mock();
+
+        // The pane has observed no turn in this run — a restored conversation —
+        // so its own answered history is what the card reports.
+        assert_eq!(
+            state.conversation_status("c1", true),
+            ConversationStatus::Success
+        );
+
+        // A turn the app issued is running.
+        state.begin_turn(1);
+        assert_eq!(
+            state.conversation_status("c1", true),
+            ConversationStatus::Waiting
+        );
+
+        // A turn that finished is done.
+        state.begin_turn(1);
+        state.finish_turn(1, TurnOutcome::Success);
+        assert_eq!(
+            state.conversation_status("c1", true),
+            ConversationStatus::Success
+        );
+
+        // The failed turn it settles into is the red square, even though the
+        // conversation holds an agent reply.
+        state.begin_turn(1);
+        state.apply_turn_error("c1", "model overloaded");
+        assert_eq!(
+            state.conversation_status("c1", true),
+            ConversationStatus::Error
+        );
+
+        // A stopped turn is quiet again.
+        state.begin_turn(1);
+        state.stop_turn(1);
+        assert_eq!(
+            state.conversation_status("c1", true),
+            ConversationStatus::Stopped
+        );
+
+        // A question the agent is waiting on is `Waiting` even with no turn
+        // running, because the card's yellow is the user's turn to act.
+        let mut waiting = UiState::mock();
+        waiting.apply_ask_user("c1", "Deploy?", Vec::new());
+        assert_eq!(
+            waiting.conversation_status("c1", true),
+            ConversationStatus::Waiting
+        );
+
+        // A conversation no pane holds is read from its own messages.
+        assert_eq!(
+            state.conversation_status("c2", true),
+            ConversationStatus::Success
+        );
+        assert_eq!(
+            state.conversation_status("c2", false),
+            ConversationStatus::Default
+        );
+    }
+
+    /// The statuses the sidebar draws are re-read from the pane runtime, so a
+    /// turn settling colours its card without a store write.
+    #[test]
+    fn refreshing_the_statuses_colours_the_cards_the_panes_report() {
+        let mut state = UiState::mock();
+        state.begin_turn(1);
+        state.refresh_conversation_statuses();
+        let card = |state: &UiState, id: &str| {
+            state
+                .conversations
+                .iter()
+                .find(|entry| entry.id == id)
+                .map(|entry| entry.status)
+        };
+        assert_eq!(card(&state, "c1"), Some(ConversationStatus::Waiting));
+        assert_eq!(card(&state, "c2"), Some(ConversationStatus::Success));
+
+        state.finish_turn(1, TurnOutcome::Success);
+        state.refresh_conversation_statuses();
+        assert_eq!(card(&state, "c1"), Some(ConversationStatus::Success));
     }
 }

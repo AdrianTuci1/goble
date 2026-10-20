@@ -18,13 +18,15 @@ use crate::state::{
 };
 use crate::terminal::{classify_input, InputClass};
 use crate::ui::{
-    AppTab, CronEntry, NavDir, Pane, PaneKind, SettingsCategory, SettingsControl, SidebarView,
-    Space, SplitDir, TabMenuAction, UiActions, WorkspaceRouting,
+    AppTab, CronEntry, FloatingDrag, FloatingDragMode, LayoutKind, NavDir, Pane, PaneKind,
+    SettingsCategory, SettingsControl, SidebarView, Space, SplitDir, TabMenuAction, UiActions,
+    WorkspaceRouting,
 };
 use crate::ui::color_picker::ColorTarget;
 
 use super::pane_ops::{
-    close_space_at, ensure_pane_hover, open_file_pane, open_pane_harness, split_active_pane,
+    close_space_at, ensure_pane_hover, open_file_pane, open_pane_harness, open_ssh_host_pane,
+    reconnect_ssh_host, split_active_pane,
 };
 use super::prompt::{run_terminal_command, send_agent_prompt};
 use crate::ui::pickers::{change_directory_command, checkout_branch_command};
@@ -72,6 +74,7 @@ pub fn make_actions(
     let on_voice = Rc::clone(&state);
     let on_model_select = Rc::clone(&state);
     let on_select_harness_state = Rc::clone(&state);
+    let desktop_select_harness = desktop.clone();
     let on_select_dir = Rc::clone(&state);
     let on_select_medium = Rc::clone(&media);
     let on_create_medium = Rc::clone(&media);
@@ -91,6 +94,12 @@ pub fn make_actions(
     let on_send_queued = Rc::clone(&state);
     let on_dismiss_queued = Rc::clone(&state);
     let on_settings = Rc::clone(&state);
+    let on_inbox = Rc::clone(&state);
+    let on_close_inbox = Rc::clone(&state);
+    let on_inbox_move = Rc::clone(&state);
+    let on_inbox_ack = Rc::clone(&state);
+    let on_inbox_ack_all = Rc::clone(&state);
+    let on_inbox_jump = Rc::clone(&state);
     let on_settings_category = Rc::clone(&state);
     let on_settings_category_step = Rc::clone(&state);
     let on_settings_focus_move = Rc::clone(&state);
@@ -119,6 +128,7 @@ pub fn make_actions(
     let on_set_scroll_speed = Rc::clone(&state);
     let on_set_font_size = Rc::clone(&state);
     let on_reload_model_config = Rc::clone(&state);
+    let on_reload_remote_agents = Rc::clone(&state);
     let on_reload_ssh_hosts = Rc::clone(&state);
     let on_projects = Rc::clone(&state);
     let on_workflows = Rc::clone(&state);
@@ -149,6 +159,19 @@ pub fn make_actions(
     let on_sidebar_drag_end = Rc::clone(&state);
     let on_split_right = Rc::clone(&state);
     let on_split_down = Rc::clone(&state);
+    let on_cycle_layout = Rc::clone(&state);
+    let on_float_start = Rc::clone(&state);
+    let on_float_rect = Rc::clone(&state);
+    let on_float_rect_end = Rc::clone(&state);
+    let on_float_minimize = Rc::clone(&state);
+    let on_float_restore = Rc::clone(&state);
+    let on_open_ssh_host_picker = Rc::clone(&state);
+    let on_close_ssh_host_picker = Rc::clone(&state);
+    let on_ssh_host_move = Rc::clone(&state);
+    let on_ssh_host_pick = Rc::clone(&state);
+    let on_ssh_reconnect = Rc::clone(&state);
+    let on_ssh_reconnect_dismiss = Rc::clone(&state);
+    let on_shell_line = Rc::clone(&state);
     let on_new_terminal = Rc::clone(&state);
     let on_close_pane = Rc::clone(&state);
     let on_terminal_cmd = Rc::clone(&state);
@@ -188,8 +211,6 @@ pub fn make_actions(
     let on_save_llm = Rc::clone(&state);
     let on_add_worker = Rc::clone(&state);
     let on_remove_worker = Rc::clone(&state);
-    let on_close_inline_screen = Rc::clone(&state);
-    let on_open_screen_link = Rc::clone(&state);
     let on_vault_unlock = Rc::clone(&state);
     let on_create_cluster = Rc::clone(&state);
     let on_unlock_cluster = Rc::clone(&state);
@@ -229,6 +250,7 @@ pub fn make_actions(
     let desktop_theme_secondary = desktop.clone();
     let desktop_theme_accent = desktop.clone();
     let desktop_reload_model = desktop.clone();
+    let desktop_reload_remote_agents = desktop.clone();
     let ui_zoom_font = ui_zoom.clone();
     let desktop_add_worker = desktop.clone();
     let desktop_remove_worker = desktop.clone();
@@ -240,6 +262,12 @@ pub fn make_actions(
     let desktop_dismiss_workspace = desktop.clone();
     let desktop_split_right = desktop.clone();
     let desktop_split_down = desktop.clone();
+    let desktop_cycle_layout = desktop.clone();
+    let desktop_float_rect_end = desktop.clone();
+    let desktop_float_minimize = desktop.clone();
+    let desktop_float_restore = desktop.clone();
+    let desktop_ssh_host = desktop.clone();
+    let desktop_ssh_reconnect = desktop.clone();
     let desktop_file_view = desktop.clone();
     let desktop_open_config = desktop.clone();
     let desktop_new_terminal = desktop.clone();
@@ -265,6 +293,7 @@ pub fn make_actions(
     let media_send_queued = Rc::clone(&media);
     let media_split_right = Rc::clone(&media);
     let media_split_down = Rc::clone(&media);
+    let media_ssh_host = Rc::clone(&media);
     let media_new_terminal = Rc::clone(&media);
     let media_term_cmd = Rc::clone(&media);
     let media_add_space = Rc::clone(&media);
@@ -303,6 +332,28 @@ pub fn make_actions(
             state.models = desktop.available_models(&state.settings_llm_provider);
         }
     }));
+    // Remote agents are read by the same config reader the models use: reload
+    // the file into the desktop state, then copy its `[remote_agents.*]` map
+    // into the page's rows. The state's own pinned path wins, so a test or a
+    // tool that names a file is read instead of the user's home.
+    let action_reload_remote_agents: Rc<RefCell<dyn FnMut()>> =
+        Rc::new(RefCell::new(move || {
+            let mut state = on_reload_remote_agents.borrow_mut();
+            let Some(desktop) = &desktop_reload_remote_agents else {
+                return;
+            };
+            let path = desktop.config_path().or_else(|| {
+                goble_core::app_home::GobleHome::locate()
+                    .ok()
+                    .map(|home| home.config_path())
+            });
+            if let Some(path) = path {
+                if let Err(e) = desktop.reload_config(&path) {
+                    log::error!("reload_config (remote agents) failed: {e}");
+                }
+            }
+            state.refresh_remote_agents(Some(desktop));
+        }));
     // `~/.ssh` is read by the state (which owns the Connections page's cache),
     // so the row and `Enter` on it take one path.
     let action_reload_ssh_hosts: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new({
@@ -484,6 +535,19 @@ pub fn make_actions(
                 // transcript, so the tab starts on a clean thread.
                 state.bind_active_pane_conversation(conversation_id, desktop_create.as_deref());
             }
+            // A space opened on an environment whose conversations run on a
+            // worker holds a viewer pane from the start: the conversation's
+            // shell is the worker's, so the pane is never given a local
+            // terminal it would only have to be torn out of (and never a pty
+            // process it should not have spawned). A local environment keeps
+            // the terminal pane it always had.
+            if let Some(desktop) = &desktop_create {
+                state.adopt_routing(
+                    id,
+                    Some(WorkspaceRouting::from_routing(routing)),
+                    desktop,
+                );
+            }
             open_pane_harness(&mut state, id, desktop_create.as_ref());
             state.refresh_space_labels();
             state.sync_active_view();
@@ -548,8 +612,11 @@ pub fn make_actions(
                 Some(InputClass::TerminalCommand(cmd)) => {
                     // A `!` line typed in an agent view is that conversation's
                     // command, so the conversation draws it: the block belongs to
-                    // the conversation and not to the shell behind Esc.
-                    let conversation = match state.pane_controls(pane_id).view {
+                    // the conversation and not to the shell behind Esc. The pane's
+                    // view names it, and it is read the one way the app reads a
+                    // pane's surface (`pane_view`), so the conversation the
+                    // command is filed under is the one the pane is drawing.
+                    let conversation = match state.pane_view(pane_id) {
                         BlockView::Agent { conversation_id } => Some(conversation_id),
                         BlockView::Terminal => None,
                     };
@@ -698,12 +765,33 @@ pub fn make_actions(
                 *state.model_menu_open.borrow_mut() = false;
             }
         })),
-        // The composer's left pill selects the work environment (medium), not a
-        // registered harness: an unknown medium id is ignored by `select_medium`.
+        // The environment control selects the medium the conversation's turns
+        // run on, not a registered harness; an unknown medium id is ignored. A
+        // conversation running on a worker keeps its own choice: it is persisted
+        // on that conversation (A3), so the pair of panes showing two
+        // conversations never shares one environment, and the turn the pane
+        // submits carries it. A pane with no environment control — every local
+        // conversation — keeps selecting the window's environment.
         on_select_harness: Rc::new(RefCell::new(move |pane_id: u64, medium_id: String| {
-            let mut media = on_select_medium.borrow_mut();
-            let _ = media.select_medium(&medium_id);
-            drop(media);
+            let viewer = on_select_harness_state.borrow().pane_is_viewer(pane_id);
+            let known = on_select_medium.borrow().has_medium(&medium_id);
+            if known && viewer {
+                let mut state = on_select_harness_state.borrow_mut();
+                let conversation = state.pane_conversation_id(pane_id).unwrap_or_default();
+                if let (Some(desktop), false) = (&desktop_select_harness, conversation.is_empty()) {
+                    if let Err(e) = desktop.set_chat_medium(&conversation, Some(&medium_id)) {
+                        log::warn!("set_chat_medium failed: {e}");
+                    }
+                }
+                // The pane shows the choice on the next frame, whether or not the
+                // conversation's row could be written.
+                state.pane_controls_mut(pane_id).environment = medium_id.clone();
+            } else if known {
+                // A pane with no environment of its own — every local pane — keeps
+                // selecting the window's environment, which is what its turns run
+                // on. An unknown id changes nothing; the menu still closes.
+                let _ = on_select_medium.borrow_mut().select_medium(&medium_id);
+            }
             let mut state = on_select_harness_state.borrow_mut();
             {
                 let controls = state.pane_controls_mut(pane_id);
@@ -755,26 +843,11 @@ pub fn make_actions(
         on_copy: Rc::new(RefCell::new(move || {
             log::info!("copy transcript pressed");
         })),
-        // Copy a terminal block's text to the system clipboard. Uses the macOS
-        // `pbcopy` helper (no extra dependency); other platforms log for now.
+        // Copy a terminal block's text to the system clipboard. The clipboard
+        // helper chooses the platform's tool and keeps an in-process copy when
+        // none is installed, so the block copy works everywhere.
         on_copy_terminal: Rc::new(RefCell::new(move |text: String| {
-            #[cfg(target_os = "macos")]
-            {
-                use std::io::Write;
-                if let Ok(mut child) = std::process::Command::new("pbcopy")
-                    .stdin(std::process::Stdio::piped())
-                    .spawn()
-                {
-                    if let Some(mut stdin) = child.stdin.take() {
-                        let _ = stdin.write_all(text.as_bytes());
-                    }
-                    let _ = child.wait();
-                } else {
-                    log::warn!("could not launch pbcopy to copy terminal block");
-                }
-            }
-            #[cfg(not(target_os = "macos"))]
-            log::info!("copy terminal block: {text}");
+            crate::clipboard::copy_text(&text);
         })),
         // Clear the active pane's in-memory transcript
         // (messages + suspended ask + queued prompt). The backend store is left
@@ -795,16 +868,15 @@ pub fn make_actions(
         })),
         on_stop: Rc::new(RefCell::new(move || {
             let mut state = on_stop.borrow_mut();
-            if let (Some(desktop), Some(chat_id)) = (&desktop_stop, state.selected_id.clone()) {
+            let pane_id = state.active_pane_id;
+            // Cancellation is the pane's turn, not whatever the sidebar last
+            // selected: the conversation is the pane's own binding.
+            if let (Some(desktop), Some(chat_id)) =
+                (&desktop_stop, state.pane_conversation_id(pane_id))
+            {
                 let _ = desktop.cancel_chat_turn(&chat_id);
             }
-            let pane_id = state.active_pane_id;
-            if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                rt.busy = false;
-                rt.turn_started_at = None;
-                rt.pending_command = None;
-                rt.command_selection = None;
-            }
+            state.stop_turn(pane_id);
             state.agent_busy = false;
         })),
         // A sub-agent row's click enters the child's own conversation in the
@@ -834,7 +906,8 @@ pub fn make_actions(
                     state.selected_model.clone()
                 };
                 let pane_id = state.active_pane_id;
-                if let (Some(desktop), Some(chat_id)) = (&desktop_answer, state.selected_id.clone())
+                if let (Some(desktop), Some(chat_id)) =
+                    (&desktop_answer, state.pane_conversation_id(pane_id))
                 {
                     if let Err(e) = desktop.resume_chat_turn(
                         &chat_id,
@@ -848,6 +921,7 @@ pub fn make_actions(
                         if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
                             rt.busy = true;
                             rt.pending_ask = None;
+                            rt.agent_state = crate::state::PaneAgentState::Working;
                         }
                         state.agent_busy = true;
                         state.pending_ask = None;
@@ -869,7 +943,9 @@ pub fn make_actions(
                 state.selected_model.clone()
             };
             let pane_id = state.active_pane_id;
-            if let (Some(desktop), Some(chat_id)) = (&desktop_skip, state.selected_id.clone()) {
+            if let (Some(desktop), Some(chat_id)) =
+                (&desktop_skip, state.pane_conversation_id(pane_id))
+            {
                 if let Err(e) = desktop.resume_chat_turn(
                     &chat_id,
                     "(skipped)",
@@ -879,10 +955,9 @@ pub fn make_actions(
                 ) {
                     log::warn!("resume_chat_turn (skip) failed: {e}");
                 } else {
-                    if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                        rt.busy = true;
-                        rt.pending_ask = None;
-                    }
+                    // The skipped question resumes the turn, so the pane reports
+                    // Working at once rather than waiting for its next event.
+                    state.skip_pending_ask(pane_id);
                     state.agent_busy = true;
                     state.pending_ask = None;
                 }
@@ -907,10 +982,10 @@ pub fn make_actions(
                 if let (Some(desktop), Some(chat_id)) = (&desktop_command, chat_id) {
                     match desktop.resume_command_chat_turn(&chat_id, decision) {
                         Ok(_) => {
-                            state.clear_command_proposal(pane_id, &proposal_id);
-                            if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                                rt.busy = true;
-                            }
+                            // The decision resumes the suspended turn: record
+                            // that it is running before the card clears, so the
+                            // pane's derived state is Working immediately.
+                            state.resume_command_decision(pane_id, &proposal_id);
                             state.agent_busy = true;
                         }
                         Err(e) => log::warn!("resume_command_chat_turn failed: {e}"),
@@ -926,10 +1001,10 @@ pub fn make_actions(
         // pane's transcript, bound to the pane that asked for it.
         on_fork_conversation: Rc::new(RefCell::new(move |pane_id: u64| {
             let mut state = on_fork_conversation.borrow_mut();
-            if state.fork_pane_conversation(pane_id, desktop_fork.as_deref()).is_some() {
-                if pane_id == state.active_pane_id {
-                    state.sync_active_view();
-                }
+            if state.fork_pane_conversation(pane_id, desktop_fork.as_deref()).is_some()
+                && pane_id == state.active_pane_id
+            {
+                state.sync_active_view();
             }
         })),
         // Cmd+Enter at a terminal pane's rich input activates the harness for
@@ -1032,7 +1107,46 @@ pub fn make_actions(
             log::info!("menu pressed");
         })),
         on_inbox: Rc::new(RefCell::new(move || {
-            log::info!("inbox pressed (coming soon)");
+            let mut state = on_inbox.borrow_mut();
+            let opening = !state.inbox_open;
+            state.inbox_open = opening;
+            if opening {
+                state.clamp_inbox_index();
+                state.inbox_error = None;
+                state.inbox_scroll.borrow_mut().reset();
+            }
+        })),
+        on_close_inbox: Rc::new(RefCell::new(move || {
+            let mut state = on_close_inbox.borrow_mut();
+            state.inbox_open = false;
+            state.inbox_error = None;
+        })),
+        on_inbox_move: Rc::new(RefCell::new(move |step: i32| {
+            let mut state = on_inbox_move.borrow_mut();
+            let len = state.inbox.len();
+            state.inbox_index = if len == 0 {
+                0
+            } else {
+                (state.inbox_index as i32 + step).clamp(0, len as i32 - 1) as usize
+            };
+            state.inbox_error = None;
+        })),
+        on_inbox_ack: Rc::new(RefCell::new(move || {
+            let mut state = on_inbox_ack.borrow_mut();
+            let index = state.inbox_index;
+            if let Some(id) = state.inbox.get(index).map(|item| item.id.clone()) {
+                state.ack_inbox(&id);
+            }
+        })),
+        on_inbox_ack_all: Rc::new(RefCell::new(move || {
+            on_inbox_ack_all.borrow_mut().ack_all();
+        })),
+        on_inbox_jump: Rc::new(RefCell::new(move || {
+            let mut state = on_inbox_jump.borrow_mut();
+            let index = state.inbox_index;
+            if state.jump_to_inbox_item(index) {
+                state.inbox_open = false;
+            }
         })),
         on_toggle_sidebar: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_sidebar.borrow_mut();
@@ -1108,6 +1222,7 @@ pub fn make_actions(
             // A single click selects the clicked workspace (Warp-style chip row).
             if state.active_space != index {
                 state.active_space = index;
+                state.spaces[index].recompute_layout();
                 state.active_pane_id = state.spaces[index].root.first_leaf_id();
                 state.sync_active_view();
                 if let Some(desktop) = &desktop_workspace_click {
@@ -1257,6 +1372,7 @@ pub fn make_actions(
             let on_vim = action_toggle_vim_mode.clone();
             let on_route = action_choose_workspace.clone();
             let on_reload = action_reload_model_config.clone();
+            let on_reload_agents = action_reload_remote_agents.clone();
             let on_step = action_settings_step.clone();
             let desktop_activate = desktop.clone();
             move || {
@@ -1292,6 +1408,9 @@ pub fn make_actions(
                     }
                     Some(SettingsControl::Route(routing)) => (on_route.borrow_mut())(routing),
                     Some(SettingsControl::ReloadModels) => (on_reload.borrow_mut())(),
+                    Some(SettingsControl::ReloadRemoteAgents) => {
+                        (on_reload_agents.borrow_mut())()
+                    }
                     // Everything else belongs to the state: the environment
                     // rows, and a text field taking the caret or committing it.
                     _ => activate_state
@@ -1356,6 +1475,7 @@ pub fn make_actions(
         on_set_scroll_speed: action_set_scroll_speed.clone(),
         on_set_font_size: action_set_font_size.clone(),
         on_reload_model_config: action_reload_model_config.clone(),
+        on_reload_remote_agents: action_reload_remote_agents.clone(),
         on_reload_ssh_hosts: action_reload_ssh_hosts.clone(),
         on_ssh_select_host: action_ssh_select_host.clone(),
         on_projects: Rc::new(RefCell::new(move || {
@@ -1610,6 +1730,153 @@ pub fn make_actions(
                 state.save_panes(desktop);
             }
         })),
+        // Cmd+Shift+L and the palette: BSP → master-stack → floating →
+        // carousel. The space keeps its tree, so switching back never loses a
+        // pane.
+        on_cycle_layout: Rc::new(RefCell::new(move || {
+            let mut state = on_cycle_layout.borrow_mut();
+            state.cycle_space_layout(desktop_cycle_layout.as_deref());
+            state.sync_active_view();
+        })),
+        // A press on a floating pane's header or its bottom-right grip. The
+        // pane is raised as it starts moving, the way clicking a window does.
+        on_float_start: Rc::new(RefCell::new(
+            move |pane_id: u64, mode: FloatingDragMode, position: Vector2F, area: Vector2F| {
+                let mut state = on_float_start.borrow_mut();
+                let space_idx = state.active_space;
+                let original = state
+                    .spaces
+                    .get(space_idx)
+                    .and_then(|space| space.floating_rect(pane_id));
+                let Some(original) = original else {
+                    return;
+                };
+                *state.floating_drag.borrow_mut() = Some(FloatingDrag {
+                    pane_id,
+                    mode,
+                    start: position,
+                    original,
+                    area,
+                });
+                state.focus_pane(pane_id);
+                if let Some(space) = state.spaces.get_mut(space_idx) {
+                    space.raise_pane(pane_id);
+                }
+            },
+        )),
+        on_float_rect: Rc::new(RefCell::new(move |pane_id: u64, rect: crate::ui::PaneRect| {
+            let mut state = on_float_rect.borrow_mut();
+            let space_idx = state.active_space;
+            if let Some(space) = state.spaces.get_mut(space_idx) {
+                space.set_floating_rect(pane_id, rect);
+            }
+        })),
+        on_float_rect_end: Rc::new(RefCell::new(move || {
+            let state = on_float_rect_end.borrow_mut();
+            state.floating_drag.borrow_mut().take();
+            if let Some(desktop) = &desktop_float_rect_end {
+                state.save_panes(desktop);
+            }
+        })),
+        // A window's minimize control: the window keeps its rect and its place
+        // in the z-order and becomes a chip in the dock. When it was the pane
+        // the keyboard was in, focus moves to the next visible window, so the
+        // keys never stay on a window nobody can see.
+        on_float_minimize: Rc::new(RefCell::new(move |pane_id: u64| {
+            let mut state = on_float_minimize.borrow_mut();
+            let space_idx = state.active_space;
+            let active_id = state.active_pane_id;
+            let mut next = None;
+            if let Some(space) = state.spaces.get_mut(space_idx) {
+                space.minimize_pane(pane_id);
+                if active_id == pane_id {
+                    next = space.visible_leaf_ids().first().copied();
+                }
+            }
+            let dragged = state
+                .floating_drag
+                .borrow()
+                .as_ref()
+                .is_some_and(|drag| drag.pane_id == pane_id);
+            if dragged {
+                state.floating_drag.borrow_mut().take();
+            }
+            if let Some(next) = next {
+                state.focus_pane(next);
+                state.sync_active_view();
+            }
+            if let Some(desktop) = &desktop_float_minimize {
+                state.save_panes(desktop);
+            }
+        })),
+        // A dock chip: the window comes back at the rect it was docked with and
+        // takes the focus, exactly as clicking an OS window's taskbar button
+        // does.
+        on_float_restore: Rc::new(RefCell::new(move |pane_id: u64| {
+            let mut state = on_float_restore.borrow_mut();
+            let space_idx = state.active_space;
+            if let Some(space) = state.spaces.get_mut(space_idx) {
+                space.restore_pane(pane_id);
+            }
+            state.focus_pane(pane_id);
+            state.sync_active_view();
+            if let Some(desktop) = &desktop_float_restore {
+                state.save_panes(desktop);
+            }
+        })),
+        // Cmd+Shift+N: read the saved hosts, then show the picker. The read
+        // happens on open so an edit to hosts.toml is seen without a restart.
+        on_open_ssh_host_picker: Rc::new(RefCell::new(move || {
+            let mut state = on_open_ssh_host_picker.borrow_mut();
+            state.reload_saved_hosts();
+            state.ssh_host_picker_index = 0;
+            state.ssh_host_picker_open = true;
+            state.command_palette_open = false;
+        })),
+        on_close_ssh_host_picker: Rc::new(RefCell::new(move || {
+            on_close_ssh_host_picker.borrow_mut().ssh_host_picker_open = false;
+        })),
+        on_ssh_host_move: Rc::new(RefCell::new(move |step: i32| {
+            let mut state = on_ssh_host_move.borrow_mut();
+            let len = state.ssh_host_entries.len();
+            state.ssh_host_picker_index = if len == 0 {
+                0
+            } else {
+                (state.ssh_host_picker_index as i32 + step).clamp(0, len as i32 - 1) as usize
+            };
+        })),
+        on_ssh_host_pick: Rc::new(RefCell::new(move |index: usize| {
+            let mut state = on_ssh_host_pick.borrow_mut();
+            let host = state.ssh_host_entries.get(index).cloned();
+            state.ssh_host_picker_open = false;
+            if let Some(host) = host {
+                let media = media_ssh_host.borrow();
+                open_ssh_host_pane(&mut state, desktop_ssh_host.as_ref(), &media, &host);
+            }
+        })),
+        // The reconnect offer: restart the pane's dead shell and run its host's
+        // line again. The saved host list is read here when the picker has not
+        // filled it yet (a pane restored after a restart).
+        on_ssh_reconnect: Rc::new(RefCell::new(move || {
+            let mut state = on_ssh_reconnect.borrow_mut();
+            let Some((pane_id, name)) = state.ssh_reconnect_prompt.take() else {
+                return;
+            };
+            if state.ssh_host_entries.is_empty() {
+                state.reload_saved_hosts();
+            }
+            if !reconnect_ssh_host(&mut state, desktop_ssh_reconnect.as_ref(), pane_id, &name) {
+                log::warn!("saved host `{name}` is no longer in hosts.toml");
+            }
+        })),
+        on_ssh_reconnect_dismiss: Rc::new(RefCell::new(move || {
+            on_ssh_reconnect_dismiss.borrow_mut().ssh_reconnect_prompt = None;
+        })),
+        // A line typed straight into the grid reaches the shell without the
+        // rich input bar, so the SSH binding is read here too.
+        on_shell_line: Rc::new(RefCell::new(move |pane_id: u64, line: String| {
+            on_shell_line.borrow_mut().note_shell_line(pane_id, &line);
+        })),
         on_new_terminal: Rc::new(RefCell::new(move || {
             let (mut state, media) = (on_new_terminal.borrow_mut(), media_new_terminal.borrow());
             split_active_pane(
@@ -1633,20 +1900,16 @@ pub fn make_actions(
             } else {
                 None
             };
-            // Drop the closed pane's session/runtime/hover so it is reclaimed.
-            state.pane_sessions.remove(&active_id);
-            state.pane_runtime.remove(&active_id);
-            state.pane_hover.remove(&active_id);
-            // A child view open in the closed pane goes with it: the next pane to
-            // take this id must not inherit a stranger's transcript.
-            state.sub_agent_views.remove(&active_id);
+            // The closed pane owns nothing: its session/runtime/hover, a child
+            // view open in it and its shell (killing the pty) go with it, and so
+            // does its viewer session — a pane that is gone must not be found by
+            // a later worker status report.
+            state.forget_pane(active_id);
             // An expanded pane that is closed gives the space back: the id is
             // dropped with the pane, so nothing is left expanded by name.
             if state.maximized_pane == Some(active_id) {
                 state.maximized_pane = None;
             }
-            // Drop any terminal session (killing its shell) + input mirror.
-            state.terminal.borrow_mut().drop_pane(active_id);
             if let Some(next) = next {
                 state.active_pane_id = next;
             }
@@ -1736,6 +1999,7 @@ pub fn make_actions(
             let mut state = on_select_space.borrow_mut();
             if index < state.spaces.len() {
                 state.active_space = index;
+                state.spaces[index].recompute_layout();
                 state.active_pane_id = state.spaces[index].root.first_leaf_id();
             }
             state.sync_active_view();
@@ -1844,9 +2108,10 @@ pub fn make_actions(
             state.add_medium_draft.clear();
             state.add_medium_focused = false;
         })),
-        on_space_press: Rc::new(RefCell::new(move |index: usize| {
+        on_space_press: Rc::new(RefCell::new(move |index: usize, at: Vector2F| {
             let mut state = on_space_press.borrow_mut();
             state.space_press = Some(index);
+            state.space_press_at = Some(at);
             state.space_hover = Some(index);
             // The press, not the release, is what the double click is counted
             // from: the count is warp-new's own rule (`SpacePressRun`), read
@@ -1875,13 +2140,18 @@ pub fn make_actions(
         on_space_reorder: Rc::new(RefCell::new(move |from: usize, to: usize| {
             let mut state = on_space_reorder.borrow_mut();
             let len = state.spaces.len();
-            if from == to || from >= len || to >= len {
+            if from >= len || to >= len {
+                return;
+            }
+            // The tab follows the pointer from `to` on, even while it has not
+            // crossed a neighbour yet: that is what tells the release this was
+            // a drag and not a click. A move that changes nothing still records
+            // it, so a press that travelled never turns into a select.
+            state.space_drag = Some(to);
+            if from == to {
                 return;
             }
             state.reorder_space(from, to);
-            // Track the dragged tab at its new index so the drag continues to
-            // follow the pointer across the per-frame rebuild.
-            state.space_drag = Some(to);
             if let Some(desktop) = &desktop_space_reorder {
                 state.save_panes(desktop);
             }
@@ -1889,12 +2159,21 @@ pub fn make_actions(
         on_space_release: Rc::new(RefCell::new(move || {
             let mut state = on_space_release.borrow_mut();
             state.space_press = None;
+            state.space_press_at = None;
             state.space_drag = None;
             state.space_hover = None;
         })),
         on_pane_activate: Rc::new(RefCell::new(move |id: u64| {
             let mut state = on_pane_activate.borrow_mut();
             state.focus_pane(id);
+            // A click on a floating pane raises it: its place in the z-order is
+            // the space's own state and is persisted with the rect.
+            let space_idx = state.active_space;
+            if let Some(space) = state.spaces.get_mut(space_idx) {
+                if space.layout == LayoutKind::Floating {
+                    space.raise_pane(id);
+                }
+            }
             state.sync_active_view();
             if let Some(desktop) = &desktop_pane_activate {
                 state.refresh_messages(desktop);
@@ -1942,34 +2221,48 @@ pub fn make_actions(
             on_pane_lift.borrow_mut().begin_pane_lift(pane_id, position);
         })),
         on_pane_lift_move: Rc::new(RefCell::new(
-            move |position: Vector2F, drop_index: Option<usize>| {
+            move |position: Vector2F, drop_index: Option<usize>, drop_target| {
                 on_pane_lift_move
                     .borrow_mut()
-                    .drag_pane_to(position, drop_index);
+                    .drag_pane_to(position, drop_index, drop_target);
             },
         )),
-        // Drop the lifted pane on the tab strip: it becomes a tab of its own
-        // there, carrying the pane itself (its id and its kind, so its PTY, its
-        // conversation and its file follow it). The space it left collapses
-        // onto its surviving pane, is consumed when it held nothing else, or —
-        // the last one — resets to a fresh empty chat pane exactly as closing
-        // it would, so the window is never left without a tab.
-        on_pane_drop: Rc::new(RefCell::new(move |drop_index: Option<usize>| {
-            let mut state = on_pane_drop.borrow_mut();
-            let Some(moved) = state.drop_pane(drop_index) else {
-                return;
-            };
-            if let Some(fresh) = moved.reset_pane {
-                ensure_pane_hover(&mut state, fresh);
-                state.bind_pane_new_conversation(fresh, desktop_pane_drop.as_deref());
-            }
-            state.refresh_space_labels();
-            state.sync_active_view();
-            if let Some(desktop) = &desktop_pane_drop {
-                state.refresh_messages(desktop);
-                state.save_panes(desktop);
-            }
-        })),
+        // Drop the lifted pane on the tab strip, where it becomes a tab of its
+        // own carrying the pane itself (its id and its kind, so its PTY, its
+        // conversation and its file follow it), or beside the pane it was
+        // released over in the active space, where it becomes a new split. A
+        // release over neither cancels. The space it left collapses onto its
+        // surviving pane, is consumed when it held nothing else, or — the last
+        // one — resets to a fresh empty chat pane exactly as closing it would,
+        // so the window is never left without a tab.
+        on_pane_drop: Rc::new(RefCell::new(
+            move |drop_index: Option<usize>, drop_target| {
+                let mut state = on_pane_drop.borrow_mut();
+                match state.release_pane_drag(drop_index, drop_target) {
+                    crate::state::PaneDrop::MovedInSpace => {
+                        state.refresh_space_labels();
+                        state.sync_active_view();
+                        if let Some(desktop) = &desktop_pane_drop {
+                            state.refresh_messages(desktop);
+                            state.save_panes(desktop);
+                        }
+                    }
+                    crate::state::PaneDrop::NewTab(moved) => {
+                        if let Some(fresh) = moved.reset_pane {
+                            ensure_pane_hover(&mut state, fresh);
+                            state.bind_pane_new_conversation(fresh, desktop_pane_drop.as_deref());
+                        }
+                        state.refresh_space_labels();
+                        state.sync_active_view();
+                        if let Some(desktop) = &desktop_pane_drop {
+                            state.refresh_messages(desktop);
+                            state.save_panes(desktop);
+                        }
+                    }
+                    crate::state::PaneDrop::Cancelled => {}
+                }
+            },
+        )),
         on_agent_delete: Rc::new(RefCell::new(move |id: String| {
             let mut state = on_agent_delete.borrow_mut();
             state.conversations.retain(|c| c.id != id);
@@ -2133,19 +2426,6 @@ pub fn make_actions(
             } else {
                 state.settings_workers.retain(|w| w.0 != id);
             }
-        })),
-        on_close_inline_screen: Rc::new(RefCell::new(move || {
-            let mut state = on_close_inline_screen.borrow_mut();
-            let pane_id = state.active_pane_id;
-            if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                rt.inline_screen_source = None;
-            }
-        })),
-        on_open_screen_link: Rc::new(RefCell::new(move |uri: String| {
-            let mut state = on_open_screen_link.borrow_mut();
-            // The root view owns the screen sheet; it pops this and performs
-            // the open (selecting the source derived from the URI).
-            state.pending_screen_link_open = Some(uri);
         })),
         // A link clicked in the transcript: hand it to the guarded external
         // opener, which refuses every non-http(s) scheme.

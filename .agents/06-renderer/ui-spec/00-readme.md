@@ -40,7 +40,7 @@ flowchart TB
 1. **Topbar** — macOS traffic lights + title on the left; `threads` toggle, `inbox`, `user settings` on the right.
 2. **Left sidebar — conversation list** — search + create button, scrollable conversation cards, fixed `Plugins` footer.
 3. **Chat view** — header with conversation name + right-sidebar toggle, message bubbles, bottom composer.
-4. **Right chat-sidebar** — `Computer Use` preview and `Routines` list.
+4. **Right chat-sidebar** — the conversation's `Routines` list.
 
 ## Principles
 

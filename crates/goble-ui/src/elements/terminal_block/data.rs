@@ -25,6 +25,10 @@ pub struct TerminalMeta {
     pub path: String,
     pub branch: Option<String>,
     pub duration: Option<String>,
+    /// The prompt the command was typed at, drawn at the head of the header.
+    /// When set it replaces `path`, because the prompt already names the
+    /// directory the command ran in — the shell prompt's own shape.
+    pub prompt: Option<String>,
 }
 
 impl TerminalMeta {
@@ -33,6 +37,7 @@ impl TerminalMeta {
             path: path.into(),
             branch: None,
             duration: None,
+            prompt: None,
         }
     }
 
@@ -46,13 +51,23 @@ impl TerminalMeta {
         self
     }
 
+    /// Attach the shell prompt the command was typed at. The block's header
+    /// draws it where its directory label would go; the body draws no prompt
+    /// row of its own.
+    pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = Some(prompt.into());
+        self
+    }
+
     /// The labels the header draws, in order. An empty path is left out, so a
     /// block whose shell never reported a working directory draws no empty
-    /// label for it.
+    /// label for it. A prompt replaces the path label, not adds to it.
     pub(crate) fn labels(&self) -> Vec<String> {
         let mut labels = Vec::new();
-        if !self.path.is_empty() {
-            labels.push(self.path.clone());
+        match &self.prompt {
+            Some(prompt) if !prompt.is_empty() => labels.push(prompt.clone()),
+            _ if !self.path.is_empty() => labels.push(self.path.clone()),
+            _ => {}
         }
         if let Some(branch) = &self.branch {
             labels.push(format!("git:({branch})"));

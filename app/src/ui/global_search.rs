@@ -319,28 +319,39 @@ fn search_with_ripgrep(rg: &Path, root: &str, query: &str) -> Result<Vec<SearchR
         });
     }
 
-    // `--null` puts the path and the match on either side of a NUL, so a path
-    // with a colon in it (or a match line with one) parses without guessing
-    // where the path ends.
     let text = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_ripgrep_matches(&text))
+}
+
+/// Read ripgrep's `path\0line:body\n` records into rows. The path repeats on
+/// every match and only its boundary with the line is a NUL; records are
+/// newline-terminated. Splitting on NUL alone would fold each file's following
+/// path into the previous match's body.
+fn parse_ripgrep_matches(text: &str) -> Vec<SearchRow> {
     let mut rows: Vec<SearchRow> = Vec::new();
-    let mut current: Option<String> = None;
-    let mut parts = text.split('\0');
-    while let Some(path) = parts.next() {
-        let Some(match_line) = parts.next() else {
-            break;
+    let mut current: Option<&str> = None;
+    let mut rest = text;
+    while let Some(nul) = rest.find('\0') {
+        let path = &rest[..nul];
+        let after = &rest[nul + 1..];
+        let end = after.find('\n').unwrap_or(after.len());
+        let match_line = &after[..end];
+        rest = if end < after.len() {
+            &after[end + 1..]
+        } else {
+            ""
         };
-        let Some((number, body)) = match_line.trim_end_matches('\n').split_once(':') else {
+        let Some((number, body)) = match_line.split_once(':') else {
             continue;
         };
         let Ok(number) = number.parse::<u32>() else {
             continue;
         };
-        if current.as_deref() != Some(path) {
+        if current != Some(path) {
             if rows.iter().filter(|row| row.line.is_none()).count() >= FILES {
                 break;
             }
-            current = Some(path.to_string());
+            current = Some(path);
             rows.push(SearchRow {
                 path: path.to_string(),
                 name: file_name(path),
@@ -355,7 +366,7 @@ fn search_with_ripgrep(rg: &Path, root: &str, query: &str) -> Result<Vec<SearchR
             text: body.to_string(),
         });
     }
-    Ok(rows)
+    rows
 }
 
 /// The same search without ripgrep: the directory walked in-process, every text
@@ -391,7 +402,7 @@ fn search_in_process(
             break;
         }
         seen += 1;
-        if seen % CANCEL_CHECK_FILES == 0 && cancelled() {
+        if seen.is_multiple_of(CANCEL_CHECK_FILES) && cancelled() {
             return Ok(None);
         }
         let path = entry.path();
@@ -685,6 +696,30 @@ mod tests {
         assert_eq!(regex_escape("plain"), "plain");
     }
 
+    /// ripgrep separates the path from the line with a NUL and terminates each
+    /// record with a newline, so each match's body ends at the newline — not at
+    /// the next path. Reading it the wrong way folds one file's path into the
+    /// previous match's text.
+    #[test]
+    fn ripgrep_output_is_read_record_by_record() {
+        let output = "/p/a.rs\x001:needle\n/p/a.rs\x002:two: colons\n/p/b.rs\x0012:needle\n";
+        let rows = parse_ripgrep_matches(output);
+        let shape: Vec<(String, Option<u32>, String)> = rows
+            .iter()
+            .map(|row| (row.name.clone(), row.line, row.text.clone()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("a.rs".to_string(), None, String::new()),
+                (String::new(), Some(1), "needle".to_string()),
+                (String::new(), Some(2), "two: colons".to_string()),
+                ("b.rs".to_string(), None, String::new()),
+                (String::new(), Some(12), "needle".to_string()),
+            ]
+        );
+    }
+
     /// Wait for the worker to publish, the way the frame loop does: collect
     /// until an answer appears, or give up.
     fn collect(worker: &SearchWorker) -> Option<SearchOutcome> {
@@ -923,7 +958,7 @@ mod sidebar_scroll_tests {
         let window = vec2f(1024.0, 768.0);
         let _ = root.layout(
             SizeConstraint::loose(window),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             app,
         );
         let mut ctx = PaintContext::new(Renderer::new());
@@ -941,10 +976,10 @@ mod sidebar_scroll_tests {
         let mut repeated = std::collections::HashSet::new();
         for command in commands {
             if let RenderCommand::DrawText { text, origin, .. } = command {
-                if origin.x < crate::ui::SIDEBAR_WIDTH {
-                    if drawn.insert(text.clone(), origin.y).is_some() {
-                        repeated.insert(text.clone());
-                    }
+                if origin.x < crate::ui::SIDEBAR_WIDTH
+                    && drawn.insert(text.clone(), origin.y).is_some()
+                {
+                    repeated.insert(text.clone());
                 }
             }
         }
@@ -991,7 +1026,7 @@ mod sidebar_scroll_tests {
         );
         assert_eq!(scroll.borrow().offset(), 0.0, "it opens at the top");
 
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         root.dispatch_event(
             &DispatchedEvent::MouseMove {
                 position: over_the_band,
@@ -1070,7 +1105,7 @@ mod sidebar_scroll_tests {
         paint(&mut root, &app, over_the_band);
 
         for key in ["n", "e", "e", "d", "l", "e"] {
-            let mut ctx = EventContext::default();
+            let mut ctx = EventContext;
             root.dispatch_event(
                 &DispatchedEvent::KeyDown {
                     key: key.to_string(),
@@ -1103,7 +1138,7 @@ mod sidebar_scroll_tests {
             scroll.borrow().max_offset()
         );
 
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         root.dispatch_event(
             &DispatchedEvent::MouseMove {
                 position: over_the_band,
@@ -1192,7 +1227,7 @@ mod sidebar_scroll_tests {
                     vec2f(0.0, 0.0),
                     vec2f(crate::ui::SIDEBAR_WIDTH, f32::INFINITY),
                 ),
-                &mut LayoutContext::default(),
+                &mut LayoutContext,
                 &app,
             );
             assert_eq!(
@@ -1234,7 +1269,7 @@ mod sidebar_scroll_tests {
         }
         let height = whole.finish().layout(
             SizeConstraint::new(vec2f(0.0, 0.0), vec2f(crate::ui::SIDEBAR_WIDTH, f32::INFINITY)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             &app,
         );
         let scroll_state = state.borrow().global_search_scroll.clone();
@@ -1253,7 +1288,7 @@ mod sidebar_scroll_tests {
         let opened_at = *rows_by_text(&top)
             .get("module_0.rs")
             .expect("the list opens at its first file");
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         root.dispatch_event(
             &DispatchedEvent::MouseMove {
                 position: over_the_band,

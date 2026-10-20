@@ -3,7 +3,8 @@
 //!
 //! One module per surface of the service: bootstrapping and the core accessors
 //! ([`bootstrap`]), the daemon-event translator that feeds the UI ([`translator`]),
-//! chat turns ([`turns`]), chat storage ([`chats`]), agents, workflows and teams
+//! chat turns ([`turns`]), re-attaching a client to a conversation's session
+//! ([`attach`]), chat storage ([`chats`]), agents, workflows and teams
 //! ([`agents`]), worker pairing and routing ([`workers`]), cluster identity and
 //! installs ([`cluster`]), the vault and access grants ([`vault`]), the
 //! environment secret groups ([`environment`]), LLM settings
@@ -32,6 +33,7 @@ use crate::thread_store::ThreadStore;
 use crate::worker_manager::WorkerClient;
 
 mod agents;
+mod attach;
 mod bootstrap;
 mod chats;
 mod cluster;
@@ -39,6 +41,8 @@ mod environment;
 mod llm;
 mod load;
 mod mcp;
+mod remote;
+mod sandboxes;
 mod settings;
 mod translator;
 mod turns;
@@ -50,6 +54,12 @@ mod workers;
 #[cfg(test)]
 mod tests;
 
+pub use attach::{AttachedSession, SessionAttach};
+pub use remote::{
+    deploy, sandbox_request, RemoteDeploy, GATEWAY_URL_ENV, PROJECT_ID_ENV, REPO_BRANCH_ENV,
+    REPO_URL_ENV, WORKER_ID_ENV, WORKER_TOKEN_ENV, WORKSPACE_PATH_ENV,
+};
+pub use sandboxes::{binding_for_local_project, binding_for_project};
 pub use types::{
     AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, CommandProposedEvent, ExecutionInfo, Intent,
     IntentParams, LlmSetting, LogEntry, ReasoningEvent, ReasoningPhase, SubAgentFinishedEvent,
@@ -109,9 +119,4 @@ pub struct DesktopState {
     /// same record to the app, which overlays it on the persisted rows so a
     /// running call is visible before the turn ends.
     tool_in_flight: Arc<Mutex<HashMap<String, HashMap<String, ToolCallEvent>>>>,
-    /// Screen capture+control registry, seeded with the local platform adapter
-    /// on construction so the capturer/controller are reachable. The backend is
-    /// platform-aware: macOS uses the real `screencapture` capturer, other
-    /// platforms fall back to a synthetic adapter.
-    screen: goble_screen_core::ScreenRegistry,
 }

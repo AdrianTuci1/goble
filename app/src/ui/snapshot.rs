@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use goble_harness_types::MediumKind;
 use goble_core::store::SecretGroup;
@@ -11,15 +10,18 @@ use goble_ui::elements::{
 };
 use goble_ui::{ScrollState, SettingsPage};
 
-use crate::state::{PaneControls, PaneDrag, PaneWorkItem, SpaceMenu};
+use crate::state::{
+    InboxItem, PaneAttach, PaneControls, PaneDrag, PaneWorkItem, SpaceMenu, WorkerPaneSession,
+};
 use crate::terminal::TerminalRegistry;
+use crate::ui::FloatingDrag;
 
 use super::color_picker;
 use super::pane::Space;
 use super::types::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, LlmFormField,
-    McpSearchEntry, McpServerEntry, SearchRow, SettingsCategory, SettingsFocus, SidebarView,
-    TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkspaceRouting,
+    McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow, SettingsCategory, SettingsFocus,
+    SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkspaceRouting,
 };
 
 /// What a pane's sub-agent child view (S6) shows: the child's own conversation,
@@ -37,6 +39,50 @@ pub struct SubAgentViewSnapshot {
     pub messages: Vec<UiChatMessage>,
 }
 
+/// A viewer pane's session as its surface draws it: which worker the
+/// conversation runs on, and how the connection stands. `None` on every pane
+/// that is not a viewer pane ([`crate::ui::PaneKind::Worker`]), which is why a
+/// chat pane and a viewer pane cannot be drawn from the same data by accident.
+#[derive(Clone, Debug)]
+pub struct WorkerPaneSnapshot {
+    /// The paired worker the conversation's turns run on. Empty while none has
+    /// been resolved — the pane's state names what is missing.
+    pub worker_id: String,
+    pub attach: PaneAttach,
+    /// The session the pane (re-)attached to on that worker, or that the
+    /// conversation has none. `None` before any attach has run, so the pane
+    /// never claims a session it has not rejoined.
+    pub session: Option<WorkerPaneSession>,
+}
+
+impl WorkerPaneSnapshot {
+    /// The line the pane leads its transcript with: which worker, how the
+    /// connection stands, and what the conversation's session there is. The
+    /// words are [`PaneAttach`]'s and [`WorkerPaneSession`]'s own.
+    ///
+    /// A conversation with no session says so here — the line is the pane's own
+    /// report, and "no session to rejoin" is a state of it, not silence.
+    pub fn connection_line(&self) -> String {
+        let connection = self.attach.words(&self.worker_id);
+        match &self.session {
+            Some(session) => format!("{connection} · {}", session.words()),
+            None => connection,
+        }
+    }
+
+    /// What the composer's directory control reads for this pane. There is no
+    /// local directory behind a viewer pane — drawing one would name this
+    /// machine for work that is not running on it — so the pill names where the
+    /// conversation actually runs.
+    pub fn location_label(&self) -> String {
+        if self.worker_id.trim().is_empty() {
+            "no worker".to_string()
+        } else {
+            self.worker_id.clone()
+        }
+    }
+}
+
 /// Per-pane chat data used to render a chat leaf: its own transcript, composer
 /// draft, working-directory label, suspended ask and queued prompt. Each chat
 /// pane is an independent session, so this is keyed by pane id and never shared.
@@ -46,6 +92,12 @@ pub struct PaneChatSnapshot {
     pub messages: Vec<UiChatMessage>,
     pub composer_draft: String,
     pub composer_path: String,
+    /// This pane's viewer session, when the pane is a viewer pane: the worker
+    /// its conversation runs on and the state of that connection. `None` for
+    /// every other pane, including a chat pane — which is what makes the two
+    /// distinguishable on screen (the viewer pane draws the connection's own
+    /// report, and there is no shell behind it).
+    pub worker: Option<WorkerPaneSnapshot>,
     /// The files this pane's rich input carries (the attach control added
     /// them), drawn as chips over the editor.
     pub composer_attachments: Vec<String>,
@@ -62,15 +114,13 @@ pub struct PaneChatSnapshot {
     /// pane's turn is busy, or the still-running kinds once it stops, or
     /// [`goble_ui::TurnStatus::Idle`] when nothing is in flight.
     pub turn_status: goble_ui::TurnStatus,
-    /// A live remote-desktop frame the harness handed off, rendered inline.
-    pub inline_screen: Option<ScreenFrameSnapshot>,
-    /// A detected BYOH handoff URI (`rdp://…` / `goble://desktop?…`), rendered
-    /// as a clickable "open remote desktop" affordance when no live frame yet.
-    pub screen_link: Option<String>,
     /// The pane's live sub-agent records, keyed by the id of the parent tool
     /// call that spawned each child; the parent transcript's rows read their
     /// status, activity and elapsed time from these.
     pub sub_agents: HashMap<String, goble_ui::SubAgentRow>,
+    /// The message the pane's last turn failed on, drawn inline at the end of
+    /// the transcript so a failed turn is readable where it happened.
+    pub turn_error: Option<String>,
     /// The sub-agent child view this pane shows (S6): the child's own
     /// conversation, entered from the parent transcript's row. `None` when the
     /// pane shows its own transcript.
@@ -271,6 +321,10 @@ pub struct UiSnapshot {
     pub show_workspace_choice: bool,
     /// First-run routing decision once the user picks Local or Remote.
     pub workspace_routing: Option<WorkspaceRouting>,
+    /// Settings → Agent & Approval: the `[remote_agents.<name>]` tables the
+    /// config declares, in name order, with the credentials each still lacks.
+    /// Read from app state every frame, so a reload shows up at once.
+    pub remote_agents: Vec<RemoteAgentEntry>,
     /// First-run: whether the model-provider dialog is open over the chat.
     pub llm_dialog_open: bool,
     /// Editable model-form fields, held in app-owned ref cells so the text and
@@ -339,11 +393,30 @@ pub struct UiSnapshot {
     pub space_hover: Option<usize>,
     /// Space tab currently pressed (MouseDown), used to detect a drag start.
     pub space_press: Option<usize>,
+    /// Where that press landed, in window coordinates (see
+    /// [`crate::state::UiState::space_press_at`]).
+    pub space_press_at: Option<goble_ui::Vector2F>,
     /// Space tab currently being dragged (reordering in progress).
     pub space_drag: Option<usize>,
     /// The pane lifted out of its grid toward the tab strip, if any: the strip
     /// draws the insertion marker from it and the bar draws its ghost card.
     pub pane_drag: Option<PaneDrag>,
+    /// The bounds each pane leaf was drawn at on the last frame, in window
+    /// coordinates, keyed by pane id: what the drag handlers resolve the pane
+    /// under the pointer against, and where the drop ghost is drawn. Shared with
+    /// app state, so the frame that reads it is one paint behind the pointer's
+    /// own frame.
+    pub pane_bounds: Rc<RefCell<HashMap<u64, goble_ui::geometry::RectF>>>,
+    /// The floating pane drag in progress. Shared with app state so a gesture
+    /// that began in one frame continues in the next.
+    pub floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
+    /// The saved SSH hosts from `~/.goble/hosts.toml`, and the picker that
+    /// offers them (Cmd+Shift+N).
+    pub ssh_host_entries: Vec<goble_core::hosts::HostEntry>,
+    pub ssh_host_picker_open: bool,
+    pub ssh_host_picker_index: usize,
+    /// A saved host whose session ended, with the pane it ran in.
+    pub ssh_reconnect_prompt: Option<(u64, String)>,
     /// The focused leaf pane (target for splits/closes, highlighted).
     pub active_pane_id: u64,
     /// The split node currently being dragged, if any.
@@ -373,6 +446,17 @@ pub struct UiSnapshot {
     pub command_palette_query: String,
     /// The palette's selected row index.
     pub command_palette_index: usize,
+    /// The global inbox's items, newest first, and how many are unread (the
+    /// topbar control's badge).
+    pub inbox_items: Vec<InboxItem>,
+    pub inbox_unread_count: usize,
+    /// Whether the inbox overlay is up, the row it highlights, and the reason
+    /// the last jump did not land.
+    pub inbox_open: bool,
+    pub inbox_index: usize,
+    pub inbox_error: Option<String>,
+    /// Scroll offset of the inbox overlay's list.
+    pub inbox_scroll: Rc<RefCell<ScrollState>>,
     /// First run: a compact "getting started" hint shown once the workspace
     /// choice is made, so the first-run flow lands on the chat with a tip.
     pub show_onboarding_tip: bool,
@@ -466,7 +550,7 @@ pub struct MediaProject {
     pub sessions: Vec<MediaSession>,
 }
 
-/// A top-level medium node in the environment tree (Local, VM, Remote xrdp,
+/// A top-level medium node in the environment tree (Local, VM, Remote worker,
 /// Browser, Container), each expandable to its projects, each project
 /// expandable to its sessions. `id` is the [`goble_harness_types::MediumId`]
 /// string carried on the turn.
@@ -492,60 +576,4 @@ pub struct MediaSnapshot {
     pub selected_session: String,
     /// Keys of the tree branches currently expanded (medium / project nodes).
     pub expanded: Vec<String>,
-}
-
-/// A capturable/controllable screen source shown in the screen panel. Read live
-/// from the backend's [`goble_screen_core::ScreenRegistry`] (exposed via
-/// [`goble_desktop_service::DesktopState::screen_registry`]).
-#[derive(Clone, Debug)]
-pub struct ScreenSourceEntry {
-    /// Source identifier, e.g. `local`.
-    pub source: String,
-    /// Whether the source has a registered [`goble_screen_core::ScreenCapturer`].
-    pub capturable: bool,
-    /// Whether the source has a registered [`goble_screen_core::ScreenController`].
-    pub controllable: bool,
-}
-
-/// Read-only mirror of the held live frame, passed to a [`goble_ui::elements::FrameView`].
-#[derive(Clone, Debug)]
-pub struct ScreenFrameSnapshot {
-    /// Monotonic parity used to detect pixel changes.
-    pub frame_seq: u64,
-    /// Frame width in pixels.
-    pub width: u32,
-    /// Frame height in pixels.
-    pub height: u32,
-    /// RGBA8 pixel data (`width * height * 4` bytes).
-    pub data: Arc<[u8]>,
-}
-
-/// Plain snapshot of the screen panel state. Owned by the host app and rebuilt
-/// from [`crate::screen::ScreenState`] every frame.
-#[derive(Clone, Debug)]
-pub struct ScreenSnapshot {
-    /// Whether the screen sheet is open.
-    pub open: bool,
-    /// Live capture: whether broadcast is streaming the selected source.
-    pub broadcast: bool,
-    /// Computer-use: whether click/type/scroll input is enabled.
-    pub computer_use: bool,
-    /// The source the panel is operating on.
-    pub selected_source: String,
-    /// The capturable/controllable sources from the screen registry.
-    pub sources: Vec<ScreenSourceEntry>,
-    /// Short status of the last broadcast capture (dimensions or an error).
-    pub last_capture: Option<String>,
-    /// Whether screen-event recording is active.
-    pub recording: bool,
-    /// Whether a screen-event replay is running.
-    pub replaying: bool,
-    /// Whether the replay loops instead of running once.
-    pub replay_loop: bool,
-    /// Number of recorded events.
-    pub recorded_count: usize,
-    /// Non-empty status from the last replay step (e.g. an input error).
-    pub replay_status: Option<String>,
-    /// The held live frame, when broadcast is capturing a source.
-    pub frame: Option<ScreenFrameSnapshot>,
 }

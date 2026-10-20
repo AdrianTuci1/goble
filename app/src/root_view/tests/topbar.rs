@@ -37,7 +37,11 @@ use super::*;
         );
 
         // One in-flight tool for the active pane: the cue shows the diamond
-        // next to `1`.
+        // next to `1`. The event names the pane's own conversation, so it is
+        // attributed to that pane rather than to whichever pane has focus.
+        state
+            .borrow_mut()
+            .record_pane_conversation(1, "conv-1");
         state.borrow_mut().apply_tool_event(&ToolCallEvent {
             chat_id: "conv-1".into(),
             id: "call_1".into(),
@@ -75,7 +79,7 @@ use super::*;
 
         // Click it, on the count and on the diamond beside it: the indicator is
         // not a hit target, so the events travel on unconsumed.
-        let mut ctx = EventContext::default();
+        let mut ctx = EventContext;
         for position in [origin + vec2f(2.0, 4.0), icon + vec2f(2.0, 4.0)] {
             for event in [
                 DispatchedEvent::MouseDown {

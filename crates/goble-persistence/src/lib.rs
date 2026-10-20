@@ -58,6 +58,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     status      TEXT NOT NULL,
     created_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS project_sandboxes (
+    project_id     TEXT NOT NULL PRIMARY KEY,
+    provider       TEXT NOT NULL,
+    sandbox_name   TEXT NOT NULL,
+    sandbox_id     TEXT,
+    workspace_path TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+);
 ";
 
 /// A durable project: the directory / mounted workspace work happens in.
@@ -85,6 +94,22 @@ pub struct Task {
     pub trigger: String,
     pub status: String,
     pub created_at: String,
+}
+
+/// The sandbox a project's remote work runs in.
+///
+/// One row per project: every tab that opens the project attaches to this
+/// sandbox and shares its filesystem. `sandbox_id` is the provider's handle
+/// once the sandbox exists; `sandbox_name` is the stable name derived from the
+/// project id, so a provider can find the sandbox again after a restart.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProjectSandbox {
+    pub project_id: ProjectId,
+    pub provider: String,
+    pub sandbox_name: String,
+    pub sandbox_id: Option<String>,
+    pub workspace_path: String,
+    pub updated_at: String,
 }
 
 /// Migrate an on-disk database that was written before the entity tables
@@ -257,6 +282,98 @@ impl CheckpointStore {
         let conn = self.conn.lock();
         conn.execute(
             "DELETE FROM projects WHERE project_id = ?1",
+            rusqlite::params![project_id.0],
+        )?;
+        Ok(())
+    }
+
+    /// Upsert the sandbox a project runs in. A project has one sandbox, so the
+    /// row is keyed by `project_id` and a new binding replaces the old one.
+    pub fn upsert_project_sandbox(
+        &self,
+        sandbox: &ProjectSandbox,
+    ) -> Result<(), PersistenceError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO project_sandboxes
+               (project_id, provider, sandbox_name, sandbox_id, workspace_path, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(project_id) DO UPDATE SET
+               provider       = excluded.provider,
+               sandbox_name   = excluded.sandbox_name,
+               sandbox_id     = excluded.sandbox_id,
+               workspace_path = excluded.workspace_path,
+               updated_at     = excluded.updated_at",
+            rusqlite::params![
+                sandbox.project_id.0,
+                sandbox.provider,
+                sandbox.sandbox_name,
+                sandbox.sandbox_id,
+                sandbox.workspace_path,
+                sandbox.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Load a project's sandbox binding, if it has one.
+    pub fn load_project_sandbox(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<Option<ProjectSandbox>, PersistenceError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT project_id, provider, sandbox_name, sandbox_id, workspace_path, updated_at
+             FROM project_sandboxes WHERE project_id = ?1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![project_id.0])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(ProjectSandbox {
+                project_id: ProjectId::new(row.get::<_, String>(0)?),
+                provider: row.get(1)?,
+                sandbox_name: row.get(2)?,
+                sandbox_id: row.get(3)?,
+                workspace_path: row.get(4)?,
+                updated_at: row.get(5)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// List every project with a sandbox binding, oldest binding first.
+    pub fn list_project_sandboxes(&self) -> Result<Vec<ProjectSandbox>, PersistenceError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT project_id, provider, sandbox_name, sandbox_id, workspace_path, updated_at
+             FROM project_sandboxes ORDER BY updated_at ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ProjectSandbox {
+                project_id: ProjectId::new(row.get::<_, String>(0)?),
+                provider: row.get(1)?,
+                sandbox_name: row.get(2)?,
+                sandbox_id: row.get(3)?,
+                workspace_path: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Forget a project's sandbox binding. The sandbox itself is destroyed by
+    /// the caller, which owns the provider credential.
+    pub fn delete_project_sandbox(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<(), PersistenceError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM project_sandboxes WHERE project_id = ?1",
             rusqlite::params![project_id.0],
         )?;
         Ok(())
@@ -467,6 +584,17 @@ mod tests {
         }
     }
 
+    fn sample_sandbox(project: &str) -> ProjectSandbox {
+        ProjectSandbox {
+            project_id: ProjectId::new(project),
+            provider: "modal".to_string(),
+            sandbox_name: format!("goble-{project}-0123456789ab"),
+            sandbox_id: Some(format!("sb-{project}")),
+            workspace_path: format!("/workspace/{project}"),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
     #[test]
     fn save_and_load_roundtrips() {
         let store = CheckpointStore::in_memory();
@@ -584,6 +712,52 @@ mod tests {
 
         store.delete_project(&ProjectId::new("p1")).unwrap();
         assert_eq!(store.list_projects().unwrap(), vec![sample_project("p2")]);
+    }
+
+    #[test]
+    fn one_sandbox_binding_per_project_roundtrips_and_replaces() {
+        let store = CheckpointStore::in_memory();
+        store.upsert_project_sandbox(&sample_sandbox("p1")).unwrap();
+
+        let loaded = store
+            .load_project_sandbox(&ProjectId::new("p1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, sample_sandbox("p1"));
+        assert_eq!(loaded.workspace_path, "/workspace/p1");
+        assert!(store
+            .load_project_sandbox(&ProjectId::new("missing"))
+            .unwrap()
+            .is_none());
+
+        // A project keeps its stable name when the provider handle changes.
+        let mut rebound = sample_sandbox("p1");
+        rebound.sandbox_id = Some("sb-restarted".to_string());
+        rebound.updated_at = "2026-02-01T00:00:00Z".to_string();
+        store.upsert_project_sandbox(&rebound).unwrap();
+        assert_eq!(
+            store
+                .load_project_sandbox(&ProjectId::new("p1"))
+                .unwrap()
+                .unwrap(),
+            rebound
+        );
+        assert_eq!(
+            store.list_project_sandboxes().unwrap(),
+            vec![rebound],
+            "one row per project"
+        );
+
+        store.upsert_project_sandbox(&sample_sandbox("p2")).unwrap();
+        assert_eq!(store.list_project_sandboxes().unwrap().len(), 2);
+
+        store
+            .delete_project_sandbox(&ProjectId::new("p1"))
+            .unwrap();
+        assert!(store
+            .load_project_sandbox(&ProjectId::new("p1"))
+            .unwrap()
+            .is_none());
     }
 
     #[test]

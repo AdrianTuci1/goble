@@ -12,7 +12,7 @@
 
 mod make_actions;
 mod pane_ops;
-mod prompt;
+pub(crate) mod prompt;
 
 pub use make_actions::make_actions;
 

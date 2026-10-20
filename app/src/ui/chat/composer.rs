@@ -45,6 +45,10 @@ pub(crate) fn build_terminal_composer(
     let controls = state.pane_controls.get(&pane_id).cloned().unwrap_or_else(|| {
         PaneControls::new(state.selected_model.clone(), state.auto_approve, String::new())
     });
+    // Where this pane's shell is: the host a submitted `ssh` line bound it to
+    // (S1), read from the session the binding lives in rather than from a copy.
+    // A pane at a local shell has no entry, so its bar draws no chip.
+    let ssh_session = state.terminal.borrow().ssh_session(pane_id).cloned();
 
     let on_composer_change = actions.on_composer_change.clone();
     let on_composer_focus = actions.on_composer_focus_change.clone();
@@ -75,6 +79,10 @@ pub(crate) fn build_terminal_composer(
         .with_blur_on_outside_click(false)
         .with_caret(controls.caret.clone())
         .with_path_label(crate::state::display_path(&session.composer_path))
+        // Where the pane's shell is, when the `ssh` line the user submitted
+        // bound it to a host: the chip over the editor names it, and a local
+        // shell draws no chip at all.
+        .with_ssh_session(ssh_session)
         .with_stop_visible(session.agent_busy)
         // The shell's own context — this pane's working directory and its git
         // branch — rides above the editor: it describes the command line below

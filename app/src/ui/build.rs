@@ -1,6 +1,3 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use goble_ui::elements::{
     AppContext, Container, CrossAxisAlignment, Divider, Element, Empty, Expanded, Fill, Flex,
     MainAxisSize, Stack,
@@ -8,43 +5,44 @@ use goble_ui::elements::{
 use goble_ui::theme::ColorToken;
 use goble_ui::{vec2f, Dialog, Sheet, DIALOG_DEFAULT_WIDTH, SHEET_DEFAULT_WIDTH};
 
-use super::actions::{AiActions, MediaActions, ProjectsActions, ScreenActions, UiActions};
-use super::palette::PaletteCommand;
-use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, ScreenSnapshot, UiSnapshot};
+use super::actions::{AiActions, MediaActions, ProjectsActions, UiActions};
+use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, UiSnapshot};
 use super::types::AppTab;
 use super::{
-    chat, connectors, crons, media, model_form, palette, screen, shell, shortcuts_help,
-    sidebar, task_workflow, vault, CONNECTORS_WIDTH,
+    chat, connectors, crons, hosts, inbox, media, model_form, shell, shortcuts_help, sidebar,
+    task_workflow, vault, CONNECTORS_WIDTH,
 };
+
+/// The snapshots and callbacks one frame is built from.
+pub struct BuildContext<'a> {
+    pub app: &'a AppContext,
+    pub state: &'a UiSnapshot,
+    pub actions: &'a UiActions,
+    pub ai: &'a AiSnapshot,
+    pub ai_actions: &'a AiActions,
+    pub projects: &'a ProjectsSnapshot,
+    pub projects_actions: &'a ProjectsActions,
+    pub media: &'a MediaSnapshot,
+    pub media_actions: &'a MediaActions,
+}
 
 /// Build the complete app UI: topbar, sidebar, main content, and the
 /// auxiliary sheets (crons, connectors, vault) stacked on top.
-pub fn build_ui(
-    app: &AppContext,
-    state: &UiSnapshot,
-    actions: &UiActions,
-    ai: &AiSnapshot,
-    ai_actions: &AiActions,
-    projects: &ProjectsSnapshot,
-    projects_actions: &ProjectsActions,
-    media: &MediaSnapshot,
-    media_actions: &MediaActions,
-    screen: &ScreenSnapshot,
-    screen_actions: &ScreenActions,
-) -> Box<dyn Element> {
-    let topbar = shell::build_topbar(app, state, actions, media, media_actions);
-    let sidebar = sidebar::build_sidebar(app, state, actions, &media.selected_medium);
-    let main = shell::build_main(
+pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
+    let BuildContext {
         app,
         state,
         actions,
-        projects,
-        projects_actions,
         ai,
         ai_actions,
+        projects: _,
+        projects_actions: _,
         media,
         media_actions,
-    );
+    } = *context;
+    let topbar = shell::build_topbar(app, state, actions, media, media_actions);
+    let sidebar = sidebar::build_sidebar(app, state, actions, &media.selected_medium);
+    let main = shell::build_main(context);
     // With the sidebar retracted the main area (and its resizable divider) is
     // gone, so the chat/terminal column fills the whole window.
     let body: Box<dyn Element> = if state.sidebar_visible {
@@ -108,6 +106,16 @@ pub fn build_ui(
             .with_on_close(move || (on_close_task_workflow.borrow_mut())())
             .finish();
 
+    // The global inbox: approvals and questions from every pane, plus the
+    // terminal reports of turns and sub-agents. It floats over the workspace
+    // like the workflow-runs overlay; its own keys are dispatched by the panel.
+    let on_close_inbox = actions.on_close_inbox.clone();
+    let inbox_dialog = Dialog::new(inbox::build_inbox_overlay(app, state, actions))
+        .with_open(state.inbox_open)
+        .with_width(inbox::INBOX_PANEL_WIDTH)
+        .with_on_close(move || (on_close_inbox.borrow_mut())())
+        .finish();
+
     let on_close_connectors = ai_actions.on_close_connectors.clone();
     let connectors_sheet = Sheet::new(connectors::build_connectors_sheet(app, ai, ai_actions))
         .with_expanded(ai.connectors_open)
@@ -120,13 +128,6 @@ pub fn build_ui(
         .with_expanded(ai.vault_open)
         .with_width(SHEET_DEFAULT_WIDTH)
         .with_on_close(move || (on_close_vault.borrow_mut())())
-        .finish();
-
-    let on_close_screen = screen_actions.on_close.clone();
-    let screen_sheet = Sheet::new(screen::build_screen_sheet(app, screen, screen_actions))
-        .with_expanded(screen.open)
-        .with_width(SHEET_DEFAULT_WIDTH)
-        .with_on_close(move || (on_close_screen.borrow_mut())())
         .finish();
 
     // The agent panel (routines + scheduled tasks) floats over the workspace
@@ -153,6 +154,12 @@ pub fn build_ui(
         .with_on_close(move || (on_close_shortcuts.borrow_mut())())
         .finish();
 
+    // Cmd+Shift+N's saved-host list, and the offer shown when a saved host's
+    // session ends. Both are dialogs over the workspace; the picker is modal
+    // while it is up, the reconnect offer only takes the click it is given.
+    let host_picker_dialog = hosts::build_host_picker(app, state, actions);
+    let ssh_reconnect_dialog = hosts::build_reconnect_prompt(app, state, actions);
+
     let mut stack = Stack::new().with_children(vec![
         shell_col.finish(),
         // The toolbar paints after the body so the popups/trays anchored in it
@@ -162,10 +169,12 @@ pub fn build_ui(
         topbar,
         crons_sheet,
         task_workflow_dialog,
+        inbox_dialog,
         connectors_sheet,
         vault_sheet,
-        screen_sheet,
         chat_panel_sheet,
+        host_picker_dialog,
+        ssh_reconnect_dialog,
         // The shortcuts panel goes last: Ctrl+. is a global chord, so wherever
         // the keyboard is, the panel it opens is the top-most surface and the
         // first to see Escape and a backdrop click.
@@ -197,129 +206,6 @@ pub fn build_ui(
     // paints/intercepts events while open (see [`super::media::build_add_medium_dialog`]).
     stack = stack.with_overlay(
         media::build_add_medium_dialog(app, state, media_actions, actions),
-        vec2f(0.0, 0.0),
-    );
-
-    // The Cmd+K command palette floats above every other overlay. Each command
-    // is a closure that runs the underlying UiAction (or a toggle) and then
-    // closes the palette.
-    let close_palette = actions.on_close_command_palette.clone();
-    let run = |action: &Rc<RefCell<dyn FnMut()>>| -> PaletteCommand {
-        let act = action.clone();
-        let close = close_palette.clone();
-        PaletteCommand::new("", "", move || {
-            (act.borrow_mut())();
-            (close.borrow_mut())();
-        })
-    };
-    let mut command_list: Vec<PaletteCommand> = vec![
-        run(&actions.on_add_space).with_label("New space", "⌘N"),
-        run(&actions.on_split_right).with_label("Split right", "Ctrl/Cmd+Space"),
-        run(&actions.on_split_down).with_label("Split down", "Cmd+Shift+D"),
-        run(&actions.on_new_terminal).with_label("New terminal", "Cmd+Shift+T"),
-        run(&actions.on_close_pane).with_label("Close pane", "Ctrl/Cmd+W"),
-        run(&actions.on_create_submit).with_label("New conversation", ""),
-        run(&actions.on_settings).with_label("Open settings", ""),
-        run(&actions.on_projects).with_label("Open projects", ""),
-        run(&actions.on_open_crons).with_label("Open scheduled tasks", ""),
-        run(&actions.on_toggle_task_workflow).with_label("Workflow runs", ""),
-        run(&actions.on_toggle_right_sidebar).with_label("Toggle right sidebar", ""),
-    ];
-    {
-        let toggle_dark = actions.on_toggle_dark_mode.clone();
-        let dark_mode = state.settings_dark_mode;
-        let close = close_palette.clone();
-        command_list.push(PaletteCommand::new("Toggle dark mode", "", move || {
-            (toggle_dark.borrow_mut())(!dark_mode);
-            (close.borrow_mut())();
-        }));
-    }
-    {
-        // The pane header's expand control, reachable from the keyboard: the
-        // command applies to the active pane, which is the pane the control
-        // belongs to. warp-new carries the same command ("Toggle Maximize
-        // Active Pane") with no default chord of its own.
-        let toggle_maximized = actions.on_toggle_pane_maximized.clone();
-        let pane_id = state.active_pane_id;
-        let close = close_palette.clone();
-        command_list.push(PaletteCommand::new(
-            "Toggle maximize active pane",
-            "",
-            move || {
-                (toggle_maximized.borrow_mut())(pane_id);
-                (close.borrow_mut())();
-            },
-        ));
-    }
-    {
-        // The chord takes a direction, so it cannot go through `run`.
-        let switch_space = actions.on_switch_space.clone();
-        let close = close_palette.clone();
-        command_list.push(PaletteCommand::new("Next space", "Ctrl+Tab", move || {
-            (switch_space.borrow_mut())(1);
-            (close.borrow_mut())();
-        }));
-    }
-    {
-        // The same switch Settings→Agent carries; either surface turns modal
-        // editing on, and the choice persists.
-        let toggle_vim = actions.on_toggle_vim_mode.clone();
-        let vim_mode = state.vim_mode;
-        let close = close_palette.clone();
-        command_list.push(PaletteCommand::new("Toggle vim mode", "", move || {
-            (toggle_vim.borrow_mut())(!vim_mode);
-            (close.borrow_mut())();
-        }));
-    }
-    command_list.push(
-        run(&screen_actions.on_open).with_label("Open screen", ""),
-    );
-    command_list.push(
-        run(&ai_actions.on_open_connectors).with_label("Open connectors", ""),
-    );
-    command_list.push(run(&ai_actions.on_open_vault).with_label("Open vault", ""));
-    // One "switch to space N" entry per existing space.
-    for (i, space) in state.spaces.iter().enumerate() {
-        let on_select_space = actions.on_select_space.clone();
-        let close = close_palette.clone();
-        let label = format!("Switch to {}", space.name);
-        command_list.push(PaletteCommand::new(label, "", move || {
-            (on_select_space.borrow_mut())(i);
-            (close.borrow_mut())();
-        }));
-    }
-    command_list.push(
-        run(&screen_actions.on_open).with_label("Open screen", ""),
-    );
-    command_list.push(
-        run(&ai_actions.on_open_connectors).with_label("Open connectors", ""),
-    );
-    command_list.push(run(&ai_actions.on_open_vault).with_label("Open vault", ""));
-    // Model selection entries: typing `/model` or the model name filters the
-    // palette down to these, so the slash path lists the config.toml models.
-    // A palette pick applies to the active pane's own composer controls.
-    let palette_pane_id = state.active_pane_id;
-    for name in &state.models {
-        let act = actions.on_model_select.clone();
-        let close = close_palette.clone();
-        let name = name.clone();
-        command_list.push(PaletteCommand::new(format!("Model: {name}"), "", move || {
-            (act.borrow_mut())(palette_pane_id, name.clone());
-            (close.borrow_mut())();
-        }));
-    }
-
-    stack = stack.with_overlay(
-        palette::build_command_palette(
-            app,
-            state.command_palette_open,
-            &state.command_palette_query,
-            state.command_palette_index,
-            command_list,
-            actions.on_command_palette_change.clone(),
-            actions.on_command_palette_move.clone(),
-            actions.on_close_command_palette.clone(),
-        ),
         vec2f(0.0, 0.0),
     );
 

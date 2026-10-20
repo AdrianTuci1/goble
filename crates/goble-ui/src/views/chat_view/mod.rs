@@ -4,13 +4,11 @@
 //! One module per surface of the pane: the builder chain that wires the view up
 //! ([`builder`]), the transcript's per-frame rebuild and its key handling
 //! ([`transcript`]), and the element protocol the view answers ([`element`]).
-//! What the surfaces share — the view's own state and the inline screen frame it
-//! renders — lives here.
+//! What the surfaces share — the view's own state — lives here.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
@@ -21,6 +19,7 @@ use crate::geometry::Vector2F;
 use crate::vim::{Clipboard, VimState};
 use goble_core::harness::CommandDecision;
 use goble_core::llm::TokenUsage;
+use goble_core::ssh_command::SshSession;
 
 mod builder;
 mod element;
@@ -29,21 +28,15 @@ mod transcript;
 #[cfg(test)]
 mod tests;
 
-/// A live remote-desktop frame rendered inline at the end of the transcript.
-#[derive(Clone)]
-struct InlineScreen {
-    source: String,
-    frame_seq: u64,
-    width: u32,
-    height: u32,
-    data: Arc<[u8]>,
-}
-
 pub struct ChatView {
     header: Option<Box<dyn Element>>,
     /// An inline notice rendered at the top of the transcript (inside the chat
     /// area rather than as a floating dialog), e.g. the "no API key" error.
     notice: Option<Box<dyn Element>>,
+    /// The message the last turn failed on. Drawn at the end of the transcript,
+    /// under the messages it belongs to, so a failed turn is readable in the
+    /// conversation instead of only in the inbox.
+    turn_error: Option<String>,
     messages: Vec<ChatMessage>,
     quick_actions: Vec<(String, Rc<RefCell<dyn FnMut() + 'static>>)>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
@@ -93,6 +86,10 @@ pub struct ChatView {
     composer_focused: bool,
     composer_model_label: Option<String>,
     composer_path: Option<String>,
+    /// The SSH session the pane's shell is bound to, when a submitted `ssh` line
+    /// put it on a host (S1). Handed to the composer, which draws the session
+    /// chip above the editor; a local session carries none.
+    composer_ssh_session: Option<SshSession>,
     /// The files the rich input carries: the attach control adds the path the
     /// system picker returned, and the composer draws one chip per file over
     /// the editor.
@@ -154,13 +151,6 @@ pub struct ChatView {
     queued_prompt: Option<String>,
     on_send_queued: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_dismiss_queued: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
-    /// A live remote desktop stream shown inline at the end of the transcript
-    /// when the harness hands off control (the "harness takes over" moment).
-    inline_screen: Option<InlineScreen>,
-    on_close_inline_screen: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
-    /// A detected BYOH handoff URI rendered as a "open remote desktop" action.
-    screen_link: Option<String>,
-    on_open_screen_link: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     /// The transcript's scroll offset. App-owned in practice (the view is
     /// rebuilt every frame); defaults to following the stream so a standalone
     /// view still clips and tails its content.
@@ -188,6 +178,7 @@ impl ChatView {
         Self {
             header: None,
             notice: None,
+            turn_error: None,
             messages: Vec::new(),
             quick_actions: Vec::new(),
             on_send: None,
@@ -212,6 +203,7 @@ impl ChatView {
             composer_focused: false,
             composer_model_label: None,
             composer_path: None,
+            composer_ssh_session: None,
             composer_attachments: Vec::new(),
             composer_stop_visible: false,
             composer_hints: Vec::new(),
@@ -253,10 +245,6 @@ impl ChatView {
             queued_prompt: None,
             on_send_queued: None,
             on_dismiss_queued: None,
-            inline_screen: None,
-            on_close_inline_screen: None,
-            screen_link: None,
-            on_open_screen_link: None,
             scroll: Rc::new(RefCell::new(ScrollState::following())),
             pane_active: true,
             show_composer: true,

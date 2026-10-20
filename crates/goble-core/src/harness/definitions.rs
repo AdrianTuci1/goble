@@ -502,21 +502,5 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["agent_id"]
             }),
         },
-        ToolDefinition {
-            name: "open_screen".to_string(),
-            description: "Open a remote desktop over the harness window and hand off to it. The agent calls this when it needs a real GUI; the host opens the stream in a screen pane and routes your keyboard/mouse to it. `host` is required; `port` defaults to 3389 and `width`/`height` to 1280x720.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "host": { "type": "string" },
-                    "port": { "type": "integer" },
-                    "username": { "type": "string" },
-                    "password": { "type": "string" },
-                    "width": { "type": "integer" },
-                    "height": { "type": "integer" }
-                },
-                "required": ["host"]
-            }),
-        },
     ]
 }

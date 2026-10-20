@@ -17,7 +17,7 @@ fn paint_frame(
 ) -> Vec<RenderCommand> {
     let _ = root.layout(
         SizeConstraint::loose(vec2f(1024.0, 768.0)),
-        &mut LayoutContext::default(),
+        &mut LayoutContext,
         app,
     );
     let mut ctx = PaintContext::new(Renderer::new());

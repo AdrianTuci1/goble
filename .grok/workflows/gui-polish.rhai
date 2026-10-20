@@ -66,9 +66,9 @@ let specs = [
     #{
         id: "R3",
         title: "Remove the sidebar footers",
-        goal: "Remove both footer rows from the left conversation sidebar in `app/src/ui/sidebar.rs`: the row labelled Plugins with its plus TopbarButton that opened the MCP connectors panel, and the row labelled Screen with its monitor TopbarButton that opened the screen sheet. Keep the search field, the New conversation row, the conversation list, the View all control and the sidebar's scroll behaviour exactly as they are. Remove the actions, icons and imports that existed only for those two rows, and any test that asserts them. Both panels must stay reachable from the Cmd+K palette (Open connectors, Open screen) - do not touch those palette entries.",
+        goal: "Remove the leftover footer row from the left conversation sidebar in `app/src/ui/sidebar.rs`: the row labelled Plugins with its plus TopbarButton that opened the MCP connectors panel. Keep the search field, the New conversation row, the conversation list, the View all control and the sidebar's scroll behaviour exactly as they are. Remove the actions, icons and imports that existed only for that row, and any test that asserts it. The connectors panel must stay reachable from the Cmd+K palette (Open connectors) - do not touch that palette entry.",
         check: "cargo test -p goble-app",
-        verify: "Read the final `build_sidebar` and confirm neither footer row remains and that the column still ends with the list rather than an empty divider. Grep `app/src/ui/` for the sidebar's use of on_open_connectors and on_open_screen and confirm those two rows are gone while the palette entries that use the same actions still exist. Run `cargo test -p goble-app` yourself and confirm exit 0.",
+        verify: "Read the final `build_sidebar` and confirm the footer row is gone and that the column still ends with the list rather than an empty divider. Grep `app/src/ui/` for the sidebar's use of on_open_connectors and confirm that row is gone while the palette entry that uses the same action still exists. Run `cargo test -p goble-app` yourself and confirm exit 0.",
     },
     #{
         id: "R2",

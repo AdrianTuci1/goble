@@ -51,12 +51,14 @@ impl Element for GridProbe {
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.inner.paint(origin, ctx, app);
+        // The content origin is the grid's own, after the bottom anchor has
+        // moved it, so a pointer maps to the cell the user is actually over.
         *self.geometry.borrow_mut() = Some(GridGeometry {
-            origin,
+            origin: self.inner.content_origin().unwrap_or(origin),
             columns: self.inner.columns(),
             rows: self.inner.rows(),
         });
-        self.inner.paint(origin, ctx, app);
     }
 
     fn size(&self) -> Option<Vector2F> {

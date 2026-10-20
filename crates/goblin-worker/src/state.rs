@@ -11,6 +11,7 @@ use tokio::sync::broadcast;
 
 use crate::file_vault::FileVault;
 use crate::leader::LeaderState;
+use crate::pty::PtyManager;
 use crate::scheduler::Scheduler;
 use goble_core::agent::{AgentId, AgentSpec, McpServer};
 use goble_core::cluster_key::ClusterKey;
@@ -35,6 +36,8 @@ pub struct AppState {
     pub file_vault: Mutex<FileVault>,
     pub traces: Mutex<std::collections::HashMap<String, ExecutionTrace>>,
     pub event_tx: broadcast::Sender<WorkerMessage>,
+    /// The child shells behind the WebSocket's `OpenPty` panes.
+    pub pty: Arc<PtyManager>,
     pub scheduler: Mutex<Option<Arc<Scheduler>>>,
     pub config: Mutex<WorkerConfig>,
     pub store: Mutex<Option<Store>>,
@@ -75,6 +78,7 @@ impl Default for WorkerConfig {
 impl AppState {
     pub fn new(worker_id: WorkerId) -> Arc<Self> {
         let (event_tx, _rx) = broadcast::channel(1024);
+        let pty = PtyManager::new(event_tx.clone());
         Arc::new(Self {
             worker_id,
             pairing_hash: Mutex::new(None),
@@ -86,6 +90,7 @@ impl AppState {
             file_vault: Mutex::new(FileVault::new(PathBuf::from("/var/goblin/vault.json"))),
             traces: Mutex::new(std::collections::HashMap::new()),
             event_tx,
+            pty,
             scheduler: Mutex::new(None),
             config: Mutex::new(WorkerConfig::default()),
             store: Mutex::new(None),
@@ -169,6 +174,19 @@ impl AppState {
 
     pub fn store_secret(&self, secret: Secret) {
         self.secrets.lock().insert(secret.id.clone(), secret);
+    }
+
+    /// Whether this workspace already holds a secret under `name`: in the file
+    /// vault (what `goble secret set` writes and what survives a restart) or in
+    /// the in-memory map the provider factory resolves from.
+    ///
+    /// A pushed secret is a seed for a vault that lacks the name, never a
+    /// rewrite of one that has it: the vault is authoritative for this
+    /// workspace, so a client whose local key differs does not silently change
+    /// what the remote workspace authenticates with.
+    pub fn holds_secret(&self, name: &str) -> bool {
+        let in_memory = self.secrets.lock().values().any(|s| s.name == name);
+        in_memory || self.file_vault.lock().keys().iter().any(|k| k == name)
     }
 
     pub fn set_vault_path(&self, path: std::path::PathBuf) {
@@ -271,11 +289,10 @@ impl AppState {
             return Arc::clone(daemon);
         }
         let (tx, _) = broadcast::channel(256);
-        let sink: Arc<dyn goble_daemon::DaemonEventSink> =
-            Arc::new(BroadcastSink::new(tx.clone()));
+        let sink: Arc<dyn goble_daemon::DaemonEventSink> = Arc::new(BroadcastSink::new(tx.clone()));
         let workspace_root = self.config.lock().workspace_root.clone();
-        let daemon = DaemonState::new(HarnessRegistry::new(), sink)
-            .with_workspace_root(workspace_root);
+        let daemon =
+            DaemonState::new(HarnessRegistry::new(), sink).with_workspace_root(workspace_root);
         let client: Arc<dyn DaemonClient> = Arc::new(InProcessClient::new(daemon.clone(), tx));
         *daemon_state = Some(daemon.clone());
         *self.daemon_client.lock() = Some(client);
@@ -313,7 +330,8 @@ impl AppState {
             // No tokio runtime is current; daemon runs always happen inside a
             // runtime, so defer the spawn until the next access and reset the
             // flag so it is retried.
-            self.daemon_translator_spawned.store(false, Ordering::SeqCst);
+            self.daemon_translator_spawned
+                .store(false, Ordering::SeqCst);
         }
     }
 }
@@ -385,7 +403,6 @@ pub(crate) fn map_daemon_event(event: DaemonEvent) -> Option<WorkerMessage> {
         DE::Done { .. }
         | DE::TraceStarted { .. }
         | DE::TraceFinished { .. }
-        | DE::ScreenHandoff { .. }
         | DE::ReasoningStarted { .. }
         | DE::ReasoningDelta { .. }
         | DE::ReasoningDone { .. }
@@ -437,20 +454,25 @@ mod tests {
     #[test]
     fn test_map_daemon_event_drops_lifecycle_frames() {
         let sid = goble_harness_types::SessionId::new("trace-1");
-        assert!(map_daemon_event(DaemonEvent::Done { session_id: sid.clone() }).is_none());
+        assert!(map_daemon_event(DaemonEvent::Done {
+            session_id: sid.clone()
+        })
+        .is_none());
         assert!(map_daemon_event(DaemonEvent::TraceStarted {
             session_id: sid.clone(),
             trace_id: "t".to_string(),
             project_id: goble_harness_types::ProjectId::new("p"),
             medium_id: goble_harness_types::MediumId::new("m"),
-        }).is_none());
+        })
+        .is_none());
         assert!(map_daemon_event(DaemonEvent::TraceFinished {
             session_id: sid,
             trace_id: "t".to_string(),
             status: "success".to_string(),
             project_id: goble_harness_types::ProjectId::new("p"),
             medium_id: goble_harness_types::MediumId::new("m"),
-        }).is_none());
+        })
+        .is_none());
     }
 
     #[test]

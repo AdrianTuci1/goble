@@ -198,17 +198,6 @@ impl DesktopState {
         );
         let daemon: Arc<dyn goble_daemon_client::DaemonClient> =
             Arc::new(goble_daemon_client::InProcessClient::new(daemon_state.clone(), tx));
-        // Seed the screen registry with the local adapter. On macOS this is the
-        // real `screencapture`-backed capturer; elsewhere the adapter supplies a
-        // synthetic pair, so a capturer/controller is always reachable. Only the
-        // real grab runs at capture time, so registering never needs permission.
-        let screen = goble_screen_core::ScreenRegistry::new();
-        if let Err(e) = goble_screen_adapter::LocalAdapter::connect_and_register(
-            goble_screen_adapter::LOCAL_SOURCE,
-            &screen,
-        ) {
-            log::warn!("screen adapter unavailable: {e}");
-        }
         Arc::new(Self {
             store: Arc::new(Mutex::new(store)),
             workers: Arc::new(Mutex::new(HashMap::new())),
@@ -236,53 +225,11 @@ impl DesktopState {
             daemon,
             translator_spawned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tool_in_flight: Arc::new(Mutex::new(HashMap::new())),
-            screen,
         })
     }
 
     pub fn thread_store(&self) -> Arc<ThreadStore> {
         Arc::clone(&self.thread_store)
-    }
-
-    /// The screen capture+control registry, seeded with the local adapter.
-    pub fn screen_registry(&self) -> &goble_screen_core::ScreenRegistry {
-        &self.screen
-    }
-
-    /// Open a live remote desktop (xrdp / RDP) for `config` and register it into
-    /// the screen registry under a derived source id. This is the host side of a
-    /// harness [`ScreenHandoff`](goble_daemon_protocol::DaemonEvent::ScreenHandoff):
-    /// the GUI then lists the new source and routes broadcast/computer-use input
-    /// to it through the registry, identically to the local adapter.
-    ///
-    /// Returns the registered source id. Without the `remote-screen` feature this
-    /// fails with a clear message instead of silently doing nothing.
-    pub fn open_remote_screen(
-        &self,
-        config: goble_harness_types::RemoteScreenConfig,
-    ) -> anyhow::Result<String> {
-        #[cfg(feature = "remote-screen")]
-        {
-            let source = format!("remote-xrdp:{}:{}", config.host, config.port);
-            let remote = goble_screen_sdk::RemoteConfig {
-                host: config.host,
-                port: config.port,
-                username: config.username,
-                password: config.password,
-                width: config.width,
-                height: config.height,
-            };
-            goble_screen_sdk::RdpRemoteSource::connect(&source, remote, &self.screen)?;
-            Ok(source)
-        }
-        #[cfg(not(feature = "remote-screen"))]
-        {
-            let _ = config;
-            anyhow::bail!(
-                "remote screen support is not enabled; build goble-desktop-service with the \
-                 `remote-screen` cargo feature"
-            )
-        }
     }
 
     /// The daemon the desktop service drives, as a [`DaemonClient`] so the GUI

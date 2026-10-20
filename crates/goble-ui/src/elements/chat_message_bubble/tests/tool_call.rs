@@ -9,6 +9,7 @@ use crate::elements::{terminal_block, AppContext, TerminalData, TerminalStatus};
 use crate::geometry::vec2f;
 use crate::render::RenderCommand;
 use crate::test_util::render_element;
+use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily};
 use goble_core::harness::ToolCallStatus;
 use goble_core::harness::{tool_kind_for, tool_row, ToolKind};
@@ -37,6 +38,54 @@ fn tool_call_draws_no_border_or_card() {
     assert_eq!(
         card_fills, 0,
         "a tool call must not paint a raised card background"
+    );
+}
+
+/// grok-build's tool row: the verb is bold and the operand keeps its own
+/// colour. A `read` therefore draws a bold `Read ` before a path in the theme's
+/// warm operand colour, not one plain run.
+#[test]
+fn a_tool_row_draws_a_bold_verb_and_an_accented_operand() {
+    let (commands, _) = paint_tool_calls_with_fold(
+        vec![call(
+            "read_file",
+            r#"{"path":"src/lib.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("1: fn main() {}"),
+        )],
+        Some(ToolDisplayMode::Expanded),
+    );
+    let app = AppContext::default();
+    let run = |needle: &str| {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText {
+                text,
+                color,
+                font_weight,
+                ..
+            } if text == needle => Some((*color, *font_weight)),
+            _ => None,
+        })
+    };
+
+    let (verb_color, verb_weight) = run("Read ").expect("the bold verb is drawn");
+    assert_eq!(
+        verb_weight,
+        FontWeight::Bold,
+        "the verb is bold, as in grok-build"
+    );
+    assert_eq!(verb_color, app.theme.color(ColorToken::Text));
+
+    let (path_color, path_weight) = run("src/lib.rs").expect("the operand is drawn");
+    assert_eq!(
+        path_weight,
+        FontWeight::Regular,
+        "the operand stays at the row's regular weight"
+    );
+    assert_eq!(
+        path_color,
+        app.theme.color(ColorToken::Path),
+        "the path takes grok-build's warm path colour"
     );
 }
 
@@ -190,6 +239,31 @@ fn command_call_shows_the_command_and_its_output() {
         !texts.iter().any(|t| t.contains(r#"{"command""#)),
         "the raw argument JSON is not shown, got {texts:?}"
     );
+
+    // grok-build's `Run` row: a bold primary verb, then the command in the
+    // pager's yellow.
+    let app = AppContext::default();
+    let run = |needle: &str| {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText {
+                text,
+                color,
+                font_weight,
+                ..
+            } if text == needle => Some((*color, *font_weight)),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        run("Run "),
+        Some((app.theme.color(ColorToken::Text), FontWeight::Bold)),
+        "the Run verb is bold primary text"
+    );
+    assert_eq!(
+        run("cargo test -p goble-ui"),
+        Some((app.theme.color(ColorToken::Command), FontWeight::Regular)),
+        "the command takes the pager's command colour"
+    );
 }
 
 /// An agent's command is drawn continuously in its reply, never as the
@@ -240,7 +314,7 @@ fn an_agents_command_is_not_a_terminal_block() {
         "the output is drawn continuously under it, got {runs:?}"
     );
     assert!(
-        runs.iter().all(|(_, _, _, size)| *size == 12.0),
+        runs.iter().all(|(_, _, _, size)| *size == 13.0),
         "the row and its body are one size, got {runs:?}"
     );
 
@@ -289,51 +363,99 @@ fn a_users_command_is_still_the_terminal_block() {
     );
 }
 
-/// A read shows a path rather than the arguments blob.
+/// A read shows a path rather than the arguments blob. Folded, the path is one
+/// step away with its run: the aggregated header names the bucket, and opening
+/// the run draws the member row that carries the path.
 #[test]
 fn read_call_shows_the_path() {
-    let (commands, _) = paint_tool_calls(vec![call(
+    let calls = vec![call(
         "read_file",
         r#"{"path":"src/lib.rs"}"#,
         ToolCallStatus::Finished,
         Some("fn main() {}"),
-    )]);
+    )];
+    let (commands, _) = paint_tool_calls(calls.clone());
 
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|t| t == "src/lib.rs"),
-        "the path is shown, got {texts:?}"
+        texts.iter().any(|t| t == "Read 1 file"),
+        "the folded run names its bucket, got {texts:?}"
     );
     assert!(
         !texts.iter().any(|t| t.contains(r#"{"path""#)),
         "the raw argument JSON is not shown, got {texts:?}"
     );
+
+    let (commands, _) = paint_tool_calls_with_run_open(calls, 0);
+    let texts = drawn_texts(&commands);
+    assert!(
+        texts.iter().any(|t| t == "src/lib.rs"),
+        "the opened run's member row carries the path, got {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains(r#"{"path""#)),
+        "the raw argument JSON is still not shown, got {texts:?}"
+    );
 }
 
-/// A read starts folded: one header line carrying the path, nothing else.
+/// A read starts folded: one aggregated header row, nothing else. Opening the
+/// run shows the member row with the path; the file's body stays hidden until
+/// that member is opened itself.
 #[test]
 fn folded_read_draws_one_line() {
-    let result: String = (1..=12).map(|i| format!("line {i}\n")).collect();
-    let (commands, _) = paint_tool_calls(vec![call(
+    let calls = vec![call(
         "read_file",
         r#"{"path":"src/lib.rs"}"#,
         ToolCallStatus::Finished,
-        Some(&result),
-    )]);
+        Some(&(1..=12).map(|i| format!("line {i}\n")).collect::<String>()),
+    )];
+    let (commands, _) = paint_tool_calls(calls.clone());
 
     assert_eq!(
         drawn_rows(&commands),
         1,
         "a folded read must occupy one header row"
     );
+    assert_eq!(
+        drawn_texts(&commands),
+        vec!["◈ ".to_string(), "Read 1 file".to_string()],
+        "the folded run draws only its aggregated label"
+    );
+
+    let (commands, _) = paint_tool_calls_with_run_open(calls, 0);
     let texts = drawn_texts(&commands);
     assert!(
         texts.iter().any(|t| t == "src/lib.rs"),
-        "the folded read's header carries its path, got {texts:?}"
+        "the opened run's member row carries its path, got {texts:?}"
     );
     assert!(
         !texts.iter().any(|t| t == "line 1"),
-        "the file body is hidden while folded, got {texts:?}"
+        "the file body is hidden while the member is folded, got {texts:?}"
+    );
+
+    // grok-build folds a member row whole: the verb and its path are both
+    // muted, and only the verb is bold.
+    let app = AppContext::default();
+    let run = |needle: &str| {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText {
+                text,
+                color,
+                font_weight,
+                ..
+            } if text == needle => Some((*color, *font_weight)),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        run("Read "),
+        Some((app.theme.color(ColorToken::Muted), FontWeight::Bold)),
+        "a folded verb is muted and bold"
+    );
+    assert_eq!(
+        run("src/lib.rs"),
+        Some((app.theme.color(ColorToken::Muted), FontWeight::Regular)),
+        "a folded path is muted like the rest of the row"
     );
 }
 
@@ -604,9 +726,9 @@ fn a_partially_numbered_result_is_not_addressable() {
     assert!(read_excerpt(&arguments, &read).is_none());
 }
 
-/// A click on a call's header advances its fold
-/// `Collapsed -> Truncated -> Expanded -> Collapsed`; the app-owned map is
-/// what holds it.
+/// A click on a folded run's header opens the run; a click on a member's header
+/// then advances that call's own fold `Collapsed -> Truncated -> Expanded ->
+/// Collapsed`. Both states live in the app-owned map.
 #[test]
 fn clicking_a_tool_call_header_cycles_its_fold() {
     let app = AppContext::default();
@@ -621,31 +743,56 @@ fn clicking_a_tool_call_header_cycles_its_fold() {
         .with_tool_calls(calls.clone())
         .with_tool_fold(fold.clone());
     let key = tool_fold_key(&calls[0], 0);
+    let group = run_key(&calls, 0);
 
-    // Lay the header out so it has click bounds; it starts folded.
+    // The run starts folded: its header is what a click reaches first.
     let commands = paint_bubble(&mut bubble, &app);
-    let header = run_origin(&commands, "Read ");
+    let header = run_origin(&commands, "Read 1 file");
     click_at(&mut bubble, &app, header + vec2f(2.0, 4.0));
+    assert_eq!(
+        fold.borrow().get(&group),
+        Some(&ToolDisplayMode::Expanded),
+        "the first click opens the run"
+    );
+    assert_eq!(
+        fold.borrow().get(&key),
+        None,
+        "and leaves the member's own fold alone"
+    );
+    assert!(
+        drawn_row_texts(&paint_bubble(&mut bubble, &app))
+            .iter()
+            .any(|row| row.contains("src/lib.rs")),
+        "the opened run draws its member row, path included"
+    );
+
+    // The member row is on screen now, and its header cycles the call. The
+    // header's own run shifts right once the open row draws its rail, so each
+    // click reads the run's position from the frame it lands on.
+    let click_member = |bubble: &mut ChatMessageBubble| {
+        let commands = paint_bubble(bubble, &app);
+        let header = run_origin(&commands, "Read ");
+        click_at(bubble, &app, header + vec2f(2.0, 4.0));
+    };
+    click_member(&mut bubble);
     assert_eq!(
         fold.borrow().get(&key),
         Some(&ToolDisplayMode::Truncated),
-        "the first click truncates the call"
+        "the next click truncates the call"
     );
 
-    let _ = paint_bubble(&mut bubble, &app);
-    click_at(&mut bubble, &app, header + vec2f(2.0, 4.0));
+    click_member(&mut bubble);
     assert_eq!(
         fold.borrow().get(&key),
         Some(&ToolDisplayMode::Expanded),
-        "the second click expands the call"
+        "the next click expands the call"
     );
 
-    let _ = paint_bubble(&mut bubble, &app);
-    click_at(&mut bubble, &app, header + vec2f(2.0, 4.0));
+    click_member(&mut bubble);
     assert_eq!(
         fold.borrow().get(&key),
         Some(&ToolDisplayMode::Collapsed),
-        "the third click folds the call back"
+        "the last click folds the call back"
     );
 }
 
@@ -804,7 +951,7 @@ fn the_rail_is_drawn_only_while_the_call_is_open() {
         .find(|(text, _, _, _)| text == "┃ ")
         .expect("an open call draws its rail");
     assert_eq!(rail.2, FontFamily::Mono, "the rail is a mono cell");
-    assert_eq!(rail.3, 12.0, "the rail is drawn at the row's own size");
+    assert_eq!(rail.3, 13.0, "the rail is drawn at the row's own size");
 }
 
 /// The state is the mark's colour, and it is dimmed while the call is folded.
@@ -853,7 +1000,10 @@ fn the_row_is_twelve_px_and_a_retracted_action_is_ten() {
         std::time::Duration::from_secs(4),
         None,
     );
-    let (folded, _) = paint_sub_agent(vec![call.clone()], HashMap::from([(call.id.clone(), record.clone())]), None);
+    let (folded, _) = paint_sub_agent_run_open(
+        vec![call.clone()],
+        HashMap::from([(call.id.clone(), record.clone())]),
+    );
     let sizes: HashMap<String, f32> = text_runs(&folded)
         .into_iter()
         .map(|(text, _, _, size)| (text, size))
@@ -863,7 +1013,7 @@ fn the_row_is_twelve_px_and_a_retracted_action_is_ten() {
         Some(&10.0),
         "the action is a size down while the row is retracted, got {sizes:?}"
     );
-    assert_eq!(sizes.get("◆ "), Some(&12.0), "the row itself stays 12 px");
+    assert_eq!(sizes.get("◆ "), Some(&13.0), "the row itself stays 13 px");
 
     let (open, _) = paint_sub_agent(
         vec![call.clone()],
@@ -876,8 +1026,166 @@ fn the_row_is_twelve_px_and_a_retracted_action_is_ten() {
         .collect();
     assert_eq!(
         sizes.get("open child"),
-        Some(&12.0),
+        Some(&13.0),
         "an open row draws its action at the row's own size, got {sizes:?}"
+    );
+}
+
+/// Consecutive folded calls of the verb-groupable families stack into one
+/// aggregated header, in first-appearance order, with the counts and plural
+/// nouns grok-build uses. A command breaks the run and keeps its own row, and
+/// the calls after it start a fresh run.
+#[test]
+fn consecutive_groupable_calls_stack_into_one_run_header() {
+    let mut calls = vec![
+        call(
+            "read_file",
+            r#"{"path":"src/a.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("fn a() {}"),
+        ),
+        call(
+            "grep",
+            r#"{"pattern":"TODO"}"#,
+            ToolCallStatus::Finished,
+            Some("src/b.rs:1: TODO"),
+        ),
+        call(
+            "list_dir",
+            r#"{"path":"src"}"#,
+            ToolCallStatus::Finished,
+            Some("a.rs\nb.rs"),
+        ),
+        call(
+            "run_command",
+            r#"{"command":"cargo test"}"#,
+            ToolCallStatus::Finished,
+            Some("ok"),
+        ),
+        call(
+            "read_file",
+            r#"{"path":"src/c.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("fn c() {}"),
+        ),
+    ];
+    // Two reads share a tool name; real calls carry distinct ids, and the fold
+    // map is keyed by them.
+    for (index, call) in calls.iter_mut().enumerate() {
+        call.id = format!("call-{index}");
+    }
+    let (commands, _) = paint_tool_calls(calls);
+    let rows = drawn_row_texts(&commands);
+
+    assert!(
+        rows.iter()
+            .any(|row| row == "◈ Read 1 file, Searched 1 pattern, Listed 1 dir"),
+        "the run folds in first-appearance order, got {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row == "◆ Run cargo test"),
+        "a command breaks the run and keeps its own row, got {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row == "◈ Read 1 file"),
+        "the call after the command starts a fresh run, got {rows:?}"
+    );
+    assert!(
+        !drawn_texts(&commands).iter().any(|text| text == "src/a.rs"),
+        "the folded members' paths are not drawn, got {rows:?}"
+    );
+}
+
+/// The run's header states the work in the present tense while any member is
+/// live, and appends grok-build's failed count in the error colour.
+#[test]
+fn a_running_run_uses_the_present_tense_and_counts_failures() {
+    let app = AppContext::default();
+    let calls = vec![
+        call(
+            "read_file",
+            r#"{"path":"src/a.rs"}"#,
+            ToolCallStatus::Running,
+            None,
+        ),
+        call(
+            "read_file",
+            r#"{"path":"src/b.rs"}"#,
+            ToolCallStatus::Error,
+            Some("no such file"),
+        ),
+        call(
+            "read_file",
+            r#"{"path":"src/c.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("fn c() {}"),
+        ),
+    ];
+    let (commands, _) = paint_tool_calls(calls);
+    let rows = drawn_row_texts(&commands);
+    assert_eq!(
+        rows,
+        vec!["◈ Reading 3 files · 1 failed".to_string()],
+        "one header states the run's tense and failures"
+    );
+    let marked = text_runs(&commands)
+        .into_iter()
+        .find(|(text, _, _, _)| text == "◈ ")
+        .expect("the run draws its chrome");
+    assert_eq!(
+        marked.1,
+        app.theme.color(ColorToken::Error),
+        "a run with a failure carries the error accent"
+    );
+}
+
+/// A member the user opened keeps its own body without splitting the run: the
+/// header still counts the folded members around it.
+#[test]
+fn an_opened_member_keeps_its_body_inside_the_folded_run() {
+    let mut calls = vec![
+        call(
+            "read_file",
+            r#"{"path":"src/a.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("fn a() {}"),
+        ),
+        call(
+            "read_file",
+            r#"{"path":"src/b.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("fn b() {}"),
+        ),
+        call(
+            "read_file",
+            r#"{"path":"src/c.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("fn c() {}"),
+        ),
+    ];
+    for (index, call) in calls.iter_mut().enumerate() {
+        call.id = format!("call-{index}");
+    }
+    let (commands, _) = paint_tool_calls_with_modes(
+        calls,
+        Some(&[
+            ToolDisplayMode::Collapsed,
+            ToolDisplayMode::Expanded,
+            ToolDisplayMode::Collapsed,
+        ]),
+    );
+    let rows = drawn_row_texts(&commands);
+    assert!(
+        rows.iter().any(|row| row == "◈ Read 2 files"),
+        "the header counts the folded members around the opened one, got {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains("fn b()")),
+        "the opened member keeps its body inside the run, got {rows:?}"
+    );
+    assert!(
+        !drawn_texts(&commands).iter().any(|text| text == "src/a.rs"),
+        "the folded members stay hidden, got {rows:?}"
     );
 }
 

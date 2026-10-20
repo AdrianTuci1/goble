@@ -19,7 +19,6 @@ use super::files::{
     rename_file, write_file,
 };
 use super::guide::user_guide;
-use super::handoff::open_screen;
 use super::mcp::{
     delete_mcp_server, discover_mcp_tools, install_mcp_server, list_mcp_servers, mcp_call,
     search_mcp_servers, update_mcp_server,
@@ -107,7 +106,6 @@ pub(crate) async fn execute_tool_call(
         "execute_python_code" => execute_python_code(&call.arguments).await,
         "memory_write" => memory_write(store, &call.arguments),
         "memory_read" => memory_read(store, &call.arguments),
-        "open_screen" => open_screen(&call.arguments),
         "mcp_call" => mcp_call(&mcp_manager, &call.arguments),
         _ => {
             if mcp_manager.is_mcp_tool(&call.name) {

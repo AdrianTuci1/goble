@@ -34,6 +34,7 @@ flowchart TD
 - [`llm-and-models.md`](llm-and-models.md) — provider/model resolution and the sampling loop.
 - [`inter-agent-communication.md`](inter-agent-communication.md) — agents talking within a workspace.
 - [`sandbox-and-cwd.md`](sandbox-and-cwd.md) — per-agent CWD, isolation.
+- [`computer-use.md`](computer-use.md) — the decision record: the streamed graphical desktop is out of scope, and the terminal is the one interaction surface.
 - [`memory.md`](memory.md) — `remember`.
 - [`personas.md`](personas.md) — personae.
 - [`deep-research.md`](deep-research.md) — long-running research.

@@ -21,14 +21,16 @@ use crate::state::UiState;
 use crate::terminal::TerminalSession;
 use crate::ui::UiActions;
 
-/// A single-pane app whose shell is a capture instead of a pty, so the bytes a
-/// selection writes are readable.
-fn harness() -> (
+type Harness = (
     Rc<RefCell<UiState>>,
     UiActions,
     Arc<Mutex<Vec<u8>>>,
     tempfile::TempDir,
-) {
+);
+
+/// A single-pane app whose shell is a capture instead of a pty, so the bytes a
+/// selection writes are readable.
+fn harness() -> Harness {
     let dir = tempfile::tempdir().expect("temp thread-store dir");
     let desktop = Arc::new(DesktopState::new(
         Store::open_in_memory().expect("in-memory store"),

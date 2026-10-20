@@ -77,7 +77,7 @@ fn the_files_tab_draws_directories_from_the_file_icon_set() {
     ) -> Vec<RenderCommand> {
         let _ = root.layout(
             SizeConstraint::loose(vec2f(1024.0, 768.0)),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             app,
         );
         let mut ctx = PaintContext::new(Renderer::new());
@@ -427,7 +427,7 @@ fn press(
     use goble_ui::elements::EventContext;
     use goble_ui::event::DispatchedEvent;
 
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     root.dispatch_event(
         &DispatchedEvent::KeyDown {
             key: key.to_string(),
@@ -1135,9 +1135,8 @@ fn a_double_click_renames_a_tab_that_is_not_the_active_one() {
         "the second click opens its rename field"
     );
     let commands = frame(&mut root, &app);
-    assert_eq!(
+    assert!(
         state.borrow().space_rename_focused,
-        true,
         "the field takes the keyboard"
     );
     assert!(
@@ -1843,7 +1842,7 @@ fn frame(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<RenderCommand> {
 
     let _ = root.layout(
         SizeConstraint::loose(vec2f(1024.0, 768.0)),
-        &mut LayoutContext::default(),
+        &mut LayoutContext,
         app,
     );
     let mut paint_ctx = PaintContext::new(Renderer::new());
@@ -1861,7 +1860,7 @@ fn click(root: &mut Box<dyn Element>, app: &AppContext, at: goble_ui::Vector2F) 
     use goble_ui::elements::EventContext;
     use goble_ui::event::DispatchedEvent;
 
-    let mut ctx = EventContext::default();
+    let mut ctx = EventContext;
     let down = root.dispatch_event(
         &DispatchedEvent::MouseDown {
             position: at,
@@ -2160,7 +2159,7 @@ fn send(
     app: &AppContext,
     event: goble_ui::event::DispatchedEvent,
 ) -> bool {
-    let mut ctx = goble_ui::elements::EventContext::default();
+    let mut ctx = goble_ui::elements::EventContext;
     root.dispatch_event(&event, &mut ctx, app)
 }
 
@@ -2187,19 +2186,19 @@ fn active_tab_rect(
         .expect("the active workspace tab is the filled tab of the strip")
 }
 
-/// Mount the app on one space holding a two-pane split, name the tab, and give
-/// the pane that will leave a session of its own. Returns the root, the state,
-/// the pane that stays and the pane that moves.
-fn split_workspace(
-    app: &AppContext,
-) -> (
+type SplitWorkspace = (
     Box<dyn Element>,
     Rc<RefCell<UiState>>,
     Arc<DesktopState>,
     tempfile::TempDir,
     u64,
     u64,
-) {
+);
+
+/// Mount the app on one space holding a two-pane split, name the tab, and give
+/// the pane that will leave a session of its own. Returns the root, the state,
+/// the pane that stays and the pane that moves.
+fn split_workspace(app: &AppContext) -> SplitWorkspace {
     let (desktop, dir) = common::desktop_state();
     let view = RootView::new(app, &desktop, None);
     let state_rc = view.state_rc();
@@ -2419,4 +2418,220 @@ fn a_pane_lifted_onto_the_strip_is_dropped_off_it_with_no_change() {
         "both panes are still in the split they were in"
     );
     assert_eq!(state.active_space, 0, "nothing was switched");
+}
+
+/// R33: a pane lifted over another pane of the same space shows where it would
+/// land — a translucent accent half of the target pane, bounded by an accent
+/// line — and a release there moves it to a new split beside that pane, without
+/// adding a tab.
+#[test]
+fn a_pane_dragged_over_another_pane_shows_where_it_would_land() {
+    use goble_app::ui::{DropSide, Pane, PaneDropTarget, SplitDir};
+    use goble_ui::event::DispatchedEvent;
+    use goble_ui::geometry::{rectf, RectF};
+
+    let app = AppContext::default();
+    let (mut root, state_rc, _desktop, _dir, kept, moved) = split_workspace(&app);
+    let commands = frame(&mut root, &app);
+
+    let (control_x, header_y) =
+        topmost_icon_center(&commands, "maximize-01").expect("the pane header's expand control");
+    let press_at = vec2f(control_x - 60.0, header_y);
+    assert!(
+        send(
+            &mut root,
+            &app,
+            DispatchedEvent::MouseDown {
+                position: press_at,
+                button: 0,
+            },
+        ),
+        "the pane header takes the press"
+    );
+    let _ = frame(&mut root, &app);
+
+    // The pane area recorded the bounds its leaves were drawn at; the pointer
+    // goes into the right half of the pane that stays.
+    let kept_bounds = state_rc
+        .borrow()
+        .pane_bounds
+        .borrow()
+        .get(&kept)
+        .copied()
+        .expect("the pane that stays was drawn");
+    let drop_at = vec2f(kept_bounds.max_x() - 20.0, kept_bounds.center().y);
+    assert!(send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseMove { position: drop_at },
+    ));
+    let commands = frame(&mut root, &app);
+
+    let target = PaneDropTarget {
+        pane_id: kept,
+        side: DropSide::Right,
+    };
+    assert_eq!(
+        state_rc.borrow().pane_drag.as_ref().and_then(|d| d.drop_target),
+        Some(target),
+        "the pane under the pointer names the side the drop would land on"
+    );
+
+    // The ghost is the right half of the target pane: accent-tinted and clear
+    // against the pane under it.
+    let ghost = rectf(
+        kept_bounds.min_x() + kept_bounds.width() / 2.0,
+        kept_bounds.min_y(),
+        kept_bounds.width() / 2.0,
+        kept_bounds.height(),
+    );
+    let near = |a: RectF, b: RectF| {
+        (a.min_x() - b.min_x()).abs() < 0.01
+            && (a.min_y() - b.min_y()).abs() < 0.01
+            && (a.width() - b.width()).abs() < 0.01
+            && (a.height() - b.height()).abs() < 0.01
+    };
+    let accent = app.theme.color(ColorToken::Accent);
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::FillRect { rect, color, .. }
+                if near(*rect, ghost)
+                    && color.a < 255
+                    && color.r == accent.r
+                    && color.g == accent.g
+                    && color.b == accent.b
+        )),
+        "the drop ghost fills the half the pane would land on"
+    );
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::StrokeRect { rect, color, .. }
+                if near(*rect, ghost) && *color == accent
+        )),
+        "the ghost is bounded by an accent line"
+    );
+
+    // Releasing there moves the pane beside the target: still one tab, the
+    // same two leaves, now in the order the drop named.
+    assert!(send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseUp {
+            position: drop_at,
+            button: 0,
+        },
+    ));
+    let state = state_rc.borrow();
+    assert!(state.pane_drag.is_none(), "the drag is over");
+    assert_eq!(state.spaces.len(), 1, "no tab was added");
+    match &state.spaces[0].root {
+        Pane::Split {
+            dir,
+            first,
+            second,
+            ..
+        } => {
+            assert_eq!(*dir, SplitDir::Horizontal);
+            assert_eq!(first.first_leaf_id(), kept, "the target moved left");
+            assert_eq!(second.first_leaf_id(), moved, "the dragged pane landed right");
+        }
+        _ => panic!("the moved pane split the pane it landed on"),
+    }
+    assert_eq!(state.active_pane_id, moved, "the moved pane holds the focus");
+}
+
+/// R2: a workspace tab dragged across a neighbour is reordered live — the
+/// dragged tab follows the pointer — and the release ends the drag without
+/// selecting the tab it was dropped on or opening its rename.
+#[test]
+fn a_workspace_tab_dragged_across_a_neighbour_is_reordered() {
+    use goble_app::ui::{Pane, PaneKind, Space};
+    use goble_ui::event::DispatchedEvent;
+
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let view = RootView::new(&app, &desktop, None);
+    let state_rc = view.state_rc();
+    {
+        let mut state = state_rc.borrow_mut();
+        state.show_onboarding_tip = false;
+        state.show_llm_key_banner = false;
+        state.show_workspace_choice = false;
+        state.spaces = vec![
+            Space::new("One", Pane::Leaf { id: 1, kind: PaneKind::Terminal }),
+            Space::new("Two", Pane::Leaf { id: 2, kind: PaneKind::Terminal }),
+        ];
+        state.active_space = 0;
+        state.active_pane_id = 1;
+    }
+    let mut root: Box<dyn Element> = Box::new(view);
+    let commands = frame(&mut root, &app);
+    let topbar_height = goble_app::ui::shell::TOPBAR_HEIGHT;
+    let label = |text: &str| {
+        commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::DrawText { text: t, origin, .. }
+                    if t == text && origin.y < topbar_height =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the tab reads {text}"))
+    };
+    let one = label("One");
+    let two = label("Two");
+
+    // A press on "Two"...
+    assert!(send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseDown {
+            position: vec2f(two.x + 2.0, two.y + 4.0),
+            button: 0,
+        },
+    ));
+    let _ = frame(&mut root, &app);
+    // ...dragged left past the center of "One", the tab it crosses.
+    let drop_at = vec2f(one.x - 20.0, one.y + 4.0);
+    assert!(send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseMove { position: drop_at },
+    ));
+    let _ = frame(&mut root, &app);
+    {
+        let state = state_rc.borrow();
+        let names: Vec<&str> = state.spaces.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["Two", "One"], "the dragged tab took its place");
+        assert_eq!(state.space_drag, Some(0), "the drag follows the tab");
+        assert_eq!(
+            state.active_space, 1,
+            "the on-screen tab moved with its pane tree"
+        );
+    }
+
+    assert!(send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseUp {
+            position: drop_at,
+            button: 0,
+        },
+    ));
+    let _ = frame(&mut root, &app);
+    let state = state_rc.borrow();
+    assert_eq!(state.space_drag, None, "the release ends the drag");
+    assert_eq!(state.space_press, None, "and clears the press");
+    assert_eq!(
+        state.active_space, 1,
+        "the release did not select the tab under the pointer"
+    );
+    assert!(
+        !state.space_rename_editing,
+        "and did not open the rename"
+    );
 }

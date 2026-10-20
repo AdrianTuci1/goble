@@ -395,6 +395,41 @@ fn a_section_header_draws_one_prompt_row_above_the_command() {
     }
 }
 
+/// A block that knows the prompt its command was typed at draws that prompt in
+/// the header, in place of the bare directory: the shell's line belongs above
+/// the command, and the body draws the command alone.
+#[test]
+fn a_section_header_prefers_the_prompt_over_the_directory() {
+    let app = app();
+    let data = TerminalData::for_section(
+        "cargo test",
+        "42 passed",
+        TerminalMeta::new("~/Projects/goble")
+            .with_prompt("me@mac ~/Projects/goble %")
+            .with_branch("main"),
+        TerminalStatus::Success,
+    );
+    let mut block = terminal_block(&data, TerminalFilter::default(), None, None);
+    let commands = crate::test_util::render_element(&mut block, vec2f(600.0, 300.0), &app);
+    let texts = drawn_texts(&commands);
+    assert!(
+        texts
+            .iter()
+            .any(|text| text == "me@mac ~/Projects/goble % git:(main)"),
+        "the header draws the prompt in the directory's place: {texts:?}"
+    );
+    assert!(
+        !texts
+            .iter()
+            .any(|text| text == "~/Projects/goble git:(main)"),
+        "the bare directory label is replaced, not repeated: {texts:?}"
+    );
+    assert!(
+        texts.concat().contains("cargo test"),
+        "the body still draws the command once: {texts:?}"
+    );
+}
+
 /// A block built from `data` and painted through `filter`, with `global` as the
 /// whole-surface filter when one is wired.
 fn paint_through(

@@ -49,7 +49,7 @@ impl SessionId {
     }
 }
 
-/// A medium is *where* the work runs: local, VM, remote (xrdp), browser, container.
+/// A medium is *where* the work runs: local, VM, remote worker, browser, container.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MediumId(pub String);
 
@@ -64,7 +64,7 @@ impl MediumId {
 pub enum MediumKind {
     Local,
     Vm,
-    RemoteXrdp,
+    Remote,
     Browser,
     Container,
 }
@@ -74,47 +74,8 @@ pub enum MediumKind {
 pub enum InteractionChannel {
     HeadlessShell,
     GuiScreen,
-    Xrdp,
     Cdp,
     Voice,
-}
-
-/// How to reach a remote RDP desktop the harness asks the host to open when it
-/// hands off to an interactive GUI session. This is the *model-shape* of the
-/// handoff request; the runtime layer [`ScreenCapturer`]/[`ScreenController`]
-/// pair that actually streams and drives it lives in `goble-screen-sdk`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoteScreenConfig {
-    /// Hostname or IP of the remote (e.g. `"vm.example.com"`).
-    pub host: String,
-    /// RDP port (default 3389).
-    pub port: u16,
-    /// RDP account username.
-    pub username: String,
-    /// RDP account password.
-    pub password: String,
-    /// Requested desktop width in pixels.
-    pub width: u16,
-    /// Requested desktop height in pixels.
-    pub height: u16,
-}
-
-impl RemoteScreenConfig {
-    /// A config for the default RDP port and a 1280x720 desktop.
-    pub fn new(
-        host: impl Into<String>,
-        username: impl Into<String>,
-        password: impl Into<String>,
-    ) -> Self {
-        Self {
-            host: host.into(),
-            port: 3389,
-            username: username.into(),
-            password: password.into(),
-            width: 1280,
-            height: 720,
-        }
-    }
 }
 
 /// Hint the harness sees so it can adapt its reporting. Voice is the *reporting*
@@ -317,17 +278,5 @@ mod tests {
     fn grants_builders() {
         assert_eq!(Grant::read_only("docs").mode, GrantMode::ReadOnly);
         assert_eq!(Grant::read_write("src").mode, GrantMode::ReadWrite);
-    }
-
-    #[test]
-    fn remote_screen_config_roundtrip() {
-        let cfg = RemoteScreenConfig::new("vm.example.com", "user", "pass");
-        assert_eq!(cfg.port, 3389);
-        assert_eq!(cfg.width, 1280);
-        assert_eq!(cfg.height, 720);
-
-        let json = serde_json::to_string(&cfg).unwrap();
-        let decoded: RemoteScreenConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded, cfg);
     }
 }

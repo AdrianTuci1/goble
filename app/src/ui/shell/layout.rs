@@ -18,13 +18,15 @@ use goble_ui::theme::ColorToken;
 /// and the drag flags/callbacks are passed in from the snapshot.
 const RESIZE_HANDLE_HALF: f32 = 4.0;
 
+type DragHandler = Option<Rc<RefCell<dyn FnMut(f32)>>>;
+
 pub struct SidebarLayout {
     sidebar: Box<dyn Element>,
     main: Box<dyn Element>,
     width: f32,
     dragging: bool,
-    on_drag_start: Option<Rc<RefCell<dyn FnMut(f32)>>>,
-    on_drag_move: Option<Rc<RefCell<dyn FnMut(f32)>>>,
+    on_drag_start: DragHandler,
+    on_drag_move: DragHandler,
     on_drag_end: Option<Rc<RefCell<dyn FnMut()>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,

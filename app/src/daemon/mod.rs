@@ -7,7 +7,7 @@
 
 mod state;
 
-pub use state::DaemonModel;
+pub use state::{DaemonModel, TurnRequest};
 
 /// The daemon client boundary the overall app uses to drive chat turns.
 ///

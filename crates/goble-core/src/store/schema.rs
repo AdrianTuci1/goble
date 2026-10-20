@@ -52,6 +52,7 @@ impl Store {
                 agent_id TEXT,
                 worker_id TEXT,
                 workspace_routing TEXT,
+                medium_id TEXT,
                 parent_chat_id TEXT,
                 working_dir TEXT,
                 usage_input INTEGER NOT NULL DEFAULT 0,
@@ -317,6 +318,20 @@ impl Store {
         if !has_working_dir {
             conn.execute("ALTER TABLE chats ADD COLUMN working_dir TEXT", [])
                 .context("failed to add chats.working_dir")?;
+        }
+
+        // Same idiom for `medium_id`: the environment (medium) a conversation's
+        // turns run on, chosen in its composer and remembered per conversation.
+        let has_medium_id: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'medium_id'",
+                [],
+                |r| r.get(0),
+            )
+            .context("failed to check for chats.medium_id")?;
+        if !has_medium_id {
+            conn.execute("ALTER TABLE chats ADD COLUMN medium_id TEXT", [])
+                .context("failed to add chats.medium_id")?;
         }
 
         // The token counts the provider reported for a conversation, so its

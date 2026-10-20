@@ -12,6 +12,12 @@
 //! [`GobleConfig::load_toml`] folds `[llm]` into `[model.*]` / `[models]` and
 //! clears it, so the next [`GobleConfig::to_toml`] writes the new layout — the
 //! migration a save performs, with no separate migration step to run.
+//!
+//! `[remote_agents.<name>]` is goble's own section: it declares the sandbox
+//! providers a harness can be shipped to. `goble-remote` turns a table into an
+//! adapter (E2B, Modal, Daytona, Box/Boat, Docker, SSH), and the desktop service
+//! composes the adapter with the project's workspace identity to deploy a
+//! worker.
 
 use std::collections::BTreeMap;
 
@@ -60,6 +66,26 @@ pub const CONFIG_HEADER: &str = "\
 # [theme] is goble's own section and grok has no equivalent: `dark`, `accent`,
 # and the optional `primary` / `secondary`.
 #
+# A remote agent declares a sandbox provider the harness can be shipped to.
+# The table's name is the agent's. `provider` is one of modal, e2b, daytona,
+# box, docker or ssh; `enabled` is true unless it says otherwise. Modal reads
+# `token_id` and `token_secret`, the hosted providers read `api_key`, and
+# docker and ssh need no credentials. `api_url`, `image`, `region` and
+# `environment` are optional. Settings -> Agent & Approval reports what each
+# table declares and what it is missing; `goble-remote` provisions it through
+# the provider API and passes the worker the gateway URL and token.
+#
+#   [remote_agents.builder]
+#   provider = \"modal\"
+#   token_id = \"...\"
+#   token_secret = \"...\"
+#   image = \"ubuntu:24.04\"
+#
+#   [remote_agents.reviewer]
+#   provider = \"e2b\"
+#   api_key = \"...\"
+#   region = \"us-east-1\"
+#
 # Sections this app does not model (grok's [cli], [ui], [privacy], the
 # marketplace) are kept exactly as they were written. Editing this file by hand
 # is expected: the app reads it when it starts, and writes it back — this header
@@ -70,7 +96,14 @@ pub const CONFIG_HEADER: &str = "\
 /// The top-level sections this schema models. Everything else a file carries
 /// (grok's `[cli]`, `[ui]`, `[marketplace]`, `[privacy]`, …) is kept verbatim in
 /// [`GobleConfig::extra`] so a save does not drop another tool's settings.
-const SECTIONS: [&str; 5] = ["model", "models", "mcp_servers", "theme", "llm"];
+const SECTIONS: [&str; 6] = [
+    "model",
+    "models",
+    "mcp_servers",
+    "theme",
+    "llm",
+    "remote_agents",
+];
 
 /// `~/.goble/config.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -93,6 +126,10 @@ pub struct GobleConfig {
     /// migrates on load and is rewritten in the new layout on the next save.
     #[serde(skip_serializing_if = "LlmConfig::is_empty")]
     pub llm: LlmConfig,
+    /// `[remote_agents.<name>]` — the sandbox providers a harness can be
+    /// shipped to, keyed by the name the user gave the agent.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub remote_agents: BTreeMap<String, RemoteAgentConfig>,
     /// Sections this schema does not model, kept as they were parsed so saving
     /// does not drop them.
     #[serde(flatten)]
@@ -162,6 +199,122 @@ impl ModelConfig {
     }
 }
 
+/// A sandbox provider a remote agent can run on. The serialized names are the
+/// ones written in `config.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteAgentProvider {
+    Modal,
+    E2b,
+    Daytona,
+    Box,
+    Docker,
+    Ssh,
+}
+
+impl RemoteAgentProvider {
+    /// The provider's name as the config file writes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RemoteAgentProvider::Modal => "modal",
+            RemoteAgentProvider::E2b => "e2b",
+            RemoteAgentProvider::Daytona => "daytona",
+            RemoteAgentProvider::Box => "box",
+            RemoteAgentProvider::Docker => "docker",
+            RemoteAgentProvider::Ssh => "ssh",
+        }
+    }
+
+    /// The credential keys this provider needs, in the order a missing-credential
+    /// line names them. Docker and SSH need none.
+    fn credential_keys(self) -> &'static [&'static str] {
+        match self {
+            RemoteAgentProvider::Modal => &["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"],
+            RemoteAgentProvider::E2b => &["E2B_API_KEY"],
+            RemoteAgentProvider::Daytona => &["DAYTONA_API_KEY"],
+            RemoteAgentProvider::Box => &["BOX_API_KEY"],
+            RemoteAgentProvider::Docker | RemoteAgentProvider::Ssh => &[],
+        }
+    }
+}
+
+impl std::fmt::Display for RemoteAgentProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One `[remote_agents.<name>]` table: a sandbox provider the harness can be
+/// shipped to. The table holds connection details; `goble-remote` turns it into
+/// a sandbox adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteAgentConfig {
+    /// The sandbox provider. Required: a table without one is reported on load
+    /// rather than guessed at, so there is no `#[serde(default)]` here.
+    pub provider: RemoteAgentProvider,
+    /// Whether the agent is offered at all.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+    /// The provider's API key (E2B, Daytona, Box).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Modal's token id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_id: Option<String>,
+    /// Modal's token secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_secret: Option<String>,
+    /// A provider endpoint override. No provider requires one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url: Option<String>,
+    /// The sandbox image the harness is shipped in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// The provider region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// The sandbox environment the harness runs in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+}
+
+impl RemoteAgentConfig {
+    /// The credential keys this table has not set, named as the environment
+    /// variables a user would supply them as. Empty means the table is ready.
+    pub fn missing_credentials(&self) -> Vec<&'static str> {
+        let filled = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+        };
+        self.provider
+            .credential_keys()
+            .iter()
+            .copied()
+            .filter(|key| match *key {
+                "MODAL_TOKEN_ID" => !filled(&self.token_id),
+                "MODAL_TOKEN_SECRET" => !filled(&self.token_secret),
+                _ => !filled(&self.api_key),
+            })
+            .collect()
+    }
+
+    /// What the Settings row says about this table: `ready`, `disabled`, or the
+    /// credential keys it is missing.
+    pub fn status_label(&self) -> String {
+        if !self.enabled {
+            return "disabled".to_string();
+        }
+        let missing = self.missing_credentials();
+        if missing.is_empty() {
+            "ready".to_string()
+        } else {
+            format!("missing {}", missing.join(", "))
+        }
+    }
+}
+
 /// One `[mcp_servers.<name>]` table. Either an HTTP endpoint (`url`) or a stdio
 /// command (`command` + `args`), as grok declares them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +375,10 @@ fn default_true() -> bool {
     true
 }
 
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 fn default_accent() -> String {
     "#14b8a6".to_string()
 }
@@ -272,6 +429,25 @@ impl GobleConfig {
         section!("mcp_servers", config.mcp_servers);
         section!("theme", config.theme);
         section!("llm", config.llm);
+
+        // The remote agents are read one table at a time: a provider name this
+        // build does not know costs that agent, not the others and not the
+        // file, so a newer config still loads its models and theme.
+        if let Some(value) = table.get("remote_agents") {
+            match value.as_table() {
+                Some(entries) => {
+                    for (name, entry) in entries {
+                        match entry.clone().try_into::<RemoteAgentConfig>() {
+                            Ok(parsed) => {
+                                config.remote_agents.insert(name.clone(), parsed);
+                            }
+                            Err(e) => problems.push(format!("[remote_agents.{name}] ignored: {e}")),
+                        }
+                    }
+                }
+                None => problems.push("[remote_agents] ignored: not a table".to_string()),
+            }
+        }
 
         for (key, value) in table {
             if SECTIONS.contains(&key.as_str()) || !value.is_table() {

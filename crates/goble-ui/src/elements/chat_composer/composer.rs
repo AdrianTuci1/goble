@@ -7,11 +7,16 @@ use crate::geometry::{PointF, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
 use crate::vim::{Clipboard, VimMode, VimState};
 use goble_core::harness::CommandDecision;
+use goble_core::ssh_command::SshSession;
 use super::proposal::CommandProposalUi;
 
 /// Cap for the working-directory pill's label. A long path ellipsizes inside the
 /// pill instead of pushing the other context pills across the row.
 const DIR_PILL_MAX_WIDTH: f32 = 280.0;
+
+/// The same cap for the session chip: a long `user@host (address)` narrows
+/// inside its own box instead of pushing the context row out of the pane.
+const SESSION_CHIP_MAX_WIDTH: f32 = 280.0;
 
 /// What the model control reads when the pane has no model configured: the
 /// turn would run on nothing, so naming a model there would be a claim nobody
@@ -29,6 +34,11 @@ pub struct ChatComposer {
     attachments: Vec<String>,
     model_label: Option<String>,
     path_label: Option<String>,
+    /// The SSH session this pane's shell is bound to, when a submitted `ssh`
+    /// line put it on a host (S1). While it is set the context row draws a chip
+    /// naming the host; a local shell has none, so the chip's absence is itself
+    /// the statement that the session is local.
+    ssh_session: Option<SshSession>,
     pub(super) focused: bool,
     /// Whether a press outside the editor blurs it. Off for a host that makes
     /// this composer the only typing surface of its pane (the terminal pane):
@@ -135,6 +145,7 @@ impl ChatComposer {
             attachments: Vec::new(),
             model_label: None,
             path_label: None,
+            ssh_session: None,
             focused: false,
             blur_on_outside_click: true,
             context_above_editor: false,
@@ -213,17 +224,26 @@ impl ChatComposer {
         self
     }
 
-    /// Label for the warp-new "harness" context pill (the agent/harness the
-    /// current turn runs on). Kept for the hosts that still set it: the rich
-    /// input no longer draws an environment control.
+    /// The SSH session the pane's shell is bound to, or `None` for a local
+    /// shell. It is the bound session itself, not a label: the chip's words are
+    /// the session's own ([`SshSession::chip_label`]). A local session draws no
+    /// chip at all.
+    pub fn with_ssh_session(mut self, session: Option<SshSession>) -> Self {
+        self.ssh_session = session;
+        self
+    }
+
+    /// Label for the environment (medium) context pill: the environment the
+    /// draft's turn will run on. The host draws it only where the environment is
+    /// the user's to choose — a conversation running on a worker — so a host
+    /// that passes no label draws no pill.
     pub fn with_harness_label(mut self, label: impl Into<String>) -> Self {
         self.harness_label = Some(label.into());
         self
     }
 
-    /// Set the harness dropdown: items, the app-owned `open` flag, and a
-    /// select callback (same contract as `with_model_menu`). No longer drawn;
-    /// see [`Self::with_harness_label`].
+    /// Set the environment (medium) dropdown: items, the app-owned `open` flag,
+    /// and a select callback (same contract as `with_model_menu`).
     pub fn with_harness_menu<F: FnMut(usize) + 'static>(
         mut self,
         items: Vec<PopupMenuItem>,
@@ -690,11 +710,38 @@ impl ChatComposer {
     /// only the directory and the branch shows exactly those two, and a
     /// composer with no context at all contributes nothing.
     ///
-    /// The harness (environment) pill is not among them any more: the rich
-    /// input names where the draft runs through the working directory and the
-    /// branch alone.
+    /// The environment (medium) pill leads the row and is drawn the same way:
+    /// only a host that sets its label gets it, which is the conversation whose
+    /// turn runs somewhere the user has to pick — a conversation on a worker. A
+    /// local conversation is never given one, so it draws no environment
+    /// control at all.
     fn context_children(&self, app: &AppContext) -> Vec<Box<dyn Element>> {
         let mut children: Vec<Box<dyn Element>> = Vec::new();
+        // The session chip leads the row: where the shell *is* frames the
+        // directory and the branch that follow it, which describe what is
+        // running there. A local session contributes nothing.
+        if let Some(session) = self.ssh_session.as_ref() {
+            children.push(self.session_chip(app, &session.chip_label()));
+        }
+        // What the draft runs on, when its host makes that a choice: the
+        // environment the turn is submitted on. It frames the directory and the
+        // branch that follow it, which describe the work inside it. A host that
+        // names no environment draws no control.
+        if let Some(label) = self
+            .harness_label
+            .clone()
+            .filter(|label| !label.trim().is_empty())
+        {
+            children.push(self.context_pill(
+                app,
+                "computer",
+                &label,
+                &self.harness_menu_items,
+                self.harness_menu_open.clone(),
+                &self.on_select_harness_item,
+                "Select environment",
+            ));
+        }
         if let Some(path) = self.path_label.clone() {
             // The directory pill is capped rather than flex-grown: a long path
             // ellipsizes inside the pill and the row's pills stay left-aligned
@@ -934,6 +981,38 @@ impl ChatComposer {
             pill = pill.with_menu(items.to_vec(), open, move |idx| (cb.borrow_mut())(idx));
         }
         pill.finish(app)
+    }
+
+    /// The session chip: the host a bound SSH session put this pane's shell on,
+    /// as a flat row of an icon and the session's own words — no card, no
+    /// outline, no tray. It is chrome beside the input rather than a control,
+    /// so it draws the same muted 11 px text the working-directory pill's label
+    /// uses, capped the same way.
+    fn session_chip(&self, app: &AppContext, label: &str) -> Box<dyn Element> {
+        Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(6.0)
+            .with_child(
+                Icon::new("conversation-remote")
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_child(
+                ConstrainedBox::new(
+                    Clipped::new(
+                        Text::new(label.to_string())
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_size(11.0)
+                            .with_max_lines(1)
+                            .finish(),
+                    )
+                    .finish(),
+                )
+                .with_max_width(SESSION_CHIP_MAX_WIDTH)
+                .finish(),
+            )
+            .finish()
     }
 
     /// Rebuild the rich-input tree. The composer hugs its content: the editor

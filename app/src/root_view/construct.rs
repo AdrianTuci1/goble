@@ -11,7 +11,6 @@ use goble_ui::AppContext;
 use crate::ai::AiState;
 use crate::media::MediaState;
 use crate::projects::ProjectsState;
-use crate::screen::ScreenState;
 use crate::state::UiState;
 use crate::ui::explorer::ExplorerCache;
 use crate::ui::file_view::FileCache;
@@ -31,7 +30,6 @@ impl RootView {
         let ai_state = Rc::new(RefCell::new(AiState::from_desktop(desktop)));
         let projects_state = Rc::new(RefCell::new(ProjectsState::from_desktop(desktop)));
         let media_state = Rc::new(RefCell::new(MediaState::from_desktop(desktop)));
-        let screen_state = Rc::new(RefCell::new(ScreenState::from_desktop(desktop)));
 
         let mut view = Self {
             element: Box::new(Empty::new()),
@@ -39,7 +37,6 @@ impl RootView {
             ai_state,
             projects_state,
             media_state,
-            screen_state,
             desktop: Some(desktop.clone()),
             event_bus,
             window_control: app.window_control.clone(),
@@ -49,6 +46,8 @@ impl RootView {
             explorer: Rc::new(RefCell::new(ExplorerCache::default())),
             file_cache: Rc::new(RefCell::new(FileCache::default())),
             actions: None,
+            #[cfg(unix)]
+            control: None,
             hover_chips: HoverChipLayer::new(),
             size: None,
             origin: None,
@@ -64,18 +63,19 @@ impl RootView {
         self
     }
 
+    /// Attach the control socket's server. Its UI verbs are answered by
+    /// [`Self::process_control_requests`] on this thread.
+    #[cfg(unix)]
+    pub fn with_control(mut self, control: crate::control::ControlBridge) -> Self {
+        self.control = Some(control);
+        self
+    }
+
     /// Expose the backing UI state so integration render tests can drive
     /// first-run flags (e.g. the model-key banner overlay) before mounting.
     #[doc(hidden)]
     pub fn state_rc(&self) -> Rc<RefCell<UiState>> {
         Rc::clone(&self.state)
-    }
-
-    /// Expose the backing screen state so integration render tests can open the
-    /// screen sheet (broadcast + computer-use) before mounting.
-    #[doc(hidden)]
-    pub fn screen_state_rc(&self) -> Rc<RefCell<ScreenState>> {
-        Rc::clone(&self.screen_state)
     }
 
     /// Expose the backing environment state so integration render tests can

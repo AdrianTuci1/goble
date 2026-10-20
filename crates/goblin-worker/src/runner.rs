@@ -243,9 +243,7 @@ impl Runner {
                 goble_core::agent::McpSource::Url { .. } => "url",
             };
             let source_value = match &server.source {
-                goble_core::agent::McpSource::Github { repo, rev } => {
-                    Some(format!("{repo}#{rev}"))
-                }
+                goble_core::agent::McpSource::Github { repo, rev } => Some(format!("{repo}#{rev}")),
                 goble_core::agent::McpSource::Npm { package, version } => {
                     Some(format!("{package}@{version}"))
                 }
@@ -288,8 +286,7 @@ impl Runner {
             .with_model(model_name.to_string())
             .with_reasoning(false)
             .with_runner(Arc::new(
-                SandboxedCommandRunner::default_tools()
-                    .with_sandbox(harness_sandbox()),
+                SandboxedCommandRunner::default_tools().with_sandbox(harness_sandbox()),
             ))
             .with_workspace_dir(&workspace_dir);
         self.state.daemon_state().register(Arc::new(harness));
@@ -316,7 +313,8 @@ impl Runner {
 
     /// Update the trace's terminal status and emit `AgentFinished`.
     fn finish_trace(&self, trace_id: &str, status: ExecutionStatus) {
-        self.state.update_trace(trace_id, |t| t.status = status.clone());
+        self.state
+            .update_trace(trace_id, |t| t.status = status.clone());
         self.state.emit(WorkerMessage::AgentFinished {
             trace_id: trace_id.to_string(),
             status,
@@ -352,16 +350,11 @@ impl Runner {
 ///
 /// A turn settles on `TraceFinished`; a turn that paused on an `AskUser` reports
 /// success (matching the harness-runner, which paused and finished on an ask).
-async fn await_turn(
-    rx: &mut broadcast::Receiver<DaemonEvent>,
-    sid: &SessionId,
-) -> ExecutionStatus {
+async fn await_turn(rx: &mut broadcast::Receiver<DaemonEvent>, sid: &SessionId) -> ExecutionStatus {
     while let Ok(event) = rx.recv().await {
         match &event {
             DaemonEvent::TraceFinished {
-                session_id,
-                status,
-                ..
+                session_id, status, ..
             } if session_id == sid => {
                 return if status == "success" {
                     ExecutionStatus::Success

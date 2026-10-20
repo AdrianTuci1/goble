@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::Request;
-use axum::extract::{Form, State};
+use axum::extract::{Form, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -11,9 +11,13 @@ use axum::Router;
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 
+use crate::assets;
 use crate::auth::verify_pin;
-use crate::state::{GatewayState, SESSION_COOKIE};
+use crate::state::{GatewayState, WorkerSummary, SESSION_COOKIE};
 use crate::web;
+
+/// Where a browser lands after unlocking and when it asks for `/`.
+const CLIENT_PATH: &str = "/app/";
 
 #[derive(Deserialize)]
 struct LoginForm {
@@ -26,6 +30,11 @@ struct Health {
     workers: usize,
 }
 
+#[derive(Serialize)]
+struct WorkersResponse {
+    workers: Vec<WorkerSummary>,
+}
+
 pub(crate) fn router(state: Arc<GatewayState>) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -33,6 +42,10 @@ pub(crate) fn router(state: Arc<GatewayState>) -> Router {
         .route("/login", post(login))
         .route("/logout", post(logout))
         .route("/panel", get(panel))
+        .route("/api/workers", get(workers_api))
+        .route("/app", get(app_index))
+        .route("/app/", get(app_index))
+        .route("/app/{*path}", get(app_asset))
         .route("/ws/worker", get(crate::ws::worker_ws))
         .route("/ws/client", get(crate::ws::client_ws))
         .with_state(state.clone())
@@ -82,7 +95,7 @@ async fn health(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
 
 async fn index(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> Response {
     if authenticated(&state, &headers) {
-        return Redirect::to("/panel").into_response();
+        return Redirect::to(CLIENT_PATH).into_response();
     }
     Html(web::login_page(None)).into_response()
 }
@@ -94,7 +107,7 @@ async fn login(
 ) -> Response {
     let Some(pin_hash) = state.config().pin_hash else {
         // Auth is disabled; there is nothing to verify.
-        return Redirect::to("/panel").into_response();
+        return Redirect::to(CLIENT_PATH).into_response();
     };
 
     let delay = state.login_delay();
@@ -119,7 +132,7 @@ async fn login(
         secure_transport(&state, &headers),
     );
 
-    let mut response = Redirect::to("/panel").into_response();
+    let mut response = Redirect::to(CLIENT_PATH).into_response();
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
@@ -152,6 +165,57 @@ async fn panel(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> Re
         state.config().public_url.as_deref(),
     ))
     .into_response()
+}
+
+/// Machine-readable worker list for the browser client. Sorted by id; no token
+/// or connection id ever appears here.
+async fn workers_api(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> Response {
+    if !authenticated(&state, &headers) {
+        return json_unauthorized();
+    }
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        axum::Json(WorkersResponse {
+            workers: state.workers(),
+        }),
+    )
+        .into_response()
+}
+
+/// `/app` and `/app/`: the client entry point.
+async fn app_index(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> Response {
+    if !authenticated(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    assets::serve_index(state.web_root()).await
+}
+
+/// `/app/<file>`: any other client asset. Unknown or unsafe paths are 404, never
+/// a directory listing.
+async fn app_asset(
+    State(state): State<Arc<GatewayState>>,
+    headers: HeaderMap,
+    Path(path): Path<String>,
+) -> Response {
+    if !authenticated(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let Some(relative) = assets::relative_asset_path(&path) else {
+        return assets::not_found();
+    };
+    assets::serve_file(state.web_root(), &relative).await
+}
+
+fn json_unauthorized() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        r#"{"error":"login required"}"#,
+    )
+        .into_response()
 }
 
 fn authenticated(state: &GatewayState, headers: &HeaderMap) -> bool {

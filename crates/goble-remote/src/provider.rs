@@ -33,7 +33,7 @@ pub struct SandboxRequest {
 /// The provider's receipt for a created sandbox.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxHandle {
-    /// The provider kind (`e2b`, `modal`, `docker`).
+    /// The provider kind (`e2b`, `modal`, `daytona`, `box`, `docker`, `ssh`).
     pub provider: String,
     /// The provider's own identifier.
     pub sandbox_id: String,
@@ -75,8 +75,8 @@ pub enum SandboxStatus {
 /// One way to create, destroy, and inspect worker sandboxes.
 ///
 /// Implementations are object-safe so [`crate::provider_for`] can return the
-/// adapter a config table selects. A new provider (Daytona, Box, SSH) plugs in
-/// by implementing this trait and adding one match arm to the factory.
+/// adapter a config table selects. A new provider plugs in by implementing
+/// this trait and adding one match arm to the factory.
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
     /// The provider kind, matching [`goble_core::config::RemoteAgentProvider::as_str`].

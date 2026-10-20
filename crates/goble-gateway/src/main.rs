@@ -29,6 +29,11 @@ struct Args {
     #[arg(long, value_name = "URL")]
     public_url: Option<String>,
 
+    /// Directory holding the built browser client (index.html and friends).
+    /// Defaults to `web` next to the executable, then the crate's `web/`.
+    #[arg(long, value_name = "DIR", env = "GOBLE_WEB_DIR")]
+    web_dir: Option<PathBuf>,
+
     /// Extra Host header value accepted by the DNS-rebinding guard. Repeatable.
     #[arg(long = "allow-host", value_name = "HOST")]
     allow_hosts: Vec<String>,
@@ -102,8 +107,13 @@ async fn main() -> anyhow::Result<()> {
     let mut config = GatewayConfig::new(args.bind, pin_hash, worker_token);
     config.public_url = args.public_url;
     config.allowed_hosts = args.allow_hosts;
+    config.web_dir = args.web_dir;
     let gateway = Gateway::new(config)?;
     let bind = gateway.bind_addr();
+    tracing::info!(
+        "browser client directory: {}",
+        gateway.state().web_root().display()
+    );
 
     if !bind.ip().is_loopback() {
         tracing::warn!(

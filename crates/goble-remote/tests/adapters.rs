@@ -744,25 +744,17 @@ mod factory {
     }
 
     #[test]
-    fn unimplemented_providers_are_unsupported() {
-        for provider in [
-            RemoteAgentProvider::Daytona,
-            RemoteAgentProvider::Box,
-            RemoteAgentProvider::Ssh,
-        ] {
-            let error = provider_for(&agent(provider))
-                .err()
-                .expect("no adapter yet");
-            match error {
-                SandboxError::Unsupported {
-                    provider: name,
-                    message,
-                } => {
-                    assert_eq!(name, provider.as_str());
-                    assert!(message.contains(provider.as_str()), "{message}");
-                }
-                other => panic!("expected unsupported for {}: {other}", provider.as_str()),
-            }
-        }
+    fn every_declared_provider_has_an_adapter() {
+        let mut daytona = agent(RemoteAgentProvider::Daytona);
+        daytona.api_key = Some("daytona-key".to_string());
+        assert_eq!(provider_for(&daytona).expect("daytona").kind(), "daytona");
+
+        let mut boxed = agent(RemoteAgentProvider::Box);
+        boxed.api_key = Some("box-key".to_string());
+        assert_eq!(provider_for(&boxed).expect("box").kind(), "box");
+
+        let mut ssh = agent(RemoteAgentProvider::Ssh);
+        ssh.api_url = Some("deploy@example.com".to_string());
+        assert_eq!(provider_for(&ssh).expect("ssh").kind(), "ssh");
     }
 }

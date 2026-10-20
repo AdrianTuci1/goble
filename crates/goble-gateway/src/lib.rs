@@ -15,6 +15,7 @@
 //! restart, which is appropriate for a transport: workers reconnect and users
 //! enter the PIN again.
 
+mod assets;
 mod auth;
 mod config;
 mod http;

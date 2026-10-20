@@ -71,6 +71,11 @@ impl<'a> RemoteDeploy<'a> {
 /// agent table; the worker connects out to `gateway_url` with `worker_token`,
 /// so no inbound port or tunnel is needed.
 pub fn sandbox_request(deploy: &RemoteDeploy<'_>) -> Result<SandboxRequest, SandboxError> {
+    if !deploy.agent.enabled {
+        return Err(SandboxError::InvalidRequest {
+            message: "the remote agent is disabled in config.toml".to_string(),
+        });
+    }
     let image = deploy
         .agent
         .image
@@ -278,6 +283,12 @@ mod tests {
             sandbox_request(&plan),
             Err(SandboxError::InvalidRequest { .. })
         ));
+
+        let mut disabled = agent();
+        disabled.enabled = false;
+        let plan = RemoteDeploy::new(&project, &disabled, "wss://gateway", "token", "host");
+        let error = sandbox_request(&plan).expect_err("a disabled agent must not deploy");
+        assert!(error.to_string().contains("disabled"));
     }
 
     #[test]

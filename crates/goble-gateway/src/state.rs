@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -7,8 +8,10 @@ use axum::extract::ws::Message;
 use axum::http::{header, HeaderMap};
 use chrono::{DateTime, Utc};
 use parking_lot::{Mutex, RwLock};
+use serde::Serialize;
 use tokio::sync::{mpsc, watch};
 
+use crate::assets;
 use crate::auth;
 use crate::config::{ConfigError, GatewayConfig};
 
@@ -45,8 +48,9 @@ struct LoginLimiter {
     failures: u32,
 }
 
-/// A snapshot of one connected worker for `/panel`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A snapshot of one connected worker, as shown on `/panel` and returned by
+/// `/api/workers`. It deliberately carries no token or connection id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkerSummary {
     pub id: String,
     pub connected_at: DateTime<Utc>,
@@ -61,6 +65,7 @@ pub struct WorkerSummary {
 pub struct GatewayState {
     config: GatewayConfig,
     allowed_hosts: Vec<String>,
+    web_root: PathBuf,
     sessions: Mutex<HashMap<String, Session>>,
     workers: RwLock<HashMap<String, WorkerEntry>>,
     login: Mutex<LoginLimiter>,
@@ -89,9 +94,12 @@ impl GatewayState {
         allowed_hosts.sort();
         allowed_hosts.dedup();
 
+        let web_root = assets::resolve_web_dir(config.web_dir.as_deref());
+
         Ok(Self {
             config,
             allowed_hosts,
+            web_root,
             sessions: Mutex::new(HashMap::new()),
             workers: RwLock::new(HashMap::new()),
             login: Mutex::new(LoginLimiter { failures: 0 }),
@@ -101,6 +109,12 @@ impl GatewayState {
 
     pub fn config(&self) -> &GatewayConfig {
         &self.config
+    }
+
+    /// Directory the browser client is served from. It may not exist yet; the
+    /// asset handler reports that as a build page rather than an error.
+    pub fn web_root(&self) -> &Path {
+        &self.web_root
     }
 
     pub fn requires_auth(&self) -> bool {

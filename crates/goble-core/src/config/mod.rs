@@ -14,8 +14,10 @@
 //! migration a save performs, with no separate migration step to run.
 //!
 //! `[remote_agents.<name>]` is goble's own section: it declares the sandbox
-//! providers a harness can be shipped to. This build models and reports the
-//! declaration; it does not provision or call a provider.
+//! providers a harness can be shipped to. `goble-remote` turns a table into an
+//! adapter (E2B, Modal, Daytona, Box/Boat, Docker, SSH), and the desktop service
+//! composes the adapter with the project's workspace identity to deploy a
+//! worker.
 
 use std::collections::BTreeMap;
 
@@ -69,8 +71,9 @@ pub const CONFIG_HEADER: &str = "\
 # box, docker or ssh; `enabled` is true unless it says otherwise. Modal reads
 # `token_id` and `token_secret`, the hosted providers read `api_key`, and
 # docker and ssh need no credentials. `api_url`, `image`, `region` and
-# `environment` are optional. Nothing is provisioned in this build: Settings
-# -> Agent & Approval reports what each table declares and what it is missing.
+# `environment` are optional. Settings -> Agent & Approval reports what each
+# table declares and what it is missing; `goble-remote` provisions it through
+# the provider API and passes the worker the gateway URL and token.
 #
 #   [remote_agents.builder]
 #   provider = \"modal\"
@@ -242,8 +245,8 @@ impl std::fmt::Display for RemoteAgentProvider {
 }
 
 /// One `[remote_agents.<name>]` table: a sandbox provider the harness can be
-/// shipped to. Phase one models the declaration only — nothing here provisions
-/// a sandbox or reaches a provider's API.
+/// shipped to. The table holds connection details; `goble-remote` turns it into
+/// a sandbox adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteAgentConfig {
     /// The sandbox provider. Required: a table without one is reported on load

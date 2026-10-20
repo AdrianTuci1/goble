@@ -173,7 +173,8 @@ fn the_header_documents_the_file() {
     assert!(CONFIG_HEADER.contains("[theme]"));
     assert!(CONFIG_HEADER.contains("kept exactly as they were written"));
     // The lines a reader follows are comments, so the file they open parses.
-    let (parsed, problems) = GobleConfig::load_toml(CONFIG_HEADER).expect("the header alone is TOML");
+    let (parsed, problems) =
+        GobleConfig::load_toml(CONFIG_HEADER).expect("the header alone is TOML");
     assert_eq!(parsed, GobleConfig::default());
     assert!(problems.is_empty(), "{problems:?}");
 }
@@ -434,10 +435,9 @@ fn the_seeded_default_is_the_new_shape() {
 
 #[test]
 fn an_mcp_stdio_entry_parses_and_is_enabled_by_default() {
-    let config = GobleConfig::from_toml(
-        "[mcp_servers.gh]\ncommand = \"npx\"\nargs = [\"-y\", \"gh\"]\n",
-    )
-    .expect("parse");
+    let config =
+        GobleConfig::from_toml("[mcp_servers.gh]\ncommand = \"npx\"\nargs = [\"-y\", \"gh\"]\n")
+            .expect("parse");
 
     let server = &config.mcp_servers["gh"];
     assert_eq!(server.command.as_deref(), Some("npx"));

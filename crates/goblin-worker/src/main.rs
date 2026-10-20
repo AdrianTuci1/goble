@@ -18,10 +18,12 @@ use tracing_subscriber::EnvFilter;
 pub mod agent_memory;
 pub mod agent_runtime;
 pub mod file_vault;
+pub mod gateway_client;
 pub mod leader;
 pub mod llm_factory;
 pub mod mcp;
 pub mod pairing;
+pub mod pty;
 pub mod runner;
 pub mod scheduler;
 pub mod snapshot_runner;
@@ -211,6 +213,23 @@ async fn main() -> anyhow::Result<()> {
     let scheduler_for_state = Arc::clone(&scheduler);
     scheduler.start_loop(Duration::from_secs(5), leader_state);
     state.set_scheduler(scheduler_for_state);
+
+    // A sandbox behind NAT has no inbound address, so it dials the gateway. A
+    // broken gateway environment fails startup; a dropped connection only
+    // reconnects and never stops the local endpoint.
+    match gateway_client::GatewaySettings::from_env_with_worker_id(&state.worker_id.0) {
+        Ok(Some(settings)) => {
+            tracing::info!(
+                url = %settings.url,
+                worker_id = %settings.worker_id,
+                "connecting out to goble-gateway"
+            );
+            let gateway_state = Arc::clone(&state);
+            tokio::spawn(gateway_client::run(gateway_state, settings));
+        }
+        Ok(None) => {}
+        Err(error) => return Err(anyhow::anyhow!(error)),
+    }
 
     let app = Router::new()
         .route("/", get(root_handler))

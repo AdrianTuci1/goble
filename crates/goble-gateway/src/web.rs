@@ -202,6 +202,57 @@ pub(crate) fn panel_page(workers: &[WorkerSummary], public_url: Option<&str>) ->
     page
 }
 
+/// Shown when the browser client has not been built yet. It has to explain the
+/// fix on a host with no network access, so it stays inline and dependency-free.
+pub(crate) fn build_page(web_dir: &str) -> String {
+    let mut page = String::from(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Goble Gateway &middot; client not built</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; max-width: 46rem; margin: 4rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.3rem; }
+  h2 { font-size: 1rem; margin-top: 2rem; }
+  code, pre { background: #8882; border-radius: .25rem; }
+  code { padding: .1rem .3rem; word-break: break-all; }
+  pre { padding: .75rem; overflow-x: auto; }
+  .hint { opacity: .7; font-size: .85rem; }
+</style>
+</head>
+<body>
+<h1>Goble browser client is not built</h1>
+<p>The gateway is running, but the terminal client it serves from <code>/app/</code> is missing.
+The gateway looked in:</p>
+<pre>"#,
+    );
+    page.push_str(&html_escape(web_dir));
+    page.push_str(
+        r#"</pre>
+
+<h2>Build it</h2>
+<p>From the repository root:</p>
+<pre>scripts/build-web.sh</pre>
+<p>Or by hand:</p>
+<pre>rustup target add wasm32-unknown-unknown
+cargo build -p goble-web --target wasm32-unknown-unknown --release
+wasm-bindgen target/wasm32-unknown-unknown/release/goble_web.wasm \
+  --out-dir crates/goble-gateway/web --target web</pre>
+
+<h2>Point the gateway elsewhere</h2>
+<p>Start it with <code>--web-dir &lt;DIR&gt;</code> or set <code>GOBLE_WEB_DIR=&lt;DIR&gt;</code>.
+The directory must contain <code>index.html</code>.</p>
+<p class="hint">The transport console keeps working at <code>/panel</code> without the client.</p>
+</body>
+</html>
+"#,
+    );
+    page
+}
+
 pub(crate) fn html_escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
@@ -240,6 +291,17 @@ mod tests {
         let page = panel_page(&workers, None);
         assert!(!page.contains("<img src=x"));
         assert!(page.contains("&lt;img src=x"));
+    }
+
+    #[test]
+    fn build_page_names_the_path_and_escapes_it() {
+        let page = build_page("/srv/<client>");
+        assert!(page.contains("scripts/build-web.sh"));
+        assert!(page.contains("goble-web --target wasm32-unknown-unknown --release"));
+        assert!(page.contains("&lt;client&gt;"));
+        assert!(!page.contains("<client>"));
+        assert!(!page.contains("http://"));
+        assert!(!page.contains("https://"));
     }
 
     #[test]

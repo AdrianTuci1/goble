@@ -1,10 +1,12 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use goble_gateway::{hash_pin, Gateway, GatewayConfig, DEFAULT_SESSION_TTL, SESSION_COOKIE};
-use reqwest::header::{CONTENT_TYPE, COOKIE, HOST, SET_COOKIE};
+use reqwest::header::{CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, SET_COOKIE};
 use reqwest::StatusCode;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -14,6 +16,7 @@ use tokio_tungstenite::WebSocketStream;
 
 const PIN: &str = "123456";
 const WORKER_TOKEN: &str = "test-worker-token";
+const WASM_BYTES: &[u8] = b"\0asm\x01\x00\x00\x00";
 
 type Ws = WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -30,10 +33,19 @@ impl Drop for TestServer {
 }
 
 async fn start(pin: Option<&str>, session_ttl: Duration) -> TestServer {
+    start_with_web_dir(pin, session_ttl, None).await
+}
+
+async fn start_with_web_dir(
+    pin: Option<&str>,
+    session_ttl: Duration,
+    web_dir: Option<PathBuf>,
+) -> TestServer {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut config = GatewayConfig::new(addr, pin.map(hash_pin), WORKER_TOKEN);
     config.session_ttl = session_ttl;
+    config.web_dir = web_dir;
 
     let gateway = Gateway::new(config).unwrap();
     let router = gateway.router();
@@ -48,6 +60,33 @@ async fn start(pin: Option<&str>, session_ttl: Duration) -> TestServer {
             .build()
             .unwrap(),
         join,
+    }
+}
+
+/// A throwaway client bundle: no generated wasm is required to run these tests.
+struct ClientAssets {
+    dir: tempfile::TempDir,
+}
+
+impl ClientAssets {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("index.html"),
+            "<!doctype html><title>goble client</title>\n<script src=\"app.js\"></script>\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("app.js"), "export function boot() {}\n").unwrap();
+        std::fs::write(root.join("app.css"), "body { margin: 0 }\n").unwrap();
+        std::fs::create_dir_all(root.join("pkg")).unwrap();
+        std::fs::write(root.join("pkg/app_bg.wasm"), WASM_BYTES).unwrap();
+        std::fs::write(root.join("secret.txt"), "only-this-file\n").unwrap();
+        Self { dir }
+    }
+
+    fn path(&self) -> PathBuf {
+        self.dir.path().to_path_buf()
     }
 }
 
@@ -76,11 +115,31 @@ async fn login_token(server: &TestServer) -> String {
 }
 
 async fn panel(server: &TestServer, token: Option<&str>) -> reqwest::Response {
-    let mut request = server.client.get(format!("http://{}/panel", server.addr));
+    get_path(server, "/panel", token).await
+}
+
+async fn get_path(server: &TestServer, path: &str, token: Option<&str>) -> reqwest::Response {
+    let mut request = server.client.get(format!("http://{}{path}", server.addr));
     if let Some(token) = token {
         request = request.header(COOKIE, format!("{SESSION_COOKIE}={token}"));
     }
     request.send().await.unwrap()
+}
+
+/// Send a request without URL normalization, so `..` reaches the router intact.
+async fn raw_get(server: &TestServer, target: &str, token: Option<&str>) -> String {
+    let mut stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let cookie = token
+        .map(|token| format!("Cookie: {SESSION_COOKIE}={token}\r\n"))
+        .unwrap_or_default();
+    let request = format!(
+        "GET {target} HTTP/1.1\r\nHost: {}\r\n{cookie}Connection: close\r\n\r\n",
+        server.addr
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    String::from_utf8_lossy(&response).into_owned()
 }
 
 async fn health(server: &TestServer) -> serde_json::Value {
@@ -242,6 +301,40 @@ async fn worker_frames_are_broadcast_to_every_client() {
 }
 
 #[tokio::test]
+async fn a_disconnected_client_asks_the_worker_to_close_its_panes() {
+    let server = start(Some(PIN), DEFAULT_SESSION_TTL).await;
+    let mut worker = connect_worker(&server, "worker-panes", WORKER_TOKEN)
+        .await
+        .expect("worker should connect");
+    wait_for_worker_count(&server, 1).await;
+
+    let token = login_token(&server).await;
+    let mut client = connect_client(&server, "worker-panes", &token)
+        .await
+        .expect("client should connect");
+
+    let open_one =
+        r#"{"kind":"open_pty","pane_id":"pane-1","cwd":"/workspace","cols":80,"rows":24}"#;
+    let open_two =
+        r#"{"kind":"open_pty","pane_id":"pane-2","cwd":"/workspace","cols":80,"rows":24}"#;
+    let close_one = r#"{"kind":"close_pty","pane_id":"pane-1"}"#;
+    for frame in [open_one, open_two, close_one] {
+        client.send(WsMessage::Text(frame.into())).await.unwrap();
+        assert_eq!(next_text(&mut worker).await, frame);
+    }
+
+    client.close(None).await.unwrap();
+
+    let frame: serde_json::Value =
+        serde_json::from_str(&next_text(&mut worker).await).expect("JSON close frame");
+    assert_eq!(frame["kind"], "close_pty");
+    assert_eq!(
+        frame["pane_id"], "pane-2",
+        "only the pane the client left open is closed"
+    );
+}
+
+#[tokio::test]
 async fn a_worker_cannot_authenticate_with_the_client_pin() {
     let server = start(Some(PIN), DEFAULT_SESSION_TTL).await;
 
@@ -348,4 +441,260 @@ async fn an_unlisted_host_header_is_rejected() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn the_browser_client_requires_a_session() {
+    let assets = ClientAssets::new();
+    let server = start_with_web_dir(Some(PIN), DEFAULT_SESSION_TTL, Some(assets.path())).await;
+
+    let anonymous = get_path(&server, "/app/", None).await;
+    assert_eq!(anonymous.status(), StatusCode::SEE_OTHER);
+    assert_eq!(anonymous.headers().get(LOCATION).unwrap(), "/");
+    assert_eq!(
+        get_path(&server, "/app/app.js", None).await.status(),
+        StatusCode::SEE_OTHER
+    );
+
+    let token = login_token(&server).await;
+    let client = get_path(&server, "/app/", Some(&token)).await;
+    assert_eq!(client.status(), StatusCode::OK);
+    assert_eq!(
+        client.headers().get(CONTENT_TYPE).unwrap(),
+        "text/html; charset=utf-8"
+    );
+    assert!(client.text().await.unwrap().contains("goble client"));
+    assert_eq!(
+        get_path(&server, "/app", Some(&token)).await.status(),
+        StatusCode::OK
+    );
+
+    let script = get_path(&server, "/app/app.js", Some(&token)).await;
+    assert_eq!(script.status(), StatusCode::OK);
+    assert_eq!(
+        script.headers().get(CONTENT_TYPE).unwrap(),
+        "text/javascript; charset=utf-8"
+    );
+}
+
+#[tokio::test]
+async fn an_authenticated_root_redirects_to_the_client() {
+    let assets = ClientAssets::new();
+    let server = start_with_web_dir(Some(PIN), DEFAULT_SESSION_TTL, Some(assets.path())).await;
+
+    let login_page = get_path(&server, "/", None).await;
+    assert_eq!(login_page.status(), StatusCode::OK);
+    assert!(login_page.text().await.unwrap().contains("Unlock"));
+
+    let token = login_token(&server).await;
+    let root = get_path(&server, "/", Some(&token)).await;
+    assert_eq!(root.status(), StatusCode::SEE_OTHER);
+    assert_eq!(root.headers().get(LOCATION).unwrap(), "/app/");
+}
+
+#[tokio::test]
+async fn wasm_assets_are_served_with_the_right_type_and_bytes() {
+    let assets = ClientAssets::new();
+    let server = start_with_web_dir(Some(PIN), DEFAULT_SESSION_TTL, Some(assets.path())).await;
+    let token = login_token(&server).await;
+
+    let response = get_path(&server, "/app/pkg/app_bg.wasm", Some(&token)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(CONTENT_TYPE).unwrap(),
+        "application/wasm"
+    );
+    assert_eq!(response.headers().get(CACHE_CONTROL).unwrap(), "no-cache");
+    assert_eq!(response.bytes().await.unwrap().as_ref(), WASM_BYTES);
+}
+
+#[tokio::test]
+async fn unknown_assets_are_404_without_listing_directories() {
+    let assets = ClientAssets::new();
+    let server = start_with_web_dir(Some(PIN), DEFAULT_SESSION_TTL, Some(assets.path())).await;
+    let token = login_token(&server).await;
+
+    assert_eq!(
+        get_path(&server, "/app/nope.js", Some(&token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get_path(&server, "/app/pkg", Some(&token)).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get_path(&server, "/app/pkg/", Some(&token)).await.status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn path_traversal_never_leaves_the_asset_root() {
+    let assets = ClientAssets::new();
+    let server = start_with_web_dir(Some(PIN), DEFAULT_SESSION_TTL, Some(assets.path())).await;
+    let token = login_token(&server).await;
+
+    for target in [
+        "/app/../Cargo.toml",
+        "/app/../secret.txt",
+        "/app/pkg/../../secret.txt",
+        "/app/..",
+    ] {
+        let raw = raw_get(&server, target, Some(&token)).await;
+        let status = raw.lines().next().unwrap_or_default().to_string();
+        assert!(
+            status.contains(" 404 ") || status.contains(" 400 "),
+            "{target} should be refused, got {status}"
+        );
+        assert!(!raw.contains("[package]"), "{target} leaked Cargo.toml");
+        assert!(!raw.contains("only-this-file"), "{target} leaked a file");
+    }
+
+    for target in [
+        "/app/%2e%2e/Cargo.toml",
+        "/app/%2e%2e%2fCargo.toml",
+        "/app/..%2fsecret.txt",
+        "/app/pkg/%2e%2e/%2e%2e/secret.txt",
+        "/app/%2fetc%2fpasswd",
+        "/app/index.html%00.png",
+    ] {
+        let response = get_path(&server, target, Some(&token)).await;
+        assert!(
+            matches!(
+                response.status(),
+                StatusCode::NOT_FOUND | StatusCode::BAD_REQUEST
+            ),
+            "{target} should be refused, got {}",
+            response.status()
+        );
+        let body = response.text().await.unwrap();
+        assert!(!body.contains("[package]"), "{target} leaked Cargo.toml");
+        assert!(!body.contains("only-this-file"), "{target} leaked a file");
+    }
+}
+
+#[tokio::test]
+async fn a_missing_client_build_serves_the_build_page() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("client-not-built");
+    let server = start_with_web_dir(Some(PIN), DEFAULT_SESSION_TTL, Some(missing)).await;
+    let token = login_token(&server).await;
+
+    for path in ["/app/", "/app/app.js"] {
+        let response = get_path(&server, path, Some(&token)).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+        let page = response.text().await.unwrap();
+        assert!(page.contains("scripts/build-web.sh"));
+        assert!(page.contains("goble-web --target wasm32-unknown-unknown --release"));
+        assert!(page.contains("wasm-bindgen"));
+        assert!(page.contains("GOBLE_WEB_DIR"));
+        assert!(!page.contains("http://"));
+        assert!(!page.contains("https://"));
+    }
+}
+
+#[tokio::test]
+async fn the_worker_api_requires_a_session() {
+    let server = start(Some(PIN), DEFAULT_SESSION_TTL).await;
+
+    let response = get_path(&server, "/api/workers", None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers().get(CONTENT_TYPE).unwrap(),
+        "application/json"
+    );
+    assert_eq!(response.headers().get(CACHE_CONTROL).unwrap(), "no-store");
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"], "login required");
+}
+
+#[tokio::test]
+async fn the_worker_api_lists_connected_workers_sorted_by_id() {
+    let server = start(Some(PIN), DEFAULT_SESSION_TTL).await;
+    let token = login_token(&server).await;
+
+    let empty: serde_json::Value = get_path(&server, "/api/workers", Some(&token))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(empty["workers"].as_array().unwrap().len(), 0);
+
+    let _second = connect_worker(&server, "worker-zeta", WORKER_TOKEN)
+        .await
+        .expect("worker should connect");
+    let _first = connect_worker(&server, "worker-alpha", WORKER_TOKEN)
+        .await
+        .expect("worker should connect");
+    wait_for_worker_count(&server, 2).await;
+
+    let response = get_path(&server, "/api/workers", Some(&token)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(CONTENT_TYPE).unwrap(),
+        "application/json"
+    );
+    assert_eq!(response.headers().get(CACHE_CONTROL).unwrap(), "no-store");
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    let workers = body["workers"].as_array().unwrap();
+    assert_eq!(workers.len(), 2);
+    assert_eq!(workers[0]["id"], "worker-alpha");
+    assert_eq!(workers[1]["id"], "worker-zeta");
+
+    for worker in workers {
+        let object = worker.as_object().unwrap();
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(keys, ["connected_at", "id", "last_seen"]);
+        for field in ["connected_at", "last_seen"] {
+            let raw = worker[field].as_str().unwrap();
+            chrono::DateTime::parse_from_rfc3339(raw)
+                .unwrap_or_else(|_| panic!("{field} is not RFC 3339: {raw}"));
+        }
+    }
+    assert!(!body.to_string().contains(WORKER_TOKEN));
+}
+
+#[tokio::test]
+async fn a_disconnected_worker_leaves_the_api_list() {
+    let server = start(Some(PIN), DEFAULT_SESSION_TTL).await;
+    let token = login_token(&server).await;
+
+    let worker = connect_worker(&server, "worker-gone", WORKER_TOKEN)
+        .await
+        .expect("worker should connect");
+    wait_for_worker_count(&server, 1).await;
+    drop(worker);
+    wait_for_worker_count(&server, 0).await;
+
+    let body: serde_json::Value = get_path(&server, "/api/workers", Some(&token))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["workers"].as_array().unwrap().len(), 0);
+}
+
+/// A symlink inside the asset directory must not become a read primitive for
+/// files outside it; the canonical root check is what stops this.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlink_cannot_escape_the_asset_root() {
+    let assets = ClientAssets::new();
+    let outside = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+    std::os::unix::fs::symlink(outside, assets.path().join("escape.txt")).unwrap();
+
+    let server = start_with_web_dir(Some(PIN), DEFAULT_SESSION_TTL, Some(assets.path())).await;
+    let token = login_token(&server).await;
+
+    let response = get_path(&server, "/app/escape.txt", Some(&token)).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(!response.text().await.unwrap().contains("[package]"));
 }

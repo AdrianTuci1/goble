@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 publish.workspace = true
 rust-version = "1.86"
-description = "Sandbox provider adapters: one trait plus E2B, Modal, and Docker backends."
+description = "Sandbox provider adapters: one trait plus E2B, Modal, Daytona, Box, Docker, and SSH backends."
 
 [dependencies]
 async-trait.workspace = true

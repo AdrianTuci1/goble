@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Default listen address. The gateway is loopback-only unless told otherwise.
@@ -31,6 +32,9 @@ pub struct GatewayConfig {
     pub public_url: Option<String>,
     pub allowed_hosts: Vec<String>,
     pub session_ttl: Duration,
+    /// Directory with the built browser client. `None` falls back to `web/`
+    /// next to the executable, then to the crate directory.
+    pub web_dir: Option<PathBuf>,
 }
 
 impl GatewayConfig {
@@ -46,6 +50,7 @@ impl GatewayConfig {
             public_url: None,
             allowed_hosts: Vec::new(),
             session_ttl: DEFAULT_SESSION_TTL,
+            web_dir: None,
         }
     }
 

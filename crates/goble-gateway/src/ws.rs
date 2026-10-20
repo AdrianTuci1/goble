@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -159,10 +160,18 @@ async fn handle_client(socket: WebSocket, state: Arc<GatewayState>, worker_id: S
             .await;
     });
 
+    // Panes are opened by the worker and live until explicitly closed. The
+    // worker cannot tell which browser opened one, so the gateway remembers the
+    // `open_pty` frames this client sent and closes the leftovers when its
+    // socket goes away. Without this, a closed browser tab would leave shells
+    // running in the sandbox for the worker's lifetime.
+    let mut panes: HashSet<String> = HashSet::new();
+
     loop {
         tokio::select! {
             incoming = stream.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
+                    track_pane(&mut panes, &text);
                     if !state
                         .send_to_worker(&worker_id, Message::Text(text))
                         .await
@@ -187,7 +196,36 @@ async fn handle_client(socket: WebSocket, state: Arc<GatewayState>, worker_id: S
     }
 
     state.unregister_client(&worker_id, client_id);
+    for pane_id in panes {
+        let close = serde_json::json!({"kind": "close_pty", "pane_id": pane_id}).to_string();
+        let _ = state
+            .send_to_worker(&worker_id, Message::Text(close.into()))
+            .await;
+    }
     settle(sink_task).await;
+}
+
+/// Note the panes a browser client opened or closed. Frames stay opaque to the
+/// relay; only the two lifecycle kinds are inspected.
+fn track_pane(panes: &mut HashSet<String>, text: &str) {
+    let Ok(frame) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    let Some(pane_id) = frame.get("pane_id").and_then(|value| value.as_str()) else {
+        return;
+    };
+    if pane_id.trim().is_empty() {
+        return;
+    }
+    match frame.get("kind").and_then(|value| value.as_str()) {
+        Some("open_pty") => {
+            panes.insert(pane_id.to_string());
+        }
+        Some("close_pty") => {
+            panes.remove(pane_id);
+        }
+        _ => {}
+    }
 }
 
 /// Give the sink a moment to flush its close frame before abandoning it.
@@ -197,5 +235,39 @@ async fn settle(mut task: JoinHandle<()>) {
         .is_err()
     {
         task.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::track_pane;
+    use std::collections::HashSet;
+
+    #[test]
+    fn open_and_close_track_the_panes_a_client_owns() {
+        let mut panes = HashSet::new();
+
+        track_pane(
+            &mut panes,
+            r#"{"kind":"open_pty","pane_id":"p1","cwd":"/workspace","cols":80,"rows":24}"#,
+        );
+        track_pane(&mut panes, r#"{"kind":"open_pty","pane_id":"p2"}"#);
+        assert_eq!(panes.len(), 2);
+
+        track_pane(&mut panes, r#"{"kind":"close_pty","pane_id":"p1"}"#);
+        assert_eq!(panes, HashSet::from(["p2".to_string()]));
+    }
+
+    #[test]
+    fn unrelated_and_malformed_frames_do_not_touch_the_set() {
+        let mut panes = HashSet::from(["p1".to_string()]);
+
+        track_pane(&mut panes, "not json");
+        track_pane(&mut panes, r#"{"kind":"ping"}"#);
+        track_pane(&mut panes, r#"{"kind":"pty_input","pane_id":"p1"}"#);
+        track_pane(&mut panes, r#"{"kind":"open_pty","pane_id":""}"#);
+        track_pane(&mut panes, r#"{"kind":"open_pty","pane_id":7}"#);
+
+        assert_eq!(panes, HashSet::from(["p1".to_string()]));
     }
 }

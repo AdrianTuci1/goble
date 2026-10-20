@@ -29,7 +29,7 @@ pub enum SandboxError {
         message: String,
     },
 
-    /// The configured provider has no adapter yet.
+    /// The configured provider is not supported by this build.
     #[error("{provider} is not supported: {message}")]
     Unsupported { provider: String, message: String },
 

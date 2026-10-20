@@ -139,7 +139,7 @@ fn build_space(
             Box::new(RegionLayer::new(
                 children,
                 false,
-                false,
+                true,
                 actions,
                 state.floating_drag.clone(),
             ))
@@ -199,7 +199,7 @@ fn build_space(
                 .finish()
         }
         LayoutKind::Carousel => {
-            // The fan is centered on the app's focused pane; clicking any
+            // The row is centered on the app's focused pane; clicking any
             // visible sliver of a neighbour focuses it and the next frame puts
             // it in the middle. Every window carries the same chrome a floating
             // window has, including maximize and close.
@@ -298,7 +298,10 @@ fn build_pane(
     pane: &Pane,
 ) -> Box<dyn Element> {
     match pane {
-        Pane::Leaf { id, kind } => build_leaf(app, state, actions, *id, kind.clone()),
+        Pane::Leaf { id, kind } => {
+            let leaf = build_leaf(app, state, actions, *id, kind.clone());
+            Box::new(PaneShadow::new(leaf))
+        }
         Pane::Split {
             id,
             dir,
@@ -559,6 +562,88 @@ impl RegionChild {
 /// The corner grip a floating pane resizes from, in pixels.
 const FLOAT_RESIZE_GRIP: f32 = 16.0;
 
+/// The soft drop shadow every framed pane casts: a translucent rectangle offset
+/// down and right of the pane, painted before it so only the edges show. Shared
+/// by the region layouts and the BSP tree, so a tiled pane and a floating window
+/// read as the same kind of surface.
+const WINDOW_SHADOW_X: f32 = 4.0;
+const WINDOW_SHADOW_Y: f32 = 6.0;
+const WINDOW_SHADOW_COLOR: goble_ui::ColorU = goble_ui::ColorU::new(0, 0, 0, 72);
+
+fn paint_window_shadow(ctx: &mut PaintContext, rect: RectF) {
+    let Some(renderer) = ctx.renderer.as_mut() else {
+        return;
+    };
+    renderer.fill_rect(
+        rectf(
+            rect.min_x() + WINDOW_SHADOW_X,
+            rect.min_y() + WINDOW_SHADOW_Y,
+            rect.width(),
+            rect.height(),
+        ),
+        WINDOW_SHADOW_COLOR,
+    );
+}
+
+/// A tiled pane drawn over the same soft shadow a floating window casts. The
+/// BSP tree places its leaves with a `SplitNode`, where there is no
+/// [`RegionLayer`] to paint the shadow, so this wrapper supplies it. It is
+/// paint-only: layout and every event belong to the pane it wraps, and the
+/// shadow is never a hit target.
+struct PaneShadow {
+    content: Box<dyn Element>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl PaneShadow {
+    fn new(content: Box<dyn Element>) -> Self {
+        Self {
+            content,
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for PaneShadow {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.content.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        if let Some(size) = self.size {
+            paint_window_shadow(ctx, rectf(origin.x, origin.y, size.x, size.y));
+        }
+        self.content.paint(origin, ctx, app);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.content.dispatch_event(event, ctx, app)
+    }
+}
+
 struct RegionLayer {
     children: Vec<RegionChild>,
     /// Whether presses on a window's titlebar move it and the corner grip
@@ -643,17 +728,10 @@ impl Element for RegionLayer {
                 // A soft drop shadow under every window, so overlapping panes
                 // read as separate surfaces the way OS windows do. It is drawn
                 // before the child, so the window covers all but its edges.
-                if let Some(renderer) = ctx.renderer.as_mut() {
-                    renderer.fill_rect(
-                        rectf(
-                            child_origin.x + 4.0,
-                            child_origin.y + 6.0,
-                            px.width(),
-                            px.height(),
-                        ),
-                        goble_ui::ColorU::new(0, 0, 0, 72),
-                    );
-                }
+                paint_window_shadow(
+                    ctx,
+                    rectf(child_origin.x, child_origin.y, px.width(), px.height()),
+                );
             }
             child.content.paint(child_origin, ctx, app);
         }
@@ -770,6 +848,8 @@ pub(crate) const WINDOW_TITLEBAR_HEIGHT: f32 = 26.0;
 /// this band belongs to the control under it and never starts a window move.
 pub(crate) const WINDOW_CONTROLS_WIDTH: f32 = 80.0;
 const WINDOW_CONTROL_SIZE: f32 = 20.0;
+/// The corner radius of a pane's frame: the same on a tiled pane and a window.
+const WINDOW_CORNER_RADIUS: f32 = 6.0;
 
 /// A pane as an operating-system window: its titlebar and controls above its
 /// content, a border that turns accent when it is focused, and the shadow the
@@ -808,7 +888,7 @@ fn build_window(
     Container::new(column.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
         .with_border(Border::all(1.0).with_border_color(app.theme.color(border)))
-        .with_corner_radius(6.0)
+        .with_corner_radius(WINDOW_CORNER_RADIUS)
         .finish()
 }
 
@@ -950,6 +1030,7 @@ fn build_leaf_with_lift(
     let pane = Container::new(column)
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
         .with_border(app.theme.color(border_color).into())
+        .with_corner_radius(WINDOW_CORNER_RADIUS)
         .finish();
     if !active {
         return pane;

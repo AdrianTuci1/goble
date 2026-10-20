@@ -568,6 +568,44 @@ fn floating_panes_draw_their_own_window_chrome() {
     );
 }
 
+/// A BSP pane is a framed surface like a floating window: it casts the same
+/// soft shadow and wears the same 1 px outline at the window's corner radius,
+/// without gaining a second titlebar (its own pane header stays the one bar).
+#[test]
+fn bsp_panes_cast_the_window_frame() {
+    let app = AppContext::default();
+    let (mut root, state, _desktop, _dir) = app_root();
+    {
+        let mut s = state.borrow_mut();
+        s.spaces = vec![Space::unnamed(Pane::Leaf {
+            id: 7,
+            kind: PaneKind::Terminal,
+        })];
+        s.active_space = 0;
+        s.active_pane_id = 7;
+    }
+
+    let commands = render_element(&mut root, window(), &app);
+    let shadow = goble_ui::ColorU::new(0, 0, 0, 72);
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == shadow)),
+        "the pane casts the window shadow: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::StrokeRect {
+                width,
+                corner_radius,
+                ..
+            } if *width == 1.0 && *corner_radius == 6.0
+        )),
+        "the pane wears the window outline: {commands:?}"
+    );
+}
+
 /// A press on a floating window's titlebar starts a move, and the pointer
 /// carries the window with it until the release: the rect the space stores is
 /// the one the drag ended on. This is the OS-window gesture, through the whole

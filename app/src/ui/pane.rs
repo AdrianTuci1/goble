@@ -10,9 +10,10 @@ use super::SettingsCategory;
 /// its own direction and ratio and a divider the user can drag. `MasterStack`
 /// draws the first leaf at ~60% of the width and stacks every other leaf in
 /// the remaining column. `Floating` gives each leaf a rect of its own, in a
-/// persisted z-order; a click raises the pane it lands on. `Carousel` fans
-/// every leaf out horizontally like a coverflow: the focused pane sits
-/// centered and on top, and clicking a neighbour brings it to the center.
+/// persisted z-order; a click raises the pane it lands on. `Carousel` lays
+/// every leaf out as the same sized window in one horizontal row, like a
+/// coverflow that pans rather than zooms: the focused pane sits centered and
+/// on top, and clicking a neighbour brings it to the center.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayoutKind {
@@ -1057,7 +1058,7 @@ impl Space {
     pub fn navigate(&self, from: u64, dir: NavDir) -> Option<u64> {
         // A carousel is one ordered row, not a grid: Left/Up walks toward the
         // front of the row and Right/Down toward the back, wrapping at either
-        // end so the fan can be cycled without stopping at an edge.
+        // end so the row can be cycled without stopping at an edge.
         if self.layout == LayoutKind::Carousel {
             let mut leaves = Vec::new();
             self.root.leaves(&mut leaves);
@@ -1162,20 +1163,21 @@ pub fn master_stack_regions(leaves: &[(u64, PaneKind)]) -> Vec<(u64, goble_ui::R
     out
 }
 
-/// The size of the centered carousel window, as a share of the pane area. The
-/// neighbours shrink by [`CAROUSEL_SHRINK`] per step away from it.
+/// The size of every carousel window, as a share of the pane area. The size is
+/// constant across the row: stepping through the carousel pans it sideways
+/// without changing a window's width or height.
 pub const CAROUSEL_WINDOW_WIDTH: f32 = 0.58;
 pub const CAROUSEL_WINDOW_HEIGHT: f32 = 0.84;
-/// How far each carousel step moves a window sideways, and how much smaller it
-/// gets. The step is narrower than the window, so the fan overlaps and the
-/// centered window reads as the one in front.
+/// How far each carousel step moves a window sideways. The step is narrower
+/// than the window, so the row overlaps and the centered window reads as the
+/// one in front while each neighbour keeps a visible, clickable edge.
 const CAROUSEL_STEP: f32 = 0.16;
-const CAROUSEL_SHRINK: f32 = 0.88;
 
 /// The carousel regions of `leaves`, centered on `focused`: the focused window
-/// at full size in the middle, every other window fanned out to its left or
-/// right, smaller and lower the farther it sits. The returned order is the draw
-/// order — farthest windows first, the focused window last and therefore on top.
+/// in the middle, every other window the same size at the same y, panned left
+/// or right by its distance from the focused one. The returned order is the
+/// draw order — farthest windows first, the focused window last and therefore on
+/// top.
 ///
 /// Positions are clamped into the unit square, so a long row stacks its outer
 /// windows at the edges instead of parking them where they cannot be clicked.
@@ -1190,19 +1192,16 @@ pub fn carousel_regions(
         .iter()
         .position(|(id, _)| *id == focused)
         .unwrap_or(0);
+    let w = CAROUSEL_WINDOW_WIDTH.min(1.0);
+    let h = CAROUSEL_WINDOW_HEIGHT.min(1.0);
+    let y = (1.0 - h) / 2.0;
     let mut placed: Vec<(u64, goble_ui::RectF, f32)> = leaves
         .iter()
         .enumerate()
         .map(|(index, (id, _))| {
             let offset = index as f32 - focus_index as f32;
             let distance = offset.abs();
-            let scale = CAROUSEL_SHRINK.powf(distance);
-            let w = (CAROUSEL_WINDOW_WIDTH * scale).min(1.0);
-            let h = (CAROUSEL_WINDOW_HEIGHT * scale).min(1.0);
-            let x = 0.5 - CAROUSEL_WINDOW_WIDTH / 2.0 + offset * CAROUSEL_STEP;
-            let y = 0.5 - h / 2.0 + distance * 0.02;
-            let x = x.clamp(0.0, (1.0 - w).max(0.0));
-            let y = y.clamp(0.0, (1.0 - h).max(0.0));
+            let x = (0.5 - w / 2.0 + offset * CAROUSEL_STEP).clamp(0.0, (1.0 - w).max(0.0));
             (*id, rectf(x, y, w, h), distance)
         })
         .collect();

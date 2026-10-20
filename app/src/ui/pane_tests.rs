@@ -304,10 +304,11 @@ fn the_layout_cycle_is_bsp_master_stack_floating_carousel() {
     assert_eq!(LayoutKind::Carousel.cycle(), LayoutKind::Bsp);
 }
 
-/// The carousel puts the focused window in the middle at full size and draws
-/// it last, so it covers the neighbours it overlaps. Every other window is
-/// smaller and stays inside the pane area, where its visible sliver can be
-/// clicked.
+/// The carousel pans its row instead of shrinking it: every window keeps the
+/// focused window's width and height at the same y, and only its x moves. The
+/// focused window is centered and drawn last, so it covers the neighbours it
+/// overlaps while every other window stays inside the pane area, where its
+/// visible sliver can be clicked.
 #[test]
 fn the_carousel_centers_the_focused_window_and_fans_the_rest_out() {
     let leaves = vec![
@@ -317,7 +318,7 @@ fn the_carousel_centers_the_focused_window_and_fans_the_rest_out() {
         (4, PaneKind::Terminal),
     ];
     let regions = carousel_regions(&leaves, 2);
-    assert_eq!(regions.len(), 4, "every pane is in the fan");
+    assert_eq!(regions.len(), 4, "every pane is in the row");
     assert_eq!(
         regions.last().map(|(id, _)| *id),
         Some(2),
@@ -325,7 +326,7 @@ fn the_carousel_centers_the_focused_window_and_fans_the_rest_out() {
     );
 
     let focused = regions.last().unwrap().1;
-    assert!(close_to(focused.center().x, 0.5), "the fan is centered");
+    assert!(close_to(focused.center().x, 0.5), "the row is centered");
     for (id, rect) in &regions {
         assert!(
             rect.min_x() >= -1e-6
@@ -334,12 +335,18 @@ fn the_carousel_centers_the_focused_window_and_fans_the_rest_out() {
                 && rect.max_y() <= 1.0 + 1e-6,
             "pane {id} stays inside the pane area: {rect:?}"
         );
-        if *id != 2 {
-            assert!(
-                rect.width() < focused.width(),
-                "pane {id} is smaller than the focused window"
-            );
-        }
+        assert!(
+            close_to(rect.width(), focused.width()),
+            "pane {id} keeps the focused window's width"
+        );
+        assert!(
+            close_to(rect.height(), focused.height()),
+            "pane {id} keeps the focused window's height"
+        );
+        assert!(
+            close_to(rect.min_y(), focused.min_y()),
+            "pane {id} sits on the focused window's row"
+        );
     }
 
     let x_of = |id: u64| {
@@ -349,9 +356,9 @@ fn the_carousel_centers_the_focused_window_and_fans_the_rest_out() {
             .map(|(_, rect)| rect.min_x())
             .unwrap()
     };
-    assert!(x_of(1) < x_of(2), "the pane before it fans left");
-    assert!(x_of(3) > x_of(2), "the pane after it fans right");
-    assert!(x_of(4) > x_of(3), "farther panes fan farther");
+    assert!(x_of(1) < x_of(2), "the pane before it pans left");
+    assert!(x_of(3) > x_of(2), "the pane after it pans right");
+    assert!(x_of(4) > x_of(3), "farther panes pan farther");
 }
 
 /// Arrow navigation walks the carousel row and wraps at both ends, so every

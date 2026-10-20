@@ -12,31 +12,18 @@
 ## About
 
 Goble is a runtime and interaction layer for agentic work. It turns an agent's execution into a
-reversible, Git-like trace that can be observed, forked, replayed, and reverted, and it presents that
-trace per project rather than per process.
+reversible, Git-like trace you can observe, fork, replay, and revert, organized per project.
 
-The problem it addresses is that agent work is currently opaque and irreversible. An agent runs,
-produces a result, and leaves behind little more than a log. You cannot inspect a single step, undo
-it, or try a different branch from the same point. Goble makes the execution the artifact: every
-turn is a durable record you can inspect and act on.
+It ships no agent of its own. Through a transport seam (BYOH), an adapter runs the harness you
+already use in-process, as a CLI subprocess, or on a remote daemon. Three properties follow:
 
-Goble does not ship a single agent. It attaches to the agent you already use through a transport
-seam, so the same reversibility, observability, and interaction features apply regardless of which
-harness is underneath. This is the bring-your-own-harness (BYOH) model. An adapter decides whether a
-harness runs in-process, as a CLI subprocess, or on a remote daemon.
-
-Three properties make Goble distinct:
-
-1. **Reversibility.** Execution is a Git-like trace. From the event stream any harness already emits,
-   the daemon keeps a per-turn ledger, so you can fork from a turn, replay it, or revert it. The
-   transcript is always reversible; a harness can opt in to environment snapshots and restore as well.
+1. **Reversibility.** A per-turn ledger built from the harness event stream lets you fork, replay,
+   or revert any turn. Harnesses can opt in to environment snapshots as well.
 2. **A terminal window manager.** Every pane is a real terminal with command blocks from OSC 133/DCS
-   hooks, and the harness is integrated into it: an agent command is claimed and run in your own
-   shell, so the transcript, tool calls and sub-agents sit beside the prompt that produced them.
-   Panes can be local, bound to an SSH session, or fed by a remote worker. Live voice (speech to
-   text and text to speech) is the interaction layer beside it.
-3. **Per-project observability.** For each directory you can see what is running, what is scheduled,
-   and what has finished. The project, not the agent, is the unit of attention.
+   hooks, and the harness runs in your own shell, so transcripts, tool calls, and sub-agents sit
+   beside the prompt that produced them. Panes can be local, SSH-bound, or remote.
+3. **Per-project observability.** See what is running, scheduled, and finished for each directory.
+   The project, not the agent, is the unit of attention.
 
 | | |
 |---|---|

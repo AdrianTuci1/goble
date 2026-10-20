@@ -41,6 +41,7 @@ mod environment;
 mod llm;
 mod load;
 mod mcp;
+mod sandboxes;
 mod settings;
 mod translator;
 mod turns;
@@ -53,6 +54,7 @@ mod workers;
 mod tests;
 
 pub use attach::{AttachedSession, SessionAttach};
+pub use sandboxes::{binding_for_local_project, binding_for_project};
 pub use types::{
     AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, CommandProposedEvent, ExecutionInfo, Intent,
     IntentParams, LlmSetting, LogEntry, ReasoningEvent, ReasoningPhase, SubAgentFinishedEvent,

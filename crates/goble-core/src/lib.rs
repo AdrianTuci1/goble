@@ -39,6 +39,7 @@ pub mod thread;
 pub mod tls;
 pub mod user;
 pub mod vault;
+pub mod workspace_identity;
 pub mod worker;
 pub mod worker_pool;
 pub mod workflow;

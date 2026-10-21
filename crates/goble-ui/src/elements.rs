@@ -79,6 +79,9 @@ pub use terminal_block::{
 pub use terminal_grid::{GridRange, TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT};
 pub use text::Text;
 pub use text_area::{LineRuns, TextArea};
+pub use text_selection::{
+    RunMetrics, SelectableLine, SelectableText, SelectionPoint, SelectionRun, TranscriptSelection,
+};
 pub use text_input::TextInput;
 pub use thread_list_item::ThreadListItem;
 pub use titlebar::TitleBar;
@@ -629,6 +632,7 @@ pub mod terminal_grid;
 pub mod text;
 pub mod text_area;
 pub mod text_input;
+pub mod text_selection;
 pub mod thread_list_item;
 pub mod titlebar;
 pub mod toggle_button;

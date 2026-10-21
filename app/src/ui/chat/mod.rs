@@ -68,6 +68,7 @@ fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneChatSnapshot {
             turn_error: None,
             sub_agent_view: None,
             scroll: Rc::new(RefCell::new(goble_ui::ScrollState::following())),
+            text_selection: Rc::new(RefCell::new(goble_ui::TranscriptSelection::default())),
             usage: Default::default(),
             usage_open: Rc::new(RefCell::new(false)),
         })

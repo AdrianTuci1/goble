@@ -255,6 +255,10 @@ pub fn build_agent_chat(
         // The transcript scrolls and follows the stream; the state is
         // app-owned per pane so a chosen scrollback position is held.
         .with_scroll_state(session.scroll.clone())
+        // Drag-to-copy over the transcript: the pane's own selection, so the
+        // highlight follows the text the user pressed on and is copied on
+        // release.
+        .with_transcript_selection(session.text_selection.clone())
         // Per-block terminal filter state is app-owned (shared) so the filter
         // tray's open flag + selection survive the per-frame rebuild; the copy
         // handler copies a terminal block's text to the clipboard.

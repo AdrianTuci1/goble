@@ -72,6 +72,106 @@ pub fn measure_text_family(
     size
 }
 
+/// One visual line a run wraps into, as the renderer draws it.
+///
+/// `text` is the exact source text the line shows, so a selection can copy
+/// what the user sees rather than re-breaking the paragraph with different
+/// rules. `top` is the line's top relative to the run's own origin and
+/// `height` the row it occupies.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WrappedLine {
+    pub text: String,
+    pub top: f32,
+    pub height: f32,
+}
+
+/// The lines `text` wraps into at `max_width`, with the geometry each line is
+/// drawn at.
+///
+/// The breaks are fontdue's own — the pass [`measure_text_family`] sizes the
+/// box and the renderer draws it with — so a line here starts and ends on the
+/// same characters the user sees on that row. Memoized like the measurements:
+/// a transcript asks for every visible run's lines on every frame while a
+/// selection is being dragged.
+pub fn wrapped_lines(
+    text: &str,
+    font_size: f32,
+    line_height: f32,
+    max_width: f32,
+    weight: FontWeight,
+    family: FontFamily,
+    italic: bool,
+) -> Vec<WrappedLine> {
+    let key = cache::SizeKey::new(
+        text, font_size, line_height, max_width, weight, family, italic,
+    );
+    if let Some(lines) = cache::lookup_lines(&key) {
+        return lines;
+    }
+    let lines = wrapped_lines_uncached(text, font_size, line_height, max_width, weight, family, italic);
+    cache::store_lines(key, lines.clone());
+    lines
+}
+
+fn wrapped_lines_uncached(
+    text: &str,
+    font_size: f32,
+    line_height: f32,
+    max_width: f32,
+    weight: FontWeight,
+    family: FontFamily,
+    italic: bool,
+) -> Vec<WrappedLine> {
+    let pitch = font_size * line_height;
+    let Some(font_set) = font_set() else {
+        return text
+            .split('\n')
+            .enumerate()
+            .map(|(index, line)| WrappedLine {
+                text: line.to_string(),
+                top: index as f32 * pitch,
+                height: pitch,
+            })
+            .collect();
+    };
+    let font = font_set.select(weight, family, italic);
+    let chain = font_chain(font, text);
+    let (layout, runs) = layout_text_with_runs(text, font_size, max_width, line_height, &chain);
+    let glyphs = layout.glyphs();
+    let Some(lines) = layout.lines() else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        let start = line.glyph_start.min(glyphs.len());
+        let end = line.glyph_end.saturating_add(1).min(glyphs.len());
+        let mut line_text = String::new();
+        // The end of the source text the previous glyph on this line covered.
+        // The gap to the next glyph is the whitespace fontdue placed without a
+        // glyph of its own (and the wrap break it dropped), which belongs to
+        // the line's text.
+        let mut covered = 0usize;
+        for (index, glyph) in glyphs.iter().enumerate().take(end).skip(start) {
+            let offset = run_base(index, &runs) + glyph.byte_offset;
+            if covered > 0 && offset > covered && offset <= text.len() {
+                line_text.extend(text[covered..offset].chars().filter(|ch| *ch != '\n'));
+            }
+            if let Some(ch) = text.get(offset..).and_then(|rest| rest.chars().next()) {
+                line_text.push(ch);
+                covered = offset + ch.len_utf8();
+            }
+        }
+        out.push(WrappedLine {
+            text: line_text.trim_end().to_string(),
+            top: (line.baseline_y - line.max_ascent).max(0.0),
+            height: (line.max_ascent - line.min_descent + line.max_line_gap)
+                .max(font_size)
+                * line_height,
+        });
+    }
+    out
+}
+
 /// [`measure_text_family`] without the cache: the fontdue pass itself.
 pub(super) fn measure_uncached(
     text: &str,
@@ -186,6 +286,17 @@ fn font_chain<'a>(primary: &'a fontdue::Font, text: &str) -> Vec<&'a fontdue::Fo
     chain
 }
 
+/// One appended stretch of the source text, and the glyphs it produced.
+///
+/// A run is appended per font the fallback chain switches to, and fontdue
+/// reports each glyph's byte offset relative to its own run. The base is what
+/// turns it back into an offset into the caller's whole string.
+struct GlyphRun {
+    first_glyph: usize,
+    end_glyph: usize,
+    byte_base: usize,
+}
+
 /// Layout `text` through `fonts`, splitting the run at every character the
 /// current face cannot draw and continuing with the first face that can.
 fn layout_text(
@@ -195,6 +306,16 @@ fn layout_text(
     line_height: f32,
     fonts: &[&fontdue::Font],
 ) -> fontdue::layout::Layout {
+    layout_text_with_runs(text, font_size, max_width, line_height, fonts).0
+}
+
+fn layout_text_with_runs(
+    text: &str,
+    font_size: f32,
+    max_width: f32,
+    line_height: f32,
+    fonts: &[&fontdue::Font],
+) -> (fontdue::layout::Layout, Vec<GlyphRun>) {
     let mut layout = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
     layout.reset(&fontdue::layout::LayoutSettings {
         max_width: if max_width.is_finite() && max_width > 0.0 {
@@ -206,8 +327,8 @@ fn layout_text(
         line_height,
         ..Default::default()
     });
-    append_with_fallback(&mut layout, fonts, text, font_size);
-    layout
+    let runs = append_with_fallback(&mut layout, fonts, text, font_size);
+    (layout, runs)
 }
 
 fn append_with_fallback(
@@ -215,9 +336,10 @@ fn append_with_fallback(
     fonts: &[&fontdue::Font],
     text: &str,
     font_size: f32,
-) {
+) -> Vec<GlyphRun> {
+    let mut runs = Vec::new();
     let Some(first) = text.chars().next() else {
-        return;
+        return runs;
     };
     let face_for = |ch: char| -> usize {
         if ch.is_whitespace() || ch.is_control() {
@@ -233,18 +355,57 @@ fn append_with_fallback(
     for (offset, ch) in text.char_indices().skip(1) {
         let face = face_for(ch);
         if face != current {
-            layout.append(
+            append_run(
+                layout,
                 fonts,
-                &fontdue::layout::TextStyle::new(&text[start..offset], font_size, current),
+                &text[start..offset],
+                start,
+                font_size,
+                current,
+                &mut runs,
             );
             start = offset;
             current = face;
         }
     }
+    append_run(
+        layout,
+        fonts,
+        &text[start..],
+        start,
+        font_size,
+        current,
+        &mut runs,
+    );
+    runs
+}
+
+fn append_run(
+    layout: &mut fontdue::layout::Layout,
+    fonts: &[&fontdue::Font],
+    segment: &str,
+    byte_base: usize,
+    font_size: f32,
+    face: usize,
+    runs: &mut Vec<GlyphRun>,
+) {
+    let first_glyph = layout.glyphs().len();
     layout.append(
         fonts,
-        &fontdue::layout::TextStyle::new(&text[start..], font_size, current),
+        &fontdue::layout::TextStyle::new(segment, font_size, face),
     );
+    runs.push(GlyphRun {
+        first_glyph,
+        end_glyph: layout.glyphs().len(),
+        byte_base,
+    });
+}
+
+/// The byte base of the run that produced glyph `index`.
+fn run_base(index: usize, runs: &[GlyphRun]) -> usize {
+    runs.iter()
+        .find(|run| index >= run.first_glyph && index < run.end_glyph)
+        .map_or(0, |run| run.byte_base)
 }
 
 /// Whether a face can actually draw `ch`.

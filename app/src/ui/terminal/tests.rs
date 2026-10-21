@@ -2418,7 +2418,7 @@ fn glyph_origin(commands: &[RenderCommand], text: &str) -> Vector2F {
 }
 
 #[test]
-fn mouse_drag_selects_cells_and_cmd_c_copies_them() {
+fn mouse_drag_copies_the_cells_it_covers_on_release() {
     let app = AppContext::default();
     let mut emulator = Emulator::new(80, 24);
     emulator.feed(b"hello world");
@@ -2455,6 +2455,11 @@ fn mouse_drag_selects_cells_and_cmd_c_copies_them() {
         &mut ctx,
         &app
     ));
+    // The release is the copy, the way grok-build's selection works: the
+    // clipboard already holds the range before any Cmd+C.
+    assert_eq!(*copied.borrow(), vec!["hello wor".to_string()]);
+    // Cmd+C still copies the selection on demand.
+    copied.borrow_mut().clear();
     assert!(
         pane.dispatch_event(
             &key(
@@ -2470,6 +2475,44 @@ fn mouse_drag_selects_cells_and_cmd_c_copies_them() {
         "Cmd+C copies the selection"
     );
     assert_eq!(*copied.borrow(), vec!["hello wor".to_string()]);
+}
+
+/// A click with no drag selects the one cell under it and copies nothing: a
+/// press in the output must not overwrite the clipboard.
+#[test]
+fn a_click_without_a_drag_copies_nothing() {
+    let app = AppContext::default();
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(b"hello world");
+    let (pane, _terminal, copied) = view_over_copy(TerminalSession::with_emulator(emulator), 7);
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let commands = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+    let origin = glyph_origin(&commands, "h");
+    let position = Vector2F::new(
+        origin.x + TerminalGrid::cell_width(FONT_SIZE) * 0.5,
+        origin.y + TerminalGrid::row_pitch(FONT_SIZE, LINE_HEIGHT) * 0.5,
+    );
+    let mut ctx = EventContext;
+    assert!(pane.dispatch_event(
+        &DispatchedEvent::MouseDown {
+            position,
+            button: 0,
+        },
+        &mut ctx,
+        &app
+    ));
+    assert!(pane.dispatch_event(
+        &DispatchedEvent::MouseUp {
+            position,
+            button: 0,
+        },
+        &mut ctx,
+        &app
+    ));
+    assert!(
+        copied.borrow().is_empty(),
+        "a plain click is not a copy: {copied:?}"
+    );
 }
 
 /// The same drag on the normal shell surface, whose body is the command
@@ -2515,6 +2558,11 @@ fn mouse_drag_selects_block_text_and_cmd_c_copies_it() {
         terminal.borrow().block_selection(7).is_some(),
         "the drag selects block text"
     );
+    assert_eq!(
+        *copied.borrow(),
+        vec!["hello wor".to_string()],
+        "the block drag copies on release"
+    );
 
     let highlighted = render_element(&mut pane, window, &app);
     assert!(
@@ -2525,6 +2573,7 @@ fn mouse_drag_selects_block_text_and_cmd_c_copies_it() {
         "the block selection is drawn over the text: {highlighted:?}"
     );
 
+    copied.borrow_mut().clear();
     assert!(
         pane.dispatch_event(
             &key(
@@ -2574,31 +2623,23 @@ fn block_mouse_double_and_triple_click_select_word_and_line() {
             &app
         ));
     };
-    let copy = |pane: &mut Box<dyn Element>, ctx: &mut EventContext| {
-        assert!(pane.dispatch_event(
-            &key(
-                "c",
-                ModifiersState {
-                    command: true,
-                    ..ModifiersState::default()
-                }
-            ),
-            ctx,
-            &app
-        ));
-    };
+    click(&mut pane, &mut ctx);
+    assert!(
+        copied.borrow().is_empty(),
+        "the first click picks one cell and copies nothing"
+    );
+    click(&mut pane, &mut ctx);
+    assert_eq!(
+        *copied.borrow(),
+        vec!["hello".to_string()],
+        "the double click's word is copied on release"
+    );
 
     click(&mut pane, &mut ctx);
-    click(&mut pane, &mut ctx);
-    copy(&mut pane, &mut ctx);
-    assert_eq!(*copied.borrow(), vec!["hello".to_string()]);
-
-    click(&mut pane, &mut ctx);
-    copy(&mut pane, &mut ctx);
     assert_eq!(
         *copied.borrow(),
         vec!["hello".to_string(), "hello world".to_string()],
-        "the third click selects the line"
+        "the third click selects the line, copied on release"
     );
 }
 

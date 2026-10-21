@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::geometry::Vector2F;
 use crate::theme::FontFamily;
 
-use super::fonts::FontWeight;
+use super::fonts::{FontWeight, WrappedLine};
 
 /// How many runs each cache keeps before it is emptied.
 ///
@@ -126,6 +126,9 @@ pub struct MeasureCacheStats {
 struct Cache {
     sizes: HashMap<SizeKey, Vector2F>,
     advances: HashMap<AdvanceKey, f32>,
+    /// The visual lines each run wraps into, for the pointer that turns a
+    /// position into a line and a column.
+    lines: HashMap<SizeKey, Vec<WrappedLine>>,
     stats: MeasureCacheStats,
 }
 
@@ -159,6 +162,23 @@ pub(super) fn store_size(key: SizeKey, size: Vector2F) {
             cache.sizes.clear();
         }
         cache.sizes.insert(key, size);
+    });
+}
+
+/// The cached wrapped lines of `key`, or `None` when the run has not been
+/// broken into lines since the last invalidation.
+pub(super) fn lookup_lines(key: &SizeKey) -> Option<Vec<WrappedLine>> {
+    CACHE.with(|cache| cache.borrow().lines.get(key).cloned())
+}
+
+/// Remember a run's wrapped lines. A full cache is emptied first.
+pub(super) fn store_lines(key: SizeKey, lines: Vec<WrappedLine>) {
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.lines.len() >= MAX_ENTRIES {
+            cache.lines.clear();
+        }
+        cache.lines.insert(key, lines);
     });
 }
 
@@ -204,6 +224,7 @@ pub fn invalidate_text_measure_cache() {
         let mut cache = cache.borrow_mut();
         cache.sizes.clear();
         cache.advances.clear();
+        cache.lines.clear();
     });
 }
 

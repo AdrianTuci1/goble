@@ -64,6 +64,14 @@ impl Selection {
     pub fn range(&self) -> (Cell, Cell) {
         self.ordered()
     }
+
+    /// Whether the selection covers more than the one cell a plain click
+    /// touches. A drag, a double-clicked word and a triple-clicked line all
+    /// do; a click is not a copy.
+    pub fn spans_more_than_one_cell(&self) -> bool {
+        let (start, end) = self.ordered();
+        start != end
+    }
 }
 
 /// A character cell's place on a line: its column and how many columns it
@@ -861,6 +869,10 @@ impl TerminalRegistry {
     /// The text a block-text selection covers.
     pub fn block_selection_text(&self, pane_id: u64) -> Option<String> {
         let selection = self.block_selection(pane_id)?;
+        self.block_text_of(pane_id, selection)
+    }
+
+    fn block_text_of(&self, pane_id: u64, selection: Selection) -> Option<String> {
         let lines = self.block_text_lines(pane_id);
         if lines.is_empty() {
             return None;
@@ -893,6 +905,29 @@ impl TerminalRegistry {
         let selection = self.selection(pane_id)?;
         let session = self.sessions.get(&pane_id)?;
         Some(session.selection_text(selection))
+    }
+
+    /// The text a finished mouse drag selected, for copy-on-release. A gesture
+    /// that covers a single cell is a click and copies nothing, so clicking in
+    /// the output never overwrites the clipboard; a drag, and the word or line
+    /// a double/triple click took, is copied.
+    pub fn dragged_selection_text(&self, pane_id: u64) -> Option<String> {
+        let state = self.pane_ui(pane_id)?;
+        if let Some(selection) = state
+            .selection
+            .filter(Selection::spans_more_than_one_cell)
+        {
+            if let Some(session) = self.sessions.get(&pane_id) {
+                let text = session.selection_text(selection);
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+        let selection = state
+            .block_selection
+            .filter(Selection::spans_more_than_one_cell)?;
+        self.block_text_of(pane_id, selection)
     }
 
     /// The text `Cmd+C` should copy: the grid selection, the block-text

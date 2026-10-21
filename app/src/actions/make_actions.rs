@@ -580,10 +580,10 @@ pub fn make_actions(
         })),
         on_select_conversation: Rc::new(RefCell::new(move |id: String| {
             let mut state = on_select_conversation.borrow_mut();
-            // Selecting a conversation binds the active pane to it (so the pane
-            // shows that conversation), keeps the sidebar highlight in sync and
-            // reloads that conversation's messages into the pane.
-            state.bind_active_pane_conversation(id, desktop_select.as_deref());
+            // A conversation opened from the sidebar gets a tab of its own in
+            // the top bar, rather than replacing the thread the focused pane
+            // showed. One already on screen is brought forward.
+            state.open_conversation_tab(id, desktop_select.as_deref());
         })),
         on_select_tab: Rc::new(RefCell::new(move |tab: AppTab| {
             on_select_tab.borrow_mut().current_tab = tab;

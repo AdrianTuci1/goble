@@ -15,6 +15,19 @@ use goble_core::ssh_command::SshSession;
 use super::ChatView;
 
 impl ChatView {
+    /// Attach the app-owned transcript drag selection, which turns the
+    /// transcript into a selectable surface: a press on its text starts a
+    /// selection, a drag extends it, and the release copies what it covered
+    /// through [`Self::with_on_copy_terminal`]. The app owns the selection so
+    /// the highlight survives the per-frame rebuild.
+    pub fn with_transcript_selection(
+        mut self,
+        selection: Rc<RefCell<crate::elements::TranscriptSelection>>,
+    ) -> Self {
+        self.transcript_selection = Some(selection);
+        self
+    }
+
     /// Attach the app-owned transcript scroll state, so the offset (and the
     /// user's scrollback position) survives the per-frame rebuild.
     pub fn with_scroll_state(mut self, scroll: Rc<RefCell<ScrollState>>) -> Self {

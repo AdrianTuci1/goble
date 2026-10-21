@@ -32,7 +32,9 @@ const DOTS_CLEARANCE: f32 = 6.0;
 const STATUS_SIZE: f32 = 12.0;
 
 /// The widest the card's tray grows before its rows' own width is what it takes.
-const TRAY_MAX_WIDTH: f32 = 168.0;
+/// Wide enough for "Delete conversation" on one line with the button's own
+/// padding, since the tray now opens beside the dots where that width is free.
+const TRAY_MAX_WIDTH: f32 = 200.0;
 
 /// How far the tray's top sits below the card the control is on.
 const TRAY_GAP: f32 = 4.0;
@@ -362,13 +364,13 @@ impl ConversationListItem {
         );
 
         // The card's own tray: star the conversation or delete it, in a card
-        // anchored to the 3-dot control rather than in rows under the row — the
-        // buttons open their own trays beside themselves the same way. It is
-        // laid out here and placed by `paint`, so it takes no room in the list
-        // and opening it does not push the cards below it down.
+        // anchored to the right of the 3-dot control rather than in rows under
+        // the row — the buttons open their own trays beside themselves the same
+        // way. It is laid out here and placed by `paint`, so it takes no room in
+        // the list and opening it does not push the cards below it down.
         if menu_open {
             let mut rows = Flex::column()
-                .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_spacing(xs);
             if let Some(star) = self.star_button(app) {
                 rows = rows.with_child(star);
@@ -424,47 +426,38 @@ impl ConversationListItem {
         ))
     }
 
-    /// The tray's box: hung from the 3-dot control it belongs to — its trailing
-    /// edge on the control's, its own top `TRAY_GAP` under the card's bottom
-    /// edge so it covers none of the card's own text — and clamped to the card's
-    /// edges, so a tray wider than the card still starts inside the surface the
-    /// card sits on. `None` until the tray has been laid out.
+    /// The tray's box: hung from the 3-dot control it belongs to, on the
+    /// control's right side — a `TRAY_GAP` past the dots and top-aligned with
+    /// them — so it opens into the space beside the sidebar instead of over the
+    /// cards below. `None` until the tray has been laid out.
     fn menu_bounds(&self) -> Option<RectF> {
-        let (origin, size) = (self.origin?, self.size?);
+        let dots = self.dots_bounds()?;
         let menu_size = self.menu_size?;
         self.menu.as_ref()?;
-        let dots = self.dots_bounds()?;
-        let left = origin.x();
-        let right = (origin.x() + size.x - menu_size.x).max(left);
-        let x = (dots.max_x() - menu_size.x).clamp(left, right);
         Some(rectf(
-            x,
-            origin.y() + size.y + TRAY_GAP,
+            dots.max_x() + TRAY_GAP,
+            dots.min_y(),
             menu_size.x,
             menu_size.y,
         ))
     }
 
     /// Whether `position` is on the tray's surface — the tray's own box and the
-    /// `TRAY_GAP`-tall strip between it and the card. The tray hangs a few
-    /// points under the card, so a pointer walking from the control down to the
+    /// `TRAY_GAP`-wide strip between it and the control. The tray sits a few
+    /// points right of the dots, so a pointer walking from the control into the
     /// tray crosses that strip: without it the card would read the crossing as
     /// the pointer leaving and put the tray away before it arrived.
     fn pointer_on_menu(&self, position: Vector2F) -> bool {
-        let (Some(bounds), Some(origin), Some(size)) =
-            (self.menu_bounds(), self.origin, self.size)
-        else {
+        let Some(bounds) = self.menu_bounds() else {
             return false;
         };
-        contains(
-            rectf(
-                bounds.min_x(),
-                origin.y() + size.y,
-                bounds.width(),
-                bounds.height() + TRAY_GAP,
-            ),
-            position,
-        )
+        let bridge = rectf(
+            bounds.min_x() - TRAY_GAP,
+            bounds.min_y(),
+            TRAY_GAP,
+            bounds.height(),
+        );
+        contains(bounds, position) || contains(bridge, position)
     }
 
     /// The pointer's position on a mouse event, or `None` for the events that
@@ -511,6 +504,7 @@ impl ConversationListItem {
         let xs = app.theme.spacing_px(SpacingToken::Xs);
         let starred = self.starred;
         let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(xs)
             .with_child(
@@ -543,6 +537,7 @@ impl ConversationListItem {
         let xs = app.theme.spacing_px(SpacingToken::Xs);
         let on_delete = self.on_delete.clone();
         let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(xs)
             .with_child(
@@ -552,7 +547,7 @@ impl ConversationListItem {
                     .finish(),
             )
             .with_child(
-                Text::new("Delete agent")
+                Text::new("Delete conversation")
                     .with_theme_color(ColorToken::Error, app)
                     .with_font_size(12.0)
                     .finish(),
@@ -966,9 +961,9 @@ mod tests {
     }
 
     /// The hovered card draws its 3-dot control, and an open menu draws its
-    /// actions in a card of its own: hung under the card rather than in rows
-    /// inside it, and inside the card's own width so the tray stays on the
-    /// surface the card sits on.
+    /// actions in a card of its own: beside the dots, opening into the space
+    /// right of the sidebar rather than over the cards below, and wide enough
+    /// that its rows span the tray.
     #[test]
     fn hover_renders_dots_and_menu_renders_delete() {
         let app = AppContext::default();
@@ -976,61 +971,63 @@ mod tests {
             hover: true,
             menu_open: true,
         }));
-        let item = ConversationListItem::new(
+        let mut item = ConversationListItem::new(
             "c1",
             "Ada",
             "A long last message",
             "5 min ago",
             ui,
             false,
+        )
+        .with_on_toggle_star(|| {});
+        let card = item.layout(
+            SizeConstraint::loose(vec2f(260.0, 200.0)),
+            &mut LayoutContext::default(),
+            &app,
         );
-        let mut element: Box<dyn Element> = Box::new(item);
-        let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
+        let mut paint_ctx = PaintContext::new(crate::render::Renderer::new());
+        item.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx
+            .renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default();
 
         let has_dots = commands.iter().any(|c| {
             matches!(c, crate::render::RenderCommand::DrawIcon { name, .. } if name == "dots-horizontal")
         });
+        let has_star = commands.iter().any(|c| {
+            matches!(c, crate::render::RenderCommand::DrawText { text, .. } if text == "Star")
+        });
         let has_delete = commands.iter().any(|c| {
-            matches!(c, crate::render::RenderCommand::DrawText { text, .. } if text.contains("Delete agent"))
+            matches!(c, crate::render::RenderCommand::DrawText { text, .. } if text == "Delete conversation")
         });
         assert!(has_dots, "hover/menu card should render the 3-dot icon");
-        assert!(has_delete, "open menu should render a 'Delete agent' action");
-
-        let card = element.size().expect("the card is laid out");
-        let delete_row = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "Delete agent" => {
-                    Some(*origin)
-                }
-                _ => None,
-            })
-            .expect("the delete row is drawn");
-        let tray = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::FillRect {
-                    rect,
-                    corner_radius,
-                    ..
-                } if *corner_radius > 0.0
-                    && rect.min_x() <= delete_row.x
-                    && delete_row.x <= rect.max_x()
-                    && rect.min_y() <= delete_row.y
-                    && delete_row.y <= rect.max_y() =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .expect("the tray is a card of its own around its rows");
+        assert!(has_star, "open menu should render a 'Star' action");
         assert!(
-            tray.min_y() >= card.y,
-            "the tray hangs under the card, not in rows inside it: {tray:?} vs card {card:?}"
+            has_delete,
+            "open menu should render a 'Delete conversation' action"
+        );
+
+        let dots = item.dots_bounds().expect("the menu draws the control");
+        let tray = item
+            .menu_bounds()
+            .expect("the open menu is placed beside the control");
+        assert!(
+            tray.min_x() >= dots.max_x(),
+            "the tray opens to the right of the dots: {tray:?} vs dots {dots:?}"
         );
         assert!(
-            tray.max_x() <= card.x,
-            "and the tray stays inside the card's width: {tray:?} vs card {card:?}"
+            (tray.min_y() - dots.min_y()).abs() < 0.01,
+            "the tray is anchored to the dots' top: {tray:?} vs dots {dots:?}"
+        );
+        assert!(
+            tray.width() >= TRAY_MAX_WIDTH - 0.01,
+            "the tray takes its full width so its rows span it: {tray:?}"
+        );
+        assert!(
+            tray.max_x() > card.x,
+            "the tray opens into the space beside the sidebar: {tray:?} vs card {card:?}"
         );
     }
 

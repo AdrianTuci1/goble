@@ -177,6 +177,7 @@ impl UiState {
             live_executions: HashMap::new(),
             pane_controls: HashMap::new(),
             pane_chat_scroll: HashMap::new(),
+            pane_transcript_selection: HashMap::new(),
             pane_usage_open: HashMap::new(),
             pane_attachments: HashMap::new(),
             pane_terminal_scroll: HashMap::new(),

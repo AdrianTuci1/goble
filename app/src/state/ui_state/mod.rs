@@ -446,6 +446,10 @@ pub struct UiState {
     /// the element, which is rebuilt every frame) so a pane's scrollback
     /// position and its follow-the-stream state survive the rebuild.
     pub pane_chat_scroll: HashMap<u64, Rc<RefCell<ScrollState>>>,
+    /// Per-pane transcript drag selection, keyed by pane id. Owned here so the
+    /// highlight and the frozen text survive the per-frame rebuild, and so two
+    /// chat panes never share a selection.
+    pub pane_transcript_selection: HashMap<u64, Rc<RefCell<goble_ui::TranscriptSelection>>>,
     /// Per-pane expanded state of the transcript's usage disclosure, keyed by
     /// pane id. Owned here for the same reason as the scroll offset: the element
     /// tree is rebuilt every frame.

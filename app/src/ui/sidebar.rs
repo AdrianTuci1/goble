@@ -549,7 +549,7 @@ mod sidebar_surface_tests {
 
         // The tray's own rows: a rounded fill that holds one of them is the
         // tray's card and not a row that went back to being a widget.
-        let tray_rows = ["Star", "Delete agent"];
+        let tray_rows = ["Star", "Delete conversation"];
         let holds_a_tray_row = |rect: &RectF| {
             tray_open
                 && commands.iter().any(|other| match other {
@@ -597,7 +597,7 @@ mod sidebar_surface_tests {
                         rect,
                         corner_radius,
                         ..
-                    } => in_band(*rect) && *corner_radius > 0.0 && holds_a_tray_row(rect),
+                    } => *corner_radius > 0.0 && holds_a_tray_row(rect),
                     _ => false,
                 })
                 .count();
@@ -1431,6 +1431,35 @@ mod sidebar_surface_tests {
             .collect()
     }
 
+    /// A point on the tray's run of `text`, a few points into its box. The tray
+    /// opens beside the sidebar, so its runs are not confined to the band.
+    fn on_tray_text(commands: &[RenderCommand], text: &str) -> goble_ui::geometry::Vector2F {
+        let origin = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText {
+                    text: run, origin, ..
+                } if run == text => Some(*origin),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{text:?} is drawn in the tray"));
+        vec2f(origin.x + 3.0, origin.y + 3.0)
+    }
+
+    /// Every paint of the tray's run of `text`, in paint order. The tray is
+    /// drawn once inside its card and once as the frame's last layer; the last
+    /// entry is the visible one.
+    fn tray_runs(commands: &[RenderCommand], text: &str) -> Vec<usize> {
+        commands
+            .iter()
+            .enumerate()
+            .filter(|(_, command)| {
+                matches!(command, RenderCommand::DrawText { text: run, .. } if run == text)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
     /// A pinned conversation is listed once, under Starred: the folder groups
     /// below hold what is left. A list that is entirely pinned is not empty, so
     /// it says nothing about an empty environment either.
@@ -1749,7 +1778,7 @@ mod sidebar_surface_tests {
     /// cannot cover it; a pointer on it is still on the card's own surface; and
     /// its rows act on the conversation the way they promise.
     #[test]
-    fn the_cards_tray_hangs_from_its_control_above_the_cards_after_it() {
+    fn the_cards_tray_hangs_from_its_control_beside_it() {
         use goble_ui::event::DispatchedEvent;
 
         let dir = tempfile::tempdir().expect("temp thread-store dir");
@@ -1797,8 +1826,8 @@ mod sidebar_surface_tests {
         );
         let open = frame_at(&mut root, &app, on_dots);
 
-        let star_row = on_band_text(&open, "Star");
-        let delete_row = on_band_text(&open, "Delete agent");
+        let star_row = on_tray_text(&open, "Star");
+        let delete_row = on_tray_text(&open, "Delete conversation");
         assert!(delete_row.y > star_row.y, "star is the tray's first row");
 
         // The tray's own card, around its rows.
@@ -1823,34 +1852,32 @@ mod sidebar_surface_tests {
             })
             .expect("the tray is a card of its own around its rows");
         assert!(
-            tray.min_y() > dots.max_y(),
-            "the tray hangs below the control: tray {tray:?} vs dots {dots:?}"
+            tray.min_x() >= dots.max_x(),
+            "the tray opens to the right of the control: tray {tray:?} vs dots {dots:?}"
         );
         assert!(
-            (tray.max_x() - dots.max_x()).abs() < 0.01,
-            "its trailing edge is the control's: tray {tray:?} vs dots {dots:?}"
+            (tray.min_y() - dots.min_y()).abs() < 0.01,
+            "and is anchored to the control's top: tray {tray:?} vs dots {dots:?}"
         );
         assert!(
-            tray.max_x() <= crate::ui::SIDEBAR_WIDTH,
-            "and the tray stays inside the sidebar: {tray:?}"
+            tray.max_x() > crate::ui::SIDEBAR_WIDTH,
+            "the tray opens into the space beside the sidebar: {tray:?}"
         );
 
         // The cards painted after this one cannot cover it: the tray's own runs
         // come after them.
         let next_card = band_runs(&open, "Coder");
         let next_card = *next_card.first().expect("the next card is drawn");
-        let star_runs = band_runs(&open, "Star");
+        let star_runs = tray_runs(&open, "Star");
         assert!(
             *star_runs.last().expect("the tray's star row is drawn") > next_card,
             "the tray is drawn after the cards that follow it: {star_runs:?} vs {next_card}"
         );
 
-        // The pointer walks off the card's bottom edge into the tray's strip:
-        // the strip is the tray's, so the tray is still open when the pointer
-        // arrives at the row. The strip is the few points between the card's
-        // bottom and the tray's own top, so its middle is a couple of points
-        // above the tray.
-        let crossing = vec2f(tray.min_x() + tray.width() / 2.0, tray.min_y() - 2.0);
+        // The pointer walks off the control into the strip between it and the
+        // tray: the strip is the tray's, so the tray is still open when the
+        // pointer arrives at the row.
+        let crossing = vec2f(tray.min_x() - 2.0, tray.min_y() + 2.0);
         root.dispatch_event(
             &DispatchedEvent::MouseMove {
                 position: crossing,
@@ -1878,7 +1905,7 @@ mod sidebar_surface_tests {
         );
         let still_open = frame_at(&mut root, &app, delete_row);
         assert!(
-            !band_runs(&still_open, "Delete agent").is_empty(),
+            !tray_runs(&still_open, "Delete conversation").is_empty(),
             "and the next frame still draws the tray"
         );
 

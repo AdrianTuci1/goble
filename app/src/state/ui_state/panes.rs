@@ -127,6 +127,9 @@ impl UiState {
         conversation_id: &str,
         label: &str,
     ) -> Option<BlockId> {
+        // The surface changes under the selection; its frozen rows no longer
+        // describe what is on screen.
+        self.clear_pane_transcript_selection(pane_id);
         let block =
             self.terminal
                 .borrow_mut()
@@ -144,6 +147,7 @@ impl UiState {
     /// surface is a shell. The card the conversation left behind stays in the
     /// list.
     pub fn leave_agent_view(&mut self, pane_id: u64) {
+        self.clear_pane_transcript_selection(pane_id);
         let controls = self.pane_controls_mut(pane_id);
         controls.harness_mode = false;
         controls.view = BlockView::Terminal;
@@ -192,6 +196,7 @@ impl UiState {
         self.pane_sessions.remove(&pane_id);
         self.pane_runtime.remove(&pane_id);
         self.pane_hover.remove(&pane_id);
+        self.pane_transcript_selection.remove(&pane_id);
         self.sub_agent_views.remove(&pane_id);
         self.pane_workers.remove(&pane_id);
         self.pane_ssh.remove(&pane_id);

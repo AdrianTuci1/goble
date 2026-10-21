@@ -107,6 +107,36 @@ fn a_find_searches_history_and_the_screen_and_reports_a_bad_regex() {
 }
 
 #[test]
+fn a_dragged_selection_is_the_text_copied_on_release() {
+    let mut registry = TerminalRegistry::default();
+    registry
+        .sessions
+        .insert(1, session("hello world", 20, 4));
+    let now = std::time::Instant::now();
+
+    // A press with no motion is a click: it selects a cell and copies nothing.
+    registry.begin_selection(1, Cell::new(0, 2), now);
+    assert_eq!(registry.dragged_selection_text(1), None);
+    registry.end_selection(1);
+
+    // A drag is copied as the cells it covers.
+    registry.begin_selection(1, Cell::new(0, 0), now);
+    registry.extend_selection(1, Cell::new(0, 4));
+    registry.end_selection(1);
+    assert_eq!(
+        registry.dragged_selection_text(1).as_deref(),
+        Some("hello")
+    );
+
+    // A double click takes the word, which spans more than one cell.
+    registry.begin_selection(1, Cell::new(0, 6), now);
+    registry.end_selection(1);
+    registry.begin_selection(1, Cell::new(0, 6), now);
+    registry.end_selection(1);
+    assert_eq!(registry.dragged_selection_text(1).as_deref(), Some("world"));
+}
+
+#[test]
 fn a_copy_mode_selection_yields_to_the_mouse_selection_for_cmd_c() {
     let mut registry = TerminalRegistry::default();
     registry

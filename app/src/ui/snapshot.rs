@@ -129,6 +129,9 @@ pub struct PaneChatSnapshot {
     /// This pane's transcript scroll offset (app-owned, so the scrollback
     /// position and follow-the-stream flag survive the per-frame rebuild).
     pub scroll: Rc<RefCell<ScrollState>>,
+    /// This pane's transcript drag selection: the highlight and the frozen text
+    /// a press captured. App-owned for the same reason as the scroll offset.
+    pub text_selection: Rc<RefCell<goble_ui::TranscriptSelection>>,
     /// The tokens this conversation has spent, summed from the provider-reported
     /// usage of its own model calls. Accounting only, never a price.
     pub usage: goble_ui::TokenUsage,

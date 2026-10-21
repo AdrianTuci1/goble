@@ -24,6 +24,46 @@ mod pill;
 mod sub_agent;
 mod tool_call;
 
+/// A fence draws no horizontal scroll, so a line longer than the pane must
+/// fold inside it: nothing it paints may end past the row's right edge where
+/// the user could not read it.
+#[test]
+fn a_long_code_fence_wraps_inside_the_pane() {
+    let app = AppContext::default();
+    let width = 420.0;
+    let code = "let some_really_long_identifier = compute_something(one, two, three, four, five);";
+    let mut element: Box<dyn Element> = Box::new(ChatMessageBubble::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::code_block(Some("rust".to_string()), code)],
+    ));
+    let commands = render_element(&mut element, vec2f(width, 600.0), &app);
+    for command in &commands {
+        if let RenderCommand::DrawText {
+            origin,
+            text,
+            font_size,
+            font_weight,
+            font_family,
+            font_italic,
+            ..
+        } = command
+        {
+            let drawn = crate::platform::text_atlas::advance_width(
+                text,
+                *font_size,
+                *font_weight,
+                *font_family,
+                *font_italic,
+            );
+            assert!(
+                origin.x + drawn <= width + 0.5,
+                "{text:?} ends at {} past the {width}-wide row",
+                origin.x + drawn
+            );
+        }
+    }
+}
+
 #[test]
 fn bubble_layouts_non_zero() {
     let app = AppContext::default();

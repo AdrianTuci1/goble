@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind};
 use crate::elements::terminal_block::{terminal_filter_bar, TerminalFilter};
 use crate::elements::{
@@ -452,7 +454,7 @@ impl ChatView {
             for message in &self.messages {
                 let on_action = self.on_action.clone();
                 let fragments = message.fragments.clone();
-                let bubble = ChatMessageBubble::new(message.role, fragments)
+                let mut bubble = ChatMessageBubble::new(message.role, fragments)
                     .with_tool_calls(message.tool_calls.clone())
                     .with_terminal_filters(self.terminal_filters.clone())
                     .with_reasoning_expanded(self.reasoning_expanded.clone())
@@ -464,8 +466,11 @@ impl ChatView {
                         if let Some(cb) = on_action.as_ref() {
                             (cb.borrow_mut())(action);
                         }
-                    })
-                    .finish();
+                    });
+                if self.transcript_selection.is_some() {
+                    bubble = bubble.with_text_selection(self.text_recording.clone());
+                }
+                let bubble = bubble.finish();
                 message_column = message_column.with_child(bubble);
             }
             // A failed turn says why under the messages it belongs to. The
@@ -589,6 +594,19 @@ impl ChatView {
                 .with_state(self.scroll.clone())
                 .with_bottom_anchor(true)
                 .finish();
+            // The surface records what its text elements painted and draws the
+            // selection over them; it is also the box the pointer is read
+            // against, so a press outside the transcript clears the selection.
+            let transcript = match &self.transcript_selection {
+                Some(selection) => super::surface::TranscriptSurface::new(
+                    transcript,
+                    self.text_recording.clone(),
+                    Rc::clone(selection),
+                    self.transcript_viewport.clone(),
+                )
+                .finish(),
+                None => transcript,
+            };
             if self.has_terminal_blocks() {
                 if let Some(bar) = self.build_global_filter_bar(app) {
                     // The filter bar is content-sized, the transcript takes the

@@ -189,6 +189,19 @@ impl TerminalView {
             .end_block_selection(self.pane_id)
     }
 
+    /// Copy what a finished drag selected, the way grok-build does: the
+    /// selection is on the clipboard as soon as the button comes up, with no
+    /// Cmd+C. A drag that covers one cell is a click and copies nothing.
+    pub(super) fn copy_dragged_selection(&mut self) {
+        let text = self
+            .terminal
+            .borrow()
+            .dragged_selection_text(self.pane_id);
+        if let Some(text) = text {
+            (self.on_copy.borrow_mut())(text);
+        }
+    }
+
     /// The wheel: a pointer report when the program listens for one, otherwise
     /// the pane's own scrollback.
     pub(super) fn handle_wheel(&mut self, delta_y: f32) {

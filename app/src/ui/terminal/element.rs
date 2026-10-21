@@ -122,6 +122,10 @@ impl Element for TerminalView {
                     let cells = self.end_mouse_selection();
                     let blocks = self.end_block_mouse_selection();
                     if cells || blocks {
+                        // A drag ends in a copy, the way grok-build's selection
+                        // does: releasing the button puts what the drag covered
+                        // on the clipboard without a Cmd+C.
+                        self.copy_dragged_selection();
                         self.pressed = None;
                         self.last_cell = self.cell_at(*position).or(self.last_cell);
                         return true;

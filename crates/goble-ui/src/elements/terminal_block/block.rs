@@ -408,6 +408,7 @@ impl TerminalBlock {
             return Text::new(line.text.clone())
                 .with_theme_color(color, app)
                 .with_font_size(FONT_SIZE)
+                .with_line_height(LINE_HEIGHT)
                 .with_font_family(FontFamily::Mono)
                 .finish();
         }
@@ -614,9 +615,10 @@ impl TerminalBlock {
         let geometry = self.line_geometry.clone();
         let line_base = self.line_base;
         let column_width = mono_advance(FONT_SIZE, FontWeight::Regular);
-        let mut body = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(sm / 2.0);
+        // The lines are drawn as terminal rows: one line height each, no gap
+        // between them. A gap would spread a command's output out like
+        // paragraphs and break column alignment across lines.
+        let mut body = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         for (line_index, line) in self
             .lines
             .iter()
@@ -632,6 +634,7 @@ impl TerminalBlock {
                         Text::new(PROMPT_PREFIX.to_string())
                             .with_theme_color(ColorToken::Accent, app)
                             .with_font_size(FONT_SIZE)
+                            .with_line_height(LINE_HEIGHT)
                             .with_font_family(FontFamily::Mono)
                             .finish(),
                     )

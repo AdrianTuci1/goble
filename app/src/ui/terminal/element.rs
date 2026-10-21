@@ -154,7 +154,7 @@ impl Element for TerminalView {
                 // Motion is never consumed: the pane does not own the pointer.
                 false
             }
-            DispatchedEvent::Scroll { delta } => {
+            DispatchedEvent::Scroll { delta, precise } => {
                 if !self.pointer_inside() {
                     return false;
                 }
@@ -167,7 +167,9 @@ impl Element for TerminalView {
                         return true;
                     }
                 }
-                self.handle_wheel(delta.y);
+                if self.handle_wheel(delta.y, *precise) {
+                    app.note_scroll_move();
+                }
                 true
             }
             // The window gained or lost the focus. Only the active pane is the

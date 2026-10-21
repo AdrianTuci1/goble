@@ -510,6 +510,10 @@ pub struct PaneTerminalState {
     /// Set while a mouse drag is extending a block-text selection.
     pub block_drag_anchor: Option<Cell>,
     pub last_click: Option<Click>,
+    /// The part of a trackpad wheel gesture that has not added up to a whole
+    /// row yet, in rows. The scrollback moves in rows; a gesture reports
+    /// pixels, and the leftover would otherwise be rounded away every event.
+    pub wheel_remainder: f32,
 }
 
 impl TerminalRegistry {

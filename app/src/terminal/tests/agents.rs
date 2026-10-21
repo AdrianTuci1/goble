@@ -9,6 +9,9 @@ use super::*;
         assert_eq!(TuiAgent::detect("cursor-agent"), Some(TuiAgent::Cursor));
         assert_eq!(TuiAgent::detect("cursor"), Some(TuiAgent::Cursor));
         assert_eq!(TuiAgent::detect("aider"), Some(TuiAgent::Aider));
+        assert_eq!(TuiAgent::detect("pi"), Some(TuiAgent::Pi));
+        assert_eq!(TuiAgent::detect("grok"), Some(TuiAgent::Grok));
+        assert_eq!(TuiAgent::detect("hermes"), Some(TuiAgent::Hermes));
     }
 
     #[test]

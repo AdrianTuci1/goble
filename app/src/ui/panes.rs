@@ -11,7 +11,7 @@ use std::rc::Rc;
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     file_icon_name, AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment,
-    Divider, EdgeInsets, Element, EventContext, Expanded, Fill, Flex, HoverButton, Icon,
+    Divider, EdgeInsets, Element, Empty, EventContext, Expanded, Fill, Flex, HoverButton, Icon,
     LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Spacer, SplitNode,
     Stack, Text, TopbarButton,
 };
@@ -121,7 +121,13 @@ fn build_space(
     space: &Space,
 ) -> Box<dyn Element> {
     match space.layout {
-        LayoutKind::Bsp => build_pane(app, state, actions, &space.root),
+        // A lifted pane leaves the tree while it is in flight (see
+        // [`build_pane`]); a space whose only pane is in flight has nothing
+        // left to draw until the drop lands.
+        LayoutKind::Bsp => match build_pane(app, state, actions, &space.root) {
+            Some(content) => content,
+            None => Empty::new().finish(),
+        },
         LayoutKind::MasterStack => {
             let mut leaves = Vec::new();
             space.root.leaves(&mut leaves);
@@ -313,25 +319,26 @@ fn build_pane(
     state: &UiSnapshot,
     actions: &UiActions,
     pane: &Pane,
-) -> Box<dyn Element> {
+) -> Option<Box<dyn Element>> {
     match pane {
         Pane::Leaf { id, kind } => {
+            // The lifted pane is not drawn and holds no slot: the panes that
+            // stay take the room it leaves, so the area under the pointer is
+            // exactly the panes a drop can land on.
+            if is_lifted(state, *id) {
+                return None;
+            }
             let leaf = build_leaf(app, state, actions, *id, kind.clone());
             // The frame sits a few pixels inside its split slot, so the
             // outline stays visible where two panes meet instead of being
             // clipped by the divider or the window edge.
-            let framed: Box<dyn Element> = Padding::new(
-                Box::new(PaneShadow::new(leaf)),
-                EdgeInsets::uniform(PANE_INSET),
+            Some(
+                Padding::new(
+                    Box::new(PaneShadow::new(leaf)),
+                    EdgeInsets::uniform(PANE_INSET),
+                )
+                .finish(),
             )
-            .finish();
-            // Hide the frame and its shadow together while the pane is lifted,
-            // not just the content: nothing may stay behind in the slot.
-            if is_lifted(state, *id) {
-                Box::new(HiddenInPlace::new(framed))
-            } else {
-                framed
-            }
         }
         Pane::Split {
             id,
@@ -340,6 +347,15 @@ fn build_pane(
             first,
             second,
         } => {
+            let first = build_pane(app, state, actions, first);
+            let second = build_pane(app, state, actions, second);
+            // A split with one side lifted collapses onto the side that stays:
+            // the survivor fills the slot both used to share.
+            let (first, second) = match (first, second) {
+                (Some(first), Some(second)) => (first, second),
+                (Some(only), None) | (None, Some(only)) => return Some(only),
+                (None, None) => return None,
+            };
             let axis = match dir {
                 SplitDir::Horizontal => Axis::Horizontal,
                 SplitDir::Vertical => Axis::Vertical,
@@ -349,17 +365,12 @@ fn build_pane(
             let on_move = actions.on_pane_drag_move.clone();
             let on_end = actions.on_pane_drag_end.clone();
             let split_id = *id;
-            let node = SplitNode::new(
-                axis,
-                *ratio,
-                build_pane(app, state, actions, first),
-                build_pane(app, state, actions, second),
-            )
-            .with_dragging(dragging)
-            .with_on_drag_start(move || (on_start.borrow_mut())(split_id))
-            .with_on_drag_move(move |r| (on_move.borrow_mut())(split_id, r))
-            .with_on_drag_end(move || (on_end.borrow_mut())());
-            Box::new(node)
+            let node = SplitNode::new(axis, *ratio, first, second)
+                .with_dragging(dragging)
+                .with_on_drag_start(move || (on_start.borrow_mut())(split_id))
+                .with_on_drag_move(move |r| (on_move.borrow_mut())(split_id, r))
+                .with_on_drag_end(move || (on_end.borrow_mut())());
+            Some(Box::new(node))
         }
     }
 }
@@ -483,10 +494,14 @@ impl Element for PaneBody {
     }
 }
 
-/// A pane lifted by its header keeps its slot in the layout but paints
-/// nothing: the drag card under the pointer is the pane's only visible part
-/// until the drop lands. Layout still runs, so cancelling the drag restores
-/// the same geometry, and events are dropped while the ghost is in flight.
+/// A lifted pane drawn as nothing: until the drop lands, the drag card under
+/// the pointer is the pane's only visible part. Layout still runs, so the place
+/// the pane came from is the place it returns to when the drag is cancelled.
+///
+/// The tiled (BSP) tree does not use this: it leaves the lifted leaf out and
+/// lets the panes that stay take its room (see [`build_pane`]). This wrapper
+/// covers the slots that cannot be shared — the maximized pane that owns the
+/// whole area, and a floating window whose own rectangle is its place.
 struct HiddenInPlace {
     content: Box<dyn Element>,
     size: Option<Vector2F>,
@@ -1021,8 +1036,8 @@ fn build_window(
         .with_border(Border::all(1.0).with_border_color(app.theme.color(border)))
         .with_corner_radius(WINDOW_CORNER_RADIUS)
         .finish();
-    // The same lifted-pane rule as a tiled leaf: keep the slot, paint only the
-    // drag card.
+    // A floating window keeps its own rectangle while lifted — there is no
+    // sibling to take the room — so only the drag card stays visible.
     if is_lifted(state, id) {
         Box::new(HiddenInPlace::new(window))
     } else {
@@ -1185,8 +1200,9 @@ fn build_leaf_with_lift(
     } else {
         pane
     };
-    // A pane lifted by its header leaves its slot visually: the drag card is
-    // the only thing the user sees until the drop lands.
+    // A lifted pane paints nothing where it stood. The tiled tree has already
+    // left it out (see `build_pane`); a maximized pane or a region layout keeps
+    // its slot, so cancelling the drag puts it back exactly there.
     if is_lifted(state, id) {
         Box::new(HiddenInPlace::new(framed))
     } else {

@@ -231,6 +231,18 @@ impl Emulator {
             .any(|block| block.state() == BlockState::Executing)
     }
 
+    /// The command the shell is running right now, if it reported one. The
+    /// command line is what tells a TUI agent from any other foreground
+    /// program once the alternate screen is gone.
+    pub fn running_command(&self) -> Option<&str> {
+        self.blocks
+            .blocks()
+            .iter()
+            .find(|block| block.state() == BlockState::Executing)
+            .map(|block| block.command_text())
+            .filter(|command| !command.is_empty())
+    }
+
     /// Lines scrolled back from the bottom of the display.
     pub fn display_offset(&self) -> usize {
         self.screen.display_offset()

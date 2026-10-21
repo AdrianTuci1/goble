@@ -162,14 +162,37 @@ impl TerminalRegistry {
     /// native-first, or any full-screen program in the alternate screen. While
     /// it does, the pane's own rich input steps aside and the program takes the
     /// keys (native-first), exactly as it does when the agent owns the pty.
+    ///
+    /// The agent mode is sticky — once a pane has launched an agent it stays
+    /// native-first — so the mode alone only means the screen is owned while
+    /// the shell still runs that agent. Once the agent exits (or the foreground
+    /// command is another one, say `cargo build`), the pane goes back to its
+    /// own shell and its rich input comes back.
     pub fn program_owns_screen(&self, pane_id: u64) -> bool {
-        if matches!(self.mode(pane_id), TerminalMode::Agent(_)) {
-            return true;
-        }
-        self.sessions
+        if self
+            .sessions
             .get(&pane_id)
             .map(|session| session.is_alt_screen())
             .unwrap_or(false)
+        {
+            return true;
+        }
+        if !matches!(self.mode(pane_id), TerminalMode::Agent(_)) {
+            return false;
+        }
+        match self
+            .sessions
+            .get(&pane_id)
+            .and_then(|session| session.running_command())
+        {
+            // The foreground command names a TUI agent: the program owns the
+            // screen even before it paints its alternate screen (or while a
+            // command it reported without a line is still running).
+            Some(command) => TuiAgent::detect(&command).is_some(),
+            // The shell reported a running command but not its line: the
+            // pane's mode is the only signal left.
+            None => self.running_a_command(pane_id),
+        }
     }
 
     /// Whether any pane's shell is running a command right now. A running
@@ -266,6 +289,16 @@ impl TerminalRegistry {
         } else {
             None
         }
+    }
+
+    /// The same switch for a command line submitted from the rich input rather
+    /// than typed into the grid: the bar is the pane's usual command surface, so
+    /// `codex` typed there must flip the pane exactly as `codex` typed at the
+    /// prompt does.
+    pub fn note_command(&mut self, pane_id: u64, command: &str) -> Option<TuiAgent> {
+        let agent = TuiAgent::detect(command)?;
+        self.modes.insert(pane_id, TerminalMode::Agent(agent));
+        Some(agent)
     }
 
     /// Launch a TUI agent inside a pane's PTY: write `command + '\n'` so the

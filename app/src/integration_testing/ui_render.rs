@@ -2579,13 +2579,20 @@ fn a_pane_dragged_over_another_pane_shows_where_it_would_land() {
         "the pane under the pointer names the side the drop would land on"
     );
 
-    // The ghost is the right half of the target pane: accent-tinted and clear
-    // against the pane under it.
+    // The ghost is the right half of the target pane as it is drawn now: the
+    // lifted pane left its slot, so the survivor fills the whole area.
+    let kept_now = state_rc
+        .borrow()
+        .pane_bounds
+        .borrow()
+        .get(&kept)
+        .copied()
+        .expect("the pane that stays drew after the lift");
     let ghost = rectf(
-        kept_bounds.min_x() + kept_bounds.width() / 2.0,
-        kept_bounds.min_y(),
-        kept_bounds.width() / 2.0,
-        kept_bounds.height(),
+        kept_now.min_x() + kept_now.width() / 2.0,
+        kept_now.min_y(),
+        kept_now.width() / 2.0,
+        kept_now.height(),
     );
     let near = |a: RectF, b: RectF| {
         (a.min_x() - b.min_x()).abs() < 0.01
@@ -2645,6 +2652,317 @@ fn a_pane_dragged_over_another_pane_shows_where_it_would_land() {
     assert_eq!(
         state.active_pane_id, moved,
         "the moved pane holds the focus"
+    );
+}
+
+/// While a pane is lifted, the panes that stay take the room it left: the
+/// split collapses around the drag instead of keeping an empty slot where the
+/// pane was.
+#[test]
+fn pane_drag_survivors_fill_the_freed_room() {
+    use goble_ui::event::DispatchedEvent;
+
+    let app = AppContext::default();
+    let (mut root, state_rc, _desktop, _dir, kept, moved) = split_workspace(&app);
+    let commands = frame(&mut root, &app);
+    let (control_x, header_y) =
+        topmost_icon_center(&commands, "maximize-01").expect("the pane header's expand control");
+    let (kept_before, moved_before) = {
+        let state = state_rc.borrow();
+        let bounds = state.pane_bounds.borrow();
+        (
+            bounds.get(&kept).copied().expect("the staying pane drew"),
+            bounds.get(&moved).copied().expect("the lifted pane drew"),
+        )
+    };
+
+    send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseDown {
+            position: vec2f(control_x - 60.0, header_y),
+            button: 0,
+        },
+    );
+    // A frame between the press and the move: the lift lives in app state, and
+    // the strip only sees the move on the tree rebuilt after the press.
+    let _ = frame(&mut root, &app);
+    send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseMove {
+            position: vec2f(control_x - 60.0, header_y + 30.0),
+        },
+    );
+    let _ = frame(&mut root, &app);
+
+    let kept_after = state_rc
+        .borrow()
+        .pane_bounds
+        .borrow()
+        .get(&kept)
+        .copied()
+        .expect("the staying pane drew after the lift");
+    assert!(
+        kept_after.width() >= kept_before.width() + moved_before.width() - 1.0,
+        "the staying pane takes the freed room: {kept_after:?} after \
+         {kept_before:?} + {moved_before:?}"
+    );
+}
+
+/// Lifting a pane out of a nested split reflows the whole tree that stays, not
+/// only the pane's immediate sibling.
+#[test]
+fn pane_drag_reflows_every_pane_that_stays() {
+    use goble_app::ui::SplitDir;
+    use goble_ui::event::DispatchedEvent;
+
+    let app = AppContext::default();
+    let (mut root, state_rc, _desktop, _dir, kept, _moved) = split_workspace(&app);
+    let third = {
+        let mut state = state_rc.borrow_mut();
+        let mut next = state.next_pane_id;
+        let third = state.spaces[0]
+            .split(kept, SplitDir::Vertical, &mut next)
+            .expect("the staying pane splits again");
+        state.next_pane_id = next;
+        state.ensure_pane_sessions(None);
+        third
+    };
+    let commands = frame(&mut root, &app);
+    let (control_x, header_y) =
+        topmost_icon_center(&commands, "maximize-01").expect("the pane header's expand control");
+    let (kept_before, third_before) = {
+        let state = state_rc.borrow();
+        let bounds = state.pane_bounds.borrow();
+        (
+            bounds.get(&kept).copied().expect("the first survivor drew"),
+            bounds.get(&third).copied().expect("the second survivor drew"),
+        )
+    };
+
+    send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseDown {
+            position: vec2f(control_x - 60.0, header_y),
+            button: 0,
+        },
+    );
+    let _ = frame(&mut root, &app);
+    send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseMove {
+            position: vec2f(control_x - 60.0, header_y + 30.0),
+        },
+    );
+    let _ = frame(&mut root, &app);
+
+    let state = state_rc.borrow();
+    let bounds = state.pane_bounds.borrow();
+    let kept_after = bounds.get(&kept).copied().expect("the first survivor drew");
+    let third_after = bounds.get(&third).copied().expect("the second survivor drew");
+    assert!(
+        kept_after.width() > kept_before.width() * 1.5,
+        "the first survivor takes the left pane's room: {kept_after:?} after {kept_before:?}"
+    );
+    assert!(
+        third_after.width() > third_before.width() * 1.5,
+        "the second survivor takes the left pane's room too: {third_after:?} after {third_before:?}"
+    );
+}
+
+/// A lifted pane dropped on the empty part of the bar — past the drawn tabs —
+/// still names an insertion point there, so it becomes a tab instead of
+/// cancelling.
+#[test]
+fn pane_drag_drops_on_the_empty_part_of_the_bar() {
+    use goble_app::ui::PaneKind;
+    use goble_ui::event::DispatchedEvent;
+
+    let app = AppContext::default();
+    let (mut root, state_rc, _desktop, _dir, _kept, moved) = split_workspace(&app);
+    let commands = frame(&mut root, &app);
+    let (control_x, header_y) =
+        topmost_icon_center(&commands, "maximize-01").expect("the pane header's expand control");
+    let tab = active_tab_rect(&commands, &app);
+    let topbar_height = goble_app::ui::shell::TOPBAR_HEIGHT;
+
+    send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseDown {
+            position: vec2f(control_x - 60.0, header_y),
+            button: 0,
+        },
+    );
+    let _ = frame(&mut root, &app);
+
+    // Well past the only drawn tab, in the bar's empty room.
+    let drop_at = vec2f(tab.max_x() + 200.0, topbar_height / 2.0);
+    assert!(
+        send(
+            &mut root,
+            &app,
+            DispatchedEvent::MouseMove { position: drop_at },
+        ),
+        "the strip takes the move over the empty bar"
+    );
+    let _ = frame(&mut root, &app);
+    assert_eq!(
+        state_rc
+            .borrow()
+            .pane_drag
+            .as_ref()
+            .and_then(|drag| drag.drop_index),
+        Some(1),
+        "the insertion point is past the only tab, wherever on the bar the pointer is"
+    );
+
+    assert!(send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseUp {
+            position: drop_at,
+            button: 0,
+        },
+    ));
+    let state = state_rc.borrow();
+    assert_eq!(state.spaces.len(), 2, "the pane became a tab of its own");
+    assert_eq!(
+        state.spaces[1].root.leaf_kind(moved),
+        Some(&PaneKind::Chat),
+        "the new tab holds the lifted pane"
+    );
+}
+
+/// A lifted pane dropped where its own slot was — now the staying pane's room
+/// — lands beside that pane as a new split: the drop resolves against the pane
+/// that is actually on screen, so a pane can be repositioned inside its tab.
+#[test]
+fn pane_drag_repositions_within_the_same_tab() {
+    use goble_app::ui::{Pane, SplitDir};
+    use goble_ui::event::DispatchedEvent;
+
+    let app = AppContext::default();
+    let (mut root, state_rc, _desktop, _dir, kept, moved) = split_workspace(&app);
+    let commands = frame(&mut root, &app);
+    let (control_x, header_y) =
+        topmost_icon_center(&commands, "maximize-01").expect("the pane header's expand control");
+    let moved_before = state_rc
+        .borrow()
+        .pane_bounds
+        .borrow()
+        .get(&moved)
+        .copied()
+        .expect("the lifted pane drew");
+
+    send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseDown {
+            position: vec2f(control_x - 60.0, header_y),
+            button: 0,
+        },
+    );
+    let _ = frame(&mut root, &app);
+
+    // The top of the lifted pane's old slot: once the survivor fills the area
+    // this names the survivor's top half.
+    let drop_at = vec2f(moved_before.center().x, moved_before.min_y() + 20.0);
+    assert!(send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseMove { position: drop_at },
+    ));
+    let _ = frame(&mut root, &app);
+    assert!(send(
+        &mut root,
+        &app,
+        DispatchedEvent::MouseUp {
+            position: drop_at,
+            button: 0,
+        },
+    ));
+
+    let state = state_rc.borrow();
+    assert!(state.pane_drag.is_none(), "the drag is over");
+    assert_eq!(state.spaces.len(), 1, "no tab was added");
+    match &state.spaces[0].root {
+        Pane::Split {
+            dir, first, second, ..
+        } => {
+            assert_eq!(
+                *dir,
+                SplitDir::Vertical,
+                "the drop named a top/bottom split"
+            );
+            assert_eq!(
+                first.first_leaf_id(),
+                moved,
+                "the lifted pane landed on top"
+            );
+            assert_eq!(second.first_leaf_id(), kept, "the staying pane is below");
+        }
+        _ => panic!("the lifted pane split the pane that stayed"),
+    }
+}
+
+/// The pane bounds a drop resolves against are rebuilt with the frame: a pane
+/// of a tab that is no longer on screen is not remembered as a target.
+#[test]
+fn pane_bounds_forget_panes_that_are_not_on_screen() {
+    use goble_app::ui::{Pane, PaneKind, Space};
+
+    let (desktop, _dir) = common::desktop_state();
+    let app = AppContext::default();
+    let view = RootView::new(&app, &desktop, None);
+    let state_rc = view.state_rc();
+    let (first_pane, second_pane) = {
+        let mut state = state_rc.borrow_mut();
+        state.show_onboarding_tip = false;
+        state.show_llm_key_banner = false;
+        state.show_workspace_choice = false;
+        let first = state.active_pane_id;
+        let second = state.next_pane_id;
+        state.next_pane_id += 1;
+        state.spaces.push(Space::new(
+            "Other",
+            Pane::Leaf {
+                id: second,
+                kind: PaneKind::Chat,
+            },
+        ));
+        (first, second)
+    };
+    let mut root: Box<dyn Element> = Box::new(view);
+    let _ = frame(&mut root, &app);
+    assert!(
+        state_rc
+            .borrow()
+            .pane_bounds
+            .borrow()
+            .contains_key(&first_pane),
+        "the tab on screen drew its pane"
+    );
+
+    {
+        let mut state = state_rc.borrow_mut();
+        state.active_space = state.spaces.len() - 1;
+        state.active_pane_id = second_pane;
+    }
+    let _ = frame(&mut root, &app);
+
+    let state = state_rc.borrow();
+    let bounds = state.pane_bounds.borrow();
+    assert!(
+        bounds.contains_key(&second_pane),
+        "the tab now on screen drew its pane"
+    );
+    assert!(
+        !bounds.contains_key(&first_pane),
+        "a pane of the tab that left is not a drop target any more"
     );
 }
 

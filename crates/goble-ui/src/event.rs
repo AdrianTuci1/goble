@@ -50,5 +50,22 @@ pub enum DispatchedEvent {
     },
     Scroll {
         delta: crate::geometry::Vector2F,
+        /// Whether the delta is a trackpad's precise pixel movement rather than
+        /// a wheel's line notch. A precise delta carries the distance the
+        /// fingers travelled, so a region that moves in whole rows can carry
+        /// the fraction over to the next event instead of rounding every
+        /// pixel up to a row.
+        precise: bool,
     },
+}
+
+impl DispatchedEvent {
+    /// A scroll delta with no gesture information, the shape a test or a caller
+    /// that is not a platform wheel stream uses: a wheel notch, not a trackpad.
+    pub fn scroll(delta: crate::geometry::Vector2F) -> Self {
+        Self::Scroll {
+            delta,
+            precise: false,
+        }
+    }
 }

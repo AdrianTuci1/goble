@@ -50,7 +50,7 @@ fn cmd_enter_activates_harness_mode_on_a_shell_pane() {
         true,
         BlockView::Terminal,
         false,
-        Text::new("bar").finish(),
+        Some(Text::new("bar").finish()),
         Rc::new(RefCell::new(|_: u64| {})),
         Rc::new(RefCell::new(move |_: u64, text: String| {
             routed_cb.borrow_mut().push(text)
@@ -84,7 +84,7 @@ fn an_inactive_pane_ignores_keystrokes() {
         false,
         BlockView::Terminal,
         false,
-        Text::new("bar").finish(),
+        Some(Text::new("bar").finish()),
         Rc::new(RefCell::new(|_: u64| {})),
         Rc::new(RefCell::new(|_: u64, _: String| {})),
         Rc::new(RefCell::new(|_: u64, _: bool| {})),
@@ -147,7 +147,7 @@ fn only_an_active_pane_with_the_mode_on_reports_focus() {
             active,
             BlockView::Terminal,
             false,
-            Text::new("bar").finish(),
+            Some(Text::new("bar").finish()),
             Rc::new(RefCell::new(|_: u64| {})),
             Rc::new(RefCell::new(|_: u64, _: String| {})),
             Rc::new(RefCell::new(|_: u64, _: bool| {})),
@@ -610,6 +610,103 @@ fn the_shells_composer_sits_at_the_bottom_of_the_pane() {
     );
 }
 
+/// A TUI agent — codex, claude, pi, grok, hermes — paints its own input on the
+/// alternate screen. The pane's rich input steps aside for it, so the program
+/// owns the whole pane and the keys; when it exits, the shell's bar returns.
+#[test]
+fn the_rich_input_steps_aside_while_a_full_screen_agent_owns_the_pane() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let placeholder = ChatComposer::new().placeholder().to_string();
+    assert!(
+        pane_has(&pane_runs(&mut root, &app), &placeholder),
+        "a shell pane draws its rich input"
+    );
+    let rows_with_bar = state
+        .borrow()
+        .terminal
+        .borrow()
+        .sessions
+        .get(&1)
+        .map(|session| session.size().0)
+        .expect("the pane has a session");
+
+    // What a TUI agent does when it starts: it takes the alternate screen.
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(b"\x1b[?1049h");
+    state
+        .borrow()
+        .terminal
+        .borrow_mut()
+        .sessions
+        .insert(1, TerminalSession::with_emulator(emulator));
+    assert!(
+        !pane_has(&pane_runs(&mut root, &app), &placeholder),
+        "the rich input is not drawn over the agent's own screen"
+    );
+    let rows_without_bar = state
+        .borrow()
+        .terminal
+        .borrow()
+        .sessions
+        .get(&1)
+        .map(|session| session.size().0)
+        .expect("the pane has a session");
+    assert!(
+        rows_without_bar > rows_with_bar,
+        "the program keeps the rows the bar held: {rows_without_bar} against {rows_with_bar}"
+    );
+    // The agent's own line editor is the typing surface: the key goes to the
+    // program instead of to a bar that is not there.
+    assert!(
+        press(&mut root, &app, "h"),
+        "the agent's screen takes the key"
+    );
+    assert_eq!(
+        state.borrow().terminal.borrow().input(1),
+        "h",
+        "the key reaches the program's line, not a composer"
+    );
+
+    // The agent exits (alt screen left) and the shell prompt is back: so is
+    // the pane's rich input.
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(b"\x1b[?1049h");
+    emulator.feed(b"\x1b[?1049l");
+    state
+        .borrow()
+        .terminal
+        .borrow_mut()
+        .sessions
+        .insert(1, TerminalSession::with_emulator(emulator));
+    assert!(
+        pane_has(&pane_runs(&mut root, &app), &placeholder),
+        "the rich input returns with the shell"
+    );
+}
+
+/// A TUI agent launched from the bar flips the pane to native-first in the
+/// same submit, so the next frame drops the bar and hands the keys over.
+#[test]
+fn a_tui_agent_launched_from_the_rich_input_goes_native_first() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let _ = pane_runs(&mut root, &app);
+    for ch in "hermes".chars() {
+        assert!(
+            press(&mut root, &app, &ch.to_string()),
+            "the bar takes {ch:?}"
+        );
+    }
+    assert!(press(&mut root, &app, "Enter"));
+
+    assert_eq!(
+        state.borrow().terminal.borrow().mode(1),
+        crate::terminal::TerminalMode::Agent(crate::terminal::TuiAgent::Hermes),
+        "the pane hands its input to the agent"
+    );
+}
+
 /// A shell that has bootstrapped but has not run a command yet draws an empty
 /// body. The body still takes the space above the bar, so the rich input stays
 /// on the pane's last row instead of rising to the top.
@@ -907,13 +1004,7 @@ fn the_wheels_sign_scrolls_the_panes_scrollback() {
             &mut ctx,
             &app,
         );
-        root.dispatch_event(
-            &DispatchedEvent::Scroll {
-                delta: vec2f(0.0, dy),
-            },
-            &mut ctx,
-            &app,
-        );
+        root.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, dy)), &mut ctx, &app);
     };
 
     assert_eq!(offset(), 0, "the pane opens at the live screen");
@@ -930,6 +1021,62 @@ fn the_wheels_sign_scrolls_the_panes_scrollback() {
         back,
         offset()
     );
+}
+
+/// A trackpad reports pixels while the scrollback moves in rows. A stream of
+/// deltas short of a row has to add up; rounding each one up to a row made a
+/// flick jump a row per event instead of travelling.
+#[test]
+fn precise_wheel_deltas_add_up_before_a_row_scrolls() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    {
+        let s = state.borrow_mut();
+        let mut emulator = Emulator::new(80, 24);
+        for line in 0..120 {
+            emulator.feed(format!("line {line}\r\n").as_bytes());
+        }
+        s.terminal
+            .borrow_mut()
+            .sessions
+            .insert(1, TerminalSession::with_emulator(emulator));
+    }
+    let _ = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+
+    let offset = || {
+        state
+            .borrow()
+            .terminal
+            .borrow()
+            .sessions
+            .get(&1)
+            .map(|session| session.display_offset())
+            .expect("the pane's session")
+    };
+    let wheel = |root: &mut Box<dyn Element>, dy: f32| {
+        let mut ctx = EventContext;
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: vec2f(600.0, 300.0),
+            },
+            &mut ctx,
+            &app,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::Scroll {
+                delta: vec2f(0.0, dy),
+                precise: true,
+            },
+            &mut ctx,
+            &app,
+        );
+    };
+
+    // Ten 4px moves: 40px of a 16.2px row is two rows of scrollback, not ten.
+    for _ in 0..10 {
+        wheel(&mut root, 4.0);
+    }
+    assert_eq!(offset(), 2, "the sub-row deltas add up");
 }
 
 /// The pane's bar carries one control beside the close X: the expand
@@ -2256,7 +2403,7 @@ fn view_over(
         BlockView::Terminal,
         // The shell's own state: the rich input holds the keyboard.
         true,
-        Text::new("bar").finish(),
+        Some(Text::new("bar").finish()),
         Rc::new(RefCell::new(|_: u64| {})),
         Rc::new(RefCell::new(|_: u64, _: String| {})),
         Rc::new(RefCell::new(|_: u64, _: bool| {})),
@@ -2388,7 +2535,7 @@ fn view_over_copy(session: TerminalSession, pane_id: u64) -> CopyFixture {
         // The test's bar is a label, not the rich composer: with no editor
         // in the tree the pane's own key path is the one under test.
         false,
-        Text::new("bar").finish(),
+        Some(Text::new("bar").finish()),
         Rc::new(RefCell::new(|_: u64| {})),
         Rc::new(RefCell::new(|_: u64, _: String| {})),
         Rc::new(RefCell::new(|_: u64, _: bool| {})),

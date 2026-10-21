@@ -125,6 +125,14 @@ impl TerminalSession {
             .unwrap_or(false)
     }
 
+    /// The command line the shell is running right now, when it reported one.
+    pub fn running_command(&self) -> Option<String> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.running_command().map(str::to_string))
+    }
+
     /// The listener thread has finished (child exited) — used to cheaply detect
     /// when the shell is closed so the pane can render a hint.
     pub fn is_alive(&self) -> bool {

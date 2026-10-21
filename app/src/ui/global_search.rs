@@ -1034,13 +1034,7 @@ mod sidebar_scroll_tests {
             &mut ctx,
             &app,
         );
-        root.dispatch_event(
-            &DispatchedEvent::Scroll {
-                delta: vec2f(0.0, -40.0),
-            },
-            &mut ctx,
-            &app,
-        );
+        root.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, -40.0)), &mut ctx, &app);
         let scrolled = scroll.borrow().offset();
         assert!(
             scrolled > 0.0,
@@ -1146,13 +1140,7 @@ mod sidebar_scroll_tests {
             &mut ctx,
             &app,
         );
-        root.dispatch_event(
-            &DispatchedEvent::Scroll {
-                delta: vec2f(0.0, -40.0),
-            },
-            &mut ctx,
-            &app,
-        );
+        root.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, -40.0)), &mut ctx, &app);
         let scrolled = scroll.borrow().offset();
         assert!(
             scrolled > 0.0,
@@ -1297,9 +1285,7 @@ mod sidebar_scroll_tests {
             &app,
         );
         root.dispatch_event(
-            &DispatchedEvent::Scroll {
-                delta: vec2f(0.0, -1_000_000.0),
-            },
+            &DispatchedEvent::scroll(vec2f(0.0, -1_000_000.0)),
             &mut ctx,
             &app,
         );

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::elements::{AppContext, Element, LayoutContext, PaintContext, SizeConstraint};
 use crate::event::DispatchedEvent;
 use crate::geometry::{vec2f, Vector2F};
+use crate::platform::scroll_momentum::ScrollMomentum;
 use crate::render::Renderer;
 use winit::application::ApplicationHandler;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -107,6 +108,7 @@ pub fn run_with_root(
         cursor_position: vec2f(0.0, 0.0),
         cursor_inside: false,
         modifiers: winit::event::Modifiers::default(),
+        scroll_momentum: ScrollMomentum::default(),
         next_frame: std::time::Instant::now(),
     };
     event_loop.run_app(&mut app)?;
@@ -121,9 +123,46 @@ struct App {
     cursor_position: Vector2F,
     cursor_inside: bool,
     modifiers: winit::event::Modifiers,
+    /// The velocity of the trackpad gesture in flight and the glide a flick
+    /// leaves behind, driven here because this is where the whole wheel stream
+    /// (and the frames the glide runs on) is visible.
+    scroll_momentum: ScrollMomentum,
     /// When the next frame is due. Input requests its own frames; this is the
     /// animation clock, and it also caps how long the window sleeps while idle.
     next_frame: std::time::Instant,
+}
+
+impl App {
+    /// Apply one frame of a trackpad glide: the motion the flick has travelled
+    /// since the last frame goes through the tree like any other wheel event.
+    ///
+    /// An associated function rather than a method because the redraw arm calls
+    /// it while it still holds the window handle, which borrows the app's
+    /// window field: this touches only the pieces a glide needs.
+    fn advance_scroll_momentum(
+        momentum: &mut ScrollMomentum,
+        root: &mut Box<dyn Element>,
+        app_context: &Rc<RefCell<AppContext>>,
+    ) {
+        let Some(delta) = momentum.advance(std::time::Instant::now()) else {
+            return;
+        };
+        let event = DispatchedEvent::Scroll {
+            delta,
+            precise: true,
+        };
+        let mut event_ctx = crate::elements::EventContext;
+        let app_context = app_context.borrow().clone();
+        let before = app_context.scroll_moves();
+        root.dispatch_event(&event, &mut event_ctx, &app_context);
+        let moved = app_context.scroll_moves() != before;
+        drop(app_context);
+        if !moved {
+            // The region under the pointer has nowhere left to go: stop instead
+            // of painting frames that would look the same.
+            momentum.stop();
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -206,6 +245,14 @@ impl ApplicationHandler for App {
                 window.request_redraw();
             }
             winit::event::WindowEvent::RedrawRequested => {
+                // A flick from last gesture glides on these frames: the motion
+                // it has travelled since the last one lands before the tree
+                // lays out, so this frame paints it.
+                Self::advance_scroll_momentum(
+                    &mut self.scroll_momentum,
+                    &mut self.root,
+                    &self.app_context,
+                );
                 let (width, height) = self
                     .surface_state
                     .as_ref()
@@ -309,26 +356,47 @@ impl ApplicationHandler for App {
                 // hover-only surface) would wait for the idle heartbeat.
                 window.request_redraw();
             }
-            winit::event::WindowEvent::MouseWheel { delta, .. } => {
+            winit::event::WindowEvent::MouseWheel { delta, phase, .. } => {
                 let zoom = *self.app_context.borrow().ui_zoom.borrow();
                 let render_scale = render_scale_for(window.scale_factor(), zoom);
-                let delta = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(x, y) => vec2f(x * 20.0, y * 20.0),
+                let (delta, precise) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        (vec2f(x * 20.0, y * 20.0), false)
+                    }
                     // Pixel deltas are physical; divide by the zoomed scale for
                     // logical px (so the scroll amount matches the layout).
                     winit::event::MouseScrollDelta::PixelDelta(p) => {
                         let logical = p.to_logical::<f64>(render_scale);
-                        vec2f(logical.x as f32, logical.y as f32)
+                        (vec2f(logical.x as f32, logical.y as f32), true)
                     }
                 };
-                let event = DispatchedEvent::Scroll { delta };
-                let mut event_ctx = crate::elements::EventContext::default();
+                // The gesture's velocity is only visible here, where the whole
+                // stream arrives: it is what a trackpad flick glides on.
+                let started_glide = self.scroll_momentum.track(
+                    delta,
+                    precise,
+                    scroll_phase(phase),
+                    std::time::Instant::now(),
+                );
+                let event = DispatchedEvent::Scroll { delta, precise };
+                let mut event_ctx = crate::elements::EventContext;
                 let app_context = self.app_context.borrow().clone();
-                let _ = self
+                let before = app_context.scroll_moves();
+                let consumed = self
                     .root
                     .dispatch_event(&event, &mut event_ctx, &app_context);
+                let moved = app_context.scroll_moves() != before;
                 drop(app_context);
-                window.request_redraw();
+                if !consumed {
+                    // Nothing under the pointer scrolls, so nothing can carry
+                    // the glide.
+                    self.scroll_momentum.stop();
+                }
+                // A delta that lands on a region already at its end changes
+                // nothing on screen: it is consumed, but it earns no frame.
+                if moved || started_glide {
+                    window.request_redraw();
+                }
             }
             winit::event::WindowEvent::KeyboardInput { event, .. } => {
                 if let Some(key) = logical_key_string(&event.logical_key) {
@@ -388,18 +456,29 @@ impl ApplicationHandler for App {
         // on a slow heartbeat instead of rebuilding and repainting at the
         // display's refresh rate forever.
         let now = std::time::Instant::now();
-        if now >= self.next_frame {
+        let animating = self.scroll_momentum.is_gliding() || self.root.wants_animation();
+        let interval = if animating { ACTIVE_FRAME } else { IDLE_FRAME };
+        // A glide (or a streamed answer) that starts mid-heartbeat has to pull
+        // the clock in: the previous frame may have scheduled the next one at
+        // the idle rate, and waiting it out would be a 250ms hole in the
+        // animation.
+        if now >= self.next_frame || (animating && self.next_frame > now + interval) {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
             }
-            let interval = if self.root.wants_animation() {
-                ACTIVE_FRAME
-            } else {
-                IDLE_FRAME
-            };
             self.next_frame = now + interval;
         }
         event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(self.next_frame));
+    }
+}
+
+/// Map winit's wheel phase onto the scroll momentum's own.
+fn scroll_phase(phase: winit::event::TouchPhase) -> crate::platform::scroll_momentum::ScrollPhase {
+    use crate::platform::scroll_momentum::ScrollPhase;
+    match phase {
+        winit::event::TouchPhase::Started => ScrollPhase::Began,
+        winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => ScrollPhase::Ended,
+        winit::event::TouchPhase::Moved => ScrollPhase::Moved,
     }
 }
 

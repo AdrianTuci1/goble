@@ -1244,13 +1244,7 @@ fn a_long_page_scrolls_inside_the_pane() {
 
     let mut ctx = EventContext;
     assert!(
-        root.dispatch_event(
-            &DispatchedEvent::Scroll {
-                delta: vec2f(0.0, -30.0),
-            },
-            &mut ctx,
-            &app
-        ),
+        root.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, -30.0)), &mut ctx, &app),
         "the wheel over the page is consumed"
     );
     assert_eq!(state.borrow().settings_scroll.borrow().offset(), 30.0);

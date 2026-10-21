@@ -30,6 +30,68 @@ use super::*;
         assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Claude));
     }
 
+    /// The agent mode is sticky, so the screen is only owned while the shell
+    /// still runs the agent. Once the command finishes, the pane is a shell
+    /// again and its rich input must come back.
+    #[test]
+    fn a_finished_agent_gives_the_screen_back_to_the_shell() {
+        let mut reg = TerminalRegistry::default();
+        reg.sessions.insert(1, detached());
+        {
+            let session = reg.sessions.get_mut(&1).expect("the session is there");
+            run_hook(session, HookEvent::Bootstrapped(Default::default()));
+            run_hook(session, preexec("codex"));
+        }
+        reg.set_mode(1, TerminalMode::Agent(TuiAgent::Codex));
+        assert!(
+            reg.program_owns_screen(1),
+            "the running agent owns the screen"
+        );
+
+        let session = reg.sessions.get_mut(&1).expect("the session is there");
+        run_hook(session, HookEvent::CommandFinished(Default::default()));
+        assert!(
+            !reg.program_owns_screen(1),
+            "the shell prompt has the screen again"
+        );
+    }
+
+    /// The mode outlives the agent that set it, so a later shell command in
+    /// the same pane is not mistaken for the agent: the pane's own bar stays.
+    #[test]
+    fn a_later_shell_command_is_not_the_agent() {
+        let mut reg = TerminalRegistry::default();
+        reg.sessions.insert(1, detached());
+        {
+            let session = reg.sessions.get_mut(&1).expect("the session is there");
+            run_hook(session, HookEvent::Bootstrapped(Default::default()));
+            run_hook(session, preexec("cargo build"));
+        }
+        reg.set_mode(1, TerminalMode::Agent(TuiAgent::Codex));
+        assert!(
+            !reg.program_owns_screen(1),
+            "a build is not the agent, so the rich input stays"
+        );
+    }
+
+    /// The rich input is the pane's usual command surface, so a line submitted
+    /// there flips the pane the same way a grid-typed one does.
+    #[test]
+    fn a_command_submitted_from_the_rich_input_flips_the_pane() {
+        let mut reg = TerminalRegistry::default();
+        assert_eq!(
+            reg.note_command(1, "grok"),
+            Some(TuiAgent::Grok),
+            "the line names a TUI agent"
+        );
+        assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Grok));
+        assert_eq!(
+            reg.note_command(1, "cargo build"),
+            None,
+            "a plain command leaves the mode alone"
+        );
+    }
+
     #[test]
     fn launch_agent_sets_agent_mode_even_for_unknown_commands() {
         let mut reg = TerminalRegistry::default();

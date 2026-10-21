@@ -442,7 +442,7 @@ impl Element for Scrollable {
             // pointer was when the last paint ran.
             self.cursor = Some(*position);
         }
-        if let DispatchedEvent::Scroll { delta } = event {
+        if let DispatchedEvent::Scroll { delta, .. } = event {
             let Some(state) = self.state.as_ref() else {
                 return false;
             };
@@ -460,7 +460,17 @@ impl Element for Scrollable {
                 Axis::Vertical => delta.y,
                 Axis::Horizontal => delta.x,
             };
+            let before = state.borrow().painted_offset();
             state.borrow_mut().scroll_by(-delta);
+            // A wheel at the end of the content is consumed but changes
+            // nothing; saying so is what keeps the platform from painting a
+            // frame that would look the same. The painted offset is compared:
+            // a wheel that lands while a follow glide is in flight snaps the
+            // paint to the offset even when the offset itself was already
+            // there.
+            if state.borrow().painted_offset() != before {
+                app.note_scroll_move();
+            }
             return true;
         }
         // Hit-testing already sees the offset: the child was painted at
@@ -804,9 +814,7 @@ mod tests {
         let mut wheel = |dy: f32| {
             let mut event_ctx = EventContext::default();
             scrollable.dispatch_event(
-                &DispatchedEvent::Scroll {
-                    delta: vec2f(0.0, dy),
-                },
+                &DispatchedEvent::scroll(vec2f(0.0, dy)),
                 &mut event_ctx,
                 &app,
             )
@@ -857,9 +865,7 @@ mod tests {
             &app,
         );
         let consumed = scrollable.dispatch_event(
-            &DispatchedEvent::Scroll {
-                delta: vec2f(0.0, 30.0),
-            },
+            &DispatchedEvent::scroll(vec2f(0.0, 30.0)),
             &mut event_ctx,
             &app,
         );
@@ -873,6 +879,53 @@ mod tests {
             "the wheel walked the transcript 30 points back from its end"
         );
         assert!(!state.borrow().is_pinned(), "and the user left the end");
+    }
+
+    /// A wheel that has nowhere to go is still the region's, but it moves
+    /// nothing: it earns no frame, which is what keeps a flick into the end of
+    /// a transcript from repainting a screen that would look the same.
+    #[test]
+    fn a_wheel_at_the_end_moves_nothing_and_earns_no_frame() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::default()));
+        let mut scrollable = Scrollable::new(
+            Empty::new().with_size(vec2f(100.0, 400.0)).finish(),
+            Axis::Vertical,
+        )
+        .with_state(Rc::clone(&state));
+        scrollable.layout(
+            SizeConstraint::loose(vec2f(300.0, 100.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut ctx = crate::elements::PaintContext::new(crate::render::Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = vec2f(10.0, 10.0);
+        scrollable.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        state.borrow_mut().scroll_by(10_000.0);
+        assert_eq!(state.borrow().offset(), 300.0, "at the end");
+
+        let mut event_ctx = EventContext::default();
+        let moves = app.scroll_moves();
+        // A negative delta moves the content up, further down the transcript —
+        // of which there is none.
+        let consumed = scrollable.dispatch_event(
+            &DispatchedEvent::scroll(vec2f(0.0, -30.0)),
+            &mut event_ctx,
+            &app,
+        );
+        assert!(consumed, "the region still takes the wheel");
+        assert_eq!(state.borrow().offset(), 300.0, "and nothing moved");
+        assert_eq!(app.scroll_moves(), moves, "no frame is owed");
+
+        let consumed = scrollable.dispatch_event(
+            &DispatchedEvent::scroll(vec2f(0.0, 30.0)),
+            &mut event_ctx,
+            &app,
+        );
+        assert!(consumed);
+        assert_eq!(state.borrow().offset(), 270.0);
+        assert_eq!(app.scroll_moves(), moves + 1, "a real move earns a frame");
     }
 
     #[test]
@@ -896,9 +949,7 @@ mod tests {
 
         let mut event_ctx = EventContext::default();
         let consumed = scrollable.dispatch_event(
-            &DispatchedEvent::Scroll {
-                delta: vec2f(0.0, -30.0),
-            },
+            &DispatchedEvent::scroll(vec2f(0.0, -30.0)),
             &mut event_ctx,
             &app,
         );

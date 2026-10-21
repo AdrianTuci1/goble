@@ -738,11 +738,7 @@ mod sidebar_surface_tests {
             // More rows than the band holds, so there is somewhere to scroll.
             s.conversations = (0..40)
                 .map(|index| {
-                    conversation(
-                        &format!("c{index}"),
-                        &format!("Agent {index}"),
-                        "Frontend",
-                    )
+                    conversation(&format!("c{index}"), &format!("Agent {index}"), "Frontend")
                 })
                 .collect();
         }
@@ -781,13 +777,7 @@ mod sidebar_surface_tests {
                 &mut ctx,
                 &app,
             );
-            root.dispatch_event(
-                &DispatchedEvent::Scroll {
-                    delta: vec2f(0.0, dy),
-                },
-                &mut ctx,
-                &app,
-            );
+            root.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, dy)), &mut ctx, &app);
         };
 
         wheel(&mut root, 40.0);
@@ -809,6 +799,173 @@ mod sidebar_surface_tests {
             scrolled,
             "the offset survives the rebuild"
         );
+    }
+
+    /// A trackpad reports how far the fingers travelled, and the sidebar spends
+    /// it to the point: a 4 pt delta moves the list 4 pt, not a row. The frame
+    /// accounting is the transcript's too — a delta that moves nothing (the
+    /// list is already at its end) is consumed but earns no frame.
+    #[test]
+    fn a_precise_delta_moves_the_sidebar_by_its_own_distance_and_only_a_move_earns_a_frame() {
+        use goble_ui::event::DispatchedEvent;
+
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let view = RootView::new(&app, &desktop, None);
+        let state = view.state_rc();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.conversations_expanded = true;
+            s.conversations = (0..40)
+                .map(|index| {
+                    conversation(&format!("c{index}"), &format!("Agent {index}"), "Frontend")
+                })
+                .collect();
+        }
+
+        let mut root: Box<dyn Element> = Box::new(view);
+        let window = vec2f(1024.0, 768.0);
+        let over_the_band = vec2f(crate::ui::SIDEBAR_WIDTH / 2.0, 400.0);
+        let _ = root.layout(SizeConstraint::loose(window), &mut LayoutContext, &app);
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        paint_ctx.cursor_inside = true;
+        paint_ctx.cursor_position = over_the_band;
+        root.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+
+        let scroll = state.borrow().sidebar_scroll.clone();
+        assert!(
+            scroll.borrow().max_offset() > 0.0,
+            "the seeded list overflows the band: {:?}",
+            scroll.borrow().max_offset()
+        );
+
+        let mut ctx = goble_ui::elements::EventContext;
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: over_the_band,
+            },
+            &mut ctx,
+            &app,
+        );
+        let moves = app.scroll_moves();
+        let wheel = |root: &mut Box<dyn Element>, dy: f32| {
+            let mut ctx = goble_ui::elements::EventContext;
+            root.dispatch_event(
+                &DispatchedEvent::Scroll {
+                    delta: vec2f(0.0, dy),
+                    precise: true,
+                },
+                &mut ctx,
+                &app,
+            );
+        };
+        wheel(&mut root, -4.0);
+        assert_eq!(
+            scroll.borrow().offset(),
+            4.0,
+            "a 4 pt trackpad delta is 4 pt of list, not a rounded row"
+        );
+        assert_eq!(app.scroll_moves(), moves + 1, "the move earns a frame");
+
+        scroll.borrow_mut().scroll_by(f32::MAX);
+        let at_end = scroll.borrow().offset();
+        assert_eq!(at_end, scroll.borrow().max_offset());
+        let moves = app.scroll_moves();
+        wheel(&mut root, -4.0);
+        assert_eq!(
+            scroll.borrow().offset(),
+            at_end,
+            "the wheel is at the end and moves nothing"
+        );
+        assert_eq!(
+            app.scroll_moves(),
+            moves,
+            "a wheel that moves nothing earns no frame"
+        );
+    }
+
+    /// The wheel belongs to the conversation cards and nothing above them: the
+    /// toolbelt, the search field and the `New conversation` row stay put, and
+    /// a wheel over them scrolls nothing.
+    #[test]
+    fn a_wheel_over_the_sidebar_header_does_not_scroll_the_list() {
+        use goble_ui::event::DispatchedEvent;
+
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let view = RootView::new(&app, &desktop, None);
+        let state = view.state_rc();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.conversations_expanded = true;
+            s.conversations = (0..40)
+                .map(|index| {
+                    conversation(&format!("c{index}"), &format!("Agent {index}"), "Frontend")
+                })
+                .collect();
+        }
+
+        let mut root: Box<dyn Element> = Box::new(view);
+        let window = vec2f(1024.0, 768.0);
+        // Below the toolbelt and over the search field / New conversation row,
+        // above the list's own viewport.
+        let over_the_header = vec2f(crate::ui::SIDEBAR_WIDTH / 2.0, 110.0);
+        let _ = root.layout(SizeConstraint::loose(window), &mut LayoutContext, &app);
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        paint_ctx.cursor_inside = true;
+        paint_ctx.cursor_position = over_the_header;
+        root.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+
+        let scroll = state.borrow().sidebar_scroll.clone();
+        assert!(
+            scroll.borrow().max_offset() > 0.0,
+            "the seeded list overflows the band: {:?}",
+            scroll.borrow().max_offset()
+        );
+
+        let mut ctx = goble_ui::elements::EventContext;
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: over_the_header,
+            },
+            &mut ctx,
+            &app,
+        );
+        let moves = app.scroll_moves();
+        let consumed = root.dispatch_event(
+            &DispatchedEvent::Scroll {
+                delta: vec2f(0.0, -20.0),
+                precise: true,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(
+            !consumed,
+            "the header does not take the wheel away from the rest of the window"
+        );
+        assert_eq!(
+            scroll.borrow().offset(),
+            0.0,
+            "and the conversation list stays at its top"
+        );
+        assert_eq!(app.scroll_moves(), moves, "so no frame is owed");
     }
 
     /// The rule above distinguishes a separator from a control's own edge, so
@@ -1059,13 +1216,7 @@ mod sidebar_surface_tests {
             &mut ctx,
             &app,
         );
-        root.dispatch_event(
-            &DispatchedEvent::Scroll {
-                delta: vec2f(0.0, -40.0),
-            },
-            &mut ctx,
-            &app,
-        );
+        root.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, -40.0)), &mut ctx, &app);
         assert!(
             scroll.borrow().offset() > 0.0,
             "the list scrolled away from the top"

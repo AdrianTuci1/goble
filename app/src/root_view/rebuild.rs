@@ -479,6 +479,10 @@ impl RootView {
             Rc::clone(&self.state),
             self.desktop.clone(),
         );
+        // The panes a lifted pane can be dropped on are the ones this frame
+        // draws: the bounds registry is rebuilt from the paint that follows, so
+        // a tab that is no longer on screen cannot shadow a real target.
+        self.state.borrow().pane_bounds.borrow_mut().clear();
         self.element = build_ui(&crate::ui::BuildContext {
             app,
             state: &snapshot,

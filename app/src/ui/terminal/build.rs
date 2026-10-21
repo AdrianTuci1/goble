@@ -111,9 +111,15 @@ pub fn build_terminal(
     let copy_or_find = owner
         .pane_ui(pane_id)
         .is_some_and(|ui| ui.copy.active || ui.find.open);
-    let bar_focused =
-        active && !owner.program_owns_screen(pane_id) && !filter_typing && !copy_or_find;
-    let bar = chat::build_terminal_composer(state, actions, pane_id, bar_focused);
+    // A program that owns the screen — a TUI agent (codex, claude, pi, grok,
+    // hermes, ...) or any full-screen program in the alternate screen — draws
+    // its own input. The pane's rich input is not built at all while it does:
+    // the program keeps the whole pane and the keys, including the keys that
+    // would otherwise focus the bar.
+    let owns_screen = owner.program_owns_screen(pane_id);
+    let bar_focused = active && !owns_screen && !filter_typing && !copy_or_find;
+    let bar =
+        (!owns_screen).then(|| chat::build_terminal_composer(state, actions, pane_id, bar_focused));
     drop(owner);
     // Why the pane's last Cmd+Enter was refused, if it was. The reason is only
     // good while the state that produced it holds, so it is read while the
@@ -419,7 +425,7 @@ impl TerminalView {
         active: bool,
         view: BlockView,
         composer_focused: bool,
-        bar: Box<dyn Element>,
+        bar: Option<Box<dyn Element>>,
         on_activate: Rc<RefCell<dyn FnMut(u64)>>,
         on_route: Rc<RefCell<dyn FnMut(u64, String)>>,
         on_harness_mode: Rc<RefCell<dyn FnMut(u64, bool)>>,
@@ -433,7 +439,7 @@ impl TerminalView {
             cwd,
             active,
             view,
-            bar: Some(bar),
+            bar,
             harness_refusal: None,
             composer_focused,
             on_activate,
@@ -500,8 +506,14 @@ impl TerminalView {
         let find_open = self.terminal.borrow().find_open(self.pane_id);
         let find_chrome = if find_open { row_pitch + sm * 2.0 } else { 0.0 };
         // The bar's own minimum, the figures `ChatComposer` lays out: a 48px
-        // editor, a 28px footer row, its padding and the column's spacing.
-        let bar_height = 48.0 + 28.0 + sm * 3.0 + md * 2.0;
+        // editor, a 28px footer row, its padding and the column's spacing. A
+        // program that owns the screen has no bar, so the grid keeps that room
+        // and the pty is told the size the user actually sees.
+        let bar_height = if self.bar.is_some() {
+            48.0 + 28.0 + sm * 3.0 + md * 2.0
+        } else {
+            0.0
+        };
         let chrome = badge_lines as f32 * row_pitch + bar_height + find_chrome;
         let rows = (((constraint.max.y - lg * 2.0 - chrome) / row_pitch).floor() as usize).max(1);
         let cols = ((constraint.max.x - lg * 2.0) / TerminalGrid::cell_width(FONT_SIZE))

@@ -297,14 +297,48 @@ impl Fixture {
     }
 }
 
-/// The sidebar switch: selecting another conversation binds the active pane to
-/// it, which is the caller whose own comment says the pane goes back to the
-/// shell.
+/// The sidebar switch opens the chosen conversation in its own topbar tab
+/// (requested behaviour), so the pane the user was on keeps its surface: it is
+/// no longer the caller that rebinds the active pane, and the harness flag and
+/// the child view must stay as they were. U1's rebinding case is the delete
+/// below, which still goes through `bind_active_pane_conversation`.
 #[test]
-fn a_conversation_switch_that_returns_a_pane_to_the_shell_really_returns_it() {
-    let fixture = agent_pane_over_a_child_view();
-    let other = fixture.other.clone();
-    fixture.return_to_shell(move |fixture| (fixture.select.borrow_mut())(other));
+fn a_conversation_switch_opens_a_tab_and_leaves_the_pane_on_its_surface() {
+    let Fixture {
+        state,
+        parent,
+        child,
+        other,
+        select,
+        ..
+    } = agent_pane_over_a_child_view();
+
+    (select.borrow_mut())(other.clone());
+
+    let state = state.borrow();
+    assert_eq!(
+        state.pane_view(1),
+        BlockView::Agent {
+            conversation_id: child
+        },
+        "the pane the user was on keeps the view it showed"
+    );
+    assert!(
+        state.pane_controls(1).harness_mode,
+        "and its harness switch is untouched"
+    );
+    assert_eq!(
+        state.pane_sessions.get(&1).map(|s| s.conversation_id.as_str()),
+        Some(parent.as_str()),
+        "the pane is still bound to the conversation it was on"
+    );
+    assert!(
+        state
+            .pane_sessions
+            .values()
+            .any(|session| session.conversation_id == other),
+        "the chosen conversation has a pane of its own"
+    );
 }
 
 /// The agent delete: removing the conversation the pane is on rebinds it to the

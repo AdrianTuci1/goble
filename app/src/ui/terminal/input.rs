@@ -189,38 +189,71 @@ impl TerminalView {
             .end_block_selection(self.pane_id)
     }
 
+    /// Copy what a finished drag selected, the way grok-build does: the
+    /// selection is on the clipboard as soon as the button comes up, with no
+    /// Cmd+C. A drag that covers one cell is a click and copies nothing.
+    pub(super) fn copy_dragged_selection(&mut self) {
+        let text = self
+            .terminal
+            .borrow()
+            .dragged_selection_text(self.pane_id);
+        if let Some(text) = text {
+            (self.on_copy.borrow_mut())(text);
+        }
+    }
+
     /// The wheel: a pointer report when the program listens for one, otherwise
-    /// the pane's own scrollback.
-    pub(super) fn handle_wheel(&mut self, delta_y: f32) {
+    /// the pane's own scrollback. Returns whether the view moved.
+    ///
+    /// A trackpad reports pixels while the scrollback (and a program's wheel
+    /// reports) move in rows, so the fraction short of a row is carried to the
+    /// next event: rounding every pixel event up to a row made a flick jump a
+    /// row at a time instead of travelling through the scrollback.
+    pub(super) fn handle_wheel(&mut self, delta_y: f32, precise: bool) -> bool {
         if delta_y == 0.0 {
-            return;
+            return false;
+        }
+        let row_pitch = TerminalGrid::row_pitch(FONT_SIZE, LINE_HEIGHT).max(1.0);
+        let rows = {
+            let mut reg = self.terminal.borrow_mut();
+            let ui = reg.pane_ui_mut(self.pane_id);
+            // A line delta is reported in points with one notch at 20 (the
+            // platform's own line height); a precise one carries the distance
+            // the fingers travelled, which is read in rows.
+            let distance = delta_y / if precise { row_pitch } else { 20.0 };
+            let total = ui.wheel_remainder + distance;
+            let whole = total.trunc();
+            ui.wheel_remainder = total - whole;
+            whole as i32
+        };
+        if rows == 0 {
+            return false;
         }
         // The wheel reports how far the content should move, and positive is
         // down (winit's contract): a positive delta pulls the content down, so
         // the view walks back into the scrollback — wheel *up* in a program's
         // terms, the button a pager calls "scroll up".
-        let down = delta_y < 0.0;
         if self.input_mode().mouse_reported() {
             let cell = self.last_cell.unwrap_or((0, 0));
-            self.report_mouse(
-                if down {
-                    MouseAction::WheelDown
-                } else {
-                    MouseAction::WheelUp
-                },
-                cell,
-            );
-            return;
+            let action = if delta_y < 0.0 {
+                MouseAction::WheelDown
+            } else {
+                MouseAction::WheelUp
+            };
+            // The program hears one report per row, the rate a wheel gives it,
+            // however many pixel events the gesture arrived in.
+            for _ in 0..rows.abs() {
+                self.report_mouse(action, cell);
+            }
+            return false;
         }
-
-        let row_pitch = TerminalGrid::row_pitch(FONT_SIZE, LINE_HEIGHT).max(1.0);
-        let lines = (delta_y.abs() / row_pitch).round().max(1.0) as i32;
-        // Wheel down walks back towards the live screen.
-        let lines = if down { -lines } else { lines };
         let mut reg = self.terminal.borrow_mut();
-        if let Some(session) = reg.sessions.get_mut(&self.pane_id) {
-            session.scroll(lines);
-        }
+        let Some(session) = reg.sessions.get_mut(&self.pane_id) else {
+            return false;
+        };
+        let before = session.display_offset();
+        session.scroll(rows);
+        session.display_offset() != before
     }
 
     /// Tell the program this pane hosts whether the window is focused. A

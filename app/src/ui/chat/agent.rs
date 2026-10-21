@@ -3,16 +3,17 @@ use std::rc::Rc;
 
 use goble_terminal::blocks::BlockView;
 use goble_terminal::BlockOwner;
-use goble_ui::elements::{
-    AppContext, Container, EdgeInsets, Element, PopupMenuItem,
-};
+use goble_ui::elements::{AppContext, Element, PopupMenuItem};
 use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView};
 
 use crate::emulator::VisibleBlock;
 use crate::state::PaneControls;
 
 use super::super::{UiActions, UiSnapshot};
-use super::{build_agent_error, build_agent_header, build_sub_agent_child_view, chat_action_relay, pane_session_snapshot, PaneChatSnapshot};
+use super::{
+    build_agent_error, build_agent_header, build_sub_agent_child_view, chat_action_relay,
+    pane_session_snapshot, PaneChatSnapshot,
+};
 
 /// If `pane_id` has a live PTY session with output, append it as an inline
 /// terminal block after the transcript so a terminal command (`!cmd`) actually
@@ -97,7 +98,9 @@ fn notice_for(
     actions: &UiActions,
 ) -> Option<Box<dyn Element>> {
     match &session.worker {
-        Some(worker) => Some(crate::ui::worker::build_worker_notice(app, worker)),
+        Some(worker) => Some(crate::ui::worker::build_worker_notice(
+            app, state, actions, worker,
+        )),
         None => state
             .show_llm_key_banner
             .then(|| build_agent_error(app, actions, state.llm_notice_heading)),
@@ -156,9 +159,17 @@ pub fn build_agent_chat(
     // The rich-input controls belong to this pane, not to the workspace: two
     // pty/agent panes side by side keep their own model, branch and dropdown
     // open flags.
-    let controls = state.pane_controls.get(&pane_id).cloned().unwrap_or_else(|| {
-        PaneControls::new(state.selected_model.clone(), state.auto_approve, String::new())
-    });
+    let controls = state
+        .pane_controls
+        .get(&pane_id)
+        .cloned()
+        .unwrap_or_else(|| {
+            PaneControls::new(
+                state.selected_model.clone(),
+                state.auto_approve,
+                String::new(),
+            )
+        });
 
     let on_composer_change = actions.on_composer_change.clone();
     let on_composer_focus = actions.on_composer_focus_change.clone();
@@ -244,6 +255,10 @@ pub fn build_agent_chat(
         // The transcript scrolls and follows the stream; the state is
         // app-owned per pane so a chosen scrollback position is held.
         .with_scroll_state(session.scroll.clone())
+        // Drag-to-copy over the transcript: the pane's own selection, so the
+        // highlight follows the text the user pressed on and is copied on
+        // release.
+        .with_transcript_selection(session.text_selection.clone())
         // Per-block terminal filter state is app-owned (shared) so the filter
         // tray's open flag + selection survive the per-frame rebuild; the copy
         // handler copies a terminal block's text to the clipboard.
@@ -349,11 +364,16 @@ pub fn build_agent_chat(
     // selection back to this pane's controls, so the pills of two panes never
     // open or change together.
     if let Some(context) = state.composer_context.get(&pane_id) {
-        let harness_ids = context.harness_ids.clone();
         let dir_ids = context.dir_ids.clone();
         chat = chat
             .with_composer_harness_label(context.harness_label.clone())
-            .with_composer_harness_menu(
+            .with_composer_harness_icon(context.harness_icon);
+        // Only a conversation that runs on a worker chooses its environment
+        // here; a local pane names the environment it already runs on and
+        // draws no menu for it.
+        if session.worker.is_some() {
+            let harness_ids = context.harness_ids.clone();
+            chat = chat.with_composer_harness_menu(
                 context.harness_items.clone(),
                 context.harness_menu_open.clone(),
                 move |idx| {
@@ -361,7 +381,9 @@ pub fn build_agent_chat(
                         (on_select_harness.borrow_mut())(pane_id, id.clone());
                     }
                 },
-            )
+            );
+        }
+        chat = chat
             .with_composer_dir_menu(
                 context.dir_items.clone(),
                 context.dir_menu_open.clone(),
@@ -391,8 +413,7 @@ pub fn build_agent_chat(
     // the editor, narrowed by what was typed after the slash. The list is the
     // Cmd+K palette's own, drawn in place instead of as a full-screen overlay.
     let slash_commands = crate::ui::palette::slash_commands(state, actions);
-    let slash_query =
-        crate::ui::palette::slash_query(&session.composer_draft).unwrap_or_default();
+    let slash_query = crate::ui::palette::slash_query(&session.composer_draft).unwrap_or_default();
     let slash_filtered = crate::ui::palette::matching_slash_commands(&slash_commands, &slash_query);
     let slash_items = crate::ui::palette::slash_items(&slash_filtered);
     let mut chat = chat
@@ -417,11 +438,9 @@ pub fn build_agent_chat(
     // that shrinks the pane. It is toggled from the chat header's "Toggle
     // panel" item and closed via its X button / backdrop click.
     //
-    // The agent surface keeps a 10 px gutter on each side, so its prose does
-    // not run flush into the pane's edges.
-    Container::new(chat.finish())
-        .with_padding(EdgeInsets::new(10.0, 0.0, 10.0, 0.0))
-        .finish()
+    // The agent surface runs to the pane's edges: its own rows carry the
+    // padding they need, and a gutter here read as a grey inset on both sides.
+    chat.finish()
 }
 
 #[cfg(test)]
@@ -626,13 +645,13 @@ mod chat_geometry_tests {
         assert_eq!(band.1, 0.0, "the user's band has square corners");
         assert_eq!(
             band.0.min_x(),
-            crate::ui::SIDEBAR_WIDTH + 10.0,
-            "the agent surface keeps its 10 px gutter at the pane's left edge"
+            crate::ui::SIDEBAR_WIDTH + crate::ui::panes::PANE_INSET,
+            "the agent surface runs to the pane's left edge, past the frame inset"
         );
         assert_eq!(
             band.0.max_x(),
-            1024.0 - 10.0,
-            "the agent surface keeps its 10 px gutter at the pane's right edge"
+            1024.0 - crate::ui::panes::PANE_INSET,
+            "the agent surface runs to the pane's right edge, past the frame inset"
         );
         let padded = user_x - band.0.min_x();
         assert!(
@@ -848,13 +867,13 @@ mod agent_pill_tests {
     use super::*;
     use crate::root_view::RootView;
     use crate::state::{PaneRuntime, SubAgentRecord};
+    use goble_core::harness::ToolCallStatus;
     use goble_core::store::Store;
     use goble_desktop_service::{DesktopState, ThreadStore};
     use goble_ui::elements::AppContext;
     use goble_ui::geometry::vec2f;
     use goble_ui::render::RenderCommand;
     use goble_ui::test_util::{pill_rects, rect_contains, render_element};
-    use goble_core::harness::ToolCallStatus;
     use goble_ui::{SubAgentRow, SubAgentRowStatus, ToolCall};
     use std::sync::Arc;
     use std::time::Duration;
@@ -1016,7 +1035,10 @@ mod agent_pill_tests {
                 matches!(command, RenderCommand::FillRect { rect, corner_radius, .. }
                     if *rect == frame && *corner_radius > 0.0)
             });
-            assert!(!filled_round, "the pane's own frame is square, got {frame:?}");
+            assert!(
+                !filled_round,
+                "the pane's own frame is square, got {frame:?}"
+            );
         }
 
         for label in row_labels {

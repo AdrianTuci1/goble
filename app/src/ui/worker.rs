@@ -18,8 +18,8 @@
 //! The pixels are unverified: no window is built or launched here.
 
 use goble_ui::elements::{
-    AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Fill, Flex, Icon, MainAxisSize,
-    Text,
+    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, EdgeInsets, Element, Fill,
+    Flex, Icon, MainAxisSize, Spacer, Text,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 
@@ -51,6 +51,8 @@ pub fn build_worker_pane(
 /// the pane's own warning.
 pub(crate) fn build_worker_notice(
     app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
     worker: &WorkerPaneSnapshot,
 ) -> Box<dyn Element> {
     use crate::state::PaneAttach;
@@ -66,7 +68,7 @@ pub(crate) fn build_worker_notice(
         PaneAttach::Detached { .. } => ("cloud-off", ColorToken::Text, ColorToken::Error),
         PaneAttach::Failed { .. } => ("cloud-off", ColorToken::Text, ColorToken::Error),
     };
-    let row = Flex::row()
+    let mut row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(sm)
@@ -81,8 +83,23 @@ pub(crate) fn build_worker_notice(
                 .with_theme_color(text, app)
                 .with_font_size(12.0)
                 .finish(),
-        )
-        .finish();
+        );
+    // A pane that cannot connect because Remote has nowhere to run offers the
+    // one thing that fixes it, instead of leaving the user with a dead end.
+    if !state.remote_configured && matches!(worker.attach, PaneAttach::Failed { .. }) {
+        row = row
+            .with_child(Spacer::new().finish())
+            .with_child(
+                Button::new(Text::new("Open remote settings").finish())
+                    .with_variant(ButtonVariant::Primary)
+                    .with_on_click({
+                        let on_open = actions.on_open_remote_settings.clone();
+                        move || (on_open.borrow_mut())()
+                    })
+                    .finish(),
+            );
+    }
+    let row = row.finish();
     Container::new(row)
         .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
         .with_padding(EdgeInsets::new(md, sm, md, sm))

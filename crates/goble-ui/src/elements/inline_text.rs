@@ -3,12 +3,13 @@ use std::rc::Rc;
 
 use crate::color::ColorU;
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
+use crate::elements::text_selection::{RunMetrics, SelectableText, SelectionRun};
 use crate::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::platform::text_atlas::{advance_width, measure_text_family, FontWeight};
+use crate::platform::text_atlas::{advance_width, measure_text_family, wrapped_lines, FontWeight};
 use crate::theme::{ColorToken, FontFamily};
 
 const DEFAULT_FONT_SIZE: f32 = 12.0;
@@ -106,6 +107,9 @@ pub struct InlineText {
     font_size: f32,
     line_height: f32,
     placed: Vec<PlacedSpan>,
+    /// When set, every visual row this flow draws is recorded here so a
+    /// surface can select and copy the text. See [`SelectableText`].
+    selection: Option<Rc<RefCell<SelectableText>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -117,9 +121,17 @@ impl InlineText {
             font_size: DEFAULT_FONT_SIZE,
             line_height: DEFAULT_LINE_HEIGHT,
             placed: Vec::new(),
+            selection: None,
             size: None,
             origin: None,
         }
+    }
+
+    /// Record each visual row this flow draws into `selection`, so a pointer can
+    /// select the paragraph and copy it.
+    pub fn with_text_selection(mut self, selection: Rc<RefCell<SelectableText>>) -> Self {
+        self.selection = Some(selection);
+        self
     }
 
     pub fn with_font_size(mut self, size: f32) -> Self {
@@ -399,6 +411,40 @@ impl Element for InlineText {
                 );
             }
         }
+
+        if let Some(selection) = &self.selection {
+            let mut selection = selection.borrow_mut();
+            for placed in &self.placed {
+                if placed.span.text.is_empty() {
+                    continue;
+                }
+                let metrics = RunMetrics::new(
+                    self.font_size,
+                    self.line_height,
+                    placed.span.family,
+                    placed.span.weight,
+                    placed.span.italic,
+                );
+                let rows = wrapped_lines(
+                    &placed.span.text,
+                    self.font_size,
+                    self.line_height,
+                    placed.max_width,
+                    placed.span.weight,
+                    placed.span.family,
+                    placed.span.italic,
+                );
+                for row in rows {
+                    selection.push_run(SelectionRun::new(
+                        origin.x + placed.x,
+                        origin.y + placed.y + row.top,
+                        row.height,
+                        row.text,
+                        metrics,
+                    ));
+                }
+            }
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -491,6 +537,31 @@ pub fn resolve_span(
 mod tests {
     use super::*;
     use crate::render::RenderCommand;
+
+    #[test]
+    fn a_recorded_paragraph_covers_its_visual_rows() {
+        let app = AppContext::default();
+        let recording = Rc::new(RefCell::new(SelectableText::default()));
+        let mut element: Box<dyn Element> = Box::new(
+            InlineText::new(vec![
+                TextSpan::plain("alpha beta gamma delta epsilon zeta eta theta"),
+            ])
+            .with_font_size(12.0)
+            .with_text_selection(recording.clone()),
+        );
+        crate::test_util::render_element(&mut element, vec2f(120.0, 400.0), &app);
+
+        let text = recording.borrow();
+        assert!(text.lines.len() > 1, "the narrow box wraps the paragraph");
+        assert!(
+            text.lines.iter().any(|line| line.text().contains("theta")),
+            "the last row is recorded too"
+        );
+        assert!(
+            text.lines.iter().all(|line| !line.text().is_empty()),
+            "no empty row is recorded"
+        );
+    }
 
     /// Lay the spans out at `width` and paint them, returning the box and the
     /// commands: what the paragraph reserves and what it actually draws.

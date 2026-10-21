@@ -12,6 +12,7 @@ use goble_ui::elements::interactive::contains;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken, TabColor, TabTint};
 
+use crate::media::medium_icon;
 use crate::state::PaneDrag;
 
 use super::super::tab_menu::{build_tab_menu, TabMenuTab, TabMenuAction};
@@ -112,7 +113,17 @@ pub fn build_topbar(
     // and — past the strip's own rule — one per file the active space shows.
     // Both frames are laid out by the strip as one row of tabs, so a file's tab
     // is exactly as wide as a workspace's (see [`TabStrip`]).
-    let mut frames = vec![build_workspace_strip(app, state, actions)];
+    //
+    // The bar records its own rectangle while it paints (see [`TopbarRow`]): a
+    // lifted pane treats the whole bar as its tab strip, so a release on the
+    // empty room beside the tabs still names an insertion point.
+    let bar_bounds: Rc<RefCell<Option<RectF>>> = Rc::new(RefCell::new(None));
+    let mut frames = vec![build_workspace_strip(
+        app,
+        state,
+        actions,
+        Rc::clone(&bar_bounds),
+    )];
     if let Some(files) = build_file_tabs(app, state, actions) {
         frames.push(files);
     }
@@ -161,6 +172,7 @@ pub fn build_topbar(
     )
     .with_left_spacing(sm * 0.5)
     .with_group_spacing(sm)
+    .with_bar_bounds(bar_bounds)
     .with_gesture(
         state.pane_drag.is_some() || state.space_drag.is_some() || state.space_press.is_some(),
     )
@@ -668,6 +680,10 @@ struct TopbarRow {
     right: Vec<Box<dyn Element>>,
     left_spacing: f32,
     group_spacing: f32,
+    /// The row's own rectangle, written each paint. The pane drop strip reads
+    /// it so the whole bar is the zone a lifted pane can be dropped on, not
+    /// only the room the drawn tabs occupy.
+    bar_bounds: Option<Rc<RefCell<Option<RectF>>>>,
     /// Whether a pointer gesture owns the bar: a tab press/drag or a lifted
     /// pane. The strip is then offered every pointer event first, so the
     /// controls beside it cannot swallow the release of a gesture that
@@ -691,10 +707,16 @@ impl TopbarRow {
             right,
             left_spacing: 0.0,
             group_spacing: 0.0,
+            bar_bounds: None,
             gesture: false,
             size: None,
             origin: None,
         }
+    }
+
+    fn with_bar_bounds(mut self, bounds: Rc<RefCell<Option<RectF>>>) -> Self {
+        self.bar_bounds = Some(bounds);
+        self
     }
 
     fn with_gesture(mut self, gesture: bool) -> Self {
@@ -788,6 +810,9 @@ impl Element for TopbarRow {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let height = self.size.unwrap_or(Vector2F::zero()).y;
         let width = self.size.unwrap_or(Vector2F::zero()).x;
+        if let Some(bounds) = self.bar_bounds.as_ref() {
+            *bounds.borrow_mut() = Some(rectf(origin.x, origin.y, width, height));
+        }
 
         // The left group: the controls and the strip, flush with `left_spacing`
         // between neighbours.
@@ -1226,6 +1251,7 @@ fn build_workspace_strip(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
+    bar_bounds: Rc<RefCell<Option<RectF>>>,
 ) -> StripFrame {
     // One slot per tab, filled with the rectangle that tab is drawn at while it
     // paints: the drop an insertion index resolves against (see
@@ -1266,6 +1292,7 @@ fn build_workspace_strip(
                 drag: state.space_drag,
             },
             state.pane_bounds.clone(),
+            bar_bounds,
             actions.on_pane_lift_move.clone(),
             actions.on_pane_drop.clone(),
             actions.on_space_reorder.clone(),
@@ -1647,7 +1674,8 @@ fn build_add_workspace_control(
     // `(medium id, label)` per environment row, in item order.
     let mut envs: Vec<(String, String)> = Vec::new();
     for m in &media.mediums {
-        let mut item = PopupMenuItem::new(m.label.clone()).with_icon("computer");
+        let mut item =
+            PopupMenuItem::new(m.label.clone()).with_icon(medium_icon(&m.id));
         if m.id == media.selected_medium {
             item = item.selected();
         }
@@ -1909,6 +1937,10 @@ struct SpaceDropStrip {
     /// against, since a window is rebuilt every frame and the strip has no
     /// other way to know where the panes are.
     pane_bounds: Rc<RefCell<std::collections::HashMap<u64, RectF>>>,
+    /// The whole bar's rectangle, as the row painted it. The bar is the drop
+    /// zone of a lifted pane, so a release beyond the drawn tabs still names a
+    /// tab slot instead of cancelling.
+    bar_bounds: Rc<RefCell<Option<RectF>>>,
     on_drag_move: DragMoveHandler,
     on_drop: DropHandler,
     on_space_reorder: Rc<RefCell<dyn FnMut(usize, usize)>>,
@@ -1924,6 +1956,7 @@ impl SpaceDropStrip {
         tab_rects: Rc<RefCell<Vec<Option<RectF>>>>,
         space: SpacePress,
         pane_bounds: Rc<RefCell<std::collections::HashMap<u64, RectF>>>,
+        bar_bounds: Rc<RefCell<Option<RectF>>>,
         on_drag_move: DragMoveHandler,
         on_drop: DropHandler,
         on_space_reorder: Rc<RefCell<dyn FnMut(usize, usize)>>,
@@ -1935,6 +1968,7 @@ impl SpaceDropStrip {
             tab_rects,
             space,
             pane_bounds,
+            bar_bounds,
             on_drag_move,
             on_drop,
             on_space_reorder,
@@ -1957,10 +1991,18 @@ impl SpaceDropStrip {
         self.tab_rects.borrow().iter().flatten().copied().collect()
     }
 
+    /// The rectangle a lifted pane's release resolves against: the whole bar
+    /// as the row painted it, so the empty room beside the tabs counts too.
+    /// Before the bar has painted once, the strip's own room is the zone.
+    fn drop_zone(&self) -> Option<RectF> {
+        let bar = *self.bar_bounds.borrow();
+        bar.or_else(|| self.bounds())
+    }
+
     /// The insertion index a release at `position` names, or `None` when the
-    /// pointer is not over the strip: a release there cancels the drag.
+    /// pointer is not over the bar: a release there cancels the drag.
     fn drop_index_at(&self, position: Vector2F) -> Option<usize> {
-        let bounds = self.bounds()?;
+        let bounds = self.drop_zone()?;
         if !contains(bounds, position) {
             return None;
         }
@@ -1968,12 +2010,12 @@ impl SpaceDropStrip {
     }
 
     /// The pane the lifted pane would land beside for a pointer at `position`,
-    /// or `None` while it is over no other pane. Over the strip itself there is
+    /// or `None` while it is over no other pane. Over the bar itself there is
     /// no in-area target: a release there gives the pane a tab of its own.
     fn drop_target_at(&self, position: Vector2F) -> Option<PaneDropTarget> {
         let drag = self.drag.as_ref()?;
         if self
-            .bounds()
+            .drop_zone()
             .map(|bounds| contains(bounds, position))
             .unwrap_or(false)
         {
@@ -2613,6 +2655,32 @@ mod tests {
         assert!(
             settings.x < window().x,
             "and Settings stays inside the window: {settings:?}"
+        );
+    }
+
+    /// The environment menu names where each row runs with the same two
+    /// glyphs the rest of the app uses: the computer for a local environment
+    /// and the cloud for a worker.
+    #[test]
+    fn the_environment_menu_marks_the_computer_and_the_cloud() {
+        let app = AppContext::default();
+        let (mut root, state, _threads) = app_with_workspaces(vec!["One".to_string()]);
+        *state.borrow().env_selector_open.borrow_mut() = true;
+        let commands = render_element(&mut root, window(), &app);
+        let icons: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            icons.contains(&"conversation-local"),
+            "the local row draws the computer: {icons:?}"
+        );
+        assert!(
+            icons.contains(&"cloud"),
+            "the remote row draws the cloud: {icons:?}"
         );
     }
 

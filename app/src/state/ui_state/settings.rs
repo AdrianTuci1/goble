@@ -1,5 +1,7 @@
 use super::*;
 
+use goble_core::config::RemoteMode;
+
 impl UiState {
     pub fn refresh_crons(&mut self, desktop: &DesktopState) {
         self.crons = desktop
@@ -85,11 +87,101 @@ impl UiState {
             .iter()
             .map(|(name, agent)| RemoteAgentEntry::from_config(name, agent))
             .collect();
+        // `[remote]` names how Remote is reached: a sandbox platform from the
+        // tables above, or a gateway server. It is read here beside them so
+        // the configured state and the page see one answer. The page also
+        // names the YAML file the desktop service reads them from.
+        self.remote_mode = config.remote.mode;
+        self.remote_gateway_url = config.remote.gateway_url().unwrap_or_default().to_string();
+        self.remote_gateway_token = config
+            .remote
+            .worker_token()
+            .unwrap_or_default()
+            .to_string();
+        self.remote_config_path = desktop
+            .config_path()
+            .or_else(|| {
+                goble_core::app_home::GobleHome::locate()
+                    .ok()
+                    .map(|home| home.config_path())
+            })
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
         // A reload can shorten the pane's order; keep the focused slot inside
         // it instead of leaving it past the end.
         let len = self.settings_pane_controls().len();
         if len > 0 {
             self.settings_pane_focus = self.settings_pane_focus.min(len - 1);
+        }
+    }
+
+    /// Whether Remote has somewhere to run: a gateway that is named and
+    /// tokened, a ready `[remote_agents.<name>]` table, or a paired worker.
+    /// Until one of them exists, choosing Remote opens its configuration in
+    /// Settings instead of a pane that can only report "no paired worker".
+    pub fn remote_configured(&self) -> bool {
+        if self.remote_mode == RemoteMode::Gateway
+            && !self.remote_gateway_url.trim().is_empty()
+            && !self.remote_gateway_token.trim().is_empty()
+        {
+            return true;
+        }
+        if self
+            .remote_agents
+            .iter()
+            .any(|agent| agent.enabled && agent.missing.is_empty())
+        {
+            return true;
+        }
+        self.settings_workers.iter().any(|worker| worker.3)
+    }
+
+    /// What the settings page says about Remote under its heading.
+    pub fn remote_status_line(&self) -> String {
+        if self.remote_mode == RemoteMode::Gateway {
+            return if self.remote_gateway_url.trim().is_empty() {
+                "Gateway server · not configured".to_string()
+            } else if self.remote_gateway_token.trim().is_empty() {
+                format!(
+                    "Gateway server · {} · missing worker token",
+                    self.remote_gateway_url
+                )
+            } else {
+                format!("Gateway server · {}", self.remote_gateway_url)
+            };
+        }
+        if self.remote_agents.is_empty() {
+            return "No remote configured. Describe a sandbox platform and its key, or a \
+                    gateway server, in config.toml."
+                .to_string();
+        }
+        self.remote_agents
+            .iter()
+            .map(|agent| format!("{} · {}", agent.name, agent.status))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Open Settings on Agent & Approval, where the Remote configuration and
+    /// the file that holds it are named. Every chooser that names Remote
+    /// before anything is configured lands here.
+    pub fn open_remote_settings_tab(&mut self, desktop: Option<&DesktopState>) {
+        self.open_settings_tab(desktop);
+        self.settings_set_page(SettingsCategory::AgentApproval);
+        let controls = self.settings_pane_controls();
+        if let Some(index) = controls
+            .iter()
+            .position(|control| matches!(control, SettingsControl::ReloadRemoteAgents))
+        {
+            self.settings_focus = SettingsFocus::Pane;
+            self.settings_pane_focus = index;
+            self.settings_pane_field_active = false;
+            self.settings_field_edit_start = None;
+        }
+        // The page travels in the leaf, so pointing an existing tab at Agent &
+        // Approval is a layout change like any other.
+        if let Some(desktop) = desktop {
+            self.save_panes(desktop);
         }
     }
 

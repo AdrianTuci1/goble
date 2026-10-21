@@ -222,6 +222,10 @@ pub struct UiActions {
     /// Agent & Approval: re-read `[remote_agents.<name>]` from the global
     /// config file and refresh the page's rows.
     pub on_reload_remote_agents: Rc<RefCell<dyn FnMut()>>,
+    /// Open Settings on Agent & Approval, with the keyboard on the Remote
+    /// form. Every chooser that names Remote before anything is configured
+    /// takes this path.
+    pub on_open_remote_settings: Rc<RefCell<dyn FnMut()>>,
     /// Connections: re-read `~/.ssh` and replace the cached read.
     pub on_reload_ssh_hosts: Rc<RefCell<dyn FnMut()>>,
     /// Connections: select a connection by alias (the row's own click). It

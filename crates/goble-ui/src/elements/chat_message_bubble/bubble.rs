@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::elements::chat_content::{group_fragments_into_blocks, ChatAction, ChatBlock, ChatFragment, ChatRole, ListItem, SubAgentRow, ToolCall, ToolDisplayMode};
-use crate::elements::{Chip, Code, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Fill, Flex, InlineText, LayoutContext, PaintContext, Point, SizeConstraint, TerminalFilter, Text};
+use crate::elements::{Chip, Code, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill, Flex, InlineText, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, TerminalFilter, Text};
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 use crate::platform::text_atlas::FontWeight;
@@ -17,6 +17,9 @@ pub struct ChatMessageBubble {
     fragments: Vec<ChatFragment>,
     tool_calls: Vec<ToolCall>,
     on_action: Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
+    /// The transcript's text recording, shared with every text-bearing block so
+    /// a drag over the transcript can select and copy what was drawn.
+    text_selection: Option<Rc<RefCell<crate::elements::SelectableText>>>,
     /// App-owned per-block filter state, keyed by a terminal block's content
     /// key; shared so the tray's open flag + selection persist across frames.
     terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
@@ -47,6 +50,7 @@ impl ChatMessageBubble {
             fragments,
             tool_calls: Vec::new(),
             on_action: None,
+            text_selection: None,
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
             reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
             tool_fold: Rc::new(RefCell::new(HashMap::new())),
@@ -62,6 +66,38 @@ impl ChatMessageBubble {
     pub fn with_tool_calls(mut self, tool_calls: Vec<ToolCall>) -> Self {
         self.tool_calls = tool_calls;
         self
+    }
+
+    /// Share the transcript's text recording with this bubble, so every text
+    /// block it draws can be selected and copied.
+    pub fn with_text_selection(
+        mut self,
+        selection: Rc<RefCell<crate::elements::SelectableText>>,
+    ) -> Self {
+        self.text_selection = Some(selection);
+        self
+    }
+
+    /// Attach the transcript's recording to `element` when the bubble has one.
+    fn recorded(&self, element: InlineText) -> InlineText {
+        match &self.text_selection {
+            Some(selection) => element.with_text_selection(Rc::clone(selection)),
+            None => element,
+        }
+    }
+
+    fn recorded_text(&self, element: Text) -> Text {
+        match &self.text_selection {
+            Some(selection) => element.with_text_selection(Rc::clone(selection)),
+            None => element,
+        }
+    }
+
+    fn recorded_code(&self, element: Code) -> Code {
+        match &self.text_selection {
+            Some(selection) => element.with_text_selection(Rc::clone(selection)),
+            None => element,
+        }
     }
 
     pub fn with_on_action<F: FnMut(ChatAction) + 'static>(mut self, callback: F) -> Self {
@@ -189,7 +225,9 @@ impl ChatMessageBubble {
                     .iter()
                     .map(|s| to_text_span(s, app, &self.on_action))
                     .collect();
-                InlineText::new(text_spans).with_font_size(14.0).finish()
+                self.recorded(InlineText::new(text_spans))
+                    .with_font_size(14.0)
+                    .finish()
             }
             ChatBlock::Heading { level, text } => {
                 let font_size = match level {
@@ -198,10 +236,12 @@ impl ChatMessageBubble {
                     3 => 16.0,
                     _ => 14.0,
                 };
-                Text::new(text.clone())
-                    .with_theme_color(ColorToken::Text, app)
-                    .with_font_size(font_size)
-                    .finish()
+                self.recorded_text(
+                    Text::new(text.clone())
+                        .with_theme_color(ColorToken::Text, app)
+                        .with_font_size(font_size),
+                )
+                .finish()
             }
             ChatBlock::CodeBlock { lang, code } => {
                 // Mono, pre-formatted, not word-wrapped; the fence's language
@@ -209,7 +249,11 @@ impl ChatMessageBubble {
                 // that language when it resolves (otherwise it stays plain).
                 let mut code_element = Code::new(code.clone())
                     .with_font_size(13.0)
-                    .with_theme_color(ColorToken::Text, app);
+                    .with_theme_color(ColorToken::Text, app)
+                    // The transcript has one width and no horizontal scroll, so
+                    // a fence wraps at the pane's edge instead of running off
+                    // it where nobody can read the rest of the line.
+                    .with_wrap(true);
                 if let Some(lang) = lang {
                     code_element = code_element
                         .with_language(lang.clone())
@@ -222,7 +266,7 @@ impl ChatMessageBubble {
                 Container::new(
                     Flex::column()
                         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                        .with_child(code_element.finish())
+                        .with_child(self.recorded_code(code_element).finish())
                         .finish(),
                 )
                 .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
@@ -335,11 +379,13 @@ impl ChatMessageBubble {
         if expanded {
             column = column.with_child(
                 QuoteRail::new(
-                    Text::new(text.to_string())
-                        .with_theme_color(ColorToken::Muted, app)
-                        .with_font_family(FontFamily::Mono)
-                        .with_font_size(TOOL_ROW_FONT_SIZE)
-                        .finish(),
+                    self.recorded_text(
+                        Text::new(text.to_string())
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_family(FontFamily::Mono)
+                            .with_font_size(TOOL_ROW_FONT_SIZE),
+                    )
+                    .finish(),
                     app.theme.spacing_px(SpacingToken::Sm),
                 )
                 .finish(),
@@ -385,10 +431,12 @@ impl ChatMessageBubble {
                 .with_cross_axis_alignment(CrossAxisAlignment::Start)
                 .with_spacing(2.0)
                 .with_child(
-                    Text::new(marker)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .with_font_size(14.0)
-                        .finish(),
+                    self.recorded_text(
+                        Text::new(marker)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_size(14.0),
+                    )
+                    .finish(),
                 )
                 .with_child(content)
                 .finish();
@@ -417,15 +465,24 @@ impl ChatMessageBubble {
 
     fn render_table_row(&self, cells: &[String], app: &crate::elements::AppContext) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
+        // The row claims the transcript's width and splits it evenly, so a wide
+        // cell wraps inside its column instead of pushing the table past the
+        // pane's edge, where the text could not be read at all.
         let mut row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_spacing(spacing);
         for cell in cells {
             row = row.with_child(
-                Text::new(cell.clone())
-                    .with_theme_color(ColorToken::Text, app)
-                    .with_font_size(14.0)
+                Expanded::new(
+                    self.recorded_text(
+                        Text::new(cell.clone())
+                            .with_theme_color(ColorToken::Text, app)
+                            .with_font_size(14.0),
+                    )
                     .finish(),
+                )
+                .finish(),
             );
         }
         row.finish()

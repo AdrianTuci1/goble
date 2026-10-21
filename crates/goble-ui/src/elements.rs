@@ -79,6 +79,9 @@ pub use terminal_block::{
 pub use terminal_grid::{GridRange, TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT};
 pub use text::Text;
 pub use text_area::{LineRuns, TextArea};
+pub use text_selection::{
+    RunMetrics, SelectableLine, SelectableText, SelectionPoint, SelectionRun, TranscriptSelection,
+};
 pub use text_input::TextInput;
 pub use thread_list_item::ThreadListItem;
 pub use titlebar::TitleBar;
@@ -90,7 +93,7 @@ pub use turn_status::{TurnActivity, TurnStatus, TurnStatusFooter, WorkKind, Work
 pub use wrap::Wrap;
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::color::ColorU;
@@ -204,6 +207,11 @@ pub struct AppContext {
     /// platform hands each frame reach the same registry, and drained by that
     /// layer every frame so a chip cannot survive into a later one.
     pub hover_chips: Rc<RefCell<hover_chip::HoverChipRegistry>>,
+    /// Counts the scroll regions that actually moved while events were
+    /// dispatched. The platform reads it around a wheel event: a delta with
+    /// nowhere to go (a region already at its end) needs no frame, and a
+    /// momentum glide that stops moving has run out of content to travel.
+    pub scroll_moves: Rc<Cell<u64>>,
 }
 
 impl Default for AppContext {
@@ -213,7 +221,21 @@ impl Default for AppContext {
             window_control: crate::platform::window::WindowControl::default(),
             ui_zoom: Rc::new(RefCell::new(1.0)),
             hover_chips: Rc::new(RefCell::new(hover_chip::HoverChipRegistry::default())),
+            scroll_moves: Rc::new(Cell::new(0)),
         }
+    }
+}
+
+impl AppContext {
+    /// How many scroll regions have moved so far. A caller compares this around
+    /// an event to know whether the event changed anything on screen.
+    pub fn scroll_moves(&self) -> u64 {
+        self.scroll_moves.get()
+    }
+
+    /// Record that a scroll region moved while handling an event.
+    pub fn note_scroll_move(&self) {
+        self.scroll_moves.set(self.scroll_moves.get() + 1);
     }
 }
 
@@ -629,6 +651,7 @@ pub mod terminal_grid;
 pub mod text;
 pub mod text_area;
 pub mod text_input;
+pub mod text_selection;
 pub mod thread_list_item;
 pub mod titlebar;
 pub mod toggle_button;

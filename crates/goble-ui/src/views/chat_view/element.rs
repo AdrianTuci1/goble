@@ -44,6 +44,67 @@ impl Element for ChatView {
         ctx: &mut crate::elements::EventContext,
         app: &AppContext,
     ) -> bool {
+        // Drag-to-copy over the transcript. The press freezes the rows the last
+        // paint recorded, so the pointer keeps reading the text the user pressed
+        // on while the stream moves. The events still reach the tree: a press on
+        // a tool row or a link is that element's click, and a plain click with
+        // no drag copies nothing.
+        if let Some(selection) = self.transcript_selection.as_ref() {
+            match event {
+                DispatchedEvent::MouseDown { position, .. } => {
+                    let inside = self
+                        .transcript_viewport
+                        .borrow()
+                        .map(|bounds| {
+                            position.x >= bounds.min().x
+                                && position.x <= bounds.max().x
+                                && position.y >= bounds.min().y
+                                && position.y <= bounds.max().y
+                        })
+                        .unwrap_or(false);
+                    if inside {
+                        let recording = self.text_recording.borrow().clone();
+                        if let Some(point) = recording.point_at(*position) {
+                            selection.borrow_mut().begin(recording, point);
+                        }
+                    } else {
+                        // A press anywhere else (the composer, the filter bar)
+                        // is not a text gesture: put the highlight away.
+                        selection.borrow_mut().cancel();
+                    }
+                }
+                DispatchedEvent::MouseMove { position } => {
+                    if selection.borrow().is_dragging() {
+                        let point = selection.borrow().point_at(*position);
+                        if let Some(point) = point {
+                            selection.borrow_mut().extend(point);
+                        }
+                    }
+                }
+                DispatchedEvent::MouseUp { position, .. } => {
+                    if selection.borrow().is_dragging() {
+                        // The release point is the end even when the last move
+                        // did not arrive.
+                        let point = selection.borrow().point_at(*position);
+                        if let Some(point) = point {
+                            selection.borrow_mut().extend(point);
+                        }
+                        let copied = selection.borrow_mut().finish();
+                        if let Some(text) = copied {
+                            if let Some(copy) = self.on_copy_terminal.as_ref() {
+                                (copy.borrow_mut())(text);
+                            }
+                            return true;
+                        }
+                    }
+                }
+                // The frozen rows do not follow the scroll, so a selection that
+                // stayed would point at text that moved away.
+                DispatchedEvent::Scroll { .. } => selection.borrow_mut().cancel(),
+                _ => {}
+            }
+        }
+
         // `e` advances the transcript's tool calls one step through
         // Collapsed -> Truncated -> Expanded. It is a transcript key only while
         // the composer is not holding the keyboard, so typing an `e` into a

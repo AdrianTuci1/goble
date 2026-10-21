@@ -9,7 +9,7 @@ use goble_ui::AppContext;
 
 use crate::actions::make_actions;
 use crate::ai::make_ai_actions;
-use crate::media::make_media_actions;
+use crate::media::{make_media_actions, medium_icon};
 use crate::projects::make_projects_actions;
 use crate::state::PaneWorkItem;
 use crate::ui::pickers::PARENT_LABEL;
@@ -80,6 +80,7 @@ impl RootView {
             let state_s = self.state.borrow();
             ComposerContext {
                 harness_label: String::new(),
+                harness_icon: "conversation-local",
                 harness_ids: Vec::new(),
                 harness_items: Vec::new(),
                 harness_menu_open: state_s.harness_menu_open.clone(),
@@ -121,14 +122,15 @@ impl RootView {
                             .unwrap_or_default();
                         ctx.harness_menu_open = controls.harness_menu_open.clone();
 
-                        // The environment control belongs to the conversation
-                        // that runs on a worker, and to it alone: the pane names
-                        // the medium its own conversation runs on (A3), and the
-                        // rows are the environments the app has. Every other
-                        // pane is given no label, so no environment control is
-                        // drawn for it — a local conversation has no environment
-                        // of its own to choose.
+                        // The environment control names where this pane's work
+                        // runs. A conversation on a worker picks its medium
+                        // (A3), and the rows are the environments the app has;
+                        // a local pane names the local environment whose tab it
+                        // sits in, so the panel carries the computer the topbar
+                        // and the menu carry. The icon is the routing's own:
+                        // computer for local, cloud for a worker.
                         ctx.harness_label = String::new();
+                        ctx.harness_icon = "conversation-local";
                         ctx.harness_ids = Vec::new();
                         ctx.harness_items = Vec::new();
                         if let Some(environment) = s.pane_environment(pid) {
@@ -138,19 +140,36 @@ impl RootView {
                                 .find(|m| m.id == environment)
                                 .map(|m| m.label.clone())
                                 .unwrap_or_else(|| environment.clone());
+                            ctx.harness_icon = medium_icon(&environment);
                             ctx.harness_ids = media.mediums.iter().map(|m| m.id.clone()).collect();
                             ctx.harness_items = media
                                 .mediums
                                 .iter()
                                 .map(|m| {
-                                    let mut item = PopupMenuItem::new(m.label.clone())
-                                        .with_icon("computer");
+                                    let mut item =
+                                        PopupMenuItem::new(m.label.clone()).with_icon(medium_icon(&m.id));
                                     if m.id == environment {
                                         item = item.selected();
                                     }
                                     item
                                 })
                                 .collect();
+                        } else {
+                            let space_medium = s
+                                .spaces
+                                .iter()
+                                .find(|space| space.leaf_kind(pid).is_some())
+                                .map(|space| space.medium.clone())
+                                .unwrap_or_default();
+                            ctx.harness_label = media
+                                .mediums
+                                .iter()
+                                .find(|m| {
+                                    m.id == space_medium
+                                        && crate::media::medium_routing(&m.id) == "local"
+                                })
+                                .map(|m| m.label.clone())
+                                .unwrap_or_else(|| "Local".to_string());
                         }
 
                         ctx.dir_menu_open = controls.dir_menu_open.clone();
@@ -303,6 +322,11 @@ impl RootView {
                 settings_ssh_hosts: s.settings_ssh_hosts.clone(),
                 settings_ssh_selected: s.settings_ssh_selected.clone(),
                 remote_agents: s.remote_agents.clone(),
+                remote_mode: s.remote_mode,
+                remote_gateway_url: s.remote_gateway_url.clone(),
+                remote_configured: s.remote_configured(),
+                remote_status: s.remote_status_line(),
+                remote_config_path: s.remote_config_path.clone(),
                 settings_invert_scroll: s.settings_invert_scroll,
                 settings_scroll_speed: s.settings_scroll_speed,
                 settings_font_size: s.settings_font_size,
@@ -455,6 +479,10 @@ impl RootView {
             Rc::clone(&self.state),
             self.desktop.clone(),
         );
+        // The panes a lifted pane can be dropped on are the ones this frame
+        // draws: the bounds registry is rebuilt from the paint that follows, so
+        // a tab that is no longer on screen cannot shadow a real target.
+        self.state.borrow().pane_bounds.borrow_mut().clear();
         self.element = build_ui(&crate::ui::BuildContext {
             app,
             state: &snapshot,

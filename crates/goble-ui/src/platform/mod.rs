@@ -1,5 +1,6 @@
 pub mod app;
 pub mod icon_atlas;
+pub mod scroll_momentum;
 pub mod text_atlas;
 pub mod wgpu_render_engine;
 pub mod window;

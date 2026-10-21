@@ -118,20 +118,26 @@ impl Emulator {
     /// Interpret one chunk of pty output.
     pub fn feed(&mut self, bytes: &[u8]) {
         let mut staged = Vec::with_capacity(bytes.len());
-        let hooks = self.hooks.tap(bytes, &mut staged);
-        self.hook_events.extend(hooks.clone());
+        let hooks = self.hooks.tap_ordered(bytes, &mut staged);
 
+        // The blocks see the same bytes the screen does, in stream order: the
+        // bytes before a hook are fed before it is applied, and the bytes after
+        // it after. A reattached pane gets a whole session in a few chunks, so
+        // feeding all bytes first would put a command's output in the block
+        // before the command.
         let mut passthrough = Vec::with_capacity(staged.len());
-        let osc = self.osc.tap(&staged, &mut passthrough);
-        self.osc_events.extend(osc);
-
-        // The blocks see the same bytes the screen does; the hooks then delimit
-        // them into command/output blocks. Bytes are fed first so the shell's
-        // echo of a typed line stays in the command screen, where the block
-        // model puts it.
-        self.blocks.feed(&passthrough);
-        for hook in hooks {
-            let events = self.blocks.apply(hook);
+        let mut cursor = 0usize;
+        for (offset, hook) in hooks {
+            let offset = offset.min(staged.len());
+            if offset > cursor {
+                let before = passthrough.len();
+                let osc = self.osc.tap(&staged[cursor..offset], &mut passthrough);
+                self.osc_events.extend(osc);
+                self.blocks.feed(&passthrough[before..]);
+                cursor = offset;
+            }
+            let events = self.blocks.apply(hook.clone());
+            self.hook_events.push(hook);
             // A `Preexec` is where the block's owner is decided. Once it is
             // known, an agent's command joins its conversation's view right
             // away, while a user's command — whose owner is `User` — stays out.
@@ -141,6 +147,12 @@ impl Emulator {
                 }
             }
             self.block_events.extend(events);
+        }
+        if cursor < staged.len() {
+            let before = passthrough.len();
+            let osc = self.osc.tap(&staged[cursor..], &mut passthrough);
+            self.osc_events.extend(osc);
+            self.blocks.feed(&passthrough[before..]);
         }
         self.screen.feed(&passthrough);
     }
@@ -217,6 +229,18 @@ impl Emulator {
             .blocks()
             .iter()
             .any(|block| block.state() == BlockState::Executing)
+    }
+
+    /// The command the shell is running right now, if it reported one. The
+    /// command line is what tells a TUI agent from any other foreground
+    /// program once the alternate screen is gone.
+    pub fn running_command(&self) -> Option<&str> {
+        self.blocks
+            .blocks()
+            .iter()
+            .find(|block| block.state() == BlockState::Executing)
+            .map(|block| block.command_text())
+            .filter(|command| !command.is_empty())
     }
 
     /// Lines scrolled back from the bottom of the display.

@@ -243,6 +243,56 @@ fn select_conversation_refreshes_messages() {
 }
 
 #[test]
+fn select_conversation_opens_a_tab_and_reuses_it() {
+    let (desktop, _dir) = common::desktop_state();
+    let chat_a = desktop.create_chat("A", None, None).expect("create chat A");
+    let chat_b = desktop.create_chat("B", None, None).expect("create chat B");
+    let chat_c = desktop.create_chat("C", None, None).expect("create chat C");
+    let (state, actions) = build(&desktop);
+    let tabs_before = state.borrow().spaces.len();
+    let launch_pane = state.borrow().active_pane_id;
+
+    // A conversation the sidebar opens gets a tab of its own, and its pane is
+    // bound to that conversation rather than to the one the launch pane showed.
+    (actions.on_select_conversation.borrow_mut())(chat_b.clone());
+    let (tabs, active_pane, bound) = {
+        let s = state.borrow();
+        (
+            s.spaces.len(),
+            s.active_pane_id,
+            s.pane_conversation_id(s.active_pane_id),
+        )
+    };
+    assert_eq!(tabs, tabs_before + 1, "the sidebar row opens a new tab");
+    assert_ne!(active_pane, launch_pane, "the new tab's pane takes the focus");
+    assert_eq!(bound.as_deref(), Some(chat_b.as_str()));
+
+    // Clicking it again brings the same tab forward: the conversation is
+    // already on screen, so there is nothing to duplicate.
+    (actions.on_select_conversation.borrow_mut())(chat_b.clone());
+    let s = state.borrow();
+    assert_eq!(s.spaces.len(), tabs_before + 1, "no duplicate tab");
+    assert_eq!(s.active_pane_id, active_pane, "the same pane comes forward");
+    drop(s);
+
+    // A conversation the launch tab already owns is brought forward there
+    // instead of opening a copy, and one no tab holds opens its own tab.
+    (actions.on_select_conversation.borrow_mut())(chat_a.clone());
+    assert_eq!(
+        state.borrow().spaces.len(),
+        tabs_before + 1,
+        "an open conversation is brought forward"
+    );
+    (actions.on_select_conversation.borrow_mut())(chat_c.clone());
+    let s = state.borrow();
+    assert_eq!(s.spaces.len(), tabs_before + 2);
+    assert_eq!(
+        s.pane_conversation_id(s.active_pane_id).as_deref(),
+        Some(chat_c.as_str())
+    );
+}
+
+#[test]
 fn select_tab_switches_views() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);

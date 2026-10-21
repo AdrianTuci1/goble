@@ -219,6 +219,7 @@ pub fn make_actions(
     let on_config_llm_key = Rc::clone(&state);
     let on_open_config_file = Rc::clone(&state);
     let on_choose_workspace = Rc::clone(&state);
+    let on_open_remote_settings = Rc::clone(&state);
     let on_close_llm_dialog = Rc::clone(&state);
     let on_dismiss_llm_key_banner = Rc::clone(&state);
     let on_dismiss_workspace_choice = Rc::clone(&state);
@@ -258,6 +259,7 @@ pub fn make_actions(
     let desktop_create_cluster = desktop.clone();
     let desktop_unlock_cluster = desktop.clone();
     let desktop_choose_workspace = desktop.clone();
+    let desktop_open_remote_settings = desktop.clone();
     let desktop_dismiss_key = desktop.clone();
     let desktop_dismiss_workspace = desktop.clone();
     let desktop_split_right = desktop.clone();
@@ -298,6 +300,10 @@ pub fn make_actions(
     let media_term_cmd = Rc::clone(&media);
     let media_add_space = Rc::clone(&media);
     let media_add_space_with_medium = Rc::clone(&media);
+    let media_select_space = Rc::clone(&media);
+    let media_switch_space = Rc::clone(&media);
+    let media_close_space = Rc::clone(&media);
+    let media_workspace_click = Rc::clone(&media);
 
     // The settings overlay runs these through `with_settings_key_activation`
     // as well as from the controls themselves, so the behaviour that already
@@ -354,6 +360,16 @@ pub fn make_actions(
             }
             state.refresh_remote_agents(Some(desktop));
         }));
+    // Remote is configured on the Settings page it belongs to. Every chooser
+    // that names it before anything is configured opens that page with the
+    // keyboard on the form, so there is one place to configure and one shape
+    // to learn.
+    let action_open_remote_settings: Rc<RefCell<dyn FnMut()>> =
+        Rc::new(RefCell::new(move || {
+            on_open_remote_settings
+                .borrow_mut()
+                .open_remote_settings_tab(desktop_open_remote_settings.as_deref());
+        }));
     // `~/.ssh` is read by the state (which owns the Connections page's cache),
     // so the row and `Enter` on it take one path.
     let action_reload_ssh_hosts: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new({
@@ -397,6 +413,12 @@ pub fn make_actions(
     let action_choose_workspace: Rc<RefCell<dyn FnMut(WorkspaceRouting)>> =
         Rc::new(RefCell::new(move |routing: WorkspaceRouting| {
             let mut state = on_choose_workspace.borrow_mut();
+            // Remote with nowhere to run asks for the configuration first: a
+            // pane opened now could only report "no paired worker".
+            if routing == WorkspaceRouting::Remote && !state.remote_configured() {
+                state.open_remote_settings_tab(desktop_choose_workspace.as_deref());
+                return;
+            }
             state.workspace_routing = Some(routing);
             state.show_workspace_choice = false;
             state.show_llm_key_banner = false;
@@ -558,10 +580,10 @@ pub fn make_actions(
         })),
         on_select_conversation: Rc::new(RefCell::new(move |id: String| {
             let mut state = on_select_conversation.borrow_mut();
-            // Selecting a conversation binds the active pane to it (so the pane
-            // shows that conversation), keeps the sidebar highlight in sync and
-            // reloads that conversation's messages into the pane.
-            state.bind_active_pane_conversation(id, desktop_select.as_deref());
+            // A conversation opened from the sidebar gets a tab of its own in
+            // the top bar, rather than replacing the thread the focused pane
+            // showed. One already on screen is brought forward.
+            state.open_conversation_tab(id, desktop_select.as_deref());
         })),
         on_select_tab: Rc::new(RefCell::new(move |tab: AppTab| {
             on_select_tab.borrow_mut().current_tab = tab;
@@ -775,6 +797,18 @@ pub fn make_actions(
         on_select_harness: Rc::new(RefCell::new(move |pane_id: u64, medium_id: String| {
             let viewer = on_select_harness_state.borrow().pane_is_viewer(pane_id);
             let known = on_select_medium.borrow().has_medium(&medium_id);
+            // A local pane picking Remote before anything is configured gets
+            // the setup dialog; the menu closes and nothing else moves.
+            if known && !viewer && medium_id == "remote" {
+                let mut state = on_select_harness_state.borrow_mut();
+                if !state.remote_configured() {
+                    state.open_remote_settings_tab(desktop_select_harness.as_deref());
+                    let flag = state.pane_controls_mut(pane_id).harness_menu_open.clone();
+                    *flag.borrow_mut() = false;
+                    *state.harness_menu_open.borrow_mut() = false;
+                    return;
+                }
+            }
             if known && viewer {
                 let mut state = on_select_harness_state.borrow_mut();
                 let conversation = state.pane_conversation_id(pane_id).unwrap_or_default();
@@ -1224,11 +1258,14 @@ pub fn make_actions(
                 state.active_space = index;
                 state.spaces[index].recompute_layout();
                 state.active_pane_id = state.spaces[index].root.first_leaf_id();
+                state.workspace_routing = None;
+                adopt_space_medium(&mut state, &media_workspace_click, index);
                 state.sync_active_view();
                 if let Some(desktop) = &desktop_workspace_click {
                     state.refresh_messages(desktop);
                     state.save_panes(desktop);
                 }
+                adopt_space_routing(&mut state, index);
             }
         })),
         // The menu a right click on a tab opens: hung from the point the click
@@ -1476,6 +1513,9 @@ pub fn make_actions(
         on_set_font_size: action_set_font_size.clone(),
         on_reload_model_config: action_reload_model_config.clone(),
         on_reload_remote_agents: action_reload_remote_agents.clone(),
+        // Settings → Agent & Approval, and every place that chooses Remote:
+        // one page holds the form that configures how Remote is reached.
+        on_open_remote_settings: action_open_remote_settings.clone(),
         on_reload_ssh_hosts: action_reload_ssh_hosts.clone(),
         on_ssh_select_host: action_ssh_select_host.clone(),
         on_projects: Rc::new(RefCell::new(move || {
@@ -2001,12 +2041,18 @@ pub fn make_actions(
                 state.active_space = index;
                 state.spaces[index].recompute_layout();
                 state.active_pane_id = state.spaces[index].root.first_leaf_id();
+                // The tab carries the environment it was opened on. Bring the
+                // window's selector (and the sidebar's filter) onto it, or the
+                // tab would show the previous tab's conversations.
+                state.workspace_routing = None;
+                adopt_space_medium(&mut state, &media_select_space, index);
             }
             state.sync_active_view();
             if let Some(desktop) = &desktop_select_space {
                 state.refresh_messages(desktop);
                 state.save_panes(desktop);
             }
+            adopt_space_routing(&mut state, index);
         })),
         // Walk the tab strip (Ctrl+Tab / Ctrl+Shift+Tab). A single-tab
         // workspace has nowhere to go, so nothing is refreshed or persisted.
@@ -2015,11 +2061,15 @@ pub fn make_actions(
             if !state.switch_space(delta) {
                 return;
             }
+            let active = state.active_space;
+            state.workspace_routing = None;
+            adopt_space_medium(&mut state, &media_switch_space, active);
             state.sync_active_view();
             if let Some(desktop) = &desktop_switch_space {
                 state.refresh_messages(desktop);
                 state.save_panes(desktop);
             }
+            adopt_space_routing(&mut state, active);
         })),
         // Close a space (tab) by index. The last remaining space is never
         // removed: it resets to a fresh empty chat pane, so closing a tab never
@@ -2028,6 +2078,11 @@ pub fn make_actions(
         on_close_space: Rc::new(RefCell::new(move |index: usize| {
             let mut state = on_close_space.borrow_mut();
             close_space_at(&mut state, index, desktop_close_space.as_deref());
+            // The tab that took the closed one's place brings its own
+            // environment with it.
+            let active = state.active_space;
+            adopt_space_medium(&mut state, &media_close_space, active);
+            adopt_space_routing(&mut state, active);
         })),
         on_add_space: Rc::new(RefCell::new(move || {
             let mut state = on_add_space.borrow_mut();
@@ -2063,31 +2118,18 @@ pub fn make_actions(
         // conversation until an agent turn runs in it.
         on_add_space_with_medium: Rc::new(RefCell::new(move |medium_id: String| {
             let mut state = on_add_space_with_medium.borrow_mut();
-            let routing = crate::media::medium_routing(&medium_id);
-            let id = state.next_pane_id;
-            state.next_pane_id += 1;
-            state.spaces.push(
-                Space::unnamed(Pane::Leaf { id, kind: PaneKind::Terminal })
-                    .with_medium(medium_id.clone()),
-            );
-            state.active_space = state.spaces.len() - 1;
-            state.active_pane_id = id;
-            state.workspace_routing = Some(WorkspaceRouting::from_routing(routing));
-            // Make the chosen environment the active medium so the new space's
-            // turns run there and the sidebar shows that environment's folders.
-            let _ = media_add_space_with_medium.borrow_mut().select_medium(&medium_id);
-            ensure_pane_hover(&mut state, id);
-            // Plain PTY: the thread is created lazily, on the pane's first agent
-            // turn, so "+" never creates an empty conversation.
-            let project_id =
-                media_add_space_with_medium.borrow().default_project_for_medium(&medium_id);
-            let path = default_pane_path(&project_id, desktop_add_space_with_medium.as_deref());
-            state.set_active_pane_path(path);
-            state.refresh_space_labels();
-            state.sync_active_view();
-            if let Some(desktop) = &desktop_add_space_with_medium {
-                state.save_panes(desktop);
+            // A space on Remote before anything is configured asks for the
+            // configuration first; saving opens the space.
+            if medium_id == "remote" && !state.remote_configured() {
+                state.open_remote_settings_tab(desktop_add_space_with_medium.as_deref());
+                return;
             }
+            add_space_with_medium(
+                &mut state,
+                &media_add_space_with_medium,
+                desktop_add_space_with_medium.as_deref(),
+                &medium_id,
+            );
         })),
         // The topbar "+" menu's "Add new medium…" item opens the add-medium dialog.
         on_open_add_medium: Rc::new(RefCell::new(move || {
@@ -2566,6 +2608,87 @@ pub fn make_actions(
         on_command_palette_move: Rc::new(RefCell::new(move |index: usize| {
             on_command_palette_move.borrow_mut().command_palette_index = index;
         })),
+    }
+}
+
+/// Bring the window's environment selector onto the tab at `index`.
+///
+/// A space carries the medium it was opened on, but the sidebar filter and the
+/// topbar's selector read the window's selected medium. Without this, a switch
+/// onto a local tab would keep listing the previous tab's environment and the
+/// local conversations would stay out of sight.
+fn adopt_space_medium(state: &mut UiState, media: &Rc<RefCell<MediaState>>, index: usize) {
+    let Some(medium_id) = state
+        .spaces
+        .get(index)
+        .map(|space| space.medium.clone())
+    else {
+        return;
+    };
+    if !medium_id.trim().is_empty() {
+        let _ = media.borrow_mut().select_medium(&medium_id);
+    }
+}
+
+/// Open a new space whose default environment is `medium_id`: a fresh PTY
+/// pane scoped to that medium's default project. The workspace has no
+/// conversation until an agent turn runs in it. Shared by the topbar "+" menu
+/// and by the remote-setup dialog, which opens the space after it configures
+/// the environment the space asked for.
+fn add_space_with_medium(
+    state: &mut UiState,
+    media: &Rc<RefCell<MediaState>>,
+    desktop: Option<&DesktopState>,
+    medium_id: &str,
+) {
+    let routing = crate::media::medium_routing(medium_id);
+    let id = state.next_pane_id;
+    state.next_pane_id += 1;
+    state.spaces.push(
+        Space::unnamed(Pane::Leaf {
+            id,
+            kind: PaneKind::Terminal,
+        })
+        .with_medium(medium_id.to_string()),
+    );
+    state.active_space = state.spaces.len() - 1;
+    state.active_pane_id = id;
+    state.workspace_routing = Some(WorkspaceRouting::from_routing(routing));
+    // Make the chosen environment the active medium so the new space's turns
+    // run there and the sidebar shows that environment's folders.
+    let _ = media.borrow_mut().select_medium(medium_id);
+    ensure_pane_hover(state, id);
+    // Plain PTY: the thread is created lazily, on the pane's first agent turn,
+    // so "+" never creates an empty conversation.
+    let project_id = media.borrow().default_project_for_medium(medium_id);
+    let path = default_pane_path(&project_id, desktop);
+    state.set_active_pane_path(path);
+    state.refresh_space_labels();
+    state.sync_active_view();
+    if let Some(desktop) = desktop {
+        state.save_panes(desktop);
+    }
+}
+
+/// Fall back to the tab's environment for the turn route when the pane did not
+/// name one of its own. A conversation's persisted routing is the pane's own
+/// choice and wins; a tab whose fresh pane has no conversation yet routes where
+/// the tab was opened.
+fn adopt_space_routing(state: &mut UiState, index: usize) {
+    if state.workspace_routing.is_some() {
+        return;
+    }
+    let Some(medium_id) = state
+        .spaces
+        .get(index)
+        .map(|space| space.medium.clone())
+    else {
+        return;
+    };
+    if !medium_id.trim().is_empty() {
+        state.workspace_routing = Some(WorkspaceRouting::from_routing(crate::media::medium_routing(
+            &medium_id,
+        )));
     }
 }
 

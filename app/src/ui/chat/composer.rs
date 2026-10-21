@@ -88,6 +88,9 @@ pub(crate) fn build_terminal_composer(
         // branch — rides above the editor: it describes the command line below
         // it, the way the shell prompt does.
         .with_context_above_editor(true)
+        // The bar is the pane's own bottom surface, so it spans the pane: no
+        // gutter of its own between the input and the pane's side edges.
+        .with_edge_to_edge(true)
         // What the bar answers, written where the bar is: Cmd/Ctrl+Enter is the
         // one gesture that leaves the shell (it opens the agent on a new
         // conversation), so it is the one instruction the strip names — and it

@@ -104,6 +104,14 @@ impl TerminalSession {
         }
     }
 
+    /// Lines scrolled back from the live screen (`0` is the live bottom).
+    pub fn display_offset(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.display_offset())
+            .unwrap_or(0)
+    }
+
     /// Rows of scrollback held above the visible screen.
     pub fn history_len(&self) -> usize {
         self.state

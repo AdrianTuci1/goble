@@ -575,6 +575,75 @@ fn a_remote_agent_table_without_a_provider_is_reported() {
     assert!(config.remote_agents.is_empty());
 }
 
+// ---- Remote mode: a platform or a gateway -------------------------------
+
+#[test]
+fn the_remote_section_reads_a_gateway_and_writes_it_back() {
+    let config = GobleConfig::from_toml(
+        r#"
+[remote]
+mode = "gateway"
+gateway_url = "https://gateway.example.com"
+worker_token = "wt-123"
+"#,
+    )
+    .expect("parse");
+
+    assert_eq!(config.remote.mode, RemoteMode::Gateway);
+    assert_eq!(
+        config.remote.gateway_url(),
+        Some("https://gateway.example.com")
+    );
+    assert_eq!(config.remote.worker_token(), Some("wt-123"));
+    assert!(config.remote.gateway_ready());
+
+    let toml = config.to_toml().expect("serialize");
+    assert!(toml.contains("[remote]"), "{toml}");
+    assert!(toml.contains(r#"mode = "gateway""#), "{toml}");
+    assert_eq!(GobleConfig::from_toml(&toml).expect("round trip"), config);
+}
+
+#[test]
+fn a_gateway_needs_both_its_url_and_its_token() {
+    let mut config = GobleConfig::default();
+    assert_eq!(config.remote.mode, RemoteMode::Platform);
+    assert!(!config.remote.gateway_ready());
+
+    config.remote.mode = RemoteMode::Gateway;
+    config.remote.gateway_url = Some("https://gateway.example.com".to_string());
+    assert!(!config.remote.gateway_ready(), "the token is still missing");
+
+    config.remote.worker_token = Some("  ".to_string());
+    assert!(!config.remote.gateway_ready(), "a blank token is no token");
+
+    config.remote.worker_token = Some("wt-123".to_string());
+    assert!(config.remote.gateway_ready());
+}
+
+#[test]
+fn an_untouched_remote_section_is_not_written() {
+    let toml = GobleConfig::default().to_toml().expect("serialize");
+    let body = toml.strip_prefix(CONFIG_HEADER).expect("the header leads");
+    assert!(!body.contains("[remote]"), "{body}");
+}
+
+#[test]
+fn the_provider_list_offers_every_known_platform() {
+    let names: Vec<&str> = RemoteAgentProvider::ALL
+        .iter()
+        .map(|provider| provider.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["modal", "e2b", "daytona", "box", "docker", "ssh"]
+    );
+    // The credential each platform reads is the one the config schema knows.
+    for provider in RemoteAgentProvider::ALL {
+        let (key, tokens) = (provider.uses_api_key(), provider.uses_modal_tokens());
+        assert!(!(key && tokens), "{provider} reads one credential shape");
+    }
+}
+
 #[test]
 fn remote_agent_missing_credentials_names_the_keys() {
     let modal = one_agent(r#"provider = "modal""#);

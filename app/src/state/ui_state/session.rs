@@ -76,6 +76,92 @@ impl UiState {
         };
         let session = self.pane_sessions.entry(pane_id).or_default();
         session.conversation_id = conversation_id;
+        self.clear_pane_transcript_selection(pane_id);
+    }
+
+    /// Open `conversation_id` in a tab of its own in the top bar.
+    ///
+    /// A conversation already on screen is not opened twice: the space holding
+    /// a pane bound to it becomes the active tab and that pane takes the focus,
+    /// so clicking the same sidebar row brings its thread forward instead of
+    /// piling up duplicate tabs. Otherwise a new unnamed space opens with one
+    /// agent pane bound to the conversation, on the environment the
+    /// conversation itself runs in.
+    pub fn open_conversation_tab(
+        &mut self,
+        conversation_id: String,
+        desktop: Option<&DesktopState>,
+    ) {
+        if conversation_id.is_empty() {
+            return;
+        }
+        // Already open: bring its tab and pane forward. The sidebar row is the
+        // conversation's one entry point, so a second click is a look at what
+        // is already there rather than another copy of it.
+        if let Some((space_index, pane_id)) = self.open_conversation_pane(&conversation_id) {
+            self.active_space = space_index;
+            self.active_pane_id = pane_id;
+            self.sync_active_view();
+            if let Some(desktop) = desktop {
+                self.refresh_messages(desktop);
+            }
+            return;
+        }
+        // The environment the conversation runs in is persisted on the
+        // conversation, so the tab opens where the thread already works rather
+        // than on whichever environment happens to be selected.
+        let routing = self
+            .conversations
+            .iter()
+            .find(|entry| entry.id == conversation_id)
+            .and_then(|entry| routing_from_str(&entry.workspace_routing))
+            .unwrap_or(WorkspaceRouting::Local);
+        let medium = crate::media::medium_for_routing(routing).to_string();
+        let id = self.next_pane_id;
+        self.next_pane_id += 1;
+        self.spaces.push(
+            Space::unnamed(Pane::Leaf {
+                id,
+                kind: PaneKind::Chat,
+            })
+            .with_medium(medium),
+        );
+        self.active_space = self.spaces.len() - 1;
+        self.active_pane_id = id;
+        self.workspace_routing = Some(routing);
+        self.pane_hover
+            .entry(id)
+            .or_insert_with(|| Rc::new(RefCell::new(false)));
+        // The pane owns a session before it can be bound: the binding writes
+        // the conversation into that entry, and the reuse lookup below reads it
+        // back on the next click.
+        self.pane_sessions.entry(id).or_default();
+        // Binding the new pane loads the conversation's transcript, adopts the
+        // routing its worker/local shape follows, and points the active-view
+        // fields at the tab that just opened.
+        self.bind_active_pane_conversation(conversation_id, desktop);
+        self.refresh_space_labels();
+        if let Some(desktop) = desktop {
+            self.save_panes(desktop);
+        }
+    }
+
+    /// The tab and pane already showing `conversation_id`, in tab order.
+    fn open_conversation_pane(&self, conversation_id: &str) -> Option<(usize, u64)> {
+        for (index, space) in self.spaces.iter().enumerate() {
+            let mut leaves = Vec::new();
+            space.root.leaves(&mut leaves);
+            for (pane_id, _) in leaves {
+                let bound = self
+                    .pane_sessions
+                    .get(&pane_id)
+                    .is_some_and(|session| session.conversation_id == conversation_id);
+                if bound {
+                    return Some((index, pane_id));
+                }
+            }
+        }
+        None
     }
 
     /// Bind the active pane to `conversation_id` (used when the sidebar selects
@@ -103,9 +189,11 @@ impl UiState {
         if self.sub_agent_views.remove(&self.active_pane_id).is_some() {
             self.leave_agent_view(self.active_pane_id);
         }
-        if let Some(session) = self.pane_sessions.get_mut(&self.active_pane_id) {
+        let pane_id = self.active_pane_id;
+        if let Some(session) = self.pane_sessions.get_mut(&pane_id) {
             session.conversation_id = conversation_id.clone();
         }
+        self.clear_pane_transcript_selection(pane_id);
         self.selected_id = Some(conversation_id);
         if let Some(desktop) = desktop {
             self.refresh_messages(desktop);
@@ -232,6 +320,29 @@ impl UiState {
             .unwrap_or_else(|| Rc::new(RefCell::new(false)))
     }
 
+    /// This pane's transcript drag selection. `ensure_pane_controls` seeds an
+    /// entry for every pane, so this is the same cell across frames; a pane
+    /// that has none gets a fresh, empty selection.
+    pub fn pane_transcript_selection(
+        &self,
+        pane_id: u64,
+    ) -> Rc<RefCell<goble_ui::TranscriptSelection>> {
+        self.pane_transcript_selection
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Forget the selection a pane's transcript carried. Called whenever the
+    /// pane starts showing different text (another conversation, another
+    /// surface): the frozen rows describe what was on screen, and a highlight
+    /// left over them would land on the new text.
+    pub fn clear_pane_transcript_selection(&self, pane_id: u64) {
+        if let Some(selection) = self.pane_transcript_selection.get(&pane_id) {
+            selection.borrow_mut().cancel();
+        }
+    }
+
     /// Build the per-pane chat snapshot (transcript + draft + path) keyed by
     /// pane id, used to render each chat leaf as an independent session.
     pub fn pane_chat_snapshot(&self) -> HashMap<u64, PaneChatSnapshot> {
@@ -286,6 +397,7 @@ impl UiState {
                         }
                     }),
                     scroll: self.pane_scroll(*pane_id),
+                    text_selection: self.pane_transcript_selection(*pane_id),
                     usage_open: self.pane_usage_open(*pane_id),
                     usage: self
                         .conversation_usage
@@ -366,6 +478,12 @@ impl UiState {
             self.pane_chat_scroll
                 .entry(id)
                 .or_insert_with(|| Rc::new(RefCell::new(ScrollState::following())));
+            // Each pane's transcript owns one drag selection too, so a highlight
+            // drawn in one pane never appears in another and survives the
+            // per-frame rebuild.
+            self.pane_transcript_selection
+                .entry(id)
+                .or_insert_with(|| Rc::new(RefCell::new(goble_ui::TranscriptSelection::default())));
             // A terminal pane's own history scrolls the same way: one following
             // state per pane, opening at the newest command section.
             self.pane_terminal_scroll

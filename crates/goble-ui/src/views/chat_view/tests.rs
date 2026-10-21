@@ -913,7 +913,7 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
         let size = vec2f(600.0, 800.0);
         let _ = view.layout(
             SizeConstraint::loose(size),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             app,
         );
         let mut ctx = PaintContext::new(Renderer::new());
@@ -1560,7 +1560,7 @@ mod the_footers_place {
     ) -> Vec<RenderCommand> {
         let _ = view.layout(
             SizeConstraint::loose(size),
-            &mut LayoutContext::default(),
+            &mut LayoutContext,
             app,
         );
         let mut ctx = PaintContext::new(Renderer::new());
@@ -1866,5 +1866,195 @@ mod the_footers_place {
                 .any(|text| text.contains("tokens") || text.contains("usage")),
             "and no usage disclosure: {drawn:?}"
         );
+    }
+}
+
+/// Drag-to-copy over the agent transcript: the press freezes the rows the last
+/// paint recorded, the drag extends the selection, and the release copies what
+/// it covered. A click with no drag copies nothing and leaves no highlight.
+mod drag_to_copy {
+    use super::*;
+    use crate::color::ColorU;
+    use crate::elements::{Element, PaintContext, TranscriptSelection};
+    use crate::event::DispatchedEvent;
+    use crate::geometry::Vector2F;
+    use crate::render::{RenderCommand, Renderer};
+
+    /// Lay the view out and paint it, returning the commands. Painting is what
+    /// fills the transcript's text recording, so every test here paints once
+    /// before it presses.
+    fn paint(view: &mut ChatView, size: Vector2F, app: &AppContext) -> Vec<RenderCommand> {
+        let _ = view.layout(
+            SizeConstraint::loose(size),
+            &mut LayoutContext,
+            app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        view.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        ctx.renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default()
+    }
+
+    fn two_messages() -> Vec<ChatMessage> {
+        vec![
+            ChatMessage::new(
+                ChatRole::Assistant,
+                vec![ChatFragment::text("alpha beta")],
+            ),
+            ChatMessage::new(
+                ChatRole::Assistant,
+                vec![ChatFragment::text("gamma delta")],
+            ),
+        ]
+    }
+
+    fn copy_sink() -> (
+        Rc<RefCell<Vec<String>>>,
+        Rc<RefCell<dyn FnMut(String)>>,
+    ) {
+        let copied = Rc::new(RefCell::new(Vec::new()));
+        let sink = copied.clone();
+        (
+            copied,
+            Rc::new(RefCell::new(move |text: String| {
+                sink.borrow_mut().push(text);
+            })),
+        )
+    }
+
+    fn drag(
+        view: &mut ChatView,
+        start: Vector2F,
+        end: Vector2F,
+        app: &AppContext,
+    ) {
+        let mut ctx = crate::elements::EventContext;
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: start,
+                button: 0,
+            },
+            DispatchedEvent::MouseMove { position: end },
+            DispatchedEvent::MouseUp {
+                position: end,
+                button: 0,
+            },
+        ] {
+            view.dispatch_event(&event, &mut ctx, app);
+        }
+    }
+
+    #[test]
+    fn a_drag_across_the_transcript_copies_it_on_release() {
+        let app = AppContext::default();
+        let (copied, on_copy) = copy_sink();
+        let selection = Rc::new(RefCell::new(TranscriptSelection::default()));
+        let mut view = ChatView::new()
+            .with_messages(two_messages())
+            .with_transcript_selection(selection.clone())
+            .with_on_copy_terminal(Some(on_copy));
+
+        paint(&mut view, vec2f(600.0, 480.0), &app);
+        let recording = view.text_recording.borrow().clone();
+        assert!(
+            recording.lines.len() >= 2,
+            "both messages record their rows: {:?}",
+            recording
+                .lines
+                .iter()
+                .map(|line| line.text())
+                .collect::<Vec<_>>()
+        );
+        let first = &recording.lines[0];
+        let last = recording.lines.last().unwrap();
+        let start = vec2f(first.left + 1.0, first.top + first.height / 2.0);
+        let end = vec2f(last.left + 400.0, last.top + last.height / 2.0);
+
+        drag(&mut view, start, end, &app);
+
+        let copied = copied.borrow();
+        assert_eq!(copied.len(), 1, "the release copies once");
+        assert!(
+            copied[0].starts_with("alpha beta"),
+            "the copy starts at the press: {:?}",
+            copied[0]
+        );
+        assert!(
+            copied[0].ends_with("gamma delta"),
+            "and runs through the release: {:?}",
+            copied[0]
+        );
+        assert!(selection.borrow().has_selection());
+
+        // The highlight is painted over the transcript on the next frame.
+        let commands = paint(&mut view, vec2f(600.0, 480.0), &app);
+        let accent = app.theme.color(ColorToken::Accent);
+        let expected = ColorU::new(accent.r, accent.g, accent.b, 70);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == expected && rect.height() > 1.0
+            )),
+            "the selection is drawn over the text it covers"
+        );
+    }
+
+    #[test]
+    fn a_click_without_a_drag_copies_nothing() {
+        let app = AppContext::default();
+        let (copied, on_copy) = copy_sink();
+        let selection = Rc::new(RefCell::new(TranscriptSelection::default()));
+        let mut view = ChatView::new()
+            .with_messages(two_messages())
+            .with_transcript_selection(selection.clone())
+            .with_on_copy_terminal(Some(on_copy));
+
+        paint(&mut view, vec2f(600.0, 480.0), &app);
+        let recording = view.text_recording.borrow().clone();
+        let line = &recording.lines[0];
+        let point = vec2f(line.left + 4.0, line.top + line.height / 2.0);
+
+        drag(&mut view, point, point, &app);
+
+        assert!(copied.borrow().is_empty(), "a click never replaces the clipboard");
+        assert!(
+            !selection.borrow().has_selection(),
+            "and leaves no one-character highlight behind"
+        );
+    }
+
+    #[test]
+    fn a_press_outside_the_transcript_puts_the_highlight_away() {
+        let app = AppContext::default();
+        let selection = Rc::new(RefCell::new(TranscriptSelection::default()));
+        let (_, on_copy) = copy_sink();
+        let mut view = ChatView::new()
+            .with_messages(two_messages())
+            .with_transcript_selection(selection.clone())
+            .with_on_copy_terminal(Some(on_copy));
+
+        paint(&mut view, vec2f(600.0, 480.0), &app);
+        let recording = view.text_recording.borrow().clone();
+        let first = &recording.lines[0];
+        let last = recording.lines.last().unwrap();
+        let start = vec2f(first.left + 1.0, first.top + first.height / 2.0);
+        let end = vec2f(last.left + 400.0, last.top + last.height / 2.0);
+        drag(&mut view, start, end, &app);
+        assert!(selection.borrow().has_selection());
+
+        // A press on the composer band is not a text gesture.
+        let mut ctx = crate::elements::EventContext;
+        view.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(300.0, 470.0),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(!selection.borrow().has_selection());
     }
 }

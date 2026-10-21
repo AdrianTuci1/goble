@@ -152,6 +152,7 @@ fn icon_atlas_name(name: IconName) -> IconName {
             "conversation-remote"
         }
         "info" => "info",
+        "cloud" | "remote" => "cloud",
         "local-only" | "cloud-off" | "not-synced" => "cloud-off",
         other if is_registered(other) => other,
         _ => {

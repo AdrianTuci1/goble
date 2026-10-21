@@ -197,6 +197,10 @@ pub(super) fn run_terminal_command(
         } else if leaves_the_shell {
             reg.set_ssh_session(pane_id, None);
         }
+        // A line naming a TUI agent flips the pane native-first before the
+        // agent paints, exactly as the same line typed at the grid prompt does:
+        // the pane then hides its own rich input and lets the agent own keys.
+        reg.note_command(pane_id, text);
         reg.ensure_session(pane_id, &cwd);
         if let Some(session) = reg.sessions.get_mut(&pane_id) {
             if let Some(conversation) = conversation {

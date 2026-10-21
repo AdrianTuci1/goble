@@ -1,7 +1,15 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::color::ColorU;
-use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
+use crate::elements::{
+    AppContext, Element, LayoutContext, PaintContext, Point, RunMetrics, SelectableText,
+    SelectionRun, SizeConstraint,
+};
 use crate::geometry::Vector2F;
-use crate::platform::text_atlas::{measure_text_family as measure_text_atlas, FontWeight};
+use crate::platform::text_atlas::{
+    measure_text_family as measure_text_atlas, wrapped_lines, FontWeight,
+};
 use crate::theme::{ColorToken, FontFamily};
 
 const DEFAULT_FONT_SIZE: f32 = 12.0;
@@ -33,6 +41,9 @@ pub struct Text {
     /// different width than the measurement did, so the line count of the drawn
     /// block follows this number and not the measured size.
     wrap_width: f32,
+    /// Where this run records the lines it draws, when its surface supports
+    /// selecting text.
+    selection: Option<Rc<RefCell<SelectableText>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -48,9 +59,17 @@ impl Text {
             weight: FontWeight::Regular,
             font_family: FontFamily::System,
             wrap_width: f32::INFINITY,
+            selection: None,
             size: None,
             origin: None,
         }
+    }
+
+    /// Record each visual line this run draws into `selection`, so a pointer
+    /// can turn a position into a line and a character column.
+    pub fn with_text_selection(mut self, selection: Rc<RefCell<SelectableText>>) -> Self {
+        self.selection = Some(selection);
+        self
     }
 
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
@@ -162,6 +181,34 @@ impl Element for Text {
             self.font_family,
             false,
         );
+        if let Some(selection) = &self.selection {
+            let metrics = RunMetrics::new(
+                self.font_size,
+                self.line_height,
+                self.font_family,
+                self.weight,
+                false,
+            );
+            let lines = wrapped_lines(
+                &self.text,
+                self.font_size,
+                self.line_height,
+                self.wrap_width,
+                self.weight,
+                self.font_family,
+                false,
+            );
+            let mut selection = selection.borrow_mut();
+            for line in lines {
+                selection.push_run(SelectionRun::new(
+                    origin.x,
+                    origin.y + line.top,
+                    line.height,
+                    line.text,
+                    metrics,
+                ));
+            }
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {

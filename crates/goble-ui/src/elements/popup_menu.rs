@@ -1311,11 +1311,7 @@ mod tests {
         let row = menu.row_bounds(3, &app).expect("row three is in the window");
         let mut ctx = EventContext::default();
         assert!(
-            menu.dispatch_event(
-                &DispatchedEvent::Scroll { delta: vec2f(0.0, -40.0) },
-                &mut ctx,
-                &app
-            ),
+            menu.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, -40.0)), &mut ctx, &app),
             "the tray takes the wheel over its rows"
         );
         assert_eq!(state.borrow().offset(), 40.0, "the content moved up by 40 px");

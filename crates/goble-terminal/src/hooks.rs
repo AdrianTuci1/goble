@@ -171,6 +171,22 @@ impl HookTap {
     /// Bytes of a partial envelope are retained until more input arrives; they
     /// are released by a later call or by [`HookTap::flush`].
     pub fn tap(&mut self, input: &[u8], passthrough: &mut Vec<u8>) -> Vec<HookEvent> {
+        self.tap_ordered(input, passthrough)
+            .into_iter()
+            .map(|(_, event)| event)
+            .collect()
+    }
+
+    /// As [`HookTap::tap`], but each event carries the pass-through offset it
+    /// appeared at: the bytes before that offset precede the hook and the bytes
+    /// after it follow. A reader that has to keep commands and their output in
+    /// stream order (the block model) splits the pass-through there instead of
+    /// applying every hook before every byte.
+    pub fn tap_ordered(
+        &mut self,
+        input: &[u8],
+        passthrough: &mut Vec<u8>,
+    ) -> Vec<(usize, HookEvent)> {
         let mut hooks = Vec::new();
 
         for &byte in input {
@@ -200,7 +216,7 @@ impl HookTap {
                     if body.ends_with(STRING_TERMINATOR) {
                         let payload = &body[..body.len() - STRING_TERMINATOR.len()];
                         match decode_hook(payload) {
-                            Ok(event) => hooks.push(event),
+                            Ok(event) => hooks.push((passthrough.len(), event)),
                             Err(err) => {
                                 log::warn!("dropping shell hook: {err}");
                                 self.dropped += 1;

@@ -31,6 +31,25 @@ impl RootView {
         let projects_state = Rc::new(RefCell::new(ProjectsState::from_desktop(desktop)));
         let media_state = Rc::new(RefCell::new(MediaState::from_desktop(desktop)));
 
+        // The restored layout keeps its active tab on screen, and that tab
+        // carries the environment it was opened on. The selector and the
+        // sidebar filter read the window's selected medium, so point them at
+        // the tab before the first frame; otherwise a restored local tab would
+        // start on whatever environment the media tree defaults to.
+        let space_medium = {
+            let s = state.borrow();
+            s.spaces.get(s.active_space).map(|space| space.medium.clone())
+        };
+        if let Some(medium) = space_medium.filter(|medium| !medium.trim().is_empty()) {
+            let _ = media_state.borrow_mut().select_medium(&medium);
+            let mut s = state.borrow_mut();
+            if s.workspace_routing.is_none() {
+                s.workspace_routing = Some(crate::ui::WorkspaceRouting::from_routing(
+                    crate::media::medium_routing(&medium),
+                ));
+            }
+        }
+
         let mut view = Self {
             element: Box::new(Empty::new()),
             state,

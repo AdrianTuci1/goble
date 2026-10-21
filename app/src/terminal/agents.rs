@@ -14,6 +14,12 @@ pub enum TuiAgent {
     OpenCode,
     Cursor,
     Aider,
+    /// `pi`, the π coding agent.
+    Pi,
+    /// The Grok CLI's agent TUI.
+    Grok,
+    /// Hermes' interaction CLI.
+    Hermes,
     /// An unrecognised binary launched explicitly (via the launch button); the
     /// pane still goes native-first so the requested agent owns the line.
     Other,
@@ -29,6 +35,9 @@ impl TuiAgent {
             TuiAgent::OpenCode => "opencode",
             TuiAgent::Cursor => "cursor-agent",
             TuiAgent::Aider => "aider",
+            TuiAgent::Pi => "pi",
+            TuiAgent::Grok => "grok",
+            TuiAgent::Hermes => "hermes",
             TuiAgent::Other => "codex",
         }
     }
@@ -42,6 +51,9 @@ impl TuiAgent {
             TuiAgent::OpenCode => "opencode",
             TuiAgent::Cursor => "cursor-agent",
             TuiAgent::Aider => "aider",
+            TuiAgent::Pi => "pi",
+            TuiAgent::Grok => "grok",
+            TuiAgent::Hermes => "hermes",
             TuiAgent::Other => "agent",
         }
     }
@@ -59,18 +71,24 @@ impl TuiAgent {
             "opencode" => Some(TuiAgent::OpenCode),
             "cursor-agent" | "cursor" => Some(TuiAgent::Cursor),
             "aider" => Some(TuiAgent::Aider),
+            "pi" => Some(TuiAgent::Pi),
+            "grok" => Some(TuiAgent::Grok),
+            "hermes" => Some(TuiAgent::Hermes),
             _ => None,
         }
     }
 
     /// All known agents, for building a launch menu.
-    pub const ALL: [TuiAgent; 6] = [
+    pub const ALL: [TuiAgent; 9] = [
         TuiAgent::Codex,
         TuiAgent::Claude,
         TuiAgent::Gemini,
         TuiAgent::OpenCode,
         TuiAgent::Cursor,
         TuiAgent::Aider,
+        TuiAgent::Pi,
+        TuiAgent::Grok,
+        TuiAgent::Hermes,
     ];
 }
 

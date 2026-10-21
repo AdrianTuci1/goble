@@ -549,7 +549,7 @@ mod sidebar_surface_tests {
 
         // The tray's own rows: a rounded fill that holds one of them is the
         // tray's card and not a row that went back to being a widget.
-        let tray_rows = ["Star", "Delete agent"];
+        let tray_rows = ["Star", "Delete conversation"];
         let holds_a_tray_row = |rect: &RectF| {
             tray_open
                 && commands.iter().any(|other| match other {
@@ -597,7 +597,7 @@ mod sidebar_surface_tests {
                         rect,
                         corner_radius,
                         ..
-                    } => in_band(*rect) && *corner_radius > 0.0 && holds_a_tray_row(rect),
+                    } => *corner_radius > 0.0 && holds_a_tray_row(rect),
                     _ => false,
                 })
                 .count();
@@ -738,11 +738,7 @@ mod sidebar_surface_tests {
             // More rows than the band holds, so there is somewhere to scroll.
             s.conversations = (0..40)
                 .map(|index| {
-                    conversation(
-                        &format!("c{index}"),
-                        &format!("Agent {index}"),
-                        "Frontend",
-                    )
+                    conversation(&format!("c{index}"), &format!("Agent {index}"), "Frontend")
                 })
                 .collect();
         }
@@ -781,13 +777,7 @@ mod sidebar_surface_tests {
                 &mut ctx,
                 &app,
             );
-            root.dispatch_event(
-                &DispatchedEvent::Scroll {
-                    delta: vec2f(0.0, dy),
-                },
-                &mut ctx,
-                &app,
-            );
+            root.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, dy)), &mut ctx, &app);
         };
 
         wheel(&mut root, 40.0);
@@ -809,6 +799,173 @@ mod sidebar_surface_tests {
             scrolled,
             "the offset survives the rebuild"
         );
+    }
+
+    /// A trackpad reports how far the fingers travelled, and the sidebar spends
+    /// it to the point: a 4 pt delta moves the list 4 pt, not a row. The frame
+    /// accounting is the transcript's too — a delta that moves nothing (the
+    /// list is already at its end) is consumed but earns no frame.
+    #[test]
+    fn a_precise_delta_moves_the_sidebar_by_its_own_distance_and_only_a_move_earns_a_frame() {
+        use goble_ui::event::DispatchedEvent;
+
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let view = RootView::new(&app, &desktop, None);
+        let state = view.state_rc();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.conversations_expanded = true;
+            s.conversations = (0..40)
+                .map(|index| {
+                    conversation(&format!("c{index}"), &format!("Agent {index}"), "Frontend")
+                })
+                .collect();
+        }
+
+        let mut root: Box<dyn Element> = Box::new(view);
+        let window = vec2f(1024.0, 768.0);
+        let over_the_band = vec2f(crate::ui::SIDEBAR_WIDTH / 2.0, 400.0);
+        let _ = root.layout(SizeConstraint::loose(window), &mut LayoutContext, &app);
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        paint_ctx.cursor_inside = true;
+        paint_ctx.cursor_position = over_the_band;
+        root.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+
+        let scroll = state.borrow().sidebar_scroll.clone();
+        assert!(
+            scroll.borrow().max_offset() > 0.0,
+            "the seeded list overflows the band: {:?}",
+            scroll.borrow().max_offset()
+        );
+
+        let mut ctx = goble_ui::elements::EventContext;
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: over_the_band,
+            },
+            &mut ctx,
+            &app,
+        );
+        let moves = app.scroll_moves();
+        let wheel = |root: &mut Box<dyn Element>, dy: f32| {
+            let mut ctx = goble_ui::elements::EventContext;
+            root.dispatch_event(
+                &DispatchedEvent::Scroll {
+                    delta: vec2f(0.0, dy),
+                    precise: true,
+                },
+                &mut ctx,
+                &app,
+            );
+        };
+        wheel(&mut root, -4.0);
+        assert_eq!(
+            scroll.borrow().offset(),
+            4.0,
+            "a 4 pt trackpad delta is 4 pt of list, not a rounded row"
+        );
+        assert_eq!(app.scroll_moves(), moves + 1, "the move earns a frame");
+
+        scroll.borrow_mut().scroll_by(f32::MAX);
+        let at_end = scroll.borrow().offset();
+        assert_eq!(at_end, scroll.borrow().max_offset());
+        let moves = app.scroll_moves();
+        wheel(&mut root, -4.0);
+        assert_eq!(
+            scroll.borrow().offset(),
+            at_end,
+            "the wheel is at the end and moves nothing"
+        );
+        assert_eq!(
+            app.scroll_moves(),
+            moves,
+            "a wheel that moves nothing earns no frame"
+        );
+    }
+
+    /// The wheel belongs to the conversation cards and nothing above them: the
+    /// toolbelt, the search field and the `New conversation` row stay put, and
+    /// a wheel over them scrolls nothing.
+    #[test]
+    fn a_wheel_over_the_sidebar_header_does_not_scroll_the_list() {
+        use goble_ui::event::DispatchedEvent;
+
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let view = RootView::new(&app, &desktop, None);
+        let state = view.state_rc();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.conversations_expanded = true;
+            s.conversations = (0..40)
+                .map(|index| {
+                    conversation(&format!("c{index}"), &format!("Agent {index}"), "Frontend")
+                })
+                .collect();
+        }
+
+        let mut root: Box<dyn Element> = Box::new(view);
+        let window = vec2f(1024.0, 768.0);
+        // Below the toolbelt and over the search field / New conversation row,
+        // above the list's own viewport.
+        let over_the_header = vec2f(crate::ui::SIDEBAR_WIDTH / 2.0, 110.0);
+        let _ = root.layout(SizeConstraint::loose(window), &mut LayoutContext, &app);
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        paint_ctx.cursor_inside = true;
+        paint_ctx.cursor_position = over_the_header;
+        root.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+
+        let scroll = state.borrow().sidebar_scroll.clone();
+        assert!(
+            scroll.borrow().max_offset() > 0.0,
+            "the seeded list overflows the band: {:?}",
+            scroll.borrow().max_offset()
+        );
+
+        let mut ctx = goble_ui::elements::EventContext;
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: over_the_header,
+            },
+            &mut ctx,
+            &app,
+        );
+        let moves = app.scroll_moves();
+        let consumed = root.dispatch_event(
+            &DispatchedEvent::Scroll {
+                delta: vec2f(0.0, -20.0),
+                precise: true,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(
+            !consumed,
+            "the header does not take the wheel away from the rest of the window"
+        );
+        assert_eq!(
+            scroll.borrow().offset(),
+            0.0,
+            "and the conversation list stays at its top"
+        );
+        assert_eq!(app.scroll_moves(), moves, "so no frame is owed");
     }
 
     /// The rule above distinguishes a separator from a control's own edge, so
@@ -1059,13 +1216,7 @@ mod sidebar_surface_tests {
             &mut ctx,
             &app,
         );
-        root.dispatch_event(
-            &DispatchedEvent::Scroll {
-                delta: vec2f(0.0, -40.0),
-            },
-            &mut ctx,
-            &app,
-        );
+        root.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, -40.0)), &mut ctx, &app);
         assert!(
             scroll.borrow().offset() > 0.0,
             "the list scrolled away from the top"
@@ -1431,6 +1582,35 @@ mod sidebar_surface_tests {
             .collect()
     }
 
+    /// A point on the tray's run of `text`, a few points into its box. The tray
+    /// opens beside the sidebar, so its runs are not confined to the band.
+    fn on_tray_text(commands: &[RenderCommand], text: &str) -> goble_ui::geometry::Vector2F {
+        let origin = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText {
+                    text: run, origin, ..
+                } if run == text => Some(*origin),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{text:?} is drawn in the tray"));
+        vec2f(origin.x + 3.0, origin.y + 3.0)
+    }
+
+    /// Every paint of the tray's run of `text`, in paint order. The tray is
+    /// drawn once inside its card and once as the frame's last layer; the last
+    /// entry is the visible one.
+    fn tray_runs(commands: &[RenderCommand], text: &str) -> Vec<usize> {
+        commands
+            .iter()
+            .enumerate()
+            .filter(|(_, command)| {
+                matches!(command, RenderCommand::DrawText { text: run, .. } if run == text)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
     /// A pinned conversation is listed once, under Starred: the folder groups
     /// below hold what is left. A list that is entirely pinned is not empty, so
     /// it says nothing about an empty environment either.
@@ -1749,7 +1929,7 @@ mod sidebar_surface_tests {
     /// cannot cover it; a pointer on it is still on the card's own surface; and
     /// its rows act on the conversation the way they promise.
     #[test]
-    fn the_cards_tray_hangs_from_its_control_above_the_cards_after_it() {
+    fn the_cards_tray_hangs_from_its_control_beside_it() {
         use goble_ui::event::DispatchedEvent;
 
         let dir = tempfile::tempdir().expect("temp thread-store dir");
@@ -1797,8 +1977,8 @@ mod sidebar_surface_tests {
         );
         let open = frame_at(&mut root, &app, on_dots);
 
-        let star_row = on_band_text(&open, "Star");
-        let delete_row = on_band_text(&open, "Delete agent");
+        let star_row = on_tray_text(&open, "Star");
+        let delete_row = on_tray_text(&open, "Delete conversation");
         assert!(delete_row.y > star_row.y, "star is the tray's first row");
 
         // The tray's own card, around its rows.
@@ -1823,34 +2003,32 @@ mod sidebar_surface_tests {
             })
             .expect("the tray is a card of its own around its rows");
         assert!(
-            tray.min_y() > dots.max_y(),
-            "the tray hangs below the control: tray {tray:?} vs dots {dots:?}"
+            tray.min_x() >= dots.max_x(),
+            "the tray opens to the right of the control: tray {tray:?} vs dots {dots:?}"
         );
         assert!(
-            (tray.max_x() - dots.max_x()).abs() < 0.01,
-            "its trailing edge is the control's: tray {tray:?} vs dots {dots:?}"
+            (tray.min_y() - dots.min_y()).abs() < 0.01,
+            "and is anchored to the control's top: tray {tray:?} vs dots {dots:?}"
         );
         assert!(
-            tray.max_x() <= crate::ui::SIDEBAR_WIDTH,
-            "and the tray stays inside the sidebar: {tray:?}"
+            tray.max_x() > crate::ui::SIDEBAR_WIDTH,
+            "the tray opens into the space beside the sidebar: {tray:?}"
         );
 
         // The cards painted after this one cannot cover it: the tray's own runs
         // come after them.
         let next_card = band_runs(&open, "Coder");
         let next_card = *next_card.first().expect("the next card is drawn");
-        let star_runs = band_runs(&open, "Star");
+        let star_runs = tray_runs(&open, "Star");
         assert!(
             *star_runs.last().expect("the tray's star row is drawn") > next_card,
             "the tray is drawn after the cards that follow it: {star_runs:?} vs {next_card}"
         );
 
-        // The pointer walks off the card's bottom edge into the tray's strip:
-        // the strip is the tray's, so the tray is still open when the pointer
-        // arrives at the row. The strip is the few points between the card's
-        // bottom and the tray's own top, so its middle is a couple of points
-        // above the tray.
-        let crossing = vec2f(tray.min_x() + tray.width() / 2.0, tray.min_y() - 2.0);
+        // The pointer walks off the control into the strip between it and the
+        // tray: the strip is the tray's, so the tray is still open when the
+        // pointer arrives at the row.
+        let crossing = vec2f(tray.min_x() - 2.0, tray.min_y() + 2.0);
         root.dispatch_event(
             &DispatchedEvent::MouseMove {
                 position: crossing,
@@ -1878,7 +2056,7 @@ mod sidebar_surface_tests {
         );
         let still_open = frame_at(&mut root, &app, delete_row);
         assert!(
-            !band_runs(&still_open, "Delete agent").is_empty(),
+            !tray_runs(&still_open, "Delete conversation").is_empty(),
             "and the next frame still draws the tray"
         );
 

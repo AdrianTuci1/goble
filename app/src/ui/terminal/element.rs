@@ -24,7 +24,7 @@ impl Element for TerminalView {
         let height = constraint.max.y.max(constraint.min.y);
         let size = Vector2F::new(width, height);
         if let Some(root) = self.root.as_mut() {
-            let _ = root.layout(
+            root.layout(
                 SizeConstraint::new(Vector2F::zero(), Vector2F::new(width, height)),
                 ctx,
                 app,
@@ -122,6 +122,10 @@ impl Element for TerminalView {
                     let cells = self.end_mouse_selection();
                     let blocks = self.end_block_mouse_selection();
                     if cells || blocks {
+                        // A drag ends in a copy, the way grok-build's selection
+                        // does: releasing the button puts what the drag covered
+                        // on the clipboard without a Cmd+C.
+                        self.copy_dragged_selection();
                         self.pressed = None;
                         self.last_cell = self.cell_at(*position).or(self.last_cell);
                         return true;
@@ -150,7 +154,7 @@ impl Element for TerminalView {
                 // Motion is never consumed: the pane does not own the pointer.
                 false
             }
-            DispatchedEvent::Scroll { delta } => {
+            DispatchedEvent::Scroll { delta, precise } => {
                 if !self.pointer_inside() {
                     return false;
                 }
@@ -163,7 +167,9 @@ impl Element for TerminalView {
                         return true;
                     }
                 }
-                self.handle_wheel(delta.y);
+                if self.handle_wheel(delta.y, *precise) {
+                    app.note_scroll_move();
+                }
                 true
             }
             // The window gained or lost the focus. Only the active pane is the

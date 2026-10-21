@@ -8,10 +8,12 @@
 //! heading per group, one row per setting with the label on the left and the
 //! value or the control on the right, and a rule between the rows. There are no
 //! cards — the page is one surface, like the keyboard-shortcuts panel.
-//! Model configuration is done by editing the global `~/.goble/config.toml`;
-//! this page only lists the resulting models and offers a reload. Connections
-//! is the same shape over `~/.ssh`: it lists what that directory already
-//! records, and goble neither writes it nor connects.
+//! Model and Remote configuration are done by editing the global
+//! `~/.goble/config.toml`; these pages list what it says and offer a reload.
+//! Remote's rows name the file as well as its `[remote]` / `[remote_agents.*]`
+//! sections, so the configuration has a visible home. Connections is the same
+//! shape over `~/.ssh`: it lists what that directory already records, and
+//! goble neither writes it nor connects.
 //!
 //! **What this build cannot do.** Nothing here opens a session over SSH:
 //! activating a connection row names the target and stops there, and no key
@@ -993,7 +995,24 @@ fn build_agent(
     let vim_focused = order.take(SettingsControl::VimMode);
     let local_focused = order.take(SettingsControl::Route(WorkspaceRouting::Local));
     let remote_focused = order.take(SettingsControl::Route(WorkspaceRouting::Remote));
-    let local = Button::new(Text::new("Local").finish())
+    let routing_label = |icon: &'static str, label: &str| {
+        Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(6.0)
+            .with_child(
+                Icon::new(icon)
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .with_child(
+                Text::new(label)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .finish()
+    };
+    let local = Button::new(routing_label("conversation-local", "Local"))
         .with_variant(if state.workspace_routing == Some(WorkspaceRouting::Local) {
             ButtonVariant::Primary
         } else {
@@ -1001,7 +1020,7 @@ fn build_agent(
         })
         .with_on_click(move || (on_local.borrow_mut())(WorkspaceRouting::Local))
         .finish();
-    let remote = Button::new(Text::new("Remote").finish())
+    let remote = Button::new(routing_label("cloud", "Remote"))
         .with_variant(if state.workspace_routing == Some(WorkspaceRouting::Remote) {
             ButtonVariant::Primary
         } else {
@@ -1064,18 +1083,37 @@ fn build_agent(
                 .finish(),
         );
 
-    // What `[remote_agents.<name>]` declares. These rows are read-only — phase
-    // one reports the configuration and provisions nothing — so none of them
-    // takes a focus slot; the reload row is the page's only control here.
+    // Remote is described in the config file; the page names it and reports
+    // what it says. Nothing here writes it: the edit is the user's, and Reload
+    // remote agents reads the result back.
     col = col.with_child(rule());
-    col = col.with_child(heading(app, "Remote agents"));
-    if state.remote_agents.is_empty() {
-        col = col.with_child(note(
-            app,
-            "No remote agents configured. Add a [remote_agents.<name>] table with a provider to \
-             ~/.goble/config.toml, then reload.",
-        ));
+    col = col.with_child(heading(app, "Remote"));
+    col = col.with_child(note(app, &state.remote_status));
+
+    let config_file = if state.remote_config_path.trim().is_empty() {
+        "~/.goble/config.toml".to_string()
     } else {
+        state.remote_config_path.clone()
+    };
+    col = col.with_child(setting_row(
+        app,
+        "Config file",
+        Text::new(config_file)
+            .with_theme_color(ColorToken::Muted, app)
+            .with_font_size(11.0)
+            .with_max_lines(1)
+            .finish(),
+        false,
+    ));
+    col = col.with_child(note(
+        app,
+        "Edit [remote] or [remote_agents.<name>] in this file, then reload. Its header \
+         lists every option.",
+    ));
+
+    if !state.remote_agents.is_empty() {
+        col = col.with_child(rule());
+        col = col.with_child(heading(app, "Remote agents"));
         for agent in &state.remote_agents {
             col = col.with_child(rule());
             col = col.with_child(setting_row(

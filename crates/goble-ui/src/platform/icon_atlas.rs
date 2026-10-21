@@ -88,6 +88,7 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("key-arrow-right", "key-arrow-right.svg"),
     icon_bytes!("diamond", "diamond.svg"),
     icon_bytes!("info", "info.svg"),
+    icon_bytes!("cloud", "cloud.svg"),
     icon_bytes!("cloud-off", "cloud-off.svg"),
     icon_bytes!("workflow", "workflow.svg"),
     icon_bytes!("activity", "activity.svg"),
@@ -454,5 +455,20 @@ mod tests {
             }
         }
         assert_eq!(found, 2, "expected both environment conversation icons");
+    }
+
+    /// The remote-routing glyph is drawn from its own asset, so it has to
+    /// rasterize like the conversation icons it sits beside.
+    #[test]
+    fn the_cloud_icon_rasterizes() {
+        let (_, bytes) = ICON_FILES
+            .iter()
+            .find(|(name, _)| *name == "cloud")
+            .expect("the cloud icon is registered");
+        let img = rasterize_icon(bytes).expect("icon cloud should rasterize");
+        assert!(
+            img.0.iter().any(|&a| a > 0),
+            "icon cloud rendered no opaque pixels"
+        );
     }
 }

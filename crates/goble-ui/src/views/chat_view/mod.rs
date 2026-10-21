@@ -12,10 +12,10 @@ use std::rc::Rc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
-    AskUserUi, CommandProposalUi, Element, PanelScroll, Point, PopupMenuItem, ScrollState, ShortcutHint, SlashMenuItem,
-    TerminalFilter, TurnStatus,
+    AskUserUi, CommandProposalUi, Element, PanelScroll, Point, PopupMenuItem, ScrollState,
+    SelectableText, ShortcutHint, SlashMenuItem, TerminalFilter, TranscriptSelection, TurnStatus,
 };
-use crate::geometry::Vector2F;
+use crate::geometry::{RectF, Vector2F};
 use crate::vim::{Clipboard, VimState};
 use goble_core::harness::CommandDecision;
 use goble_core::llm::TokenUsage;
@@ -23,6 +23,7 @@ use goble_core::ssh_command::SshSession;
 
 mod builder;
 mod element;
+mod surface;
 mod transcript;
 
 #[cfg(test)]
@@ -104,6 +105,9 @@ pub struct ChatView {
     /// height, so it costs nothing when nothing is in flight.
     turn_status: TurnStatus,
     composer_harness_label: Option<String>,
+    /// The glyph beside the environment label: the computer for a local
+    /// environment and the cloud for a worker.
+    composer_harness_icon: Option<&'static str>,
     composer_branch_label: Option<String>,
     on_composer_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_composer_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
@@ -155,6 +159,17 @@ pub struct ChatView {
     /// rebuilt every frame); defaults to following the stream so a standalone
     /// view still clips and tails its content.
     scroll: Rc<RefCell<ScrollState>>,
+    /// The transcript's drag selection. App-owned, so the highlight and the
+    /// frozen text survive the per-frame rebuild. `None` on a view that does
+    /// not offer drag-to-copy.
+    transcript_selection: Option<Rc<RefCell<TranscriptSelection>>>,
+    /// Every visual row the transcript's text elements drew when they were last
+    /// painted. A press freezes this into `transcript_selection`, so the pointer
+    /// keeps reading the text the user pressed on while the stream moves.
+    text_recording: Rc<RefCell<SelectableText>>,
+    /// The transcript viewport from the last paint. Mouse events are read
+    /// against it: a press inside starts a selection, one outside clears it.
+    transcript_viewport: Rc<RefCell<Option<RectF>>>,
     /// Whether this chat pane is the workspace's active pane. Only the active
     /// pane's transcript takes the fold key (`e`), so a sibling pane sharing the
     /// tree cannot swallow it. A standalone view is active.
@@ -219,6 +234,7 @@ impl ChatView {
             composer_model_index: Rc::new(RefCell::new(0)),
             on_select_model_item: None,
             composer_harness_label: None,
+            composer_harness_icon: None,
             composer_branch_label: None,
             composer_harness_items: Vec::new(),
             composer_harness_menu_open: Rc::new(RefCell::new(false)),
@@ -246,6 +262,9 @@ impl ChatView {
             on_send_queued: None,
             on_dismiss_queued: None,
             scroll: Rc::new(RefCell::new(ScrollState::following())),
+            transcript_selection: None,
+            text_recording: Rc::new(RefCell::new(SelectableText::default())),
+            transcript_viewport: Rc::new(RefCell::new(None)),
             pane_active: true,
             show_composer: true,
             on_escape: None,

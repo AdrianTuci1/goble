@@ -1,7 +1,13 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::color::ColorU;
+use crate::elements::text_selection::{RunMetrics, SelectableText, SelectionRun};
 use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
 use crate::geometry::{vec2f, Vector2F};
-use crate::platform::text_atlas::{advance_width, measure_text_family, FontWeight};
+use crate::platform::text_atlas::{
+    advance_width, measure_text_family, mono_advance, wrapped_lines, FontWeight,
+};
 use crate::theme::{ColorToken, FontFamily};
 
 const DEFAULT_FONT_SIZE: f32 = 12.0;
@@ -30,6 +36,9 @@ pub struct Code {
     inline: bool,
     wrap: bool,
     highlighted: Option<Vec<crate::syntax::HighlightedLine>>,
+    /// When set, every visual row this element draws is recorded here so a
+    /// surface can select and copy the code. See [`SelectableText`].
+    selection: Option<Rc<RefCell<SelectableText>>>,
     /// The width the body was last measured against, when it wraps. Drawing
     /// breaks a line at a different width than the measurement did, so the
     /// drawn block follows this number and not the measured size.
@@ -51,6 +60,7 @@ impl Code {
             // Code is pre-formatted: wrapping it would break indentation.
             wrap: false,
             highlighted: None,
+            selection: None,
             wrap_width: f32::INFINITY,
             size: None,
             origin: None,
@@ -104,6 +114,13 @@ impl Code {
         self
     }
 
+    /// Record each visual row this element draws into `selection`, so a pointer
+    /// can select the code and copy it.
+    pub fn with_text_selection(mut self, selection: Rc<RefCell<SelectableText>>) -> Self {
+        self.selection = Some(selection);
+        self
+    }
+
     /// Highlight the body as `language` through [`crate::syntax::highlight`].
     /// The body is painted run by run in the runs' own colours. A language that
     /// cannot be resolved leaves the body in the plain colour it had before, so
@@ -142,6 +159,31 @@ impl Code {
         }
     }
 
+    /// Record one drawn run so a surface's selection has the row it landed on.
+    /// Rows drawn at the same top join one selectable line.
+    fn record_run(&self, x: f32, top: f32, text: &str, weight: FontWeight, italic: bool) {
+        let Some(selection) = &self.selection else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let metrics = RunMetrics::new(
+            self.font_size,
+            self.line_height,
+            FontFamily::Mono,
+            weight,
+            italic,
+        );
+        selection.borrow_mut().push_run(SelectionRun::new(
+            x,
+            top,
+            self.font_size * self.line_height,
+            text,
+            metrics,
+        ));
+    }
+
     /// Wrapping uses the constraint; pre-formatted block code is measured
     /// unbounded so a long line overflows instead of folding mid-expression.
     fn measure_max_width(&self, constraint: SizeConstraint) -> f32 {
@@ -176,7 +218,7 @@ impl Element for Code {
     ) -> Vector2F {
         let max_width = self.measure_max_width(constraint);
         let mut size = match &self.highlighted {
-            Some(lines) => measure_highlighted_lines(lines, self.font_size, self.line_height),
+            Some(lines) => measure_highlighted_lines(lines, self.font_size, self.line_height, max_width),
             None => measure_text_family(
                 &self.text,
                 self.font_size,
@@ -226,6 +268,55 @@ impl Element for Code {
         }
         if let Some(lines) = &self.highlighted {
             let line_height = self.font_size * self.line_height;
+            if self.wrap && self.wrap_width.is_finite() {
+                // Each logical line is folded into the visual rows that fit the
+                // box, then every row's characters are grouped back into
+                // same-styled runs so the colours survive the fold.
+                let chars = styled_chars(lines);
+                let mut row = 0usize;
+                for line in &chars {
+                    for (start, end) in wrap_styled(line, self.wrap_width, self.font_size) {
+                        let line_y = y + row as f32 * line_height;
+                        let mut x = origin.x;
+                        let mut index = start;
+                        while index < end {
+                            let first = &line[index];
+                            let run_start = index;
+                            index += 1;
+                            while index < end
+                                && line[index].weight == first.weight
+                                && line[index].italic == first.italic
+                                && line[index].color == first.color
+                            {
+                                index += 1;
+                            }
+                            let text: String =
+                                line[run_start..index].iter().map(|ch| ch.ch).collect();
+                            renderer.draw_text_with_font(
+                                vec2f(x, line_y),
+                                text.clone(),
+                                self.font_size,
+                                first.color,
+                                f32::INFINITY,
+                                self.line_height,
+                                first.weight,
+                                FontFamily::Mono,
+                                first.italic,
+                            );
+                            self.record_run(x, line_y, &text, first.weight, first.italic);
+                            x += advance_width(
+                                &text,
+                                self.font_size,
+                                first.weight,
+                                FontFamily::Mono,
+                                first.italic,
+                            );
+                        }
+                        row += 1;
+                    }
+                }
+                return;
+            }
             for (index, runs) in lines.iter().enumerate() {
                 let line_y = y + index as f32 * line_height;
                 let mut x = origin.x;
@@ -245,6 +336,7 @@ impl Element for Code {
                         FontFamily::Mono,
                         run.italic,
                     );
+                    self.record_run(x, line_y, &run.text, run.weight, run.italic);
                     x += advance_width(
                         &run.text,
                         self.font_size,
@@ -267,6 +359,26 @@ impl Element for Code {
             FontFamily::Mono,
             false,
         );
+        if self.selection.is_some() {
+            let rows = wrapped_lines(
+                &self.text,
+                self.font_size,
+                self.line_height,
+                max_width,
+                FontWeight::Regular,
+                FontFamily::Mono,
+                false,
+            );
+            for row in rows {
+                self.record_run(
+                    origin.x,
+                    y + row.top,
+                    &row.text,
+                    FontWeight::Regular,
+                    false,
+                );
+            }
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -278,9 +390,99 @@ impl Element for Code {
     }
 }
 
-/// Measure highlighted lines: the widest line's runs summed, one line height per
-/// line. The runs are mono, so this matches the plain measurement of the same
-/// characters while keeping the size consistent with the per-line painting.
+/// One character of a highlighted line, carrying the style of the run it came
+/// from. Wrapping a highlighted body has to move whole characters between
+/// visual rows, so the runs are flattened to this for the wrap pass and grouped
+/// back into same-styled runs when each row is painted.
+struct StyledChar {
+    ch: char,
+    color: ColorU,
+    weight: FontWeight,
+    italic: bool,
+}
+
+fn styled_chars(lines: &[crate::syntax::HighlightedLine]) -> Vec<Vec<StyledChar>> {
+    lines
+        .iter()
+        .map(|runs| {
+            let mut out = Vec::new();
+            for run in runs {
+                for ch in run.text.chars() {
+                    // The highlighter keeps the line endings; they are not
+                    // glyphs and a row break is drawn by the wrap pass itself.
+                    if ch == '\n' || ch == '\r' {
+                        continue;
+                    }
+                    out.push(StyledChar {
+                        ch,
+                        color: run.color,
+                        weight: run.weight,
+                        italic: run.italic,
+                    });
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// The advance one highlighted character is drawn with. Highlighted code is
+/// mono, and every glyph is rounded up to a whole pixel when it is drawn, so a
+/// cell is the rounded advance.
+fn styled_char_advance(character: &StyledChar, font_size: f32) -> f32 {
+    if character.ch.is_control() {
+        0.0
+    } else {
+        mono_advance(font_size, character.weight).ceil().max(0.0)
+    }
+}
+
+/// The `(start, end)` character ranges one logical line breaks into at
+/// `max_width`: at the last space of the row when one can take the break, and
+/// mid-word only when a single word cannot fit.
+fn wrap_styled(chars: &[StyledChar], max_width: f32, font_size: f32) -> Vec<(usize, usize)> {
+    if chars.is_empty() {
+        return vec![(0, 0)];
+    }
+    if !max_width.is_finite() || max_width <= 0.0 {
+        return vec![(0, chars.len())];
+    }
+    let mut rows = Vec::new();
+    let mut start = 0usize;
+    let mut last_space: Option<usize> = None;
+    let mut width = 0.0f32;
+    let mut index = 0usize;
+    while index < chars.len() {
+        let advance = styled_char_advance(&chars[index], font_size);
+        if width + advance > max_width && index > start {
+            let break_at = last_space.filter(|space| *space > start).unwrap_or(index);
+            rows.push((start, break_at));
+            start = break_at;
+            if start < chars.len() && chars[start].ch == ' ' {
+                start += 1;
+            }
+            // The tail after the break moves to the next row, so it is
+            // measured again from the new start rather than from the overflow.
+            index = start;
+            width = 0.0;
+            last_space = None;
+            continue;
+        }
+        width += advance;
+        if chars[index].ch == ' ' {
+            last_space = Some(index);
+        }
+        index += 1;
+    }
+    if start < chars.len() || rows.is_empty() {
+        rows.push((start, chars.len()));
+    }
+    rows
+}
+
+/// Measure highlighted lines: the widest visual row's runs summed, one line
+/// height per visual row. With wrapping on, a row is what fits in `max_width`,
+/// so the measured width never exceeds the box the code was given.
 ///
 /// The runs are summed by their advances: that is how far apart the painting
 /// places them, and the ink is a bearing short of it.
@@ -288,25 +490,25 @@ fn measure_highlighted_lines(
     lines: &[crate::syntax::HighlightedLine],
     font_size: f32,
     line_height: f32,
+    max_width: f32,
 ) -> Vector2F {
-    let mut width: f32 = 0.0;
-    for runs in lines {
-        let line_width: f32 = runs
-            .iter()
-            .map(|run| {
-                advance_width(
-                    &run.text,
-                    font_size,
-                    run.weight,
-                    FontFamily::Mono,
-                    run.italic,
-                )
-            })
-            .sum();
-        width = width.max(line_width);
+    let chars = styled_chars(lines);
+    if chars.is_empty() {
+        return vec2f(0.0, (font_size * line_height).ceil());
     }
-    let height = lines.len().max(1) as f32 * font_size * line_height;
-    vec2f(width.ceil(), height.ceil())
+    let mut width: f32 = 0.0;
+    let mut rows = 0usize;
+    for line in &chars {
+        for (start, end) in wrap_styled(line, max_width, font_size) {
+            rows += 1;
+            let row_width: f32 = line[start..end]
+                .iter()
+                .map(|character| styled_char_advance(character, font_size))
+                .sum();
+            width = width.max(row_width);
+        }
+    }
+    vec2f(width.ceil(), (rows.max(1) as f32 * font_size * line_height).ceil())
 }
 
 #[cfg(test)]
@@ -337,6 +539,28 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn code_records_the_rows_it_paints() {
+        use crate::elements::SelectableText;
+
+        let app = AppContext::default();
+        let recording = Rc::new(RefCell::new(SelectableText::default()));
+        let mut code = Code::new("let alpha = 1;\nlet beta = 2;")
+            .with_text_selection(recording.clone());
+        code.layout(
+            SizeConstraint::loose(vec2f(400.0, 200.0)),
+            &mut LayoutContext,
+            &app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        code.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+
+        let text = recording.borrow();
+        assert_eq!(text.lines.len(), 2, "one row per logical line");
+        assert_eq!(text.lines[0].text(), "let alpha = 1;");
+        assert_eq!(text.lines[1].text(), "let beta = 2;");
     }
 
     #[test]
@@ -410,6 +634,36 @@ mod tests {
         assert!(
             narrow.y > wide.y,
             "opted-in wrapping must fold the line and grow the height"
+        );
+    }
+
+    #[test]
+    fn wrapped_highlighted_code_folds_inside_its_width() {
+        let source = "let some_really_long_identifier = compute_something(one, two, three);";
+        let lines = crate::syntax::highlight(source, "rust").expect("rust resolves");
+        let app = AppContext::default();
+
+        let mut wide = Code::new(source)
+            .with_highlighted_lines(lines.clone())
+            .with_wrap(true);
+        let wide_size = wide.layout(
+            SizeConstraint::loose(vec2f(1000.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut narrow = Code::new(source).with_highlighted_lines(lines).with_wrap(true);
+        let narrow_size = narrow.layout(
+            SizeConstraint::loose(vec2f(120.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert!(
+            narrow_size.x <= 120.0 + 0.01,
+            "a wrapped fence measures within the width it was given: {narrow_size:?}"
+        );
+        assert!(
+            narrow_size.y > wide_size.y,
+            "folding the line grows the block: {narrow_size:?} vs {wide_size:?}"
         );
     }
 

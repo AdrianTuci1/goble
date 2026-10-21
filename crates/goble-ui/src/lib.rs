@@ -42,7 +42,8 @@ pub use elements::{
     TerminalData, TerminalFilter, TerminalLine, TerminalLineKind, TerminalStatus, Text, TextArea,
     TextInput,
     ToolCall, ToolDisplayMode, tool_fold_key,
-    ThreadListItem, ToggleButton, Toolbar, Topbar, TopbarButton, TurnActivity, TurnStatus,
+    ThreadListItem, ToggleButton, Toolbar, Topbar, TopbarButton, TranscriptSelection,
+    TurnActivity, TurnStatus,
     TurnStatusFooter, Vector2FExt, WorkKind, WorkKindCount,
     CHAT_RIGHT_SIDEBAR_WIDTH, CONVERSATION_SIDEBAR_WIDTH, DIALOG_DEFAULT_WIDTH, SHEET_DEFAULT_WIDTH,
 };

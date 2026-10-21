@@ -47,7 +47,16 @@ impl Element for Expanded {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        let size = self.child.layout(constraint, ctx, app);
+        let mut size = self.child.layout(constraint, ctx, app);
+        // A flex parent hands this child a tight slice on its main axis. The
+        // slice belongs to the child even when its content reports a smaller
+        // size — an empty body must not pull the rows after it up to the top.
+        if constraint.max.x.is_finite() && constraint.min.x == constraint.max.x {
+            size.x = constraint.max.x;
+        }
+        if constraint.max.y.is_finite() && constraint.min.y == constraint.max.y {
+            size.y = constraint.max.y;
+        }
         self.size = Some(size);
         size
     }
@@ -76,5 +85,27 @@ impl Element for Expanded {
         app: &AppContext,
     ) -> bool {
         self.child.dispatch_event(event, ctx, app)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::elements::Empty;
+    use crate::geometry::vec2f;
+
+    /// A flex parent gives an expanded child a tight slice. A child whose
+    /// content is smaller than that slice (an empty body) still occupies it,
+    /// so the rows after it stay where the parent put them.
+    #[test]
+    fn an_expanded_child_fills_the_tight_slice_its_parent_allocated() {
+        let app = AppContext::default();
+        let mut expanded = Expanded::new(Empty::new().finish());
+        let size = expanded.layout(
+            SizeConstraint::new(vec2f(320.0, 180.0), vec2f(320.0, 180.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert_eq!(size, vec2f(320.0, 180.0));
     }
 }

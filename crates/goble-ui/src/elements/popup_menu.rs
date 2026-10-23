@@ -3,12 +3,13 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
-    EventContext, Fill, Flex, Icon, LayoutContext, PaintContext, Point, ScrollState, Scrollable,
-    SizeConstraint, Text,
+    AppContext, Axis, Clipped, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
+    EventContext, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize,
+    PaintContext, Point, ScrollState, Scrollable, SizeConstraint, Text,
 };
 use crate::event::{DispatchedEvent, BUTTON_PRIMARY};
 use crate::geometry::{rectf, vec2f, PointF, RectF, Size2F, Vector2F};
+use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, SpacingToken};
 
 const POPUP_MAX_WIDTH: f32 = 220.0;
@@ -25,6 +26,14 @@ const POPUP_GAP: f32 = 6.0;
 /// The gap between the hovered row and its tray (warp-new's action sidecar).
 const TRAY_GAP: f32 = 4.0;
 
+/// The line counts drawn at the trailing edge of a menu row: a changed file's
+/// additions and deletions, in the same green and red as the diff control.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PopupMenuDiff {
+    pub added: u32,
+    pub removed: u32,
+}
+
 /// One entry in a [`PopupMenu`].
 #[derive(Clone, Debug)]
 pub struct PopupMenuItem {
@@ -32,6 +41,9 @@ pub struct PopupMenuItem {
     pub icon: Option<&'static str>,
     pub selected: bool,
     pub disabled: bool,
+    /// The file's line counts, right-aligned on the row. `None` for a plain
+    /// menu item.
+    pub diff: Option<PopupMenuDiff>,
 }
 
 impl PopupMenuItem {
@@ -41,7 +53,14 @@ impl PopupMenuItem {
             icon: None,
             selected: false,
             disabled: false,
+            diff: None,
         }
+    }
+
+    /// Right-align a changed file's additions and deletions on the row.
+    pub fn with_diff(mut self, added: u32, removed: u32) -> Self {
+        self.diff = Some(PopupMenuDiff { added, removed });
+        self
     }
 
     pub fn with_icon(mut self, icon: &'static str) -> Self {
@@ -158,6 +177,11 @@ pub struct PopupMenu {
     /// a menu that never asked for a cap is drawn exactly as before.
     max_visible_rows: Option<usize>,
     panel_scroll: PanelScroll,
+    /// The panel's widest row and the radius of its own box. The app's menus
+    /// keep the defaults; the diff menu widens for file paths and squares its
+    /// corners.
+    max_width: f32,
+    corner_radius: f32,
     tray: Option<Box<dyn Element>>,
     tray_size: Option<Vector2F>,
     tray_origin: Vector2F,
@@ -183,6 +207,8 @@ impl PopupMenu {
             panel_origin: Vector2F::zero(),
             max_visible_rows: None,
             panel_scroll: PanelScroll::default(),
+            max_width: POPUP_MAX_WIDTH,
+            corner_radius: 6.0,
             tray: None,
             tray_size: None,
             tray_origin: Vector2F::zero(),
@@ -210,6 +236,21 @@ impl PopupMenu {
     /// the top again on the frame after the wheel moved it.
     pub fn with_panel_scroll(mut self, scroll: PanelScroll) -> Self {
         self.panel_scroll = scroll;
+        self
+    }
+
+    /// The widest the panel's rows may be. A menu of file paths asks for more
+    /// room than the default item list.
+    pub fn with_max_width(mut self, width: f32) -> Self {
+        self.max_width = width;
+        self
+    }
+
+    /// The panel's corner radius, and the source of its rows' radius (two
+    /// pixels smaller, so a row sits inside the panel's border). Zero squares
+    /// both.
+    pub fn with_corner_radius(mut self, radius: f32) -> Self {
+        self.corner_radius = radius;
         self
     }
 
@@ -433,11 +474,15 @@ impl PopupMenu {
             let disabled = item.disabled;
             let is_open = open.clone();
             let cb = on_select.clone();
+            let diff = item.diff;
             let row = PopupMenuItemView::new(
                 label,
                 icon,
                 selected,
                 disabled,
+                diff,
+                self.max_width,
+                (self.corner_radius - 2.0).max(0.0),
                 move || {
                     if !disabled {
                         if let Some(cb) = cb.as_ref() {
@@ -483,7 +528,7 @@ impl PopupMenu {
             .with_padding(EdgeInsets::uniform(sm))
             .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
             .with_border(app.theme.color(ColorToken::Border).into())
-            .with_corner_radius(6.0)
+            .with_corner_radius(self.corner_radius)
             .finish()
     }
 
@@ -558,7 +603,7 @@ impl Element for PopupMenu {
                 POPUP_MAX_WIDTH
             };
             let panel_size = panel.layout(
-                SizeConstraint::loose(vec2f(available_width.min(POPUP_MAX_WIDTH), 400.0)),
+                SizeConstraint::loose(vec2f(available_width.min(self.max_width), 400.0)),
                 ctx,
                 app,
             );
@@ -747,6 +792,9 @@ struct PopupMenuItemView {
     icon: Option<&'static str>,
     selected: bool,
     disabled: bool,
+    diff: Option<PopupMenuDiff>,
+    max_width: f32,
+    corner_radius: f32,
     state: InteractiveState,
     on_select: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     content: Option<Box<dyn Element>>,
@@ -756,11 +804,15 @@ struct PopupMenuItemView {
 }
 
 impl PopupMenuItemView {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         label: String,
         icon: Option<&'static str>,
         selected: bool,
         disabled: bool,
+        diff: Option<PopupMenuDiff>,
+        max_width: f32,
+        corner_radius: f32,
         on_select: impl FnMut() + 'static,
     ) -> Self {
         Self {
@@ -768,6 +820,9 @@ impl PopupMenuItemView {
             icon,
             selected,
             disabled,
+            diff,
+            max_width,
+            corner_radius,
             state: InteractiveState::default(),
             on_select: Some(Rc::new(RefCell::new(on_select))),
             content: None,
@@ -791,6 +846,11 @@ impl PopupMenuItemView {
         let text = Text::new(self.label.clone())
             .with_theme_color(text_color, app)
             .with_font_size(12.0);
+        let text = if self.diff.is_some() {
+            text.with_max_lines(1)
+        } else {
+            text
+        };
         let mut content = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(8.0);
@@ -802,9 +862,58 @@ impl PopupMenuItemView {
                     .finish(),
             );
         }
-        content = content.with_child(text.finish());
+        match self.diff {
+            // A changed file's row keeps the path on the left and its counts
+            // on the right, the two ends of the row's full width.
+            Some(diff) => {
+                let counts = diff_counts(diff, app);
+                content = content
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                    .with_child(Expanded::new(Clipped::new(text.finish()).finish()).finish())
+                    .with_child(counts);
+            }
+            None => {
+                content = content.with_child(text.finish());
+            }
+        }
         self.content = Some(content.finish());
     }
+}
+
+/// The additions and deletions at a changed file row's trailing edge. An empty
+/// category is left out, the way the diff control leaves out a zero count.
+fn diff_counts(diff: PopupMenuDiff, app: &AppContext) -> Box<dyn Element> {
+    let mut row = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0);
+    if diff.added > 0 {
+        row = row.with_child(
+            Text::new(format!("+{}", diff.added))
+                .with_theme_color(ColorToken::Success, app)
+                .with_font_size(11.0)
+                .with_weight(FontWeight::SemiBold)
+                .finish(),
+        );
+    }
+    if diff.removed > 0 {
+        row = row.with_child(
+            Text::new(format!("-{}", diff.removed))
+                .with_theme_color(ColorToken::Error, app)
+                .with_font_size(11.0)
+                .with_weight(FontWeight::SemiBold)
+                .finish(),
+        );
+    }
+    if diff.added == 0 && diff.removed == 0 {
+        row = row.with_child(
+            Text::new("0")
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(11.0)
+                .finish(),
+        );
+    }
+    row.finish()
 }
 
 impl Element for PopupMenuItemView {
@@ -815,11 +924,11 @@ impl Element for PopupMenuItemView {
         app: &AppContext,
     ) -> Vector2F {
         self.build_content(app);
-        let size = vec2f(constraint.max.x.min(POPUP_MAX_WIDTH), POPUP_ITEM_HEIGHT);
+        let size = vec2f(constraint.max.x.min(self.max_width), POPUP_ITEM_HEIGHT);
         self.size = Some(size);
         let content = self.content.as_mut().unwrap();
         let _ = content.layout(
-            SizeConstraint::loose(vec2f(POPUP_MAX_WIDTH, POPUP_ITEM_HEIGHT)),
+            SizeConstraint::loose(vec2f((size.x - 16.0).max(0.0), POPUP_ITEM_HEIGHT)),
             ctx,
             app,
         );
@@ -840,7 +949,7 @@ impl Element for PopupMenuItemView {
             None
         };
         if let (Some(color), Some(renderer)) = (bg, ctx.renderer.as_mut()) {
-            renderer.fill_rounded_rect(hit, color, 4.0);
+            renderer.fill_rounded_rect(hit, color, self.corner_radius);
         }
         if let Some(content) = self.content.as_mut() {
             content.paint(origin + self.content_origin, ctx, app);

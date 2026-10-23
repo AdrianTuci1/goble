@@ -925,6 +925,82 @@ fn the_branch_menu_lists_the_repositorys_local_branches() {
     );
 }
 
+/// The shell bar's diff control reads the pane's own repository: the changed
+/// file count and its additions are on the bar, and the menu opened from it
+/// lists the file.
+#[test]
+fn the_shells_bar_shows_the_working_trees_diff_and_opens_the_review_pane() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let Some(repo) = repository_on_two_branches() else {
+        return; // no git on this machine: there is no diff to read
+    };
+    std::fs::write(repo.path().join("new.txt"), "one\ntwo\n").unwrap();
+    let cwd = repo.path().to_string_lossy().to_string();
+    {
+        let mut s = state.borrow_mut();
+        s.set_pane_path(1, cwd.clone());
+    }
+
+    let closed = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&closed, "+2"),
+        "the bar counts the untracked file's lines: {closed:?}"
+    );
+    assert!(
+        !pane_has(&closed, "new.txt"),
+        "nothing lists the files before the click: {closed:?}"
+    );
+
+    // One click on the chip opens the review pane; no menu stands between the
+    // count and the diffs.
+    let at = closed
+        .iter()
+        .find_map(|(text, origin)| (text == "+2").then_some(*origin))
+        .expect("the bar draws the diff totals")
+        + vec2f(2.0, 4.0);
+    let mut ctx = EventContext;
+    let _ = root.dispatch_event(
+        &DispatchedEvent::MouseDown {
+            position: at,
+            button: 0,
+        },
+        &mut ctx,
+        &app,
+    );
+    let _ = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+    let _ = root.dispatch_event(
+        &DispatchedEvent::MouseUp {
+            position: at,
+            button: 0,
+        },
+        &mut ctx,
+        &app,
+    );
+    {
+        let s = state.borrow();
+        let review = s.active_pane_id;
+        assert_eq!(
+            s.spaces[0].diff_leaf_for(&cwd),
+            Some(review),
+            "the click opens one review pane for the shell's directory"
+        );
+        assert!(matches!(
+            s.spaces[0].leaf_kind(review),
+            Some(crate::ui::PaneKind::Diff { .. })
+        ));
+    }
+    let after = pane_runs(&mut root, &app);
+    assert!(
+        pane_has(&after, "Commit"),
+        "the pane is the review surface and its controls bar: {after:?}"
+    );
+    assert!(
+        pane_has(&after, "new.txt"),
+        "and it draws the changed file: {after:?}"
+    );
+}
+
 /// A scratch repository with a commit on `main` and `feature/x` checked out.
 /// `None` when git is not on this machine, so the case has nothing to read
 /// rather than a failure to report.
@@ -3016,3 +3092,4 @@ fn an_image_only_viewport_is_painted() {
         .count();
     assert_eq!(drawn, 1, "the pane paints its only content: {commands:?}");
 }
+

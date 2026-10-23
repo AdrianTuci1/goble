@@ -115,23 +115,23 @@ fn run_saved_host_line(state: &mut UiState, pane_id: u64, cwd: &str, host: &Host
 /// Open `file_path` in a file-view pane of the active space, and focus it.
 ///
 /// The view opens beside the pane that asked for it, in the tab on screen. A
-/// pane that is already showing a file takes the new one over instead of
-/// splitting again, so browsing a directory with the file view focused walks
-/// through files in one pane rather than tiling the tab with them. The pane
-/// keeps no conversation and no working directory of its own: the explorer's
-/// tree follows the last pane that had one.
+/// pane that is already showing a file takes the new one as another chip
+/// instead of splitting again, so browsing a directory with the file view
+/// focused walks through files in one pane rather than tiling the tab with
+/// them. The pane keeps no conversation and no working directory of its own:
+/// the explorer's tree follows the last pane that had one.
 pub(super) fn open_file_pane(
     state: &mut UiState,
     file_path: String,
     desktop: Option<&Arc<DesktopState>>,
 ) {
-    let kind = PaneKind::File { path: file_path };
     if state.active_pane_shows_file() {
-        let (active_space, pane_id) = (state.active_space, state.active_pane_id);
-        if let Some(space) = state.spaces.get_mut(active_space) {
-            space.set_leaf_kind(pane_id, kind);
-        }
+        let active = state.active_pane_id;
+        state.show_file_in_pane(active, file_path);
     } else {
+        let kind = PaneKind::File {
+            path: file_path.clone(),
+        };
         let space_idx = state.active_space;
         let Some(space) = state.spaces.get_mut(space_idx) else {
             return;
@@ -144,8 +144,73 @@ pub(super) fn open_file_pane(
         ) else {
             return;
         };
+        state.pane_open_files.insert(new_id, vec![file_path]);
         state.focus_pane(new_id);
         ensure_pane_hover(state, new_id);
+    }
+    state.sync_active_view();
+    if let Some(desktop) = desktop {
+        state.save_panes(desktop);
+    }
+}
+
+/// Open the working tree's review pane for `source`'s directory (or focus the
+/// one this tab already has), optionally showing one changed file.
+///
+/// The pane carries the directory it reviews, so it survives a restart and a
+/// lift into another tab. A tab keeps at most one review pane per directory:
+/// pressing the composer's diff control again focuses that pane instead of
+/// tiling the tab with duplicates.
+pub(super) fn open_diff_pane(
+    state: &mut UiState,
+    source: u64,
+    file: Option<String>,
+    desktop: Option<&Arc<DesktopState>>,
+) {
+    let cwd = state
+        .pane_sessions
+        .get(&source)
+        .map(|session| session.path.clone())
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or_else(|| state.composer_path.clone());
+    if cwd.trim().is_empty() {
+        return;
+    }
+    let space_idx = state.active_space;
+    let Some(space) = state.spaces.get(space_idx) else {
+        return;
+    };
+    if let Some(id) = space.diff_leaf_for(&cwd) {
+        state.focus_pane(id);
+        let controls = state.pane_controls_mut(id);
+        *controls.diff_selected.borrow_mut() = file;
+        controls.diff_scroll.borrow_mut().reset();
+        if let Some(desktop) = desktop {
+            state.save_panes(desktop);
+        }
+        return;
+    }
+    let anchor = if space.root.contains_leaf(source) {
+        source
+    } else {
+        state.active_pane_id
+    };
+    let Some(space) = state.spaces.get_mut(space_idx) else {
+        return;
+    };
+    let Some(new_id) = space.split_with_kind(
+        anchor,
+        SplitDir::Horizontal,
+        &mut state.next_pane_id,
+        PaneKind::Diff { cwd },
+    ) else {
+        return;
+    };
+    state.focus_pane(new_id);
+    ensure_pane_hover(state, new_id);
+    {
+        let controls = state.pane_controls_mut(new_id);
+        *controls.diff_selected.borrow_mut() = file;
     }
     state.sync_active_view();
     if let Some(desktop) = desktop {
@@ -295,5 +360,41 @@ pub(super) fn collect_leaf_ids(pane: &Pane) -> Vec<u64> {
             ids.extend(collect_leaf_ids(second));
             ids
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opening a second file while a file pane is focused adds it to that
+    /// pane's chips: the space keeps its layout instead of tiling one pane per
+    /// file.
+    #[test]
+    fn a_second_file_joins_the_file_pane_instead_of_splitting() {
+        let mut state = UiState::mock();
+        let space = state.active_space;
+        let first = "/tmp/alpha.txt".to_string();
+        open_file_pane(&mut state, first.clone(), None);
+        let pane = state.active_pane_id;
+        let leaves = state.spaces[space].root.leaf_count();
+
+        let second = "/tmp/beta.txt".to_string();
+        open_file_pane(&mut state, second.clone(), None);
+
+        assert_eq!(
+            state.active_pane_id, pane,
+            "the file pane keeps the focus it had"
+        );
+        assert_eq!(
+            state.spaces[space].root.leaf_count(),
+            leaves,
+            "a second file adds no pane"
+        );
+        assert_eq!(
+            state.pane_open_files.get(&pane).cloned().unwrap_or_default(),
+            vec![first, second],
+            "the pane holds both files, the shown one last"
+        );
     }
 }

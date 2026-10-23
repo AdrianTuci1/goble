@@ -9,7 +9,7 @@ pub enum DiffLineKind {
 /// One body line of a hunk, with the line number each side of the diff shows.
 ///
 /// A removed line has only an old number, an added line only a new one, and a
-/// context line both — so which gutter column is populated *is* the change type.
+/// context line both — so which number is populated *is* the change type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiffLine {
     pub kind: DiffLineKind,

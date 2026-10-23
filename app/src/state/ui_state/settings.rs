@@ -44,6 +44,7 @@ impl UiState {
         }
         self.settings_vault_unlocked = desktop.is_vault_unlocked();
         self.vim_mode = desktop.get_vim_mode();
+        self.auto_save_on_close = desktop.get_auto_save_on_close();
         // The models are what the key is resolved against, so they come first.
         self.refresh_llm_models(desktop);
         // The setting in force is the one a turn would run with, model and all:
@@ -151,8 +152,8 @@ impl UiState {
             };
         }
         if self.remote_agents.is_empty() {
-            return "No remote configured. Describe a sandbox platform and its key, or a \
-                    gateway server, in config.toml."
+            return "Turns run on this machine. Add a [remote] gateway or a \
+                    [remote_agents.<name>] table to config.toml to run them elsewhere."
                 .to_string();
         }
         self.remote_agents
@@ -278,7 +279,7 @@ impl UiState {
     }
 
     /// Move the keyboard into the pane, on its first control. A pane with
-    /// nothing interactive (Advanced) does not take it.
+    /// nothing interactive does not take it.
     pub fn settings_focus_into_pane(&mut self) {
         if self.settings_pane_controls().is_empty() {
             return;

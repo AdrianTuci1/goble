@@ -20,6 +20,7 @@ use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::chat;
+use super::diff_panel;
 use super::file_view;
 use super::pane::{carousel_regions, default_floating_rect, drop_ghost_rect, master_stack_regions};
 use super::settings;
@@ -1142,6 +1143,7 @@ fn window_icon(kind: &PaneKind) -> &'static str {
         PaneKind::Terminal => "terminal",
         PaneKind::File { path } => file_icon_name(&file_view::file_name(path)),
         PaneKind::Settings { .. } => "settings",
+        PaneKind::Diff { .. } => "code",
     }
 }
 
@@ -1152,6 +1154,7 @@ fn window_title(kind: &PaneKind) -> String {
         PaneKind::Terminal => "Terminal".to_string(),
         PaneKind::File { path } => file_view::file_name(path),
         PaneKind::Settings { .. } => "Settings".to_string(),
+        PaneKind::Diff { .. } => "Changes".to_string(),
     }
 }
 
@@ -1236,6 +1239,9 @@ fn build_leaf_column(
         // A file view is read-only: no composer, no shell, just the file the
         // pane was opened on.
         PaneKind::File { path } => file_view::build_file_view(app, state, actions, id, &path),
+        // The review pane: the file list and every changed file's diff, with
+        // the options that shape the view (refresh, expand/collapse, sidebar).
+        PaneKind::Diff { cwd } => diff_panel::build_diff_pane(app, state, actions, id, &cwd),
         PaneKind::Terminal => {
             // The terminal spawns in this pane's own cwd (the same per-session
             // path used by the composer for chat panes), so a terminal and a

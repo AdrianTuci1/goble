@@ -67,6 +67,11 @@ const ACTIVE_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 /// idle window still wakes this often to notice a change nobody announced.
 const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// How far one wheel notch travels. Winit reports a notch as a line, and
+/// warp-new converts the same line at 40 points, which is what makes a wheel
+/// cross a code review at a comparable pace here.
+const PIXELS_PER_WHEEL_LINE: f32 = 40.0;
+
 /// Clamp a zoom value into `[ZOOM_MIN, ZOOM_MAX]`.
 pub fn clamp_zoom(zoom: f32) -> f32 {
     zoom.clamp(ZOOM_MIN, ZOOM_MAX)
@@ -360,9 +365,10 @@ impl ApplicationHandler for App {
                 let zoom = *self.app_context.borrow().ui_zoom.borrow();
                 let render_scale = render_scale_for(window.scale_factor(), zoom);
                 let (delta, precise) = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
-                        (vec2f(x * 20.0, y * 20.0), false)
-                    }
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => (
+                        vec2f(x * PIXELS_PER_WHEEL_LINE, y * PIXELS_PER_WHEEL_LINE),
+                        false,
+                    ),
                     // Pixel deltas are physical; divide by the zoomed scale for
                     // logical px (so the scroll amount matches the layout).
                     winit::event::MouseScrollDelta::PixelDelta(p) => {

@@ -34,6 +34,35 @@ fn a_failed_turn_draws_its_reason_in_the_transcript() {
 }
 
 #[test]
+fn the_composer_draws_the_working_trees_diff_and_its_files() {
+    use crate::elements::{DiffFileStat, DiffSummary};
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let open = Rc::new(RefCell::new(true));
+    let summary = DiffSummary::new(vec![
+        DiffFileStat::new("src/lib.rs", 9, 2),
+        DiffFileStat::new("README.md", 3, 0),
+    ]);
+    let mut view = ChatView::new().with_composer_diff(summary, open).finish();
+    let commands = render_element(&mut view, vec2f(700.0, 500.0), &app);
+    let texts: Vec<&str> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    for expected in ["+12", "-2", "src/lib.rs", "README.md"] {
+        assert!(
+            texts.iter().any(|text| *text == expected),
+            "the diff control and its menu draw {expected:?}: {texts:?}"
+        );
+    }
+}
+
+#[test]
 fn chat_view_layouts_with_messages() {
     let app = AppContext::default();
     let messages = vec![ChatMessage::new(
@@ -1258,6 +1287,77 @@ fn the_strip_sits_lower_than_its_own_spacing_over_the_input() {
     assert!(gap > 0.0, "and stay over it: {gap}");
 }
 
+/// The input's first row sits `xs` under the separator, the same edge the
+/// shell pane's bar keeps: the rule and the composer are one block, so the
+/// column's `md` spacing does not open a gap under the rule.
+#[test]
+fn the_input_hugs_its_separator_like_the_shell_bar() {
+    use crate::elements::ShortcutHint;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let width = 600.0;
+    let mut view = ChatView::new()
+        .with_composer_path("~/Projects/goble")
+        .with_composer_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")])
+        .finish();
+    let commands = render_element(&mut view, vec2f(width, 520.0), &app);
+
+    let editor = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text == "Ask anything..." => {
+                Some(origin.y)
+            }
+            _ => None,
+        })
+        .expect("the rich input is drawn");
+    let (separator, separator_bottom) = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, .. }
+                if rect.height() <= 2.0
+                    && rect.width() >= width - 0.5
+                    && rect.min_y() < editor =>
+            {
+                Some((rect.min_y(), rect.max_y()))
+            }
+            _ => None,
+        })
+        .fold((f32::NEG_INFINITY, f32::NEG_INFINITY), |a, b| {
+            if b.0 > a.0 {
+                b
+            } else {
+                a
+            }
+        });
+    assert!(
+        separator.is_finite(),
+        "the input draws its separator over the editor at {editor}"
+    );
+
+    // The context pills are the row directly under the rule: the tallest
+    // bordered controls of the block, above the editor.
+    let pills_top = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::StrokeRect { rect, .. }
+                if rect.height() >= 20.0 && rect.min_y() > separator && rect.max_y() < editor =>
+            {
+                Some(rect.min_y())
+            }
+            _ => None,
+        })
+        .fold(f32::INFINITY, f32::min);
+    let xs = app.theme.spacing_px(SpacingToken::Xs);
+    assert!(
+        (pills_top - separator_bottom - xs).abs() < 0.5,
+        "the pills sit {xs} under the separator, like the shell bar: gap {}, \
+         pills {pills_top}, separator {separator}..{separator_bottom}, editor {editor}",
+        pills_top - separator_bottom
+    );
+}
 
 /// The models the model control opens are drawn exactly where the draft's
 /// commands are: one band in the one slot over the whole input block, above the

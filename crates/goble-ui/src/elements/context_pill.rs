@@ -18,9 +18,10 @@ use crate::elements::{
 };
 use crate::theme::ColorToken;
 
-/// Height of a context pill. Callers lay their bar out around it (the pane
-/// header pads itself out to the shared topbar height around this).
-pub const CONTEXT_PILL_HEIGHT: f32 = 28.0;
+/// Height of a context pill. It matches the rich input's other footer
+/// controls — the model, the attach button, the stop control — so one row of
+/// them reads as one strip instead of a mix of heights.
+pub const CONTEXT_PILL_HEIGHT: f32 = 24.0;
 
 /// Which side of the trigger a pill's tray opens on. A pill at the bottom of
 /// the window opens above itself; one in the topbar opens below.
@@ -92,7 +93,7 @@ impl ContextPill {
     pub fn finish(self, app: &AppContext) -> Box<dyn Element> {
         let label = Text::new(self.label.clone())
             .with_theme_color(ColorToken::Muted, app)
-            .with_font_size(12.0)
+            .with_font_size(11.0)
             .with_max_lines(1)
             .finish();
         // A long path narrows to the cap instead of pushing the bar out of the
@@ -117,6 +118,7 @@ impl ContextPill {
         let trigger = Tooltip::new(
             ComposerButton::new(row)
                 .with_height(CONTEXT_PILL_HEIGHT)
+                .with_h_pad(8.0)
                 .finish(),
             self.tooltip.clone(),
         )

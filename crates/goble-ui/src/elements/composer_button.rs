@@ -22,7 +22,7 @@ use crate::geometry::{rectf, vec2f};
 use crate::theme::ColorToken;
 
 /// The rich input's own corner radius, smaller than the theme's `radius_px`:
-/// these controls sit inside the input's box at 28 pt tall, where the theme's
+/// these controls sit inside the input's box at 24 pt tall, where the theme's
 /// radius reads as a pill rather than as a card.
 pub const COMPOSER_CONTROL_RADIUS: f32 = 4.0;
 
@@ -35,10 +35,18 @@ pub struct ComposerButton {
     child: Box<dyn Element>,
     state: InteractiveState,
     height: f32,
+    /// The inset from the box's side edges to its content. A footer control
+    /// keeps it small so a row of buttons stays compact; a list row that
+    /// belongs to a card overrides it with [`ComposerButton::with_h_pad`].
+    h_pad: f32,
     /// Whether the control outlines its own box at rest. On for the rich
     /// input's footer controls; off for a full-width row that belongs to a card
     /// it is drawn inside.
     outlined: bool,
+    /// The box's corner radius. The rich input's controls share
+    /// [`COMPOSER_CONTROL_RADIUS`]; a control that belongs to a square surface
+    /// (the diff menu's trigger) asks for square corners instead.
+    radius: f32,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -50,7 +58,9 @@ impl ComposerButton {
             child,
             state: InteractiveState::default(),
             height: 28.0,
+            h_pad: 10.0,
             outlined: true,
+            radius: COMPOSER_CONTROL_RADIUS,
             on_click: None,
             size: None,
             origin: None,
@@ -62,9 +72,24 @@ impl ComposerButton {
         self
     }
 
+    /// The horizontal inset between the box's edges and its content. Footer
+    /// controls in the rich input pass a tighter inset than the default so the
+    /// row reads as one compact strip.
+    pub fn with_h_pad(mut self, h_pad: f32) -> Self {
+        self.h_pad = h_pad;
+        self
+    }
+
     /// Whether the control draws its resting outline (see the module docs).
     pub fn with_outline(mut self, outlined: bool) -> Self {
         self.outlined = outlined;
+        self
+    }
+
+    /// The corner radius of the control's own box. Zero gives the square
+    /// corners the diff control uses.
+    pub fn with_radius(mut self, radius: f32) -> Self {
+        self.radius = radius;
         self
     }
 
@@ -81,7 +106,7 @@ impl Element for ComposerButton {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        let h_pad = 10.0;
+        let h_pad = self.h_pad;
         let inner_max = vec2f(
             (constraint.max.x - h_pad * 2.0).max(0.0),
             (self.height - 4.0).max(0.0),
@@ -99,10 +124,10 @@ impl Element for ComposerButton {
         let size = self.size.unwrap_or(Vector2F::zero());
         let rect = rectf(origin.x, origin.y, size.x, size.y);
         let hovered = ctx.hovered(rect);
-        // The outline and the hover fill share the input's own corner radius,
+        // The outline and the hover fill share the control's own corner radius,
         // so the fill sits exactly inside the card's border. At rest the
         // control draws the outline only — no fill of its own.
-        let radius = COMPOSER_CONTROL_RADIUS;
+        let radius = self.radius;
         if let Some(renderer) = ctx.renderer.as_mut() {
             if hovered {
                 renderer.fill_rounded_rect(rect, app.theme.color(ColorToken::Hover), radius);

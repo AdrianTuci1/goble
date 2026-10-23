@@ -12,8 +12,9 @@ use std::rc::Rc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
-    AskUserUi, CommandProposalUi, Element, PanelScroll, Point, PopupMenuItem, ScrollState,
-    SelectableText, ShortcutHint, SlashMenuItem, TerminalFilter, TranscriptSelection, TurnStatus,
+    AskUserUi, CommandProposalUi, DiffSummary, Element, PanelScroll, Point, PopupMenuItem,
+    ScrollState, SelectableText, ShortcutHint, SlashMenuItem, TerminalFilter, TranscriptSelection,
+    TurnStatus,
 };
 use crate::geometry::{RectF, Vector2F};
 use crate::vim::{Clipboard, VimState};
@@ -133,6 +134,12 @@ pub struct ChatView {
     composer_branch_items: Vec<PopupMenuItem>,
     composer_branch_menu_open: Rc<RefCell<bool>>,
     on_select_branch_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    /// The working tree's changed files, when the pane is in a local
+    /// repository. The composer draws the diff control from it.
+    composer_diff: Option<DiffSummary>,
+    composer_diff_menu_open: Rc<RefCell<bool>>,
+    composer_diff_menu_scroll: PanelScroll,
+    on_composer_diff_open: Option<Rc<RefCell<dyn FnMut(Option<String>) + 'static>>>,
     composer_slash_items: Vec<SlashMenuItem>,
     composer_slash_index: Rc<RefCell<usize>>,
     composer_slash_dismissed: Rc<RefCell<bool>>,
@@ -246,6 +253,10 @@ impl ChatView {
             composer_branch_items: Vec::new(),
             composer_branch_menu_open: Rc::new(RefCell::new(false)),
             on_select_branch_item: None,
+            composer_diff: None,
+            composer_diff_menu_open: Rc::new(RefCell::new(false)),
+            composer_diff_menu_scroll: PanelScroll::default(),
+            on_composer_diff_open: None,
             composer_slash_items: Vec::new(),
             composer_slash_index: Rc::new(RefCell::new(0)),
             composer_slash_dismissed: Rc::new(RefCell::new(false)),

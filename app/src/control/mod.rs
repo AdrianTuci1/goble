@@ -254,6 +254,7 @@ fn kind_name(kind: &PaneKind) -> String {
         PaneKind::Worker => "worker",
         PaneKind::File { .. } => "file",
         PaneKind::Settings { .. } => "settings",
+        PaneKind::Diff { .. } => "diff",
     }
     .to_string()
 }

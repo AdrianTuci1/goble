@@ -9,9 +9,9 @@ use goble_terminal::{Palette, SearchMatch};
 use goble_ui::elements::terminal_block::terminal_filter_bar;
 use goble_ui::elements::{
     AppContext, Axis, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded,
-    Fill, Flex, GridRange, MainAxisAlignment, MainAxisSize, Scrollable, SearchInput, SizeConstraint,
-    Stack, TerminalBlockPlumbing, TerminalFilter, TerminalGrid, TerminalTextSelection, Text,
-    TopbarButton,
+    Fill, Flex, GridRange, MainAxisAlignment, MainAxisSize, Scrollable, SearchInput,
+    SizeConstraint, Stack, TerminalBlockPlumbing, TerminalFilter, TerminalGrid,
+    TerminalTextSelection, Text, TopbarButton, CONTEXT_PILL_HEIGHT,
 };
 use goble_ui::geometry::Vector2F;
 use goble_ui::theme::{ColorToken, FontFamily, SpacingToken};
@@ -506,11 +506,11 @@ impl TerminalView {
         let find_open = self.terminal.borrow().find_open(self.pane_id);
         let find_chrome = if find_open { row_pitch + sm * 2.0 } else { 0.0 };
         // The bar's own minimum, the figures `ChatComposer` lays out: a 48px
-        // editor, a 28px footer row, its padding and the column's spacing. A
-        // program that owns the screen has no bar, so the grid keeps that room
-        // and the pty is told the size the user actually sees.
+        // editor, one row of 24px controls, its padding and the column's
+        // spacing. A program that owns the screen has no bar, so the grid keeps
+        // that room and the pty is told the size the user actually sees.
         let bar_height = if self.bar.is_some() {
-            48.0 + 28.0 + sm * 3.0 + md * 2.0
+            48.0 + CONTEXT_PILL_HEIGHT + sm * 3.0 + md * 2.0
         } else {
             0.0
         };

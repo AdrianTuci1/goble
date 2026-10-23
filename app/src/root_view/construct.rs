@@ -13,7 +13,7 @@ use crate::media::MediaState;
 use crate::projects::ProjectsState;
 use crate::state::UiState;
 use crate::ui::explorer::ExplorerCache;
-use crate::ui::file_view::FileCache;
+use crate::ui::file_view::{DiffFileCache, FileCache};
 use crate::ui::pickers::PickerCache;
 
 use super::RootView;
@@ -64,6 +64,7 @@ impl RootView {
             pickers: Rc::new(RefCell::new(PickerCache::default())),
             explorer: Rc::new(RefCell::new(ExplorerCache::default())),
             file_cache: Rc::new(RefCell::new(FileCache::default())),
+            diff_files: Rc::new(RefCell::new(DiffFileCache::default())),
             actions: None,
             #[cfg(unix)]
             control: None,

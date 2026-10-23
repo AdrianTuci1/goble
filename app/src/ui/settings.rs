@@ -3,11 +3,12 @@
 //! root is a leaf of kind `PaneKind::Settings` (see [`build_settings_pane`]),
 //! so it is drawn inside a pane like any other surface and closed by its tab's
 //! ✕. The pages are the grok-build categories (Appearance, Mouse, Editor &
-//! Input, Agent & Approval, Environment) plus the two this app adds
-//! (Connections, Models) and Advanced, each a flat list of rows: a muted
-//! heading per group, one row per setting with the label on the left and the
-//! value or the control on the right, and a rule between the rows. There are no
-//! cards — the page is one surface, like the keyboard-shortcuts panel.
+//! Input, Agent & Approval) plus the two this app adds (Connections, Models)
+//! and Advanced, each a flat list of rows: a muted heading per group, one row
+//! per setting with the label on the left and the value or the control on the
+//! right, and a rule between the rows. There are no cards — the page is one
+//! surface, like the keyboard-shortcuts panel. (The Environment page keeps its
+//! builder for a pane that still carries it, but it is not in the rail.)
 //! Model and Remote configuration are done by editing the global
 //! `~/.goble/config.toml`; these pages list what it says and offer a reload.
 //! Remote's rows name the file as well as its `[remote]` / `[remote_agents.*]`
@@ -132,26 +133,27 @@ pub fn pane_controls(
             controls
         }
         SettingsCategory::Mouse => vec![InvertScroll, ScrollSpeed],
-        SettingsCategory::EditorInput => vec![FontSize],
+        SettingsCategory::EditorInput => vec![FontSize, AutoSaveOnClose],
         SettingsCategory::AgentApproval => vec![
             AutoApprove,
             VimMode,
-            Route(WorkspaceRouting::Local),
-            Route(WorkspaceRouting::Remote),
+            OpenConfigFile,
             ReloadRemoteAgents,
         ],
-        SettingsCategory::Models => vec![ReloadModels],
-        // Nothing in Advanced is interactive: the pane reports the SSH and
-        // config-file state and nothing else.
-        SettingsCategory::Advanced => Vec::new(),
-        // One row per concrete host, in the order the reader sorted them, and
-        // the reload row last. The key files are read-only rows: they name a
-        // path and whether it exists, and there is nothing to activate.
+        SettingsCategory::Models => vec![OpenConfigFile, ReloadModels],
+        // Advanced reports the machine state; opening the config file is the
+        // page's one control.
+        SettingsCategory::Advanced => vec![OpenConfigFile],
+        // One row per concrete host, in the order the reader sorted them, then
+        // the config-file row and the reload row last. The key files are
+        // read-only rows: they name a path and whether it exists, and there is
+        // nothing to activate.
         SettingsCategory::Connections => {
             let mut controls = Vec::new();
             if let Some(ssh) = ssh {
                 controls.extend(ssh.hosts.iter().map(|h| SshHost(h.alias.clone())));
             }
+            controls.push(OpenConfigFile);
             controls.push(ReloadSshHosts);
             controls
         }
@@ -478,10 +480,6 @@ pub(crate) fn footer_hints(
                     hints.push(ShortcutHint::new(&["↵"], "edit"));
                 }
                 Some(SettingsControl::ColorWheel) => {}
-                Some(SettingsControl::Route(_)) => {
-                    hints.push(ShortcutHint::new(&["←", "→"], "choose"));
-                    hints.push(ShortcutHint::new(&["↵"], "select"));
-                }
                 Some(control) if control.has_discrete_values() => {
                     hints.push(ShortcutHint::new(&["←", "→"], "change"));
                     hints.push(ShortcutHint::new(&["↵"], "increase"));
@@ -516,6 +514,7 @@ fn is_toggle(control: &SettingsControl) -> bool {
             | SettingsControl::InvertScroll
             | SettingsControl::AutoApprove
             | SettingsControl::VimMode
+            | SettingsControl::AutoSaveOnClose
     )
 }
 
@@ -584,7 +583,7 @@ fn build_pane(
         SettingsCategory::Environment => build_environment(app, state, actions, page),
         SettingsCategory::Connections => build_connections(app, state, actions, page),
         SettingsCategory::Models => build_models(app, state, actions, page),
-        SettingsCategory::Advanced => build_advanced(app, state, actions),
+        SettingsCategory::Advanced => build_advanced(app, state, actions, page),
     }
 }
 
@@ -693,6 +692,24 @@ fn action_row(app: &AppContext, button: Box<dyn Element>, focused: bool) -> Box<
     .finish()
 }
 
+/// The row that opens `~/.goble/config.toml` in a file pane. Every page that
+/// reports what the file says ends with it, so the file has a way in from the
+/// page that names it.
+fn open_config_row(app: &AppContext, actions: &UiActions, focused: bool) -> Box<dyn Element> {
+    let on_open = actions.on_open_config_file.clone();
+    let button = Button::new(
+        Text::new("Open config file")
+            .with_theme_color(ColorToken::Text, app)
+            .finish(),
+    )
+    // A light outline and white text, no fill: the row reads as a control on
+    // the black page without becoming a plaque of its own.
+    .with_variant(ButtonVariant::Outline)
+    .with_on_click(move || (on_open.borrow_mut())())
+    .finish();
+    action_row(app, button, focused)
+}
+
 /// The `- value +` stepper a row draws on its right. The two buttons are the
 /// mouse's path to the same value `Left`/`Right`/`Enter` step from the keyboard.
 fn stepper(
@@ -701,12 +718,12 @@ fn stepper(
     on_dec: Rc<RefCell<dyn FnMut()>>,
     on_inc: Rc<RefCell<dyn FnMut()>>,
 ) -> Box<dyn Element> {
-    let minus = Button::new(Text::new("-").finish())
-        .with_variant(ButtonVariant::Ghost)
+    let minus = Button::new(Text::new("-").with_theme_color(ColorToken::Text, app).finish())
+        .with_variant(ButtonVariant::Outline)
         .with_on_click(move || (on_dec.borrow_mut())())
         .finish();
-    let plus = Button::new(Text::new("+").finish())
-        .with_variant(ButtonVariant::Ghost)
+    let plus = Button::new(Text::new("+").with_theme_color(ColorToken::Text, app).finish())
+        .with_variant(ButtonVariant::Outline)
         .with_on_click(move || (on_inc.borrow_mut())())
         .finish();
     Flex::row()
@@ -963,6 +980,15 @@ fn build_editor(
             order.take(SettingsControl::FontSize),
         ))
         .with_child(rule())
+        .with_child(heading(app, "Files"))
+        .with_child(switch_row(
+            app,
+            "Auto-save on close",
+            state.auto_save_on_close,
+            actions.on_toggle_auto_save_on_close.clone(),
+            order.take(SettingsControl::AutoSaveOnClose),
+        ))
+        .with_child(rule())
         .with_child(
             Container::new(
                 Text::new("Zoom applies to the whole window: Cmd/Ctrl+Plus and Minus do the same.")
@@ -987,60 +1013,8 @@ fn build_agent(
     let controls = order_for(state, page);
     let mut order = FocusOrder::new(state, &controls);
 
-    let on_local = actions.on_choose_workspace.clone();
-    let on_remote = actions.on_choose_workspace.clone();
-    // Slots are claimed in the order the list holds (the switches come before
-    // the routing buttons), not the order the rows happen to be built in.
     let auto_approve_focused = order.take(SettingsControl::AutoApprove);
     let vim_focused = order.take(SettingsControl::VimMode);
-    let local_focused = order.take(SettingsControl::Route(WorkspaceRouting::Local));
-    let remote_focused = order.take(SettingsControl::Route(WorkspaceRouting::Remote));
-    let routing_label = |icon: &'static str, label: &str| {
-        Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(6.0)
-            .with_child(
-                Icon::new(icon)
-                    .with_size(14.0)
-                    .with_theme_color(ColorToken::Text, app)
-                    .finish(),
-            )
-            .with_child(
-                Text::new(label)
-                    .with_theme_color(ColorToken::Text, app)
-                    .finish(),
-            )
-            .finish()
-    };
-    let local = Button::new(routing_label("conversation-local", "Local"))
-        .with_variant(if state.workspace_routing == Some(WorkspaceRouting::Local) {
-            ButtonVariant::Primary
-        } else {
-            ButtonVariant::Ghost
-        })
-        .with_on_click(move || (on_local.borrow_mut())(WorkspaceRouting::Local))
-        .finish();
-    let remote = Button::new(routing_label("cloud", "Remote"))
-        .with_variant(if state.workspace_routing == Some(WorkspaceRouting::Remote) {
-            ButtonVariant::Primary
-        } else {
-            ButtonVariant::Ghost
-        })
-        .with_on_click(move || (on_remote.borrow_mut())(WorkspaceRouting::Remote))
-        .finish();
-    let routing = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(app.theme.spacing_px(SpacingToken::Sm))
-        .with_child(
-            Text::new("Run agent")
-                .with_theme_color(ColorToken::Text, app)
-                .with_font_size(12.0)
-                .finish(),
-        )
-        .with_child(Spacer::new().finish())
-        .with_child(focus_ring(app, local, local_focused))
-        .with_child(focus_ring(app, remote, remote_focused))
-        .finish();
 
     // The global auto-approve switch edits the active pane's control (the
     // setting is stored per pane and mirrored into the shared setting).
@@ -1076,18 +1050,26 @@ fn build_agent(
             vim_focused,
         ))
         .with_child(rule())
-        .with_child(heading(app, "Where the agent runs"))
-        .with_child(
-            Container::new(routing)
-                .with_padding(EdgeInsets::uniform(app.theme.spacing_px(SpacingToken::Sm)))
-                .finish(),
-        );
+        .with_child(heading(app, "Remote"))
+        .with_child(setting_row(
+            app,
+            "Run agent",
+            Text::new(
+                state
+                    .workspace_routing
+                    .map(WorkspaceRouting::label)
+                    .unwrap_or("Local"),
+            )
+            .with_theme_color(ColorToken::Text, app)
+            .with_font_size(12.0)
+            .with_max_lines(1)
+            .finish(),
+            false,
+        ));
 
     // Remote is described in the config file; the page names it and reports
     // what it says. Nothing here writes it: the edit is the user's, and Reload
     // remote agents reads the result back.
-    col = col.with_child(rule());
-    col = col.with_child(heading(app, "Remote"));
     col = col.with_child(note(app, &state.remote_status));
 
     let config_file = if state.remote_config_path.trim().is_empty() {
@@ -1110,6 +1092,9 @@ fn build_agent(
         "Edit [remote] or [remote_agents.<name>] in this file, then reload. Its header \
          lists every option.",
     ));
+    let open_focused = order.take(SettingsControl::OpenConfigFile);
+    col = col.with_child(rule());
+    col = col.with_child(open_config_row(app, actions, open_focused));
 
     if !state.remote_agents.is_empty() {
         col = col.with_child(rule());
@@ -1571,6 +1556,10 @@ fn build_connections(
         }
     }
 
+    let open_focused = order.take(SettingsControl::OpenConfigFile);
+    col = col.with_child(rule());
+    col = col.with_child(open_config_row(app, actions, open_focused));
+
     let reload_focused = order.take(SettingsControl::ReloadSshHosts);
     let on_reload = actions.on_reload_ssh_hosts.clone();
     let reload = Button::new(Text::new("Reload from ~/.ssh").finish())
@@ -1702,6 +1691,10 @@ fn build_models(
         ));
     }
 
+    let open_focused = order.take(SettingsControl::OpenConfigFile);
+    col = col.with_child(rule());
+    col = col.with_child(open_config_row(app, actions, open_focused));
+
     let reload_focused = order.take(SettingsControl::ReloadModels);
     let on_reload = actions.on_reload_model_config.clone();
     let reload = Button::new(Text::new("Reload from config").finish())
@@ -1716,10 +1709,17 @@ fn build_models(
     Container::new(col.finish()).finish()
 }
 
-fn build_advanced(app: &AppContext, _state: &UiSnapshot, _actions: &UiActions) -> Box<dyn Element> {
+fn build_advanced(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    page: SettingsCategory,
+) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let controls = order_for(state, page);
+    let mut order = FocusOrder::new(state, &controls);
 
-    let col = Flex::column()
+    let mut col = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min)
         .with_child(heading(app, "Machine"))
@@ -1736,14 +1736,19 @@ fn build_advanced(app: &AppContext, _state: &UiSnapshot, _actions: &UiActions) -
         .with_child(rule())
         .with_child(
             Container::new(
-                Text::new("This page only reports: the config lives in ~/.goble/config.toml and the SSH connections under ~/.ssh are on the Connections page. Nothing here is a control, so the pane takes no keyboard focus.")
+                Text::new("This page only reports: the config lives in ~/.goble/config.toml and the SSH connections under ~/.ssh are on the Connections page. The button below opens the file in a pane.")
                     .with_theme_color(ColorToken::Muted, app)
                     .with_font_size(11.0)
                     .finish(),
             )
             .with_padding(EdgeInsets::uniform(sm))
             .finish(),
-        )
-        .finish();
-    Container::new(col).finish()
+        );
+
+    let open_focused = order.take(SettingsControl::OpenConfigFile);
+    col = col.with_child(rule());
+    col = col.with_child(open_config_row(app, actions, open_focused));
+
+    order.finish();
+    Container::new(col.finish()).finish()
 }

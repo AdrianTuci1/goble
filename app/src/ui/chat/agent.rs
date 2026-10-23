@@ -174,6 +174,7 @@ pub fn build_agent_chat(
     let on_composer_change = actions.on_composer_change.clone();
     let on_composer_focus = actions.on_composer_focus_change.clone();
     let on_pane_activate = actions.on_pane_activate.clone();
+    let on_diff_panel = actions.on_diff_panel.clone();
     let on_send_message = actions.on_send_message.clone();
     let on_attach = actions.on_attach.clone();
     let on_voice = actions.on_voice.clone();
@@ -407,6 +408,15 @@ pub fn build_agent_chat(
                         }
                     },
                 );
+        }
+        if let Some(diff) = context.diff.clone() {
+            let open = on_diff_panel.clone();
+            chat = chat
+                .with_composer_diff(diff, context.diff_menu_open.clone())
+                .with_composer_diff_menu_scroll(context.diff_menu_scroll.clone())
+                .with_composer_diff_open(move |file| {
+                    (open.borrow_mut())(pane_id, crate::ui::DiffPanelAction::Open(file))
+                });
         }
     }
     // Slash commands: a draft that starts with `/` opens the command menu above

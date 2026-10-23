@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::process::Command;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -13,20 +14,20 @@ use goble_ui::{ChatMessage, ChatRole, SettingsPage};
 
 use crate::media::MediaState;
 use crate::state::{
-    default_pane_path, routing_to_str, SpaceMenu, SpacePressRun, UiState, MULTI_CLICK_INTERVAL_MS,
-    NEW_CONVERSATION_TITLE,
+    default_pane_path, routing_to_str, DiffGitResult, SpaceMenu, SpacePressRun, UiState,
+    MULTI_CLICK_INTERVAL_MS, NEW_CONVERSATION_TITLE,
 };
 use crate::terminal::{classify_input, InputClass};
 use crate::ui::{
-    AppTab, CronEntry, FloatingDrag, FloatingDragMode, LayoutKind, NavDir, Pane, PaneKind,
-    SettingsCategory, SettingsControl, SidebarView, Space, SplitDir, TabMenuAction, UiActions,
-    WorkspaceRouting,
+    AppTab, CronEntry, DiffPanelAction, FloatingDrag, FloatingDragMode, LayoutKind, NavDir, Pane,
+    PaneKind, SettingsCategory, SettingsControl, SidebarView, Space, SplitDir, TabMenuAction,
+    UiActions, WorkspaceRouting,
 };
 use crate::ui::color_picker::ColorTarget;
 
 use super::pane_ops::{
-    close_space_at, ensure_pane_hover, open_file_pane, open_pane_harness, open_ssh_host_pane,
-    reconnect_ssh_host, split_active_pane,
+    close_space_at, ensure_pane_hover, open_diff_pane, open_file_pane, open_pane_harness,
+    open_ssh_host_pane, reconnect_ssh_host, split_active_pane,
 };
 use super::prompt::{run_terminal_command, send_agent_prompt};
 use crate::ui::pickers::{change_directory_command, checkout_branch_command};
@@ -44,6 +45,8 @@ pub fn make_actions(
     let on_create_focus_change = Rc::clone(&state);
     let on_create_submit = Rc::clone(&state);
     let on_toggle_sidebar = Rc::clone(&state);
+    let on_diff_panel = Rc::clone(&state);
+    let desktop_diff_panel = desktop.clone();
     let on_toggle_conversations_expanded = Rc::clone(&state);
     let on_select_sidebar_view = Rc::clone(&state);
     let on_toggle_section = Rc::clone(&state);
@@ -88,6 +91,7 @@ pub fn make_actions(
     let on_command_decision = Rc::clone(&state);
     let on_toggle_auto_approve = Rc::clone(&state);
     let on_toggle_vim_mode = Rc::clone(&state);
+    let on_toggle_auto_save_on_close = Rc::clone(&state);
     let on_fork_conversation = Rc::clone(&state);
     let on_set_harness_mode = Rc::clone(&state);
     let on_open_agent_view = Rc::clone(&state);
@@ -174,6 +178,9 @@ pub fn make_actions(
     let on_shell_line = Rc::clone(&state);
     let on_new_terminal = Rc::clone(&state);
     let on_close_pane = Rc::clone(&state);
+    let on_close_unsaved_save = Rc::clone(&state);
+    let on_close_unsaved_discard = Rc::clone(&state);
+    let on_close_unsaved_cancel = Rc::clone(&state);
     let on_terminal_cmd = Rc::clone(&state);
     let on_launch_tui_agent = Rc::clone(&state);
     let on_select_space = Rc::clone(&state);
@@ -240,6 +247,7 @@ pub fn make_actions(
     let desktop_command = desktop.clone();
     let desktop_auto = desktop.clone();
     let desktop_vim = desktop.clone();
+    let desktop_auto_save = desktop.clone();
     let desktop_fork = desktop.clone();
     let desktop_set_harness = desktop.clone();
     let desktop_send_queued = desktop.clone();
@@ -272,8 +280,66 @@ pub fn make_actions(
     let desktop_ssh_reconnect = desktop.clone();
     let desktop_file_view = desktop.clone();
     let desktop_open_config = desktop.clone();
+    // Opening `~/.goble/config.toml` is both a `UiActions` field and a settings
+    // row, so it is built once and shared: the button, `Enter` and the notice
+    // band all run this closure.
+    let action_open_config_file: Rc<RefCell<dyn FnMut()>> = {
+        let state = Rc::clone(&on_open_config_file);
+        let desktop = desktop_open_config.clone();
+        Rc::new(RefCell::new(move || {
+            // The API keys and the models live in the home's `config.toml`, so
+            // the notice band opens that file in a pane beside the pane that
+            // noticed the missing key. The home is the one the app itself
+            // reads: `GobleHome::locate()`, the same path `DesktopState` loads
+            // at startup and the model dialog saves to.
+            let Ok(home) = goble_core::app_home::GobleHome::locate() else {
+                log::warn!("cannot locate the Goble home to open config.toml");
+                return;
+            };
+            let mut state = state.borrow_mut();
+            open_file_pane(
+                &mut state,
+                home.config_path().to_string_lossy().to_string(),
+                desktop.as_ref(),
+            );
+        }))
+    };
+    // One chip in a file pane's topbar shows the file it names. The pane keeps
+    // every file it opened, so this only moves the one it shows; the buffers
+    // are keyed by file, so an unsaved edit on the one left behind survives.
+    let on_file_chip_select = Rc::clone(&state);
+    let desktop_file_chip = desktop.clone();
+    let action_file_chip_select: Rc<RefCell<dyn FnMut(u64, String)>> = {
+        let state = Rc::clone(&on_file_chip_select);
+        let desktop = desktop_file_chip.clone();
+        Rc::new(RefCell::new(move |pane_id: u64, path: String| {
+            let mut state = state.borrow_mut();
+            if state.show_file_in_pane(pane_id, path) {
+                state.focus_pane(pane_id);
+                state.sync_active_view();
+                if let Some(desktop) = desktop.as_deref() {
+                    state.save_panes(desktop);
+                }
+            }
+        }))
+    };
+    // The chip's own "x" closes that one file. A dirty buffer asks first, and
+    // the pane stays as long as it holds another file.
+    let on_file_chip_close = Rc::clone(&state);
+    let desktop_file_chip_close = desktop.clone();
+    let action_file_chip_close: Rc<RefCell<dyn FnMut(u64, String)>> = {
+        let state = Rc::clone(&on_file_chip_close);
+        let desktop = desktop_file_chip_close.clone();
+        Rc::new(RefCell::new(move |pane_id: u64, path: String| {
+            state
+                .borrow_mut()
+                .request_close_file(pane_id, path, desktop.as_deref());
+        }))
+    };
     let desktop_new_terminal = desktop.clone();
     let desktop_close_pane = desktop.clone();
+    let desktop_close_unsaved_save = desktop.clone();
+    let desktop_close_unsaved_discard = desktop.clone();
     let desktop_term_cmd = desktop.clone();
     let desktop_select_space = desktop.clone();
     let desktop_settings = desktop.clone();
@@ -407,6 +473,18 @@ pub fn make_actions(
             if let Some(desktop) = &desktop_vim {
                 if let Err(e) = desktop.set_vim_mode(enabled) {
                     log::warn!("set_vim_mode failed: {e}");
+                }
+            }
+        }));
+    // A dirty file view asks before its pane closes unless this is on; then
+    // the close saves it first. The choice persists across restarts.
+    let action_toggle_auto_save_on_close: Rc<RefCell<dyn FnMut(bool)>> =
+        Rc::new(RefCell::new(move |enabled: bool| {
+            let mut state = on_toggle_auto_save_on_close.borrow_mut();
+            state.auto_save_on_close = enabled;
+            if let Some(desktop) = &desktop_auto_save {
+                if let Err(e) = desktop.set_auto_save_on_close(enabled) {
+                    log::warn!("set_auto_save_on_close failed: {e}");
                 }
             }
         }));
@@ -1030,6 +1108,7 @@ pub fn make_actions(
         )),
         on_toggle_auto_approve: action_toggle_auto_approve.clone(),
         on_toggle_vim_mode: action_toggle_vim_mode.clone(),
+        on_toggle_auto_save_on_close: action_toggle_auto_save_on_close.clone(),
         clipboard: crate::clipboard::system_clipboard(),
         // The transcript footer's Fork: a new conversation inheriting this
         // pane's transcript, bound to the pane that asked for it.
@@ -1182,6 +1261,171 @@ pub fn make_actions(
                 state.inbox_open = false;
             }
         })),
+        // The review pane's own interactions. Every view choice lives in the
+        // pane's controls, so the per-frame rebuild keeps it; the two app
+        // effects are opening the pane (and a file from it) and the clipboard.
+        on_diff_panel: Rc::new(RefCell::new(
+            move |pane_id: u64, action: DiffPanelAction| {
+                let mut state = on_diff_panel.borrow_mut();
+                match action {
+                    DiffPanelAction::Open(file) => {
+                        open_diff_pane(&mut state, pane_id, file, desktop_diff_panel.as_ref());
+                    }
+                    DiffPanelAction::Select(file) => {
+                        let controls = state.pane_controls_mut(pane_id);
+                        *controls.diff_selected.borrow_mut() = file;
+                        *controls.diff_edit_focus.borrow_mut() = None;
+                        controls.diff_scroll.borrow_mut().reset();
+                    }
+                    DiffPanelAction::SetFileOpen(path, open) => {
+                        let controls = state.pane_controls_mut(pane_id);
+                        controls.diff_expanded.borrow_mut().insert(path, open);
+                    }
+                    DiffPanelAction::SetFileEditing(path, edit) => {
+                        // The press is in this pane whichever body it asks
+                        // for: the editor left behind must not keep taking
+                        // keys once the pane is not the active one.
+                        state.focus_pane(pane_id);
+                        let controls = state.pane_controls_mut(pane_id);
+                        if edit {
+                            // The body is the file's own text, so the block is
+                            // unfolded before it is shown.
+                            controls
+                                .diff_expanded
+                                .borrow_mut()
+                                .insert(path.clone(), true);
+                        } else if controls.diff_edit_focus.borrow().as_deref()
+                            == Some(path.as_str())
+                        {
+                            *controls.diff_edit_focus.borrow_mut() = None;
+                        }
+                        controls.diff_editing.borrow_mut().insert(path, edit);
+                    }
+                    DiffPanelAction::Focus => {
+                        state.focus_pane(pane_id);
+                    }
+                    DiffPanelAction::ToggleSidebar => {
+                        let controls = state.pane_controls_mut(pane_id);
+                        let sidebar = controls.diff_sidebar.clone();
+                        let open = *sidebar.borrow();
+                        *sidebar.borrow_mut() = !open;
+                    }
+                    DiffPanelAction::ToggleCommit => {
+                        state.focus_pane(pane_id);
+                        let controls = state.pane_controls_mut(pane_id);
+                        let open = controls.diff_commit_open.clone();
+                        let showing = *open.borrow();
+                        *open.borrow_mut() = !showing;
+                        *controls.diff_commit_focus.borrow_mut() = !showing;
+                        *controls.diff_commit_menu_open.borrow_mut() = false;
+                    }
+                    DiffPanelAction::SetCommitMessage(message) => {
+                        let controls = state.pane_controls_mut(pane_id);
+                        *controls.diff_commit_message.borrow_mut() = message;
+                        *controls.diff_commit_focus.borrow_mut() = true;
+                    }
+                    DiffPanelAction::Commit => {
+                        state.focus_pane(pane_id);
+                        let cwd = state.pane_cwd(pane_id);
+                        let controls = state.pane_controls_mut(pane_id);
+                        let message = controls.diff_commit_message.borrow().trim().to_string();
+                        if message.is_empty() {
+                            // A commit needs its message: the bar opens on the
+                            // field the user has to fill, with the reason in the
+                            // status line instead of a silent no-op.
+                            *controls.diff_commit_open.borrow_mut() = true;
+                            *controls.diff_commit_focus.borrow_mut() = true;
+                            *controls.diff_commit_menu_open.borrow_mut() = false;
+                            *controls.diff_git_status.borrow_mut() =
+                                Some(("Write a commit message first".to_string(), false));
+                            return;
+                        }
+                        let Some(cwd) = cwd else {
+                            *controls.diff_git_status.borrow_mut() =
+                                Some(("No working tree here".to_string(), false));
+                            return;
+                        };
+                        *controls.diff_commit_open.borrow_mut() = false;
+                        *controls.diff_commit_focus.borrow_mut() = false;
+                        *controls.diff_commit_menu_open.borrow_mut() = false;
+                        *controls.diff_git_status.borrow_mut() =
+                            Some(("Committing…".to_string(), true));
+                        spawn_git_job(
+                            cwd,
+                            GitJob::Commit(message),
+                            Arc::clone(&controls.diff_git_result),
+                        );
+                    }
+                    DiffPanelAction::Push => {
+                        let cwd = state.pane_cwd(pane_id);
+                        let controls = state.pane_controls_mut(pane_id);
+                        *controls.diff_commit_menu_open.borrow_mut() = false;
+                        let Some(cwd) = cwd else {
+                            *controls.diff_git_status.borrow_mut() =
+                                Some(("No working tree here".to_string(), false));
+                            return;
+                        };
+                        *controls.diff_git_status.borrow_mut() =
+                            Some(("Pushing…".to_string(), true));
+                        spawn_git_job(cwd, GitJob::Push, Arc::clone(&controls.diff_git_result));
+                    }
+                    DiffPanelAction::CreatePr => {
+                        let cwd = state.pane_cwd(pane_id);
+                        let controls = state.pane_controls_mut(pane_id);
+                        *controls.diff_commit_menu_open.borrow_mut() = false;
+                        let Some(cwd) = cwd else {
+                            *controls.diff_git_status.borrow_mut() =
+                                Some(("No working tree here".to_string(), false));
+                            return;
+                        };
+                        *controls.diff_git_status.borrow_mut() =
+                            Some(("Opening a pull request…".to_string(), true));
+                        spawn_git_job(cwd, GitJob::CreatePr, Arc::clone(&controls.diff_git_result));
+                    }
+                    DiffPanelAction::CopyLink(path) => {
+                        crate::clipboard::copy_text(&format!("file://{path}"));
+                    }
+                    DiffPanelAction::ConfirmRevert(path) => {
+                        let controls = state.pane_controls_mut(pane_id);
+                        *controls.diff_revert_confirm.borrow_mut() = Some(path);
+                    }
+                    DiffPanelAction::CancelRevert => {
+                        let controls = state.pane_controls_mut(pane_id);
+                        *controls.diff_revert_confirm.borrow_mut() = None;
+                    }
+                    DiffPanelAction::RevertFile(path) => {
+                        let cwd = state.pane_cwd(pane_id);
+                        let controls = state.pane_controls_mut(pane_id);
+                        *controls.diff_revert_confirm.borrow_mut() = None;
+                        let Some(cwd) = cwd else {
+                            *controls.diff_git_status.borrow_mut() =
+                                Some(("No working tree here".to_string(), false));
+                            return;
+                        };
+                        *controls.diff_git_status.borrow_mut() =
+                            Some((format!("Reverting {path}…"), true));
+                        spawn_git_job(
+                            cwd,
+                            GitJob::Revert(path),
+                            Arc::clone(&controls.diff_git_result),
+                        );
+                    }
+                    DiffPanelAction::OpenExternal(path) => {
+                        let controls = state.pane_controls_mut(pane_id);
+                        if let Err(error) = crate::state::open_local_path(&path) {
+                            *controls.diff_git_status.borrow_mut() = Some((error, false));
+                        }
+                    }
+                    DiffPanelAction::OpenFile(path) => {
+                        state.focus_pane(pane_id);
+                        open_file_pane(&mut state, path, desktop_diff_panel.as_ref());
+                    }
+                    DiffPanelAction::CopyPaths(paths) => {
+                        crate::clipboard::copy_text(&paths.join("\n"));
+                    }
+                }
+            },
+        )),
         on_toggle_sidebar: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_sidebar.borrow_mut();
             state.sidebar_visible = !state.sidebar_visible;
@@ -1407,9 +1651,10 @@ pub fn make_actions(
             let on_theme = action_set_theme_target.clone();
             let on_auto = action_toggle_auto_approve.clone();
             let on_vim = action_toggle_vim_mode.clone();
-            let on_route = action_choose_workspace.clone();
+            let on_auto_save = action_toggle_auto_save_on_close.clone();
             let on_reload = action_reload_model_config.clone();
             let on_reload_agents = action_reload_remote_agents.clone();
+            let on_open_config = Rc::clone(&action_open_config_file);
             let on_step = action_settings_step.clone();
             let desktop_activate = desktop.clone();
             move || {
@@ -1443,7 +1688,11 @@ pub fn make_actions(
                         let next = !activate_state.borrow().vim_mode;
                         (on_vim.borrow_mut())(next);
                     }
-                    Some(SettingsControl::Route(routing)) => (on_route.borrow_mut())(routing),
+                    Some(SettingsControl::AutoSaveOnClose) => {
+                        let next = !activate_state.borrow().auto_save_on_close;
+                        (on_auto_save.borrow_mut())(next);
+                    }
+                    Some(SettingsControl::OpenConfigFile) => (on_open_config.borrow_mut())(),
                     Some(SettingsControl::ReloadModels) => (on_reload.borrow_mut())(),
                     Some(SettingsControl::ReloadRemoteAgents) => {
                         (on_reload_agents.borrow_mut())()
@@ -1933,31 +2182,24 @@ pub fn make_actions(
         })),
         on_close_pane: Rc::new(RefCell::new(move || {
             let mut state = on_close_pane.borrow_mut();
-            let space_idx = state.active_space;
-            let active_id = state.active_pane_id;
-            let next = if let Some(space) = state.spaces.get_mut(space_idx) {
-                space.close(active_id)
-            } else {
-                None
-            };
-            // The closed pane owns nothing: its session/runtime/hover, a child
-            // view open in it and its shell (killing the pty) go with it, and so
-            // does its viewer session — a pane that is gone must not be found by
-            // a later worker status report.
-            state.forget_pane(active_id);
-            // An expanded pane that is closed gives the space back: the id is
-            // dropped with the pane, so nothing is left expanded by name.
-            if state.maximized_pane == Some(active_id) {
-                state.maximized_pane = None;
-            }
-            if let Some(next) = next {
-                state.active_pane_id = next;
-            }
-            state.sync_active_view();
-            if let Some(desktop) = &desktop_close_pane {
-                state.refresh_messages(desktop);
-                state.save_panes(desktop);
-            }
+            let pane_id = state.active_pane_id;
+            state.request_close_pane(pane_id, desktop_close_pane.as_deref());
+        })),
+        on_close_unsaved_save: Rc::new(RefCell::new(move || {
+            let mut state = on_close_unsaved_save.borrow_mut();
+            // Only one of the two can be pending: a file chip or a whole pane.
+            state.close_pending_file_save(desktop_close_unsaved_save.as_deref());
+            state.close_pending_pane_save(desktop_close_unsaved_save.as_deref());
+        })),
+        on_close_unsaved_discard: Rc::new(RefCell::new(move || {
+            let mut state = on_close_unsaved_discard.borrow_mut();
+            state.close_pending_file_discard(desktop_close_unsaved_discard.as_deref());
+            state.close_pending_pane_discard(desktop_close_unsaved_discard.as_deref());
+        })),
+        on_close_unsaved_cancel: Rc::new(RefCell::new(move || {
+            let mut state = on_close_unsaved_cancel.borrow_mut();
+            state.cancel_pending_file_close();
+            state.cancel_pending_pane_close();
         })),
         // Cmd+Enter in a terminal pane: route the pane's current input through
         // the default harness (an agent turn), scoped to that pane's own
@@ -2536,23 +2778,9 @@ pub fn make_actions(
             state.prime_llm_form();
             state.llm_dialog_open = true;
         })),
-        on_open_config_file: Rc::new(RefCell::new(move || {
-            // The API keys and the models live in the home's `config.toml`, so
-            // the notice band opens that file in a pane beside the pane that
-            // noticed the missing key. The home is the one the app itself
-            // reads: `GobleHome::locate()`, the same path `DesktopState` loads
-            // at startup and the model dialog saves to.
-            let Ok(home) = goble_core::app_home::GobleHome::locate() else {
-                log::warn!("cannot locate the Goble home to open config.toml");
-                return;
-            };
-            let mut state = on_open_config_file.borrow_mut();
-            open_file_pane(
-                &mut state,
-                home.config_path().to_string_lossy().to_string(),
-                desktop_open_config.as_ref(),
-            );
-        })),
+        on_open_config_file: Rc::clone(&action_open_config_file),
+        on_file_chip_select: Rc::clone(&action_file_chip_select),
+        on_file_chip_close: Rc::clone(&action_file_chip_close),
         on_close_llm_dialog: Rc::new(RefCell::new(move || {
             on_close_llm_dialog.borrow_mut().llm_dialog_open = false;
         })),
@@ -2690,6 +2918,129 @@ fn adopt_space_routing(state: &mut UiState, index: usize) {
             &medium_id,
         )));
     }
+}
+
+/// One git job the review pane can start. The commit carries the message the
+/// bar held when the user pressed Commit.
+enum GitJob {
+    Commit(String),
+    Push,
+    CreatePr,
+    Revert(String),
+}
+
+/// Run `job` in `cwd` on its own thread and put its word in `result`. A push
+/// or a pull request waits on the network, so the frame must not.
+fn spawn_git_job(cwd: String, job: GitJob, result: DiffGitResult) {
+    std::thread::spawn(move || {
+        let outcome = run_git_job(&cwd, job);
+        if let Ok(mut slot) = result.lock() {
+            *slot = Some(outcome);
+        }
+    });
+}
+
+fn run_git_job(cwd: &str, job: GitJob) -> Result<String, String> {
+    match job {
+        GitJob::Commit(message) => {
+            let add = git(cwd, &["add", "-A"])?;
+            if !add.status.success() {
+                return Err(git_failure(&add));
+            }
+            let commit = git(cwd, &["commit", "-m", &message])?;
+            if !commit.status.success() {
+                return Err(git_failure(&commit));
+            }
+            Ok("Committed".to_string())
+        }
+        GitJob::Push => {
+            push_branch(cwd)?;
+            Ok("Pushed".to_string())
+        }
+        GitJob::CreatePr => {
+            // `gh` asks a terminal where to push a branch that has no upstream,
+            // and a worker has no terminal. Pushing first makes the branch's
+            // remote explicit, so the pull request is the only question left.
+            push_branch(cwd)?;
+            let output = Command::new("gh")
+                .current_dir(cwd)
+                .args(["pr", "create", "--fill"])
+                .output()
+                .map_err(|error| format!("gh is not available: {error}"))?;
+            if !output.status.success() {
+                return Err(git_failure(&output));
+            }
+            Ok(first_line(&output.stdout).unwrap_or_else(|| "Pull request created".to_string()))
+        }
+        GitJob::Revert(path) => {
+            let tracked = git(cwd, &["ls-files", "--error-unmatch", "--", &path])?;
+            let output = if tracked.status.success() {
+                git(cwd, &["checkout", "HEAD", "--", &path])?
+            } else {
+                // An untracked file has no `HEAD` version to restore; its whole
+                // content is the change, so reverting removes it.
+                git(cwd, &["clean", "-f", "--", &path])?
+            };
+            if !output.status.success() {
+                return Err(git_failure(&output));
+            }
+            Ok(format!("Reverted {path}"))
+        }
+    }
+}
+
+/// Push the checked-out branch. A branch that was never pushed has no
+/// upstream; the first push creates one. Any other refusal is reported as it
+/// came.
+fn push_branch(cwd: &str) -> Result<(), String> {
+    let push = git(cwd, &["push"])?;
+    if push.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&push.stderr);
+    if !stderr.contains("no upstream") && !stderr.contains("set-upstream") {
+        return Err(git_failure(&push));
+    }
+    let set = git(cwd, &["push", "--set-upstream", "origin", "HEAD"])?;
+    if !set.status.success() {
+        return Err(git_failure(&set));
+    }
+    Ok(())
+}
+
+fn git(cwd: &str, args: &[&str]) -> Result<std::process::Output, String> {
+    Command::new("git")
+        .arg("--no-optional-locks")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .map_err(|error| format!("git is not available: {error}"))
+}
+
+/// The one line a failure is reported by: the last non-empty line git wrote,
+/// which is the reason rather than the hint above it.
+fn git_failure(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    last_line(&stderr)
+        .or_else(|| last_line(&String::from_utf8_lossy(&output.stdout)))
+        .unwrap_or_else(|| "git failed".to_string())
+}
+
+fn first_line(bytes: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
+fn last_line(text: &str) -> Option<String> {
+    text.lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
 }
 
 /// Run the global search over the active pane's working directory and store the

@@ -24,7 +24,7 @@ use crate::media::MediaState;
 use crate::projects::ProjectsState;
 use crate::state::UiState;
 use crate::ui::explorer::ExplorerCache;
-use crate::ui::file_view::FileCache;
+use crate::ui::file_view::{DiffFileCache, FileCache};
 use crate::ui::pickers::PickerCache;
 use crate::ui::UiActions;
 
@@ -71,6 +71,10 @@ pub struct RootView {
     /// reason: a file view is built while the state is borrowed, and a frame
     /// that changes nothing must read nothing.
     file_cache: Rc<RefCell<FileCache>>,
+    /// The changed files the review panes have opened for editing. Keyed by
+    /// path beside the state for the same reason: the tree is built while the
+    /// state is borrowed, and a frame that changes nothing reads nothing.
+    diff_files: Rc<RefCell<DiffFileCache>>,
     /// The callbacks built on the last rebuild; kept here so the root can
     /// dispatch global keyboard shortcuts (split/space) before the tree does.
     actions: Option<UiActions>,

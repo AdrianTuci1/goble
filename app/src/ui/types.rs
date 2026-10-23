@@ -180,15 +180,14 @@ pub enum SettingsCategory {
     Mouse,
     EditorInput,
     AgentApproval,
-    /// Groups of secrets a remote session is meant to start with. It sits
-    /// directly after Agent & Approval because that page is where the user
-    /// picks Local or Remote: the secrets belong next to the choice that makes
-    /// them matter, before the model and machine-config pages.
+    /// Groups of secrets a remote session is meant to start with. The rail no
+    /// longer offers the page (it is not in [`Self::ALL`]); the variant stays
+    /// so a pane or a saved layout that still carries it reads back and keeps
+    /// its rows in the focus order.
     Environment,
     /// The SSH connections this machine already knows, read from `~/.ssh`. It
-    /// sits directly after Environment because both pages report what a session
-    /// that leaves this machine would need; unlike Environment it is read-only
-    /// and never stored by goble, so it draws no database state of its own.
+    /// is read-only and never stored by goble, so it draws no database state of
+    /// its own.
     Connections,
     Models,
     Advanced,
@@ -200,7 +199,6 @@ impl SettingsCategory {
         SettingsCategory::Mouse,
         SettingsCategory::EditorInput,
         SettingsCategory::AgentApproval,
-        SettingsCategory::Environment,
         SettingsCategory::Connections,
         SettingsCategory::Models,
         SettingsCategory::Advanced,
@@ -250,16 +248,20 @@ pub enum SettingsControl {
     ScrollSpeed,
     /// Editor & Input: the font-size stepper.
     FontSize,
+    /// Editor & Input: save a dirty file view when its pane is closed, instead
+    /// of asking whether to save.
+    AutoSaveOnClose,
     /// Agent & Approval: the auto-approve switch of the active pane.
     AutoApprove,
     /// Agent & Approval: the vim-mode switch.
     VimMode,
-    /// Agent & Approval: where the agent runs.
-    Route(WorkspaceRouting),
     /// Models: reload the list from `~/.goble/config.toml`.
     ReloadModels,
     /// Agent & Approval: re-read `[remote_agents.<name>]` from the config file.
     ReloadRemoteAgents,
+    /// Agent & Approval, Connections, Models and Advanced: open
+    /// `~/.goble/config.toml` in a file pane beside this one.
+    OpenConfigFile,
     /// Environment: the new-group name field.
     EnvironmentGroupName,
     /// Environment: create the group the name field holds.
@@ -298,7 +300,6 @@ impl SettingsControl {
             SettingsControl::ScrollSpeed
                 | SettingsControl::FontSize
                 | SettingsControl::ThemeChannel(_)
-                | SettingsControl::Route(_)
         )
     }
 
@@ -391,6 +392,14 @@ pub enum WorkspaceRouting {
 }
 
 impl WorkspaceRouting {
+    /// The word the settings page uses for this routing.
+    pub fn label(self) -> &'static str {
+        match self {
+            WorkspaceRouting::Local => "Local",
+            WorkspaceRouting::Remote => "Remote",
+        }
+    }
+
     /// Map a `"local"` / `"remote"` routing string (see [`crate::media::medium_routing`])
     /// to the corresponding variant, defaulting to `Local`.
     pub fn from_routing(routing: &str) -> Self {

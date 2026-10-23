@@ -29,6 +29,28 @@ const FOLLOW_EASE_MAX: f32 = 0.2;
 /// active rate forever.
 const GLIDE_STALL: f32 = 1.0;
 
+/// The time constant a smooth region's offset chases a wheel's target with.
+/// A trackpad already sends small, dense deltas, so it needs only enough lag
+/// to absorb a dropped frame; a wheel notch arrives as one 20-point step and
+/// needs the longer constant to read as motion instead of a jump.
+const SMOOTH_TAU_PRECISE: f32 = 0.03;
+const SMOOTH_TAU_LINE: f32 = 0.06;
+/// How close to the target counts as arrived, in points. A fraction of a
+/// pixel: the glide snaps there so it can end instead of chasing forever.
+const SMOOTH_SETTLE: f32 = 0.25;
+/// The longest step a smooth glides takes from one frame's clock, so a frame
+/// that arrives late does not carry a visible jump.
+const SMOOTH_MAX_STEP: f32 = 0.05;
+
+/// A user scroll in flight: the offset the wheel is headed for and the time
+/// constant the painted offset chases it with. Wheel notches arrive in steps;
+/// easing the offset between them is what reads as a smooth scroll.
+#[derive(Clone, Copy, Debug)]
+struct ScrollEase {
+    target: f32,
+    tau: f32,
+}
+
 /// A follow glide in flight: the painted offset travelling from `from` to `to`
 /// over `duration` seconds, eased out so it settles rather than stops.
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +90,15 @@ pub struct ScrollState {
     /// The glide in flight, while a pinned region travels to newly arrived
     /// content.
     ease: Option<FollowEase>,
+    /// Whether wheel movement eases towards its target instead of landing in
+    /// the step the event carried. Opt-in: a transcript tail and a plain list
+    /// keep the wheel's own immediacy, and a review pane asks for it so its
+    /// wheel steps read as one motion.
+    smooth: bool,
+    /// The user's scroll in flight, while the offset chases the wheel's
+    /// target. Never set on a following region, whose own glide owns the
+    /// paint.
+    scroll_ease: Option<ScrollEase>,
     /// Whether the region has been laid out at least once. A region that opens
     /// on content it has never measured (a pane mounting a long transcript)
     /// starts at the end instead of gliding there from the top.
@@ -75,6 +106,10 @@ pub struct ScrollState {
     /// When this region was last laid out. The glide is driven by the frames
     /// that lay the region out, and the frame interval is only known here.
     last_layout: Option<Instant>,
+    /// The viewport the region last painted through, in window coordinates.
+    /// A long element inside it (a diff) reads this to skip the rows that are
+    /// clipped away instead of drawing a command for each one.
+    painted_viewport: Option<RectF>,
 }
 
 impl ScrollState {
@@ -89,9 +124,32 @@ impl ScrollState {
         }
     }
 
+    /// A state whose wheel movement eases into place instead of landing in
+    /// the event's own step. A long, dense document — the diff review — reads
+    /// as one motion this way; a transcript keeps [`ScrollState::following`]
+    /// and its own glide.
+    pub fn smooth() -> Self {
+        Self {
+            smooth: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether this region's wheel eases towards its target. A following
+    /// region never does: its own glide owns the paint.
+    pub fn is_smooth(&self) -> bool {
+        self.smooth && !self.follow
+    }
+
     /// Current offset in points along the scroll axis.
     pub fn offset(&self) -> f32 {
         self.offset
+    }
+
+    /// The viewport this region last painted through, in window coordinates.
+    /// `None` before its first paint, when a child has no window to clip to.
+    pub fn painted_viewport(&self) -> Option<RectF> {
+        self.painted_viewport
     }
 
     /// The offset to paint at this frame: the pin target chased by the follow
@@ -102,12 +160,17 @@ impl ScrollState {
         self.painted
     }
 
-    /// Whether a follow glide is still in flight. The frame clock reads this to
-    /// keep running at the active rate while the transcript is moving
+    /// Whether a glide — a following region's or the wheel's own eased
+    /// movement — is still in flight. The frame clock reads this to keep
+    /// running at the active rate while the content is moving
     /// (`Element::wants_animation`); at the idle rate a glide would advance in
     /// 250ms steps and read as jank.
     pub fn is_animating(&self) -> bool {
-        let Some(ease) = self.ease else {
+        let Some(duration) = self
+            .ease
+            .map(|ease| ease.duration)
+            .or_else(|| self.scroll_ease.map(|_| 0.5))
+        else {
             return false;
         };
         // A glide is driven by the frames that lay its region out, so one that
@@ -117,29 +180,47 @@ impl ScrollState {
             .last_layout
             .map(|last| (Instant::now() - last).as_secs_f32())
             .unwrap_or(f32::INFINITY);
-        since_last_frame <= ease.duration + GLIDE_STALL
+        since_last_frame <= duration + GLIDE_STALL
     }
 
-    /// Advance a follow glide by `dt` seconds. Frames drive this — the platform
-    /// runs at 16ms while anything is animating — so the glide is time-based
-    /// and settles within its own duration however fast the frames come.
+    /// Advance a glide by `dt` seconds. Frames drive this — the platform runs
+    /// at 16ms while anything is animating — so both kinds of glide are
+    /// time-based and settle however fast the frames come.
     pub fn advance(&mut self, dt: f32) {
-        let Some(ease) = self.ease.as_mut() else {
-            return;
-        };
         if !dt.is_finite() || dt <= 0.0 {
             return;
         }
-        ease.elapsed += dt;
-        let progress = (ease.elapsed / ease.duration).clamp(0.0, 1.0);
-        // Ease-out cubic: quick off the mark and settling at the end, monotone
-        // over [0, 1], so the glide never passes the end it is aimed at.
-        let travelled = 1.0 - (1.0 - progress).powi(3);
-        self.painted = ease.from + (ease.to - ease.from) * travelled;
-        if progress >= 1.0 {
-            self.painted = ease.to;
-            self.ease = None;
+        if let Some(ease) = self.ease.as_mut() {
+            ease.elapsed += dt;
+            let progress = (ease.elapsed / ease.duration).clamp(0.0, 1.0);
+            // Ease-out cubic: quick off the mark and settling at the end,
+            // monotone over [0, 1], so the glide never passes the end it is
+            // aimed at.
+            let travelled = 1.0 - (1.0 - progress).powi(3);
+            self.painted = ease.from + (ease.to - ease.from) * travelled;
+            if progress >= 1.0 {
+                self.painted = ease.to;
+                self.ease = None;
+            }
+            return;
         }
+        // A wheel's target is chased exponentially: continuous notches extend
+        // the target, and the offset keeps closing the gap without ever
+        // restarting a curve. It is frame-rate independent, which is what
+        // makes it read the same on a 60Hz and a 120Hz display.
+        let Some(ease) = self.scroll_ease else {
+            return;
+        };
+        let dt = dt.min(SMOOTH_MAX_STEP);
+        let travelled = 1.0 - (-dt / ease.tau).exp();
+        let next = self.painted + (ease.target - self.painted) * travelled;
+        if (ease.target - next).abs() <= SMOOTH_SETTLE {
+            self.painted = ease.target;
+            self.scroll_ease = None;
+        } else {
+            self.painted = next;
+        }
+        self.offset = self.painted;
     }
 
     /// Advance the glide to the frame's own clock, using the time since this
@@ -202,9 +283,49 @@ impl ScrollState {
         // glide in the way.
         self.painted = self.offset;
         self.ease = None;
+        self.scroll_ease = None;
         if self.follow {
             self.pinned = self.offset >= max - END_EPSILON;
         }
+    }
+
+    /// Scroll by `delta` towards a target the offset eases into, for a smooth
+    /// region. Consecutive notches extend one target instead of restarting the
+    /// ease, so a fast wheel or a dense trackpad stream reads as a single
+    /// movement. A region that is not smooth, or is following its content,
+    /// lands immediately through [`ScrollState::scroll_by`].
+    pub fn scroll_by_smooth(&mut self, delta: f32, precise: bool) {
+        if !self.is_smooth() {
+            self.scroll_by(delta);
+            return;
+        }
+        let max = self.max_offset();
+        let target = match self.scroll_ease {
+            Some(ease) => ease.target,
+            None => self.offset,
+        };
+        let target = (target + delta).clamp(0.0, max);
+        if (target - self.painted).abs() <= SMOOTH_SETTLE {
+            // The wheel has nowhere to go: land there and run no frames for it.
+            self.offset = target;
+            self.painted = target;
+            self.scroll_ease = None;
+            return;
+        }
+        self.scroll_ease = Some(ScrollEase {
+            target,
+            tau: if precise {
+                SMOOTH_TAU_PRECISE
+            } else {
+                SMOOTH_TAU_LINE
+            },
+        });
+        // The wheel is activity: the region may not have been laid out for
+        // longer than a glide could survive, and [`Self::is_animating`] would
+        // then say there is nothing to run, leaving this glide with no frames
+        // until the idle heartbeat. The next layout measures its step from
+        // here.
+        self.last_layout = Some(Instant::now());
     }
 
     /// Return to the top/left of the content (a following region stops
@@ -213,6 +334,7 @@ impl ScrollState {
         self.offset = 0.0;
         self.painted = 0.0;
         self.ease = None;
+        self.scroll_ease = None;
         self.pinned = false;
     }
 
@@ -226,6 +348,10 @@ impl ScrollState {
         self.viewport = viewport;
         let max = self.max_offset();
         if self.pinned {
+            // Following owns the paint while it is pinned; a wheel ease would
+            // fight its glide, and a scroll away from the end already clears
+            // the pin.
+            self.scroll_ease = None;
             if self.laid_out && (max - self.painted).abs() > END_EPSILON {
                 self.aim_follow(max);
             } else {
@@ -234,9 +360,17 @@ impl ScrollState {
             }
             self.offset = max;
         } else {
-            self.offset = self.offset.clamp(0.0, max);
-            self.painted = self.offset;
-            self.ease = None;
+            self.painted = self.painted.clamp(0.0, max);
+            if let Some(ease) = self.scroll_ease.as_mut() {
+                // The content shrank under a glide: aim no further than its
+                // new end, and let the next frame travel there.
+                ease.target = ease.target.clamp(0.0, max);
+                self.offset = self.painted;
+            } else {
+                self.offset = self.offset.clamp(0.0, max);
+                self.painted = self.offset;
+                self.ease = None;
+            }
         }
         self.laid_out = true;
     }
@@ -399,7 +533,11 @@ impl Element for Scrollable {
         let offset = self
             .state
             .as_ref()
-            .map(|state| state.borrow().painted_offset())
+            .map(|state| {
+                let mut state = state.borrow_mut();
+                state.painted_viewport = Some(viewport_rect);
+                state.painted_offset()
+            })
             .unwrap_or(0.0);
         // Content shorter than the viewport is flushed to its end: no offset
         // can express that (the scroll range is zero), so the child is painted
@@ -442,12 +580,19 @@ impl Element for Scrollable {
             // pointer was when the last paint ran.
             self.cursor = Some(*position);
         }
-        if let DispatchedEvent::Scroll { delta, .. } = event {
+        if let DispatchedEvent::Scroll { delta, precise } = event {
             let Some(state) = self.state.as_ref() else {
                 return false;
             };
             if !self.pointer_over() {
                 return false;
+            }
+            // A wheel with no travel along this region's axis belongs to a
+            // nested region: a file stacked in the review list scrolls
+            // sideways inside its own box while the list above it keeps the
+            // vertical travel.
+            if delta.along(self.axis) == 0.0 {
+                return self.child.dispatch_event(event, ctx, app);
             }
             // The wheel reports how far the *content* should move, and positive
             // is right/down (winit's own contract, and AppKit's
@@ -460,15 +605,21 @@ impl Element for Scrollable {
                 Axis::Vertical => delta.y,
                 Axis::Horizontal => delta.x,
             };
-            let before = state.borrow().painted_offset();
-            state.borrow_mut().scroll_by(-delta);
+            let mut state = state.borrow_mut();
+            let before = state.painted_offset();
+            if state.is_smooth() {
+                state.scroll_by_smooth(-delta, *precise);
+            } else {
+                state.scroll_by(-delta);
+            }
             // A wheel at the end of the content is consumed but changes
             // nothing; saying so is what keeps the platform from painting a
-            // frame that would look the same. The painted offset is compared:
-            // a wheel that lands while a follow glide is in flight snaps the
-            // paint to the offset even when the offset itself was already
-            // there.
-            if state.borrow().painted_offset() != before {
+            // frame that would look the same. A smooth glide earns frames
+            // after the event too, so it asks for the next one even when this
+            // frame's offset has not caught up yet.
+            let moved = state.painted_offset() != before || state.is_animating();
+            drop(state);
+            if moved {
                 app.note_scroll_move();
             }
             return true;
@@ -955,5 +1106,207 @@ mod tests {
         );
         assert!(!consumed, "the pointer is not over this region");
         assert_eq!(state.borrow().offset(), 0.0);
+    }
+
+    /// Lay out a smooth region over 400 points of content in a 100 point
+    /// viewport and paint it with the pointer inside, as a review pane does.
+    fn smooth_region(app: &AppContext, state: &Rc<RefCell<ScrollState>>) -> Scrollable {
+        let mut scrollable = Scrollable::new(
+            Empty::new().with_size(vec2f(100.0, 400.0)).finish(),
+            Axis::Vertical,
+        )
+        .with_state(Rc::clone(state));
+        scrollable.layout(
+            SizeConstraint::loose(vec2f(300.0, 100.0)),
+            &mut LayoutContext,
+            app,
+        );
+        let mut ctx = crate::elements::PaintContext::new(crate::render::Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = vec2f(10.0, 10.0);
+        scrollable.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        scrollable
+    }
+
+    /// A smooth region's wheel does not land in the event's own step: it aims
+    /// the offset at the target, asks for the frames it runs on, and travels
+    /// there over them without overshooting.
+    #[test]
+    fn a_smooth_wheel_glides_to_its_target_over_frames() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::smooth()));
+        let mut scrollable = smooth_region(&app, &state);
+        let moves = app.scroll_moves();
+
+        let mut event_ctx = EventContext;
+        let consumed = scrollable.dispatch_event(
+            &DispatchedEvent::scroll(vec2f(0.0, -40.0)),
+            &mut event_ctx,
+            &app,
+        );
+        assert!(consumed, "the wheel is the region's");
+        assert_eq!(
+            app.scroll_moves(),
+            moves + 1,
+            "the glide asks for the frame it runs on"
+        );
+        assert_eq!(
+            state.borrow().offset(),
+            0.0,
+            "the offset eases towards the wheel, it does not land in the event"
+        );
+        assert!(state.borrow().is_animating());
+
+        let mut previous = state.borrow().offset();
+        let mut frames = 0;
+        while state.borrow().is_animating() {
+            state.borrow_mut().advance(FRAME);
+            assert_eq!(
+                state.borrow().offset(),
+                state.borrow().painted_offset(),
+                "the region paints where it says it is while it eases"
+            );
+            let offset = state.borrow().offset();
+            assert!(
+                offset >= previous,
+                "the glide only moves towards the wheel: {previous} then {offset}"
+            );
+            assert!(offset <= 40.0, "and never past it: {offset}");
+            previous = offset;
+            frames += 1;
+            assert!(frames < 64, "the glide settles, still at {offset}");
+        }
+        assert_eq!(previous, 40.0, "and arrives exactly at the wheel's target");
+    }
+
+    /// The first wheel after an idle spell still earns its frames: the glide
+    /// starts on the event, not on the next heartbeat, even though the last
+    /// layout is older than any glide would survive.
+    #[test]
+    fn a_smooth_wheel_after_idle_still_starts_its_frames() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::smooth()));
+        let mut scrollable = smooth_region(&app, &state);
+        state.borrow_mut().last_layout =
+            Some(Instant::now() - std::time::Duration::from_secs(30));
+        let moves = app.scroll_moves();
+
+        let mut event_ctx = EventContext;
+        let consumed = scrollable.dispatch_event(
+            &DispatchedEvent::scroll(vec2f(0.0, -40.0)),
+            &mut event_ctx,
+            &app,
+        );
+        assert!(consumed);
+        assert!(
+            state.borrow().is_animating(),
+            "the wheel itself makes the glide current"
+        );
+        assert_eq!(
+            app.scroll_moves(),
+            moves + 1,
+            "and the frame that carries it is requested"
+        );
+    }
+
+    /// Two notches in quick succession extend one target: the second does not
+    /// restart the first from where the eased offset happens to be.
+    #[test]
+    fn smooth_wheel_notches_extend_one_target() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::smooth()));
+        let mut scrollable = smooth_region(&app, &state);
+        let mut event_ctx = EventContext;
+        for _ in 0..2 {
+            let _ = scrollable.dispatch_event(
+                &DispatchedEvent::scroll(vec2f(0.0, -20.0)),
+                &mut event_ctx,
+                &app,
+            );
+        }
+        let mut frames = 0;
+        while state.borrow().is_animating() {
+            state.borrow_mut().advance(FRAME);
+            frames += 1;
+            assert!(frames < 64, "the glide settles");
+        }
+        assert_eq!(
+            state.borrow().offset(),
+            40.0,
+            "both notches are travelled, not just the last one"
+        );
+    }
+
+    /// The per-frame layout measures the region again; that must not snap a
+    /// glide back to where it started or drop the target it is headed for.
+    #[test]
+    fn a_smooth_glide_survives_the_next_layout() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::smooth()));
+        let mut scrollable = smooth_region(&app, &state);
+        let mut event_ctx = EventContext;
+        let _ = scrollable.dispatch_event(
+            &DispatchedEvent::scroll(vec2f(0.0, -80.0)),
+            &mut event_ctx,
+            &app,
+        );
+        state.borrow_mut().advance(FRAME);
+        let moved = state.borrow().offset();
+        assert!(moved > 0.0);
+
+        // The next frame rebuilds the same region over the same content. That
+        // layout advances the glide by the time since the last frame, but it
+        // must not snap it back to where it started or drop its target.
+        let _ = smooth_region(&app, &state);
+        assert!(
+            state.borrow().offset() >= moved,
+            "layout moves the glide forward from {moved}, not back to zero"
+        );
+        assert!(state.borrow().is_animating(), "the glide is still running");
+
+        let mut frames = 0;
+        while state.borrow().is_animating() {
+            state.borrow_mut().advance(FRAME);
+            frames += 1;
+            assert!(frames < 64, "the glide settles");
+        }
+        assert_eq!(state.borrow().offset(), 80.0);
+    }
+
+    /// A smooth region whose wheel is already at the end earns no frame: the
+    /// target does not move, so there is nothing to animate.
+    #[test]
+    fn a_smooth_wheel_at_the_end_earns_no_frame() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::smooth()));
+        let mut scrollable = smooth_region(&app, &state);
+        state.borrow_mut().scroll_by(10_000.0);
+        assert_eq!(state.borrow().offset(), 300.0, "at the end");
+        let moves = app.scroll_moves();
+
+        let mut event_ctx = EventContext;
+        let consumed = scrollable.dispatch_event(
+            &DispatchedEvent::scroll(vec2f(0.0, -30.0)),
+            &mut event_ctx,
+            &app,
+        );
+        assert!(consumed);
+        assert_eq!(state.borrow().offset(), 300.0);
+        assert_eq!(app.scroll_moves(), moves, "no frame is owed");
+        assert!(!state.borrow().is_animating());
+    }
+
+    /// Programmatic scrolling keeps its exact, immediate contract: a caller
+    /// that restores a saved position (or a test) is not made to wait on
+    /// frames.
+    #[test]
+    fn a_programmatic_scroll_lands_immediately_in_a_smooth_region() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ScrollState::smooth()));
+        let _ = smooth_region(&app, &state);
+        state.borrow_mut().scroll_by(120.0);
+        assert_eq!(state.borrow().offset(), 120.0);
+        assert_eq!(state.borrow().painted_offset(), 120.0);
+        assert!(!state.borrow().is_animating());
     }
 }

@@ -1,4 +1,10 @@
+use std::sync::{Arc, Mutex};
+
 use super::*;
+
+/// The outcome of a review pane's git job, written by its worker thread and
+/// read by the next frame.
+pub type DiffGitResult = Arc<Mutex<Option<Result<String, String>>>>;
 
 
 /// Per-pane conversation identity + composer draft + working directory.
@@ -560,6 +566,54 @@ pub struct PaneControls {
     /// offset the wheel left has to live here to survive it.
     pub dir_menu_scroll: PanelScroll,
     pub branch_menu_open: Rc<RefCell<bool>>,
+    /// Whether this pane's changed-files menu is open, and the position the
+    /// wheel left it at. App-owned like the other dropdowns, so both survive
+    /// the per-frame rebuild.
+    pub diff_menu_open: Rc<RefCell<bool>>,
+    pub diff_menu_scroll: PanelScroll,
+    /// The review pane's own view state: the file selected in its sidebar
+    /// (`None` draws every file), the per-file expanded overrides, whether the
+    /// sidebar is shown, and the offsets of the two scroll regions. All of it
+    /// is app-owned because the tree is rebuilt every frame.
+    pub diff_selected: Rc<RefCell<Option<String>>>,
+    pub diff_expanded: Rc<RefCell<std::collections::BTreeMap<String, bool>>>,
+    /// Which file bodies the user asked to see as a diff instead of the
+    /// editor. An entry is only written when the header's toggle is pressed;
+    /// without one an editable file shows its text directly.
+    pub diff_editing: Rc<RefCell<std::collections::BTreeMap<String, bool>>>,
+    pub diff_edit_focus: Rc<RefCell<Option<String>>>,
+    pub diff_sidebar: Rc<RefCell<bool>>,
+    pub diff_scroll: Rc<RefCell<ScrollState>>,
+    pub diff_list_scroll: Rc<RefCell<ScrollState>>,
+    /// One horizontal offset per file: a box whose lines are wider than the
+    /// pane swipes sideways on its own while the list keeps its vertical
+    /// offset.
+    pub diff_hscroll: Rc<RefCell<std::collections::BTreeMap<String, Rc<RefCell<ScrollState>>>>>,
+    /// The files the last frame actually laid out, as absolute paths. The read
+    /// cache takes its work list from here, so a review reads the files in
+    /// view instead of every changed file.
+    pub diff_visible: Rc<RefCell<Vec<String>>>,
+    /// The commit bar under the toolbar, its message, and the last git job's
+    /// word (`true` for a success). The job itself runs off this thread: a push
+    /// waits on the network, and the window must keep painting while it does.
+    pub diff_commit_open: Rc<RefCell<bool>>,
+    /// Whether the commit bar's message field holds the keyboard. A press in
+    /// the diff body takes it away, so editing a file is not typed into the
+    /// commit message as well.
+    pub diff_commit_focus: Rc<RefCell<bool>>,
+    /// Whether the commit split button's menu (push, pull request) is open.
+    pub diff_commit_menu_open: Rc<RefCell<bool>>,
+    pub diff_commit_message: Rc<RefCell<String>>,
+    /// The file whose revert icon was pressed, while its header asks whether
+    /// to discard the change. One at a time, and never a press that reverts on
+    /// its own: the icon sits beside the others and a misclick must not throw
+    /// away uncommitted work.
+    pub diff_revert_confirm: Rc<RefCell<Option<String>>>,
+    pub diff_git_status: Rc<RefCell<Option<(String, bool)>>>,
+    pub diff_git_result: DiffGitResult,
+    /// Bumped when the review should read the working tree again; the diff
+    /// cache keys on it, so a bump re-reads at once.
+    pub diff_refresh: Rc<RefCell<u64>>,
     /// Where this pane's rich input draws its insertion beam, as a character
     /// index into the draft. App-owned because the composer element is rebuilt
     /// every frame and would otherwise lose the position on each one.
@@ -597,6 +651,27 @@ impl PaneControls {
             dir_menu_open: Rc::new(RefCell::new(false)),
             dir_menu_scroll: PanelScroll::default(),
             branch_menu_open: Rc::new(RefCell::new(false)),
+            diff_menu_open: Rc::new(RefCell::new(false)),
+            diff_menu_scroll: PanelScroll::default(),
+            diff_selected: Rc::new(RefCell::new(None)),
+            diff_expanded: Rc::new(RefCell::new(std::collections::BTreeMap::new())),
+            diff_editing: Rc::new(RefCell::new(std::collections::BTreeMap::new())),
+            diff_edit_focus: Rc::new(RefCell::new(None)),
+            // The diffs are the point of the pane; the file list is an optional
+            // rail the user opens from the topbar.
+            diff_sidebar: Rc::new(RefCell::new(false)),
+            diff_scroll: Rc::new(RefCell::new(ScrollState::smooth())),
+            diff_list_scroll: Rc::new(RefCell::new(ScrollState::smooth())),
+            diff_hscroll: Rc::new(RefCell::new(std::collections::BTreeMap::new())),
+            diff_visible: Rc::new(RefCell::new(Vec::new())),
+            diff_commit_open: Rc::new(RefCell::new(false)),
+            diff_commit_focus: Rc::new(RefCell::new(false)),
+            diff_commit_menu_open: Rc::new(RefCell::new(false)),
+            diff_commit_message: Rc::new(RefCell::new(String::new())),
+            diff_revert_confirm: Rc::new(RefCell::new(None)),
+            diff_git_status: Rc::new(RefCell::new(None)),
+            diff_git_result: Arc::new(Mutex::new(None)),
+            diff_refresh: Rc::new(RefCell::new(0)),
             caret: Rc::new(RefCell::new(0)),
             vim: Rc::new(RefCell::new(VimState::new())),
             slash_index: Rc::new(RefCell::new(0)),

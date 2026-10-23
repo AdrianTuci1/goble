@@ -2,9 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    AppContext, ConstrainedBox, Container, CrossAxisAlignment,
-    Divider, EdgeInsets, Element, Empty, Fill, Flex, Icon, MainAxisSize, Spacer, Text, Tooltip,
-    TopbarButton,
+    AppContext, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty,
+    Expanded, Fill, Flex, Icon, MainAxisSize, Spacer, Text, Tooltip, TopbarButton,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -15,7 +14,7 @@ use crate::state::PaneWorkItem;
 
 /// Height of the agent header's tallest control (`TopbarButton`'s default
 /// size); the header is padded out to `shell::TOPBAR_HEIGHT` around it.
-const HEADER_CONTROL_HEIGHT: f32 = 32.0;
+pub(crate) const HEADER_CONTROL_HEIGHT: f32 = 32.0;
 
 /// Agent header row: a right-aligned work chip, the pane's expand control and
 /// a close X.
@@ -41,6 +40,42 @@ pub(crate) fn build_agent_header(
     actions: &UiActions,
     pane_id: u64,
     harness_open: bool,
+) -> Box<dyn Element> {
+    build_agent_header_with(
+        app,
+        state,
+        actions,
+        pane_id,
+        harness_open,
+        HeaderSlots::default(),
+    )
+}
+
+/// Content a pane adds to its own bar around the controls every pane wears.
+///
+/// The bar keeps one row — the pane's own title and totals at the leading edge,
+/// its own actions, when it has any, before the expand and close controls. A
+/// pane whose actions do not fit that row draws them as a second bar under this
+/// one and leaves `trailing` empty (the review pane does).
+#[derive(Default)]
+pub(crate) struct HeaderSlots {
+    /// Drawn at the bar's leading edge: what the pane is showing, in its own
+    /// words. It takes the space left over after the bar's controls, so a long
+    /// title cannot push them off a narrow pane.
+    pub leading: Option<Box<dyn Element>>,
+    /// Drawn at the bar's trailing edge, before the expand and close controls:
+    /// the pane's own controls, to the left of the ones every pane shares.
+    pub trailing: Option<Box<dyn Element>>,
+}
+
+/// The same bar, with the pane's own content in its leading and trailing slots.
+pub(crate) fn build_agent_header_with(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    pane_id: u64,
+    harness_open: bool,
+    slots: HeaderSlots,
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Sm);
     // The agent header is the pane's topbar, so it is padded out to the same
@@ -116,12 +151,23 @@ pub(crate) fn build_agent_header(
             (on_composer_focus.borrow_mut())(false);
         }));
     }
+    // The pane's own content takes the leading edge and the leftover space: it
+    // is the bar's only flexible child, so the controls after it stay against
+    // the trailing edge however wide the pane is. A pane with nothing to say
+    // leaves the space empty, exactly as the bar always did.
+    let row = match slots.leading {
+        Some(leading) => row.with_child(Expanded::new(leading).finish()),
+        None => row.with_child(Spacer::new().finish()),
+    };
+    let row = row.with_child(build_work_chip(
+        app,
+        state.pane_live_work.get(&pane_id).map(Vec::as_slice).unwrap_or(&[]),
+    ));
+    let row = match slots.trailing {
+        Some(trailing) => row.with_child(trailing),
+        None => row,
+    };
     let row = row
-        .with_child(Spacer::new().finish())
-        .with_child(build_work_chip(
-            app,
-            state.pane_live_work.get(&pane_id).map(Vec::as_slice).unwrap_or(&[]),
-        ))
         .with_child(expand_button)
         .with_child(close_button)
         .finish();

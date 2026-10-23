@@ -6,9 +6,11 @@
 //! extension or a file path, so a fenced block, a file read and a command all
 //! resolve through the same call.
 //!
-//! The grammars are bat's, through `two-face`; the regex engine is syntect's
-//! pure-Rust `fancy-regex` backend, so the build needs no C toolchain. The theme
-//! is ours, authored under `assets/themes` and loaded from there. Only syntect's
+//! The grammars are bat's, through `two-face`, and the regex engine is syntect's
+//! Oniguruma backend — about 2.6x faster than the pure-Rust one on a large file,
+//! which is what keeps a review's colouring off the frame. The theme is
+//! grok-build's own Grok Night, extracted from the harness and loaded from
+//! `assets/themes`, so the same file reads alike in both. Only syntect's
 //! foreground survives — its background is dropped, the way grok-build's
 //! `syntect_to_ratatui_fg` keeps the colour and the modifiers and nothing else.
 
@@ -16,7 +18,7 @@ use std::io::Cursor;
 use std::sync::OnceLock;
 
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{FontStyle, Style, Theme, ThemeSet};
+use syntect::highlighting::{FontStyle, Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
@@ -25,10 +27,10 @@ use crate::elements::TextSpan;
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::FontFamily;
 
-/// Our own theme, loaded from the crate's asset directory. It was authored here
-/// in grok-build's visual idiom; no theme or grammar file is taken from a
-/// reference tree.
-const THEME_FILE: &[u8] = include_bytes!("../assets/themes/goble-night.tmTheme");
+/// GrokBuild's own night theme, byte for byte, so a file coloured here and the
+/// same file coloured in the harness read alike. The grammars are bat's and the
+/// engine is syntect, which is what the harness uses too.
+const THEME_FILE: &[u8] = include_bytes!("../assets/themes/grok-night.tmTheme");
 
 struct Syntaxes {
     syntax_set: SyntaxSet,
@@ -41,7 +43,7 @@ fn syntaxes() -> &'static Syntaxes {
     static SYNTAXES: OnceLock<Syntaxes> = OnceLock::new();
     SYNTAXES.get_or_init(|| {
         let theme = ThemeSet::load_from_reader(&mut Cursor::new(THEME_FILE))
-            .expect("the bundled Goble Night theme must parse");
+            .expect("the bundled Grok Night theme must parse");
         Syntaxes {
             syntax_set: two_face::syntax::extra_newlines(),
             theme,
@@ -53,6 +55,22 @@ fn syntaxes() -> &'static Syntaxes {
 /// `Vec<TextSpan>` a paragraph is painted from, so code and prose share one
 /// text model.
 pub type HighlightedLine = Vec<TextSpan>;
+
+/// One highlighted run without the render-only callback a [`TextSpan`] carries.
+/// A [`TextSpan`] is not `Send`, so a background highlighter produces these and
+/// the UI thread turns them into spans with [`spans_to_lines`]. Everything here
+/// is plain data, which is what lets a large file be coloured off the frame
+/// that reads it.
+#[derive(Clone, Debug)]
+pub struct HighlightSpan {
+    pub text: String,
+    pub color: ColorU,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// A whole file's runs, line by line, in the form a worker can send back.
+pub type HighlightedSpans = Vec<Vec<HighlightSpan>>;
 
 /// Turn `text` into styled runs for `language` — the one entry point for code
 /// colouring.
@@ -66,6 +84,13 @@ pub type HighlightedLine = Vec<TextSpan>;
 /// text plain. Every run is mono and carries a foreground colour plus
 /// bold/italic; syntect's background is dropped.
 pub fn highlight(text: &str, language: &str) -> Option<Vec<HighlightedLine>> {
+    highlight_spans(text, language).map(|lines| spans_to_lines(&lines))
+}
+
+/// The same colouring as [`highlight`], in a form a worker thread can build and
+/// send: no callbacks, no `Rc`. A host that reads a large file off the frame
+/// uses this and converts the answer with [`spans_to_lines`].
+pub fn highlight_spans(text: &str, language: &str) -> Option<HighlightedSpans> {
     let syntaxes = syntaxes();
     let token = language_token(language)?;
     let syntax = syntaxes.syntax_set.find_syntax_by_token(token)?;
@@ -75,9 +100,50 @@ pub fn highlight(text: &str, language: &str) -> Option<Vec<HighlightedLine>> {
         let styled = highlighter
             .highlight_line(line, &syntaxes.syntax_set)
             .ok()?;
-        lines.push(styled.into_iter().filter_map(to_text_span).collect());
+        let mut spans = Vec::new();
+        for (style, text) in styled {
+            let text = text.trim_end_matches(['\n', '\r']);
+            if text.is_empty() {
+                continue;
+            }
+            spans.push(HighlightSpan {
+                text: text.to_string(),
+                color: ColorU::new(
+                    style.foreground.r,
+                    style.foreground.g,
+                    style.foreground.b,
+                    style.foreground.a,
+                ),
+                bold: style.font_style.contains(FontStyle::BOLD),
+                italic: style.font_style.contains(FontStyle::ITALIC),
+            });
+        }
+        lines.push(spans);
     }
     Some(lines)
+}
+
+/// Turn a worker's plain runs into the spans the text model paints.
+pub fn spans_to_lines(spans: &HighlightedSpans) -> Vec<HighlightedLine> {
+    spans
+        .iter()
+        .map(|line| {
+            line.iter()
+                .map(|span| {
+                    let mut out = TextSpan::plain(span.text.clone())
+                        .with_family(FontFamily::Mono)
+                        .with_color(span.color);
+                    if span.bold {
+                        out = out.with_weight(FontWeight::Bold);
+                    }
+                    if span.italic {
+                        out = out.with_italic(true);
+                    }
+                    out
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// The lookup key a language string resolves through. A fence info string may
@@ -101,34 +167,6 @@ fn language_token(language: &str) -> Option<&str> {
         }
     }
     Some(token)
-}
-
-/// A syntect styled segment as a renderable run: colour, weight and slant only.
-fn to_text_span((style, text): (Style, &str)) -> Option<TextSpan> {
-    // syntect leaves the line ending on the last run; a run is painted inside
-    // its own line, so it is dropped here.
-    let text = text.trim_end_matches(['\n', '\r']).to_string();
-    if text.is_empty() {
-        return None;
-    }
-    let color = ColorU::new(
-        style.foreground.r,
-        style.foreground.g,
-        style.foreground.b,
-        style.foreground.a,
-    );
-    let mut span = TextSpan::plain(text)
-        .with_family(FontFamily::Mono)
-        .with_color(color);
-    if style.font_style.contains(FontStyle::BOLD) {
-        span = span.with_weight(FontWeight::Bold);
-    }
-    if style.font_style.contains(FontStyle::ITALIC) {
-        span = span.with_italic(true);
-    }
-    // style.background is deliberately not carried: TextSpan keeps its default
-    // (no background), which is the "drop syntect's backgrounds" rule.
-    Some(span)
 }
 
 #[cfg(test)]
@@ -196,5 +234,44 @@ mod tests {
     #[test]
     fn a_fence_info_string_resolves_its_first_token() {
         assert!(highlight("fn main() {}", "rust,ignore").is_some());
+    }
+
+    /// The harness's theme, not a lookalike: a doc comment, a keyword and a
+    /// string come out in Grok Night's own colours, so a file read here and the
+    /// same file read in grok-build agree.
+    #[test]
+    fn the_theme_is_grok_builds_own_night_theme() {
+        let lines = highlight("/// note\nfn main() { let s = \"hi\"; }", "rust")
+            .expect("rust must resolve");
+        let spans: Vec<&TextSpan> = lines.iter().flatten().collect();
+        let colour_of = |text: &str| {
+            spans
+                .iter()
+                .find(|span| span.text == text)
+                .map(|span| span.color)
+        };
+        // The doc comment is split into `///` and ` note`; both are its colour.
+        let comment: Vec<&TextSpan> = spans
+            .iter()
+            .copied()
+            .filter(|span| span.text.starts_with("///") || span.text == " note")
+            .collect();
+        assert!(!comment.is_empty(), "the doc comment is drawn");
+        assert!(
+            comment
+                .iter()
+                .all(|span| span.color == ColorU::new(0x51, 0x59, 0x7d, 0xff)),
+            "the doc comment wears Grok Night's comment colour"
+        );
+        assert_eq!(
+            colour_of("fn"),
+            Some(ColorU::new(0xbb, 0x9a, 0xf7, 0xff)),
+            "the function keyword wears its keyword colour"
+        );
+        assert_eq!(
+            colour_of("hi"),
+            Some(ColorU::new(0x9e, 0xce, 0x6a, 0xff)),
+            "the string's text wears its string colour"
+        );
     }
 }

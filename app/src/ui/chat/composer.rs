@@ -187,6 +187,15 @@ pub(crate) fn build_terminal_composer(
                     },
                 );
         }
+        if let Some(diff) = context.diff.clone() {
+            let open = actions.on_diff_panel.clone();
+            composer = composer
+                .with_diff_menu(diff, context.diff_menu_open.clone())
+                .with_diff_menu_scroll(context.diff_menu_scroll.clone())
+                .with_diff_open(move |file| {
+                    (open.borrow_mut())(pane_id, crate::ui::DiffPanelAction::Open(file))
+                });
+        }
     }
 
     // The command list the draft is typing is drawn over the whole bar, above

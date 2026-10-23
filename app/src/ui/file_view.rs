@@ -26,21 +26,26 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::SystemTime;
 
+use goble_ui::elements::diff::{DiffHighlightJob, PreparedDiff};
+use goble_ui::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use goble_ui::elements::{
-    file_icon_name, AppContext, Axis, Code, ConstrainedBox, Container, CrossAxisAlignment,
-    EdgeInsets, Element, Empty, EventContext, Expanded, Fill, Flex, Icon, LayoutContext, LineRuns,
-    MainAxisSize, PaintContext, Point, Scrollable, SizeConstraint, Spacer, Stack, Text, TextArea,
-    Tooltip, TooltipPosition,
+    file_icon_name, AppContext, Axis, Button, ButtonVariant, Code, ConstrainedBox,
+    Container, CrossAxisAlignment, Dialog, EdgeInsets, Element, Empty, EventContext, Expanded,
+    Fill, Flex,
+    Icon, KeyHandler, LayoutContext, LineRuns, MainAxisSize, PaintContext, Point, Scrollable,
+    SizeConstraint, Spacer, Stack, Text, TextArea, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
-use goble_ui::geometry::Vector2F;
-use goble_ui::syntax::HighlightedLine;
+use goble_ui::geometry::{rectf, Vector2F};
+use goble_ui::syntax::{HighlightedLine, HighlightedSpans};
 use goble_ui::theme::{ColorToken, FontFamily, SpacingToken};
 
 use super::chat;
 use super::{UiActions, UiSnapshot};
+use crate::ui::PaneKind;
 
 /// The largest file a view opens, in bytes. Opening a file is a read of the
 /// machine into the element tree, so it has a ceiling; past it the pane says how
@@ -155,6 +160,14 @@ impl std::fmt::Debug for FileContent {
     }
 }
 
+impl FileContent {
+    /// The file's lines as the highlighted runs of its own type, one entry per
+    /// line the body shows.
+    pub(crate) fn runs(&self) -> Option<&Rc<Vec<HighlightedLine>>> {
+        self.runs.as_ref()
+    }
+}
+
 /// A size as the title spells it: whole kilobytes and megabytes, because the
 /// exact byte count of a file this view refuses to open is noise.
 fn bytes_label(bytes: u64) -> String {
@@ -178,28 +191,52 @@ fn bytes_label(bytes: u64) -> String {
 #[derive(Default)]
 pub(crate) struct FileCache {
     files: HashMap<String, FileContent>,
-    buffers: HashMap<u64, Rc<RefCell<FileBuffer>>>,
+    /// Every buffer a pane holds, keyed by the pane and the file it edits: a
+    /// pane can keep several files open as chips, and switching between them
+    /// must not drop the text of the one it leaves.
+    buffers: HashMap<(u64, String), Rc<RefCell<FileBuffer>>>,
 }
 
 impl FileCache {
-    /// What every file the listed panes show draws, keyed by pane id. `wanted`
-    /// is the file every open view points at, so the cache holds exactly the
-    /// files on screen.
+    /// What every open view draws, keyed by pane id, for the tests that open
+    /// one file per pane: each pane's answer is the last file named for it.
+    #[cfg(test)]
     pub fn read(&mut self, wanted: &[(u64, String)]) -> HashMap<u64, FileContent> {
-        let mut contents = HashMap::new();
-        for (pane_id, path) in wanted {
-            contents.insert(*pane_id, self.content(path));
-        }
-        self.files
-            .retain(|path, _| wanted.iter().any(|(_, wanted)| wanted == path));
-        self.settle(wanted, &contents);
-        contents
+        let active = wanted.iter().fold(HashMap::new(), |mut active, (pane, path)| {
+            active.insert(*pane, path.clone());
+            active
+        });
+        self.read_open(wanted, &active)
     }
 
-    /// The editors of the open views, keyed by pane id: shared handles, so the
-    /// element tree reads the text, the caret and the markers the state machine
-    /// below keeps.
-    pub fn buffers(&self) -> HashMap<u64, Rc<RefCell<FileBuffer>>> {
+    /// Settle every open file against its read and answer the active file of
+    /// each pane in `active`.
+    pub fn read_open(
+        &mut self,
+        open: &[(u64, String)],
+        active: &HashMap<u64, String>,
+    ) -> HashMap<u64, FileContent> {
+        let mut contents = HashMap::new();
+        for (pane_id, path) in open {
+            contents.insert((*pane_id, path.clone()), self.content(path));
+        }
+        self.files
+            .retain(|path, _| open.iter().any(|(_, wanted)| wanted == path));
+        self.settle(open, &contents);
+        active
+            .iter()
+            .filter_map(|(pane_id, path)| {
+                contents
+                    .get(&(*pane_id, path.clone()))
+                    .map(|content| (*pane_id, content.clone()))
+            })
+            .collect()
+    }
+
+    /// The editors of the open views, keyed by pane and file: shared handles,
+    /// so the element tree reads the text, the caret and the markers the state
+    /// machine below keeps.
+    pub fn buffers(&self) -> HashMap<(u64, String), Rc<RefCell<FileBuffer>>> {
         self.buffers.clone()
     }
 
@@ -227,21 +264,21 @@ impl FileCache {
     /// outside never discards an edit that was not saved. A file that can no
     /// longer be edited whole loses its buffer only while the buffer is clean,
     /// so the pane falls back to the read-only body.
-    fn settle(&mut self, wanted: &[(u64, String)], contents: &HashMap<u64, FileContent>) {
+    fn settle(
+        &mut self,
+        wanted: &[(u64, String)],
+        contents: &HashMap<(u64, String), FileContent>,
+    ) {
         self.buffers
-            .retain(|pane_id, _| wanted.iter().any(|(id, _)| id == pane_id));
+            .retain(|(pane_id, path), _| wanted.iter().any(|(id, open)| id == pane_id && open == path));
         for (pane_id, path) in wanted {
-            let Some(content) = contents.get(pane_id) else {
+            let Some(content) = contents.get(&(*pane_id, path.clone())) else {
                 continue;
             };
-            let Some(buffer) = self.buffers.get(pane_id).cloned() else {
+            let Some(buffer) = self.buffers.get(&(*pane_id, path.clone())).cloned() else {
                 self.open(*pane_id, path, content);
                 continue;
             };
-            if buffer.borrow().path() != path.as_str() {
-                self.open(*pane_id, path, content);
-                continue;
-            }
             // A write this buffer made is not a change from outside. The entry
             // it was compared against predates the write, so it is dropped: the
             // next frame re-reads and re-highlights what the save wrote.
@@ -265,13 +302,514 @@ impl FileCache {
     }
 
     fn open(&mut self, pane_id: u64, path: &str, content: &FileContent) {
+        self.buffers.insert(
+            (pane_id, path.to_string()),
+            Rc::new(RefCell::new(FileBuffer::open(path, content))),
+        );
+    }
+}
+
+/// One changed file the review pane has opened for editing: the read (its lines
+/// and their highlighted runs) and the buffer the field edits.
+pub struct DiffEditor {
+    pub content: FileContent,
+    pub buffer: Rc<RefCell<FileBuffer>>,
+    /// The buffer's lines mapped to the runs of the text they were highlighted
+    /// from. Built once per text version and shared by every frame, so a
+    /// review that is not edited maps nothing.
+    pub runs: Option<Rc<LineRuns>>,
+}
+
+impl std::fmt::Debug for DiffEditor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiffEditor")
+            .field("content", &self.content)
+            .field("buffer", &self.buffer.borrow())
+            .finish()
+    }
+}
+
+/// How many reads the review keeps between frames. A file scrolled out of view
+/// stays here, so scrolling back or showing the file list again does not parse
+/// it a second time; the least recently seen ones are dropped above this.
+const MAX_REVIEW_FILES: usize = 48;
+
+/// The changed files the review pane has opened for editing.
+///
+/// It is the same read the file pane does, minus the syntax pass:
+/// [`read_without_highlight`] takes the text, and a worker thread colours it
+/// with the shared highlighter beside the frame, so opening a review of large
+/// files does not freeze the window on syntect. It is keyed by path rather than
+/// by pane, since a review pane shows many files. Only the files the user
+/// opened are read, their stamps decide whether a frame reads anything at all,
+/// and a buffer survives the per-frame rebuild so an edit is not lost while it
+/// is unsaved.
+#[derive(Default)]
+pub(crate) struct DiffFileCache {
+    files: HashMap<String, FileContent>,
+    buffers: HashMap<String, Rc<RefCell<FileBuffer>>>,
+    /// The run mapping for each path's live text, keyed by the text it was
+    /// built from: a frame with no edit reuses it, and an edit rebuilds it once.
+    runs: HashMap<String, (Rc<String>, Option<Rc<LineRuns>>)>,
+    /// The text each path's colouring was requested for, with the token that
+    /// names that request. It is what keeps one file to one request while the
+    /// worker colours it, and what tells a late answer from a current one.
+    versions: HashMap<String, (Rc<String>, u64)>,
+    /// The runs the worker returned, with the text they were built from. The
+    /// frame after they land builds the line mapping from them; the frame
+    /// before draws the text plain.
+    highlighted: HashMap<String, (Rc<String>, Rc<Vec<HighlightedLine>>)>,
+    /// The token of the request in flight, per path.
+    pending: HashMap<String, u64>,
+    /// The cards the worker is colouring, keyed by absolute path.
+    diff_pending: HashMap<String, PendingDiff>,
+    /// The colouring thread, started by the first file the review opens. It
+    /// lives here so closing every review closes it too.
+    highlighter: Option<HighlightWorker>,
+    next_token: u64,
+    /// The order files were last in view, least recent first. It bounds the
+    /// cache by what the review moved past rather than by what one frame shows.
+    order: Vec<String>,
+}
+
+/// One file's colouring request, in a form the worker thread can take.
+struct HighlightJob {
+    path: String,
+    token: u64,
+    text: String,
+    language: String,
+}
+
+/// A diff card's colouring request. The card's sides are already joined on the
+/// frame that saw it; the worker runs the parser.
+struct DiffJob {
+    path: String,
+    token: u64,
+    language: String,
+    job: DiffHighlightJob,
+}
+
+/// The work the one highlighter thread accepts: a file for the review's
+/// in-place editor, or a card's changed lines.
+enum HighlightWork {
+    File(HighlightJob),
+    Diff(DiffJob),
+}
+
+/// A coloured file on its way back to the frame that asked for it. A token
+/// that no longer matches the path's latest request is stale and is dropped.
+struct HighlightResult {
+    path: String,
+    token: u64,
+    spans: Option<HighlightedSpans>,
+}
+
+/// A coloured card, one answer per side of its job.
+struct DiffResult {
+    path: String,
+    token: u64,
+    answers: Vec<Option<HighlightedSpans>>,
+}
+
+enum HighlightAnswer {
+    File(HighlightResult),
+    Diff(DiffResult),
+}
+
+/// The thread that colours what the review opened, so a large file or diff
+/// never spends its highlight inside a frame. Jobs are coloured in the order
+/// they arrive; the UI drops an answer whose text moved on.
+struct HighlightWorker {
+    jobs: Sender<HighlightWork>,
+    results: Receiver<HighlightAnswer>,
+}
+
+impl HighlightWorker {
+    fn spawn() -> Self {
+        let (jobs, incoming) = mpsc::channel::<HighlightWork>();
+        let (answers, results) = mpsc::channel::<HighlightAnswer>();
+        std::thread::Builder::new()
+            .name("goble-highlight".to_string())
+            .spawn(move || {
+                while let Ok(work) = incoming.recv() {
+                    let answer = match work {
+                        HighlightWork::File(job) => {
+                            let spans = goble_ui::syntax::highlight_spans(&job.text, &job.language);
+                            HighlightAnswer::File(HighlightResult {
+                                path: job.path,
+                                token: job.token,
+                                spans,
+                            })
+                        }
+                        HighlightWork::Diff(job) => {
+                            let answers = job
+                                .job
+                                .sides
+                                .iter()
+                                .map(|side| {
+                                    goble_ui::syntax::highlight_spans(&side.text, &job.language)
+                                })
+                                .collect();
+                            HighlightAnswer::Diff(DiffResult {
+                                path: job.path,
+                                token: job.token,
+                                answers,
+                            })
+                        }
+                    };
+                    if answers.send(answer).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("the highlighter thread must start");
+        Self { jobs, results }
+    }
+}
+
+/// A card whose colouring is in flight: what to install the answer into, and
+/// the job whose side order the answer follows.
+struct PendingDiff {
+    token: u64,
+    prepared: PreparedDiff,
+    job: DiffHighlightJob,
+}
+
+impl DiffFileCache {
+    /// The editors for the review panes' files in view, keyed by pane id and
+    /// absolute path. `wanted` is what the last frame laid out; the reads stay
+    /// cached for a while after they leave the view, so scrolling back costs no
+    /// disk work.
+    pub fn read(
+        &mut self,
+        wanted: &[(u64, String)],
+    ) -> HashMap<u64, HashMap<String, Rc<DiffEditor>>> {
+        let keep: std::collections::HashSet<String> =
+            wanted.iter().map(|(_, path)| path.clone()).collect();
+        self.collect();
+        for path in &keep {
+            self.touch(path);
+            let content = self.content(path);
+            self.settle(path, &content);
+            self.request_highlight(path, &content);
+        }
+        let cached: Vec<(String, FileContent)> = self
+            .files
+            .iter()
+            .map(|(path, content)| (path.clone(), content.clone()))
+            .collect();
+        let mut all: Vec<(String, FileContent, Rc<RefCell<FileBuffer>>, Option<Rc<LineRuns>>)> =
+            Vec::new();
+        for (path, content) in cached {
+            let Some(buffer) = self.buffers.get(&path).cloned() else {
+                continue;
+            };
+            let runs = self.line_runs(&path, &content, &buffer);
+            all.push((path, content, buffer, runs));
+        }
+        // Every pane that laid a file out gets the whole cache: the box that
+        // just left the viewport — or the one the file list filtered out — is
+        // already read, so showing it again does not wait on the disk.
+        let mut panes: Vec<u64> = wanted.iter().map(|(pane_id, _)| *pane_id).collect();
+        panes.sort_unstable();
+        panes.dedup();
+        let mut editors: HashMap<u64, HashMap<String, Rc<DiffEditor>>> = HashMap::new();
+        for pane_id in panes {
+            let files = all
+                .iter()
+                .map(|(path, content, buffer, runs)| {
+                    (
+                        path.clone(),
+                        Rc::new(DiffEditor {
+                            content: content.clone(),
+                            buffer: Rc::clone(buffer),
+                            runs: runs.clone(),
+                        }),
+                    )
+                })
+                .collect();
+            editors.insert(pane_id, files);
+        }
+        self.evict(&keep);
+        editors
+    }
+
+    /// Mark `path` as the most recently seen read.
+    fn touch(&mut self, path: &str) {
+        if let Some(at) = self.order.iter().position(|seen| seen == path) {
+            self.order.remove(at);
+        }
+        self.order.push(path.to_string());
+    }
+
+    /// Drop the least recently seen reads above the cap. A file in view, or a
+    /// buffer with an edit that was never saved, is never dropped: the first
+    /// would be read again at once, and the second is the user's work.
+    fn evict(&mut self, wanted: &std::collections::HashSet<String>) {
+        if self.files.len() <= MAX_REVIEW_FILES {
+            return;
+        }
+        let mut index = 0;
+        while self.files.len() > MAX_REVIEW_FILES && index < self.order.len() {
+            let path = self.order[index].clone();
+            let dirty = self
+                .buffers
+                .get(&path)
+                .is_some_and(|buffer| buffer.borrow().dirty());
+            if !wanted.contains(&path) && !dirty {
+                self.order.remove(index);
+                self.files.remove(&path);
+                self.buffers.remove(&path);
+                self.runs.remove(&path);
+                self.versions.remove(&path);
+                self.highlighted.remove(&path);
+                self.pending.remove(&path);
+                self.diff_pending.remove(&path);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    /// The runs the buffer's lines are drawn with, mapped once per text it
+    /// holds: a frame that changed nothing finds the mapping by identity.
+    fn line_runs(
+        &mut self,
+        path: &str,
+        content: &FileContent,
+        buffer: &Rc<RefCell<FileBuffer>>,
+    ) -> Option<Rc<LineRuns>> {
+        let (text, lines) = {
+            let buffer = buffer.borrow();
+            (buffer.text_rc(), buffer.lines())
+        };
+        if let Some((cached, runs)) = self.runs.get(path) {
+            if Rc::ptr_eq(cached, &text) {
+                return runs.clone();
+            }
+        }
+        // The worker's runs when they belong to the text this read produced;
+        // the read's own only for a cache filled before the worker existed.
+        let source = self
+            .highlighted
+            .get(path)
+            .filter(|(cached, _)| {
+                content
+                    .text
+                    .as_ref()
+                    .is_some_and(|text| Rc::ptr_eq(cached, text))
+            })
+            .map(|(_, source)| Rc::clone(source))
+            .or_else(|| content.runs().cloned());
+        let runs = source.map(|source| {
+            let count = source.len();
+            let sources = (0..lines)
+                .map(|index| (index < count).then_some(index))
+                .collect();
+            Rc::new(LineRuns {
+                lines: Rc::clone(&source),
+                sources,
+            })
+        });
+        self.runs
+            .insert(path.to_string(), (Rc::clone(&text), runs.clone()));
+        runs
+    }
+
+    fn content(&mut self, path: &str) -> FileContent {
+        let stamp = fs::metadata(path)
+            .ok()
+            .map(|metadata| (metadata.len(), metadata.modified().ok()));
+        if let Some(cached) = self.files.get(path) {
+            if stamp.is_some() && cached.stamp == stamp {
+                return cached.clone();
+            }
+        }
+        let content = read_without_highlight(path);
+        if stamp.is_some() {
+            self.files.insert(path.to_string(), content.clone());
+        }
+        content
+    }
+
+    /// Take every answer the worker has finished. An answer for a text that
+    /// moved on, or for a path that left the cache, is dropped; a current one
+    /// becomes the path's runs and drops the plain mapping built in the frames
+    /// before it landed, so the next frame maps the colour in.
+    fn collect(&mut self) {
+        let mut landed = Vec::new();
+        if let Some(worker) = &self.highlighter {
+            while let Ok(result) = worker.results.try_recv() {
+                landed.push(result);
+            }
+        }
+        for answer in landed {
+            match answer {
+                HighlightAnswer::File(result) => {
+                    if self.pending.get(&result.path) != Some(&result.token) {
+                        continue;
+                    }
+                    self.pending.remove(&result.path);
+                    let Some(spans) = result.spans else {
+                        continue;
+                    };
+                    let Some((text, _)) = self.versions.get(&result.path) else {
+                        continue;
+                    };
+                    let lines = Rc::new(goble_ui::syntax::spans_to_lines(&spans));
+                    self.highlighted
+                        .insert(result.path.clone(), (Rc::clone(text), lines));
+                    self.runs.remove(&result.path);
+                }
+                HighlightAnswer::Diff(result) => {
+                    let Some(pending) = self.diff_pending.get(&result.path) else {
+                        continue;
+                    };
+                    if pending.token != result.token {
+                        continue;
+                    }
+                    let Some(pending) = self.diff_pending.remove(&result.path) else {
+                        continue;
+                    };
+                    pending
+                        .prepared
+                        .install_highlights(&pending.job, &result.answers);
+                }
+            }
+        }
+    }
+
+    /// Ask the worker to colour the changed lines of every card in view. The
+    /// rows are joined on this frame and the parser runs beside it, so a card
+    /// that scrolls in is flat for a beat and then coloured, never frozen.
+    pub fn highlight_diffs(
+        &mut self,
+        wanted: &[(u64, String)],
+        details: &HashMap<u64, Option<Rc<super::pickers::DiffDetail>>>,
+    ) {
+        self.collect();
+        for (pane_id, path) in wanted {
+            let Some(Some(detail)) = details.get(pane_id) else {
+                continue;
+            };
+            let Some(file) = detail.files.iter().find(|file| &file.absolute_path == path) else {
+                continue;
+            };
+            if self.diff_pending.contains_key(path) {
+                continue;
+            }
+            let Some(job) = file.prepared.highlight_job() else {
+                continue;
+            };
+            self.next_token += 1;
+            let token = self.next_token;
+            self.diff_pending.insert(
+                path.clone(),
+                PendingDiff {
+                    token,
+                    prepared: file.prepared.clone(),
+                    job: job.clone(),
+                },
+            );
+            let worker = self.highlighter.get_or_insert_with(HighlightWorker::spawn);
+            let work = HighlightWork::Diff(DiffJob {
+                path: path.clone(),
+                token,
+                language: path.clone(),
+                job,
+            });
+            if worker.jobs.send(work).is_err() {
+                self.highlighter = None;
+                self.diff_pending.remove(path);
+            }
+        }
+        // A card that left the view no longer needs its answer; dropping the
+        // entry lets the late answer fall on the floor and bounds the work
+        // held between frames.
+        self.diff_pending
+            .retain(|path, _| wanted.iter().any(|(_, wanted_path)| wanted_path == path));
+    }
+
+    /// Ask the worker to colour `path`'s text, once per text version. A file
+    /// that is not editable whole has no text to colour and stays plain.
+    fn request_highlight(&mut self, path: &str, content: &FileContent) {
+        let Some(text) = content.text.clone() else {
+            return;
+        };
+        if self
+            .versions
+            .get(path)
+            .is_some_and(|(requested, _)| Rc::ptr_eq(requested, &text))
+        {
+            return;
+        }
+        self.next_token += 1;
+        let token = self.next_token;
+        self.versions
+            .insert(path.to_string(), (Rc::clone(&text), token));
+        self.pending.insert(path.to_string(), token);
+        let worker = self.highlighter.get_or_insert_with(HighlightWorker::spawn);
+        let job = HighlightWork::File(HighlightJob {
+            path: path.to_string(),
+            token,
+            text: (*text).clone(),
+            language: path.to_string(),
+        });
+        if worker.jobs.send(job).is_err() {
+            // The thread died: forget it and the request, so the next frame
+            // starts a fresh one instead of waiting forever.
+            self.highlighter = None;
+            self.pending.remove(path);
+            self.versions.remove(path);
+        }
+    }
+
+    /// Settle `path`'s buffer against the read that just happened, with the
+    /// same rule the file pane uses: a save of this buffer drops the pre-save
+    /// read, a file that did not move leaves the buffer alone, a file that did
+    /// move refreshes only a clean buffer, and an unsaved edit is never thrown
+    /// away.
+    fn settle(&mut self, path: &str, content: &FileContent) -> Rc<RefCell<FileBuffer>> {
+        let Some(buffer) = self.buffers.get(path).cloned() else {
+            let buffer = Rc::new(RefCell::new(FileBuffer::open(path, content)));
+            self.buffers.insert(path.to_string(), Rc::clone(&buffer));
+            return buffer;
+        };
+        if buffer.borrow_mut().take_written() {
+            self.files.remove(path);
+            return buffer;
+        }
+        if buffer.borrow().stamp() == content.stamp {
+            return buffer;
+        }
+        if buffer.borrow().dirty() {
+            buffer.borrow_mut().note_external_change();
+            return buffer;
+        }
+        if buffer.borrow().editable() && read_only_reason(content).is_none() {
+            buffer.borrow_mut().reload(content);
+            return buffer;
+        }
+        let replacement = Rc::new(RefCell::new(FileBuffer::open(path, content)));
         self.buffers
-            .insert(pane_id, Rc::new(RefCell::new(FileBuffer::open(path, content))));
+            .insert(path.to_string(), Rc::clone(&replacement));
+        replacement
     }
 }
 
 /// Read one file into what its view draws, and nothing otherwise.
-fn read(path: &str) -> FileContent {
+pub(crate) fn read(path: &str) -> FileContent {
+    read_inner(path, true)
+}
+
+/// The same read without the syntax pass. The review pane's cache takes this
+/// form and hands the text to a background highlighter, so a card that scrolls
+/// into view never waits on syntect inside the frame.
+pub(crate) fn read_without_highlight(path: &str) -> FileContent {
+    read_inner(path, false)
+}
+
+fn read_inner(path: &str, highlight: bool) -> FileContent {
     /// A file the view will not draw.
     fn none(body: FileBody, stamp: Option<FileStamp>) -> FileContent {
         FileContent {
@@ -319,7 +857,7 @@ fn read(path: &str) -> FileContent {
     // buffer over the part of a file the pane shows would save that part back
     // over the rest of it.
     let whole = total == shown.len();
-    let runs = highlight(&shown, path);
+    let runs = highlight.then(|| highlight_lines(&shown, path)).flatten();
     FileContent {
         body: FileBody::Lines {
             shown: Rc::new(shown),
@@ -340,7 +878,7 @@ fn read(path: &str) -> FileContent {
 /// Only the lines the pane shows are handed over, so [`MAX_LINES`] bounds this
 /// exactly as it bounds the body, and the whole thing runs inside [`FileCache`]
 /// with the read rather than per frame.
-fn highlight(lines: &[String], path: &str) -> Option<Rc<Vec<HighlightedLine>>> {
+fn highlight_lines(lines: &[String], path: &str) -> Option<Rc<Vec<HighlightedLine>>> {
     goble_ui::syntax::highlight(&lines.join("\n"), path).map(Rc::new)
 }
 
@@ -373,9 +911,17 @@ pub struct FileBuffer {
     path: String,
     /// The text the pane edits, and the text the file holds — saved verbatim by
     /// `save`, and what `dirty` compares the live text against: an edit that is
-    /// typed and then typed back out is not an unsaved change.
-    text: String,
+    /// typed and then typed back out is not an unsaved change. The live text is
+    /// shared with the field rather than copied into it every frame.
+    text: Rc<String>,
     saved: String,
+    /// Whether the live text differs from the file's. Kept beside the two
+    /// strings because the review cache asks every buffer on every frame, and
+    /// comparing whole files there would grow with the review.
+    dirty: bool,
+    /// How many lines the live text has, counted when it changes: the review
+    /// header and the block's height ask for it every frame.
+    lines: usize,
     /// The file's size and modification time at the last read or write, which
     /// is what tells this buffer the file moved under it.
     stamp: Option<FileStamp>,
@@ -423,10 +969,14 @@ impl FileBuffer {
             (true, Some(text)) => text.to_string(),
             _ => String::new(),
         };
+        let saved = text.clone();
+        let lines = text.matches('\n').count() + 1;
         Self {
             path: path.to_string(),
-            saved: text.clone(),
-            text,
+            saved,
+            text: Rc::new(text),
+            dirty: false,
+            lines,
             stamp: content.stamp,
             read_only,
             written: false,
@@ -448,6 +998,16 @@ impl FileBuffer {
         &self.text
     }
 
+    /// The live text as the field takes it, without copying it.
+    pub fn text_rc(&self) -> Rc<String> {
+        Rc::clone(&self.text)
+    }
+
+    /// How many rows the text has, counted when it changed.
+    pub fn lines(&self) -> usize {
+        self.lines
+    }
+
     pub fn caret(&self) -> Rc<RefCell<usize>> {
         Rc::clone(&self.caret)
     }
@@ -463,7 +1023,7 @@ impl FileBuffer {
     /// Whether the buffer holds text the file does not. An edit typed and typed
     /// back out is not one: the file's own bytes are the comparison.
     pub fn dirty(&self) -> bool {
-        self.text != self.saved
+        self.dirty
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -492,7 +1052,7 @@ impl FileBuffer {
     /// did. Why a file cannot be edited at all is the pane's own line — see
     /// [`Self::read_only`].
     pub fn detail(&self) -> String {
-        let mut parts = vec![format!("{} lines", self.text.lines().count())];
+        let mut parts = vec![format!("{} lines", self.lines)];
         if self.dirty() {
             parts.push("unsaved changes".to_string());
         }
@@ -504,7 +1064,11 @@ impl FileBuffer {
 
     /// The text the field reports after a key: the buffer's own, whole.
     pub fn set_text(&mut self, text: String) {
-        self.text = text;
+        self.lines = text.matches('\n').count() + 1;
+        self.text = Rc::new(text);
+        // Typed back to the file's own text, it is not a change at all, and
+        // the comparison runs here rather than on every frame that asks.
+        self.dirty = *self.text != self.saved;
         // The last save's report describes the text this keystroke just
         // replaced; the dirty marker says where the buffer stands now.
         self.status = None;
@@ -521,7 +1085,8 @@ impl FileBuffer {
         if let Err(error) = fs::write(&self.path, self.text.as_bytes()) {
             return Err(self.fail(format!("Not saved: {error}")));
         }
-        self.saved = self.text.clone();
+        self.saved = (*self.text).clone();
+        self.dirty = false;
         // The write is this buffer's own doing, so the cache entry that predates
         // it is dropped rather than read as a change from outside; the stamp is
         // the file's, as it is now.
@@ -548,8 +1113,10 @@ impl FileBuffer {
         let Some(text) = content.text.as_deref() else {
             return;
         };
-        self.text = text.to_string();
+        self.lines = text.matches('\n').count() + 1;
+        self.text = Rc::new(text.to_string());
         self.saved = text.to_string();
+        self.dirty = false;
         self.stamp = content.stamp;
         self.error = None;
         self.status = None;
@@ -572,8 +1139,8 @@ impl FileBuffer {
     }
 }
 
-/// The pane's view of `path`: the pane's one topbar, the file's name and size,
-/// and the file's lines, highlighted by the file's own type, under a
+/// The pane's view of `path`: the file's name and size in the pane's own
+/// topbar, and the file's lines, highlighted by the file's own type, under a
 /// line-number gutter.
 pub(crate) fn build_file_view(
     app: &AppContext,
@@ -583,11 +1150,11 @@ pub(crate) fn build_file_view(
     path: &str,
 ) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
-    // The pane wears the same topbar as its siblings (the close button and the
-    // app's own tray), so a pane is closed the same way whatever it hosts.
-    let header = chat::build_agent_header(app, state, actions, pane_id, false);
     let file = state.pane_files.get(&pane_id);
-    let editor = state.file_buffers.get(&pane_id).cloned();
+    let editor = state
+        .file_buffers
+        .get(&(pane_id, path.to_string()))
+        .cloned();
     let editing = editor
         .as_ref()
         .filter(|buffer| buffer.borrow().editable())
@@ -651,8 +1218,7 @@ pub(crate) fn build_file_view(
             Empty::new()
                 .with_size(Vector2F::new(0.0, super::shell::TOPBAR_HEIGHT))
                 .finish(),
-        )
-        .with_child(title_row(app, path, detail.as_deref(), read_only.as_deref()));
+        );
     for (message, color) in marks {
         column = column.with_child(band(app, &message, color));
     }
@@ -663,6 +1229,31 @@ pub(crate) fn build_file_view(
         .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
         .with_padding(EdgeInsets::new(sm, sm, sm, sm))
         .finish();
+    // The file is named in the pane's own topbar, the row every pane wears,
+    // rather than in a title row under it. Every file the pane holds open gets
+    // a chip, so one pane can switch between files without splitting.
+    let title = file_title(
+        app,
+        state,
+        actions,
+        pane_id,
+        path,
+        detail.as_deref(),
+        read_only.as_deref(),
+    );
+    // The pane wears the same topbar as its siblings (the close button and the
+    // app's own tray), so a pane is closed the same way whatever it hosts.
+    let header = chat::build_agent_header_with(
+        app,
+        state,
+        actions,
+        pane_id,
+        false,
+        chat::HeaderSlots {
+            leading: Some(title),
+            trailing: None,
+        },
+    );
     let pane = Stack::new()
         .with_children(vec![content])
         .with_overlay(header, Vector2F::zero())
@@ -679,6 +1270,115 @@ pub(crate) fn build_file_view(
     }
 }
 
+/// The "save before closing?" dialog a dirty file view gets when its pane is
+/// closed while auto-save is off.
+///
+/// The three answers are the only ways out: save and close, discard and close,
+/// or keep the pane (Cancel, `Escape`, or a backdrop click). It only paints and
+/// takes events while a close is pending.
+pub(crate) fn build_close_prompt(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    let open = state.pending_close_pane.is_some() || state.pending_close_file.is_some();
+    let name = state
+        .pending_close_file
+        .as_ref()
+        .map(|(_, path)| file_name(path))
+        .or_else(|| {
+            state.pending_close_pane.and_then(|pane_id| {
+                // The prompt names the file the pane is showing; the buffers
+                // are the fallback for a pane whose kind is already gone.
+                state
+                    .spaces
+                    .iter()
+                    .find_map(|space| match space.leaf_kind(pane_id) {
+                        Some(PaneKind::File { path }) => Some(path.clone()),
+                        _ => None,
+                    })
+                    .or_else(|| {
+                        state
+                            .file_buffers
+                            .keys()
+                            .find(|(id, _)| *id == pane_id)
+                            .map(|(_, path)| path.clone())
+                    })
+                    .map(|path| file_name(&path))
+            })
+        })
+        .unwrap_or_else(|| "This file".to_string());
+
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let md = app.theme.spacing_px(SpacingToken::Md);
+    let save = actions.on_close_unsaved_save.clone();
+    let discard = actions.on_close_unsaved_discard.clone();
+    let cancel = actions.on_close_unsaved_cancel.clone();
+    let cancel_on_close = actions.on_close_unsaved_cancel.clone();
+    let cancel_on_escape = actions.on_close_unsaved_cancel.clone();
+
+    let content = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(sm)
+        .with_child(
+            Text::new("Save changes before closing?")
+                .with_font_size(13.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_child(
+            Text::new(format!("{name} has unsaved changes."))
+                .with_font_size(12.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_child(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(sm)
+                .with_child(Spacer::new().finish())
+                .with_child(
+                    Button::new(Text::new("Cancel").finish())
+                        .with_variant(ButtonVariant::Ghost)
+                        .with_on_click(move || (cancel.borrow_mut())())
+                        .finish(),
+                )
+                .with_child(
+                    Button::new(Text::new("Don't save").finish())
+                        .with_variant(ButtonVariant::Outline)
+                        .with_on_click(move || (discard.borrow_mut())())
+                        .finish(),
+                )
+                .with_child(
+                    Button::new(Text::new("Save and close").finish())
+                        .with_variant(ButtonVariant::Primary)
+                        .with_on_click(move || (save.borrow_mut())())
+                        .finish(),
+                )
+                .finish(),
+        );
+    let panel = Container::new(content.finish())
+        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+        .with_padding(EdgeInsets::uniform(md))
+        .with_corner_radius(app.theme.radius_px())
+        .finish();
+    let panel = KeyHandler::new(panel, move |key: &str, _modifiers| {
+        if key == "Escape" {
+            (cancel_on_escape.borrow_mut())();
+            return true;
+        }
+        false
+    })
+    .finish();
+
+    Dialog::new(panel)
+        .with_open(open)
+        .with_on_close(move || (cancel_on_close.borrow_mut())())
+        .finish()
+}
+
 /// The last component of a path: what a pane and its tab call the file, and the
 /// stem [`file_icon_name`] reads its type from. A path with no component of its
 /// own (a root, or one that ends in `..`) is its own name.
@@ -689,15 +1389,61 @@ pub(crate) fn file_name(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-/// The file's name and how much of it is shown, with the full path on the name's
-/// own hover. `detail` is what the buffer (or the read body) says about the
-/// file, `read_only` why the pane will not edit it.
-fn title_row(
+/// The files the pane holds open, named in its topbar. One file keeps the plain
+/// title it always had; two or more become chips, the one the pane shows filled
+/// in and the rest outlined, each a click away. `detail` is what the buffer (or
+/// the read body) says about the shown file, `read_only` why the pane will not
+/// edit it.
+fn file_title(
     app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    pane_id: u64,
     path: &str,
     detail: Option<&str>,
     read_only: Option<&str>,
 ) -> Box<dyn Element> {
+    let detail = match (detail, read_only) {
+        (Some(detail), Some(reason)) => Some(format!("{detail} · {reason}")),
+        (Some(detail), None) => Some(detail.to_string()),
+        (None, reason) => reason.map(str::to_string),
+    };
+    // A pane restored from a saved layout has no chip list yet; the file it
+    // shows is the one it has open.
+    let mut files = state
+        .pane_open_files
+        .get(&pane_id)
+        .cloned()
+        .unwrap_or_default();
+    if !files.iter().any(|file| file == path) {
+        files.push(path.to_string());
+    }
+    if files.len() > 1 {
+        let mut row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(6.0);
+        for file in &files {
+            row = row.with_child(file_chip(
+                app,
+                actions,
+                pane_id,
+                file,
+                file == path,
+            ));
+        }
+        if let Some(detail) = detail {
+            row = row.with_child(
+                Text::new(detail)
+                    .with_font_size(11.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_max_lines(1)
+                    .finish(),
+            );
+        }
+        return row.with_child(Spacer::new().finish()).finish();
+    }
+
     let name = file_name(path);
     let name_text = Text::new(name.clone())
         .with_font_size(13.0)
@@ -717,13 +1463,8 @@ fn title_row(
             Tooltip::new(name_text, path.to_string())
                 .with_position(TooltipPosition::Below)
                 .finish(),
-        )
-        .with_child(Spacer::new().finish());
-    let detail = match (detail, read_only) {
-        (Some(detail), Some(reason)) => Some(format!("{detail} · {reason}")),
-        (Some(detail), None) => Some(detail.to_string()),
-        (None, reason) => reason.map(str::to_string),
-    };
+        );
+    row = row.with_child(Spacer::new().finish());
     if let Some(detail) = detail {
         row = row.with_child(
             Text::new(detail)
@@ -733,6 +1474,221 @@ fn title_row(
         );
     }
     row.finish()
+}
+
+/// One file in a pane's chip row. The file the pane shows is filled in and
+/// inert; the others are outlined and switch the pane to that file when
+/// clicked. The full path stays on the chip's own hover.
+fn file_chip(
+    app: &AppContext,
+    actions: &UiActions,
+    pane_id: u64,
+    path: &str,
+    active: bool,
+) -> Box<dyn Element> {
+    let name = file_name(path);
+    let content = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(6.0)
+        .with_child(
+            Icon::new(file_icon_name(&name))
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_child(
+            Tooltip::new(
+                Text::new(name)
+                    .with_font_size(13.0)
+                    .with_theme_color(
+                        if active {
+                            ColorToken::Text
+                        } else {
+                            ColorToken::Muted
+                        },
+                        app,
+                    )
+                    .with_max_lines(1)
+                    .finish(),
+                path.to_string(),
+            )
+            .with_position(TooltipPosition::Below)
+            .finish(),
+        )
+        .finish();
+    let on_select = actions.on_file_chip_select.clone();
+    let selected = path.to_string();
+    let on_close = actions.on_file_chip_close.clone();
+    let closed = path.to_string();
+    let close: Box<dyn Element> = TopbarButton::new(
+        Icon::new("x")
+            .with_size(10.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(16.0)
+    .with_on_click(move || (on_close.borrow_mut())(pane_id, closed.clone()))
+    .finish();
+    Box::new(FileChip {
+        child: content,
+        close,
+        active,
+        on_select: Rc::new(RefCell::new(move || {
+            (on_select.borrow_mut())(pane_id, selected.clone())
+        })),
+        state: InteractiveState::default(),
+        size: None,
+        origin: None,
+    })
+}
+
+/// One file in a pane's topbar, drawn the way the general topbar draws its
+/// workspace tabs: a square, frameless cell the height of the bar. The file the
+/// pane shows carries the raised fill; the others are plain until the pointer
+/// is over them, and every chip shows its close "x" on hover so a file can be
+/// closed without closing the pane.
+struct FileChip {
+    child: Box<dyn Element>,
+    close: Box<dyn Element>,
+    active: bool,
+    on_select: Rc<RefCell<dyn FnMut()>>,
+    state: InteractiveState,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl FileChip {
+    /// The row the chip fills: the same height as the pane header's controls,
+    /// so the bar keeps `TOPBAR_HEIGHT` around it.
+    fn height() -> f32 {
+        chat::HEADER_CONTROL_HEIGHT
+    }
+
+    /// The inset before the file's icon and after its close control, the same
+    /// the workspace tabs use.
+    fn h_pad() -> f32 {
+        7.0
+    }
+
+    fn close_gap() -> f32 {
+        4.0
+    }
+
+    fn inner(constraint: SizeConstraint, close_width: f32) -> SizeConstraint {
+        let room =
+            (constraint.max.x - Self::h_pad() * 2.0 - Self::close_gap() - close_width).max(0.0);
+        SizeConstraint::new(Vector2F::zero(), Vector2F::new(room, Self::height()))
+    }
+
+    fn width(intrinsic: f32, constraint: SizeConstraint) -> f32 {
+        intrinsic.max(constraint.min.x).min(constraint.max.x)
+    }
+
+    fn close_origin(origin: Vector2F, size: Vector2F, close_size: Vector2F) -> Vector2F {
+        Vector2F::new(
+            origin.x + (size.x - Self::h_pad() - close_size.x).max(Self::h_pad()),
+            origin.y + (size.y - close_size.y).max(0.0) / 2.0,
+        )
+    }
+
+    fn bounds(&self) -> Option<goble_ui::geometry::RectF> {
+        let origin = self.origin?;
+        let size = self.size?;
+        Some(rectf(origin.x(), origin.y(), size.x, size.y))
+    }
+}
+
+impl Element for FileChip {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        // The close control's slot is reserved whether it is drawn or not, so a
+        // chip does not change width under the pointer that reveals its "x".
+        let close_size = self.close.layout(
+            SizeConstraint::loose(Vector2F::new(Self::height(), Self::height())),
+            ctx,
+            app,
+        );
+        let child_size = self
+            .child
+            .layout(Self::inner(constraint, close_size.x), ctx, app);
+        let intrinsic = child_size.x + Self::close_gap() + close_size.x + Self::h_pad() * 2.0;
+        let size = Vector2F::new(
+            Self::width(intrinsic, constraint),
+            Self::height().min(constraint.max.y),
+        );
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let size = self.size.unwrap_or(Vector2F::zero());
+        let rect = rectf(origin.x, origin.y, size.x, size.y);
+        let hovered = ctx.hovered(rect);
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            // Square fills and no stroke, exactly as the workspace tabs: the
+            // pane bar behind the chips is the only frame they need.
+            if self.active {
+                renderer.fill_rect(rect, app.theme.color(ColorToken::SurfaceRaised));
+            } else if hovered {
+                renderer.fill_rect(rect, app.theme.color(ColorToken::Hover));
+            }
+        }
+        let child_size = self.child.size().unwrap_or(Vector2F::zero());
+        let close_size = self.close.size().unwrap_or(Vector2F::zero());
+        self.child.paint(
+            Vector2F::new(
+                origin.x + Self::h_pad(),
+                origin.y + (size.y - child_size.y).max(0.0) / 2.0,
+            ),
+            ctx,
+            app,
+        );
+        if hovered {
+            self.close
+                .paint(Self::close_origin(origin, size, close_size), ctx, app);
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        let over = match event {
+            DispatchedEvent::MouseDown { position, .. }
+            | DispatchedEvent::MouseUp { position, .. }
+            | DispatchedEvent::MouseMove { position } => {
+                self.bounds().is_some_and(|bounds| contains(bounds, *position))
+            }
+            _ => false,
+        };
+        // The close "x" is hit-tested first, and only while the chip shows it:
+        // a click on the name still selects the file.
+        if over && self.close.dispatch_event(event, ctx, app) {
+            return true;
+        }
+        let Some(bounds) = self.bounds() else {
+            return false;
+        };
+        let cb = Rc::clone(&self.on_select);
+        let mut on_click = move || (cb.borrow_mut())();
+        handle_mouse_event(&mut self.state, event, bounds, ctx, &mut on_click)
+    }
 }
 
 /// A line of the pane's own, above the file: what a save did, or that the file
@@ -809,8 +1765,21 @@ fn editor_view(
     // buffer of as many lines as the pane will open is laid out a screenful at a
     // time, and the caret is brought into view when it moves off that window.
     let field = field.with_scroll_state(Rc::clone(&scroll));
-    Scrollable::new(field.finish(), Axis::Vertical)
+    // Lines are not folded: the horizontal region lets a long one run past the
+    // pane, and the vertical one scrolls the rows.
+    let hscroll = state
+        .file_hscroll
+        .get(&pane_id)
+        .cloned()
+        .unwrap_or_default();
+    // The horizontal region is the outer one: it measures the text at its
+    // intrinsic width while the vertical region inside it still knows the
+    // viewport's height, so the wheel scrolls sideways anywhere in the body.
+    let field = Scrollable::new(field.finish(), Axis::Vertical)
         .with_state(scroll)
+        .finish();
+    Scrollable::new(field, Axis::Horizontal)
+        .with_state(hscroll)
         .finish()
 }
 
@@ -818,7 +1787,11 @@ fn editor_view(
 /// itself, and this answers the one gesture that belongs to the pane rather
 /// than to the text — Cmd/Ctrl+S, which writes the buffer back to the file it
 /// was read from. Everything else is the body's, unchanged.
-struct FileKeys {
+///
+/// The review pane wraps its inline editors in the same element, so a save
+/// means the same thing — and is refused for the same reasons — whichever
+/// surface the file is edited on.
+pub(crate) struct FileKeys {
     buffer: Rc<RefCell<FileBuffer>>,
     /// Whether this pane is the active one. Only the active pane answers the
     /// chord, so a file pane beside a terminal never takes it from the terminal.
@@ -829,7 +1802,11 @@ struct FileKeys {
 }
 
 impl FileKeys {
-    fn new(buffer: Rc<RefCell<FileBuffer>>, focused: bool, child: Box<dyn Element>) -> Self {
+    pub(crate) fn new(
+        buffer: Rc<RefCell<FileBuffer>>,
+        focused: bool,
+        child: Box<dyn Element>,
+    ) -> Self {
         Self {
             buffer,
             focused,
@@ -949,7 +1926,10 @@ fn lines_view(
     let window = drawn_window(state, pane_id, lines.len());
     let mut list = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        // Start, not Stretch: the horizontal region measures the widest line,
+        // so a stretched column would take the unbounded width it is offered
+        // and there would be nothing to scroll.
+        .with_cross_axis_alignment(CrossAxisAlignment::Start);
     if window.start > 0 {
         list = list.with_child(filler(window.start));
     }
@@ -976,8 +1956,18 @@ fn lines_view(
         .get(&pane_id)
         .cloned()
         .unwrap_or_default();
-    Scrollable::new(list.finish(), Axis::Vertical)
+    let hscroll = state
+        .file_hscroll
+        .get(&pane_id)
+        .cloned()
+        .unwrap_or_default();
+    // The horizontal region is the outer one so it can measure the widest line
+    // while the vertical region inside it keeps the body's viewport height.
+    let list = Scrollable::new(list.finish(), Axis::Vertical)
         .with_state(scroll)
+        .finish();
+    Scrollable::new(list, Axis::Horizontal)
+        .with_state(hscroll)
         .finish()
 }
 
@@ -1179,6 +2169,80 @@ mod tests {
         }
     }
 
+    /// The review pane's in-place editors reuse this module's read and
+    /// highlight, and a dirty buffer survives closing the editor: "Done" puts
+    /// the diff back without throwing an unsaved edit away.
+    #[test]
+    fn a_review_editors_text_is_parsed_once_and_an_unsaved_edit_survives_done() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").expect("write");
+        let path = path.to_string_lossy().to_string();
+
+        let mut cache = DiffFileCache::default();
+        let first = cache.read(&[(1, path.clone())]);
+        let editor = first
+            .get(&1)
+            .and_then(|editors| editors.get(&path))
+            .expect("the file is read");
+        assert!(editor.buffer.borrow().editable());
+        assert!(
+            editor.content.runs().is_none(),
+            "the read itself takes no syntax pass"
+        );
+        // The worker colours the file beside the frame, so the runs arrive a
+        // read or two later; the mapping then carries them.
+        let mut coloured = None;
+        for _ in 0..500 {
+            let ready = cache.read(&[(1, path.clone())]);
+            let ready = ready
+                .get(&1)
+                .and_then(|editors| editors.get(&path))
+                .expect("the file is read");
+            if let Some(runs) = &ready.runs {
+                coloured = Some(Rc::clone(runs));
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let runs = coloured.expect("the worker colours the file's own type");
+        assert!(!runs.lines.is_empty(), "a Rust file has coloured runs");
+
+        editor
+            .buffer
+            .borrow_mut()
+            .set_text("fn main() { done(); }\n".to_string());
+
+        // A second read of an unchanged file hands back the cached runs.
+        let second = cache.read(&[(1, path.clone())]);
+        let cached = second
+            .get(&1)
+            .and_then(|editors| editors.get(&path))
+            .expect("the file is read again");
+        assert!(
+            cached
+                .runs
+                .as_ref()
+                .is_some_and(|again| Rc::ptr_eq(&again.lines, &runs.lines)),
+            "an unchanged file is not parsed and highlighted again"
+        );
+
+        // Closing the editor (`Done`) leaves no wanted files, but the edit is
+        // still unsaved, so it stays and is shown again when the file reopens.
+        assert!(cache.read(&[]).is_empty());
+        let reopened = cache.read(&[(1, path.clone())]);
+        let editor = reopened
+            .get(&1)
+            .and_then(|editors| editors.get(&path))
+            .expect("the file is still cached");
+        assert_eq!(
+            editor.buffer.borrow().text(),
+            "fn main() { done(); }\n",
+            "the unsaved edit is kept"
+        );
+        assert!(editor.buffer.borrow().dirty());
+    }
+
     #[test]
     fn a_binary_file_a_missing_path_and_a_directory_are_reported_not_drawn() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1231,12 +2295,13 @@ mod tests {
         }
     }
 
-    /// The buffer the pane at `pane` holds.
+    /// The buffer the pane at `pane` holds for a single file.
     fn buffer_at(cache: &FileCache, pane: u64) -> Rc<RefCell<FileBuffer>> {
         cache
             .buffers()
-            .get(&pane)
-            .cloned()
+            .into_iter()
+            .find(|((id, _), _)| *id == pane)
+            .map(|(_, buffer)| buffer)
             .unwrap_or_else(|| panic!("pane {pane} has a buffer"))
     }
 
@@ -1887,7 +2952,7 @@ mod tests {
     fn a_plain_row_and_a_highlighted_row_are_one_line_box_tall() {
         let app = AppContext::default();
         let line = "let value = compute(1);";
-        let runs = highlight(&[line.to_string()], "a.rs").expect("rust resolves");
+        let runs = highlight_lines(&[line.to_string()], "a.rs").expect("rust resolves");
         let constraint = SizeConstraint::loose(Vector2F::new(600.0, 400.0));
         let mut ctx = LayoutContext;
 
@@ -1903,5 +2968,719 @@ mod tests {
             LINE_BOX,
             "and a highlighted line takes the same one"
         );
+    }
+
+    /// A window with one file pane showing `path`, made the active pane. The
+    /// fixture directory is returned so the store outlives the test.
+    fn file_pane(
+        app: &AppContext,
+        path: &str,
+    ) -> (
+        Box<dyn Element>,
+        Rc<RefCell<crate::state::UiState>>,
+        std::sync::Arc<goble_desktop_service::DesktopState>,
+        u64,
+        tempfile::TempDir,
+    ) {
+        use crate::root_view::RootView;
+        use crate::ui::{PaneKind, SplitDir};
+        use goble_core::store::Store;
+        use goble_desktop_service::{DesktopState, ThreadStore};
+
+        let store_dir = tempfile::tempdir().expect("thread store dir");
+        // `DesktopState::new` already hands back a shared handle.
+        let desktop = DesktopState::new(
+            Store::open_in_memory().expect("store"),
+            ThreadStore::new(store_dir.path()).expect("thread store"),
+        );
+        let view = RootView::new(app, &desktop, None);
+        let state = view.state_rc();
+        let pane_id = {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.show_onboarding_tip = false;
+            s.right_sidebar_open = false;
+            let (space, pane) = (s.active_space, s.active_pane_id);
+            // The file pane is split off the original one: a space keeps its
+            // last pane, and closing the file pane has to collapse onto it.
+            let mut next = s.next_pane_id;
+            let file_pane = s.spaces[space]
+                .split_with_kind(
+                    pane,
+                    SplitDir::Vertical,
+                    &mut next,
+                    PaneKind::File {
+                        path: path.to_string(),
+                    },
+                )
+                .expect("the file pane splits off the pane that opened it");
+            s.next_pane_id = next;
+            s.active_pane_id = file_pane;
+            s.sync_active_view();
+            file_pane
+        };
+        (
+            Box::new(view),
+            state,
+            desktop,
+            pane_id,
+            store_dir,
+        )
+    }
+
+    fn draw(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<goble_ui::render::RenderCommand> {
+        draw_at(root, app, None)
+    }
+
+    /// Draw with the pointer at `cursor` when given, so paint-time hover state
+    /// can be asserted.
+    fn draw_at(
+        root: &mut Box<dyn Element>,
+        app: &AppContext,
+        cursor: Option<Vector2F>,
+    ) -> Vec<goble_ui::render::RenderCommand> {
+        use goble_ui::elements::PaintContext;
+        use goble_ui::render::Renderer;
+
+        let _ = root.layout(
+            SizeConstraint::loose(Vector2F::new(1024.0, 768.0)),
+            &mut LayoutContext,
+            app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        if let Some(cursor) = cursor {
+            ctx.cursor_position = cursor;
+            ctx.cursor_inside = true;
+        }
+        root.paint(Vector2F::zero(), &mut ctx, app);
+        ctx.renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default()
+    }
+
+    fn key_in(
+        root: &mut Box<dyn Element>,
+        app: &AppContext,
+        key: &str,
+        modifiers: goble_ui::event::ModifiersState,
+    ) -> bool {
+        use goble_ui::event::DispatchedEvent;
+
+        let mut ctx = EventContext;
+        root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: key.to_string(),
+                modifiers,
+            },
+            &mut ctx,
+            app,
+        )
+    }
+
+    /// The file is named in the pane's own topbar. It adds no tab to the
+    /// general bar, and no title row under the topbar either.
+    #[test]
+    fn a_file_is_named_in_the_pane_topbar_and_not_in_the_general_one() {
+        use crate::ui::shell::TOPBAR_HEIGHT;
+        use goble_ui::render::RenderCommand;
+
+        let app = AppContext::default();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("notes.txt");
+        fs::write(&path, "alpha\nbeta\n").expect("write");
+        let path = path.to_string_lossy().to_string();
+
+        let (mut root, state, _desktop, pane_id, _store) = file_pane(&app, &path);
+        let _ = draw(&mut root, &app);
+        let commands = draw(&mut root, &app);
+        let pane_top = state
+            .borrow()
+            .pane_bounds
+            .borrow()
+            .get(&pane_id)
+            .map(|rect| rect.min_y())
+            .expect("the pane was measured");
+        let name = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "notes.txt" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the pane names its file");
+        assert!(
+            name.y >= pane_top && name.y < pane_top + TOPBAR_HEIGHT,
+            "the name is in the pane's topbar, not in a row under it: {name:?} against {pane_top}"
+        );
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "notes.txt" && origin.y < TOPBAR_HEIGHT
+            )),
+            "a file adds no tab to the general bar: {commands:?}"
+        );
+    }
+
+    /// Several files open in one pane become a row of chips in that pane's
+    /// topbar: the file it shows is filled in, the others outlined and a click
+    /// away. Switching files keeps the pane and its other files.
+    #[test]
+    fn several_open_files_draw_each_name_as_a_chip() {
+        use crate::ui::shell::TOPBAR_HEIGHT;
+        use crate::ui::PaneKind;
+        use goble_ui::event::BUTTON_PRIMARY;
+        use goble_ui::geometry::PointF;
+        use goble_ui::render::RenderCommand;
+        use goble_ui::theme::ColorToken;
+
+        let app = AppContext::default();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let first = dir.path().join("alpha.txt");
+        let second = dir.path().join("beta.txt");
+        fs::write(&first, "alpha\n").expect("write");
+        fs::write(&second, "beta\n").expect("write");
+        let first = first.to_string_lossy().to_string();
+        let second = second.to_string_lossy().to_string();
+
+        let (mut root, state, _desktop, pane_id, _store) = file_pane(&app, &first);
+        assert!(
+            state.borrow_mut().show_file_in_pane(pane_id, second.clone()),
+            "the pane takes a second file"
+        );
+        let _ = draw(&mut root, &app);
+        let commands = draw(&mut root, &app);
+        let pane_top = state
+            .borrow()
+            .pane_bounds
+            .borrow()
+            .get(&pane_id)
+            .map(|rect| rect.min_y())
+            .expect("the pane was measured");
+        let origin_of = |name: &str| {
+            commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. } if text == name => Some(*origin),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the pane names {name}: {commands:?}"))
+        };
+
+        for (name, text_color) in [
+            ("alpha.txt", ColorToken::Muted),
+            ("beta.txt", ColorToken::Text),
+        ] {
+            let origin = origin_of(name);
+            assert!(
+                origin.y >= pane_top && origin.y < pane_top + TOPBAR_HEIGHT,
+                "{name} stays in the pane's topbar: {origin:?} against {pane_top}"
+            );
+            assert!(
+                commands.iter().any(|command| matches!(
+                    command,
+                    RenderCommand::DrawText { text, color, .. }
+                        if text == name && *color == app.theme.color(text_color)
+                )),
+                "{name} is drawn in its chip's own colour"
+            );
+        }
+
+        // The shown file wears the tab look, not a plaque: a square raised cell
+        // the height of the bar, with no padding or rounded frame of its own.
+        let raised = app.theme.color(ColorToken::SurfaceRaised);
+        let beta = origin_of("beta.txt");
+        let beta_point = PointF::new(beta.x, beta.y);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, color, corner_radius }
+                    if *color == raised && *corner_radius == 0.0 && rect.contains(beta_point)
+            )),
+            "the shown file sits on a square tab fill: {commands:?}"
+        );
+        let alpha = origin_of("alpha.txt");
+        let alpha_point = PointF::new(alpha.x, alpha.y);
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, corner_radius, .. }
+                    if *corner_radius > 0.0
+                        && rect.height() <= chat::HEADER_CONTROL_HEIGHT + 4.0
+                        && rect.contains(alpha_point)
+            )),
+            "a file chip has no rounded frame: {commands:?}"
+        );
+
+        // The other chip is plain until the pointer is over it: then it takes
+        // the tab strip's own square hover fill, and shows its close "x".
+        let hovered = draw_at(&mut root, &app, Some(Vector2F::new(alpha.x, alpha.y)));
+        let alpha_chip = hovered
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == app.theme.color(ColorToken::Hover)
+                    && *corner_radius == 0.0
+                    && rect.contains(alpha_point) =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the chip takes a hover fill: {hovered:?}"));
+        assert!(
+            hovered.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, origin, .. }
+                    if name == "x-close"
+                        && origin.x > alpha_chip.min_x()
+                        && origin.x < alpha_chip.max_x()
+            )),
+            "a hovered chip shows its close control: {hovered:?}"
+        );
+
+        // A click on the chip shows that file in the same pane, without a
+        // second pane and without moving the chip.
+        let at = Vector2F::new(alpha.x, alpha.y);
+        let mut ctx = EventContext::default();
+        root.dispatch_event(&DispatchedEvent::MouseMove { position: at }, &mut ctx, &app);
+        root.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: at,
+                button: BUTTON_PRIMARY,
+            },
+            &mut ctx,
+            &app,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: at,
+                button: BUTTON_PRIMARY,
+            },
+            &mut ctx,
+            &app,
+        );
+        {
+            let s = state.borrow();
+            let space = s.active_space;
+            assert!(
+                matches!(
+                    s.spaces[space].leaf_kind(pane_id),
+                    Some(PaneKind::File { path }) if path == &first
+                ),
+                "the chip switches the pane to its file"
+            );
+            assert_eq!(
+                s.pane_open_files.get(&pane_id).map(Vec::as_slice),
+                Some([first.clone(), second.clone()].as_slice()),
+                "the chip row keeps its order when a file is shown"
+            );
+        }
+
+        // The hovered chip's "x" closes that one file: the pane stays, with
+        // the file it was showing.
+        let beta_hover = draw_at(&mut root, &app, Some(Vector2F::new(beta.x, beta.y)));
+        let beta_chip = beta_hover
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == app.theme.color(ColorToken::Hover)
+                    && *corner_radius == 0.0
+                    && rect.contains(beta_point) =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the other chip takes a hover fill");
+        let close_at = Vector2F::new(
+            beta_chip.max_x() - 7.0 - 8.0,
+            (beta_chip.min_y() + beta_chip.max_y()) / 2.0,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: close_at,
+            },
+            &mut ctx,
+            &app,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: close_at,
+                button: BUTTON_PRIMARY,
+            },
+            &mut ctx,
+            &app,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: close_at,
+                button: BUTTON_PRIMARY,
+            },
+            &mut ctx,
+            &app,
+        );
+        let s = state.borrow();
+        let space = s.active_space;
+        assert!(
+            matches!(
+                s.spaces[space].leaf_kind(pane_id),
+                Some(PaneKind::File { path }) if path == &first
+            ),
+            "closing one chip leaves the pane showing its other file"
+        );
+        assert_eq!(
+            s.pane_open_files.get(&pane_id).map(Vec::as_slice),
+            Some([first].as_slice()),
+            "only the closed file leaves the chip row"
+        );
+    }
+
+    /// A chip's close asks about that file alone: the pane and its other files
+    /// stay, and Cancel (Escape) keeps even the dirty one open.
+    #[test]
+    fn closing_a_dirty_file_chip_asks_only_about_that_file() {
+        use crate::ui::PaneKind;
+        use goble_ui::event::{ModifiersState, BUTTON_PRIMARY};
+        use goble_ui::geometry::PointF;
+        use goble_ui::render::RenderCommand;
+        use goble_ui::theme::ColorToken;
+
+        let app = AppContext::default();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let first = dir.path().join("alpha.txt");
+        let second = dir.path().join("beta.txt");
+        fs::write(&first, "alpha\n").expect("write");
+        fs::write(&second, "beta\n").expect("write");
+        let first = first.to_string_lossy().to_string();
+        let second = second.to_string_lossy().to_string();
+
+        let (mut root, state, desktop, pane_id, _store) = file_pane(&app, &first);
+        assert!(state.borrow_mut().show_file_in_pane(pane_id, second.clone()));
+        let _ = draw(&mut root, &app);
+        let _ = draw(&mut root, &app);
+        assert!(key_in(&mut root, &app, "!", ModifiersState::default()));
+        let commands = draw(&mut root, &app);
+        assert!(
+            state
+                .borrow()
+                .file_buffers
+                .get(&(pane_id, second.clone()))
+                .is_some_and(|buffer| buffer.borrow().dirty()),
+            "the shown file has an unsaved edit"
+        );
+
+        // The shown file's square tab fill gives the chip its bounds; the close
+        // control sits at the chip's trailing edge.
+        let origin = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "beta.txt" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the pane names the second file");
+        let chip = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == app.theme.color(ColorToken::SurfaceRaised)
+                        && rect.contains(PointF::new(origin.x, origin.y)) =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the shown file sits on its chip");
+        let close_at = Vector2F::new(
+            chip.max_x() - 7.0 - 8.0,
+            (chip.min_y() + chip.max_y()) / 2.0,
+        );
+        // Hovering the chip is what draws its close control; a control that
+        // was never painted has no bounds to hit.
+        let _ = draw_at(&mut root, &app, Some(Vector2F::new(origin.x, origin.y)));
+        let mut ctx = EventContext::default();
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: close_at,
+            },
+            &mut ctx,
+            &app,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: close_at,
+                button: BUTTON_PRIMARY,
+            },
+            &mut ctx,
+            &app,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: close_at,
+                button: BUTTON_PRIMARY,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert_eq!(
+            state.borrow().pending_close_file,
+            Some((pane_id, second.clone())),
+            "the dirty chip asks before it closes"
+        );
+        assert!(
+            state.borrow().space_index_of_pane(pane_id).is_some(),
+            "the pane stays while the question is up"
+        );
+        assert_eq!(
+            state
+                .borrow()
+                .pane_open_files
+                .get(&pane_id)
+                .cloned()
+                .unwrap_or_default(),
+            vec![first.clone(), second.clone()],
+            "no chip leaves before the answer"
+        );
+
+        // Escape is Cancel: the chip and its edit stay.
+        let commands = draw(&mut root, &app);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text == "Save changes before closing?"
+            )),
+            "the chip's close draws the save question: {commands:?}"
+        );
+        assert!(key_in(
+            &mut root,
+            &app,
+            "Escape",
+            ModifiersState::default()
+        ));
+        assert_eq!(state.borrow().pending_close_file, None);
+        assert_eq!(
+            state
+                .borrow()
+                .pane_open_files
+                .get(&pane_id)
+                .cloned()
+                .unwrap_or_default(),
+            vec![first.clone(), second.clone()]
+        );
+
+        // Ask again and save: only that file is written and dropped.
+        state
+            .borrow_mut()
+            .request_close_file(pane_id, second.clone(), Some(&desktop));
+        state
+            .borrow_mut()
+            .close_pending_file_save(Some(&desktop));
+        assert_eq!(
+            fs::read_to_string(&second).expect("read"),
+            "!beta\n",
+            "the chip's close wrote its buffer"
+        );
+        let s = state.borrow();
+        let space = s.active_space;
+        assert!(
+            s.space_index_of_pane(pane_id).is_some(),
+            "the pane stays with the file that is left"
+        );
+        assert!(
+            matches!(
+                s.spaces[space].leaf_kind(pane_id),
+                Some(PaneKind::File { path }) if path == &first
+            ),
+            "the remaining file takes the pane"
+        );
+        assert_eq!(
+            s.pane_open_files.get(&pane_id).map(Vec::as_slice),
+            Some([first].as_slice())
+        );
+    }
+
+    /// The file body does not fold its lines: the horizontal region takes the
+    /// wheel's sideways travel to the end of the longest line, while the
+    /// vertical region keeps the rows.
+    #[test]
+    fn a_file_pane_scrolls_sideways_to_the_end_of_a_long_line() {
+        use goble_ui::event::DispatchedEvent;
+        use goble_ui::render::Renderer;
+
+        let app = AppContext::default();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("wide.txt");
+        let wide = "x".repeat(400);
+        fs::write(&path, format!("{wide}\nshort\n")).expect("write");
+        let path = path.to_string_lossy().to_string();
+
+        let (mut root, state, _desktop, pane_id, _store) = file_pane(&app, &path);
+        let _ = draw(&mut root, &app);
+        let _ = draw(&mut root, &app);
+        let hscroll = state
+            .borrow()
+            .file_hscroll
+            .get(&pane_id)
+            .cloned()
+            .expect("the pane's horizontal region was measured");
+        assert!(
+            hscroll.borrow().max_offset() > 0.0,
+            "the 400-character line runs past the pane"
+        );
+
+        // The pointer is over the body; a sideways wheel step is the horizontal
+        // region's, because the vertical one has no travel of its own to use.
+        let at = {
+            let state = state.borrow();
+            let bounds = state.pane_bounds.borrow();
+            let pane = bounds.get(&pane_id).copied().expect("the pane was measured");
+            Vector2F::new(
+                pane.min_x() + pane.width() * 0.5,
+                pane.min_y() + pane.height() * 0.5,
+            )
+        };
+        let mut paint = PaintContext::new(Renderer::new());
+        paint.cursor_position = at;
+        paint.cursor_inside = true;
+        root.paint(Vector2F::zero(), &mut paint, &app);
+        let mut ctx = EventContext;
+        root.dispatch_event(&DispatchedEvent::MouseMove { position: at }, &mut ctx, &app);
+        assert!(root.dispatch_event(
+            &DispatchedEvent::Scroll {
+                delta: Vector2F::new(-20.0, 0.0),
+                precise: true,
+            },
+            &mut ctx,
+            &app,
+        ));
+        assert!(
+            hscroll.borrow().offset() > 0.0,
+            "the body followed the sideways wheel"
+        );
+    }
+
+    /// Closing a dirty file pane asks first; `Escape` keeps the pane, and
+    /// "Save and close" writes the buffer before the pane goes.
+    #[test]
+    fn closing_a_dirty_file_pane_asks_then_saves() {
+        use goble_ui::event::ModifiersState;
+        use goble_ui::render::RenderCommand;
+
+        let app = AppContext::default();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("notes.txt");
+        fs::write(&path, "alpha\nbeta\n").expect("write");
+        let path = path.to_string_lossy().to_string();
+
+        let (mut root, state, desktop, pane_id, _store) = file_pane(&app, &path);
+        let _ = draw(&mut root, &app);
+        assert!(key_in(
+            &mut root,
+            &app,
+            "!",
+            ModifiersState::default()
+        ));
+        let _ = draw(&mut root, &app);
+        assert!(
+            state
+                .borrow()
+                .file_buffers
+                .iter()
+                .any(|((pane, _), buffer)| *pane == pane_id && buffer.borrow().dirty()),
+            "the typed character is an unsaved edit"
+        );
+
+        let command_w = ModifiersState {
+            command: true,
+            ..Default::default()
+        };
+        assert!(key_in(&mut root, &app, "w", command_w));
+        assert_eq!(state.borrow().pending_close_pane, Some(pane_id));
+        assert!(
+            state.borrow().space_index_of_pane(pane_id).is_some(),
+            "the pane is still open while the question is up"
+        );
+        let commands = draw(&mut root, &app);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text == "Save changes before closing?"
+            )),
+            "the prompt is drawn: {commands:?}"
+        );
+
+        // `Escape` is Cancel: the pane stays, and so does the edit.
+        assert!(key_in(
+            &mut root,
+            &app,
+            "Escape",
+            ModifiersState::default()
+        ));
+        assert_eq!(state.borrow().pending_close_pane, None);
+        assert!(state.borrow().space_index_of_pane(pane_id).is_some());
+
+        // Ask again and save: the file holds the edit, and the pane is gone.
+        assert!(key_in(&mut root, &app, "w", command_w));
+        state
+            .borrow_mut()
+            .close_pending_pane_save(Some(&desktop));
+        assert_eq!(
+            fs::read_to_string(&path).expect("read"),
+            "!alpha\nbeta\n",
+            "the pending close wrote the buffer"
+        );
+        assert!(state.borrow().space_index_of_pane(pane_id).is_none());
+    }
+
+    /// With "Auto-save on close" on, the same close saves and goes without a
+    /// question.
+    #[test]
+    fn auto_save_on_close_writes_the_file_and_closes_without_a_prompt() {
+        use goble_ui::event::ModifiersState;
+
+        let app = AppContext::default();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("notes.txt");
+        fs::write(&path, "alpha\nbeta\n").expect("write");
+        let path = path.to_string_lossy().to_string();
+
+        let (mut root, state, _desktop, pane_id, _store) = file_pane(&app, &path);
+        let _ = draw(&mut root, &app);
+        assert!(key_in(
+            &mut root,
+            &app,
+            "!",
+            ModifiersState::default()
+        ));
+        let _ = draw(&mut root, &app);
+        state.borrow_mut().auto_save_on_close = true;
+
+        let command_w = ModifiersState {
+            command: true,
+            ..Default::default()
+        };
+        assert!(key_in(&mut root, &app, "w", command_w));
+        assert_eq!(
+            state.borrow().pending_close_pane,
+            None,
+            "no question is asked"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("read"),
+            "!alpha\nbeta\n",
+            "the close wrote the buffer"
+        );
+        assert!(state.borrow().space_index_of_pane(pane_id).is_none());
     }
 }

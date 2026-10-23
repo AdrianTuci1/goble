@@ -60,6 +60,8 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("sparkle", "sparkle.svg"),
     icon_bytes!("ai-assistant", "ai-assistant.svg"),
     icon_bytes!("copy", "copy.svg"),
+    // The review card's revert control: warp-new's curved undo arrow.
+    icon_bytes!("undo", "undo.svg"),
     icon_bytes!("refresh", "refresh.svg"),
     icon_bytes!("terminal", "terminal.svg"),
     icon_bytes!("terminal-input", "terminal-input.svg"),

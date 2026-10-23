@@ -718,6 +718,14 @@ impl ChatView {
         if let Some(label) = self.composer_branch_label.clone() {
             composer = composer.with_branch_label(label);
         }
+        if let Some(diff) = self.composer_diff.clone() {
+            composer = composer
+                .with_diff_menu(diff, self.composer_diff_menu_open.clone())
+                .with_diff_menu_scroll(self.composer_diff_menu_scroll.clone());
+            if let Some(open) = self.on_composer_diff_open.clone() {
+                composer = composer.with_diff_open(move |file| (open.borrow_mut())(file));
+            }
+        }
         if let Some(cb) = self.on_composer_focus_change.clone() {
             composer = composer.with_on_focus_change(move |focused| (cb.borrow_mut())(focused));
         }
@@ -844,8 +852,17 @@ impl ChatView {
                         .finish(),
                 );
             }
-            column = column.with_child(Divider::horizontal().finish());
-            column = column.with_child(composer);
+            // The separator is the input's top edge and the composer sits on
+            // it: the pair is one block, so the column's `md` spacing does not
+            // open a gap under the rule. The shell pane's bar keeps its rows
+            // `xs` under its own divider; this is the same edge.
+            let input = Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(Divider::horizontal().finish())
+                .with_child(composer)
+                .finish();
+            column = column.with_child(input);
         }
 
         // No outer padding: the header and composer span the full width and

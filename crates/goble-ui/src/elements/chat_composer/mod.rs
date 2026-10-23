@@ -6,6 +6,7 @@
 //! `elements::chat_composer::CommandProposalUi`) unchanged.
 
 mod composer;
+mod diff;
 mod proposal;
 #[cfg(test)]
 mod tests;
@@ -15,4 +16,5 @@ pub use composer::ChatComposer;
 /// that draws the label owns them; the app re-exports this constant rather than
 /// keeping a copy that could drift.
 pub use composer::MODEL_NOT_CONFIGURED;
+pub use diff::{DiffFileStat, DiffSummary};
 pub use proposal::CommandProposalUi;

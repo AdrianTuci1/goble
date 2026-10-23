@@ -204,6 +204,10 @@ pub enum PaneKind {
     /// the pane shows rides in the leaf, so it comes back with the pane and
     /// travels with it when the pane is lifted into another space.
     Settings { page: SettingsCategory },
+    /// The working tree's changes: a file list beside the unified diffs of the
+    /// repository `cwd` sits in. The directory rides in the leaf, so the pane
+    /// reopens on the same repository after a restart.
+    Diff { cwd: String },
 }
 
 /// Which way a pane tree splits.
@@ -397,6 +401,21 @@ impl Pane {
             Pane::Split { first, second, .. } => {
                 first.file_leaves(out);
                 second.file_leaves(out);
+            }
+        }
+    }
+
+    /// Every diff leaf in this subtree, with the directory it reviews.
+    pub fn diff_leaves(&self, out: &mut Vec<(u64, String)>) {
+        match self {
+            Pane::Leaf {
+                id,
+                kind: PaneKind::Diff { cwd },
+            } => out.push((*id, cwd.clone())),
+            Pane::Leaf { .. } => {}
+            Pane::Split { first, second, .. } => {
+                first.diff_leaves(out);
+                second.diff_leaves(out);
             }
         }
     }
@@ -988,6 +1007,17 @@ impl Space {
     /// The first settings leaf in this space's tree (see [`Pane::settings_leaf`]).
     pub fn settings_leaf(&self) -> Option<u64> {
         self.root.settings_leaf()
+    }
+
+    /// The diff leaf reviewing `cwd`, if this space already has one. A space
+    /// can hold review panes for several directories, so the search matches the
+    /// directory rather than taking the first leaf.
+    pub fn diff_leaf_for(&self, cwd: &str) -> Option<u64> {
+        let mut leaves = Vec::new();
+        self.root.diff_leaves(&mut leaves);
+        leaves
+            .into_iter()
+            .find_map(|(id, leaf_cwd)| (leaf_cwd == cwd).then_some(id))
     }
 
     /// Point the leaf `target` at different content (see [`Pane::set_leaf_kind`]).

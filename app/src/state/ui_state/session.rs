@@ -421,6 +421,34 @@ impl UiState {
             .or_insert_with(|| PaneControls::new(model, auto_approve, branch))
     }
 
+    /// Take any finished git job's word for the review pane. The worker runs
+    /// off the UI thread; this is where its result reaches the status line and
+    /// asks the working tree to be read again.
+    pub fn collect_diff_git_results(&mut self) {
+        for controls in self.pane_controls.values_mut() {
+            let outcome = controls
+                .diff_git_result
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take());
+            let Some(outcome) = outcome else {
+                continue;
+            };
+            let (text, ok) = match outcome {
+                Ok(text) => (text, true),
+                Err(text) => (text, false),
+            };
+            // A commit that landed consumed its message. A failed one keeps it,
+            // so the user can fix the tree and press Commit again without
+            // retyping.
+            if ok && text == "Committed" {
+                *controls.diff_commit_message.borrow_mut() = String::new();
+            }
+            *controls.diff_git_status.borrow_mut() = Some((text, ok));
+            *controls.diff_refresh.borrow_mut() += 1;
+        }
+    }
+
     /// A copy of this pane's rich-input controls. A pane that has no entry yet
     /// reads the window globals, so the first frame shows sane values.
     pub fn pane_controls(&self, pane_id: u64) -> PaneControls {
@@ -492,6 +520,11 @@ impl UiState {
             // A file view opens at the file's first line and keeps the user's
             // place, so its offset is a plain one, never a following one.
             self.file_scroll
+                .entry(id)
+                .or_insert_with(|| Rc::new(RefCell::new(ScrollState::default())));
+            // The same view scrolls sideways too: its lines do not wrap, so a
+            // long line runs past the pane and the wheel can follow it.
+            self.file_hscroll
                 .entry(id)
                 .or_insert_with(|| Rc::new(RefCell::new(ScrollState::default())));
             // The usage disclosure starts collapsed and remembers its state.

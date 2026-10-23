@@ -159,6 +159,8 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // while it is up, the reconnect offer only takes the click it is given.
     let host_picker_dialog = hosts::build_host_picker(app, state, actions);
     let ssh_reconnect_dialog = hosts::build_reconnect_prompt(app, state, actions);
+    // Closing a file pane with unsaved edits asks here, above the workspace.
+    let close_prompt_dialog = super::file_view::build_close_prompt(app, state, actions);
 
     let mut stack = Stack::new().with_children(vec![
         shell_col.finish(),
@@ -175,6 +177,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         chat_panel_sheet,
         host_picker_dialog,
         ssh_reconnect_dialog,
+        close_prompt_dialog,
         // The shortcuts panel goes last: Ctrl+. is a global chord, so wherever
         // the keyboard is, the panel it opens is the top-most surface and the
         // first to see Escape and a backdrop click.

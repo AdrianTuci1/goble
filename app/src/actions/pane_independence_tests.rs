@@ -1103,3 +1103,84 @@ fn the_attach_control_opens_the_file_picker_and_writes_no_message() {
         "the picked path is the pane's attachment, counted once"
     );
 }
+
+/// The composer's diff control opens the review pane beside its own pane, one
+/// pane per directory: asking again focuses it, and asking for a file in it
+/// selects that file.
+#[test]
+fn the_diff_control_opens_one_review_pane_per_directory() {
+    use crate::ui::DiffPanelAction;
+
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+    let cwd = "/tmp/review-one".to_string();
+    state
+        .borrow_mut()
+        .pane_sessions
+        .get_mut(&1)
+        .expect("the first pane has a session")
+        .path = cwd.clone();
+
+    (actions.on_diff_panel.borrow_mut())(1, DiffPanelAction::Open(None));
+    let review = state.borrow().active_pane_id;
+    {
+        let s = state.borrow();
+        assert_ne!(review, 1, "the review pane is its own leaf");
+        assert_eq!(
+            s.spaces[0].leaf_kind(review),
+            Some(&PaneKind::Diff { cwd: cwd.clone() }),
+            "it reviews the directory of the pane that asked"
+        );
+        assert_eq!(
+            *s.pane_controls
+                .get(&review)
+                .expect("controls")
+                .diff_selected
+                .borrow(),
+            None,
+            "the whole tree is shown first"
+        );
+    }
+
+    (actions.on_diff_panel.borrow_mut())(
+        1,
+        DiffPanelAction::Open(Some("src/lib.rs".to_string())),
+    );
+    {
+        let s = state.borrow();
+        assert_eq!(s.active_pane_id, review, "the same pane is focused");
+        assert_eq!(
+            s.spaces[0].root.max_id(),
+            review,
+            "no second review pane for the same directory"
+        );
+        assert_eq!(
+            *s.pane_controls
+                .get(&review)
+                .expect("controls")
+                .diff_selected
+                .borrow(),
+            Some("src/lib.rs".to_string()),
+            "the file the menu row named is selected"
+        );
+    }
+
+    state
+        .borrow_mut()
+        .pane_sessions
+        .get_mut(&1)
+        .expect("the first pane has a session")
+        .path = "/tmp/review-two".to_string();
+    (actions.on_diff_panel.borrow_mut())(1, DiffPanelAction::Open(None));
+    {
+        let s = state.borrow();
+        let second = s.active_pane_id;
+        assert_ne!(second, review, "another directory gets its own pane");
+        assert_eq!(
+            s.spaces[0].leaf_kind(second),
+            Some(&PaneKind::Diff {
+                cwd: "/tmp/review-two".to_string()
+            })
+        );
+    }
+}

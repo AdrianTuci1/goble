@@ -64,8 +64,26 @@ impl Element for RootView {
             .pane_chat_scroll
             .values()
             .chain(state.pane_terminal_scroll.values())
+            .chain(
+                state
+                    .pane_controls
+                    .values()
+                    .flat_map(|controls| [&controls.diff_scroll, &controls.diff_list_scroll]),
+            )
             .any(|scroll| scroll.borrow().is_animating());
         if gliding {
+            return true;
+        }
+        // A card's sideways swipe glides on the same clock as the column's
+        // vertical one; it is kept per file, so it is asked for separately.
+        let sideways = state.pane_controls.values().any(|controls| {
+            controls
+                .diff_hscroll
+                .borrow()
+                .values()
+                .any(|scroll| scroll.borrow().is_animating())
+        });
+        if sideways {
             return true;
         }
         let running = state.terminal.borrow().any_running_command();

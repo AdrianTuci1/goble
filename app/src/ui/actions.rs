@@ -28,6 +28,56 @@ pub type SaveLlmHandler = Rc<RefCell<dyn FnMut(String, String, String, String, S
 /// A callback carrying three strings.
 pub type ThreeStringHandler = Rc<RefCell<dyn FnMut(String, String, String)>>;
 
+/// One interaction in the diff review pane.
+///
+/// The pane is rebuilt every frame, so its view choices (which file is
+/// selected, which files are open, whether the sidebar shows) live in the
+/// pane's controls and the pane reports each change here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffPanelAction {
+    /// Open the review pane for a source pane's directory, optionally on one
+    /// file. The composer's diff menu sends this.
+    Open(Option<String>),
+    /// Show only this file, or every file when `None`.
+    Select(Option<String>),
+    /// Open or fold one file's diff. The row sends the state it wants rather
+    /// than "toggle", because a long or binary file starts folded and a toggle
+    /// would fold it again.
+    SetFileOpen(String, bool),
+    /// Open or close one file's in-place editor. Opening also unfolds the file
+    /// and hands it the keyboard; closing returns the block to its diff.
+    SetFileEditing(String, bool),
+    /// Make this review pane the active one, so a press in an editor can type
+    /// into it even when the pane was opened beside a terminal.
+    Focus,
+    /// Show or hide the file list.
+    ToggleSidebar,
+    /// Open or close the commit bar under the topbar.
+    ToggleCommit,
+    /// Hold the commit bar's message as it is typed.
+    SetCommitMessage(String),
+    /// Stage every change and commit it with the bar's message.
+    Commit,
+    /// Push the current branch.
+    Push,
+    /// Open a pull request for the current branch through `gh`.
+    CreatePr,
+    /// Copy a changed file's `file://` link.
+    CopyLink(String),
+    /// Ask the file's header to confirm discarding its changes.
+    ConfirmRevert(String),
+    /// Dismiss the revert confirmation without touching the file.
+    CancelRevert,
+    /// Restore one file to `HEAD`, or remove it when it is untracked.
+    RevertFile(String),
+    /// Open a changed file in the platform's editor.
+    OpenExternal(String),
+    /// Open a changed file in a file pane.
+    OpenFile(String),
+    /// Copy these paths to the system clipboard, one per line.
+    CopyPaths(Vec<String>),
+}
+
 /// Callbacks supplied by the host app for the main view. Created fresh on
 /// every rebuild; they mutate app-owned state, which is rendered back on the
 /// next frame.
@@ -97,6 +147,8 @@ pub struct UiActions {
     /// Turn modal (vim) editing on or off for the rich input. The choice is
     /// persisted; turning it off returns every pane's editor to insert mode.
     pub on_toggle_vim_mode: Rc<RefCell<dyn FnMut(bool)>>,
+    /// Editor & Input: save a dirty file view on close instead of asking.
+    pub on_toggle_auto_save_on_close: Rc<RefCell<dyn FnMut(bool)>>,
     /// Fork `pane_id`'s conversation into a new one that inherits its transcript
     /// (the transcript footer's Fork).
     pub on_fork_conversation: Rc<RefCell<dyn FnMut(u64)>>,
@@ -128,6 +180,8 @@ pub struct UiActions {
     pub on_settings: Rc<RefCell<dyn FnMut()>>,
     /// Toggle the left conversation sidebar (topbar sidebar button).
     pub on_toggle_sidebar: Rc<RefCell<dyn FnMut()>>,
+    /// One interaction in the diff review pane, naming the pane it happened in.
+    pub on_diff_panel: Rc<RefCell<dyn FnMut(u64, DiffPanelAction)>>,
     /// Toggle the sidebar conversation list between "a few cards" and the full,
     /// scrollable list.
     pub on_toggle_conversations_expanded: Rc<RefCell<dyn FnMut()>>,
@@ -314,8 +368,15 @@ pub struct UiActions {
     pub on_ssh_reconnect: Rc<RefCell<dyn FnMut()>>,
     /// Dismiss the reconnect offer.
     pub on_ssh_reconnect_dismiss: Rc<RefCell<dyn FnMut()>>,
-    /// Close the active pane, focusing the surviving sibling.
+    /// Close the active pane, focusing the surviving sibling. A file view with
+    /// unsaved edits asks first unless auto-save on close is on.
     pub on_close_pane: Rc<RefCell<dyn FnMut()>>,
+    /// Close dialog: save the pending file view, then close it.
+    pub on_close_unsaved_save: Rc<RefCell<dyn FnMut()>>,
+    /// Close dialog: close the pending file view and drop its edits.
+    pub on_close_unsaved_discard: Rc<RefCell<dyn FnMut()>>,
+    /// Close dialog: keep the pending file view open.
+    pub on_close_unsaved_cancel: Rc<RefCell<dyn FnMut()>>,
     /// Create a new terminal pane by splitting the active pane downward.
     pub on_new_terminal: Rc<RefCell<dyn FnMut()>>,
     /// Route a terminal pane's current input to the agent turn path (Cmd+Enter),
@@ -432,6 +493,11 @@ pub struct UiActions {
     /// Open `~/.goble/config.toml` — where the API keys and the models live — in
     /// a file pane beside the active pane.
     pub on_open_config_file: Rc<RefCell<dyn FnMut()>>,
+    /// Show one of the files a file pane keeps open, named by its chip in the
+    /// pane's own topbar.
+    pub on_file_chip_select: Rc<RefCell<dyn FnMut(u64, String)>>,
+    /// Close one file's chip, asking first when it has unsaved edits.
+    pub on_file_chip_close: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// First-run: choose the workspace routing (Local or Remote).
     pub on_choose_workspace: Rc<RefCell<dyn FnMut(WorkspaceRouting)>>,
     /// First-run: close the model-provider dialog without saving.

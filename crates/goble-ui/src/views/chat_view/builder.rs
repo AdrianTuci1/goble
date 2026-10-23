@@ -394,6 +394,36 @@ impl ChatView {
         self
     }
 
+    /// The working tree's changed files: the totals the composer's diff
+    /// control draws and the rows its menu lists. `None` outside a local
+    /// repository.
+    pub fn with_composer_diff(
+        mut self,
+        summary: crate::elements::DiffSummary,
+        open: Rc<RefCell<bool>>,
+    ) -> Self {
+        self.composer_diff = Some(summary);
+        self.composer_diff_menu_open = open;
+        self
+    }
+
+    /// Share the diff menu's scroll offset with the app, so a long list keeps
+    /// the position the wheel left it at across the per-frame rebuild.
+    pub fn with_composer_diff_menu_scroll(mut self, scroll: PanelScroll) -> Self {
+        self.composer_diff_menu_scroll = scroll;
+        self
+    }
+
+    /// What the composer's diff menu opens: the host's review panel, on the
+    /// chosen file (`None` for "Open all changes").
+    pub fn with_composer_diff_open<F: FnMut(Option<String>) + 'static>(
+        mut self,
+        callback: F,
+    ) -> Self {
+        self.on_composer_diff_open = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     /// Set the composer's slash-command menu: the commands the host offers for
     /// the draft being typed (already filtered by it), the app-owned selection,
     /// the app-owned Escape flag, and the three gestures the menu answers.

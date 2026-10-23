@@ -54,6 +54,10 @@ impl RootView {
         // sitting at a prompt; fold that into the pane's agent state before the
         // snapshot draws it.
         self.state.borrow_mut().refresh_tui_agent_states();
+        // A review pane's commit, push or pull request runs on its own thread.
+        // Its word — and the refresh a commit needs — lands here, before the
+        // snapshot reads the pane.
+        self.state.borrow_mut().collect_diff_git_results();
         // The sidebar's status squares are live pane state: a turn settling or
         // a pane stopping changes them without writing to the store, so they
         // are re-read here, before the snapshot takes them.
@@ -92,6 +96,9 @@ impl RootView {
                 branch_ids: Vec::new(),
                 branch_items: Vec::new(),
                 branch_menu_open: state_s.branch_menu_open.clone(),
+                diff: None,
+                diff_menu_open: Rc::new(RefCell::new(false)),
+                diff_menu_scroll: Default::default(),
             }
         };
         let snapshot = {
@@ -212,6 +219,25 @@ impl RootView {
                                 item
                             })
                             .collect();
+
+                        // The working tree's changes, for the diff control.
+                        // Only a local pane's own directory is read: a worker
+                        // pane's work lives on the worker, and an SSH-bound
+                        // pane's reported path is the remote host's.
+                        ctx.diff_menu_open = controls.diff_menu_open.clone();
+                        ctx.diff_menu_scroll = controls.diff_menu_scroll.clone();
+                        let bound_to_ssh = s
+                            .pane_ssh
+                            .get(&pid)
+                            .is_some_and(|binding| binding.session.is_some());
+                        ctx.diff = if s.pane_workers.contains_key(&pid) || bound_to_ssh {
+                            None
+                        } else {
+                            pickers.diff(&cwd)
+                        };
+                        if ctx.diff.as_ref().is_none_or(|diff| diff.is_empty()) {
+                            *controls.diff_menu_open.borrow_mut() = false;
+                        }
                         (pid, ctx)
                     })
                     .collect()
@@ -230,12 +256,109 @@ impl RootView {
             // file changed — instead of per frame in the element tree, and the
             // same pass highlights the lines it just read. Only the active
             // space is mounted, so only its file views are read.
-            let pane_files = {
+            let (pane_files, pane_open_files) = {
+                let mut leaves = Vec::new();
+                if let Some(space) = s.spaces.get(s.active_space) {
+                    space.root.file_leaves(&mut leaves);
+                }
+                let mut open = Vec::new();
+                let mut active = HashMap::new();
+                let mut lists = HashMap::new();
+                for (pane_id, path) in leaves {
+                    // A pane restored from a saved layout has no chip list yet;
+                    // the file it shows is the one it has open.
+                    let mut paths = s.pane_open_files.get(&pane_id).cloned().unwrap_or_default();
+                    if paths.is_empty() {
+                        paths.push(path.clone());
+                    } else if !paths.iter().any(|open| open == &path) {
+                        paths.push(path.clone());
+                    }
+                    for file in &paths {
+                        open.push((pane_id, file.clone()));
+                    }
+                    active.insert(pane_id, path);
+                    lists.insert(pane_id, paths);
+                }
+                let contents = self.file_cache.borrow_mut().read_open(&open, &active);
+                (contents, lists)
+            };
+            // The editing state sits beside the read it was just settled
+            // against, so a pane that opened this frame draws its buffer, not
+            // the read-only body.
+            let file_buffers = self.file_cache.borrow().buffers();
+            // Every review pane on screen reads its repository's changes here,
+            // under the pickers' short cache: the panel is rebuilt every frame,
+            // and one `git diff` per frame would make the app wait on the disk.
+            let pane_diffs: HashMap<u64, Option<Rc<crate::ui::pickers::DiffDetail>>> = {
                 let mut wanted = Vec::new();
                 if let Some(space) = s.spaces.get(s.active_space) {
-                    space.root.file_leaves(&mut wanted);
+                    let mut leaves = Vec::new();
+                    space.root.diff_leaves(&mut leaves);
+                    for (id, cwd) in leaves {
+                        let generation = *s.pane_controls(id).diff_refresh.borrow();
+                        wanted.push((id, cwd, generation));
+                    }
                 }
-                self.file_cache.borrow_mut().read(&wanted)
+                let mut pickers = self.pickers.borrow_mut();
+                wanted
+                    .into_iter()
+                    .map(|(id, cwd, generation)| (id, pickers.diff_detail(&cwd, generation)))
+                    .collect()
+            };
+            // The changed files the review panes last laid out. Only those are
+            // read: the file pane's own parser and highlighter do the work, the
+            // path-keyed cache keeps the read between frames, and a review of a
+            // thousand files costs the handful in view.
+            let pane_diff_editors = {
+                let mut editors_wanted: Vec<(u64, String)> = Vec::new();
+                let mut cards_wanted: Vec<(u64, String)> = Vec::new();
+                if let Some(space) = s.spaces.get(s.active_space) {
+                    let mut leaves = Vec::new();
+                    space.root.diff_leaves(&mut leaves);
+                    for (id, _cwd) in leaves {
+                        let Some(Some(detail)) = pane_diffs.get(&id) else {
+                            continue;
+                        };
+                        let visible = s.pane_controls(id).diff_visible.borrow().clone();
+                        let editing = s.pane_controls(id).diff_editing.borrow().clone();
+                        let mut paths = visible;
+                        if paths.is_empty() {
+                            // The first frame has no measured boxes yet: take
+                            // the first few files so the list opens with their
+                            // text instead of a row of placeholders.
+                            paths = detail
+                                .files
+                                .iter()
+                                .filter(|file| !file.binary && !file.truncated)
+                                .take(4)
+                                .map(|file| file.absolute_path.clone())
+                                .collect();
+                        }
+                        for path in paths {
+                            // A file showing its whole text needs the read; a
+                            // card needs only its changed lines coloured. Both
+                            // sides ask the pane which body it draws, so the
+                            // read and the paint agree on one answer.
+                            let shows_editor = detail
+                                .files
+                                .iter()
+                                .find(|file| file.absolute_path == path)
+                                .is_some_and(|file| {
+                                    crate::ui::diff_panel::file_shows_editor(file, &editing)
+                                });
+                            if shows_editor {
+                                editors_wanted.push((id, path));
+                            } else {
+                                cards_wanted.push((id, path));
+                            }
+                        }
+                    }
+                }
+                let editors = self.diff_files.borrow_mut().read(&editors_wanted);
+                self.diff_files
+                    .borrow_mut()
+                    .highlight_diffs(&cards_wanted, &pane_diffs);
+                editors
             };
             // The pane header's work chip is per pane, where `live_work` above
             // is app-wide, so it is built from each pane's own runtime. A pane
@@ -246,9 +369,11 @@ impl RootView {
                 .map(|&pane_id| (pane_id, s.pane_live_work(pane_id)))
                 .filter(|(_, items)| !items.is_empty())
                 .collect();
-            // The editing state sits beside the read it was settled against, so
-            // it is taken in the same breath.
-            let file_buffers = self.file_cache.borrow().buffers();
+            // The panes a lifted pane can be dropped on are the ones this frame
+            // draws: the live registry is cleared and rebuilt by the paint that
+            // follows. This copy is the frame before, and it is what a pane's
+            // content reads to adapt to the width it is drawn at.
+            let pane_bounds_prev = s.pane_bounds.borrow().clone();
             UiSnapshot {
                 current_tab: s.current_tab,
                 conversations: s.conversations.clone(),
@@ -331,6 +456,9 @@ impl RootView {
                 settings_scroll_speed: s.settings_scroll_speed,
                 settings_font_size: s.settings_font_size,
                 vim_mode: s.vim_mode,
+                auto_save_on_close: s.auto_save_on_close,
+                pending_close_pane: s.pending_close_pane,
+                pending_close_file: s.pending_close_file.clone(),
                 theme_primary: s.theme_primary.clone(),
                 theme_secondary: s.theme_secondary.clone(),
                 theme_accent: s.theme_accent.clone(),
@@ -355,6 +483,7 @@ impl RootView {
                 space_drag: s.space_drag,
                 pane_drag: s.pane_drag.clone(),
                 pane_bounds: s.pane_bounds.clone(),
+                pane_bounds_prev,
                 floating_drag: s.floating_drag.clone(),
                 ssh_host_entries: s.ssh_host_entries.clone(),
                 ssh_host_picker_open: s.ssh_host_picker_open,
@@ -419,10 +548,17 @@ impl RootView {
                 add_medium_focused: s.add_medium_focused,
                 terminal_run_agent_menu_open: s.terminal_run_agent_menu_open.clone(),
                 file_scroll: s.file_scroll.clone(),
+                file_hscroll: s.file_hscroll.clone(),
                 pane_files,
+                pane_diffs,
+                pane_diff_editors,
+                pane_open_files,
                 file_buffers,
             }
         };
+        // The buffers are the same shared handles the frame drew, so a close
+        // action can see a dirty edit and save it without the file cache.
+        self.state.borrow_mut().file_buffers = self.file_cache.borrow().buffers();
         let actions = make_actions(
             Rc::clone(&self.state),
             self.desktop.clone(),

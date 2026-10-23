@@ -2097,3 +2097,194 @@ fn the_directory_tray_is_capped_and_clips_the_rows_it_cannot_show() {
         "twenty rows are drawn in an eight-row window, not {window} px"
     );
 }
+
+/// The rich input's controls are one compact strip: the environment, model and
+/// attach controls of the agent input and the shell bar's directory and branch
+/// pills draw at the pill's height with the same 11px label. The agent input
+/// and the terminal bar therefore space their buttons the same way.
+#[test]
+fn the_rich_input_controls_share_one_compact_size() {
+    use crate::elements::CONTEXT_PILL_HEIGHT;
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let painted = |composer: &mut ChatComposer| {
+        let (_, commands) = paint_composer_in(&app, composer, vec2f(720.0, 500.0));
+        let cards: Vec<f32> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::StrokeRect { rect, .. } => Some(rect.height()),
+                _ => None,
+            })
+            .collect();
+        let labels: Vec<f32> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText {
+                    text, font_size, ..
+                } if matches!(
+                    text.as_str(),
+                    "~/Projects/goble" | "terminal-first" | "gpt-4o"
+                ) =>
+                {
+                    Some(*font_size)
+                }
+                _ => None,
+            })
+            .collect();
+        (cards, labels)
+    };
+
+    // The agent input: its own model and attach controls beside the shared
+    // directory and branch pills.
+    let mut agent = ChatComposer::new()
+        .with_context_above_editor(true)
+        .with_path_label("~/Projects/goble")
+        .with_branch_label("terminal-first")
+        .with_model_label("gpt-4o")
+        .with_on_attach(|| {})
+        .with_on_select_model(|| {});
+    let (agent_cards, agent_labels) = painted(&mut agent);
+    assert!(!agent_cards.is_empty(), "the controls draw their cards");
+    for height in &agent_cards {
+        assert!(
+            (height - CONTEXT_PILL_HEIGHT).abs() < 0.5,
+            "every control is one row tall: {height} against {CONTEXT_PILL_HEIGHT}"
+        );
+    }
+    assert_eq!(agent_labels.len(), 3, "the three labels are drawn");
+    for size in agent_labels {
+        assert!(
+            (size - 11.0).abs() < f32::EPSILON,
+            "the labels share one 11px size, got {size}"
+        );
+    }
+
+    // The shell bar: the same directory and branch pills at the same height,
+    // with no model or attach control of its own.
+    let mut shell = ChatComposer::new()
+        .with_context_above_editor(true)
+        .with_path_label("~/Projects/goble")
+        .with_branch_label("terminal-first");
+    let (shell_cards, _) = painted(&mut shell);
+    assert!(
+        shell_cards.iter().all(|height| agent_cards.contains(height)),
+        "the shell bar draws its pills at the agent input's height: {shell_cards:?} against {agent_cards:?}"
+    );
+}
+
+/// The diff control reads the summary it is handed: file count, additions and
+/// deletions, with square corners on both the control and the menu it opens.
+/// The menu is the summary's own rows, each with its counts.
+#[test]
+fn the_diff_control_shows_the_totals_and_opens_the_changed_files() {
+    use crate::elements::{DiffFileStat, DiffSummary};
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let open = Rc::new(RefCell::new(false));
+    let summary = DiffSummary::new(vec![
+        DiffFileStat::new("src/lib.rs", 9, 2),
+        DiffFileStat::new("README.md", 3, 0),
+    ]);
+    let mut composer = ChatComposer::new()
+        .with_context_above_editor(true)
+        .with_path_label("/work/goble")
+        .with_branch_label("terminal-first")
+        .with_diff_menu(summary, open.clone());
+
+    let commands = paint_composer(&app, &mut composer);
+    let texts = drawn_texts(&commands);
+    for expected in ["2", "+12", "-2"] {
+        assert!(
+            texts.iter().any(|text| text == expected),
+            "the control draws {expected:?}: {texts:?}"
+        );
+    }
+    assert!(
+        !texts.iter().any(|text| text == "src/lib.rs"),
+        "the menu starts closed"
+    );
+
+    let button = card_of(&commands, "file");
+    assert!(
+        (button.height() - crate::elements::CONTEXT_PILL_HEIGHT).abs() < 0.5,
+        "the control is one context-row item tall"
+    );
+    let radius = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::StrokeRect {
+                rect,
+                corner_radius,
+                ..
+            } if *rect == button => Some(*corner_radius),
+            _ => None,
+        })
+        .expect("the diff control outlines its box");
+    assert_eq!(radius, 0.0, "the diff control has square corners");
+
+    // A release inside the control opens the menu the app owns.
+    assert!(click_at(&mut composer, &app, button));
+    assert!(*open.borrow(), "the click opens the changed-files menu");
+
+    let commands = paint_composer(&app, &mut composer);
+    let texts = drawn_texts(&commands);
+    for expected in ["src/lib.rs", "README.md", "+9", "+3"] {
+        assert!(
+            texts.iter().any(|text| text == expected),
+            "the open menu draws {expected:?}: {texts:?}"
+        );
+    }
+    let panel_corners = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::StrokeRect { corner_radius, .. } => Some(*corner_radius),
+            _ => None,
+        })
+        .filter(|radius| *radius == 0.0)
+        .count();
+    assert!(
+        panel_corners >= 2,
+        "the control and its menu panel are square: {panel_corners}"
+    );
+}
+
+/// One click on the control opens the review pane on every change: no menu
+/// stands between the chip and the diffs.
+#[test]
+fn the_diff_control_opens_the_review_pane_on_every_change() {
+    use crate::elements::{DiffFileStat, DiffSummary};
+
+    let app = AppContext::default();
+    let open = Rc::new(RefCell::new(false));
+    let summary = DiffSummary::new(vec![
+        DiffFileStat::new("src/lib.rs", 9, 2),
+        DiffFileStat::new("README.md", 3, 0),
+    ]);
+    let opened: Rc<RefCell<Vec<Option<String>>>> = Rc::new(RefCell::new(Vec::new()));
+    let callback = Rc::clone(&opened);
+    let mut composer = ChatComposer::new()
+        .with_context_above_editor(true)
+        .with_path_label("/work/goble")
+        .with_diff_menu(summary, Rc::clone(&open))
+        .with_diff_open(move |file| callback.borrow_mut().push(file));
+
+    let commands = paint_composer(&app, &mut composer);
+    assert!(
+        !drawn_texts(&commands).iter().any(|text| text == "src/lib.rs"),
+        "the file list does not stand between the click and the pane"
+    );
+    let button = card_of(&commands, "file");
+    assert!(
+        click_at(&mut composer, &app, button),
+        "the control takes the click"
+    );
+    assert_eq!(
+        opened.borrow().as_slice(),
+        &[None],
+        "the control asks for the whole tree"
+    );
+    assert!(!*open.borrow(), "no menu was opened on the way");
+}
+

@@ -45,6 +45,13 @@ pub(crate) fn open_external_url_with(
     launch(url)
 }
 
+/// Hand a local path to the platform opener as one argument, never through a
+/// shell. A path is not a URL and does not pass the web-scheme guard: it is
+/// opened only because the user pressed a control that names that file.
+pub(crate) fn open_local_path(path: &str) -> Result<(), String> {
+    platform_open_external(path)
+}
+
 /// Hand `url` to the OS opener as a single argument (never through a shell).
 #[cfg(target_os = "macos")]
 pub(crate) fn platform_open_external(url: &str) -> Result<(), String> {

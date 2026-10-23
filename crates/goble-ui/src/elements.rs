@@ -5,7 +5,7 @@ pub use avatar::{Avatar, AvatarShape};
 pub use button::{Button, ButtonVariant};
 pub use caption::Caption;
 pub use caret::{caret, caret_beam, CaretShape, CARET_HEIGHT};
-pub use chat_composer::{ChatComposer, CommandProposalUi};
+pub use chat_composer::{ChatComposer, CommandProposalUi, DiffFileStat, DiffSummary};
 pub use chat_content::{
     tool_fold_key, ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, SubAgentRow,
     SubAgentRowStatus, ToolCall, ToolDisplayMode,
@@ -18,7 +18,9 @@ pub use conversation_sidebar::{
     ConversationEntry, ConversationSidebar, CONVERSATION_SIDEBAR_WIDTH,
 };
 pub use dialog::{Dialog, DIALOG_DEFAULT_WIDTH};
-pub use diff::{parse_unified_diff, Diff, DiffLine, DiffLineKind, DiffRow, DiffStats, Hunk};
+pub use diff::{
+    parse_unified_diff, Diff, DiffLine, DiffLineKind, DiffRow, DiffStats, Hunk, PreparedDiff,
+};
 pub mod markdown;
 pub use chat_message_bubble::ChatMessageBubble;
 pub use checkbox::Checkbox;

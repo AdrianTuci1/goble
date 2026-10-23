@@ -15,6 +15,7 @@ pub mod chat;
 pub mod color_picker;
 pub mod connectors;
 pub mod crons;
+pub mod diff_panel;
 pub mod explorer;
 pub mod file_view;
 pub mod global_search;
@@ -45,7 +46,7 @@ mod shortcut_hints;
 mod snapshot;
 mod types;
 
-pub use actions::{AiActions, FloatStartHandler, MediaActions, ProjectsActions, UiActions};
+pub use actions::{AiActions, DiffPanelAction, FloatStartHandler, MediaActions, ProjectsActions, UiActions};
 pub use build::{build_ui, BuildContext};
 pub use pane::{
     DropSide, FloatingDrag, FloatingDragMode, FloatingPane, LayoutKind, NavDir, Pane, PaneDropTarget,
@@ -69,6 +70,8 @@ pub const SIDEBAR_WIDTH: f32 = 300.0;
 /// Width of the connectors sheet (wider than the default panels).
 pub const CONNECTORS_WIDTH: f32 = 480.0;
 
+#[cfg(test)]
+mod diff_panel_tests;
 #[cfg(test)]
 mod pane_tests;
 #[cfg(test)]

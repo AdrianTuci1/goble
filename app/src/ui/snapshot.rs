@@ -5,8 +5,8 @@ use std::rc::Rc;
 use goble_harness_types::MediumKind;
 use goble_core::store::SecretGroup;
 use goble_ui::elements::{
-    AgentCardUi, ChatMessage as UiChatMessage, ConversationEntry, PanelScroll, PopupMenuItem,
-    TerminalFilter,
+    AgentCardUi, ChatMessage as UiChatMessage, ConversationEntry, DiffSummary, PanelScroll,
+    PopupMenuItem, TerminalFilter,
 };
 use goble_ui::{ScrollState, SettingsPage};
 
@@ -164,6 +164,11 @@ pub struct ComposerContext {
     pub branch_ids: Vec<String>,
     pub branch_items: Vec<PopupMenuItem>,
     pub branch_menu_open: Rc<RefCell<bool>>,
+    /// The working tree's changed files. `None` outside a local repository;
+    /// a clean repository arrives as an empty summary and draws no control.
+    pub diff: Option<DiffSummary>,
+    pub diff_menu_open: Rc<RefCell<bool>>,
+    pub diff_menu_scroll: PanelScroll,
 }
 
 /// Plain snapshot of the main UI state used to build the tree. Owned by the
@@ -234,14 +239,35 @@ pub struct UiSnapshot {
     /// Per-pane scroll offset of a pane's file view, shared with app state so a
     /// file keeps the user's place across the per-frame rebuild.
     pub file_scroll: HashMap<u64, Rc<RefCell<goble_ui::ScrollState>>>,
+    /// Per-pane horizontal offset of a pane's file view. The lines do not wrap,
+    /// so the view scrolls sideways to the end of the longest one.
+    pub file_hscroll: HashMap<u64, Rc<RefCell<goble_ui::ScrollState>>>,
     /// What each open file view draws, keyed by pane id — its body and the
     /// body's highlighted runs. Read while the snapshot is built (never per
     /// frame), so a pane that shows a file reads and highlights it once.
     pub pane_files: HashMap<u64, crate::ui::file_view::FileContent>,
-    /// The editing state of each open file view, keyed by pane id. Shared with
-    /// the read cache that settles it every frame, so the text the pane edits,
-    /// its caret and its unsaved-changes mark outlive the per-frame rebuild.
-    pub file_buffers: HashMap<u64, Rc<RefCell<crate::ui::file_view::FileBuffer>>>,
+    /// What each open diff pane draws, keyed by pane id. `Some(None)` is a
+    /// directory with no repository to review; an id the map does not hold has
+    /// not been read yet. Read while the snapshot is built, under the same
+    /// cache the diff summary uses, so a frame that changes nothing reads no
+    /// git.
+    pub pane_diffs: HashMap<u64, Option<std::rc::Rc<crate::ui::pickers::DiffDetail>>>,
+    /// The changed files each review pane has opened for editing, keyed by the
+    /// pane's id and the file's absolute path. Read while the snapshot is
+    /// built, only for the files in edit mode, so the panel reads and
+    /// highlights a file once and never per frame.
+    pub pane_diff_editors:
+        HashMap<u64, HashMap<String, std::rc::Rc<crate::ui::file_view::DiffEditor>>>,
+    /// The files each pane holds open as chips, in the order they were opened.
+    /// The file a pane shows is its `PaneKind::File` path, independent of this
+    /// order, so switching files never moves a chip.
+    pub pane_open_files: HashMap<u64, Vec<String>>,
+    /// The editing state of every file a pane keeps open, keyed by pane and
+    /// file. Shared with the read cache that settles it every frame, so the
+    /// text the pane edits, its caret and its unsaved-changes mark outlive the
+    /// per-frame rebuild.
+    pub file_buffers:
+        HashMap<(u64, String), Rc<RefCell<crate::ui::file_view::FileBuffer>>>,
     pub crons_open: bool,
     /// Whether the workflow-runs overlay is up. It floats over the workspace, so
     /// the panes stay mounted underneath it.
@@ -313,6 +339,13 @@ pub struct UiSnapshot {
     /// Whether the rich input uses modal (vim) editing, and which pane states
     /// to read for the mode badge.
     pub vim_mode: bool,
+    /// Whether closing a file pane with unsaved edits saves it first instead
+    /// of asking.
+    pub auto_save_on_close: bool,
+    /// The pane a close is waiting on, or `None` when no dialog is up.
+    pub pending_close_pane: Option<u64>,
+    /// The one file chip a close is waiting on, as `(pane, path)`.
+    pub pending_close_file: Option<(u64, String)>,
     pub theme_primary: Option<String>,
     pub theme_secondary: Option<String>,
     pub theme_accent: Option<String>,
@@ -425,6 +458,12 @@ pub struct UiSnapshot {
     /// app state, so the frame that reads it is one paint behind the pointer's
     /// own frame.
     pub pane_bounds: Rc<RefCell<HashMap<u64, goble_ui::geometry::RectF>>>,
+    /// The bounds the panes were drawn at on the frame before this one. The
+    /// live registry is cleared before each build and refilled while the panes
+    /// paint, so a pane building its own layout cannot read the width it is
+    /// about to be drawn at from it; this copy is one frame behind and is what
+    /// a pane's content reads to adapt to the split it sits in.
+    pub pane_bounds_prev: HashMap<u64, goble_ui::geometry::RectF>,
     /// The floating pane drag in progress. Shared with app state so a gesture
     /// that began in one frame continues in the next.
     pub floating_drag: Rc<RefCell<Option<FloatingDrag>>>,

@@ -2,10 +2,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    file_icon_name, AppContext, Button, ConstrainedBox, Container, CrossAxisAlignment, Divider,
-    EdgeInsets, Element, Empty, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment,
+    AppContext, Button, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
+    Element, Empty, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment,
     MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem, RunningIndicator, SizeConstraint,
-    Stack, Text, TextInput, Tooltip, TooltipPosition, TopbarButton,
+    Stack, Text, TextInput, Tooltip, TopbarButton,
 };
 use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY, BUTTON_SECONDARY};
 use goble_ui::elements::interactive::contains;
@@ -16,7 +16,7 @@ use crate::media::medium_icon;
 use crate::state::PaneDrag;
 
 use super::super::tab_menu::{build_tab_menu, TabMenuTab, TabMenuAction};
-use super::super::{file_view, MediaActions, MediaSnapshot, PaneDropTarget, UiActions, UiSnapshot};
+use super::super::{MediaActions, MediaSnapshot, PaneDropTarget, UiActions, UiSnapshot};
 
 /// The width of the environment menu's hover tray.
 const ENV_TRAY_WIDTH: f32 = 220.0;
@@ -109,25 +109,22 @@ pub fn build_topbar(
     .with_on_click(move || (on_toggle_sidebar.borrow_mut())())
     .finish();
 
-    // One tab per workspace, active one first-class (double-click renames it),
-    // and — past the strip's own rule — one per file the active space shows.
-    // Both frames are laid out by the strip as one row of tabs, so a file's tab
-    // is exactly as wide as a workspace's (see [`TabStrip`]).
+    // One tab per workspace, active one first-class (double-click renames it).
+    // A file open in a pane is not a workspace: it is named in its pane's own
+    // topbar and adds nothing to this bar, so browsing files leaves the strip
+    // as it was.
     //
     // The bar records its own rectangle while it paints (see [`TopbarRow`]): a
     // lifted pane treats the whole bar as its tab strip, so a release on the
     // empty room beside the tabs still names an insertion point.
     let bar_bounds: Rc<RefCell<Option<RectF>>> = Rc::new(RefCell::new(None));
-    let mut frames = vec![build_workspace_strip(
+    let workspaces = TabStrip::new(vec![build_workspace_strip(
         app,
         state,
         actions,
         Rc::clone(&bar_bounds),
-    )];
-    if let Some(files) = build_file_tabs(app, state, actions) {
-        frames.push(files);
-    }
-    let workspaces = TabStrip::new(frames).finish();
+    )])
+    .finish();
 
     // "+ ▾": open a new workspace, or pick the environment it runs in.
     let add_workspace = build_add_workspace_control(app, state, media, media_actions, actions);
@@ -917,326 +914,6 @@ impl Element for TopbarRow {
         self.right
             .iter_mut()
             .any(|child| child.dispatch_event(event, ctx, app))
-    }
-}
-
-/// The contents of one tab of the bar: the icon that names its kind, and its
-/// name in the room the icon leaves behind.
-///
-/// It lays the row out itself for the reason [`TopbarRow`] exists: a `Flex` row
-/// hands every child the row's whole width, so a tab the strip narrowed would
-/// draw its whole name past its own end — over its close control and into the
-/// tab beside it — instead of shortening it.
-struct IconLabelRow {
-    icon: Box<dyn Element>,
-    label: Box<dyn Element>,
-    spacing: f32,
-    size: Option<Vector2F>,
-    origin: Option<Point>,
-}
-
-impl IconLabelRow {
-    fn new(icon: Box<dyn Element>, label: Box<dyn Element>, spacing: f32) -> Self {
-        Self {
-            icon,
-            label,
-            spacing,
-            size: None,
-            origin: None,
-        }
-    }
-}
-
-impl Element for IconLabelRow {
-    fn layout(
-        &mut self,
-        constraint: SizeConstraint,
-        ctx: &mut LayoutContext,
-        app: &AppContext,
-    ) -> Vector2F {
-        let icon = self.icon.layout(
-            SizeConstraint::loose(vec2f(f32::INFINITY, constraint.max.y)),
-            ctx,
-            app,
-        );
-        let room = (constraint.max.x - icon.x - self.spacing).max(0.0);
-        let label = self.label.layout(
-            SizeConstraint::loose(vec2f(room, constraint.max.y)),
-            ctx,
-            app,
-        );
-        let size = vec2f(icon.x + self.spacing + label.x, icon.y.max(label.y));
-        self.size = Some(size);
-        size
-    }
-
-    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
-        self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        let size = self.size.unwrap_or(Vector2F::zero());
-        let icon = self.icon.size().unwrap_or(Vector2F::zero());
-        let label = self.label.size().unwrap_or(Vector2F::zero());
-        self.icon
-            .paint(origin + vec2f(0.0, (size.y - icon.y).max(0.0) / 2.0), ctx, app);
-        self.label.paint(
-            origin + vec2f(icon.x + self.spacing, (size.y - label.y).max(0.0) / 2.0),
-            ctx,
-            app,
-        );
-    }
-
-    fn size(&self) -> Option<Vector2F> {
-        self.size
-    }
-
-    fn origin(&self) -> Option<Point> {
-        self.origin
-    }
-
-    fn dispatch_event(
-        &mut self,
-        event: &DispatchedEvent,
-        ctx: &mut EventContext,
-        app: &AppContext,
-    ) -> bool {
-        if self.icon.dispatch_event(event, ctx, app) {
-            return true;
-        }
-        self.label.dispatch_event(event, ctx, app)
-    }
-}
-
-/// The tabs of the files the active space shows, past the workspace tabs, or
-/// `None` when it shows none.
-///
-/// A file open in a pane is not a workspace, so the strip's own slots stay what
-/// they were — the drop index a lifted pane resolves is an index among the
-/// workspace tabs and nothing else — and the file's tab is drawn after them,
-/// behind their rule, with the same geometry every tab of the bar has.
-fn build_file_tabs(
-    app: &AppContext,
-    state: &UiSnapshot,
-    actions: &UiActions,
-) -> Option<StripFrame> {
-    let space = state.spaces.get(state.active_space)?;
-    let mut leaves = Vec::new();
-    space.root.file_leaves(&mut leaves);
-    if leaves.is_empty() {
-        return None;
-    }
-    // One rule per boundary, belonging to the tab that follows it, exactly as
-    // between the workspace tabs: the files' tabs read as their own frame
-    // rather than as more workspaces.
-    let tabs = leaves.len();
-    let mut children = vec![FrameChild::Rule(tab_rule())];
-    for (pane_id, path) in leaves {
-        children.push(FrameChild::Tab(build_file_tab(
-            app,
-            actions,
-            pane_id,
-            &path,
-            pane_id == state.active_pane_id,
-        )));
-    }
-    // The frame is laid out by the strip with the workspace frame, so a file's
-    // tab is exactly as wide as a workspace's; it carries the counts the strip
-    // slices its room with.
-    Some(StripFrame::new(TabFrame::new(children).finish(), tabs, 1))
-}
-
-/// One file pane as the bar draws it: the file's type icon and its name, the
-/// full path on the name's hover, and the control that closes that pane.
-fn build_file_tab(
-    app: &AppContext,
-    actions: &UiActions,
-    pane_id: u64,
-    path: &str,
-    active: bool,
-) -> Box<dyn Element> {
-    let color = if active {
-        ColorToken::Text
-    } else {
-        ColorToken::Muted
-    };
-    let name = file_view::file_name(path);
-    let label = IconLabelRow::new(
-        Icon::new(file_icon_name(&name))
-            .with_size(14.0)
-            .with_theme_color(color, app)
-            .finish(),
-        // The name is the bar's own tab label, so a tab the strip squeezed
-        // shortens it the way every other tab does; the tooltip still reads
-        // the whole path.
-        Tooltip::new(TabLabel::new(name, color).finish(), path.to_string())
-            .with_position(TooltipPosition::Below)
-            .finish(),
-        6.0,
-    )
-    .finish();
-    // Closing a pane is the app's own rule and it names the pane the tab stands
-    // for by making it the active one first: the tab and the pane it closes are
-    // then the same pane on both counts.
-    let on_activate = actions.on_pane_activate.clone();
-    let on_close = actions.on_close_pane.clone();
-    let close = TopbarButton::new(
-        Icon::new("x")
-            .with_size(10.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_size(16.0)
-    .with_on_click(move || {
-        (on_activate.borrow_mut())(pane_id);
-        (on_close.borrow_mut())();
-    })
-    .finish();
-    Box::new(FileTab::new(
-        label,
-        close,
-        pane_id,
-        active,
-        actions.on_pane_activate.clone(),
-    ))
-}
-
-/// A file's tab in the topbar: the same full-height, square-cornered surface a
-/// workspace tab is — the geometry is [`WorkspaceChip`]'s own, so the two kinds
-/// of tab in the bar cannot drift apart — carrying the file's own icon and name,
-/// and, unlike a workspace tab, whose close appears under the pointer, the close
-/// control always drawn, because a file's tab is the one place the pane can be
-/// closed from the bar.
-struct FileTab {
-    child: Box<dyn Element>,
-    close: Box<dyn Element>,
-    pane_id: u64,
-    active: bool,
-    on_activate: Rc<RefCell<dyn FnMut(u64)>>,
-    state: goble_ui::elements::interactive::InteractiveState,
-    size: Option<Vector2F>,
-    origin: Option<Point>,
-}
-
-impl FileTab {
-    fn new(
-        child: Box<dyn Element>,
-        close: Box<dyn Element>,
-        pane_id: u64,
-        active: bool,
-        on_activate: Rc<RefCell<dyn FnMut(u64)>>,
-    ) -> Self {
-        Self {
-            child,
-            close,
-            pane_id,
-            active,
-            on_activate,
-            state: Default::default(),
-            size: None,
-            origin: None,
-        }
-    }
-
-    fn bounds(&self) -> Option<RectF> {
-        Some(rectf(
-            self.origin?.x(),
-            self.origin?.y(),
-            self.size?.x,
-            self.size?.y,
-        ))
-    }
-}
-
-impl Element for FileTab {
-    fn layout(
-        &mut self,
-        constraint: SizeConstraint,
-        ctx: &mut LayoutContext,
-        app: &AppContext,
-    ) -> Vector2F {
-        // The close control's slot is reserved before the name is measured, so
-        // the name gets what is left of the tab and never runs under it.
-        let close_size = self.close.layout(
-            SizeConstraint::loose(vec2f(WorkspaceChip::height(), WorkspaceChip::height())),
-            ctx,
-            app,
-        );
-        let child_size = self
-            .child
-            .layout(WorkspaceChip::inner(constraint, close_size.x), ctx, app);
-        let intrinsic =
-            child_size.x + WorkspaceChip::close_gap() + close_size.x + WorkspaceChip::h_pad() * 2.0;
-        let size = vec2f(
-            WorkspaceChip::width(intrinsic, constraint),
-            WorkspaceChip::height(),
-        );
-        self.size = Some(size);
-        size
-    }
-
-    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
-        self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        let size = self.size.unwrap_or(Vector2F::zero());
-        let rect = rectf(origin.x, origin.y, size.x, size.y);
-        let hovered = ctx.hovered(rect);
-        if let Some(renderer) = ctx.renderer.as_mut() {
-            // Square corners and no stroke, as every tab of the bar: the rule
-            // between neighbours is the strip's own.
-            if self.active {
-                renderer.fill_rect(rect, app.theme.color(ColorToken::SurfaceRaised));
-            } else if hovered {
-                renderer.fill_rect(rect, app.theme.color(ColorToken::Hover));
-            }
-        }
-        let child_size = self.child.size().unwrap_or(Vector2F::zero());
-        let close_size = self.close.size().unwrap_or(Vector2F::zero());
-        self.child.paint(
-            vec2f(
-                origin.x + WorkspaceChip::h_pad(),
-                origin.y + (size.y - child_size.y).max(0.0) / 2.0,
-            ),
-            ctx,
-            app,
-        );
-        self.close.paint(
-            WorkspaceChip::close_origin(origin, size, close_size),
-            ctx,
-            app,
-        );
-    }
-
-    fn size(&self) -> Option<Vector2F> {
-        self.size
-    }
-
-    fn origin(&self) -> Option<Point> {
-        self.origin
-    }
-
-    fn dispatch_event(
-        &mut self,
-        event: &DispatchedEvent,
-        ctx: &mut EventContext,
-        app: &AppContext,
-    ) -> bool {
-        // The close control gets the event first and consumes only what lands
-        // in its own bounds, so a click on the name still activates the pane.
-        // It is drawn always, so it is offered the pointer always too.
-        if self.close.dispatch_event(event, ctx, app) {
-            return true;
-        }
-        let bounds = match self.bounds() {
-            Some(bounds) => bounds,
-            None => return false,
-        };
-        let activate = self.on_activate.clone();
-        let pane_id = self.pane_id;
-        let mut on_click = move || (activate.borrow_mut())(pane_id);
-        goble_ui::elements::interactive::handle_mouse_event(
-            &mut self.state,
-            event,
-            bounds,
-            ctx,
-            &mut on_click,
-        )
     }
 }
 
@@ -2267,8 +1944,7 @@ mod tests {
     use super::*;
     use crate::root_view::RootView;
     use crate::state::UiState;
-    use crate::ui::{Pane, PaneKind, Space, SplitDir};
-    use goble_ui::event::DispatchedEvent;
+    use crate::ui::{Pane, PaneKind, Space};
     use goble_ui::render::RenderCommand;
     use goble_ui::test_util::render_element;
 
@@ -2392,47 +2068,6 @@ mod tests {
             .fold(0.0_f32, f32::max)
     }
 
-    /// The whole app over a real store with a file open in a pane of its own —
-    /// the explorer's own shape — and the first-run overlays out of the way.
-    fn app_with_file(path: &str) -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir) {
-        use goble_core::store::Store;
-        use goble_desktop_service::{DesktopState, ThreadStore};
-        use std::sync::Arc;
-
-        let dir = tempfile::tempdir().expect("temp thread-store dir");
-        let desktop = Arc::new(DesktopState::new(
-            Store::open_in_memory().expect("in-memory store"),
-            ThreadStore::new(dir.path()).expect("thread store"),
-        ));
-        let app = AppContext::default();
-        let view = RootView::new(&app, &desktop, None);
-        let state = view.state_rc();
-        {
-            let mut s = state.borrow_mut();
-            s.show_workspace_choice = false;
-            s.show_llm_key_banner = false;
-            s.show_onboarding_tip = false;
-            s.right_sidebar_open = false;
-            let (space, pane) = (s.active_space, s.active_pane_id);
-            let mut next = s.next_pane_id;
-            let new_id = s.spaces[space]
-                .split_with_kind(
-                    pane,
-                    SplitDir::Horizontal,
-                    &mut next,
-                    PaneKind::File {
-                        path: path.to_string(),
-                    },
-                )
-                .expect("a file pane opens beside the pane that asked for it");
-            s.next_pane_id = next;
-            s.active_pane_id = new_id;
-            s.sync_active_view();
-        }
-        (Box::new(view), state, dir)
-    }
-
-    /// The origin of the topbar run that reads exactly `text`.
     fn topbar_text(commands: &[RenderCommand], text: &str) -> Option<Vector2F> {
         commands.iter().find_map(|command| match command {
             RenderCommand::DrawText { text: drawn, origin, .. }
@@ -2455,102 +2090,6 @@ mod tests {
             }
             _ => None,
         })
-    }
-
-    /// A full press and release at `pos`, with a frame between them, the way the
-    /// running app rebuilds the tree between the two events.
-    fn click(root: &mut Box<dyn Element>, app: &AppContext, pos: Vector2F) {
-        let mut ctx = EventContext;
-        let _ = root.dispatch_event(
-            &DispatchedEvent::MouseDown {
-                position: pos,
-                button: 0,
-            },
-            &mut ctx,
-            app,
-        );
-        let _ = render_element(root, window(), app);
-        let _ = root.dispatch_event(
-            &DispatchedEvent::MouseUp {
-                position: pos,
-                button: 0,
-            },
-            &mut ctx,
-            app,
-        );
-    }
-
-    /// A file pane is a tab of the bar in its own frame: the file's type icon,
-    /// the file's name, and the control that closes that pane. The close is
-    /// drawn on every frame rather than appearing under the pointer, because the
-    /// bar is where a file pane is closed from.
-    #[test]
-    fn a_file_pane_draws_as_a_tab_that_names_it_and_closes_it() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("notes.rs");
-        std::fs::write(&path, "fn main() {}\n").expect("write");
-        let path = path.to_string_lossy().to_string();
-
-        let app = AppContext::default();
-        let (mut root, state, _threads) = app_with_file(&path);
-        let pane_id = state.borrow().active_pane_id;
-        let commands = render_element(&mut root, window(), &app);
-
-        assert!(
-            topbar_icon(&commands, "file-rust").is_some(),
-            "the tab carries the file's own type icon: {commands:?}"
-        );
-        assert!(
-            topbar_text(&commands, "notes.rs").is_some(),
-            "and reads the file's name: {commands:?}"
-        );
-
-        // The close is the pane's own: a press on it leaves the space without
-        // the pane the tab stands for, and the tab goes with it.
-        // `Icon::new("x")` draws the atlas' own `x-close`, the control every
-        // tab of this bar closes with.
-        let close = topbar_icon(&commands, "x-close").unwrap_or_else(|| {
-            panic!("the tab draws its close control on every frame: {commands:?}")
-        });
-        click(&mut root, &app, close);
-
-        assert!(
-            !state.borrow().spaces.iter().any(|space| space.root.contains_leaf(pane_id)),
-            "the close removes the pane the tab stands for"
-        );
-        let after = render_element(&mut root, window(), &app);
-        assert!(
-            topbar_text(&after, "notes.rs").is_none(),
-            "and the tab goes with its pane: {after:?}"
-        );
-    }
-
-    /// A press on the name rather than the close leaves the pane where it is:
-    /// the close control consumes only what lands in its own bounds.
-    #[test]
-    fn a_press_on_the_tab_name_does_not_close_the_pane() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("notes.rs");
-        std::fs::write(&path, "fn main() {}\n").expect("write");
-        let path = path.to_string_lossy().to_string();
-
-        let app = AppContext::default();
-        let (mut root, state, _threads) = app_with_file(&path);
-        let pane_id = state.borrow().active_pane_id;
-        let commands = render_element(&mut root, window(), &app);
-        let name = topbar_text(&commands, "notes.rs").expect("the tab reads the file's name");
-        let close = topbar_icon(&commands, "x-close").expect("the tab draws its close control");
-        assert!(
-            name.x + 20.0 < close.x,
-            "the name is drawn to the left of the close: {name:?} against {close:?}"
-        );
-
-        click(&mut root, &app, vec2f(name.x + 2.0, name.y + 4.0));
-
-        assert!(
-            state.borrow().spaces.iter().any(|space| space.root.contains_leaf(pane_id)),
-            "the pane stays: only the close control closes it"
-        );
     }
 
     /// The bar's tabs never fall below the readable minimum ([`MIN_TAB_WIDTH`])
@@ -2720,37 +2259,4 @@ mod tests {
         assert!(settings.x < WIDTH, "Settings stays inside the window: {settings:?}");
     }
 
-    /// A file's tab is squeezed by the same rule, and it cuts its name rather
-    /// than drawing it over its close control and into the tab beside it.
-    #[test]
-    fn a_squeezed_file_tab_cuts_its_name() {
-        const WIDTH: f32 = 420.0;
-        let dir = tempfile::tempdir().expect("temp dir");
-        let name = "a_very_long_file_name_for_a_bars_tab.rs";
-        let path = dir.path().join(name);
-        std::fs::write(&path, "fn main() {}\n").expect("write");
-        let path = path.to_string_lossy().to_string();
-
-        let app = AppContext::default();
-        let (mut root, _state, _threads) = app_with_file(&path);
-        let commands = render_element(&mut root, vec2f(WIDTH, 600.0), &app);
-
-        assert!(
-            topbar_text(&commands, name).is_none(),
-            "the tab draws the name it has room for, not the whole one: {:?}",
-            topbar_texts(&commands)
-        );
-        assert!(
-            topbar_texts(&commands)
-                .iter()
-                .any(|text| text.starts_with("a_") && text.ends_with(ELLIPSIS)),
-            "the file's tab reads its name cut: {:?}",
-            topbar_texts(&commands)
-        );
-        let close = topbar_icon(&commands, "x-close").expect("the tab draws its close control");
-        assert!(
-            close.x < WIDTH,
-            "the close control stays inside the window: {close:?}"
-        );
-    }
 }

@@ -15,6 +15,11 @@ pub enum ButtonVariant {
     Default,
     Primary,
     Ghost,
+    /// A bare outline with no fill — the secondary control for a surface that
+    /// is already dark, where a raised fill would read as another panel. The
+    /// outline is a light gray (the text color) unless `border_color` says
+    /// otherwise; the child keeps its own color.
+    Outline,
 }
 
 impl Default for ButtonVariant {
@@ -130,25 +135,37 @@ impl Element for Button {
         // of dissolving into it. The ghost variant is the low-emphasis one and
         // stays a bare fill; the primary carries the accent.
         let (bg_color, outline) = match self.variant {
-            ButtonVariant::Primary => (app.theme.color(crate::theme::ColorToken::Accent), None),
+            ButtonVariant::Primary => (
+                Some(app.theme.color(crate::theme::ColorToken::Accent)),
+                None,
+            ),
             ButtonVariant::Default => (
-                if hovered {
+                Some(if hovered {
                     app.theme.color(crate::theme::ColorToken::Hover)
                 } else {
                     app.theme.color(crate::theme::ColorToken::SurfaceRaised)
-                },
+                }),
                 Some(
                     self.border_color
                         .unwrap_or_else(|| app.theme.color(crate::theme::ColorToken::Border)),
                 ),
             ),
             ButtonVariant::Ghost => (
-                if hovered {
+                Some(if hovered {
                     app.theme.color(crate::theme::ColorToken::Hover)
                 } else {
                     app.theme.color(crate::theme::ColorToken::Surface)
-                },
+                }),
                 None,
+            ),
+            // No fill at all: the outline alone carries the button, so it
+            // reads as a control over a black page rather than as a plaque.
+            ButtonVariant::Outline => (
+                None,
+                Some(
+                    self.border_color
+                        .unwrap_or_else(|| app.theme.color(crate::theme::ColorToken::Text)),
+                ),
             ),
         };
         let corner_radius = self.corner_radius.unwrap_or_else(|| app.theme.radius_px());
@@ -157,7 +174,9 @@ impl Element for Button {
                 crate::geometry::PointF::new(origin.x, origin.y),
                 crate::geometry::Size2F::new(size.x, size.y),
             );
-            renderer.fill_rounded_rect(rect, bg_color, corner_radius);
+            if let Some(bg_color) = bg_color {
+                renderer.fill_rounded_rect(rect, bg_color, corner_radius);
+            }
             if let Some(outline) = outline {
                 renderer.stroke_rect(rect, outline, 1.0, corner_radius);
             }
@@ -358,5 +377,43 @@ mod tests {
         assert!(!button.dispatch_event(&down, &mut event_ctx, &app));
         assert!(!button.dispatch_event(&up, &mut event_ctx, &app));
         assert!(!*clicked.borrow());
+    }
+
+    /// The outline variant is a secondary control on a dark page: no fill, a
+    /// light outline, and nothing else painted by the button itself.
+    #[test]
+    fn the_outline_variant_paints_an_outline_and_no_fill() {
+        use crate::render::{RenderCommand, Renderer};
+
+        let app = AppContext::default();
+        let mut button = Button::new(Empty::new().with_size(vec2f(80.0, 32.0)).finish())
+            .with_variant(ButtonVariant::Outline);
+        button.layout(
+            SizeConstraint::loose(vec2f(200.0, 200.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        button.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        let commands = ctx
+            .renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default();
+
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, RenderCommand::FillRect { .. })),
+            "the secondary button draws no background: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::StrokeRect { color, .. }
+                    if *color == app.theme.color(crate::theme::ColorToken::Text)
+            )),
+            "and a light outline: {commands:?}"
+        );
     }
 }

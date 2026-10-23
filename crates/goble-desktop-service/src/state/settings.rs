@@ -56,6 +56,25 @@ impl DesktopState {
         Ok(())
     }
 
+    /// Whether closing a file pane with unsaved edits saves it first instead
+    /// of asking. Off by default: a close that discards work asks first.
+    pub fn get_auto_save_on_close(&self) -> bool {
+        self.store
+            .lock()
+            .get_setting("auto_save_on_close")
+            .ok()
+            .flatten()
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    }
+
+    pub fn set_auto_save_on_close(&self, enabled: bool) -> anyhow::Result<()> {
+        self.store
+            .lock()
+            .set_setting("auto_save_on_close", if enabled { "1" } else { "0" })?;
+        Ok(())
+    }
+
     /// The persisted native-UI pane layout (spaces + active space/pane) as a
     /// JSON blob, if a previous run saved one. `None` when never saved or on a
     /// fresh install.

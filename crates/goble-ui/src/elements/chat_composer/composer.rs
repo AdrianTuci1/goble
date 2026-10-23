@@ -1,14 +1,22 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::{AppContext, Chip, Clipped, ComposerButton, COMPOSER_CONTROL_RADIUS, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisSize, Padding, PanelScroll, PaintContext, PillTraySide, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Text, TextArea, Tooltip, TooltipPosition, Wrap, MENU_MAX_VISIBLE_ROWS};
+use super::proposal::CommandProposalUi;
+use crate::elements::{
+    AppContext, Chip, Clipped, ComposerButton, ConstrainedBox, Container, ContextPill,
+    CrossAxisAlignment, DiffSummary, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisSize,
+    Padding, PaintContext, PanelScroll, PillTraySide, Point, PopupMenu, PopupMenuItem,
+    PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Text, TextArea,
+    Tooltip, TooltipPosition, Wrap, COMPOSER_CONTROL_RADIUS, CONTEXT_PILL_HEIGHT,
+    MENU_MAX_VISIBLE_ROWS,
+};
 use crate::event::{DispatchedEvent, ModifiersState};
 use crate::geometry::{PointF, Vector2F};
+use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, SpacingToken};
 use crate::vim::{Clipboard, VimMode, VimState};
 use goble_core::harness::CommandDecision;
 use goble_core::ssh_command::SshSession;
-use super::proposal::CommandProposalUi;
 
 /// Cap for the working-directory pill's label. A long path ellipsizes inside the
 /// pill instead of pushing the other context pills across the row.
@@ -23,6 +31,18 @@ const SESSION_CHIP_MAX_WIDTH: f32 = 280.0;
 /// made. The host's own resolved label says the same thing (its model value is
 /// empty until a model is configured), and this covers the label it passes.
 pub const MODEL_NOT_CONFIGURED: &str = "not configured";
+
+/// The rich input's footer controls share one label size and one side inset,
+/// so every button in the row — the model, the attach and stop controls, the
+/// directory, environment and branch pills — reads as part of one compact
+/// strip. The height itself is [`CONTEXT_PILL_HEIGHT`], the pill's own.
+const CONTROL_TEXT_SIZE: f32 = 11.0;
+const CONTROL_H_PAD: f32 = 8.0;
+
+/// The diff menu is wider than the other dropdowns: its rows are repository
+/// paths with line counts at the far edge, so the default 220 pt would leave
+/// little of the path readable.
+const DIFF_MENU_WIDTH: f32 = 340.0;
 
 pub struct ChatComposer {
     pub(super) value: Rc<RefCell<String>>,
@@ -97,6 +117,16 @@ pub struct ChatComposer {
     branch_menu_items: Vec<PopupMenuItem>,
     branch_menu_open: Rc<RefCell<bool>>,
     on_select_branch_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    /// The working tree's changed files, or `None` when the pane is not in a
+    /// repository (or has nothing changed). The control shows the totals and
+    /// opens a menu of the files.
+    diff_summary: Option<DiffSummary>,
+    diff_menu_open: Rc<RefCell<bool>>,
+    diff_menu_scroll: PanelScroll,
+    /// What a chosen row of the diff menu opens: the review panel, optionally
+    /// on one file (`None` opens it on every file). A host that has a review
+    /// surface sets this; the shell bar and the agent view both do.
+    diff_open: Option<Rc<RefCell<dyn FnMut(Option<String>) + 'static>>>,
     /// The command the harness is waiting on an approval for (A6). While set,
     /// the composer shows the proposal card and the editor holds the selected
     /// candidate so it can be run as-is or edited in place.
@@ -200,6 +230,10 @@ impl ChatComposer {
             branch_menu_items: Vec::new(),
             branch_menu_open: Rc::new(RefCell::new(false)),
             on_select_branch_item: None,
+            diff_summary: None,
+            diff_menu_open: Rc::new(RefCell::new(false)),
+            diff_menu_scroll: PanelScroll::default(),
+            diff_open: None,
             proposal: None,
             proposal_selected: Rc::new(RefCell::new(0)),
             on_decision: None,
@@ -311,6 +345,34 @@ impl ChatComposer {
         self.branch_menu_items = items;
         self.branch_menu_open = open;
         self.on_select_branch_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Show the working tree's diff control: the number of changed files,
+    /// lines added and lines removed, opening a menu of the files. The host
+    /// supplies the summary only when the pane is in a repository with
+    /// changes; an empty summary draws nothing.
+    pub fn with_diff_menu(mut self, summary: DiffSummary, open: Rc<RefCell<bool>>) -> Self {
+        self.diff_summary = (!summary.is_empty()).then_some(summary);
+        self.diff_menu_open = open;
+        self
+    }
+
+    /// Share the diff menu's scroll offset with the app, like the directory
+    /// tray's, so a long list keeps the position the wheel left it at.
+    pub fn with_diff_menu_scroll(mut self, scroll: PanelScroll) -> Self {
+        self.diff_menu_scroll = scroll;
+        self
+    }
+
+    /// What a diff-menu row opens: the host's review panel, on the chosen file
+    /// or on every file when the row is "Open all changes". Without it the menu
+    /// lists the files and a click only closes it.
+    pub fn with_diff_open<F: FnMut(Option<String>) + 'static>(
+        mut self,
+        callback: F,
+    ) -> Self {
+        self.diff_open = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -730,6 +792,96 @@ impl ChatComposer {
         )
     }
 
+    /// The diff control: the changed-file count and the lines added and
+    /// removed. Clicking it opens the review pane on the whole tree when the
+    /// host supplies one; without a host it lists the changed files instead.
+    /// It is square-cornered, like the review surface it opens, and reads as
+    /// one more item in the context row.
+    fn diff_control(&self, app: &AppContext, summary: &DiffSummary) -> Box<dyn Element> {
+        let added = summary.added();
+        let removed = summary.removed();
+        let mut content = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(4.0)
+            .with_child(
+                Icon::new("file")
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_child(
+                Text::new(summary.files_changed().to_string())
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_font_size(CONTROL_TEXT_SIZE)
+                    .with_weight(FontWeight::SemiBold)
+                    .finish(),
+            );
+        if added > 0 || removed > 0 {
+            content = content.with_child(
+                Text::new("•")
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_font_size(CONTROL_TEXT_SIZE)
+                    .with_weight(FontWeight::SemiBold)
+                    .finish(),
+            );
+        }
+        if added > 0 {
+            content = content.with_child(
+                Text::new(format!("+{added}"))
+                    .with_theme_color(ColorToken::Success, app)
+                    .with_font_size(CONTROL_TEXT_SIZE)
+                    .with_weight(FontWeight::SemiBold)
+                    .finish(),
+            );
+        }
+        if removed > 0 {
+            content = content.with_child(
+                Text::new(format!("-{removed}"))
+                    .with_theme_color(ColorToken::Error, app)
+                    .with_font_size(CONTROL_TEXT_SIZE)
+                    .with_weight(FontWeight::SemiBold)
+                    .finish(),
+            );
+        }
+        let button = ComposerButton::new(content.finish())
+            .with_height(CONTEXT_PILL_HEIGHT)
+            .with_h_pad(CONTROL_H_PAD)
+            .with_radius(0.0);
+        // The control's whole job is the review pane: one click opens it on
+        // every change. The files are already listed and navigable inside the
+        // pane, so making the click open a menu first only adds a step.
+        if let Some(open) = self.diff_open.clone() {
+            let button = button
+                .with_on_click(move || (open.borrow_mut())(None))
+                .finish();
+            return Tooltip::new(button, "Open changes")
+                .with_position(TooltipPosition::Above)
+                .finish();
+        }
+        // A host without a review pane still gets the file list, so a bare
+        // composer shows what changed rather than a control that does nothing.
+        let trigger = Tooltip::new(button.finish(), "View changed files")
+            .with_position(TooltipPosition::Above)
+            .finish();
+        let items = summary
+            .files
+            .iter()
+            .map(|file| {
+                PopupMenuItem::new(file.path.clone())
+                    .with_icon("file")
+                    .with_diff(file.added, file.removed)
+            })
+            .collect();
+        PopupMenu::new(trigger, items)
+            .with_open(self.diff_menu_open.clone())
+            .with_position(PopupMenuPosition::Above)
+            .with_max_visible_rows(MENU_MAX_VISIBLE_ROWS)
+            .with_panel_scroll(self.diff_menu_scroll.clone())
+            .with_max_width(DIFF_MENU_WIDTH)
+            .with_corner_radius(0.0)
+            .finish()
+    }
+
     /// The context controls, left to right: what the draft will run on. Each is
     /// drawn only when the surface set it, so a terminal composer that sets
     /// only the directory and the branch shows exactly those two, and a
@@ -786,7 +938,7 @@ impl ChatComposer {
                             Clipped::new(
                                 Text::new(path.clone())
                                     .with_theme_color(ColorToken::Muted, app)
-                                    .with_font_size(11.0)
+                                    .with_font_size(CONTROL_TEXT_SIZE)
                                     .with_max_lines(1)
                                     .finish(),
                             )
@@ -798,7 +950,10 @@ impl ChatComposer {
                     .finish()
             };
             let trigger = Tooltip::new(
-                ComposerButton::new(dir_child()).with_height(28.0).finish(),
+                ComposerButton::new(dir_child())
+                    .with_height(CONTEXT_PILL_HEIGHT)
+                    .with_h_pad(CONTROL_H_PAD)
+                    .finish(),
                 "Select working directory",
             )
             .with_position(TooltipPosition::Above)
@@ -831,14 +986,18 @@ impl ChatComposer {
                 "Select branch",
             ));
         }
+        if let Some(summary) = self.diff_summary.as_ref() {
+            children.push(self.diff_control(app, summary));
+        }
         if let Some(cb) = self.on_attach.clone() {
             let attach = ComposerButton::new(
                 Icon::new("plus")
-                    .with_size(16.0)
+                    .with_size(14.0)
                     .with_theme_color(ColorToken::Muted, app)
                     .finish(),
             )
-            .with_height(28.0)
+            .with_height(CONTEXT_PILL_HEIGHT)
+            .with_h_pad(CONTROL_H_PAD)
             .with_on_click(move || (cb.borrow_mut())())
             .finish();
             children.push(
@@ -867,10 +1026,11 @@ impl ChatComposer {
         let button = ComposerButton::new(
             Text::new(text)
                 .with_theme_color(ColorToken::Muted, app)
-                .with_font_size(12.0)
+                .with_font_size(CONTROL_TEXT_SIZE)
                 .finish(),
         )
-        .with_height(28.0);
+        .with_height(CONTEXT_PILL_HEIGHT)
+        .with_h_pad(CONTROL_H_PAD);
         let button = match self.on_select_model_item.clone() {
             // The list is the host's, drawn over the whole input block; the
             // control opens and closes it, so a second press on the control
@@ -926,11 +1086,12 @@ impl ChatComposer {
             if let Some(cb) = self.on_stop.clone() {
                 let stop = ComposerButton::new(
                     Icon::new("stop")
-                        .with_size(16.0)
+                        .with_size(14.0)
                         .with_theme_color(ColorToken::Error, app)
                         .finish(),
                 )
-                .with_height(28.0)
+                .with_height(CONTEXT_PILL_HEIGHT)
+                .with_h_pad(CONTROL_H_PAD)
                 .with_on_click(move || (cb.borrow_mut())())
                 .finish();
                 children.push(

@@ -153,6 +153,34 @@ impl UiState {
         controls.view = BlockView::Terminal;
     }
 
+    /// Point the file pane at another file it already has open, or add the file
+    /// to the pane's chips. The pane stays where it is: two files share one
+    /// topbar instead of splitting the space.
+    ///
+    /// Returns false when `pane_id` is not a file view.
+    pub fn show_file_in_pane(&mut self, pane_id: u64, path: String) -> bool {
+        let Some(space_idx) = self.space_index_of_pane(pane_id) else {
+            return false;
+        };
+        let Some(PaneKind::File {
+            path: showing_path,
+        }) = self.spaces[space_idx].leaf_kind(pane_id).cloned()
+        else {
+            return false;
+        };
+        let files = self.pane_open_files.entry(pane_id).or_default();
+        if files.is_empty() {
+            files.push(showing_path);
+        }
+        // The chip row keeps the order the files were opened in: showing one
+        // again leaves it where it was, and a new one joins at the end.
+        if !files.iter().any(|file| file == &path) {
+            files.push(path.clone());
+        }
+        self.spaces[space_idx].set_leaf_kind(pane_id, PaneKind::File { path });
+        true
+    }
+
     /// Whether `pane_id` is in this space's pane tree as a file view.
     pub fn active_pane_shows_file(&self) -> bool {
         self.spaces
@@ -170,6 +198,13 @@ impl UiState {
     /// landing on a remote conversation moves the tree the user is browsing out
     /// from under them.
     pub fn active_working_directory(&self) -> String {
+        if let Some(PaneKind::Diff { cwd }) = self
+            .spaces
+            .get(self.active_space)
+            .and_then(|space| space.leaf_kind(self.active_pane_id))
+        {
+            return cwd.clone();
+        }
         if self.active_pane_shows_file() || self.pane_is_viewer(self.active_pane_id) {
             return self.composer_path.clone();
         }
@@ -177,6 +212,15 @@ impl UiState {
             .get(&self.active_pane_id)
             .map(|session| session.path.clone())
             .unwrap_or_else(|| self.composer_path.clone())
+    }
+
+    /// The directory a review pane reads its working tree from, wherever the
+    /// pane sits. `None` when the id is not a review pane.
+    pub fn pane_cwd(&self, pane_id: u64) -> Option<String> {
+        self.spaces.iter().find_map(|space| match space.leaf_kind(pane_id) {
+            Some(PaneKind::Diff { cwd }) => Some(cwd.clone()),
+            _ => None,
+        })
     }
 
     /// A pane that is gone owns nothing: drop every entry this state keys by

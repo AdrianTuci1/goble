@@ -11,4 +11,4 @@ mod paint;
 mod tests;
 
 pub use model::{parse_unified_diff, DiffLine, DiffLineKind, DiffRow, DiffStats, Hunk};
-pub use paint::Diff;
+pub use paint::{Diff, DiffHighlightJob, DiffHighlightSide, PreparedDiff};

@@ -2,7 +2,7 @@
 //!
 //! The struct's fields are declared here; its methods live one module per
 //! concern ([`refresh`], [`pane_move`], [`panes`], [`agents`], [`session`],
-//! [`settings`], [`mock`], [`spaces`], [`worker`]) as separate
+//! [`settings`], [`close`], [`mock`], [`spaces`], [`worker`]) as separate
 //! `impl UiState` blocks, which are the same block to the compiler as one.
 //! [`title`] is not one of them: the subject a conversation is named with is
 //! derived from the conversation, not held by the state machine.
@@ -13,6 +13,7 @@ use goble_core::hosts::HostEntry;
 use goble_core::ssh_hosts::SshHosts;
 
 mod agents;
+mod close;
 mod inbox;
 mod mock;
 mod pane_move;
@@ -244,6 +245,15 @@ pub struct UiState {
     /// as `vim_mode`; each pane keeps its own mode/registers in
     /// [`PaneControls::vim`].
     pub vim_mode: bool,
+    /// Whether closing a file pane with unsaved edits saves the buffer first.
+    /// Persisted as `auto_save_on_close`; off asks the user at the close.
+    pub auto_save_on_close: bool,
+    /// The pane a close is waiting on: a file view whose buffer is dirty and
+    /// the user has not answered "save?" yet. The close dialog reads this.
+    pub pending_close_pane: Option<u64>,
+    /// The one file chip a close is waiting on, as `(pane, path)`. Closing a
+    /// chip asks only about that file, so the pane and its other files stay.
+    pub pending_close_file: Option<(u64, String)>,
     /// The tokens each conversation has spent, keyed by conversation id, summed
     /// from the provider-reported usage of its own model calls (`chat:usage`).
     /// Accounting only; nothing here is a price.
@@ -467,6 +477,20 @@ pub struct UiState {
     /// view opens at its first line and keeps the user's place, so it is a plain
     /// offset rather than the terminal's follow-the-end state.
     pub file_scroll: HashMap<u64, Rc<RefCell<ScrollState>>>,
+    /// Per-pane horizontal offset of a pane's file view, keyed by pane id. The
+    /// lines do not wrap, so the view scrolls sideways to the end of the
+    /// longest one. Kept beside the vertical offset for the same reason.
+    pub file_hscroll: HashMap<u64, Rc<RefCell<ScrollState>>>,
+    /// The files each pane holds open as chips, in the order they were opened.
+    /// A pane keeps one `PaneKind::File` path — the one it shows — and the
+    /// list here names the files it can switch between without leaving the
+    /// pane.
+    pub pane_open_files: HashMap<u64, Vec<String>>,
+    /// The editor buffer of every file a pane keeps open, keyed by pane and
+    /// file, mirrored from the frame's `FileCache` so the close action can see
+    /// whether any of them has unsaved edits (and save them) without the file
+    /// cache.
+    pub file_buffers: HashMap<(u64, String), Rc<RefCell<crate::ui::file_view::FileBuffer>>>,
     /// Live per-pane terminal sessions (PTY child + output buffer) and the local
     /// input mirrors used to route `Cmd+Enter` to the agent. Not persisted; a
     /// terminal pane is re-spawned in its cwd on next render.

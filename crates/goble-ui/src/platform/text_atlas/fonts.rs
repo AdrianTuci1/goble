@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 use crate::theme::FontFamily;
@@ -671,6 +673,51 @@ fn load_bundled_font(
     fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
 }
 
+/// One glyph's coverage bitmap and its metrics, cached by the font, glyph and
+/// size it was rasterized for.
+struct GlyphBitmap {
+    metrics: fontdue::Metrics,
+    coverage: Vec<u8>,
+}
+
+/// How many glyphs the cache keeps before it is emptied. A code view crosses a
+/// few hundred distinct glyphs at one size; the bound is there for a window
+/// that has been zoomed through many scales, not for ordinary use.
+const MAX_GLYPHS: usize = 8192;
+
+thread_local! {
+    /// Rasterized glyphs, keyed by font, glyph and size.
+    ///
+    /// A run is what the atlas stores, but a line of code is made of glyphs the
+    /// lines before it already rasterized: caching at the glyph is what makes a
+    /// line scrolled into view cost a composition of cached bitmaps instead of
+    /// an outline parse and rasterization for every character. Warp-new's
+    /// renderer keeps a glyph cache for the same reason, and this is the piece
+    /// of its approach that fits the run atlas without changing the renderer.
+    static GLYPH_CACHE: RefCell<HashMap<fontdue::layout::GlyphRasterConfig, Rc<GlyphBitmap>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// The bitmap for `config`, rasterized once per font/glyph/size.
+fn glyph_bitmap(
+    font: &fontdue::Font,
+    config: fontdue::layout::GlyphRasterConfig,
+) -> Rc<GlyphBitmap> {
+    GLYPH_CACHE.with(|cache| {
+        if let Some(glyph) = cache.borrow().get(&config).cloned() {
+            return glyph;
+        }
+        let (metrics, coverage) = font.rasterize_config(config);
+        let glyph = Rc::new(GlyphBitmap { metrics, coverage });
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= MAX_GLYPHS {
+            cache.clear();
+        }
+        cache.insert(config, Rc::clone(&glyph));
+        glyph
+    })
+}
+
 /// Rasterize a run into an atlas bitmap.
 ///
 /// The size and the wrap width are the exact values the element measured with
@@ -722,19 +769,33 @@ pub(super) fn rasterize_text(
     // straight to its layout coordinates instead of adding `xmin`/`ymin` again.
     // Measuring both `max_x` and `max_y` lets the quad shrink to the ink when
     // that is taller/narrower than the line box, so nothing gets clipped.
+    //
+    // The bitmaps come from the glyph cache: a new line shares almost every
+    // shape with the lines above it, and only the glyphs it is the first to use
+    // are rasterized here.
+    let rasterized: Vec<(f32, f32, Rc<GlyphBitmap>)> = glyphs
+        .iter()
+        .map(|glyph| {
+            (
+                glyph.x,
+                glyph.y,
+                glyph_bitmap(chain[glyph.font_index], glyph.key),
+            )
+        })
+        .collect();
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
     let mut max_y = f32::NEG_INFINITY;
-    for glyph in glyphs {
-        let (metrics, _) = chain[glyph.font_index].rasterize_config(glyph.key);
+    for (x, y, glyph) in &rasterized {
+        let metrics = &glyph.metrics;
         if metrics.width == 0 || metrics.height == 0 {
             continue;
         }
-        min_x = min_x.min(glyph.x);
-        min_y = min_y.min(glyph.y);
-        max_x = max_x.max(glyph.x + metrics.width as f32);
-        max_y = max_y.max(glyph.y + metrics.height as f32);
+        min_x = min_x.min(*x);
+        min_y = min_y.min(*y);
+        max_x = max_x.max(*x + metrics.width as f32);
+        max_y = max_y.max(*y + metrics.height as f32);
     }
 
     // Anchor the bitmap at the line-box origin so the quad aligns with the
@@ -746,13 +807,13 @@ pub(super) fn rasterize_text(
     let height = ((line_box_height.max(max_y - top).ceil()).max(1.0)) as u32;
 
     let mut atlas = vec![0u8; (width * height) as usize];
-    for glyph in glyphs {
-        let (metrics, bitmap) = chain[glyph.font_index].rasterize_config(glyph.key);
+    for (x, y, glyph) in &rasterized {
+        let metrics = &glyph.metrics;
         if metrics.width == 0 || metrics.height == 0 {
             continue;
         }
-        let x_offset = (glyph.x - left).floor() as i32;
-        let y_offset = (glyph.y - top).floor() as i32;
+        let x_offset = (*x - left).floor() as i32;
+        let y_offset = (*y - top).floor() as i32;
         for row in 0..metrics.height {
             for col in 0..metrics.width {
                 let src = row * metrics.width + col;
@@ -762,7 +823,7 @@ pub(super) fn rasterize_text(
                     continue;
                 }
                 let dst = (dst_y * width as i32 + dst_x) as usize;
-                atlas[dst] = atlas[dst].saturating_add(bitmap[src]);
+                atlas[dst] = atlas[dst].saturating_add(glyph.coverage[src]);
             }
         }
     }
@@ -811,6 +872,52 @@ mod tests {
         assert!(
             atlas.iter().any(|coverage| *coverage > 0),
             "the fallback draws the arrow's ink"
+        );
+    }
+
+    /// A line that scrolls into view shares almost every glyph with the lines
+    /// already on screen; only the shapes it is the first to use are
+    /// rasterized. This is what keeps a continuous scroll from re-parsing
+    /// outlines for every new line.
+    #[test]
+    fn a_line_reuses_the_glyphs_the_lines_before_it_rasterized() {
+        if font_set().is_none() {
+            return;
+        }
+        GLYPH_CACHE.with(|cache| cache.borrow_mut().clear());
+        let first = rasterize_text(
+            "let value = 42;",
+            12.0,
+            FontWeight::Regular,
+            true,
+            false,
+            f32::INFINITY,
+            1.35,
+        )
+        .expect("the first line rasterizes");
+        let after_first = GLYPH_CACHE.with(|cache| cache.borrow().len());
+        assert!(after_first > 0, "the first line fills the glyph cache");
+
+        let second = rasterize_text(
+            "let answer = 7;",
+            12.0,
+            FontWeight::Regular,
+            true,
+            false,
+            f32::INFINITY,
+            1.35,
+        )
+        .expect("the second line rasterizes");
+        let after_second = GLYPH_CACHE.with(|cache| cache.borrow().len());
+        assert!(
+            after_second - after_first < after_first,
+            "the second line shares most of its glyphs: {} new against {}",
+            after_second - after_first,
+            after_first
+        );
+        assert!(
+            first.2 > 0 && first.3 > 0 && second.2 > 0 && second.3 > 0,
+            "both lines have real coverage"
         );
     }
 

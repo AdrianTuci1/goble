@@ -10,8 +10,9 @@ use goble_ui::render::RenderCommand;
 
 use super::*;
 
-/// The seven grok-build pages keep their labels and their order: they are still
-/// exactly what the rail names once the page this app adds is taken out of it.
+/// The grok-build pages keep their labels and their order: they are still
+/// exactly what the rail names once the pages this app adds are taken out of
+/// it. Environment is not in the rail any more.
 #[test]
 fn categories_match_grok_build_labels() {
     let labels: Vec<&str> = SettingsCategory::ALL
@@ -26,34 +27,39 @@ fn categories_match_grok_build_labels() {
             "Mouse",
             "Editor & Input",
             "Agent & Approval",
-            "Environment",
             "Models",
             "Advanced",
         ]
     );
 }
 
-/// Connections is the page between them: it sits directly after Environment,
-/// where the machine's own SSH state belongs, and nothing before it moved.
+/// Connections is the page between them: it sits directly after Agent &
+/// Approval, where the machine's own SSH state belongs, and nothing before it
+/// moved.
 #[test]
-fn connections_sits_after_environment() {
+fn connections_sits_after_the_agent_page() {
     let labels: Vec<&str> = SettingsCategory::ALL.iter().map(|c| c.label()).collect();
     let at = labels
         .iter()
         .position(|label| *label == "Connections")
         .expect("the Connections page is in the rail");
-    assert_eq!(labels[at - 1], "Environment");
+    assert_eq!(labels[at - 1], "Agent & Approval");
     assert_eq!(
         labels[..at],
-        [
-            "Appearance",
-            "Mouse",
-            "Editor & Input",
-            "Agent & Approval",
-            "Environment"
-        ]
+        ["Appearance", "Mouse", "Editor & Input", "Agent & Approval"]
     );
     assert_eq!(&labels[at..], ["Connections", "Models", "Advanced"]);
+}
+
+/// The Environment menu is gone from the rail; the page it used to open has no
+/// way in from Settings.
+#[test]
+fn the_rail_has_no_environment_page() {
+    let labels: Vec<&str> = SettingsCategory::ALL.iter().map(|c| c.label()).collect();
+    assert!(
+        !labels.contains(&"Environment"),
+        "Environment is not in the rail: {labels:?}"
+    );
 }
 
 /// A whole app tree with the settings tab open, plus its live state.
@@ -875,6 +881,33 @@ fn enter_flips_a_switch_and_the_setting_is_persisted() {
     assert!(!desktop.get_vim_mode());
 }
 
+/// Editor & Input → "Auto-save on close" is a switch like the others: `Enter`
+/// flips it and the choice is written to the store.
+#[test]
+fn enter_flips_auto_save_on_close_and_the_setting_is_persisted() {
+    let app = AppContext::default();
+    let (mut root, state, _dir, desktop) =
+        settings_root_with_desktop(SettingsCategory::EditorInput);
+    assert!(!desktop.get_auto_save_on_close(), "it starts off");
+
+    press(&mut root, &app, "ArrowRight"); // Font size
+    press(&mut root, &app, "ArrowDown"); // Auto-save on close
+    assert_eq!(
+        state.borrow().settings_focused_control(),
+        Some(SettingsControl::AutoSaveOnClose)
+    );
+    assert!(press(&mut root, &app, "Enter"));
+    assert!(state.borrow().auto_save_on_close, "the switch flipped");
+    assert!(
+        desktop.get_auto_save_on_close(),
+        "and the flip was persisted"
+    );
+
+    press(&mut root, &app, "Enter");
+    assert!(!state.borrow().auto_save_on_close);
+    assert!(!desktop.get_auto_save_on_close());
+}
+
 /// `Left`/`Right` step a control that holds a discrete value (the stepper),
 /// and a control that does not is left alone by `Right`.
 #[test]
@@ -1009,53 +1042,38 @@ fn enter_advances_a_stepper_and_selects_a_choice() {
     let before = state.borrow().settings_font_size;
     press(&mut root, &app, "Enter");
     assert!((state.borrow().settings_font_size - (before + 0.1)).abs() < 1e-5);
-
-    // A routing row selects the choice it names.
-    let (mut root, state, _dir) = settings_root(SettingsCategory::AgentApproval);
-    press(&mut root, &app, "ArrowRight"); // Auto-approve
-    press(&mut root, &app, "ArrowDown"); // Vim mode
-    press(&mut root, &app, "ArrowDown"); // Local
-    press(&mut root, &app, "ArrowDown"); // Remote
-    assert_eq!(
-        state.borrow().settings_focused_control(),
-        Some(SettingsControl::Route(WorkspaceRouting::Remote))
-    );
-    // Remote has somewhere to run, so choosing it routes the window there.
-    state.borrow_mut().settings_workers.push((
-        "w1".to_string(),
-        "worker".to_string(),
-        "ws://worker".to_string(),
-        true,
-    ));
-    press(&mut root, &app, "Enter");
-    assert_eq!(
-        state.borrow().workspace_routing,
-        Some(WorkspaceRouting::Remote)
-    );
 }
 
-/// The routing choice names where the agent runs with a picture of it: the
-/// computer for a local turn and a cloud for a remote worker.
+/// Where a turn runs is reported, not chosen: the page names the window's
+/// routing and the heading that used to hold the Local/Remote buttons is gone.
 #[test]
-fn the_routing_choices_draw_a_computer_and_a_cloud() {
+fn the_agent_page_reports_where_turns_run_without_buttons() {
     let app = AppContext::default();
-    let (mut root, _state, _dir) = settings_root(SettingsCategory::AgentApproval);
-    let commands = frame(&mut root, &app, vec2f(1024.0, 768.0));
-    let icons: Vec<&str> = commands
-        .iter()
-        .filter_map(|command| match command {
-            RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
-            _ => None,
-        })
-        .collect();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir) = settings_root(SettingsCategory::AgentApproval);
+    state.borrow_mut().workspace_routing = Some(WorkspaceRouting::Remote);
+    let commands = frame(&mut root, &app, window);
+
+    assert!(drawn(&commands, "Run agent"), "the row is drawn");
+    assert!(drawn(&commands, "Remote"), "it names the routing");
     assert!(
-        icons.contains(&"conversation-local"),
-        "Local draws the computer icon: {icons:?}"
+        !drawn(&commands, "Where the agent runs"),
+        "the chooser's heading is gone"
     );
-    assert!(
-        icons.contains(&"cloud"),
-        "Remote draws the cloud icon: {icons:?}"
+    assert_eq!(
+        state.borrow().settings_pane_controls(),
+        vec![
+            SettingsControl::AutoApprove,
+            SettingsControl::VimMode,
+            SettingsControl::OpenConfigFile,
+            SettingsControl::ReloadRemoteAgents,
+        ],
+        "the switches, the config row and the reload: no routing control"
     );
+
+    state.borrow_mut().workspace_routing = Some(WorkspaceRouting::Local);
+    let commands = frame(&mut root, &app, window);
+    assert!(any_run_contains(&commands, "Local"), "it follows the routing");
 }
 
 /// The footer is the page's key map, drawn: each region and each kind of row
@@ -1080,13 +1098,6 @@ fn the_footer_says_what_the_focused_row_answers() {
         false,
     );
     assert_eq!(words(&stepper), vec!["row", "change", "increase", "back"]);
-
-    let choice = footer_hints(
-        SettingsFocus::Pane,
-        Some(&SettingsControl::Route(WorkspaceRouting::Local)),
-        false,
-    );
-    assert_eq!(words(&choice), vec!["row", "choose", "select", "back"]);
 
     let field = footer_hints(
         SettingsFocus::Pane,
@@ -1863,7 +1874,10 @@ fn the_missing_directory_and_config_less_cases_draw_their_muted_lines() {
     assert!(drawn(&commands, "Reload from ~/.ssh"));
     assert_eq!(
         state.borrow().settings_pane_controls(),
-        vec![SettingsControl::ReloadSshHosts]
+        vec![
+            SettingsControl::OpenConfigFile,
+            SettingsControl::ReloadSshHosts
+        ]
     );
 
     // The directory exists with no `config`: its own line, and the keys.
@@ -1996,9 +2010,10 @@ fn the_connection_rows_are_focusable_in_order_and_enter_selects() {
         vec![
             SettingsControl::SshHost("db".to_string()),
             SettingsControl::SshHost("web".to_string()),
+            SettingsControl::OpenConfigFile,
             SettingsControl::ReloadSshHosts,
         ],
-        "the hosts in the reader's order, then the reload row"
+        "the hosts in the reader's order, then the config-file and reload rows"
     );
 
     let mut previous: Option<(f32, f32)> = None;
@@ -2102,8 +2117,13 @@ Host two
     // The reload row re-reads it.
     {
         let mut s = state.borrow_mut();
+        let controls = s.settings_pane_controls();
+        let slot = controls
+            .iter()
+            .position(|control| *control == SettingsControl::ReloadSshHosts)
+            .expect("the reload row is in the order");
         s.settings_focus = SettingsFocus::Pane;
-        s.settings_pane_focus = 1;
+        s.settings_pane_focus = slot;
     }
     assert_eq!(
         state.borrow().settings_focused_control(),
@@ -2211,8 +2231,8 @@ fn no_remote_agents_draws_the_explanatory_row() {
     assert!(state.borrow().remote_agents.is_empty());
     assert!(drawn(&commands, "Remote"), "the heading is drawn");
     assert!(
-        any_run_contains(&commands, "No remote configured"),
-        "the page says Remote has nowhere to run"
+        any_run_contains(&commands, "Turns run on this machine"),
+        "the page says where turns run and how to move them"
     );
     assert!(drawn(&commands, "Config file"), "the page names the file");
     assert!(
@@ -2224,6 +2244,47 @@ fn no_remote_agents_draws_the_explanatory_row() {
         "the page says what the file is for"
     );
     assert!(drawn(&commands, "Reload remote agents"));
+}
+
+/// Every page that reports the config file offers a way in: the row is drawn,
+/// it is a focus stop, and `Enter` on it opens the file in a pane.
+#[test]
+fn the_config_backed_pages_draw_the_open_config_row() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    for category in [
+        SettingsCategory::AgentApproval,
+        SettingsCategory::Connections,
+        SettingsCategory::Models,
+        SettingsCategory::Advanced,
+    ] {
+        let (mut root, state, _dir) = settings_root(category);
+        let commands = frame(&mut root, &app, window);
+        assert!(
+            drawn(&commands, "Open config file"),
+            "{category:?} draws the row that opens the file"
+        );
+        let controls = state.borrow().settings_pane_controls();
+        let slot = controls
+            .iter()
+            .position(|control| *control == SettingsControl::OpenConfigFile)
+            .unwrap_or_else(|| panic!("{category:?} makes the row a focus stop"));
+        {
+            let mut s = state.borrow_mut();
+            s.settings_focus = SettingsFocus::Pane;
+            s.settings_pane_focus = slot;
+        }
+        frame(&mut root, &app, window);
+        assert!(press(&mut root, &app, "Enter"));
+        let s = state.borrow();
+        match s.spaces[s.active_space].leaf_kind(s.active_pane_id) {
+            Some(PaneKind::File { path }) => assert!(
+                path.ends_with("config.toml"),
+                "{category:?} opens the config file: {path}"
+            ),
+            other => panic!("{category:?} opened {other:?}"),
+        }
+    }
 }
 
 /// The reload row re-reads the config file, so a `[remote]` gateway written

@@ -46,7 +46,10 @@ pub struct LineRuns {
 }
 
 pub struct TextArea {
-    value: String,
+    /// Shared so a host that holds a large buffer — the review pane's inline
+    /// editors — does not copy it into a new field on every frame. Edits take
+    /// the string out of the shared handle only when they change it.
+    value: Rc<String>,
     placeholder: String,
     focused: bool,
     min_height: f32,
@@ -73,6 +76,11 @@ pub struct TextArea {
     /// — every single-line field, and every multi-line field the host draws
     /// whole — lays out every row, as before.
     scroll: Option<Rc<RefCell<ScrollState>>>,
+    /// Where this buffer's first row sits inside the scroll region's content.
+    /// A host that stacks several buffers in one region — the review pane's
+    /// files — hands each one its own top, so every buffer reads the region's
+    /// offset against its own rows instead of against the whole list.
+    scroll_bias: f32,
     /// The syntax runs the buffer's lines are drawn with, when the host
     /// resolved them — see [`LineRuns`].
     line_runs: Option<Rc<LineRuns>>,
@@ -105,7 +113,7 @@ pub struct TextArea {
 impl TextArea {
     pub fn new() -> Self {
         Self {
-            value: String::new(),
+            value: Rc::new(String::new()),
             placeholder: String::new(),
             focused: false,
             min_height: 80.0,
@@ -116,6 +124,7 @@ impl TextArea {
             line_numbers: 0,
             line_height: TEXT_LINE_HEIGHT,
             scroll: None,
+            scroll_bias: 0.0,
             line_runs: None,
             anchor: None,
             blur_on_outside_click: true,
@@ -132,7 +141,14 @@ impl TextArea {
     }
 
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
-        self.value = value.into();
+        self.value = Rc::new(value.into());
+        self
+    }
+
+    /// Take a buffer the host already holds: the field shares it instead of
+    /// copying the whole text into a new `String` on every rebuild.
+    pub fn with_shared_value(mut self, value: Rc<String>) -> Self {
+        self.value = value;
         self
     }
 
@@ -188,6 +204,18 @@ impl TextArea {
     /// when it moves off it. A buffer without one is drawn whole.
     pub fn with_scroll_state(mut self, scroll: Rc<RefCell<ScrollState>>) -> Self {
         self.scroll = Some(scroll);
+        self
+    }
+
+    /// Where this buffer's first row sits inside the scroll region's content.
+    ///
+    /// A host that stacks several buffers in one region hands each one its own
+    /// top; the buffer then reads the region's offset against its own rows, so
+    /// a list of files scrolls as one continuous document while every buffer
+    /// still lays out only the rows its share of the viewport can show. Zero
+    /// (the default) is a buffer that owns the whole region.
+    pub fn with_scroll_bias(mut self, bias: f32) -> Self {
+        self.scroll_bias = bias;
         self
     }
 
@@ -301,7 +329,7 @@ impl TextArea {
         } else if self.masked {
             "•".repeat(self.value.chars().count())
         } else {
-            self.value.clone()
+            (*self.value).clone()
         }
     }
 
@@ -376,15 +404,22 @@ impl TextArea {
     /// buffer is two spacers, so the content the host's region measures is still
     /// the whole buffer's.
     fn rebuild_multiline(&mut self, app: &AppContext) {
-        let chars: Vec<char> = self.value.chars().collect();
-        let caret = self.caret_index();
-        let selection = self.selection();
-        let plain = app.theme.color(ColorToken::Text);
         let lines = self.value.matches('\n').count() + 1;
         let window = self.drawn_rows(lines);
         let mut column = Flex::column()
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Start);
+        // A buffer the region has scrolled entirely past builds no rows and
+        // takes no pass over its text: one spacer gives the region its height.
+        if window.is_empty() {
+            column = column.with_child(row_spacer(lines, self.line_box()));
+            self.root = Some(Container::new(column.finish()).finish());
+            return;
+        }
+        let chars: Vec<char> = self.value.chars().collect();
+        let caret = self.caret_index();
+        let selection = self.selection();
+        let plain = app.theme.color(ColorToken::Text);
         if window.start > 0 {
             column = column.with_child(row_spacer(window.start, self.line_box()));
         }
@@ -431,11 +466,23 @@ impl TextArea {
         let Some(scroll) = self.scroll.as_ref() else {
             return 0..lines;
         };
-        let (offset, viewport) = {
+        let (outer, viewport) = {
             let scroll = scroll.borrow();
             (scroll.offset(), scroll.viewport())
         };
         let line_box = self.line_box();
+        // A stacked buffer that is entirely outside the region's window lays
+        // out no rows at all. Without this, every file below the viewport would
+        // still draw its own screenful; with it, the list costs the files in
+        // view. The rows it stands in still give the region the file's full
+        // height, so the scroll range is unchanged.
+        if viewport > 0.0
+            && (self.scroll_bias >= outer + viewport
+                || self.scroll_bias + lines as f32 * line_box <= outer)
+        {
+            return 0..0;
+        }
+        let offset = (outer - self.scroll_bias).max(0.0);
         let first = ((offset / line_box).floor().max(0.0) as usize).min(lines.saturating_sub(1));
         let rows = if viewport > 0.0 {
             (viewport / line_box).ceil() as usize
@@ -458,7 +505,10 @@ impl TextArea {
         };
         let (offset, viewport) = {
             let scroll = scroll.borrow();
-            (scroll.offset(), scroll.viewport())
+            (
+                (scroll.offset() - self.scroll_bias).max(0.0),
+                scroll.viewport(),
+            )
         };
         if viewport <= 0.0 {
             return;
@@ -480,7 +530,11 @@ impl TextArea {
         } else {
             return;
         };
-        scroll.borrow_mut().scroll_by(target - offset);
+        // The region's own offset counts from the start of its content, which
+        // is this buffer's top minus its bias.
+        scroll
+            .borrow_mut()
+            .scroll_by(target + self.scroll_bias - offset);
     }
 
     /// One line of the buffer: the padded line number, the line's runs cut at
@@ -672,7 +726,7 @@ impl TextArea {
                 if caret == 0 {
                     return Some(false);
                 }
-                remove_char(&mut self.value, caret - 1);
+                remove_char(Rc::make_mut(&mut self.value), caret - 1);
                 self.set_caret_index(caret - 1);
                 Some(true)
             }
@@ -683,7 +737,7 @@ impl TextArea {
                 if caret >= chars.len() {
                     return Some(false);
                 }
-                remove_char(&mut self.value, caret);
+                remove_char(Rc::make_mut(&mut self.value), caret);
                 Some(true)
             }
             "Enter" => {
@@ -693,7 +747,7 @@ impl TextArea {
                 }
                 self.replace_selection();
                 let caret = self.caret_index();
-                insert_char(&mut self.value, caret, '\n');
+                insert_char(Rc::make_mut(&mut self.value), caret, '\n');
                 self.set_caret_index(caret + 1);
                 Some(true)
             }
@@ -703,7 +757,11 @@ impl TextArea {
                 }
                 self.replace_selection();
                 let caret = self.caret_index();
-                insert_char(&mut self.value, caret, key.chars().next().unwrap());
+                insert_char(
+                    Rc::make_mut(&mut self.value),
+                    caret,
+                    key.chars().next().unwrap(),
+                );
                 self.set_caret_index(caret + 1);
                 Some(true)
             }
@@ -717,7 +775,7 @@ impl TextArea {
         let Some(range) = self.selection() else {
             return false;
         };
-        remove_range(&mut self.value, range.start, range.end);
+        remove_range(Rc::make_mut(&mut self.value), range.start, range.end);
         self.move_caret(range.start, false);
         true
     }
@@ -857,7 +915,7 @@ impl TextArea {
         key: &str,
         modifiers: &ModifiersState,
     ) -> VimOutcome {
-        let mut buffer = VimBuffer::new(self.value.clone(), self.caret_index());
+        let mut buffer = VimBuffer::new((*self.value).clone(), self.caret_index());
         // The clipboard handle is cloned out of `self` first: the engine holds
         // it across the call, and the field's own value/caret are written back
         // right after.
@@ -875,7 +933,7 @@ impl TextArea {
         match outcome {
             VimOutcome::Moved => self.set_caret_index(buffer.caret),
             VimOutcome::Edited => {
-                self.value = buffer.text;
+                self.value = Rc::new(buffer.text);
                 self.set_caret_index(buffer.caret);
             }
             VimOutcome::Passthrough | VimOutcome::Consumed => {}
@@ -1051,7 +1109,9 @@ fn runs_spell(runs: &[TextSpan], line: &str) -> bool {
             None => return false,
         }
     }
-    rest.is_empty()
+    // The highlighter drops a line ending; a CRLF buffer keeps the `\r` on the
+    // line it splits, so the carriage return is not a mismatch.
+    rest.is_empty() || rest == "\r"
 }
 
 /// The runs that cover the characters `start..end` of the line they spell.
@@ -1179,7 +1239,7 @@ impl Element for TextArea {
                         VimOutcome::Moved => return true,
                         VimOutcome::Edited => {
                             if let Some(cb) = self.on_change.as_ref() {
-                                (cb.borrow_mut())(self.value.clone());
+                                (cb.borrow_mut())((*self.value).clone());
                             }
                             return true;
                         }
@@ -1197,7 +1257,7 @@ impl Element for TextArea {
                             self.reveal_caret();
                             if changed {
                                 if let Some(cb) = self.on_change.as_ref() {
-                                    (cb.borrow_mut())(self.value.clone());
+                                    (cb.borrow_mut())((*self.value).clone());
                                 }
                             }
                             true
@@ -1228,13 +1288,13 @@ impl Element for TextArea {
                     }
                     "Backspace" => {
                         if caret > 0 {
-                            remove_char(&mut self.value, caret - 1);
+                            remove_char(Rc::make_mut(&mut self.value), caret - 1);
                             self.set_caret_index(caret - 1);
                         }
                     }
                     "Delete" => {
                         if caret < length {
-                            remove_char(&mut self.value, caret);
+                            remove_char(Rc::make_mut(&mut self.value), caret);
                         }
                     }
                     "Enter" => {
@@ -1242,7 +1302,7 @@ impl Element for TextArea {
                             (cb.borrow_mut())(*modifiers);
                             return true;
                         }
-                        insert_char(&mut self.value, caret, '\n');
+                        insert_char(Rc::make_mut(&mut self.value), caret, '\n');
                         self.set_caret_index(caret + 1);
                     }
                     // One typed character is inserted where the beam is, not
@@ -1252,12 +1312,16 @@ impl Element for TextArea {
                         if key.len() != 1 {
                             return false;
                         }
-                        insert_char(&mut self.value, caret, key.chars().next().unwrap());
+                        insert_char(
+                            Rc::make_mut(&mut self.value),
+                            caret,
+                            key.chars().next().unwrap(),
+                        );
                         self.set_caret_index(caret + 1);
                     }
                 }
                 if let Some(cb) = self.on_change.as_ref() {
-                    (cb.borrow_mut())(self.value.clone());
+                    (cb.borrow_mut())((*self.value).clone());
                 }
                 true
             }
@@ -2264,6 +2328,42 @@ mod tests {
             scroll_range,
             "the rows outside the window stand in at their own height, so the region \
              still scrolls through the whole buffer"
+        );
+    }
+
+    /// A buffer stacked under another in one scroll region reads the region's
+    /// offset against its own top: the bias is the rows above it, so a list of
+    /// files scrolls as one document while each buffer still draws only its own
+    /// share of the viewport.
+    #[test]
+    fn a_biased_buffer_reads_the_regions_offset_against_its_own_top() {
+        use crate::elements::{Axis, Scrollable};
+
+        let app = app();
+        let lines = 200usize;
+        let value: String = (0..lines).map(|line| format!("line {line}\n")).collect();
+        let scroll = Rc::new(RefCell::new(ScrollState::default()));
+        let bias = 170.0;
+        let field = TextArea::new()
+            .with_value(value)
+            .with_multiline(true)
+            .with_line_numbers(5)
+            .with_line_height(1.35)
+            .with_min_height(0.0)
+            .with_focused(false)
+            .with_scroll_state(Rc::clone(&scroll))
+            .with_scroll_bias(bias);
+        let mut root: Box<dyn Element> = Box::new(
+            Scrollable::new(field.finish(), Axis::Vertical).with_state(Rc::clone(&scroll)),
+        );
+        let size = vec2f(600.0, 200.0);
+        let _ = frame_of(&mut root, &app, size);
+        let line_box = (TEXT_FONT_SIZE * 1.35).ceil();
+        scroll.borrow_mut().scroll_by(bias + 10.0 * line_box);
+        let drawn = drawn_line_numbers(&frame_of(&mut root, &app, size));
+        assert_eq!(
+            drawn[0], 11,
+            "the buffer starts ten rows below the top of the region: {drawn:?}"
         );
     }
 

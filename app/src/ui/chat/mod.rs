@@ -21,7 +21,9 @@ mod sub_agent;
 
 pub(crate) use agent::build_agent_chat;
 pub(crate) use composer::build_terminal_composer;
-pub(crate) use header::build_agent_header;
+pub(crate) use header::{
+    build_agent_header, build_agent_header_with, HeaderSlots, HEADER_CONTROL_HEIGHT,
+};
 pub(crate) use overlays::{
     build_agent_error, build_chat_panel_overlay, build_onboarding_tip, build_workspace_choice,
 };

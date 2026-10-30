@@ -91,7 +91,19 @@ pub fn cleanup_stale(socket: &Path, pidfile: &Path) -> std::io::Result<bool> {
             return Ok(false);
         }
     }
+    remove_stale_record(socket, pidfile)
+}
 
+/// Remove a socket file and pidfile without consulting the pid.
+///
+/// This is the recovery path for a record whose pid names a live process that
+/// is not the daemon: after a crash the pid can be reused by an unrelated
+/// process, and `cleanup_stale` would then refuse to clean a record nobody can
+/// answer on. The caller must already know the daemon is unreachable; with no
+/// socket file there is nothing that could answer, so the record is stale
+/// whatever the pid says. Like [`cleanup_stale`], it refuses to delete a
+/// non-socket file at `socket`.
+pub fn remove_stale_record(socket: &Path, pidfile: &Path) -> std::io::Result<bool> {
     if socket.exists() {
         use std::os::unix::fs::FileTypeExt;
         let meta = std::fs::symlink_metadata(socket)?;

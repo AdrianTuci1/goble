@@ -45,6 +45,11 @@ impl RootView {
                         None => crate::state::TurnOutcome::Unknown,
                     };
                     state.finish_turn(pane_id, outcome);
+                    log::warn!(
+                        "chat:turn_finished for {}: {}",
+                        payload.get("chat_id").and_then(|v| v.as_str()).unwrap_or(""),
+                        payload.get("status").and_then(|v| v.as_str()).unwrap_or("unknown")
+                    );
                     // A prompt queued while the agent was running is submitted
                     // automatically now that the turn finished (warp-new model).
                     let queued = state
@@ -112,6 +117,7 @@ impl RootView {
                         .and_then(|v| v.as_str())
                         .unwrap_or_default();
                     if !chat_id.is_empty() {
+                        log::warn!("chat:error for {chat_id}: {message}");
                         state.apply_turn_error(chat_id, message);
                     }
                     state.sync_active_view();
@@ -145,6 +151,37 @@ impl RootView {
                     >(payload)
                     {
                         state.apply_command_proposed(&proposal);
+                        // The pane's approval mode decides whether the turn
+                        // suspends at all: always-approve runs the first
+                        // candidate at once, plan refuses it, and the two
+                        // review modes leave the card for the user.
+                        if let Some(pane_id) = state.pane_for_chat_event(&proposal.chat_id) {
+                            let decision = match state.pane_controls(pane_id).approval_mode {
+                                goble_ui::ApprovalMode::AlwaysApprove => proposal
+                                    .candidates
+                                    .first()
+                                    .cloned()
+                                    .map(goble_core::harness::CommandDecision::Approve),
+                                goble_ui::ApprovalMode::Plan => Some(
+                                    goble_core::harness::CommandDecision::Reject(
+                                        "Plan mode: command execution is disabled.".to_string(),
+                                    ),
+                                ),
+                                goble_ui::ApprovalMode::Manual
+                                | goble_ui::ApprovalMode::AutoReview => None,
+                            };
+                            if let Some(decision) = decision {
+                                match desktop.resume_command_chat_turn(&proposal.chat_id, decision) {
+                                    Ok(_) => {
+                                        state.resume_command_decision(pane_id, &proposal.id);
+                                        state.agent_busy = true;
+                                    }
+                                    Err(e) => {
+                                        log::warn!("resume_command_chat_turn failed: {e}")
+                                    }
+                                }
+                            }
+                        }
                     }
                     state.refresh_messages(&desktop);
                 }

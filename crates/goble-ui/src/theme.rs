@@ -143,6 +143,22 @@ impl Theme {
         self.accent.color()
     }
 
+    /// The palette a terminal paints with: the theme's own text, background and
+    /// caret colours over the standard sixteen ANSI colours, so a shell in a
+    /// pane agrees with the window it is in. The palette's own sixteen are the
+    /// `xterm` defaults — the theme does not define terminal colours — while the
+    /// three defaults it does define are taken from the theme.
+    pub fn terminal_palette(&self) -> goble_terminal::Palette {
+        let text = self.color(ColorToken::Text);
+        let background = self.color(ColorToken::Bg);
+        let cursor = self.color(ColorToken::Accent);
+        goble_terminal::Palette::xterm().with_defaults(
+            (text.r, text.g, text.b),
+            (background.r, background.g, background.b),
+            (cursor.r, cursor.g, cursor.b),
+        )
+    }
+
     /// Resolve a named color token.
     pub fn color(&self, token: ColorToken) -> ColorU {
         match token {

@@ -480,16 +480,80 @@ impl ChatView {
         self
     }
 
-    /// Show a command the harness suspended on for approval (A6/R1) in the
-    /// composer's proposal card.
+    /// Show a command the harness suspended on for approval (A6/R1) at the end
+    /// of the agent's output.
+    ///
+    /// A new proposal seeds the editor with its first candidate, so the card
+    /// opens ready to run or edit. The seed is keyed on the proposal id: a
+    /// draft the user emptied or changed is left alone between frames.
     pub fn with_command_proposal(mut self, proposal: Option<CommandProposalUi>) -> Self {
+        if let Some(next) = proposal.as_ref() {
+            let is_new = self
+                .composer_proposal
+                .as_ref()
+                .map(|current| current.id != next.id)
+                .unwrap_or(true);
+            if is_new {
+                let first = next.candidates.first().cloned().unwrap_or_default();
+                *self.composer_proposal_caret.borrow_mut() = first.chars().count();
+                *self.composer_proposal_draft.borrow_mut() = first;
+                *self.composer_proposal_selection.borrow_mut() = 0;
+                *self.composer_proposal_scroll.borrow_mut() = ScrollState::default();
+                *self.composer_proposal_editor_scroll.borrow_mut() = ScrollState::default();
+            }
+        }
         self.composer_proposal = proposal;
         self
     }
 
-    /// The app-owned selected candidate index for the proposal card.
+    /// The app-owned selected candidate index for the approval card.
     pub fn with_command_proposal_selection(mut self, selected: Rc<RefCell<usize>>) -> Self {
         self.composer_proposal_selection = selected;
+        self
+    }
+
+    /// The app-owned viewport the approval card's command scrolls in.
+    pub fn with_command_proposal_scroll(mut self, scroll: Rc<RefCell<ScrollState>>) -> Self {
+        self.composer_proposal_scroll = scroll;
+        self
+    }
+
+    /// The app-owned command the approval card edits: its text, the caret and
+    /// the viewport the field scrolls in. All three must live outside the view,
+    /// which is rebuilt every frame.
+    pub fn with_command_proposal_draft(
+        mut self,
+        draft: Rc<RefCell<String>>,
+        caret: Rc<RefCell<usize>>,
+        editor_scroll: Rc<RefCell<ScrollState>>,
+    ) -> Self {
+        self.composer_proposal_draft = draft;
+        self.composer_proposal_caret = caret;
+        self.composer_proposal_editor_scroll = editor_scroll;
+        self
+    }
+
+    /// Draw the pane's approval mode next to the composer's model select.
+    pub fn with_composer_approval_mode(mut self, mode: crate::elements::ApprovalMode) -> Self {
+        self.composer_approval_mode = Some(mode);
+        self
+    }
+
+    /// The mode menu's app-owned open flag.
+    pub fn with_composer_approval_menu_open(mut self, open: Rc<RefCell<bool>>) -> Self {
+        self.composer_approval_menu_open = open;
+        self
+    }
+
+    /// Fired with the mode the user picked from the menu or cycled to with
+    /// Shift+Tab, so the host stores it on the pane.
+    pub fn with_on_select_approval_mode<
+        F: FnMut(crate::elements::ApprovalMode) + 'static,
+    >(
+        mut self,
+        callback: F,
+    ) -> Self {
+        self.on_select_approval_mode = Some(Rc::new(RefCell::new(callback)));
         self
     }
 

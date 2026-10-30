@@ -99,6 +99,7 @@ async fn test_deepseek_with_conversation_history() {
             tool_calls: None,
             tool_call_id: None,
             tool_status: None,
+            reasoning_content: None,
         },
         Message {
             role: Role::User,
@@ -106,6 +107,7 @@ async fn test_deepseek_with_conversation_history() {
             tool_calls: None,
             tool_call_id: None,
             tool_status: None,
+            reasoning_content: None,
         },
     ];
     let request = CompletionRequest::new("deepseek", "deepseek-v4-pro").with_messages(messages);

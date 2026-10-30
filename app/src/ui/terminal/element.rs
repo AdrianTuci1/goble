@@ -191,6 +191,15 @@ impl Element for TerminalView {
                 if self.handle_copy_key(key, *modifiers) {
                     return true;
                 }
+                // A suspended command owns the keys. The card's editor takes
+                // them through the tree; a key it leaves stops here instead of
+                // falling through to the shell under a decision nobody made.
+                if self.approval_pending {
+                    if let Some(root) = self.root.as_mut() {
+                        let _ = root.dispatch_event(event, ctx, app);
+                    }
+                    return true;
+                }
                 // While the find bar is up its query field is the pane's typing
                 // surface, so the keys are routed into the tree, where that
                 // field sits ahead of the composer.

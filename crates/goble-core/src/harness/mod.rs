@@ -324,20 +324,37 @@ impl Harness {
 
     /// Resume a turn that suspended on a proposed command, executing the user's
     /// decision (A6): approve runs the chosen text, edit runs the edited text,
-    /// and reject fails the tool call instead of running anything.
+    /// and reject fails the tool call instead of running anything. The mission
+    /// then continues with the command's outcome in its history, so the turn
+    /// answers instead of ending on the approval.
     pub fn resume_command(
         &self,
         chat_id: &str,
         decision: CommandDecision,
+        provider: &str,
+        model: &str,
     ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
-        crate::subagent_run::with_subagent_lifecycle(
+        let events = crate::subagent_run::with_subagent_lifecycle(
             &self.subagents,
             crate::reasoning::resume_command_turn(
                 self.store.clone(),
                 Arc::clone(&self.runner),
+                Arc::clone(&self.llm),
+                self.deploy_sender.clone(),
+                self.mcp_manager.clone(),
+                self.cancel.clone(),
+                self.workspace_dir.clone(),
+                self.docs_dir.clone(),
                 chat_id.to_string(),
                 decision,
+                provider.to_string(),
+                model.to_string(),
+                self.reasoning_enabled,
+                self.auto_approve,
+                self.web_search.clone(),
+                self.subagent_host(),
             ),
-        )
+        );
+        self.recorded_usage(events)
     }
 }

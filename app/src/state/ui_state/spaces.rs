@@ -392,7 +392,7 @@ impl UiState {
     /// created with, or [`NEW_AGENT_TAB_LABEL`] while it has none — a
     /// conversation nobody named is titled [`NEW_CONVERSATION_TITLE`], which is a
     /// placeholder rather than a subject.
-    fn pane_subject(&self, pane_id: u64) -> String {
+    pub(crate) fn pane_subject(&self, pane_id: u64) -> String {
         let subject = self
             .pane_conversation_id(pane_id)
             .and_then(|id| self.conversations.iter().find(|c| c.id == id))

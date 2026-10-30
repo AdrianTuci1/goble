@@ -392,6 +392,10 @@ pub struct Scrollable {
     /// short conversation reads as content ending at the input rather than as
     /// content floating at the top of the pane.
     bottom_anchor: bool,
+    /// Whether the viewport shrinks to the content along the scroll axis
+    /// instead of filling the constraint (see
+    /// [`Scrollable::with_fit_content`]).
+    fit_content: bool,
     /// The child's size from the last layout, which is what the flush above is
     /// measured against.
     content: Vector2F,
@@ -415,6 +419,7 @@ impl Scrollable {
             axis,
             state: None,
             bottom_anchor: false,
+            fit_content: false,
             content: Vector2F::zero(),
             pointer_over: false,
             cursor: None,
@@ -434,6 +439,17 @@ impl Scrollable {
     /// with a state has a viewport to flush against; without one this is inert.
     pub fn with_bottom_anchor(mut self, anchored: bool) -> Self {
         self.bottom_anchor = anchored;
+        self
+    }
+
+    /// Shrink the viewport along the scroll axis to the content instead of
+    /// filling the constraint. A region that shows a surface which grows with
+    /// what it holds — the composer's approval body — keeps its own height up to
+    /// the cap the constraint gives and scrolls past it, rather than spending
+    /// the whole cap on a two-line command. Off by default: a transcript or a
+    /// list fills the space it is given.
+    pub fn with_fit_content(mut self, fit: bool) -> Self {
+        self.fit_content = fit;
         self
     }
 
@@ -488,9 +504,14 @@ impl Element for Scrollable {
         let viewport = match self.axis {
             Axis::Vertical => {
                 if constraint.max.y.is_finite() {
+                    let height = if self.fit_content {
+                        child_size.y.min(constraint.max.y)
+                    } else {
+                        constraint.max.y
+                    };
                     vec2f(
                         child_size.x.min(constraint.max.x).max(constraint.min.x),
-                        constraint.max.y,
+                        height.max(constraint.min.y),
                     )
                 } else {
                     child_size

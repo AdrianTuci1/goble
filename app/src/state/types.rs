@@ -268,6 +268,16 @@ pub struct PaneRuntime {
     /// The app-owned selected candidate index for `pending_command`, so the
     /// composer's selection survives the per-frame rebuild.
     pub command_selection: Option<Rc<RefCell<usize>>>,
+    /// The approval card's command viewport. App-owned for the same reason:
+    /// the card is rebuilt every frame, and a long command or candidate list
+    /// keeps the position the user scrolled it to.
+    pub command_scroll: Rc<RefCell<goble_ui::ScrollState>>,
+    /// The approval card's editable command: its text, the caret and the
+    /// viewport the field scrolls in. Seeded from the first candidate when the
+    /// proposal arrives, then owned by the user's edits until the decision.
+    pub command_draft: Rc<RefCell<String>>,
+    pub command_caret: Rc<RefCell<usize>>,
+    pub command_editor_scroll: Rc<RefCell<goble_ui::ScrollState>>,
     pub queued_prompt: Option<String>,
     pub busy: bool,
     /// What this pane's agent is doing, derived from the real turn/approval/ask
@@ -361,6 +371,17 @@ pub struct ReasoningRow {
 }
 
 impl PaneRuntime {
+    /// Drop the suspended command and the edit state that belonged to it.
+    /// Called wherever a proposal is settled or abandoned, so the next one
+    /// opens on its own candidate instead of the previous draft.
+    pub(crate) fn reset_command_edit(&mut self) {
+        self.pending_command = None;
+        self.command_selection = None;
+        *self.command_draft.borrow_mut() = String::new();
+        *self.command_caret.borrow_mut() = 0;
+        *self.command_editor_scroll.borrow_mut() = goble_ui::ScrollState::default();
+    }
+
     /// Fold one live reasoning transition into the pane's accumulated steps.
     ///
     /// A `started` at step 0 begins a new reasoning turn, so the previous
@@ -522,6 +543,13 @@ pub struct TokenUsagePayload {
 pub struct PaneControls {
     /// Whether this pane auto-approves `ask_user` questions.
     pub auto_approve: bool,
+    /// How this pane treats a command the harness proposes: run it at once,
+    /// ask first, refuse it (plan only), or review it. The composer draws the
+    /// control; the pane's proposal path applies it.
+    pub approval_mode: ApprovalMode,
+    /// Whether the approval-mode menu is open. App-owned like the model menu's
+    /// flag, so it survives the per-frame rebuild.
+    pub approval_menu_open: Rc<RefCell<bool>>,
     /// This pane's model (shown as the composer's model label).
     pub model: String,
     /// The environment (medium) this pane's conversation runs on, as the
@@ -639,6 +667,12 @@ impl PaneControls {
     pub fn new(model: String, auto_approve: bool, branch: String) -> Self {
         Self {
             auto_approve,
+            approval_mode: if auto_approve {
+                ApprovalMode::AlwaysApprove
+            } else {
+                ApprovalMode::Manual
+            },
+            approval_menu_open: Rc::new(RefCell::new(false)),
             model,
             environment: String::new(),
             branch,

@@ -84,7 +84,9 @@ fn start_telemetry() -> Option<Arc<Telemetry>> {
     match try_start_telemetry() {
         Ok(telemetry) => Some(telemetry),
         Err(err) => {
-            env_logger::init();
+            // Telemetry could not take the logger, but the app still needs its
+            // own sinks: stderr and `~/.goble/logs/goble.log`.
+            goble_app::logging::install_default();
             log::warn!("telemetry is off for this run: {err}");
             None
         }
@@ -98,9 +100,11 @@ fn try_start_telemetry() -> Result<Arc<Telemetry>, Box<dyn std::error::Error>> {
     let telemetry = Telemetry::start(config)?;
 
     // Telemetry must own the logger, so it can keep the recent log tail that
-    // travels with a crash report. `env_logger` still does the writing.
-    let logger = env_logger::Builder::from_default_env().build();
-    let max_level = logger.filter();
+    // travels with a crash report. The tee writes to stderr and to
+    // `~/.goble/logs/goble.log`, so a GUI run keeps its errors after the
+    // terminal is gone.
+    let logger = goble_app::logging::app_logger();
+    let max_level = logger.max_level();
     telemetry.install_logger(Box::new(logger), max_level)?;
     telemetry.clone().install_panic_hook();
     Ok(telemetry)

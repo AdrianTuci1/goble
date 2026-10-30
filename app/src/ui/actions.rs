@@ -144,6 +144,10 @@ pub struct UiActions {
     pub on_command_decision: CommandDecisionHandler,
     /// Toggle one pane's auto-approve (autonomy) switch above its composer.
     pub on_toggle_auto_approve: Rc<RefCell<dyn FnMut(u64, bool)>>,
+    /// Set one pane's approval mode from the composer's mode control or the
+    /// Shift+Tab cycle: always-approve, manual, plan, auto-review.
+    pub on_select_approval_mode:
+        Rc<RefCell<dyn FnMut(u64, goble_ui::ApprovalMode)>>,
     /// Turn modal (vim) editing on or off for the rich input. The choice is
     /// persisted; turning it off returns every pane's editor to insert mode.
     pub on_toggle_vim_mode: Rc<RefCell<dyn FnMut(bool)>>,

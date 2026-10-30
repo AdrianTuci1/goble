@@ -941,3 +941,210 @@ fn the_general_filter_bar_is_a_real_field_with_the_counts() {
         "the general bar types into the same app-owned query"
     );
 }
+
+/// The SGR colours a command printed resolve through the terminal palette: the
+/// sixteen base colours, the 6×6×6 cube and a 24-bit truecolor.
+#[test]
+fn sgr_colours_resolve_through_the_ansi_table_the_cube_and_truecolor() {
+    let palette = goble_terminal::Palette::xterm();
+    let data = TerminalData::for_command(
+        "printf",
+        "\x1b[31mred\x1b[0m \x1b[38;5;196mcube\x1b[0m \x1b[38;2;1;2;3mtrue\x1b[0m",
+        TerminalStatus::Success,
+    );
+    let runs = draw_runs(&paint_block(&data));
+    let color_of = |want: &str| {
+        runs.iter()
+            .find(|(text, _)| text == want)
+            .map(|(_, color)| *color)
+            .unwrap_or_else(|| panic!("{want} is drawn, got {runs:?}"))
+    };
+    let (r, g, b) = palette.ansi[1];
+    assert_eq!(color_of("red"), ColorU::new(r, g, b, 255));
+    // Index 196 is the cube's pure red.
+    assert_eq!(color_of("cube"), ColorU::new(255, 0, 0, 255));
+    assert_eq!(color_of("true"), ColorU::new(1, 2, 3, 255));
+}
+
+/// The SGR attributes a command printed reach the drawn runs: bold and italic
+/// through the faces, underline and strikeout as rules, and dim as a darker ink.
+#[test]
+fn sgr_attributes_reach_the_drawn_runs() {
+    use crate::platform::text_atlas::FontWeight;
+
+    let app = app();
+    let data = TerminalData::for_command(
+        "printf",
+        "\x1b[1mbold\x1b[0m \x1b[3mitalic\x1b[0m \x1b[4munder\x1b[0m \x1b[9mstruck\x1b[0m \x1b[2mdim\x1b[0m",
+        TerminalStatus::Success,
+    );
+    let commands = paint_block(&data);
+    let drawn = |want: &str| {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                crate::render::RenderCommand::DrawText {
+                    origin,
+                    text,
+                    color,
+                    font_weight,
+                    font_italic,
+                    ..
+                } if text == want => Some((*origin, *color, *font_weight, *font_italic)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{want} is drawn: {commands:?}"))
+    };
+    let line_height = 13.0 * 1.4;
+
+    let (_, _, weight, italic) = drawn("bold");
+    assert_eq!(weight, FontWeight::Bold, "SGR 1 draws the bold face");
+    assert!(!italic);
+
+    let (_, _, weight, italic) = drawn("italic");
+    assert_eq!(weight, FontWeight::Regular);
+    assert!(italic, "SGR 3 draws the oblique face");
+
+    let (under_origin, under_color, ..) = drawn("under");
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            crate::render::RenderCommand::FillRect { rect, color, .. }
+                if *color == under_color
+                    && (rect.origin.y - (under_origin.y + line_height - 1.0)).abs() < 0.5
+                    && rect.width() > 0.0
+        )),
+        "SGR 4 draws a rule under the run: {commands:?}"
+    );
+
+    let (struck_origin, struck_color, ..) = drawn("struck");
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            crate::render::RenderCommand::FillRect { rect, color, .. }
+                if *color == struck_color
+                    && (rect.origin.y - (struck_origin.y + line_height * 0.55)).abs() < 0.5
+        )),
+        "SGR 9 draws a rule through the run: {commands:?}"
+    );
+
+    let (_, dim_color, ..) = drawn("dim");
+    let text = app.theme.color(ColorToken::Text);
+    assert_ne!(dim_color, text, "SGR 2 darkens the ink");
+    assert!(
+        dim_color.r < text.r && dim_color.g < text.g && dim_color.b < text.b,
+        "the dim run is a darker version of the text colour, got {dim_color:?}"
+    );
+}
+
+/// A cell of a block's own screen as the renderer sees it.
+fn cell(ch: char) -> goble_terminal::ScreenCell {
+    goble_terminal::ScreenCell {
+        ch,
+        ..goble_terminal::ScreenCell::default()
+    }
+}
+
+fn indexed(ch: char, index: u8) -> goble_terminal::ScreenCell {
+    goble_terminal::ScreenCell {
+        ch,
+        fg: goble_terminal::ScreenColor::Indexed(index),
+        ..goble_terminal::ScreenCell::default()
+    }
+}
+
+fn line(cells: Vec<goble_terminal::ScreenCell>) -> goble_terminal::ScreenLine {
+    goble_terminal::ScreenLine { cells }
+}
+
+/// Adjacent cells of one style draw as one run; a style change splits it, and a
+/// line built from a block's own cells keeps both.
+#[test]
+fn adjacent_cells_of_one_style_draw_as_one_run() {
+    let cells = line(vec![
+        indexed('a', 1),
+        indexed('b', 1),
+        indexed('c', 2),
+        indexed('d', 2),
+    ]);
+    let data = TerminalData::for_command_lines(
+        "run",
+        &[cells],
+        goble_terminal::Palette::xterm(),
+        TerminalStatus::Success,
+    );
+    let runs = draw_runs(&paint_block(&data));
+    let colored: Vec<(String, ColorU)> = runs
+        .iter()
+        .filter(|(text, _)| text == "ab" || text == "cd")
+        .cloned()
+        .collect();
+    assert_eq!(colored.len(), 2, "two styles draw two runs, got {runs:?}");
+    assert_eq!(colored[0].0, "ab");
+    assert_eq!(colored[1].0, "cd");
+    assert_ne!(colored[0].1, colored[1].1, "the two styles keep their inks");
+}
+
+/// A line built from a block's own cells keeps inverse video: the cell paints
+/// its background and draws its text in the colour that background covered,
+/// both resolved through the theme's palette.
+#[test]
+fn an_inverse_cell_paints_its_background_from_the_theme_palette() {
+    let app = app();
+    let palette = app.theme.terminal_palette();
+    let inverse = goble_terminal::ScreenCell {
+        attrs: goble_terminal::CellAttrs {
+            inverse: true,
+            ..goble_terminal::CellAttrs::default()
+        },
+        ..goble_terminal::ScreenCell::default()
+    };
+    let data = TerminalData::for_command_lines(
+        "run",
+        &[line(vec![inverse; 3])],
+        palette,
+        TerminalStatus::Success,
+    );
+    let commands = paint_block(&data);
+    let text = app.theme.color(ColorToken::Text);
+    let background = app.theme.color(ColorToken::Bg);
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            crate::render::RenderCommand::FillRect { rect, color, .. }
+                if *color == text && rect.width() > 0.0
+        )),
+        "the inverse cells paint a band in the theme's text colour: {commands:?}"
+    );
+    let runs = draw_runs(&commands);
+    assert!(
+        runs.iter().any(|(_, color)| *color == background),
+        "inverse text is drawn in the theme's background colour: {runs:?}"
+    );
+}
+
+/// A wide character keeps its one glyph, the spacer cell that follows it adds
+/// nothing, and emoji survive, so a TUI's columns keep their shape.
+#[test]
+fn wide_and_emoji_characters_survive_to_the_drawn_output() {
+    let mut wide = cell('日');
+    wide.attrs.wide = true;
+    let mut spacer = cell(' ');
+    spacer.attrs.wide_spacer = true;
+    let cells = line(vec![wide, spacer, cell('本'), {
+        let mut mark = cell(' ');
+        mark.attrs.wide_spacer = true;
+        mark
+    }, cell('😀')]);
+    let data = TerminalData::for_command_lines(
+        "run",
+        &[cells],
+        goble_terminal::Palette::xterm(),
+        TerminalStatus::Success,
+    );
+    let drawn = drawn_texts(&paint_block(&data));
+    assert!(
+        drawn.iter().any(|text| text.contains("日本😀")),
+        "wide characters and emoji keep their glyphs: {drawn:?}"
+    );
+}

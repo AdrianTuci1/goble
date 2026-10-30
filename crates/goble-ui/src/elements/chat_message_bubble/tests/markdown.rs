@@ -107,6 +107,51 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
 }
 
 #[test]
+fn a_streaming_reasoning_row_is_open_until_it_finishes() {
+    let expanded = Rc::new(RefCell::new(HashMap::new()));
+    let key = "c1:0";
+
+    let live: Vec<String> = reasoning_commands_in(&expanded, key, false)
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        live.iter().any(|text| text == "Thinking…"),
+        "the live row says it is still thinking, got {live:?}"
+    );
+    assert!(
+        live.iter()
+            .any(|text| text.contains("weighing the options")),
+        "the live thinking body is drawn while it streams, got {live:?}"
+    );
+    assert!(
+        expanded.borrow().is_empty(),
+        "streaming needs no manual fold state"
+    );
+
+    let finished: Vec<String> = reasoning_commands_in(&expanded, key, true)
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        finished.iter().any(|text| text == "Thought"),
+        "a finished step is grok-build's one-line Thought row, got {finished:?}"
+    );
+    assert!(
+        !finished
+            .iter()
+            .any(|text| text.contains("weighing the options")),
+        "the finished body folds away, got {finished:?}"
+    );
+}
+
+#[test]
 fn reasoning_header_click_toggles_the_row() {
     let app = AppContext::default();
     let expanded = Rc::new(RefCell::new(HashMap::new()));

@@ -58,6 +58,12 @@ struct OpenAiStreamOptions {
 pub(super) struct OpenAiMessage {
     role: String,
     pub(super) content: Option<String>,
+    /// DeepSeek's thinking mode requires the field back on every assistant
+    /// message. A tool-call turn carries the empty string; the reply that
+    /// ended the turn carries the chain of thought it streamed. Other
+    /// endpoints never receive the key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -134,6 +140,10 @@ pub(super) struct OpenAiStreamChoice {
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct OpenAiStreamDelta {
     pub(super) content: Option<String>,
+    /// A thinking model's chain of thought, streamed before the answer. It is
+    /// not part of the reply, but DeepSeek's next request must carry it back.
+    #[serde(default)]
+    pub(super) reasoning_content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<OpenAiStreamToolCall>>,
 }
@@ -163,7 +173,10 @@ pub(super) fn provider_content(message: &Message) -> String {
     }
 }
 
-pub(super) fn into_openai_messages(messages: Vec<Message>) -> Vec<OpenAiMessage> {
+pub(super) fn into_openai_messages(
+    messages: Vec<Message>,
+    thinking_provider: bool,
+) -> Vec<OpenAiMessage> {
     messages
         .into_iter()
         .map(|m| {
@@ -187,6 +200,18 @@ pub(super) fn into_openai_messages(messages: Vec<Message>) -> Vec<OpenAiMessage>
                     })
                     .collect()
             });
+            // DeepSeek checks its thinking-mode conversations for this field:
+            // a tool-call turn must carry it as the empty string, and the turn
+            // that ended with an answer carries what it streamed. A row from
+            // before the field was stored still satisfies the check with the
+            // empty string, so an old conversation is not bricked.
+            let reasoning_content = thinking_provider.then(|| {
+                if tool_calls.is_some() {
+                    String::new()
+                } else {
+                    m.reasoning_content.clone().unwrap_or_default()
+                }
+            });
             let tool_call_id = m.tool_call_id.clone();
             let content = provider_content(&m);
             OpenAiMessage {
@@ -196,6 +221,7 @@ pub(super) fn into_openai_messages(messages: Vec<Message>) -> Vec<OpenAiMessage>
                 } else {
                     Some(content)
                 },
+                reasoning_content,
                 tool_call_id,
                 tool_calls,
             }
@@ -252,6 +278,7 @@ impl LlmProvider for OpenAiProvider {
         while let Some(event) = stream.next().await {
             match event {
                 CompletionStreamEvent::AssistantDelta(delta) => content.push_str(&delta),
+                CompletionStreamEvent::ReasoningDelta(_) => {}
                 CompletionStreamEvent::ToolCalls(calls) => tool_calls = calls,
                 CompletionStreamEvent::Usage(reported) => usage = Some(reported),
                 CompletionStreamEvent::Done => {}
@@ -271,7 +298,10 @@ impl LlmProvider for OpenAiProvider {
     ) -> Result<Pin<Box<dyn Stream<Item = CompletionStreamEvent> + Send>>> {
         let body = OpenAiRequest {
             model: request.model,
-            messages: into_openai_messages(request.messages),
+            messages: into_openai_messages(
+                request.messages,
+                self.name.eq_ignore_ascii_case("deepseek"),
+            ),
             tools: into_openai_tools(request.tools),
             temperature: request.temperature,
             stream: true,
@@ -287,11 +317,16 @@ impl LlmProvider for OpenAiProvider {
             .json(&body)
             .send()
             .await
+            .map_err(|error| {
+                crate::llm::log_transport_failure(&self.name, &body.model, &url, &error);
+                error
+            })
             .with_context(|| format!("failed to POST to {url}"))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text: String = resp.text().await.unwrap_or_default();
+            crate::llm::log_http_failure(&self.name, &body.model, &url, status.as_u16(), &text);
             anyhow::bail!("LLM request failed: {status} {text}");
         }
 
@@ -342,6 +377,11 @@ impl LlmProvider for OpenAiProvider {
                     }
 
                     for choice in parsed.choices {
+                        if let Some(reasoning) = choice.delta.reasoning_content {
+                            if !reasoning.is_empty() {
+                                yield CompletionStreamEvent::ReasoningDelta(reasoning);
+                            }
+                        }
                         if let Some(content) = choice.delta.content {
                             if !content.is_empty() {
                                 yield CompletionStreamEvent::AssistantDelta(content);

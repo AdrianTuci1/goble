@@ -12,6 +12,13 @@ use winit::application::ApplicationHandler;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
+/// The smallest inner width the window may be resized to. Matches warp-new's
+/// `MIN_WINDOW_WIDTH`, so the two apps stop at the same place.
+pub const MIN_WINDOW_WIDTH: f64 = 480.0;
+/// The smallest inner height the window may be resized to, warp-new's
+/// `MIN_WINDOW_HEIGHT`.
+pub const MIN_WINDOW_HEIGHT: f64 = 192.0;
+
 /// A handle the UI uses to request window-level changes (e.g. toggling
 /// fullscreen). The winit event loop owns the real [`Window`] and installs a
 /// handler here once the window is created; the app layer can safely call
@@ -177,7 +184,14 @@ impl ApplicationHandler for App {
         }
         let mut window_attributes = winit::window::WindowAttributes::default()
             .with_title("Goble")
-            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0))
+            // The smallest a window may be dragged to, the same floor warp-new
+            // uses: below it the topbar and a single pane stop fitting side by
+            // side.
+            .with_min_inner_size(winit::dpi::LogicalSize::new(
+                MIN_WINDOW_WIDTH,
+                MIN_WINDOW_HEIGHT,
+            ));
 
         // macOS: use the real OS titlebar, but make it transparent so the app
         // content (topbar surface) doubles as the titlebar background. The

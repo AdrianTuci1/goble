@@ -6,10 +6,11 @@
 //! instead of a grid, so an ANSI-coloured blob is drawn with the colours it
 //! emitted instead of showing its escape sequences literally.
 //!
-//! Only what a line of text can carry is kept — the foreground colour, bold,
-//! italic and underline. Everything else (cursor addressing, erases, modes, an
-//! unknown final) is consumed and ignored, never dropped from the text around
-//! it. The result is the same cell model the screen hands the renderer
+//! What a line of text can carry is kept — the foreground and background
+//! colours, bold, dim, italic, the underline styles, inverse, hidden and
+//! strikeout. Everything else (cursor addressing, erases, modes, an unknown
+//! final) is consumed and ignored, never dropped from the text around it. The
+//! result is the same cell model the screen hands the renderer
 //! ([`ScreenLine`]), so both paths describe a colour the same way.
 
 use alacritty_terminal::vte::ansi::{Attr, Color, Handler, NamedColor, Processor, Rgb};
@@ -42,9 +43,15 @@ struct LineSink {
     row: usize,
     col: usize,
     fg: ScreenColor,
+    bg: ScreenColor,
     bold: bool,
+    dim: bool,
     italic: bool,
     underline: Underline,
+    underline_color: Option<ScreenColor>,
+    inverse: bool,
+    hidden: bool,
+    strikeout: bool,
 }
 
 impl LineSink {
@@ -54,9 +61,15 @@ impl LineSink {
             row: 0,
             col: 0,
             fg: ScreenColor::Named(NamedColor::Foreground),
+            bg: ScreenColor::Named(NamedColor::Background),
             bold: false,
+            dim: false,
             italic: false,
             underline: Underline::None,
+            underline_color: None,
+            inverse: false,
+            hidden: false,
+            strikeout: false,
         }
     }
 
@@ -64,11 +77,16 @@ impl LineSink {
         ScreenCell {
             ch,
             fg: self.fg,
-            bg: ScreenColor::Named(NamedColor::Background),
+            bg: self.bg,
             attrs: CellAttrs {
                 bold: self.bold,
+                dim: self.dim,
                 italic: self.italic,
                 underline: self.underline,
+                underline_color: self.underline_color,
+                inverse: self.inverse,
+                hidden: self.hidden,
+                strikeout: self.strikeout,
                 ..CellAttrs::default()
             },
             zerowidth: Vec::new(),
@@ -156,24 +174,44 @@ impl Handler for LineSink {
         match attr {
             Attr::Reset => {
                 self.fg = ScreenColor::Named(NamedColor::Foreground);
+                self.bg = ScreenColor::Named(NamedColor::Background);
                 self.bold = false;
+                self.dim = false;
                 self.italic = false;
                 self.underline = Underline::None;
+                self.underline_color = None;
+                self.inverse = false;
+                self.hidden = false;
+                self.strikeout = false;
             }
             Attr::Bold => self.bold = true,
+            Attr::Dim => self.dim = true,
             Attr::Italic => self.italic = true,
             Attr::Underline => self.underline = Underline::Single,
             Attr::DoubleUnderline => self.underline = Underline::Double,
             Attr::Undercurl => self.underline = Underline::Curly,
             Attr::DottedUnderline => self.underline = Underline::Dotted,
             Attr::DashedUnderline => self.underline = Underline::Dashed,
-            Attr::CancelBold | Attr::CancelBoldDim => self.bold = false,
+            Attr::Reverse => self.inverse = true,
+            Attr::Hidden => self.hidden = true,
+            Attr::Strike => self.strikeout = true,
+            Attr::CancelBold => self.bold = false,
+            Attr::CancelBoldDim => {
+                self.bold = false;
+                self.dim = false;
+            }
             Attr::CancelItalic => self.italic = false,
-            Attr::CancelUnderline => self.underline = Underline::None,
+            Attr::CancelUnderline => {
+                self.underline = Underline::None;
+                self.underline_color = None;
+            }
+            Attr::CancelReverse => self.inverse = false,
+            Attr::CancelHidden => self.hidden = false,
+            Attr::CancelStrike => self.strikeout = false,
             Attr::Foreground(color) => self.fg = map_color(color),
-            // Background, dim, reverse, hidden, strikeout, blink and underline
-            // colour are not drawn by a transcript line: ignored, but the text
-            // they apply to is not.
+            Attr::Background(color) => self.bg = map_color(color),
+            Attr::UnderlineColor(color) => self.underline_color = color.map(map_color),
+            // Blink has no visual effect on a captured line.
             _ => {}
         }
     }
@@ -226,6 +264,40 @@ mod tests {
         assert!(!cells[1].attrs.bold);
         assert!(!cells[1].attrs.italic);
         assert_eq!(cells[1].attrs.underline, Underline::None);
+    }
+
+    #[test]
+    fn background_dim_reverse_hidden_and_strikeout_are_carried() {
+        let lines = render_lines(
+            b"\x1b[41;2;7;8;9mx\x1b[0m \x1b[49;22;27;28;29my",
+        );
+        let cells = &lines[0].cells;
+        assert!(matches!(
+            cells[0].bg,
+            ScreenColor::Named(NamedColor::Red)
+        ));
+        assert!(cells[0].attrs.dim);
+        assert!(cells[0].attrs.inverse);
+        assert!(cells[0].attrs.hidden);
+        assert!(cells[0].attrs.strikeout);
+
+        let reset = &cells[2];
+        assert!(matches!(
+            reset.bg,
+            ScreenColor::Named(NamedColor::Background)
+        ));
+        assert!(!reset.attrs.dim);
+        assert!(!reset.attrs.inverse);
+        assert!(!reset.attrs.hidden);
+        assert!(!reset.attrs.strikeout);
+    }
+
+    #[test]
+    fn truecolor_and_indexed_backgrounds_are_kept() {
+        let lines = render_lines(b"\x1b[48;5;200ma\x1b[48;2;1;2;3mb");
+        let cells = &lines[0].cells;
+        assert_eq!(cells[0].bg, ScreenColor::Indexed(200));
+        assert_eq!(cells[1].bg, ScreenColor::Rgb(1, 2, 3));
     }
 
     #[test]

@@ -56,6 +56,25 @@ fn run_chat_turn_unregistered_harness_errors() {
 }
 
 #[test]
+fn a_daemon_error_lands_in_the_log_store() {
+    // The LLM's own rejection message is the only place the reason exists; it
+    // must survive the turn in the log store, not only in the pane's inline
+    // error and a stderr line nobody sees in a GUI run.
+    let (_dir, state) = tmp_state();
+    state.translate_daemon_event(goble_daemon_protocol::DaemonEvent::Error {
+        session_id: goble_harness_types::SessionId::new("chat-1"),
+        message: "LLM request failed: 400 Bad Request".into(),
+    });
+
+    let logs = state.get_logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].message,
+        "chat chat-1 failed: LLM request failed: 400 Bad Request"
+    );
+}
+
+#[test]
 fn command_proposed_is_emitted_as_chat_command_proposed() {
     // The harness suspension crosses the daemon translator as a structured
     // event the app can render, instead of being dropped at the adapter.
@@ -250,8 +269,7 @@ fn a_command_turn_frees_the_session_on_every_exit_path() {
     let _guard = rt.enter();
 
     // The three ways a proposed command can end. The failing path uses the
-    // real sandbox runner so an approved command that is refused by the
-    // allow-list errors without spawning a process.
+    // real sandbox runner so an approved command that exits non-zero errors.
     struct ExitPath {
         label: &'static str,
         runner: Option<Arc<dyn goble_core::harness::CommandRunner>>,
@@ -274,7 +292,7 @@ fn a_command_turn_frees_the_session_on_every_exit_path() {
                 goble_core::harness::SandboxedCommandRunner::default_tools(),
             )),
             decision: goble_core::harness::CommandDecision::Approve(
-                "definitely-not-allowed".to_string(),
+                "cat /definitely/missing/goble-file".to_string(),
             ),
         },
     ];
@@ -324,9 +342,7 @@ fn a_command_turn_frees_the_session_on_every_exit_path() {
                 "a rejected command is recorded as a rejection: {tool_rows:?}"
             ),
             "approved-but-failing" => assert!(
-                tool_rows
-                    .iter()
-                    .any(|t| t.contains("not in the allowed list")),
+                tool_rows.iter().any(|t| t.contains("command failed")),
                 "the approved-but-failing command reports its failure: {tool_rows:?}"
             ),
             _ => {}

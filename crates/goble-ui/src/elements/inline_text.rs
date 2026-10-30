@@ -26,6 +26,8 @@ pub struct TextSpan {
     /// Draw a rule under the run. Terminal output carries underline as an SGR
     /// attribute; prose never sets it.
     pub underline: bool,
+    /// Draw a rule through the run, as terminal output's strikeout does.
+    pub strikeout: bool,
     pub color: ColorU,
     pub background: Option<ColorU>,
     /// When set, this run is a live hit target: a click on it invokes the
@@ -42,6 +44,7 @@ impl TextSpan {
             family: FontFamily::System,
             italic: false,
             underline: false,
+            strikeout: false,
             color: ColorU::default(),
             background: None,
             on_click: None,
@@ -60,6 +63,11 @@ impl TextSpan {
 
     pub fn with_underline(mut self, underline: bool) -> Self {
         self.underline = underline;
+        self
+    }
+
+    pub fn with_strikeout(mut self, strikeout: bool) -> Self {
+        self.strikeout = strikeout;
         self
     }
 
@@ -106,6 +114,10 @@ pub struct InlineText {
     spans: Vec<TextSpan>,
     font_size: f32,
     line_height: f32,
+    /// Draw each run's background as the exact box its advance covers, the way
+    /// a terminal paints a cell. Off, a background is the padded code chip
+    /// prose wants.
+    cell_backgrounds: bool,
     placed: Vec<PlacedSpan>,
     /// When set, every visual row this flow draws is recorded here so a
     /// surface can select and copy the text. See [`SelectableText`].
@@ -120,6 +132,7 @@ impl InlineText {
             spans,
             font_size: DEFAULT_FONT_SIZE,
             line_height: DEFAULT_LINE_HEIGHT,
+            cell_backgrounds: false,
             placed: Vec::new(),
             selection: None,
             size: None,
@@ -141,6 +154,14 @@ impl InlineText {
 
     pub fn with_line_height(mut self, line_height: f32) -> Self {
         self.line_height = line_height;
+        self
+    }
+
+    /// Paint run backgrounds as exact cell fills: no padding and no corner, and
+    /// blank runs included. This is how a terminal draws a background-coloured
+    /// cell, where the spaces are part of the band.
+    pub fn with_cell_backgrounds(mut self, cell: bool) -> Self {
+        self.cell_backgrounds = cell;
         self
     }
 
@@ -179,6 +200,7 @@ fn same_style(a: &TextSpan, b: &TextSpan) -> bool {
         && a.family == b.family
         && a.italic == b.italic
         && a.underline == b.underline
+        && a.strikeout == b.strikeout
         && a.color == b.color
         && a.background == b.background
         && match (&a.on_click, &b.on_click) {
@@ -276,7 +298,28 @@ impl Element for InlineText {
             );
 
             if is_space {
-                pending_space = Some((index, text, width));
+                // A terminal paints a cell's background for every column it
+                // covers, blank ones included, so a styled space is placed where
+                // it stands instead of held back for the word after it.
+                if self.cell_backgrounds && span.background.is_some() {
+                    let mut space_span = span;
+                    space_span.text = text;
+                    push_chunk(
+                        &mut placed,
+                        PlacedSpan {
+                            x: cursor_x,
+                            y: cursor_y,
+                            max_width: drawn_run_width(max_width, cursor_x, width),
+                            width,
+                            span: space_span,
+                            state: InteractiveState::default(),
+                        },
+                        max_width,
+                    );
+                    cursor_x += width;
+                } else {
+                    pending_space = Some((index, text, width));
+                }
                 continue;
             }
 
@@ -377,12 +420,23 @@ impl Element for InlineText {
             Some(r) => r,
             None => return,
         };
+        // A flow scrolled out of its viewport paints nothing, and contributes
+        // nothing to the text atlas. Each span is its own run there, so an
+        // off-screen block of terminal output is a row of large entries the
+        // window's chrome would have to compete with.
+        let size = self.size.unwrap_or_default();
+        if !renderer.visible(crate::geometry::rectf(origin.x, origin.y, size.x, size.y)) {
+            return;
+        }
         for placed in &self.placed {
             let base = vec2f(origin.x + placed.x, origin.y + placed.y);
             if let Some(bg) = placed.span.background {
-                // Whitespace only pads a run out to the next word; it carries no
-                // box of its own.
-                if !placed.span.text.trim().is_empty() {
+                if self.cell_backgrounds {
+                    let height = self.font_size * self.line_height;
+                    renderer.fill_rect(rectf(base.x, base.y, placed.width, height), bg);
+                } else if !placed.span.text.trim().is_empty() {
+                    // Whitespace only pads a run out to the next word; it
+                    // carries no box of its own.
                     let height = self.font_size * self.line_height;
                     renderer.fill_rounded_rect(
                         rectf(base.x - CODE_BG_PAD, base.y - CODE_BG_PAD, placed.width + CODE_BG_PAD * 2.0, height + CODE_BG_PAD * 2.0),
@@ -407,6 +461,14 @@ impl Element for InlineText {
                 let baseline = base.y + self.font_size * self.line_height - thickness;
                 renderer.fill_rect(
                     rectf(base.x, baseline, placed.width, thickness),
+                    placed.span.color,
+                );
+            }
+            if placed.span.strikeout {
+                let thickness = 1.0;
+                let middle = base.y + self.font_size * self.line_height * 0.55;
+                renderer.fill_rect(
+                    rectf(base.x, middle, placed.width, thickness),
                     placed.span.color,
                 );
             }
@@ -527,6 +589,7 @@ pub fn resolve_span(
         family,
         italic,
         underline: false,
+        strikeout: false,
         color,
         background,
         on_click: None,

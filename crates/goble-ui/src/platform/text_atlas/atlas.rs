@@ -5,7 +5,11 @@ use crate::theme::FontFamily;
 
 use super::fonts::{rasterize_text, FontWeight};
 
-pub(super) const ATLAS_SIZE: u32 = 2048;
+/// A 16 MB single-channel atlas. It packs whole runs, so a screen full of
+/// terminal output at 2x display scale is several megabytes of boxes on its
+/// own; 2048² left little room for the window's chrome once a scrollback and a
+/// transcript were both on screen.
+pub(super) const ATLAS_SIZE: u32 = 4096;
 /// Empty texels kept between two entries, and between an entry and the edge of
 /// the atlas. The atlas is sampled with a linear filter, so the outermost
 /// fragment of a glyph's quad can land between its own texels and the ones
@@ -102,8 +106,11 @@ pub(super) fn text_key(
 /// runs rasterized to. Kept apart from the wgpu objects so the packing and the
 /// pixels can be read back in a test, with no device.
 pub(super) struct AtlasStore {
-    /// One byte of coverage per texel, row-major, [`ATLAS_SIZE`] per row: the
-    /// exact bytes the texture holds.
+    /// The atlas's edge in texels. It is [`ATLAS_SIZE`] outside tests; a
+    /// smaller store lets a test fill one in a handful of runs.
+    size: u32,
+    /// One byte of coverage per texel, row-major, `size` per row: the exact
+    /// bytes the texture holds.
     pixels: Vec<u8>,
     entries: HashMap<TextKey, AtlasEntry>,
     cursor_x: u32,
@@ -113,13 +120,25 @@ pub(super) struct AtlasStore {
 
 impl AtlasStore {
     pub(super) fn new() -> Self {
+        Self::with_size(ATLAS_SIZE)
+    }
+
+    fn with_size(size: u32) -> Self {
         Self {
-            pixels: vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize],
+            size,
+            pixels: vec![0u8; (size * size) as usize],
             entries: HashMap::new(),
             cursor_x: PADDING,
             cursor_y: PADDING,
             row_height: 0,
         }
+    }
+
+    /// A store small enough for a test to fill, while packing exactly like the
+    /// real one.
+    #[cfg(test)]
+    pub(super) fn for_test(size: u32) -> Self {
+        Self::with_size(size)
     }
 
     pub(super) fn contains(&self, key: &TextKey) -> bool {
@@ -153,7 +172,7 @@ impl AtlasStore {
         // empty it is. Callers with an unbounded wrap width (terminal lines,
         // code blocks) produce those; clamping them into the texture would
         // stretch or crop them, so they are skipped instead.
-        if width + PADDING > ATLAS_SIZE || height + PADDING > ATLAS_SIZE {
+        if width + PADDING > self.size || height + PADDING > self.size {
             return Placement::TooLarge;
         }
 
@@ -165,12 +184,12 @@ impl AtlasStore {
             key.clone(),
             AtlasEntry {
                 uv_origin: [
-                    region.x as f32 / ATLAS_SIZE as f32,
-                    region.y as f32 / ATLAS_SIZE as f32,
+                    region.x as f32 / self.size as f32,
+                    region.y as f32 / self.size as f32,
                 ],
                 uv_size: [
-                    width as f32 / ATLAS_SIZE as f32,
-                    height as f32 / ATLAS_SIZE as f32,
+                    width as f32 / self.size as f32,
+                    height as f32 / self.size as f32,
                 ],
                 size: [width as f32, height as f32],
                 offset: entry.offset,
@@ -187,12 +206,12 @@ impl AtlasStore {
         let mut x = self.cursor_x;
         let mut y = self.cursor_y;
         let mut row_height = self.row_height;
-        if x + width + PADDING > ATLAS_SIZE {
+        if x + width + PADDING > self.size {
             x = PADDING;
             y += row_height + PADDING;
             row_height = 0;
         }
-        if y + height + PADDING > ATLAS_SIZE {
+        if y + height + PADDING > self.size {
             return None;
         }
         self.cursor_x = x + width + PADDING;
@@ -212,7 +231,7 @@ impl AtlasStore {
     fn blit(&mut self, region: Region, src_stride: u32, data: &[u8]) {
         for row in 0..region.height {
             let src = (row * src_stride) as usize;
-            let dst = ((region.y + row) * ATLAS_SIZE + region.x) as usize;
+            let dst = ((region.y + row) * self.size + region.x) as usize;
             self.pixels[dst..dst + region.width as usize]
                 .copy_from_slice(&data[src..src + region.width as usize]);
         }
@@ -229,6 +248,46 @@ impl AtlasStore {
         self.row_height = 0;
         self.pixels.fill(0);
     }
+}
+
+/// Place a frame's keys into `store`, clearing it once if it fills.
+///
+/// Returns whether the atlas was cleared, and the runs to upload. After a
+/// clear, placement continues with the keys that had not been placed yet
+/// instead of starting over: the runs placed before the clear lost their
+/// pixels with it, while the ones later in the frame — the window's chrome,
+/// drawn over the panes — are the runs a frame cannot afford to lose. Those
+/// first runs draw nothing until the next clear makes room for them again.
+pub(super) fn pack(store: &mut AtlasStore, keys: &[TextKey]) -> (bool, Vec<(Region, Vec<u8>)>) {
+    let mut placed = Vec::new();
+    let mut restarted = false;
+    let mut index = 0;
+    while index < keys.len() {
+        let key = &keys[index];
+        if store.contains(key) {
+            index += 1;
+            continue;
+        }
+        match store.place(key) {
+            Placement::Written { region, data } => {
+                placed.push((region, data));
+                index += 1;
+            }
+            Placement::Empty | Placement::TooLarge => index += 1,
+            Placement::Full if !restarted => {
+                store.reset();
+                restarted = true;
+                // The regions above were wiped with the reset: the pass on the
+                // empty atlas is the one whose runs get uploaded.
+                placed.clear();
+            }
+            // A key that still does not fit on an empty atlas is one that
+            // cannot ever fit (`TooLarge` covers that, so this is the
+            // belt-and-braces path): skip it rather than spin.
+            Placement::Full => index += 1,
+        }
+    }
+    (restarted, placed)
 }
 
 impl TextAtlas {
@@ -387,32 +446,14 @@ impl TextAtlas {
         // cleared and filled again from this frame's commands. Without that, a
         // long-lived window would eventually fail every placement and draw no
         // text at all (the entries are never evicted on their own).
-        let mut restarted = false;
-        let mut index = 0;
-        while index < keys.len() {
-            let key = &keys[index];
-            if self.store.contains(key) {
-                index += 1;
-                continue;
-            }
-            match self.store.place(key) {
-                Placement::Written { region, data } => {
-                    self.upload(queue, region, &data);
-                    index += 1;
-                }
-                Placement::Empty | Placement::TooLarge => index += 1,
-                Placement::Full if !restarted => {
-                    // Everything placed so far in this frame was dropped with
-                    // the atlas, so the pass starts over on the empty one.
-                    self.store.reset();
-                    self.clear_texture(queue);
-                    restarted = true;
-                    index = 0;
-                }
-                // A key that still does not fit on an empty atlas is one that
-                // cannot ever fit (`TooLarge` covers that, so this is the
-                // belt-and-braces path): skip it rather than spin.
-                Placement::Full => index += 1,
+        let (restarted, placements) = pack(&mut self.store, &keys);
+        if restarted {
+            // The cleared store already holds this pass's pixels, so one
+            // upload puts both the wipe and the new runs into the texture.
+            self.clear_texture(queue);
+        } else {
+            for (region, data) in placements {
+                self.upload(queue, region, &data);
             }
         }
     }

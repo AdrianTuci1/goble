@@ -31,6 +31,72 @@ use super::*;
         );
     }
 
+    /// The shell a harness turn routes its command through keeps being pumped
+    /// even while the pane draws its agent view: nothing builds the pane's
+    /// terminal in that frame, and pumping only painted shells left the call
+    /// waiting until the tool timed out.
+    ///
+    /// The whole round trip runs through [`TerminalRegistry::pump_sessions`],
+    /// the app's per-frame path: the request reaches the pty, the claim attaches
+    /// to the `Preexec`, and the finished block's output is the tool result.
+    #[test]
+    fn a_pane_services_its_agent_command_without_painting_its_shell() {
+        let mut registry = TerminalRegistry::default();
+        let mut session = detached();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
+        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+        let answer = submit(&mut session, "echo hi");
+        registry.sessions.insert(7, session);
+
+        registry.pump_sessions();
+
+        assert_eq!(
+            &*captured.lock().unwrap(),
+            b"echo hi\r",
+            "the agent's command reached the pane's pty"
+        );
+        assert!(
+            registry
+                .sessions
+                .get(&7)
+                .is_some_and(|session| session.pending_claim().is_some()),
+            "and the pane holds the claim that answers the call"
+        );
+
+        // What the shell writes back between frames: the echoed line, the
+        // `Preexec` that proves the claimed command started, its output, and
+        // the finished hook. Nothing here pumps a session directly.
+        feed_to_registry(&mut registry, 7, b"echo hi\r\n");
+        feed_to_registry(
+            &mut registry,
+            7,
+            &goble_terminal::hooks::encode_hook(&preexec("echo hi")),
+        );
+        feed_to_registry(&mut registry, 7, b"hi\r\n");
+        feed_to_registry(
+            &mut registry,
+            7,
+            &goble_terminal::hooks::encode_hook(&HookEvent::CommandFinished(Default::default())),
+        );
+
+        assert_eq!(
+            answer.blocking_recv().expect("the pane answers"),
+            Ok("hi".to_string()),
+            "the harness's shell call returns the block's output"
+        );
+    }
+
+    /// Feed pty bytes into a registry-held session and let the frame's pump
+    /// service it, exactly as [`TerminalRegistry::pump_sessions`] does in the app.
+    fn feed_to_registry(registry: &mut TerminalRegistry, pane_id: u64, bytes: &[u8]) {
+        {
+            let session = registry.sessions.get(&pane_id).expect("the pane's session");
+            session.state.lock().unwrap().feed(bytes);
+        }
+        registry.pump_sessions();
+    }
+
     #[test]
     fn a_command_the_shell_never_ran_fails_the_agent_call() {
         let mut session = detached();

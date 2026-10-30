@@ -64,6 +64,179 @@ fn a_long_code_fence_wraps_inside_the_pane() {
     }
 }
 
+/// A table's columns share one set of widths: a body cell starts at the same x
+/// as its header, and no cell — including an unbroken token — runs past the
+/// bubble's right edge.
+#[test]
+fn a_table_aligns_its_columns_and_stays_inside_the_pane() {
+    let app = AppContext::default();
+    let width = 600.0;
+    let mut element: Box<dyn Element> = Box::new(ChatMessageBubble::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::table(
+            vec!["File".into(), "Summary".into(), "Notes".into()],
+            vec![
+                vec!["a.rs".into(), "beta".into(), "gamma".into()],
+                vec![
+                    "b.rs".into(),
+                    "delta".into(),
+                    "a_really_long_unbroken_token_that_would_run_past_the_right_edge".into(),
+                ],
+            ],
+        )],
+    ));
+    let commands = render_element(&mut element, vec2f(width, 900.0), &app);
+
+    let mut origins: std::collections::HashMap<&str, f32> = std::collections::HashMap::new();
+    for command in &commands {
+        if let RenderCommand::DrawText {
+            origin,
+            text,
+            max_width,
+            ..
+        } = command
+        {
+            // The run is broken at `max_width`, so that is where its ink ends:
+            // an over-wide token wraps inside the cell instead of running on.
+            assert!(
+                origin.x + max_width <= width + 0.5,
+                "{text:?} is drawn past the {width}-wide bubble"
+            );
+            let label = match text.as_str() {
+                "File" | "Summary" | "Notes" | "a.rs" | "b.rs" | "beta" | "gamma" | "delta" => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            };
+            if let Some(label) = label {
+                origins.insert(label, origin.x);
+            }
+        }
+    }
+
+    for (label, column) in [("a.rs", "File"), ("beta", "Summary"), ("b.rs", "File"), ("delta", "Summary"), ("gamma", "Notes")] {
+        let x = origins
+            .get(label)
+            .unwrap_or_else(|| panic!("{label:?} drew: {commands:?}"));
+        let header_x = origins
+            .get(column)
+            .unwrap_or_else(|| panic!("{column:?} drew: {commands:?}"));
+        assert!(
+            (x - header_x).abs() < 0.5,
+            "{label:?} starts at {x}, its column {column:?} at {header_x}"
+        );
+    }
+}
+
+#[test]
+fn a_long_command_row_wraps_inside_the_pane() {
+    let token = "a".repeat(600);
+    let long = call(
+        "run_command",
+        &format!(r#"{{"command":"{token}"}}"#),
+        ToolCallStatus::Finished,
+        None,
+    );
+    let (commands, width) =
+        paint_tool_calls_in_width(vec![long], ToolDisplayMode::Collapsed, 400.0);
+    assert_runs_fit(&commands, width);
+}
+
+#[test]
+fn a_long_command_output_wraps_inside_the_pane() {
+    let token = "b".repeat(600);
+    let long = call(
+        "run_command",
+        r#"{"command":"ls"}"#,
+        ToolCallStatus::Finished,
+        Some(&token),
+    );
+    let (commands, width) =
+        paint_tool_calls_in_width(vec![long], ToolDisplayMode::Expanded, 400.0);
+    assert_runs_fit(&commands, width);
+}
+
+#[test]
+fn a_long_sub_agent_row_keeps_its_open_action_in_the_pane() {
+    let token = "c".repeat(600);
+    let spawn = call(
+        "task",
+        &format!(r#"{{"description":"{token}"}}"#),
+        ToolCallStatus::Running,
+        None,
+    );
+    let identity = spawn.id.clone();
+    let mut sub_agents = HashMap::new();
+    sub_agents.insert(
+        identity,
+        record(
+            "child-1",
+            SubAgentRowStatus::Running,
+            "reading the migration",
+            Duration::from_secs(3),
+            None,
+        ),
+    );
+    let app = AppContext::default();
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(vec![spawn])
+        .with_sub_agents(sub_agents)
+        .with_on_action(|_| {});
+    let size = bubble.layout(
+        SizeConstraint::loose(vec2f(400.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let commands = paint_ctx
+        .renderer
+        .take()
+        .map(|r| r.commands().to_vec())
+        .unwrap_or_default();
+    // The header takes the row's remaining width and the action keeps its place
+    // at the right edge: its label starts and ends inside the pane.
+    for command in &commands {
+        if let RenderCommand::DrawText { origin, .. } = command {
+            assert!(
+                origin.x <= size.x + 0.5,
+                "a run starts past the {}-wide pane: {command:?}",
+                size.x
+            );
+        }
+    }
+    let (origin, font_size, font_weight, font_family, font_italic) = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText {
+                origin,
+                text,
+                font_size,
+                font_weight,
+                font_family,
+                font_italic,
+                ..
+            } if text == "open child" => {
+                Some((*origin, *font_size, *font_weight, *font_family, *font_italic))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the open action stays drawn: {:?}", drawn_texts(&commands)));
+    let drawn = crate::platform::text_atlas::advance_width(
+        "open child",
+        font_size,
+        font_weight,
+        font_family,
+        font_italic,
+    );
+    assert!(
+        origin.x + drawn <= size.x + 0.5,
+        "the open action ends at {} past the {}-wide pane",
+        origin.x + drawn,
+        size.x
+    );
+}
+
 #[test]
 fn bubble_layouts_non_zero() {
     let app = AppContext::default();
@@ -107,7 +280,8 @@ fn drawn_text_x(commands: &[RenderCommand], text: &str) -> f32 {
 /// R1: a transcript row is a full-width band, not a pill. The agent's own
 /// reply paints no box at all, the user's message is one square grey band
 /// spanning the pane, and both inset their text by the transcript's
-/// 10-15 px of padding.
+/// 10-15 px of padding. The user's row is led by the prompt marker on its
+/// first line, which pushes that row's text one marker-width to the right.
 #[test]
 fn transcript_rows_are_full_width_bands_not_pills() {
     let app = AppContext::default();
@@ -166,14 +340,88 @@ fn transcript_rows_are_full_width_bands_not_pills() {
         "the user's band runs across the pane"
     );
 
-    // Both rows carry the transcript's padding at the edge.
-    for (role, commands) in [(ChatRole::Assistant, &reply), (ChatRole::User, &message)] {
-        let text_x = drawn_text_x(commands, "Salut!");
-        assert!(
-            (10.0..=15.0).contains(&text_x),
-            "{role:?} keeps 10-15 px of padding, got {text_x}"
-        );
+    // The agent's reply keeps the transcript's padding at the edge.
+    let reply_x = drawn_text_x(&reply, "Salut!");
+    assert!(
+        (10.0..=15.0).contains(&reply_x),
+        "the agent's reply keeps 10-15 px of padding, got {reply_x}"
+    );
+
+    // The user's row draws the prompt marker on its first line, and the
+    // message starts past it.
+    let marker = message
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawIcon {
+                name, origin, size, ..
+            } if name == "prompt-arrow" => Some((*origin, *size)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the user's message draws its prompt marker: {message:?}"));
+    assert!(
+        !reply.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
+        )),
+        "the agent's reply draws no prompt marker"
+    );
+    let first_line = 14.0 * 1.2;
+    let message_y = message
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText {
+                origin, text: drawn, ..
+            } if drawn == "Salut!" => Some(origin.y),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the message's first line is drawn: {message:?}"));
+    assert!(
+        (marker.0.y + marker.1 / 2.0 - (message_y + first_line / 2.0)).abs() <= 1.0,
+        "the marker is centred on the message's first line, got y {} for a line at {message_y}",
+        marker.0.y
+    );
+    let message_x = drawn_text_x(&message, "Salut!");
+    assert!(
+        message_x >= marker.0.x + marker.1 + 2.0,
+        "the message starts at {message_x}, past the marker ending at {}",
+        marker.0.x + marker.1
+    );
+}
+
+/// A user message wraps under its first character: the prompt marker takes
+/// the first column and every line of the message starts at the same x, so a
+/// long prompt reads as one indented block instead of running under the
+/// marker.
+#[test]
+fn a_wrapped_user_message_hangs_under_its_first_character() {
+    let long = "the quick brown fox jumps over the lazy dog ".repeat(8);
+    let (commands, _) = paint_row(ChatRole::User, &long, 260.0);
+
+    let mut line_starts: Vec<f32> = Vec::new();
+    for command in &commands {
+        if let RenderCommand::DrawText {
+            origin,
+            text: drawn,
+            ..
+        } = command
+        {
+            if drawn.trim().is_empty() {
+                continue;
+            }
+            if !line_starts.iter().any(|x| (*x - origin.x).abs() < 0.5) {
+                line_starts.push(origin.x);
+            }
+        }
     }
+    assert!(
+        line_starts.len() == 1,
+        "every wrapped line starts at one x, got {line_starts:?}"
+    );
+    assert!(
+        line_starts[0] > 15.0,
+        "the text starts past the prompt marker, got {}",
+        line_starts[0]
+    );
 }
 
 /// Paint an assistant bubble holding only `calls`; return its render
@@ -247,6 +495,56 @@ fn paint_tool_calls_with_fold_map(
         .map(|r| r.commands().to_vec())
         .unwrap_or_default();
     (commands, size.y)
+}
+
+/// Paint `calls` at `width` with every call in `mode`, so a test can hold a
+/// long operand or result against the pane's right edge.
+fn paint_tool_calls_in_width(
+    calls: Vec<ToolCall>,
+    mode: ToolDisplayMode,
+    width: f32,
+) -> (Vec<RenderCommand>, f32) {
+    let app = AppContext::default();
+    let fold: HashMap<String, ToolDisplayMode> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, call)| (tool_fold_key(call, index), mode))
+        .collect();
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(calls)
+        .with_tool_fold(Rc::new(RefCell::new(fold)));
+    let size = bubble.layout(
+        SizeConstraint::loose(vec2f(width, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let commands = paint_ctx
+        .renderer
+        .take()
+        .map(|r| r.commands().to_vec())
+        .unwrap_or_default();
+    (commands, size.x)
+}
+
+/// Every drawn run ends inside `width`: a long command, path or output line
+/// breaks at the pane's right edge instead of running past it.
+fn assert_runs_fit(commands: &[RenderCommand], width: f32) {
+    for command in commands {
+        if let RenderCommand::DrawText {
+            origin,
+            text,
+            max_width,
+            ..
+        } = command
+        {
+            assert!(
+                origin.x + max_width <= width + 0.5,
+                "{text:?} is drawn past the {width}-wide pane (origin {origin:?}, max width {max_width})"
+            );
+        }
+    }
 }
 
 fn drawn_texts(commands: &[RenderCommand]) -> Vec<String> {
@@ -327,8 +625,19 @@ fn call(name: &str, arguments: &str, status: ToolCallStatus, result: Option<&str
 
 /// Lay a bubble out and paint it, returning its render commands.
 fn paint_bubble(bubble: &mut ChatMessageBubble, app: &AppContext) -> Vec<RenderCommand> {
+    paint_bubble_at(bubble, app, 400.0)
+}
+
+/// Lay a bubble out at `width` and paint it. A transcript is as wide as its
+/// pane, so a test that pins a row's line needs the width the app would give
+/// it.
+fn paint_bubble_at(
+    bubble: &mut ChatMessageBubble,
+    app: &AppContext,
+    width: f32,
+) -> Vec<RenderCommand> {
     bubble.layout(
-        SizeConstraint::loose(vec2f(400.0, 400.0)),
+        SizeConstraint::loose(vec2f(width, 400.0)),
         &mut LayoutContext::default(),
         app,
     );
@@ -428,12 +737,7 @@ fn paint_sub_agent_with_fold(
 ) -> (Vec<RenderCommand>, Rc<RefCell<Vec<ChatAction>>>) {
     let app = AppContext::default();
     let (mut bubble, actions) = sub_agent_bubble(calls, records, Rc::new(RefCell::new(fold)));
-    bubble.layout(
-        SizeConstraint::loose(vec2f(600.0, 600.0)),
-        &mut LayoutContext::default(),
-        &app,
-    );
-    (paint_bubble(&mut bubble, &app), actions)
+    (paint_bubble_at(&mut bubble, &app, 800.0), actions)
 }
 
 /// The top-left corner of the run `label` was painted at.
@@ -510,6 +814,16 @@ fn reasoning_commands(
     expanded: &Rc<RefCell<HashMap<String, bool>>>,
     key: &str,
 ) -> Vec<RenderCommand> {
+    reasoning_commands_in(expanded, key, true)
+}
+
+/// Paint one reasoning row in the phase the test needs: live (`done = false`)
+/// or finished.
+fn reasoning_commands_in(
+    expanded: &Rc<RefCell<HashMap<String, bool>>>,
+    key: &str,
+    done: bool,
+) -> Vec<RenderCommand> {
     let app = AppContext::default();
     let message = ChatMessage::new(
         ChatRole::Assistant,
@@ -517,7 +831,7 @@ fn reasoning_commands(
             key,
             "contemplating",
             "weighing the options carefully",
-            true,
+            done,
         )],
     );
     let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments)

@@ -36,8 +36,12 @@ pub enum PillTraySide {
 /// The pill is the card the footer control draws: an icon and a label, no
 /// chevron. The tray opens from the pill itself.
 pub struct ContextPill {
-    icon: &'static str,
+    /// The leading glyph, when the control draws one. A control whose word is
+    /// enough (the approval mode) sets `None` and lets the label's colour carry
+    /// the state.
+    icon: Option<&'static str>,
     label: String,
+    label_color: ColorToken,
     items: Vec<PopupMenuItem>,
     open: Option<Rc<RefCell<bool>>>,
     on_select: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
@@ -51,8 +55,9 @@ pub struct ContextPill {
 impl ContextPill {
     pub fn new(icon: &'static str, label: impl Into<String>) -> Self {
         Self {
-            icon,
+            icon: Some(icon),
             label: label.into(),
+            label_color: ColorToken::Muted,
             items: Vec::new(),
             open: None,
             on_select: None,
@@ -60,6 +65,19 @@ impl ContextPill {
             tray_side: PillTraySide::Above,
             max_label_width: None,
         }
+    }
+
+    /// Draw the label alone, with no leading glyph. The word is the whole
+    /// control; its colour says the state.
+    pub fn without_icon(mut self) -> Self {
+        self.icon = None;
+        self
+    }
+
+    /// The label's colour. The glyph, when drawn, stays muted.
+    pub fn with_label_color(mut self, color: ColorToken) -> Self {
+        self.label_color = color;
+        self
     }
 
     /// Attach the choice tray. Without items the pill is a plain label.
@@ -92,7 +110,7 @@ impl ContextPill {
 
     pub fn finish(self, app: &AppContext) -> Box<dyn Element> {
         let label = Text::new(self.label.clone())
-            .with_theme_color(ColorToken::Muted, app)
+            .with_theme_color(self.label_color, app)
             .with_font_size(11.0)
             .with_max_lines(1)
             .finish();
@@ -104,17 +122,18 @@ impl ContextPill {
                 .finish(),
             None => label,
         };
-        let row = Flex::row()
+        let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(6.0)
-            .with_child(
-                Icon::new(self.icon)
+            .with_spacing(6.0);
+        if let Some(icon) = self.icon {
+            row = row.with_child(
+                Icon::new(icon)
                     .with_size(14.0)
                     .with_theme_color(ColorToken::Muted, app)
                     .finish(),
-            )
-            .with_child(label)
-            .finish();
+            );
+        }
+        let row = row.with_child(label).finish();
         let trigger = Tooltip::new(
             ComposerButton::new(row)
                 .with_height(CONTEXT_PILL_HEIGHT)

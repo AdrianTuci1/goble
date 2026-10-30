@@ -16,6 +16,7 @@ mod tests;
 
 pub use bubble::ChatMessageBubble;
 pub(crate) use quote_rail::QuoteRail;
+pub(crate) use tool_call::{tool_fold_targets, ToolFoldTarget};
 
 #[cfg(test)]
 pub(crate) use quote_rail::QUOTE_RAIL_WIDTH;

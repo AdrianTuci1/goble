@@ -1315,21 +1315,6 @@ fn drawn_texts(commands: &[crate::render::RenderCommand]) -> Vec<String> {
         .collect()
 }
 
-fn text_color(
-    commands: &[crate::render::RenderCommand],
-    text: &str,
-) -> Vec<crate::color::ColorU> {
-    commands
-        .iter()
-        .filter_map(|c| match c {
-            crate::render::RenderCommand::DrawText {
-                text: drawn, color, ..
-            } if drawn == text => Some(*color),
-            _ => None,
-        })
-        .collect()
-}
-
 /// Lay the composer out and paint it, returning the draw commands.
 fn paint_composer(
     app: &AppContext,
@@ -1461,55 +1446,11 @@ fn record_into(log: DecisionLog) -> impl FnMut(String, CommandDecision) + 'stati
 }
 
 #[test]
-fn proposal_card_shows_the_candidates_and_selects_the_first() {
+fn arrow_keys_cycle_the_candidates() {
     let app = AppContext::default();
-    let decisions = decision_log();
     let mut composer = ChatComposer::new()
         .with_focused(true)
-        .with_proposal(proposal(&["git status", "git diff --stat"]))
-        .with_on_decision(record_into(decisions.clone()));
-    let commands = paint_composer(&app, &mut composer);
-
-    let texts = drawn_texts(&commands);
-    for expected in [
-        "Agent proposes a command",
-        "git status",
-        "git diff --stat",
-        "/work/project",
-        "Approve",
-        "Reject",
-    ] {
-        assert!(texts.iter().any(|t| t == expected), "missing {expected:?}");
-    }
-    // The proposal is a band of native rows, so it draws no border at all.
-    let strokes = commands
-        .iter()
-        .filter(|c| matches!(c, crate::render::RenderCommand::StrokeRect { .. }))
-        .count();
-    assert_eq!(strokes, 0, "the proposal draws no border");
-
-    // The first candidate is selected: its row is the accent one and the
-    // editor was seeded with it, so Enter has something to run.
-    assert_eq!(composer.selected_candidate().as_deref(), Some("git status"));
-    assert_eq!(composer.value(), "git status");
-    let accent = app.theme.color(ColorToken::Accent);
-    assert!(
-        text_color(&commands, "git status").contains(&accent),
-        "the selected candidate should be the accent row"
-    );
-    let unselected = text_color(&commands, "git diff --stat");
-    assert!(!unselected.contains(&accent));
-}
-
-#[test]
-fn arrow_keys_cycle_the_candidates_and_follow_the_draft() {
-    let app = AppContext::default();
-    let changes = Rc::new(RefCell::new(Vec::new()));
-    let for_cb = changes.clone();
-    let mut composer = ChatComposer::new()
-        .with_focused(true)
-        .with_proposal(proposal(&["git status", "git diff --stat"]))
-        .with_on_change(move |text| for_cb.borrow_mut().push(text));
+        .with_proposal(proposal(&["git status", "git diff --stat"]));
     paint_composer(&app, &mut composer);
 
     assert!(press(&mut composer, &app, "ArrowDown"));
@@ -1517,16 +1458,15 @@ fn arrow_keys_cycle_the_candidates_and_follow_the_draft() {
         composer.selected_candidate().as_deref(),
         Some("git diff --stat")
     );
-    assert_eq!(composer.value(), "git diff --stat");
-    // The cycle is a draft change too, so the host's own draft (which is
-    // what the editor is rebuilt from) does not undo the selection.
-    assert_eq!(*changes.borrow(), vec!["git diff --stat".to_string()]);
 
     // Wraps past the end back to the first, and the other way from the top.
     assert!(press(&mut composer, &app, "ArrowDown"));
-    assert_eq!(composer.value(), "git status");
+    assert_eq!(composer.selected_candidate().as_deref(), Some("git status"));
     assert!(press(&mut composer, &app, "ArrowUp"));
-    assert_eq!(composer.value(), "git diff --stat");
+    assert_eq!(
+        composer.selected_candidate().as_deref(),
+        Some("git diff --stat")
+    );
 }
 
 #[test]
@@ -1539,7 +1479,6 @@ fn a_host_owned_selection_survives_the_rebuild() {
         .with_proposal_selection(selection.clone());
     paint_composer(&app, &mut composer);
 
-    assert_eq!(composer.value(), "git diff --stat");
     assert_eq!(
         composer.selected_candidate().as_deref(),
         Some("git diff --stat")
@@ -1547,32 +1486,43 @@ fn a_host_owned_selection_survives_the_rebuild() {
 
     assert!(press(&mut composer, &app, "ArrowUp"));
     assert_eq!(*selection.borrow(), 0);
-    assert_eq!(composer.value(), "git status");
+    assert_eq!(composer.selected_candidate().as_deref(), Some("git status"));
 }
 
 #[test]
-fn editing_a_candidate_submits_the_edit() {
+fn the_rich_input_stays_put_while_a_proposal_is_pending() {
     let app = AppContext::default();
-    let decisions = decision_log();
     let mut composer = ChatComposer::new()
         .with_focused(true)
         .with_proposal(proposal(&["git status"]))
-        .with_on_decision(record_into(decisions.clone()));
-    paint_composer(&app, &mut composer);
+        .with_path_label("~/Projects/goble")
+        .with_branch_label("main")
+        .with_model_label("gpt-4o")
+        .with_context_above_editor(true)
+        .with_on_attach(|| {})
+        .with_hints(vec![crate::elements::ShortcutHint::new(
+            &["⌘", "↵"],
+            "new conversation",
+        )]);
+    let commands = paint_composer(&app, &mut composer);
+    let texts = drawn_texts(&commands);
 
-    // Type into the editor below the card — the in-place edit.
-    for ch in " --short".chars() {
-        assert!(press(&mut composer, &app, &ch.to_string()));
+    // The approval is the transcript's card; the input keeps its own chrome.
+    for chrome in [
+        "~/Projects/goble",
+        "main",
+        "gpt-4o",
+        "new conversation",
+        "Ask anything...",
+    ] {
+        assert!(
+            texts.iter().any(|t| t == chrome),
+            "the input keeps {chrome:?}, got {texts:?}"
+        );
     }
-    assert_eq!(composer.value(), "git status --short");
-
-    assert!(press(&mut composer, &app, "Enter"));
-    assert_eq!(
-        *decisions.borrow(),
-        vec![(
-            "call-1".to_string(),
-            CommandDecision::Edit("git status --short".to_string())
-        )]
+    assert!(
+        !texts.iter().any(|t| t == "OK if I run this command and read the output?"),
+        "the approval is not drawn in the input"
     );
 }
 
@@ -1638,6 +1588,93 @@ fn proposal_keys_are_only_taken_with_focus_and_a_proposal() {
     assert!(!press(&mut blurred, &app, "ArrowDown"));
     assert!(!press(&mut blurred, &app, "Enter"));
     assert!(decisions.borrow().is_empty());
+}
+
+#[test]
+fn a_disabled_input_waits_without_taking_keys_or_presses() {
+    let app = AppContext::default();
+    let focused: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+    let log = focused.clone();
+    let mut composer = ChatComposer::new()
+        .with_focused(true)
+        .with_value("a prompt the turn will not read")
+        .with_disabled(true)
+        .with_on_focus_change(move |focused| log.borrow_mut().push(focused));
+    let (size, commands) = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0));
+    // The bar says what it waits for instead of inviting a draft, and the
+    // preserved draft is not drawn: a shown draft would read as an editor that
+    // still takes keys.
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            crate::render::RenderCommand::DrawText { text, .. }
+                if text == "Waiting for your decision…"
+        )),
+        "the waiting placeholder is drawn: {commands:?}"
+    );
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            crate::render::RenderCommand::DrawText { text, .. }
+                if text.contains("a prompt the turn will not read")
+        )),
+        "the waiting bar does not draw the preserved draft: {commands:?}"
+    );
+
+    // Neither a key nor a press lands in the waiting input.
+    assert!(!press(&mut composer, &app, "x"));
+    assert_eq!(
+        composer.value(),
+        "a prompt the turn will not read",
+        "the disabled editor took no text, and the draft is kept for after the decision"
+    );
+    let handled = composer.dispatch_event(
+        &DispatchedEvent::MouseDown {
+            position: vec2f(size.x - 2.0, size.y - 2.0),
+            button: 0,
+        },
+        &mut crate::elements::EventContext::default(),
+        &app,
+    );
+    assert!(!handled, "the waiting bar does not focus itself");
+    assert!(focused.borrow().is_empty(), "focus never moved to the bar");
+}
+
+/// The approval mode is a word, not a glyph: the control draws no icon, and the
+/// label's colour is what distinguishes the four policies.
+#[test]
+fn the_approval_mode_is_a_word_whose_colour_names_the_policy() {
+    use crate::elements::ApprovalMode;
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    for mode in ApprovalMode::ALL {
+        let mut composer = ChatComposer::new()
+            .with_focused(true)
+            .with_approval_mode(mode);
+        let (_, commands) = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0));
+        let drawn = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, color, .. } if text == mode.label() => Some(*color),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{:?}'s label is drawn", mode));
+        assert_eq!(
+            drawn,
+            app.theme.color(mode.color()),
+            "{:?} paints its label in the mode's colour",
+            mode
+        );
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "sliders"
+            )),
+            "{:?} draws no glyph in front of the label",
+            mode
+        );
+    }
 }
 
 #[test]
@@ -2048,6 +2085,30 @@ fn the_cloud_chord_submits_to_the_cloud_and_plain_enter_still_sends() {
     assert!(cloud.borrow().is_empty(), "⌘⌥⇧↵ is not the cloud chord");
 }
 
+/// While a turn waits, an empty plain Enter is still a submit: the first Enter
+/// queued the prompt, so the second one is the host's send-now. The composer
+/// reports it and lets the host decide what an empty submit means.
+#[test]
+fn an_empty_enter_while_waiting_reports_a_submit() {
+    let app = AppContext::default();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let sent_cb = sent.clone();
+    let mut composer = ChatComposer::new()
+        .with_focused(true)
+        .with_waiting(true)
+        .with_on_send(move |text| sent_cb.borrow_mut().push(text));
+    paint_composer(&app, &mut composer);
+
+    let handled = press(&mut composer, &app, "Enter");
+
+    assert!(handled, "the waiting composer keeps Enter");
+    assert_eq!(
+        *sent.borrow(),
+        vec![String::new()],
+        "an empty submit reaches the host"
+    );
+}
+
 /// The working-directory tray is capped and scrolls: a directory with more
 /// entries than the cap draws an eight-row window that clips what it cannot
 /// show, instead of a panel taller than the pane it opens into.
@@ -2079,11 +2140,12 @@ fn the_directory_tray_is_capped_and_clips_the_rows_it_cannot_show() {
         })
         .collect();
     assert!(
-        labels.len() > MENU_MAX_VISIBLE_ROWS,
-        "the whole list is there to scroll through: {labels:?}"
+        !labels.is_empty() && labels.len() <= MENU_MAX_VISIBLE_ROWS,
+        "the tray draws its eight-row window, not the twenty rows a directory \
+         can hold: {labels:?}"
     );
-    // The rows past the cap are drawn but clipped away: the panel's own window
-    // is the eight-row cap, not the twenty rows a directory can hold.
+    // The rows past the cap are culled before they paint, and the panel's own
+    // window is the eight-row cap.
     let window = commands
         .iter()
         .find_map(|command| match command {

@@ -14,8 +14,7 @@ Tools are how the agent acts on the world. Goble registers a consistent set; eac
 | `deploy_agent` / `deploy_workflow` | Deploy to a worker |
 | `schedule_workflow` | Run a workflow on a trigger |
 | `get_execution_status` | Status of an execution |
-| `list_entities` | List agents, workflows, teams or workers |
-| `search_store` | Search by name |
+| `search_store` | Search by name; an empty query lists every agent, workflow and team |
 | `run_command` | Run an allowed shell command (with timeout) |
 | `read_file` / `write_file` / `edit_file` / `rename_file` / `delete_file` | Workspace file operations |
 | `git_status` / `git_diff` | Workspace git |

@@ -1,6 +1,10 @@
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use goble_core::harness::CommandDecision;
 use goble_ui::elements::{
-    slash_menu_open, CrossAxisAlignment, Element, Flex, ShortcutHint, SlashMenu,
+    slash_menu_open, AppContext, CrossAxisAlignment, Element, Flex, ShortcutHint, SlashMenu,
 };
 use goble_ui::ChatComposer;
 
@@ -28,13 +32,15 @@ use super::pane_session_snapshot;
 /// input is the only place a command can be typed, so it holds the keyboard
 /// whenever the pane is active and no full-screen program owns the screen.
 ///
-/// Two controls are left out deliberately: the command-proposal card — a
-/// suspended command only exists while the harness owns a pane's input, and a
-/// pane whose harness is open draws the shared agent view, that card included,
-/// instead of this bar — and the agent's own environment controls (the harness
-/// pill, the model selector and the attach button), which describe a turn this
-/// bar never runs. What it keeps above the editor is the shell's own context:
-/// the working directory and the branch.
+/// The agent's own environment controls are left out deliberately (the harness
+/// pill, the model selector and the attach button), because they describe a
+/// turn this bar never runs. What it keeps above the editor is the shell's own
+/// context: the working directory and the branch.
+///
+/// A command the harness suspended on is a card at the end of the pane's
+/// output, in the shell view as in the agent view: leaving the agent view while
+/// the turn is suspended keeps the decision in front of the user, and this
+/// bar's own keys decide the same proposal.
 pub(crate) fn build_terminal_composer(
     state: &UiSnapshot,
     actions: &UiActions,
@@ -53,6 +59,7 @@ pub(crate) fn build_terminal_composer(
     let on_composer_change = actions.on_composer_change.clone();
     let on_composer_focus = actions.on_composer_focus_change.clone();
     let on_stop = actions.on_stop.clone();
+    let on_command_decision = actions.on_command_decision.clone();
     let on_slash_move = actions.on_slash_move.clone();
     let on_slash_close = actions.on_slash_close.clone();
     let on_slash_dismiss = actions.on_slash_dismiss.clone();
@@ -74,6 +81,10 @@ pub(crate) fn build_terminal_composer(
         // screen still belongs to the shell; a background pane's input never
         // swallows the keys the active pane needs.
         .with_focused(focused)
+        // A suspended command is a card over this bar: until the user decides,
+        // the bar is not a typing surface, so typing cannot go to the shell
+        // while the harness waits.
+        .with_disabled(session.pending_command.is_some())
         // The rich input is the shell pane's only typing surface: a click on
         // the output above it must not blur the editor.
         .with_blur_on_outside_click(false)
@@ -123,6 +134,16 @@ pub(crate) fn build_terminal_composer(
             (on_composer_focus.borrow_mut())(focused);
         })
         .with_on_stop(move || (on_stop.borrow_mut())());
+    // A suspended command is the bar while it lasts: the same approval
+    // surface the agent view draws, answering the same decision handler.
+    if let Some(proposal) = session.pending_command.clone() {
+        composer = composer.with_proposal(proposal);
+    }
+    composer = composer
+        .with_proposal_selection(session.command_selection.clone())
+        .with_on_decision(move |id, decision| {
+            (on_command_decision.borrow_mut())(pane_id, id, decision)
+        });
 
     // The bar's own slash commands: `/` opens the palette's command list above
     // the editor, narrowed by what was typed after the slash. Same list as the
@@ -202,7 +223,9 @@ pub(crate) fn build_terminal_composer(
     // it — over the instruction strip the composer carries at its bottom — the
     // way grok-build puts it over the prompt.
     let composer = composer.finish();
-    if !slash_menu_open(&session.composer_draft, *controls.slash_dismissed.borrow()) {
+    if session.pending_command.is_some()
+        || !slash_menu_open(&session.composer_draft, *controls.slash_dismissed.borrow())
+    {
         return composer;
     }
     let menu = SlashMenu::new(slash_items, controls.slash_index.clone())
@@ -213,4 +236,64 @@ pub(crate) fn build_terminal_composer(
         .with_child(menu.finish())
         .with_child(composer)
         .finish()
+}
+/// The approval card for the command this pane's harness is suspended on, with
+/// the height the pane reserves for it so its pty keeps the rows it can see.
+/// The card closes the shell's output exactly where the command would run, so a
+/// turn suspended behind it stays visible after the user leaves the agent view
+/// for the shell.
+pub(crate) struct PendingApproval {
+    pub element: Box<dyn Element>,
+    pub height: f32,
+}
+
+pub(crate) fn build_pending_approval(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    pane_id: u64,
+) -> Option<PendingApproval> {
+    use goble_ui::theme::SpacingToken;
+
+    let session = pane_session_snapshot(state, pane_id);
+    let proposal = session.pending_command.as_ref()?;
+    let on_command_decision = actions.on_command_decision.clone();
+    let handler: goble_ui::elements::DecisionHandler =
+        Rc::new(RefCell::new(move |id: String, decision: CommandDecision| {
+            (on_command_decision.borrow_mut())(pane_id, id, decision);
+        }));
+    let element = goble_ui::elements::command_approval_card(
+        proposal,
+        &goble_ui::elements::CommandApprovalState {
+            selection: session.command_selection.clone(),
+            scroll: session.command_scroll.clone(),
+            editor_scroll: session.command_editor_scroll.clone(),
+            draft: session.command_draft.clone(),
+            caret: session.command_caret.clone(),
+            // A terminal pane has no follow-up input of its own while the
+            // command waits, so the card always holds the keyboard.
+            field_focused: true,
+        },
+        Some(handler),
+        app,
+    );
+    // The header band (question and the two controls), the separator, the
+    // candidate list when there is one, the editable command flush with the
+    // card's edges, and the padded hint under it. The editor grows with the
+    // command's lines up to its cap.
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let md = app.theme.spacing_px(SpacingToken::Md);
+    let variants = match proposal.candidates.len() {
+        0 | 1 => 0.0,
+        count => (count as f32 * 24.0 + 4.0)
+            .clamp(24.0, goble_ui::elements::APPROVAL_BODY_MAX_HEIGHT),
+    };
+    let lines = session.command_draft.borrow().matches('\n').count() + 1;
+    let editor = (lines as f32 * 16.8 + 2.0)
+        .clamp(28.0, goble_ui::elements::APPROVAL_EDITOR_MAX_HEIGHT);
+    let mut height = md + sm + 28.0 + 1.0 + editor + sm + 12.0 + sm;
+    if variants > 0.0 {
+        height += variants + sm;
+    }
+    Some(PendingApproval { element, height })
 }

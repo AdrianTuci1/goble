@@ -116,11 +116,28 @@ pub(crate) fn resume_mission_turn(
 /// `Reject` fails the tool call with a `ToolCallError` instead of running
 /// anything. The result (or the rejection) is persisted into the call's record
 /// and as a `role="tool"` row, exactly as the immediate path writes it.
-pub fn resume_command_turn(
+///
+/// The command's outcome is then folded back into the mission and the turn
+/// continues, so the model reads the output and answers. Ending on the command
+/// would leave the conversation without the reply the user asked for.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resume_command_turn(
     store: Store,
     runner: Arc<dyn crate::harness::CommandRunner>,
+    llm: Arc<dyn LlmProvider>,
+    deploy_sender: Option<Arc<dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync>>,
+    mcp_manager: McpManager,
+    cancel: Arc<AtomicBool>,
+    workspace_dir: std::path::PathBuf,
+    docs_dir: std::path::PathBuf,
     chat_id: String,
     decision: CommandDecision,
+    provider: String,
+    model: String,
+    reasoning_enabled: bool,
+    auto_approve: bool,
+    web_search: WebSearchConfig,
+    subagents: SubAgentHost,
 ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
     Box::pin(async_stream::stream! {
         let now = Utc::now().to_rfc3339();
@@ -164,7 +181,43 @@ pub fn resume_command_turn(
             Ok(value) => yield HarnessEvent::ToolCallFinished { id: call_id, result: value },
             Err(e) => yield HarnessEvent::ToolCallError { id: call_id, message: e.to_string() },
         }
-        yield HarnessEvent::Done;
+
+        // The call's result is in the transcript and the mission's history, so
+        // the same mission continues from there. The goal is read from the
+        // mission the suspended turn left behind; a missing one is not a state
+        // a proposal can be resumed out of, but an empty goal degrades to the
+        // turn ending here rather than inventing one.
+        let goal = store
+            .list_missions()
+            .ok()
+            .and_then(|missions| {
+                missions
+                    .into_iter()
+                    .find(|mission| mission.1 == chat_id && mission.3 != "done")
+                    .map(|mission| mission.2)
+            })
+            .unwrap_or_default();
+        let mut continued = super::mission::run_mission(
+            store,
+            runner,
+            llm,
+            deploy_sender,
+            mcp_manager,
+            cancel,
+            workspace_dir,
+            docs_dir,
+            chat_id,
+            goal,
+            provider,
+            model,
+            reasoning_enabled,
+            auto_approve,
+            web_search,
+            subagents,
+        );
+        while let Some(event) = continued.next().await {
+            yield event;
+        }
     })
 }
 

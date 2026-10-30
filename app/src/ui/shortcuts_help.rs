@@ -702,7 +702,19 @@ mod tests {
         assert!(toggle(&mut root, &app), "the chord is consumed");
         assert!(state.borrow().shortcuts_help_open, "Ctrl+. opens the panel");
 
-        let commands = frame(&mut root, &app);
+        // The list is taller than its own capped viewport, and a row scrolled
+        // out of the viewport is culled rather than painted: one frame shows
+        // the top of the list, and a frame scrolled to the end shows the rest.
+        // The checks below read the two frames together.
+        let top = frame(&mut root, &app);
+        state
+            .borrow()
+            .shortcuts_help_scroll
+            .borrow_mut()
+            .scroll_by(10_000.0);
+        let bottom = frame(&mut root, &app);
+        let mut commands = top;
+        commands.extend(bottom);
         for (title, hints) in sections() {
             assert!(drawn(&commands, title), "the panel draws {title:?}");
             for hint in hints {

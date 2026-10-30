@@ -57,7 +57,7 @@ fn each_sub_agent_status_draws_its_own_line() {
             "reading",
             Duration::from_millis(4500),
             None,
-            ColorToken::Accent,
+            ColorToken::Warning,
             "running · reading · 4.5s",
         ),
         (
@@ -234,20 +234,24 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
         fold.clone(),
     );
 
+    // A transcript is as wide as its pane. The record's line and the open
+    // action share the row, so the test gives it a pane wide enough for the
+    // whole line and checks the folding, not the wrapping.
+    let paint = |bubble: &mut ChatMessageBubble| paint_bubble_at(bubble, &app, 800.0);
     let open_run = |bubble: &mut ChatMessageBubble| {
-        let commands = paint_bubble(bubble, &app);
+        let commands = paint(bubble);
         let origin = run_origin(&commands, "Ran 1 subagent");
         click_at(bubble, &app, origin + vec2f(2.0, 4.0));
     };
     let header_click = |bubble: &mut ChatMessageBubble| {
-        let commands = paint_bubble(bubble, &app);
+        let commands = paint(bubble);
         let origin = run_origin(&commands, "Subagent ");
         click_at(bubble, &app, origin + vec2f(2.0, 4.0));
     };
 
     // Folded, the sub-agent is part of its run's aggregated header: the member
     // row, its child line and the open target are all one expansion away.
-    let folded = drawn_row_texts(&paint_bubble(&mut bubble, &app));
+    let folded = drawn_row_texts(&paint(&mut bubble));
     assert!(
         folded.iter().any(|row| row.contains("Ran 1 subagent")),
         "a folded sub-agent joins its run header, got {folded:?}"
@@ -269,7 +273,7 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
         Some(&ToolDisplayMode::Expanded),
         "the run's header opens the run"
     );
-    let opened = drawn_row_texts(&paint_bubble(&mut bubble, &app));
+    let opened = drawn_row_texts(&paint(&mut bubble));
     assert_eq!(
         opened.iter().filter(|row| row.contains("Subagent")).count(),
         1,
@@ -282,7 +286,7 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
         Some(&ToolDisplayMode::Truncated),
         "the first click truncates the call, like every other shape"
     );
-    let truncated = drawn_row_texts(&paint_bubble(&mut bubble, &app));
+    let truncated = drawn_row_texts(&paint(&mut bubble));
     assert!(
         truncated
             .iter()
@@ -316,7 +320,7 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
         Some(&ToolDisplayMode::Expanded),
         "the second click expands the call"
     );
-    let expanded = drawn_row_texts(&paint_bubble(&mut bubble, &app));
+    let expanded = drawn_row_texts(&paint(&mut bubble));
     assert!(
         expanded
             .iter()
@@ -335,7 +339,7 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
         "the third click folds the call back, like every other shape"
     );
     assert_eq!(
-        drawn_row_texts(&paint_bubble(&mut bubble, &app))
+        drawn_row_texts(&paint(&mut bubble))
             .iter()
             .filter(|row| row.contains("Subagent"))
             .count(),
@@ -398,16 +402,15 @@ fn clicking_a_sub_agent_row_fires_the_open_action() {
 fn status_affordance_reflects_the_persisted_status() {
     let app = AppContext::default();
     let cases = [
-        (ToolCallStatus::Pending, ColorToken::Accent),
-        (ToolCallStatus::Running, ColorToken::Accent),
-        (ToolCallStatus::Finished, ColorToken::Text),
+        (ToolCallStatus::Pending, ColorToken::Muted),
+        (ToolCallStatus::Running, ColorToken::Warning),
+        (ToolCallStatus::Finished, ColorToken::Success),
         (ToolCallStatus::Error, ColorToken::Error),
     ];
     for (status, token) in cases {
         let (commands, _) = paint_tool_calls(vec![call("ls", "{}", status, None)]);
-        // The mark is drawn with the row's trailing space. `ls` is not a
-        // command, so its finished mark is the quiet colour rather than the
-        // success one a finished `run_command` carries.
+        // The mark is drawn with the row's trailing space. Every call carries
+        // its state's colour, whatever tool it is.
         assert!(
             mark_color(&commands, folded_mark(&app, token)),
             "status {status:?} draws the mark in {token:?}"
@@ -419,7 +422,8 @@ fn status_affordance_reflects_the_persisted_status() {
         );
     }
 
-    // A finished command is the one success the mark announces.
+    // A finished command carries the same success colour as every other
+    // finished call.
     let (commands, _) = paint_tool_calls(vec![call(
         "run_command",
         r#"{"command":"ls"}"#,

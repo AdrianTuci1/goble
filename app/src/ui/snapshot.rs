@@ -109,6 +109,14 @@ pub struct PaneChatSnapshot {
     /// The app-owned selected candidate index for `pending_command`, so the
     /// composer's selection survives the per-frame rebuild.
     pub command_selection: Rc<RefCell<usize>>,
+    /// The approval card's app-owned command viewport, so a long command or a
+    /// candidate list keeps the position it was scrolled to.
+    pub command_scroll: Rc<RefCell<goble_ui::ScrollState>>,
+    /// The approval card's editable command: the text, its caret and the
+    /// viewport the field scrolls in. App-owned for the same reason.
+    pub command_draft: Rc<RefCell<String>>,
+    pub command_caret: Rc<RefCell<usize>>,
+    pub command_editor_scroll: Rc<RefCell<goble_ui::ScrollState>>,
     pub queued_prompt: Option<String>,
     pub agent_busy: bool,
     /// The live turn-status footer's state (C2): the activity/elapsed while the
@@ -490,6 +498,10 @@ pub struct UiSnapshot {
     /// Per-pane chat data (transcript + draft + path) keyed by pane id, so each
     /// chat pane renders its own independent session.
     pub pane_chat: HashMap<u64, PaneChatSnapshot>,
+    /// What each mounted pane calls itself when it talks to an agent: the
+    /// conversation's subject, or [`crate::state::NEW_AGENT_TAB_LABEL`] while
+    /// that conversation has none. The agent view centres it in its bar.
+    pub pane_titles: HashMap<u64, String>,
     /// Per-pane rich-input controls (auto-approve, model, branch, harness mode,
     /// dropdown open flags), keyed by pane id.
     pub pane_controls: HashMap<u64, PaneControls>,

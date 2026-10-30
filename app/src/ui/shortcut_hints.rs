@@ -244,8 +244,9 @@ mod rich_input_tests {
             "{case}: the pills are inside the input, under its separator (rule {rule}, pills {pills_top})"
         );
 
-        // A running turn: the same key queues instead of sending, and the other
-        // entries are untouched.
+        // A running turn: the live status row takes the strip's slot, so the
+        // instruction strip and every hint on it are gone while the turn is in
+        // flight. The row says what the turn is doing, over the same rule.
         let pane_id = state.borrow().active_pane_id;
         state
             .borrow_mut()
@@ -255,23 +256,22 @@ mod rich_input_tests {
             .busy = true;
         let commands = frame(&mut root, &app);
         let case = "turn running";
-        assert!(
-            lines_of(&commands, "send").is_empty(),
-            "{case}: the send hint is gone"
-        );
-        let queue = lines_of(&commands, "queue");
-        assert!(!queue.is_empty(), "{case}: the queue hint replaced it");
-        for label in ["send to cloud", "tasks"] {
-            above(&commands, label, editor, case);
+        for label in ["send", "queue", "send to cloud", "tasks"] {
+            assert!(
+                lines_of(&commands, label).is_empty(),
+                "{case}: the {label:?} hint is replaced by the status row"
+            );
         }
-        let running_strip_bottom = ["queue", "send to cloud", "tasks"]
-            .iter()
-            .flat_map(|label| lines_of(&commands, label))
-            .fold(f32::NEG_INFINITY, f32::max);
+        let status = lines_of(&commands, "Waiting for response…");
+        let status_top = *status.first().expect("the status row is drawn");
+        assert!(
+            status_top < editor,
+            "{case}: the status row is drawn above the editor (found {status_top} against {editor})"
+        );
         let running_rule = rules(&commands)
             .into_iter()
-            .find(|y| *y > running_strip_bottom && *y - running_strip_bottom < 60.0)
-            .unwrap_or_else(|| panic!("{case}: a separator under the strip"));
-        assert!(running_rule > running_strip_bottom, "{case}: the strip is over the rule");
+            .find(|y| *y > status_top && *y - status_top < 60.0)
+            .unwrap_or_else(|| panic!("{case}: a separator under the status row"));
+        assert!(running_rule > status_top, "{case}: the row is over the rule");
     }
 }

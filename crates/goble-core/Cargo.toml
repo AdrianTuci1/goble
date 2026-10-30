@@ -40,6 +40,7 @@ urlencoding = "2"
 rusqlite.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
+log.workspace = true
 dirs = "6"
 goble-sandbox = { path = "../goble-sandbox", features = ["tokio"] }
 

@@ -418,10 +418,24 @@ fn run_base(index: usize, runs: &[GlyphRun]) -> usize {
 /// computed from the outline, so a zero-sized glyph is skipped and the next
 /// face is tried.
 fn draws_glyph(font: &fontdue::Font, ch: char) -> bool {
-    font.has_glyph(ch) && {
-        let metrics = font.metrics(ch, 16.0);
-        metrics.width > 0 && metrics.height > 0
+    if !font.has_glyph(ch) {
+        return false;
     }
+    let metrics = font.metrics(ch, 16.0);
+    if metrics.width > 0 && metrics.height > 0 {
+        return true;
+    }
+    // A named glyph without ink can be a legitimate blank. TUI art pads its
+    // cells with `U+2800 BRAILLE PATTERN BLANK` (and a couple of other
+    // fillers); treating those as undrawable hands the cell to the primary
+    // face's `.notdef`, which paints a hollow box over the art.
+    is_blank_filler(ch)
+}
+
+/// Characters that occupy a cell without painting anything, used as padding
+/// by terminal art.
+fn is_blank_filler(ch: char) -> bool {
+    matches!(ch, '\u{2800}' | '\u{3164}' | '\u{ffa0}')
 }
 
 /// Faces tried after the bundled primary, in coverage order: the system's
@@ -841,6 +855,27 @@ pub(super) fn rasterize_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A blank filler — `U+2800 BRAILLE PATTERN BLANK`, which TUI art uses to
+    /// pad its cells — draws no ink. Falling through to the primary face's
+    /// `.notdef` would cover the art in hollow boxes.
+    #[test]
+    fn a_blank_filler_draws_nothing_instead_of_a_notdef_box() {
+        let Some(set) = font_set() else {
+            return;
+        };
+        let primary = set.select(FontWeight::Regular, FontFamily::Mono, false);
+        if !primary.has_glyph('\u{2800}') && fallback_fonts().is_empty() {
+            return;
+        }
+        let Some((_, alpha, _, _)) =
+            rasterize_text("\u{2800}", 12.0, FontWeight::Regular, true, false, 100.0, 1.35)
+        else {
+            return;
+        };
+        let ink = alpha.iter().filter(|pixel| **pixel > 0).count();
+        assert_eq!(ink, 0, "a blank filler draws no .notdef box");
+    }
 
     /// A run holding a character the bundled face omits lays that character out
     /// through a system fallback, so it draws ink instead of the empty

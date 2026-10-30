@@ -2315,9 +2315,9 @@ mod tests {
         let rows = (viewport / line_box).ceil() as usize;
         assert_eq!(
             drawn.len(),
-            rows + WINDOW_SLACK,
-            "the frame with a viewport draws its own rows and the window's slack, \
-             {rows} rows in {viewport} points"
+            rows,
+            "the frame with a viewport draws its own rows, {rows} rows in \
+             {viewport} points"
         );
         assert_eq!(drawn[0], 1, "and starts at the top of the buffer");
         // The buffer's value ends in a newline, so it has one more line than it
@@ -2361,9 +2361,10 @@ mod tests {
         let line_box = (TEXT_FONT_SIZE * 1.35).ceil();
         scroll.borrow_mut().scroll_by(bias + 10.0 * line_box);
         let drawn = drawn_line_numbers(&frame_of(&mut root, &app, size));
+        let first_visible = (scroll.borrow().offset() / line_box).floor() as usize + 1;
         assert_eq!(
-            drawn[0], 11,
-            "the buffer starts ten rows below the top of the region: {drawn:?}"
+            drawn[0], first_visible,
+            "the buffer starts at the row under the region's offset: {drawn:?}"
         );
     }
 
@@ -2409,7 +2410,7 @@ mod tests {
         let commands = frame_of(&mut root, &app, size);
         let drawn = drawn_line_numbers(&commands);
         assert!(
-            drawn.contains(&1_501),
+            drawn.contains(&1_500),
             "the caret's row is in the window after the move: {drawn:?}"
         );
         let (offset, viewport) = {

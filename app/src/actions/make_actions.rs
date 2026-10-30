@@ -32,6 +32,106 @@ use super::pane_ops::{
 use super::prompt::{run_terminal_command, send_agent_prompt};
 use crate::ui::pickers::{change_directory_command, checkout_branch_command};
 
+/// Submit the prompt a running turn has queued, right now.
+///
+/// This is the second Enter on a composer whose first Enter queued a message.
+/// A turn that is only busy is cancelled and the prompt starts fresh; a turn
+/// suspended on a command approval is settled with a rejection first, and the
+/// queued prompt goes out when that turn's `finished` event lands — starting a
+/// second turn over the suspended one would race the harness session.
+fn flush_queued_prompt(
+    state: &mut UiState,
+    desktop: Option<&Arc<DesktopState>>,
+    media: &Rc<RefCell<MediaState>>,
+) {
+    let pane_id = state.active_pane_id;
+    let model = if state.selected_model.trim().is_empty() {
+        state.settings_llm_model.clone()
+    } else {
+        state.selected_model.clone()
+    };
+    // Nothing can run without a runtime and a conversation, so the prompt is
+    // only taken once both are known: an empty submit must not eat the queue.
+    let Some(desktop) = desktop else {
+        return;
+    };
+    let Some(chat_id) = state.pane_conversation_id(pane_id) else {
+        return;
+    };
+    let Some(prompt) = state
+        .pane_runtime
+        .get_mut(&pane_id)
+        .and_then(|rt| rt.queued_prompt.take())
+    else {
+        return;
+    };
+    state.queued_prompt = None;
+
+    // A command the harness is suspended on has no running future to cancel:
+    // reject it, which resumes the turn, and let the finish event submit the
+    // prompt through the queue.
+    let pending = state
+        .pane_runtime
+        .get(&pane_id)
+        .and_then(|rt| rt.pending_command.clone());
+    if let Some(proposal) = pending {
+        let decision = goble_core::harness::CommandDecision::Reject(
+            "superseded by a new message".to_string(),
+        );
+        match desktop.resume_command_chat_turn(&chat_id, decision) {
+            Ok(_) => {
+                state.resume_command_decision(pane_id, &proposal.id);
+                state.agent_busy = true;
+                if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
+                    rt.queued_prompt = Some(prompt.clone());
+                }
+                state.queued_prompt = Some(prompt);
+            }
+            Err(e) => {
+                log::warn!("resume_command_chat_turn (send now) failed: {e}");
+            }
+        }
+        state.refresh_messages(desktop);
+        return;
+    }
+
+    let _ = desktop.cancel_chat_turn(&chat_id);
+    let (medium_id, project_id, session_id) = {
+        let media = media.borrow();
+        let session_id = if media.selected_session_id().is_empty() {
+            chat_id.clone()
+        } else {
+            media.selected_session_id().to_string()
+        };
+        (
+            media.selected_medium_id().to_string(),
+            media.selected_project_id().to_string(),
+            session_id,
+        )
+    };
+    let pane_session = state.pane_session(pane_id, &chat_id);
+    if let Err(e) = crate::runtime::run_turn(
+        desktop,
+        &chat_id,
+        &prompt,
+        &state.settings_llm_provider,
+        &model,
+        state.workspace_routing,
+        &medium_id,
+        &project_id,
+        &session_id,
+        &state.composer_path,
+        Some(state.selected_harness.as_str()),
+        pane_session,
+    ) {
+        log::warn!("run_chat_turn (queued) failed: {e}");
+    } else {
+        state.begin_turn(pane_id);
+        state.agent_busy = true;
+    }
+    state.refresh_messages(desktop);
+}
+
 pub fn make_actions(
     state: Rc<RefCell<UiState>>,
     desktop: Option<Arc<DesktopState>>,
@@ -90,6 +190,7 @@ pub fn make_actions(
     let on_skip_ask = Rc::clone(&state);
     let on_command_decision = Rc::clone(&state);
     let on_toggle_auto_approve = Rc::clone(&state);
+    let on_select_approval_mode_state = Rc::clone(&state);
     let on_toggle_vim_mode = Rc::clone(&state);
     let on_toggle_auto_save_on_close = Rc::clone(&state);
     let on_fork_conversation = Rc::clone(&state);
@@ -459,6 +560,16 @@ pub fn make_actions(
                 }
             }
         }));
+    // The pane's approval mode: how a proposed command reaches the shell. The
+    // control and Shift+Tab both land here, so the pane's stored mode is the
+    // one policy the turn and the composer read.
+    let action_select_approval_mode: Rc<RefCell<dyn FnMut(u64, goble_ui::ApprovalMode)>> =
+        Rc::new(RefCell::new(move |pane_id: u64, mode| {
+            let mut state = on_select_approval_mode_state.borrow_mut();
+            let controls = state.pane_controls_mut(pane_id);
+            controls.approval_mode = mode;
+            *controls.approval_menu_open.borrow_mut() = false;
+        }));
     // Modal (vim) editing for the rich input, off by default. The choice is
     // persisted; turning it off drops every pane's half-typed command and
     // returns its editor to insert mode, so no pane is left in a mode whose
@@ -705,6 +816,19 @@ pub fn make_actions(
             // The active pane owns the composer, so route the turn to its own
             // conversation (an independent session per pane).
             let pane_id = state.active_pane_id;
+            // An empty submit is the second Enter: the prompt the first one
+            // queued is sent now instead of waiting for the turn to finish.
+            if text.trim().is_empty() {
+                let queued = state
+                    .pane_runtime
+                    .get(&pane_id)
+                    .and_then(|rt| rt.queued_prompt.as_ref())
+                    .is_some();
+                if queued {
+                    flush_queued_prompt(&mut state, desktop_send.as_ref(), &media_send);
+                }
+                return;
+            }
             // The chat composer is a prompt line in agent mode (an active agent
             // conversation): an input is an agent prompt unless it starts with
             // `!`, which forces a terminal command (warp-new input model).
@@ -970,8 +1094,7 @@ pub fn make_actions(
             if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
                 rt.messages.clear();
                 rt.pending_ask = None;
-                rt.pending_command = None;
-                rt.command_selection = None;
+                rt.reset_command_edit();
                 rt.queued_prompt = None;
             }
             state.pending_ask = None;
@@ -1107,6 +1230,7 @@ pub fn make_actions(
             },
         )),
         on_toggle_auto_approve: action_toggle_auto_approve.clone(),
+        on_select_approval_mode: action_select_approval_mode.clone(),
         on_toggle_vim_mode: action_toggle_vim_mode.clone(),
         on_toggle_auto_save_on_close: action_toggle_auto_save_on_close.clone(),
         clipboard: crate::clipboard::system_clipboard(),
@@ -1152,61 +1276,7 @@ pub fn make_actions(
         )),
         on_send_queued: Rc::new(RefCell::new(move || {
             let mut state = on_send_queued.borrow_mut();
-            let pane_id = state.active_pane_id;
-            let Some(prompt) = state
-                .pane_runtime
-                .get_mut(&pane_id)
-                .and_then(|rt| rt.queued_prompt.take())
-            else {
-                return;
-            };
-            state.queued_prompt = None;
-            let model = if state.selected_model.trim().is_empty() {
-                state.settings_llm_model.clone()
-            } else {
-                state.selected_model.clone()
-            };
-            if let (Some(desktop), Some(chat_id)) =
-                (&desktop_send_queued, state.pane_conversation_id(pane_id))
-            {
-                // "Send now": interrupt the in-flight turn and submit immediately,
-                // routed to the conversation's chosen runtime.
-                let _ = desktop.cancel_chat_turn(&chat_id);
-                let (medium_id, project_id, session_id) = {
-                    let media_b = media_send_queued.borrow();
-                    let session_id = if media_b.selected_session_id().is_empty() {
-                        chat_id.clone()
-                    } else {
-                        media_b.selected_session_id().to_string()
-                    };
-                    (
-                        media_b.selected_medium_id().to_string(),
-                        media_b.selected_project_id().to_string(),
-                        session_id,
-                    )
-                };
-                let pane_session = state.pane_session(pane_id, &chat_id);
-                if let Err(e) = crate::runtime::run_turn(
-                    desktop,
-                    &chat_id,
-                    &prompt,
-                    &state.settings_llm_provider,
-                    &model,
-                    state.workspace_routing,
-                    &medium_id,
-                    &project_id,
-                    &session_id,
-                    &state.composer_path,
-                    Some(state.selected_harness.as_str()),
-                    pane_session,
-                ) {
-                    log::warn!("run_chat_turn (queued) failed: {e}");
-                } else {
-                    state.begin_turn(pane_id);
-                    state.agent_busy = true;
-                }
-                state.refresh_messages(desktop);
-            }
+            flush_queued_prompt(&mut state, desktop_send_queued.as_ref(), &media_send_queued);
         })),
         on_dismiss_queued: Rc::new(RefCell::new(move || {
             let mut state = on_dismiss_queued.borrow_mut();

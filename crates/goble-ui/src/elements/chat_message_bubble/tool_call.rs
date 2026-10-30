@@ -4,11 +4,11 @@ use std::rc::Rc;
 
 use crate::color::ColorU;
 use crate::elements::chat_content::{tool_fold_key, ChatAction, InlineSpan as ModelSpan, InlineStyle, SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode};
-use crate::elements::{resolve_inline_span, Chip, CrossAxisAlignment, Element, Empty, Flex, Text, TextSpan};
+use crate::elements::{resolve_inline_span, Chip, CrossAxisAlignment, Element, Empty, Expanded, Flex, InlineText, MainAxisSize, Text, TextSpan};
 use crate::geometry::vec2f;
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
-use goble_core::harness::{subagent_subject, tool_kind_for, tool_row, ToolCallStatus, ToolKind};
+use goble_core::harness::{subagent_subject, tool_row, ToolCallStatus, ToolKind};
 use super::tool_body::build_tool_call_body;
 
 /// The mark every tool call draws, whatever its state: grok-build's filled
@@ -23,10 +23,6 @@ const VERB_GROUP_MARK: &str = "◈";
 /// The prefix the app-owned fold map uses for a folded run, so a group's fold
 /// state never collides with the call that anchors the run.
 const VERB_GROUP_KEY_PREFIX: &str = "verb-group:";
-
-/// The rail drawn down the left of a call that is open. A collapsed call draws
-/// none: the rail is what says the rows under a header belong to it.
-pub(super) const TOOL_RAIL: &str = "┃";
 
 /// The row's own text size. An action hanging off a row is a size down while
 /// the row is collapsed and the row's own size once it is open: grok-build
@@ -74,20 +70,17 @@ pub(super) fn to_text_span(
     })
 }
 
-/// The colour a tool call's mark carries: the state, not the tool. A finished
-/// read carries a quiet mark, a finished command the success colour, and a
-/// failure the error colour whichever tool it was — grok-build's split, where
-/// only a command's success is a success the row announces.
-fn tool_mark_token(kind: ToolKind, status: ToolCallStatus) -> ColorToken {
+/// The colour a tool call's mark carries: the state, not the tool. Every call
+/// walks the same four states, and each one owns a colour a reader can tell
+/// apart at a glance — queued is quiet, work in flight is amber, a call that
+/// finished is green and a failure is red. The colour is the state; the mark
+/// never changes shape.
+fn tool_mark_token(status: ToolCallStatus) -> ColorToken {
     match status {
-        ToolCallStatus::Pending | ToolCallStatus::Running => ColorToken::Accent,
+        ToolCallStatus::Pending => ColorToken::Muted,
+        ToolCallStatus::Running => ColorToken::Warning,
+        ToolCallStatus::Finished => ColorToken::Success,
         ToolCallStatus::Error => ColorToken::Error,
-        ToolCallStatus::Finished => match kind {
-            ToolKind::Execute => ColorToken::Success,
-            // A read-shaped tool's bullet is the pager's default: primary while
-            // the row is open, dimmed into gray while it is folded.
-            _ => ColorToken::Text,
-        },
     }
 }
 
@@ -98,7 +91,7 @@ fn mark_token(call: &ToolCall, sub_agent: Option<&SubAgentRow>) -> ColorToken {
         // A child's own record is the row's state, and its four statuses are
         // the same four the tool-call path carries.
         Some(record) => record.status_affordance().1,
-        None => tool_mark_token(tool_kind_for(&call.name), call.status),
+        None => tool_mark_token(call.status),
     }
 }
 
@@ -329,6 +322,78 @@ fn verb_group_open(fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>, key: &s
     fold.borrow().get(key).copied() == Some(ToolDisplayMode::Expanded)
 }
 
+/// One foldable row of a tool sequence, in display order: a whole verb run
+/// under its aggregated header, or a call that stands on its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ToolFoldTarget {
+    Group {
+        key: String,
+        start: usize,
+        end: usize,
+    },
+    Call {
+        key: String,
+        index: usize,
+    },
+}
+
+/// The foldable rows [`build_tool_call_rows`] draws, in the order it draws
+/// them. The transcript's arrow keys use this to find the last row they can
+/// open or close without duplicating the run walk.
+pub(crate) fn tool_fold_targets(
+    tool_calls: &[ToolCall],
+    fold: &HashMap<String, ToolDisplayMode>,
+) -> Vec<ToolFoldTarget> {
+    let mode_of = |index: usize| {
+        let key = tool_fold_key(&tool_calls[index], index);
+        fold.get(&key)
+            .copied()
+            .unwrap_or_else(|| tool_calls[index].default_display_mode())
+    };
+    let mut targets = Vec::new();
+    let mut index = 0usize;
+    while index < tool_calls.len() {
+        if !matches!(run_step(&tool_calls[index], mode_of(index)), RunStep::Member(_)) {
+            let key = tool_fold_key(&tool_calls[index], index);
+            targets.push(ToolFoldTarget::Call { key, index });
+            index += 1;
+            continue;
+        }
+        let start = index;
+        let mut end = start + 1;
+        let mut stop = start + 1;
+        while stop < tool_calls.len() {
+            match run_step(&tool_calls[stop], mode_of(stop)) {
+                RunStep::Member(_) => end = stop + 1,
+                RunStep::Transparent(_) => {}
+                RunStep::Break => break,
+            }
+            stop += 1;
+        }
+        let group_key = verb_group_key(tool_calls, start);
+        let open = fold.get(&group_key).copied() == Some(ToolDisplayMode::Expanded);
+        targets.push(ToolFoldTarget::Group {
+            key: group_key,
+            start,
+            end,
+        });
+        // An open run draws its member rows, so they are foldable rows of the
+        // transcript too. They follow the header in display order: Right opens
+        // the newest member after the run, and Left closes the members before
+        // it closes the run back to its header.
+        if open {
+            for member in start..end {
+                targets.push(ToolFoldTarget::Call {
+                    key: tool_fold_key(&tool_calls[member], member),
+                    index: member,
+                });
+            }
+        }
+        index = end.max(start + 1);
+    }
+    targets
+}
+
 /// The folded run's header: grok-build's dotted diamond in the run's state
 /// colour and the bold aggregated label, with the failed suffix in the error
 /// colour. A click on the row opens or folds the whole run.
@@ -343,32 +408,30 @@ fn verb_group_header(
     let token = if failed > 0 {
         ColorToken::Error
     } else if running {
-        ColorToken::Accent
+        ColorToken::Warning
     } else {
-        ColorToken::Muted
+        ColorToken::Success
     };
-    let run = |text: String, color: ColorU, weight: FontWeight| -> Box<dyn Element> {
-        Text::new(text)
+    let run = |text: String, color: ColorU, weight: FontWeight| -> TextSpan {
+        TextSpan::plain(text)
             .with_color(color)
-            .with_font_family(FontFamily::Mono)
-            .with_font_size(TOOL_ROW_FONT_SIZE)
+            .with_family(FontFamily::Mono)
             .with_weight(weight)
-            .finish()
     };
-    let mut row = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_child(run(
+    let mut spans = vec![
+        run(
             format!("{VERB_GROUP_MARK} "),
             app.theme.color(token),
             FontWeight::Regular,
-        ))
-        .with_child(run(
+        ),
+        run(
             label.to_string(),
             app.theme.color(ColorToken::Text),
             FontWeight::Bold,
-        ));
+        ),
+    ];
     if failed > 0 {
-        row = row.with_child(run(
+        spans.push(run(
             format!(" · {failed} failed"),
             app.theme.color(ColorToken::Error),
             FontWeight::Regular,
@@ -377,7 +440,12 @@ fn verb_group_header(
 
     let toggle = fold.clone();
     let key = key.to_string();
-    Chip::new(row.finish())
+    Chip::flat(
+        InlineText::new(spans)
+            .with_font_size(TOOL_ROW_FONT_SIZE)
+            .with_line_height(1.4)
+            .finish(),
+    )
         .with_on_click(move || {
             let mut folds = toggle.borrow_mut();
             let open = folds.get(&key).copied() == Some(ToolDisplayMode::Expanded);
@@ -415,15 +483,21 @@ fn single_call_column(
     // the one that opens the child's own view.
     let header = match sub_agent_open_target(record, on_action, mode, app) {
         Some(open) => Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(2.0)
-            .with_child(header)
+            // The header takes the space the open action leaves, so a long
+            // subject wraps inside the pane instead of pushing the action out.
+            .with_child(Expanded::new(header).with_flex(1.0).finish())
             .with_child(open)
             .finish(),
         None => header,
     };
+    // Stretch, so the header and the body are measured at the transcript's
+    // width: a long command or path wraps inside the pane instead of running
+    // past its right edge.
     let mut call_column = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(2.0)
         .with_child(header);
 
@@ -521,7 +595,7 @@ pub(super) fn build_tool_call_rows(
         let (label, running, failed) =
             verb_group_label(&tool_calls[start..end], start, fold, sub_agents);
         let mut group = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(2.0)
             .with_child(verb_group_header(
                 &label, running, failed, &group_key, fold, app,
@@ -594,45 +668,42 @@ pub(super) fn tool_call_header(
         };
     }
 
-    // The row is one line of runs: the rail, the mark, the verb in bold, the
-    // operand and the detail, each at its own colour and separated by the
-    // spaces they already carry.
-    let run = |text: String, color: ColorU, weight: FontWeight| -> Box<dyn Element> {
-        Text::new(text)
+    // The row is one line of runs: the mark, the verb in bold, the operand and
+    // the detail, each at its own colour and separated by the spaces they
+    // already carry. The row starts where prose starts — no rail and no inset
+    // — so a call reads as part of the reply rather than as a nested block.
+    // One wrapping flow rather than a row of runs: a long operand or detail
+    // breaks inside the transcript's width, and an over-wide token breaks
+    // inside it too, instead of being drawn past the pane's right edge.
+    let run = |text: String, color: ColorU, weight: FontWeight| -> TextSpan {
+        TextSpan::plain(text)
             .with_color(color)
-            .with_font_family(FontFamily::Mono)
-            .with_font_size(TOOL_ROW_FONT_SIZE)
+            .with_family(FontFamily::Mono)
             .with_weight(weight)
-            .finish()
     };
-    let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
-    if mode != ToolDisplayMode::Collapsed {
-        row = row.with_child(run(
-            format!("{TOOL_RAIL} "),
-            app.theme.color(token),
-            FontWeight::Regular,
-        ));
-    }
-    row = row.with_child(run(
-        format!("{TOOL_MARK} "),
-        mark,
-        FontWeight::Regular,
-    ));
+    let mut spans = vec![run(format!("{TOOL_MARK} "), mark, FontWeight::Regular)];
     if !parsed.verb.is_empty() {
-        row = row.with_child(run(parsed.verb.to_string(), label_color(mode, app), FontWeight::Bold));
+        spans.push(run(
+            parsed.verb.to_string(),
+            label_color(mode, app),
+            FontWeight::Bold,
+        ));
     }
     if !parsed.subject.is_empty() {
         // The operand keeps its own colour while folded: it is the one thing a
         // folded row is read for.
-        row = row.with_child(run(
+        spans.push(run(
             parsed.subject.clone(),
             tool_subject_color(parsed.kind, mode, app),
             FontWeight::Regular,
         ));
     }
-    if !parsed.detail.is_empty() {
-        row = row.with_child(run(
-            format!(" {}", parsed.detail),
+    // One space between the operand and the detail, whether the family spells
+    // its detail with a leading space (` (2 entries)`, ` +1/-1`) or not.
+    let detail = parsed.detail.trim_start();
+    if !detail.is_empty() {
+        spans.push(run(
+            format!(" {detail}"),
             app.theme.color(ColorToken::Muted),
             FontWeight::Regular,
         ));
@@ -640,13 +711,18 @@ pub(super) fn tool_call_header(
 
     let toggle = fold.clone();
     let key = key.to_string();
-    Chip::new(row.finish())
-        .with_on_click(move || {
-            let mut folds = toggle.borrow_mut();
-            let current = folds.get(&key).copied().unwrap_or(fallback);
-            folds.insert(key.clone(), current.next());
-        })
-        .finish()
+    Chip::flat(
+        InlineText::new(spans)
+            .with_font_size(TOOL_ROW_FONT_SIZE)
+            .with_line_height(1.4)
+            .finish(),
+    )
+    .with_on_click(move || {
+        let mut folds = toggle.borrow_mut();
+        let current = folds.get(&key).copied().unwrap_or(fallback);
+        folds.insert(key.clone(), current.next());
+    })
+    .finish()
 }
 
 /// The sub-agent row's open target: a click fires [`ChatAction::OpenSubAgent`]
@@ -688,11 +764,16 @@ pub(super) fn tool_body_row(
     color: ColorToken,
     app: &crate::elements::AppContext,
 ) -> Box<dyn Element> {
-    Text::new(text.into())
-        .with_theme_color(color, app)
-        .with_font_family(FontFamily::Mono)
-        .with_font_size(TOOL_ROW_FONT_SIZE)
-        .finish()
+    // Inline flow, like the header: a long command or path breaks at the
+    // transcript's width, and an over-wide token breaks inside it.
+    InlineText::new(vec![
+        TextSpan::plain(text.into())
+            .with_color(app.theme.color(color))
+            .with_family(FontFamily::Mono),
+    ])
+    .with_font_size(TOOL_ROW_FONT_SIZE)
+    .with_line_height(1.4)
+    .finish()
 }
 
 /// A body row drawn from styled runs rather than one colour: a command's output

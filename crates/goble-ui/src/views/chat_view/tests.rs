@@ -98,7 +98,8 @@ fn chat_view_renders_markdown_message() {
 
 /// R1: the transcript is full-width rows, not pills. The agent's reply
 /// paints no box, the user's message is a square band running across the
-/// pane, and every row insets its text by 10-15 px of padding.
+/// pane, and the agent's row insets its text by 10-15 px of padding. The
+/// user's row is led by the prompt marker, so its text starts past it.
 #[test]
 fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
     use crate::render::RenderCommand;
@@ -153,13 +154,26 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
     };
     let user_x = text_x("Salut");
     let reply_x = text_x("Bine ai venit");
-    assert_eq!(
-        user_x, reply_x,
-        "the user's message and the agent's reply share the pane's left edge"
-    );
     assert!(
-        (10.0..=15.0).contains(&user_x),
-        "the row keeps 10-15 px of padding, got {user_x}"
+        (10.0..=15.0).contains(&reply_x),
+        "the agent's row keeps 10-15 px of padding, got {reply_x}"
+    );
+
+    // The user's message opens with the prompt marker on its first line, so
+    // its text starts one marker-width past the pane's padding.
+    let marker = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawIcon {
+                name, origin, size, ..
+            } if name == "prompt-arrow" => Some((*origin, *size)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the user's message draws its prompt marker: {commands:?}"));
+    assert!(
+        user_x >= marker.0.x + marker.1 + 2.0 && user_x > reply_x,
+        "the user's text starts at {user_x}, past the marker ending at {} and the reply at {reply_x}",
+        marker.0.x + marker.1
     );
 }
 
@@ -587,6 +601,115 @@ fn e_cycles_the_transcript_tool_folds_and_survives_a_rebuild() {
     );
 }
 
+/// The transcript has no cursor, so Right opens the newest foldable row the
+/// tail carries — first the folded run, then the call inside it — and Left
+/// closes the same rows back. grok-build's arrow pair, on the row the pane
+/// tails.
+#[test]
+fn right_opens_the_newest_fold_and_left_closes_it() {
+    use crate::elements::chat_content::ToolCall;
+    use crate::event::{DispatchedEvent, ModifiersState};
+    use crate::test_util::render_element;
+    use goble_core::harness::ToolCallStatus;
+
+    let app = AppContext::default();
+    let call = |id: &str, path: &str| ToolCall {
+        id: id.to_string(),
+        name: "read_file".to_string(),
+        arguments: format!(r#"{{"path":"{path}"}}"#),
+        status: ToolCallStatus::Finished,
+        result: Some(
+            (1..=12)
+                .map(|i| format!("{path} line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+    };
+    let messages = vec![ChatMessage::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(vec![call("call_a", "src/a.rs"), call("call_b", "src/b.rs")])];
+    let fold = Rc::new(RefCell::new(HashMap::new()));
+
+    let build = |fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>| -> Box<dyn Element> {
+        ChatView::new()
+            .with_messages(messages.clone())
+            .with_tool_fold(fold.clone())
+            .finish()
+    };
+    let press = |view: &mut Box<dyn Element>, key: &str| {
+        view.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: key.to_string(),
+                modifiers: ModifiersState::none(),
+            },
+            &mut crate::elements::EventContext::default(),
+            &app,
+        );
+    };
+    let drawn = |view: &mut Box<dyn Element>| -> String {
+        render_element(view, vec2f(600.0, 800.0), &app)
+            .iter()
+            .filter_map(|command| match command {
+                crate::render::RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let mut view = build(&fold);
+    let folded = drawn(&mut view);
+    assert!(
+        folded.contains("Read 2 files"),
+        "the two reads start as one folded run: {folded}"
+    );
+    assert!(
+        !folded.contains("src/a.rs"),
+        "the folded run hides its members: {folded}"
+    );
+
+    // Right opens the run: its member rows appear, bodies still folded.
+    press(&mut view, "ArrowRight");
+    let mut view = build(&fold);
+    let run = drawn(&mut view);
+    assert!(
+        run.contains("src/a.rs") && run.contains("src/b.rs"),
+        "the run opens to its members: {run}"
+    );
+    assert!(
+        !run.contains("src/b.rs line 7"),
+        "opening the run does not open the call's body: {run}"
+    );
+
+    // The next Right opens the newest call in full.
+    press(&mut view, "ArrowRight");
+    let mut view = build(&fold);
+    let opened = drawn(&mut view);
+    assert!(
+        opened.contains("src/b.rs line 7"),
+        "the newest call opens whole: {opened}"
+    );
+    assert!(
+        !opened.contains("src/a.rs line 7"),
+        "the older call stays folded: {opened}"
+    );
+
+    // Left closes that call, then the run.
+    press(&mut view, "ArrowLeft");
+    let mut view = build(&fold);
+    let closed = drawn(&mut view);
+    assert!(
+        !closed.contains("src/b.rs line 7") && closed.contains("src/b.rs"),
+        "Left closes the call's body, not the run: {closed}"
+    );
+
+    press(&mut view, "ArrowLeft");
+    let mut view = build(&fold);
+    let folded_again = drawn(&mut view);
+    assert!(
+        folded_again.contains("Read 2 files") && !folded_again.contains("src/a.rs"),
+        "Left closes the run back to its header: {folded_again}"
+    );
+}
+
 /// A background chat pane sharing the tree does not take the fold key.
 #[test]
 fn a_background_chat_pane_does_not_take_the_fold_key() {
@@ -632,7 +755,9 @@ fn a_background_chat_pane_does_not_take_the_fold_key() {
 /// agent's prose and reasoning, a tool call of every family in every fold — one
 /// of them still in flight — a sub-agent's row, an interrupted turn and the
 /// footer. Not one pill, anywhere: the pane's rows are square and borderless,
-/// and the only bordered box is the shared terminal command block.
+/// and the only bordered box is the shared terminal command block. The
+/// approval card that closes a suspended turn is a control block of its own,
+/// so it is checked apart from the row lock.
 #[test]
 fn the_agent_transcript_paints_no_pill() {
     use std::cell::RefCell;
@@ -711,16 +836,11 @@ fn the_agent_transcript_paints_no_pill() {
         .with_messages(messages)
         .with_tool_fold(Rc::new(RefCell::new(fold)))
         .with_sub_agents(HashMap::from([(spawn.id.clone(), record)]))
-        // An interrupted turn: the agent asked a question and proposed a
-        // command, and another prompt is queued behind it.
+        // An interrupted turn: the agent asked a question and another prompt
+        // is queued behind it.
         .with_pending_ask(Some(AskUserUi::new(
             "Which environment?",
             vec!["staging".to_string(), "production".to_string()],
-        )))
-        .with_command_proposal(Some(CommandProposalUi::new(
-            "cmd-1",
-            vec!["cargo test".to_string(), "cargo clippy".to_string()],
-            "~/Projects/goble",
         )))
         .with_queued_prompt(Some("then run the linter".to_string()))
         .with_turn_status(TurnStatus::still_running(vec![WorkKindCount {
@@ -733,6 +853,185 @@ fn the_agent_transcript_paints_no_pill() {
     let commands = render_element(&mut view, vec2f(600.0, 800.0), &app);
     assert_pill_free(&commands, "the agent transcript");
     assert_no_row_border(&commands, "the agent transcript");
+
+    // The approval card is a control block, the way the terminal command block
+    // is: it closes the same transcript and brings its own decision buttons.
+    let mut with_card = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Running the suite.")],
+        )])
+        .with_command_proposal(Some(CommandProposalUi::new(
+            "cmd-1",
+            vec!["cargo test".to_string()],
+            "~/Projects/goble",
+        )))
+        .without_composer()
+        .finish();
+    let drawn: Vec<String> = render_element(&mut with_card, vec2f(600.0, 400.0), &app)
+        .iter()
+        .filter_map(|command| match command {
+            crate::render::RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    for expected in ["OK if I run this command and read the output?", "cargo test", "Run"] {
+        assert!(
+            drawn.iter().any(|text| text == expected),
+            "the transcript closes with the approval card drawing {expected:?}, got {drawn:?}"
+        );
+    }
+}
+
+/// While the approval card waits, the rich input keeps its place and its own
+/// instruction: the card is the decision, the input the follow-up.
+#[test]
+fn a_pending_command_puts_the_rich_input_in_its_waiting_state() {
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let mut view = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Running the suite.")],
+        )])
+        .with_composer_focused(true)
+        .with_command_proposal(Some(CommandProposalUi::new(
+            "cmd-1",
+            vec!["cargo test".to_string()],
+            "~/Projects/goble",
+        )))
+        .finish();
+    let drawn: Vec<String> = render_element(&mut view, vec2f(600.0, 500.0), &app)
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !drawn.iter().any(|text| text == "Ask anything..."),
+        "a suspended turn does not invite a new draft: {drawn:?}"
+    );
+    assert!(
+        !drawn.iter().any(|text| text == "Waiting for your decision…"),
+        "the rich input is not drawn at all while the card waits: {drawn:?}"
+    );
+    assert!(
+        drawn.iter().any(|text| text == "OK if I run this command and read the output?"),
+        "the approval card is the only input surface: {drawn:?}"
+    );
+}
+
+/// While the card waits, the rich input stays a follow-up surface: once it
+/// holds the keyboard, the keys it receives edit its draft instead of the
+/// card's command.
+#[test]
+fn a_pending_command_leaves_typing_to_the_focused_composer() {
+    use crate::elements::EventContext;
+    use crate::event::{DispatchedEvent, ModifiersState};
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let changed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let log = changed.clone();
+    let draft = Rc::new(RefCell::new("cargo test".to_string()));
+    let mut view = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Running the suite.")],
+        )])
+        .with_composer_focused(true)
+        .with_composer_value("a half-written prompt")
+        .with_composer_caret(Rc::new(RefCell::new("a half-written prompt".chars().count())))
+        .with_composer_on_change(move |text| log.borrow_mut().push(text))
+        .with_command_proposal(Some(CommandProposalUi::new(
+            "cmd-1",
+            vec!["cargo test".to_string()],
+            "~/Projects/goble",
+        )))
+        .with_command_proposal_draft(
+            draft.clone(),
+            Rc::new(RefCell::new("cargo test".chars().count())),
+            Rc::new(RefCell::new(ScrollState::default())),
+        )
+        .finish();
+    render_element(&mut view, vec2f(600.0, 500.0), &app);
+
+    view.dispatch_event(
+        &DispatchedEvent::KeyDown {
+            key: "x".to_string(),
+            modifiers: ModifiersState::none(),
+        },
+        &mut EventContext::default(),
+        &app,
+    );
+
+    assert_eq!(
+        changed.borrow().last().map(String::as_str),
+        Some("a half-written promptx"),
+        "the focused composer takes the follow-up draft: {:?}",
+        changed.borrow()
+    );
+    assert_eq!(
+        draft.borrow().as_str(),
+        "cargo test",
+        "the card's command is untouched while the composer is focused"
+    );
+}
+
+/// With the composer unfocused the card still owns the keyboard: typing edits
+/// the command Enter will run, not a draft the suspended turn will not read.
+#[test]
+fn a_pending_command_owns_the_keys_until_the_composer_is_clicked() {
+    use crate::elements::EventContext;
+    use crate::event::{DispatchedEvent, ModifiersState};
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let changed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let log = changed.clone();
+    let draft = Rc::new(RefCell::new("cargo test".to_string()));
+    let mut view = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Running the suite.")],
+        )])
+        .with_composer_focused(false)
+        .with_composer_on_change(move |text| log.borrow_mut().push(text))
+        .with_command_proposal(Some(CommandProposalUi::new(
+            "cmd-1",
+            vec!["cargo test".to_string()],
+            "~/Projects/goble",
+        )))
+        .with_command_proposal_draft(
+            draft.clone(),
+            Rc::new(RefCell::new("cargo test".chars().count())),
+            Rc::new(RefCell::new(ScrollState::default())),
+        )
+        .finish();
+    render_element(&mut view, vec2f(600.0, 500.0), &app);
+
+    view.dispatch_event(
+        &DispatchedEvent::KeyDown {
+            key: "x".to_string(),
+            modifiers: ModifiersState::none(),
+        },
+        &mut EventContext::default(),
+        &app,
+    );
+
+    assert!(
+        changed.borrow().is_empty(),
+        "the unfocused composer took a draft: {:?}",
+        changed.borrow()
+    );
+    assert_eq!(
+        draft.borrow().as_str(),
+        "cargo testx",
+        "the keys belong to the card's command"
+    );
 }
 
 /// The transcript's own rows keep a real tool call drawn in every fold, so the
@@ -1107,6 +1406,76 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
     let usage_origin = text_origin(&rest, "no usage yet");
     let over_usage = paint_with(&mut bare, Some(probe(usage_origin)), &app);
     let _ = band_at(&rest, &over_usage, probe(usage_origin));
+}
+
+/// The closing row waits for the turn: while the agent is still working, or
+/// suspended on a command decision, the conversation has no fork and no token
+/// count to read yet.
+#[test]
+fn the_footer_waits_until_the_turn_finishes() {
+    use crate::elements::{TurnActivity, TurnStatus};
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+    use goble_core::llm::TokenUsage;
+
+    let app = AppContext::default();
+    let usage = TokenUsage {
+        input: 1_234,
+        cached: Some(800),
+        output: 56,
+    };
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::text("Working on it")],
+    )];
+    let drawn = |view: &mut Box<dyn Element>| -> Vec<String> {
+        render_element(view, vec2f(600.0, 480.0), &app)
+            .into_iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let mut busy = ChatView::new()
+        .with_messages(messages.clone())
+        .with_usage(usage)
+        .with_on_fork(|| {})
+        .with_turn_status(TurnStatus::busy(TurnActivity::Thinking, None, 0))
+        .finish();
+    let labels = drawn(&mut busy);
+    assert!(
+        !labels.iter().any(|text| text == "Fork" || text.contains("tokens")),
+        "a running turn draws no closing row: {labels:?}"
+    );
+
+    let mut waiting = ChatView::new()
+        .with_messages(messages.clone())
+        .with_usage(usage)
+        .with_on_fork(|| {})
+        .with_command_proposal(Some(CommandProposalUi::new(
+            "call-1",
+            vec!["git status".to_string()],
+            "~/Projects/goble",
+        )))
+        .finish();
+    let labels = drawn(&mut waiting);
+    assert!(
+        !labels.iter().any(|text| text == "Fork" || text.contains("tokens")),
+        "a pending decision draws no closing row: {labels:?}"
+    );
+
+    let mut done = ChatView::new()
+        .with_messages(messages)
+        .with_usage(usage)
+        .with_on_fork(|| {})
+        .finish();
+    let labels = drawn(&mut done);
+    assert!(
+        labels.iter().any(|text| text == "Fork") && labels.iter().any(|text| text.contains("tokens")),
+        "once the turn is over the row is back: {labels:?}"
+    );
 }
 
 /// The instructions the caller hands the view are drawn over the input's
@@ -1856,13 +2225,15 @@ mod the_footers_place {
             "the footer is in view at the end of the stream: {pinned_fork:?} in {viewport:?}"
         );
 
-        // The user scrolls up through the conversation.
-        scroll.borrow_mut().scroll_by(-120.0);
+        // The user scrolls up through the conversation. The delta stays small
+        // enough that the footer is still on screen: a run outside the
+        // viewport is culled, so its geometry cannot be read from the frame.
+        scroll.borrow_mut().scroll_by(-8.0);
         let scrolled = frame(&mut view, size, &app, None);
         assert_close(
             "the footer moves with the transcript's scroll offset",
             text_origin(&scrolled, "Fork").y - pinned_fork.y,
-            120.0,
+            8.0,
         );
 
         // All the way back: the footer has left the viewport, with the message.
@@ -1870,7 +2241,7 @@ mod the_footers_place {
         let top = frame(&mut view, size, &app, None);
         assert_eq!(scroll.borrow().offset(), 0.0, "the transcript is at its start");
         assert!(
-            text_origin(&top, "Fork").y > viewport.max_y(),
+            !texts(&top).iter().any(|text| text == "Fork"),
             "at the start of the history the footer is out of the viewport, not stranded over \
              the composer"
         );

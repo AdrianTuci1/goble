@@ -120,6 +120,130 @@ use super::*;
         );
     }
 
+    /// The harness writes one assistant row per execution step: the preamble
+    /// with its calls, then a tool-only row per step. Drawn row by row that is
+    /// one bubble per step; the chain merges into the reply that opened it, so
+    /// the run header counts the whole chain and the prose stays on top.
+    #[test]
+    fn chained_tool_steps_merge_into_the_reply_that_opened_them() {
+        let call = |id: &str, path: &str| {
+            format!(
+                r#"{{"id":"{id}","name":"read_file","arguments":{{"path":"{path}"}},"status":"finished"}}"#
+            )
+        };
+        let row = |id: &str, content: &str, calls: Option<String>| {
+            goble_desktop_service::ChatMessage {
+                id: id.into(),
+                role: "assistant".into(),
+                content: content.into(),
+                tool_calls: calls,
+                created_at: "2026-09-10T00:00:00Z".into(),
+            }
+        };
+        let rows = vec![
+            row("m1", "Checking the module.", Some(format!("[{}]", call("call_1", "src/a.rs")))),
+            row("m2", "", Some(format!("[{}]", call("call_2", "src/b.rs")))),
+            row("m3", "", Some(format!("[{}]", call("call_3", "src/c.rs")))),
+            row("m4", "All three are clean.", None),
+        ];
+
+        let messages = MessageParseCache::default().resolve(&rows);
+
+        assert_eq!(
+            messages.len(),
+            2,
+            "the tool-only steps are not bubbles of their own"
+        );
+        assert_eq!(
+            messages[0].tool_calls.len(),
+            3,
+            "the chain's calls all belong to the reply that opened it"
+        );
+        assert!(
+            messages[0]
+                .fragments
+                .iter()
+                .any(|fragment| matches!(&fragment.kind, goble_ui::ChatFragmentKind::Text(text) if text.contains("Checking the module."))),
+            "the opening prose leads the merged reply"
+        );
+        assert!(
+            messages[1]
+                .fragments
+                .iter()
+                .any(|fragment| matches!(&fragment.kind, goble_ui::ChatFragmentKind::Text(text) if text.contains("All three are clean."))),
+            "the final answer stays its own message"
+        );
+    }
+
+    /// A step that carries prose of its own starts a new reply: the next
+    /// paragraph is where grok-build's agent message ends the run too.
+    #[test]
+    fn a_step_with_its_own_prose_starts_a_new_reply() {
+        let row = |id: &str, content: &str, call_id: &str| goble_desktop_service::ChatMessage {
+            id: id.into(),
+            role: "assistant".into(),
+            content: content.into(),
+            tool_calls: Some(format!(
+                r#"[{{"id":"{call_id}","name":"read_file","arguments":{{"path":"src/a.rs"}},"status":"finished"}}]"#
+            )),
+            created_at: "2026-09-10T00:00:00Z".into(),
+        };
+        let rows = vec![
+            row("m1", "First I read it.", "call_1"),
+            row("m2", "Then I read it again.", "call_2"),
+        ];
+
+        let messages = MessageParseCache::default().resolve(&rows);
+
+        assert_eq!(messages.len(), 2, "prose owns its own reply");
+        assert_eq!(messages[1].tool_calls.len(), 1);
+    }
+
+    /// The thinking block belongs to the turn's start: the harness plans before
+    /// it executes, so the block sits right after the user's message instead of
+    /// riding the assistant reply down under the tools it drove.
+    #[test]
+    fn the_reasoning_block_sits_at_the_start_of_the_turn() {
+        use crate::state::transcript::{overlay_reasoning, reasoning_row_key};
+
+        let mut messages = vec![
+            ChatMessage::new(ChatRole::User, vec![ChatFragment::text("fix the test")]),
+            ChatMessage::new(ChatRole::Assistant, vec![ChatFragment::text("Done.")]),
+        ];
+        let rows = vec![ReasoningRow {
+            chat_id: "c1".into(),
+            step: 0,
+            mode: "contemplating".into(),
+            text: "weighing the options".into(),
+            done: true,
+        }];
+
+        overlay_reasoning(&mut messages, &rows);
+
+        assert_eq!(messages.len(), 3, "one block is added");
+        assert_eq!(messages[0].role, ChatRole::User);
+        assert!(
+            crate::state::transcript::is_reasoning_overlay(&messages[1]),
+            "the thinking block follows the user's message"
+        );
+        let expected = reasoning_row_key("c1", 0);
+        assert!(
+            matches!(
+                &messages[1].fragments[0].kind,
+                goble_ui::ChatFragmentKind::Reasoning { key, text, .. }
+                    if key == &expected && text == "weighing the options"
+            ),
+            "the block carries the app-owned key its fold is stored under"
+        );
+        assert!(
+            messages[2]
+                .fragments
+                .iter()
+                .any(|fragment| matches!(&fragment.kind, goble_ui::ChatFragmentKind::Text(text) if text.contains("Done."))),
+            "the answer stays after the thinking"
+        );
+    }
+
     #[test]
     fn reasoning_events_reach_the_transcript_and_render_recessed_rows() {
         use goble_desktop_service::{ReasoningEvent, ReasoningPhase};

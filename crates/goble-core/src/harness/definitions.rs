@@ -140,19 +140,8 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "list_entities".to_string(),
-            description: "List existing agents, workflows, teams or workers.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "entity_type": { "type": "string", "enum": ["agents", "workflows", "teams", "workers"] }
-                },
-                "required": ["entity_type"]
-            }),
-        },
-        ToolDefinition {
             name: "search_store".to_string(),
-            description: "Search agents, workflows and teams by name.".to_string(),
+            description: "Search agents, workflows and teams by name. An empty query lists everything, so this also covers what a separate listing call would return.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -390,14 +379,6 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
                     "id": { "type": "string", "description": "Installed MCP server id" }
                 },
                 "required": ["id"]
-            }),
-        },
-        ToolDefinition {
-            name: "list_mcp_servers".to_string(),
-            description: "List registered MCP servers.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {}
             }),
         },
         ToolDefinition {

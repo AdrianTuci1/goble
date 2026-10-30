@@ -36,7 +36,7 @@ impl SubAgentRowStatus {
     /// colour, which is also what the parent's tool row draws its own mark in.
     pub fn affordance(self) -> (&'static str, crate::theme::ColorToken) {
         match self {
-            Self::Running => ("◆", crate::theme::ColorToken::Accent),
+            Self::Running => ("◆", crate::theme::ColorToken::Warning),
             Self::Completed => ("◆", crate::theme::ColorToken::Success),
             Self::Failed => ("◆", crate::theme::ColorToken::Error),
             Self::Cancelled => ("◆", crate::theme::ColorToken::Muted),

@@ -225,6 +225,12 @@ impl UiState {
                     pending_ask: None,
                     pending_command: None,
                     command_selection: None,
+                    command_scroll: Rc::new(RefCell::new(goble_ui::ScrollState::default())),
+                    command_draft: Rc::new(RefCell::new(String::new())),
+                    command_caret: Rc::new(RefCell::new(0)),
+                    command_editor_scroll: Rc::new(RefCell::new(
+                        goble_ui::ScrollState::default(),
+                    )),
                     queued_prompt: None,
                     busy: false,
                     agent_state: PaneAgentState::Unknown,

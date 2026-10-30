@@ -234,6 +234,19 @@ impl TerminalRegistry {
             .unwrap_or_default()
     }
 
+    /// The cells behind the blocks `view` draws in `pane_id`, keyed by block id.
+    /// A pane with no session has no blocks, so the result is empty.
+    pub fn block_output_lines(
+        &self,
+        pane_id: u64,
+        view: &BlockView,
+    ) -> std::collections::HashMap<BlockId, Vec<goble_terminal::ScreenLine>> {
+        self.sessions
+            .get(&pane_id)
+            .map(|session| session.block_output_lines(view))
+            .unwrap_or_default()
+    }
+
     /// Push the card standing for `conversation_id` into `pane_id`'s block list.
     /// A pane with no live session has no list to push into, so `None`.
     pub fn push_agent_view_block(
@@ -249,6 +262,20 @@ impl TerminalRegistry {
 
     pub fn set_mode(&mut self, pane_id: u64, mode: TerminalMode) {
         self.modes.insert(pane_id, mode);
+    }
+
+    /// Pump every live session, painted or not.
+    ///
+    /// A pane's harness turn routes its shell tool through this pane
+    /// ([`PaneCommandRunner`]), and the session's pump is what services that
+    /// request. A pane drawing its agent view, or sitting in a tab that is not
+    /// in front, still owns its shell: pumping only the painted shells would
+    /// leave the call waiting until the pane showed its terminal again, and the
+    /// tool would fail with "the pane did not answer".
+    pub fn pump_sessions(&mut self) {
+        for session in self.sessions.values_mut() {
+            session.pump();
+        }
     }
 
     /// The harness's shell-tool route for a pane whose shell can answer, or

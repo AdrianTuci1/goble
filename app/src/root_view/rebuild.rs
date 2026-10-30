@@ -104,6 +104,19 @@ impl RootView {
         let snapshot = {
             let s = self.state.borrow();
             let pane_chat = s.pane_chat_snapshot();
+            // What each mounted pane calls itself when it talks to an agent.
+            // The agent view centres it in the pane bar, so it is read here
+            // once per frame with the rest of the pane's own state.
+            let pane_titles = {
+                let mut leaves = Vec::new();
+                if let Some(space) = s.spaces.get(s.active_space) {
+                    space.root.leaves(&mut leaves);
+                }
+                leaves
+                    .into_iter()
+                    .map(|(pane_id, _)| (pane_id, s.pane_subject(pane_id)))
+                    .collect()
+            };
             // The topbar's live cue reads C1's one accessor once; the count and
             // phase are carried on the snapshot so `build_topbar` stays pure.
             let live_work = s.live_work();
@@ -495,6 +508,7 @@ impl RootView {
                 composer_context,
                 pane_hover: s.pane_hover.clone(),
                 pane_chat,
+                pane_titles,
                 pane_controls: s.pane_controls_snapshot(),
                 terminal: s.terminal.clone(),
                 sidebar_width: s.sidebar_width,

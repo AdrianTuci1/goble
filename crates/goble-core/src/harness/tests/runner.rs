@@ -1,7 +1,7 @@
 use super::*;
 use crate::harness::*;
 
-use crate::harness::runner::shell_line;
+use crate::harness::runner::{shell_line, split_command_line};
 use futures::StreamExt;
 use goble_sandbox::Sandbox;
 
@@ -131,6 +131,70 @@ fn a_pane_line_composes_the_argv_and_quotes_what_the_shell_would_change() {
         Some("echo 'it'\\''s'")
     );
     assert_eq!(shell_line("   ", &[]), None);
+}
+
+#[test]
+fn a_composed_line_splits_back_into_the_same_argv() {
+    assert_eq!(
+        split_command_line("git status"),
+        Some(("git".to_string(), vec!["status".to_string()]))
+    );
+    assert_eq!(
+        split_command_line("echo 'a b'"),
+        Some(("echo".to_string(), vec!["a b".to_string()]))
+    );
+    assert_eq!(
+        split_command_line("echo 'it'\\''s'"),
+        Some(("echo".to_string(), vec!["it's".to_string()]))
+    );
+    assert_eq!(split_command_line("   "), None);
+}
+
+/// The approval card carries a full line. Approving it in a sandboxed pane must
+/// run the command with its arguments, not fail because `"ls -la"` is not a
+/// literal allow-list entry.
+#[tokio::test]
+async fn an_approved_line_runs_with_its_arguments_in_the_sandbox() {
+    let runner = SandboxedCommandRunner::default_tools();
+    let out = runner
+        .run_line("echo 'hello world'")
+        .await
+        .expect("an allowed command with arguments runs");
+    assert_eq!(out, "hello world");
+}
+
+/// The user saw this exact line and ran it, so the static allow-list must not
+/// overrule that decision. The unattended path keeps the gate.
+#[tokio::test]
+async fn an_approved_line_is_authorized_even_outside_the_allow_list() {
+    let runner = SandboxedCommandRunner::default_tools();
+    let out = runner
+        .run_line("printf approved")
+        .await
+        .expect("the approved command runs");
+    assert_eq!(out, "approved");
+
+    let err = runner
+        .run("printf", &["approved".to_string()])
+        .await
+        .expect_err("an unapproved command keeps the allow-list gate");
+    assert!(err.to_string().contains("not in the allowed list"), "{err}");
+}
+
+#[tokio::test]
+async fn a_pane_receives_the_approved_line_verbatim() {
+    let pane = Arc::new(FakePaneSession {
+        output: "ran in the pane".to_string(),
+        lines: std::sync::Mutex::new(Vec::new()),
+    });
+    let runner = RoutedCommandRunner::new(Arc::new(SandboxedCommandRunner::default_tools()))
+        .with_pane_session(Some(pane.clone()));
+    let out = runner
+        .run_line("ls -la | head -5")
+        .await
+        .expect("the pane's shell runs the line");
+    assert_eq!(out, "ran in the pane");
+    assert_eq!(pane.lines.lock().unwrap().as_slice(), ["ls -la | head -5"]);
 }
 
 #[tokio::test]

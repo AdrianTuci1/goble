@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::elements::chat_content::{group_fragments_into_blocks, ChatAction, ChatBlock, ChatFragment, ChatRole, ListItem, SubAgentRow, ToolCall, ToolDisplayMode};
-use crate::elements::{Chip, Code, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill, Flex, InlineText, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, TerminalFilter, Text};
+use crate::elements::{Chip, Code, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill, Flex, Icon, InlineText, LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, TerminalFilter, Text};
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 use crate::platform::text_atlas::FontWeight;
@@ -11,6 +11,17 @@ use crate::theme::{ColorToken, FontFamily, SpacingToken};
 use super::quote_rail::QuoteRail;
 use crate::elements::terminal_block::TerminalBlockPlumbing;
 use super::tool_call::{build_tool_call_rows, to_text_span, TOOL_MARK, TOOL_ROW_FONT_SIZE};
+
+/// The prompt marker that leads a user's own message. grok-build's `❯` is a
+/// wide, short-armed chevron at the user accent, and the bundled mono face
+/// draws that glyph tall and narrow, so the marker is its own glyph.
+const PROMPT_ARROW_SIZE: f32 = 11.0;
+/// The room between the marker and the message's first character.
+const PROMPT_ARROW_GAP: f32 = 4.0;
+/// The paragraph size of a transcript row; the marker is centred on the
+/// first line's box rather than on the row's top edge.
+const MESSAGE_FONT_SIZE: f32 = 14.0;
+const MESSAGE_LINE_HEIGHT: f32 = 1.2;
 
 pub struct ChatMessageBubble {
     role: ChatRole,
@@ -188,11 +199,15 @@ impl ChatMessageBubble {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(spacing);
 
-        // Tool invocations attached to this (assistant) message render as
-        // inline rows above the prose so the read is "the agent called these
-        // tools, then produced this reply". They are part of the reply and take
-        // no terminal plumbing: a call never draws a block, a copy button or a
-        // filter, which belong to a command the user ran.
+        // The assistant's own words lead the calls they announce: the harness
+        // stores a step's preamble in the same row as its calls, and grok-build
+        // paints that message before the calls it made. The calls are part of
+        // the reply and take no terminal plumbing: a call never draws a block,
+        // a copy button or a filter, which belong to a command the user ran.
+        for block in group_fragments_into_blocks(&self.fragments) {
+            column = column.with_child(self.render_block(&block, app));
+        }
+
         if !self.tool_calls.is_empty() {
             column = column.with_child(build_tool_call_rows(
                 &self.tool_calls,
@@ -203,14 +218,39 @@ impl ChatMessageBubble {
             ));
         }
 
-        for block in group_fragments_into_blocks(&self.fragments) {
-            column = column.with_child(self.render_block(&block, app));
-        }
+        // The user's own message opens with the prompt marker on its first
+        // line, the way grok-build's prompt row does: the marker sits beside
+        // the text and every wrapped line starts at the same x, so a long
+        // message hangs under its first character. The agent's rows carry no
+        // marker; their tool marks are part of the reply itself.
+        let content: Box<dyn Element> = match self.role {
+            ChatRole::User => {
+                let line_box = MESSAGE_FONT_SIZE * MESSAGE_LINE_HEIGHT;
+                let marker_top = (line_box - PROMPT_ARROW_SIZE) / 2.0;
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                    .with_spacing(PROMPT_ARROW_GAP)
+                    .with_child(
+                        Padding::new(
+                            Icon::new("prompt-arrow")
+                                .with_size(PROMPT_ARROW_SIZE)
+                                .with_theme_color(ColorToken::Accent, app)
+                                .finish(),
+                            EdgeInsets::new(0.0, marker_top, 0.0, 0.0),
+                        )
+                        .finish(),
+                    )
+                    .with_child(Expanded::new(column.finish()).with_flex(1.0).finish())
+                    .finish()
+            }
+            ChatRole::Assistant | ChatRole::Tool => column.finish(),
+        };
 
         // No width cap and no radius: the row is laid out at whatever the
         // transcript gives it, which is the pane's full width.
         self.root = Some(
-            Container::new(column.finish())
+            Container::new(content)
                 .with_background(bg)
                 .with_padding(EdgeInsets::uniform(padding))
                 .finish(),
@@ -226,7 +266,7 @@ impl ChatMessageBubble {
                     .map(|s| to_text_span(s, app, &self.on_action))
                     .collect();
                 self.recorded(InlineText::new(text_spans))
-                    .with_font_size(14.0)
+                    .with_font_size(MESSAGE_FONT_SIZE)
                     .finish()
             }
             ChatBlock::Heading { level, text } => {
@@ -334,7 +374,16 @@ impl ChatMessageBubble {
         done: bool,
         app: &crate::elements::AppContext,
     ) -> Box<dyn Element> {
-        let expanded = *self.reasoning_expanded.borrow().get(key).unwrap_or(&false);
+        // A step that is still streaming is open, the way grok-build keeps its
+        // live thinking panel transparent; when it finishes it folds back to
+        // the one-line `Thought` row unless the user opened it. An entry in the
+        // app-owned map always wins, so a manual fold survives both phases.
+        let expanded = self
+            .reasoning_expanded
+            .borrow()
+            .get(key)
+            .copied()
+            .unwrap_or(!done);
         let label = if done { "Thought" } else { "Thinking…" };
         let mark = if done {
             ColorToken::Muted
@@ -344,7 +393,7 @@ impl ChatMessageBubble {
 
         let toggle = self.reasoning_expanded.clone();
         let key = key.to_string();
-        let header = Chip::new(
+        let header = Chip::flat(
             Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_spacing(2.0)
@@ -452,38 +501,62 @@ impl ChatMessageBubble {
         app: &crate::elements::AppContext,
     ) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
+        // One width budget for the whole table: a column whose cells are longer
+        // gets a wider share, and every row uses the same shares, so the
+        // columns line up down the table instead of each row splitting its own
+        // width. The square root keeps one long cell (a path, a URL) from
+        // squeezing the other columns to a sliver.
+        let columns = header.len().max(rows.iter().map(Vec::len).max().unwrap_or(0));
+        let weights: Vec<f32> = (0..columns)
+            .map(|index| {
+                let longest = std::iter::once(header.get(index))
+                    .chain(rows.iter().map(|row| row.get(index)))
+                    .flatten()
+                    .map(|cell| cell.chars().count())
+                    .max()
+                    .unwrap_or(0);
+                (longest as f32).sqrt().max(1.0)
+            })
+            .collect();
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(spacing / 2.0)
-            .with_child(self.render_table_row(header, app));
+            .with_child(self.render_table_row(header, true, &weights, app));
         column = column.with_child(Divider::horizontal().finish());
         for row in rows {
-            column = column.with_child(self.render_table_row(row, app));
+            column = column.with_child(self.render_table_row(row, false, &weights, app));
         }
         column.finish()
     }
 
-    fn render_table_row(&self, cells: &[String], app: &crate::elements::AppContext) -> Box<dyn Element> {
+    fn render_table_row(
+        &self,
+        cells: &[String],
+        header: bool,
+        weights: &[f32],
+        app: &crate::elements::AppContext,
+    ) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
-        // The row claims the transcript's width and splits it evenly, so a wide
-        // cell wraps inside its column instead of pushing the table past the
-        // pane's edge, where the text could not be read at all.
+        // The row claims the transcript's width and splits it by the table's
+        // column weights. A cell is an inline flow so even an over-wide token
+        // breaks inside its column instead of running past the pane's edge.
         let mut row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_spacing(spacing);
-        for cell in cells {
-            row = row.with_child(
-                Expanded::new(
-                    self.recorded_text(
-                        Text::new(cell.clone())
-                            .with_theme_color(ColorToken::Text, app)
-                            .with_font_size(14.0),
-                    )
-                    .finish(),
-                )
-                .finish(),
-            );
+        for (index, weight) in weights.iter().enumerate() {
+            let text = cells.get(index).cloned().unwrap_or_default();
+            let span = crate::elements::TextSpan::plain(text)
+                .with_color(app.theme.color(ColorToken::Text))
+                .with_weight(if header {
+                    FontWeight::SemiBold
+                } else {
+                    FontWeight::Regular
+                });
+            let cell = self
+                .recorded(InlineText::new(vec![span]).with_font_size(14.0))
+                .finish();
+            row = row.with_child(Expanded::new(cell).with_flex(*weight).finish());
         }
         row.finish()
     }

@@ -2247,10 +2247,10 @@ fn a_command_is_drawn_as_a_section_with_its_directory_and_duration() {
     }
 
     let runs = pane_runs(&mut root, &app);
-    let prompt = runs
+    let (prompt, prompt_origin) = runs
         .iter()
-        .map(|(text, _)| text.clone())
-        .find(|text| text.starts_with("~/Projects/goble"))
+        .find(|(text, _)| text.starts_with("~/Projects/goble"))
+        .cloned()
         .unwrap_or_else(|| panic!("the section header is one prompt row: {runs:?}"));
     assert!(
         prompt.contains("git:(main)"),
@@ -2260,11 +2260,17 @@ fn a_command_is_drawn_as_a_section_with_its_directory_and_duration() {
         prompt.ends_with("s)") && prompt.contains(" ("),
         "the prompt row carries the command's duration in parentheses: {prompt:?}"
     );
+    // The row is one run, not a label per part. Another surface may name the
+    // same path — the composer's directory pill does — so the parts are looked
+    // for on the header's own row.
     for separate in ["~/Projects/goble", "git:(main)"] {
         assert!(
-                !pane_has(&runs, separate),
-                "the prompt row is one row, not a label per part, but {separate} was drawn alone: {runs:?}"
-            );
+            !runs
+                .iter()
+                .any(|(text, origin)| text == separate
+                    && (origin.y - prompt_origin.y).abs() < 1.0),
+            "the prompt row is one row, not a label per part, but {separate} was drawn alone: {runs:?}"
+        );
     }
     assert!(
         runs.iter().any(|(text, _)| text.contains("cargo")),
@@ -3093,3 +3099,213 @@ fn an_image_only_viewport_is_painted() {
     assert_eq!(drawn, 1, "the pane paints its only content: {commands:?}");
 }
 
+
+/// The shell pane's bar names the directory it runs in, centred over the pane.
+#[test]
+fn the_shell_bar_centres_its_working_directory() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let cwd = "/tmp/goble-shell-heading".to_string();
+    {
+        let mut s = state.borrow_mut();
+        s.composer_path = cwd.clone();
+        if let Some(session) = s.pane_sessions.get_mut(&1) {
+            session.path = cwd.clone();
+        }
+    }
+
+    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+    let bar_y = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawIcon { origin, name, .. }
+                if name == "x-close" && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+            {
+                Some(origin.y)
+            }
+            _ => None,
+        })
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .expect("the pane bar draws its close X");
+    let origin = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text == &cwd => Some(*origin),
+            _ => None,
+        })
+        .find(|origin| (origin.y - bar_y).abs() < 24.0)
+        .expect("the bar draws the pane's directory");
+
+    let width = goble_ui::elements::text::measure_text(&cwd, 12.0, 1.2, f32::INFINITY).x;
+    let centred = origin.x + width / 2.0;
+    let bounds = state
+        .borrow()
+        .pane_bounds
+        .borrow()
+        .get(&1)
+        .copied()
+        .expect("the pane recorded its bounds");
+    let pane_middle = (bounds.min_x() + bounds.max_x()) / 2.0;
+    assert!(
+        (centred - pane_middle).abs() <= 0.5,
+        "the directory sits in the pane's middle: {centred} vs {pane_middle}"
+    );
+}
+
+/// A command's output keeps the colours it printed. The pane draws a block from
+/// the cells the command painted into, not from the flattened text its
+/// `VisibleBlock` carries, so an SGR colour reaches the frame.
+#[test]
+fn a_commands_output_keeps_the_colours_it_printed() {
+    use goble_ui::theme::ColorToken;
+
+    let app = AppContext::default();
+    let session = session_that_ran("printf", "\x1b[31mred\x1b[0m plain");
+    let (pane, _terminal) = view_over(
+        session,
+        7,
+        TerminalBlockPlumbing::new(block_filters(), None, None),
+    );
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let commands = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+    let runs = text_runs(&commands);
+
+    let (r, g, b) = goble_terminal::Palette::xterm().ansi[1];
+    let ansi_red = ColorU::new(r, g, b, 255);
+    assert!(
+        runs.iter()
+            .any(|(text, color, ..)| text == "red" && *color == ansi_red),
+        "the coloured word is drawn in ANSI red, got {runs:?}"
+    );
+    let text = app.theme.color(ColorToken::Text);
+    assert!(
+        runs.iter()
+            .any(|(drawn, color, ..)| drawn.contains("plain") && *color == text),
+        "the uncoloured rest stays the theme's text colour, got {runs:?}"
+    );
+}
+
+/// A TUI line drawn inline — the shape a program takes when it owns no
+/// alternate screen — keeps its inverse video: the pane paints the cell band in
+/// the theme's text colour and draws the glyph in the background colour.
+#[test]
+fn an_inverse_video_tui_line_paints_its_cells() {
+    use goble_ui::theme::ColorToken;
+
+    let app = AppContext::default();
+    let session = session_that_ran("tui", "\x1b[7mINV\x1b[0m");
+    let (pane, _terminal) = view_over(
+        session,
+        7,
+        TerminalBlockPlumbing::new(block_filters(), None, None),
+    );
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let commands = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+
+    let text = app.theme.color(ColorToken::Text);
+    let background = app.theme.color(ColorToken::Bg);
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == text && rect.width() > 0.0 && rect.height() > 0.0
+        )),
+        "the inverse cells paint a band: {commands:?}"
+    );
+    assert!(
+        text_runs(&commands)
+            .iter()
+            .any(|(drawn, color, ..)| drawn == "INV" && *color == background),
+        "the inverse text is drawn in the background colour: {:?}",
+        text_runs(&commands)
+    );
+}
+
+/// The same inverse line on the alternate screen keeps its band: the grid path
+/// paints a background-coloured cell whatever screen the program is on.
+#[test]
+fn an_alternate_screen_keeps_a_cells_background() {
+    use goble_ui::theme::ColorToken;
+
+    let app = AppContext::default();
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(b"\x1b[?1049h\x1b[7mINV\x1b[0m");
+    let (pane, _terminal) = view_over(
+        TerminalSession::with_emulator(emulator),
+        7,
+        TerminalBlockPlumbing::new(block_filters(), None, None),
+    );
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let commands = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+
+    let text = app.theme.color(ColorToken::Text);
+    let background = app.theme.color(ColorToken::Bg);
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == text && rect.width() > 0.0
+        )),
+        "the alternate screen paints the inverse band: {commands:?}"
+    );
+    assert!(
+        text_runs(&commands)
+            .iter()
+            .any(|(drawn, color, ..)| drawn == "I" && *color == background),
+        "and draws the cell's text in the background colour: {:?}",
+        text_runs(&commands)
+    );
+}
+
+/// Wide characters, box drawing and emoji keep their glyphs when a block's
+/// output is drawn: the spacer cells add no text of their own and nothing is
+/// dropped, so a TUI's columns keep their shape.
+#[test]
+fn wide_and_emoji_characters_survive_to_the_drawn_output() {
+    let app = AppContext::default();
+    let session = session_that_ran("printf", "\u{65e5}\u{672c}\u{8a9e} \u{1f600} \u{250c}\u{2500}\u{2510}");
+    let (pane, _terminal) = view_over(
+        session,
+        7,
+        TerminalBlockPlumbing::new(block_filters(), None, None),
+    );
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let commands = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+    let drawn: String = text_runs(&commands)
+        .iter()
+        .map(|(text, ..)| text.as_str())
+        .collect();
+    for wanted in ["\u{65e5}\u{672c}\u{8a9e}", "\u{1f600}", "\u{250c}\u{2500}\u{2510}"] {
+        assert!(
+            drawn.contains(wanted),
+            "{wanted:?} survives to the frame, got {drawn:?}"
+        );
+    }
+}
+
+/// An uncoloured line is still drawn in the block's own text colour: keeping
+/// the cells must not turn ordinary output grey.
+#[test]
+fn plain_output_is_still_drawn_in_the_theme_text_colour() {
+    use goble_ui::theme::ColorToken;
+
+    let app = AppContext::default();
+    let session = session_that_ran("echo", "plain words");
+    let (pane, _terminal) = view_over(
+        session,
+        7,
+        TerminalBlockPlumbing::new(block_filters(), None, None),
+    );
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let commands = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+    let text = app.theme.color(ColorToken::Text);
+    let runs = text_runs(&commands);
+    let plain = runs
+        .iter()
+        .find(|(drawn, ..)| drawn.contains("plain words"))
+        .unwrap_or_else(|| panic!("the output line is drawn, got {runs:?}"));
+    assert_eq!(
+        plain.1, text,
+        "an uncoloured line stays the theme's text colour"
+    );
+}

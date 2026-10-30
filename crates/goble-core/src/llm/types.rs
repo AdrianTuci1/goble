@@ -25,6 +25,12 @@ pub struct Message {
     /// here — otherwise the model reads a failure as an ordinary result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_status: Option<ToolCallStatus>,
+    /// The chain of thought the provider streamed for this assistant turn.
+    /// DeepSeek's thinking mode rejects the next request when the turn it just
+    /// answered is replayed without it, so the harness stores it beside the
+    /// message and echoes it back. OpenAI and Anthropic never read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +75,7 @@ impl CompletionRequest {
             tool_calls: None,
             tool_call_id: None,
             tool_status: None,
+            reasoning_content: None,
         });
         self
     }
@@ -80,6 +87,7 @@ impl CompletionRequest {
             tool_calls: None,
             tool_call_id: None,
             tool_status: None,
+            reasoning_content: None,
         });
         self
     }
@@ -173,6 +181,10 @@ pub trait LlmProvider: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionStreamEvent {
     AssistantDelta(String),
+    /// A reasoning token from a thinking model. It is the provider's chain of
+    /// thought, kept out of the reply: the harness stores it beside the
+    /// assistant message so a later request can echo it back.
+    ReasoningDelta(String),
     ToolCalls(Vec<LlmToolCall>),
     /// What the call cost in tokens, when the provider reported it. It arrives
     /// before [`Self::Done`] on the providers that send a usage frame; one per

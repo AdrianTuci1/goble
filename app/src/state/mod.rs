@@ -18,7 +18,7 @@ use goble_core::harness::{tool_kind_for, ToolCallStatus, ToolKind};
 use goble_core::store::SecretGroup;
 use goble_desktop_service::DesktopState;
 use goble_ui::{
-    AgentCardUi, AskUserUi, ChatFragment, ChatMessage, ChatRole, CommandProposalUi,
+    AgentCardUi, ApprovalMode, AskUserUi, ChatFragment, ChatMessage, ChatRole, CommandProposalUi,
     ConversationEntry, ConversationStatus, ScrollState, SettingsPage, SubAgentRow,
     SubAgentRowStatus, TerminalData, TerminalFilter, TerminalLine, TerminalStatus, ToolCall,
     ToolDisplayMode, TurnActivity, TurnStatus, WorkKind, WorkKindCount,

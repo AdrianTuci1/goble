@@ -35,6 +35,21 @@ impl OpenAiProvider {
     pub fn openai(api_key: impl Into<String>) -> Self {
         Self::new("openai", api_key, "https://api.openai.com/v1")
     }
+
+    /// Whether this endpoint is a DeepSeek thinking model, which expects the
+    /// conversation's `reasoning_content` replayed on the next request.
+    ///
+    /// A `[model.deepseek]` entry names its own `base_url`, so the app reaches
+    /// DeepSeek through the generic OpenAI-compatible provider and the
+    /// provider is named `"openai"`. The name alone therefore misses the
+    /// endpoint the model is actually served by; the base URL and the model id
+    /// both identify it as well.
+    pub(super) fn replays_reasoning(&self, model: &str) -> bool {
+        let named = |value: &str| value.to_ascii_lowercase();
+        named(&self.name) == "deepseek"
+            || named(&self.base_url).contains("deepseek")
+            || named(model).contains("deepseek")
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -200,18 +215,16 @@ pub(super) fn into_openai_messages(
                     })
                     .collect()
             });
-            // DeepSeek checks its thinking-mode conversations for this field:
-            // a tool-call turn must carry it as the empty string, and the turn
-            // that ended with an answer carries what it streamed. A row from
-            // before the field was stored still satisfies the check with the
-            // empty string, so an old conversation is not bricked.
-            let reasoning_content = thinking_provider.then(|| {
-                if tool_calls.is_some() {
-                    String::new()
-                } else {
-                    m.reasoning_content.clone().unwrap_or_default()
-                }
-            });
+            // DeepSeek checks the assistant turns of a thinking-mode
+            // conversation for this field, and a tool-call turn is not exempt:
+            // the API wants the chain of thought it streamed for that call.
+            // Echoing an empty string where the model reasoned is itself the
+            // rejection it answers with "must be passed back". A row from
+            // before the field was stored, or a turn that reasoned nothing,
+            // still satisfies the check with the empty string, so an old
+            // conversation is not bricked.
+            let reasoning_content = (thinking_provider && m.role == Role::Assistant)
+                .then(|| m.reasoning_content.clone().unwrap_or_default());
             let tool_call_id = m.tool_call_id.clone();
             let content = provider_content(&m);
             OpenAiMessage {
@@ -227,6 +240,30 @@ pub(super) fn into_openai_messages(
             }
         })
         .collect()
+}
+
+/// The shape of a request, for logs: role, whether a chain of thought is
+/// replayed, tool calls, and whether the row answers a call. Content is never
+/// included.
+pub(super) fn request_shape(messages: &[OpenAiMessage]) -> String {
+    messages
+        .iter()
+        .map(|message| {
+            let reasoning = message
+                .reasoning_content
+                .as_ref()
+                .map_or("reasoning:absent".to_string(), |text| {
+                    format!("reasoning:{}b", text.len())
+                });
+            let calls = message.tool_calls.as_ref().map_or(0, Vec::len);
+            format!(
+                "{}[{reasoning},calls:{calls},tool_result:{}]",
+                message.role,
+                message.tool_call_id.is_some()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn into_openai_tools(tools: Vec<ToolDefinition>) -> Option<Vec<OpenAiTool>> {
@@ -296,18 +333,17 @@ impl LlmProvider for OpenAiProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = CompletionStreamEvent> + Send>>> {
+        let thinking_provider = self.replays_reasoning(&request.model);
         let body = OpenAiRequest {
             model: request.model,
-            messages: into_openai_messages(
-                request.messages,
-                self.name.eq_ignore_ascii_case("deepseek"),
-            ),
+            messages: into_openai_messages(request.messages, thinking_provider),
             tools: into_openai_tools(request.tools),
             temperature: request.temperature,
             stream: true,
             stream_options: OpenAiStreamOptions { include_usage: true },
         };
 
+        log::debug!("LLM request shape: {}", request_shape(&body.messages));
         let url = format!("{}/chat/completions", self.base_url);
         let resp = self
             .client
@@ -327,6 +363,10 @@ impl LlmProvider for OpenAiProvider {
             let status = resp.status();
             let text: String = resp.text().await.unwrap_or_default();
             crate::llm::log_http_failure(&self.name, &body.model, &url, status.as_u16(), &text);
+            // The reasoning rejection names the field but not the message that
+            // is missing it; the shape says which turns the endpoint counted as
+            // thinking turns. No content is logged.
+            log::error!("LLM request shape: {}", request_shape(&body.messages));
             anyhow::bail!("LLM request failed: {status} {text}");
         }
 

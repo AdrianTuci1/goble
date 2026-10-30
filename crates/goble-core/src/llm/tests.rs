@@ -215,14 +215,75 @@ fn a_deepseek_turn_echoes_its_reasoning_content() {
 
     assert_eq!(
         wire[0].reasoning_content.as_deref(),
-        Some(""),
-        "a tool-call turn carries the empty string DeepSeek requires"
+        Some("I should read the file."),
+        "a tool-call turn echoes the thinking it streamed, not an empty string"
     );
     assert_eq!(
         wire[1].reasoning_content.as_deref(),
         Some("The file has no warnings."),
         "the answer echoes the thinking it streamed"
     );
+}
+
+/// An assistant turn stored before the reasoning column existed, or one whose
+/// model reasoned nothing, still sends the field: DeepSeek checks that every
+/// assistant turn has it.
+#[test]
+fn an_assistant_turn_without_stored_reasoning_sends_an_empty_string() {
+    let turn = Message {
+        role: Role::Assistant,
+        content: "Done.".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        tool_status: None,
+        reasoning_content: None,
+    };
+
+    let wire = into_openai_messages(vec![turn], true);
+
+    assert_eq!(wire[0].reasoning_content.as_deref(), Some(""));
+}
+
+/// Only assistant turns carry the field; a user, system or tool message with a
+/// stray value must not put `reasoning_content` on the wire.
+#[test]
+fn reasoning_content_stays_on_assistant_turns() {
+    let user = Message {
+        role: Role::User,
+        content: "hello".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        tool_status: None,
+        reasoning_content: Some("not mine".to_string()),
+    };
+
+    let wire = into_openai_messages(vec![user], true);
+
+    assert_eq!(wire[0].reasoning_content, None);
+}
+
+/// The app reaches a `[model.deepseek]` entry through the generic
+/// OpenAI-compatible provider, so the provider is named `"openai"` while the
+/// endpoint is DeepSeek. Gating the replay on the name alone silently dropped
+/// the stored `reasoning_content` and the next request failed with "must be
+/// passed back".
+#[test]
+fn a_deepseek_endpoint_behind_the_openai_provider_replays_reasoning() {
+    let declared = OpenAiProvider::new("openai", "key", "https://api.deepseek.com");
+    assert!(declared.replays_reasoning("deepseek-flash"));
+
+    let openrouter = OpenAiProvider::new(
+        "openrouter",
+        "key",
+        "https://openrouter.ai/api/v1",
+    );
+    assert!(
+        openrouter.replays_reasoning("deepseek/deepseek-reasoner"),
+        "the model id identifies a proxied DeepSeek model"
+    );
+
+    let openai = OpenAiProvider::new("openai", "key", "https://api.openai.com/v1");
+    assert!(!openai.replays_reasoning("gpt-4o"));
 }
 
 #[test]

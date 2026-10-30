@@ -2,6 +2,8 @@
 name = "goble-voice"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+publish.workspace = true
 description = "Model-facing voice capability: STT/TTS clients, a streaming event stream, and an object-safe provider seam."
 
 [dependencies]

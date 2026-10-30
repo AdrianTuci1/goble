@@ -2,6 +2,8 @@
 name = "goble-control"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+publish.workspace = true
 description = "The app's control protocol: typed JSON over a line-delimited Unix socket, a server generic over a handler, and a client."
 
 [dependencies]

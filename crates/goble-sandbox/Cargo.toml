@@ -2,6 +2,8 @@
 name = "goble-sandbox"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+publish.workspace = true
 description = "Profile-driven process isolation: SandboxProfile model, object-safe Sandbox trait, NoopSandbox default, and RAII guards."
 
 [features]

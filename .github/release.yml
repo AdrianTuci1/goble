@@ -1,0 +1,27 @@
+# Release notes are grouped by the labels a PR carries. A PR without a label
+# falls into "Other changes"; `skip-changelog` keeps chores and dependency
+# bumps out of the notes.
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+      - dependencies
+  categories:
+    - title: Breaking changes
+      labels:
+        - breaking-change
+    - title: Security
+      labels:
+        - security
+    - title: Features
+      labels:
+        - enhancement
+    - title: Fixes
+      labels:
+        - bug
+    - title: Documentation
+      labels:
+        - documentation
+    - title: Other changes
+      labels:
+        - "*"

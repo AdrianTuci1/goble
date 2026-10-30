@@ -2,6 +2,8 @@
 name = "goble-foreign-harnesses"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+publish.workspace = true
 description = "Read-only discovery of foreign harness sessions (Claude Code, Codex, Cursor)."
 
 [dependencies]

@@ -2,6 +2,8 @@
 name = "goble-replay"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+publish.workspace = true
 description = "Reversible-execution substrate: per-turn checkpoints + rewind/revert, fork, and replay."
 
 [dependencies]

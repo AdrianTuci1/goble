@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::chat_content::{
@@ -9,9 +10,9 @@ use crate::elements::{
     command_approval_card, slash_menu_open, AppContext, AskUserCard, Axis, Border, Button,
     ButtonVariant, ChatComposer, ChatMessageBubble, CommandApprovalState, ConstrainedBox,
     Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex,
-    HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding, QuickActionButton,
-    Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
-    TurnStatusFooter,
+    FocusHandler, HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding,
+    QuickActionButton, Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip,
+    TooltipPosition, TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
@@ -661,8 +662,19 @@ impl ChatView {
                     draft: self.composer_proposal_draft.clone(),
                     caret: self.composer_proposal_caret.clone(),
                     // Clicking the composer hands it the keyboard; until then
-                    // the card's command field answers Enter and Escape.
+                    // the card's command field answers Enter and Escape. A
+                    // click on the field itself takes the keys back from the
+                    // composer, so the two never type at once.
                     field_focused: !self.composer_focused,
+                    on_focus_change: self.on_composer_focus_change.as_ref().map(|cb| {
+                        let cb = cb.clone();
+                        Rc::new(RefCell::new(move |focused: bool| {
+                            if focused {
+                                (cb.borrow_mut())(false);
+                            }
+                        }))
+                            as FocusHandler
+                    }),
                 };
                 message_column = message_column.with_child(command_approval_card(
                     &proposal,

@@ -37,10 +37,6 @@ pub(crate) const HEADER_SPACING: f32 = 8.0;
 
 pub(crate) const BUTTON_SIZE: f32 = 24.0;
 
-/// How opaque the text selection is over the block's own background, so the
-/// glyphs under it stay readable.
-const SELECTION_ALPHA: u8 = 70;
-
 const PROMPT_PREFIX: &str = "❯ ";
 
 /// `text` cut with an ellipsis so it measures at most `max_width` in the
@@ -713,7 +709,9 @@ impl TerminalBlock {
 
     /// Draw the text selection over the block's lines. The lines recorded their
     /// boxes as they painted, so this runs after the root and a selected line is
-    /// highlighted in place, from the first selected character to the last.
+    /// highlighted in place, from the first selected character to the last. The
+    /// selected glyphs are redrawn in the background colour, so the text itself
+    /// changes colour under the band instead of keeping its own tint.
     fn paint_selection(&self, ctx: &mut PaintContext, app: &AppContext) {
         let Some(selection) = self.selection else {
             return;
@@ -722,17 +720,41 @@ impl TerminalBlock {
             return;
         };
         let accent = app.theme.color(ColorToken::Accent);
-        let color = ColorU::new(accent.r, accent.g, accent.b, SELECTION_ALPHA);
+        let contrast = app.theme.color(ColorToken::Bg);
         let Some(renderer) = ctx.renderer.as_mut() else {
             return;
         };
-        for line in geometry.borrow().iter() {
+        let geometry = geometry.borrow();
+        for line in geometry.iter() {
             let Some((from, to)) = selection.columns_on(line.line, line.text_columns) else {
                 continue;
             };
+            let Some(source) = self.lines.get(line.line) else {
+                continue;
+            };
+            let text: Vec<char> = source.text.chars().collect();
+            if text.is_empty() {
+                continue;
+            }
+            let to = to.min(text.len() - 1);
+            if from > to {
+                continue;
+            }
             let x = line.origin.x + (line.prefix_columns + from) as f32 * line.column_width;
             let width = (to - from + 1) as f32 * line.column_width;
-            renderer.fill_rect(rectf(x, line.origin.y, width, line.size.y), color);
+            renderer.fill_rect(rectf(x, line.origin.y, width, line.size.y), accent);
+            let fragment: String = text[from..=to].iter().collect();
+            renderer.draw_text_with_font(
+                Vector2F::new(x, line.origin.y),
+                fragment,
+                FONT_SIZE,
+                contrast,
+                f32::INFINITY,
+                LINE_HEIGHT,
+                FontWeight::Regular,
+                FontFamily::Mono,
+                false,
+            );
         }
     }
 

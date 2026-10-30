@@ -29,7 +29,8 @@ pub use chip::Chip;
 pub use clipped::Clipped;
 pub use code::Code;
 pub use command_approval::{
-    command_approval_card, CommandApprovalState, DecisionHandler, APPROVAL_BODY_MAX_HEIGHT,
+    command_approval_card, CommandApprovalState, DecisionHandler, FocusHandler,
+    APPROVAL_BODY_MAX_HEIGHT,
     APPROVAL_EDITOR_MAX_HEIGHT,
 };
 pub use composer_button::{ComposerButton, COMPOSER_CONTROL_RADIUS};
@@ -87,7 +88,8 @@ pub use terminal_grid::{GridRange, TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE
 pub use text::Text;
 pub use text_area::{LineRuns, TextArea};
 pub use text_selection::{
-    RunMetrics, SelectableLine, SelectableText, SelectionPoint, SelectionRun, TranscriptSelection,
+    RunMetrics, SelectableLine, SelectableText, SelectedFragment, SelectionPoint, SelectionRun,
+    TranscriptSelection,
 };
 pub use text_input::TextInput;
 pub use thread_list_item::ThreadListItem;

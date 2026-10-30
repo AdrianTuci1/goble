@@ -1015,7 +1015,9 @@ fn a_pending_command_owns_the_keys_until_the_composer_is_clicked() {
 
     view.dispatch_event(
         &DispatchedEvent::KeyDown {
-            key: "x".to_string(),
+            // `e` is also the transcript's fold key; the card owns it while a
+            // command waits, so it must land in the command field.
+            key: "e".to_string(),
             modifiers: ModifiersState::none(),
         },
         &mut EventContext::default(),
@@ -1029,8 +1031,64 @@ fn a_pending_command_owns_the_keys_until_the_composer_is_clicked() {
     );
     assert_eq!(
         draft.borrow().as_str(),
-        "cargo testx",
+        "cargo teste",
         "the keys belong to the card's command"
+    );
+}
+
+/// A press on the card's command field takes the keyboard back from the
+/// composer, so the user can edit the command after typing a follow-up.
+#[test]
+fn clicking_the_waiting_command_field_takes_the_keys_back_from_the_composer() {
+    use crate::elements::EventContext;
+    use crate::event::DispatchedEvent;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let focus_log: Rc<RefCell<Vec<bool>>> = Rc::default();
+    let log = focus_log.clone();
+    let draft = Rc::new(RefCell::new("cargo test".to_string()));
+    let mut view = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Running the suite.")],
+        )])
+        .with_composer_focused(true)
+        .with_composer_on_focus_change(move |focused| log.borrow_mut().push(focused))
+        .with_command_proposal(Some(CommandProposalUi::new(
+            "cmd-1",
+            vec!["cargo test".to_string()],
+            "~/Projects/goble",
+        )))
+        .with_command_proposal_draft(
+            draft.clone(),
+            Rc::new(RefCell::new("cargo test".chars().count())),
+            Rc::new(RefCell::new(ScrollState::default())),
+        )
+        .finish();
+    let commands = render_element(&mut view, vec2f(600.0, 500.0), &app);
+    let origin = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { text, origin, .. } if text == "cargo test" => Some(*origin),
+            _ => None,
+        })
+        .expect("the card draws the command");
+
+    view.dispatch_event(
+        &DispatchedEvent::MouseDown {
+            position: vec2f(origin.x + 2.0, origin.y + 4.0),
+            button: 0,
+        },
+        &mut EventContext::default(),
+        &app,
+    );
+
+    assert_eq!(
+        *focus_log.borrow(),
+        [false],
+        "the card reports that it took the keys from the composer"
     );
 }
 
@@ -2345,7 +2403,6 @@ mod the_footers_place {
 /// it covered. A click with no drag copies nothing and leaves no highlight.
 mod drag_to_copy {
     use super::*;
-    use crate::color::ColorU;
     use crate::elements::{Element, PaintContext, TranscriptSelection};
     use crate::event::DispatchedEvent;
     use crate::geometry::Vector2F;
@@ -2459,17 +2516,27 @@ mod drag_to_copy {
         );
         assert!(selection.borrow().has_selection());
 
-        // The highlight is painted over the transcript on the next frame.
+        // The highlight is painted over the transcript on the next frame, and
+        // the glyphs under it are redrawn in the background colour so selected
+        // text changes colour instead of keeping its own.
         let commands = paint(&mut view, vec2f(600.0, 480.0), &app);
         let accent = app.theme.color(ColorToken::Accent);
-        let expected = ColorU::new(accent.r, accent.g, accent.b, 70);
         assert!(
             commands.iter().any(|command| matches!(
                 command,
                 RenderCommand::FillRect { rect, color, .. }
-                    if *color == expected && rect.height() > 1.0
+                    if *color == accent && rect.height() > 1.0
             )),
             "the selection is drawn over the text it covers"
+        );
+        let contrast = app.theme.color(ColorToken::Bg);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, color, .. }
+                    if *color == contrast && text.starts_with("alpha")
+            )),
+            "the selected glyphs are repainted in the contrast colour"
         );
     }
 

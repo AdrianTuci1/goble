@@ -273,6 +273,7 @@ pub(crate) fn build_pending_approval(
             // A terminal pane has no follow-up input of its own while the
             // command waits, so the card always holds the keyboard.
             field_focused: true,
+            on_focus_change: None,
         },
         Some(handler),
         app,

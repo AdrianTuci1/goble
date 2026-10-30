@@ -10,17 +10,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::color::ColorU;
 use crate::elements::{
     AppContext, Element, LayoutContext, PaintContext, Point, SelectableText, SizeConstraint,
     TranscriptSelection,
 };
 use crate::geometry::{rectf, RectF, Vector2F};
 use crate::theme::ColorToken;
-
-/// How opaque the selection is over the transcript's own background. Matches
-/// the terminal pane's selection, so the two read as one gesture.
-const SELECTION_ALPHA: u8 = 70;
 
 pub(super) struct TranscriptSurface {
     child: Box<dyn Element>,
@@ -87,18 +82,37 @@ impl Element for TranscriptSurface {
             });
         }
 
-        let rects = self.selection.borrow().highlight_rects();
+        let selection = self.selection.borrow();
+        let rects = selection.highlight_rects();
         if rects.is_empty() {
             return;
         }
+        let fragments = selection.selected_fragments();
         let Some(renderer) = ctx.renderer.as_mut() else {
             return;
         };
         let accent = app.theme.color(ColorToken::Accent);
-        let color = ColorU::new(accent.r, accent.g, accent.b, SELECTION_ALPHA);
+        // The band is the accent itself, and the glyphs over it are redrawn in
+        // the background colour: a selected line reads as inverted text, the
+        // way a terminal's own selection does, instead of staying the same
+        // colour under a tint.
+        let contrast = app.theme.color(ColorToken::Bg);
         renderer.clip_rect(bounds);
         for rect in rects {
-            renderer.fill_rect(rect, color);
+            renderer.fill_rect(rect, accent);
+        }
+        for fragment in fragments {
+            renderer.draw_text_with_font(
+                Vector2F::new(fragment.left, fragment.top),
+                fragment.text,
+                fragment.metrics.font_size,
+                contrast,
+                f32::INFINITY,
+                fragment.metrics.line_height,
+                fragment.metrics.weight,
+                fragment.metrics.family,
+                fragment.metrics.italic,
+            );
         }
         renderer.pop_clip();
     }

@@ -2794,12 +2794,22 @@ fn mouse_drag_selects_block_text_and_cmd_c_copies_it() {
     );
 
     let highlighted = render_element(&mut pane, window, &app);
+    let accent = app.theme.color(goble_ui::theme::ColorToken::Accent);
+    let contrast = app.theme.color(goble_ui::theme::ColorToken::Bg);
     assert!(
         highlighted.iter().any(|command| matches!(
             command,
-            RenderCommand::FillRect { color, .. } if color.a == 70
+            RenderCommand::FillRect { color, .. } if *color == accent
         )),
         "the block selection is drawn over the text: {highlighted:?}"
+    );
+    assert!(
+        highlighted.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { text, color, .. }
+                if *color == contrast && text.starts_with("hello")
+        )),
+        "the selected glyphs are repainted in the contrast colour: {highlighted:?}"
     );
 
     copied.borrow_mut().clear();

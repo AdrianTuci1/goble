@@ -1,13 +1,17 @@
 use std::rc::Rc;
 
-use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind};
+use crate::elements::chat_content::{
+    tool_fold_key, ChatFragmentKind, ToolDisplayMode,
+};
+use crate::elements::chat_message_bubble::{tool_fold_targets, ToolFoldTarget};
 use crate::elements::terminal_block::{terminal_filter_bar, TerminalFilter};
 use crate::elements::{
-    slash_menu_open, AppContext, AskUserCard, Axis, Border, Button, ButtonVariant, ChatComposer,
-    ChatMessageBubble, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    Empty, Expanded, Fill, Flex, HoverRow, Icon, MainAxisAlignment, MainAxisSize,
-    ModelMenu, Padding, QuickActionButton, Scrollable, ShortcutHints, SlashMenu, Spacer, Stack,
-    Text, Tooltip, TooltipPosition, TurnStatusFooter,
+    command_approval_card, slash_menu_open, AppContext, AskUserCard, Axis, Border, Button,
+    ButtonVariant, ChatComposer, ChatMessageBubble, CommandApprovalState, ConstrainedBox,
+    Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex,
+    HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding, QuickActionButton,
+    Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
+    TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
@@ -44,12 +48,148 @@ fn group_digits(value: u64) -> String {
     out
 }
 
+/// The short form of a failed turn's reason: the first non-empty line, with a
+/// provider's JSON body reduced to the message it carries, then capped so a
+/// long error cannot take over the transcript. The full message stays
+/// available to the caller's tooltip.
+fn brief_failure(message: &str) -> String {
+    const MAX_CHARS: usize = 180;
+    const MESSAGE_KEY: &str = "\"message\":\"";
+    let first = message
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("The turn ended without a reply.");
+    // A provider error is often `<prefix>: 400 Bad Request {"error":{...}}`.
+    // Keep the prefix and the message it names, and drop the rest of the body.
+    let condensed = match (first.find('{'), first.find(MESSAGE_KEY)) {
+        (Some(brace), Some(at)) if at > brace => {
+            let value: String = first[at + MESSAGE_KEY.len()..]
+                .chars()
+                .take_while(|ch| *ch != '"')
+                .collect();
+            let head = first[..brace]
+                .trim_end_matches(|ch: char| ch == ':' || ch == ' ')
+                .trim_end();
+            format!("{head} — {}", value.replace("\\n", " "))
+        }
+        _ => first.to_string(),
+    };
+    if condensed.chars().count() <= MAX_CHARS {
+        return condensed;
+    }
+    let mut shortened: String = condensed.chars().take(MAX_CHARS - 1).collect();
+    shortened.push('…');
+    shortened
+}
+
+/// The block that closes a failed turn: the heading and the brief reason.
+///
+/// The reason has no line cap: it wraps to whatever width the transcript gives
+/// it, and the block's height follows the wrapped text, so a narrow pane reads
+/// the whole brief instead of clipping it. The full provider message stays on
+/// the tooltip.
+fn failure_block(error: &str, app: &AppContext) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let md = app.theme.spacing_px(SpacingToken::Md);
+    let reason = Tooltip::new(
+        Text::new(brief_failure(error))
+            .with_theme_color(ColorToken::Text, app)
+            .with_font_size(12.0)
+            .finish(),
+        error.to_string(),
+    )
+    .with_position(TooltipPosition::Above)
+    .finish();
+    Container::new(
+        // Stretch, so the reason is measured against the transcript's width
+        // and wraps there. A start-aligned column hands its children an
+        // unbounded width, which is what let the line run past the pane.
+        Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(sm)
+            .with_child(
+                Text::new("Agent turn failed")
+                    .with_theme_color(ColorToken::Error, app)
+                    .with_font_size(12.0)
+                    .finish(),
+            )
+            .with_child(reason)
+            .finish(),
+    )
+    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+    .with_padding(EdgeInsets::uniform(md))
+    .finish()
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::{brief_failure, failure_block};
+    use crate::elements::{AppContext, LayoutContext, SizeConstraint};
+    use crate::geometry::vec2f;
+
+    #[test]
+    fn a_provider_error_keeps_its_prefix_and_message() {
+        let error = "LLM request failed: 400 Bad Request {\"error\":{\"message\":\"The reasoning_content in the assistant message is not supported\"}}";
+        assert_eq!(
+            brief_failure(error),
+            "LLM request failed: 400 Bad Request — The reasoning_content in the assistant message is not supported"
+        );
+    }
+
+    #[test]
+    fn a_plain_error_is_its_first_line_and_a_long_one_is_capped() {
+        assert_eq!(brief_failure("\n  network unreachable  \nmore"), "network unreachable");
+        let long = "x".repeat(400);
+        let brief = brief_failure(&long);
+        assert_eq!(brief.chars().count(), 180);
+        assert!(brief.ends_with('…'));
+    }
+
+    /// The reason is not clipped at a fixed number of lines: a narrow block
+    /// wraps it and grows, and a wide one is shorter.
+    #[test]
+    fn the_reason_wraps_to_the_width_it_is_given() {
+        let app = AppContext::default();
+        let error = "LLM request failed: 400 Bad Request {\"error\":{\"message\":\"The reasoning_content in the assistant message is not supported by this model\"}}";
+        let mut narrow = failure_block(error, &app);
+        let narrow_size = narrow.layout(
+            SizeConstraint::loose(vec2f(280.0, 4000.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut wide = failure_block(error, &app);
+        let wide_size = wide.layout(
+            SizeConstraint::loose(vec2f(900.0, 4000.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert!(
+            narrow_size.y > wide_size.y,
+            "the block grows with the wrapped reason: {narrow_size:?} against {wide_size:?}"
+        );
+        assert!(
+            narrow_size.y > 14.4 * 3.0,
+            "the narrow block is taller than the two-line clip it replaced: {narrow_size:?}"
+        );
+        assert_eq!(
+            narrow_size.x, 280.0,
+            "the block takes the width it is given"
+        );
+    }
+}
+
 impl ChatView {
     /// The slash-command list, when the draft the composer holds is a command:
     /// the items the host filtered for that draft, drawn over the whole input
     /// block. `None` when the draft is not a command (or Escape put the list
     /// away), so a closed list takes no space at all.
     fn slash_menu(&self) -> Option<Box<dyn Element>> {
+        // The approval card owns the keyboard while it waits, so the command
+        // list has no query to follow and draws nothing.
+        if self.composer_proposal.is_some() {
+            return None;
+        }
         if !slash_menu_open(
             &self.composer_value.borrow(),
             *self.composer_slash_dismissed.borrow(),
@@ -75,6 +215,9 @@ impl ChatView {
     /// (see [`Self::slash_menu`] and the slot rule in `rebuild`). `None` while
     /// it is closed, so a closed list takes no space at all.
     fn model_menu(&self) -> Option<Box<dyn Element>> {
+        if self.composer_proposal.is_some() {
+            return None;
+        }
         if !*self.composer_model_menu_open.borrow() {
             return None;
         }
@@ -197,6 +340,13 @@ impl ChatView {
     /// with that message instead of stranding it over the composer.
     fn build_conversation_footer(&self, app: &AppContext) -> Option<Box<dyn Element>> {
         if self.messages.is_empty() {
+            return None;
+        }
+        // A turn that is still in flight — including one suspended on a
+        // command decision — has no closing row yet: forking the conversation
+        // and its spend are read after the agent has finished, not while it is
+        // still working.
+        if self.turn_status.is_in_flight() || self.composer_proposal.is_some() {
             return None;
         }
         let has_usage = !self.usage.is_empty();
@@ -436,6 +586,7 @@ impl ChatView {
 
         let message_area: Box<dyn Element> = if self.messages.is_empty()
             && self.pending_ask.is_none()
+            && self.composer_proposal.is_none()
             && self.notice.is_none()
             && self.turn_error.is_none()
         {
@@ -477,33 +628,7 @@ impl ChatView {
             // inbox names the conversation; the transcript carries the reason,
             // where the user is already looking when the agent goes quiet.
             if let Some(error) = self.turn_error.clone() {
-                let sm = app.theme.spacing_px(SpacingToken::Sm);
-                let md = app.theme.spacing_px(SpacingToken::Md);
-                message_column = message_column.with_child(
-                    Container::new(
-                        Flex::column()
-                            .with_cross_axis_alignment(CrossAxisAlignment::Start)
-                            .with_spacing(sm)
-                            .with_child(
-                                Text::new("Agent turn failed")
-                                    .with_theme_color(ColorToken::Error, app)
-                                    .with_font_size(12.0)
-                                    .finish(),
-                            )
-                            .with_child(
-                                Text::new(error)
-                                    .with_theme_color(ColorToken::Text, app)
-                                    .with_font_size(13.0)
-                                    .finish(),
-                            )
-                            .finish(),
-                    )
-                    .with_background(Fill::Solid(
-                        app.theme.color(ColorToken::SurfaceRaised),
-                    ))
-                    .with_padding(EdgeInsets::uniform(md))
-                    .finish(),
-                );
+                message_column = message_column.with_child(failure_block(&error, app));
             }
             // The conversation's own footer closes the transcript: fork it, and
             // the tokens it has spent.
@@ -522,6 +647,29 @@ impl ChatView {
                     card = card.with_on_skip(move || (cb.borrow_mut())());
                 }
                 message_column = message_column.with_child(card.finish());
+            }
+            // A command the harness is waiting on closes the agent's output:
+            // the turn stays suspended until Run or Reject, and the decision is
+            // made where the command would run. The card scrolls with the
+            // transcript, so a long command or a list of variants is read like
+            // any other output instead of growing the input.
+            if let Some(proposal) = self.composer_proposal.clone() {
+                let state = CommandApprovalState {
+                    selection: self.composer_proposal_selection.clone(),
+                    scroll: self.composer_proposal_scroll.clone(),
+                    editor_scroll: self.composer_proposal_editor_scroll.clone(),
+                    draft: self.composer_proposal_draft.clone(),
+                    caret: self.composer_proposal_caret.clone(),
+                    // Clicking the composer hands it the keyboard; until then
+                    // the card's command field answers Enter and Escape.
+                    field_focused: !self.composer_focused,
+                };
+                message_column = message_column.with_child(command_approval_card(
+                    &proposal,
+                    &state,
+                    self.on_command_decision.clone(),
+                    app,
+                ));
             }
             // A prompt queued while the agent was running renders as a pending
             // block in the transcript (warp-new model) with "Send now" + dismiss.
@@ -658,9 +806,16 @@ impl ChatView {
             // The files the attach control picked: one chip per file, over the
             // editor they belong to.
             .with_attachments(self.composer_attachments.clone())
+            // The approval card above owns the keyboard until the user clicks
+            // the input, so the composer stays writable: a follow-up can be
+            // queued while the decision waits.
             .with_focused(self.composer_focused)
+            .with_waiting(self.composer_proposal.is_some())
+            .with_queued_prompt_present(self.queued_prompt.is_some())
             .with_caret(self.composer_caret.clone())
-            .with_stop_visible(self.composer_stop_visible)
+            // While a turn is in flight the status row above the input carries
+            // the one Stop control; an idle input keeps it in its action row.
+            .with_stop_visible(self.composer_stop_visible && !self.turn_status.is_in_flight())
             // The rich input is built the same way in both surfaces: the
             // context row (harness, directory, branch, attach) rides above the
             // editor, where it describes the draft, and the pane's instructions
@@ -741,6 +896,15 @@ impl ChatView {
         if let Some(cb) = self.on_stop.clone() {
             composer = composer.with_on_stop(move || (cb.borrow_mut())());
         }
+        if let Some(mode) = self.composer_approval_mode {
+            composer = composer
+                .with_approval_mode(mode)
+                .with_approval_menu_open(self.composer_approval_menu_open.clone());
+            if let Some(cb) = self.on_select_approval_mode.clone() {
+                composer = composer
+                    .with_on_select_approval_mode(move |mode| (cb.borrow_mut())(mode));
+            }
+        }
         if let Some(proposal) = self.composer_proposal.clone() {
             composer = composer
                 .with_proposal(proposal)
@@ -806,14 +970,6 @@ impl ChatView {
             }
         }
         let composer = composer.finish();
-        // The live turn-status footer sits directly above the composer's
-        // divider, in the pager idiom: full width, no border. It is added only
-        // when it is in flight, so an idle pane pays neither its height nor the
-        // column's inter-child spacing for it.
-        if self.turn_status.is_in_flight() {
-            let footer = TurnStatusFooter::new(self.turn_status.clone());
-            column = column.with_child(footer.finish());
-        }
         // A separator line above the rich input separates it from the
         // transcript. The composer is a content-sized child (not flex-grown),
         // so it pins to the bottom: its textarea grows with the draft (capped)
@@ -829,10 +985,31 @@ impl ChatView {
         // draft's own command list holds while the draft is a command, the way
         // grok-build puts them over the prompt and not over the pane.
         if self.show_composer {
-            if let Some(menu) = self.slash_menu().or_else(|| self.model_menu()) {
-                column = column.with_child(menu);
+            // A waiting command puts the card's keys first: the command list
+            // and the instruction strip stay away, and the card's command
+            // field holds the keyboard until the user clicks the composer.
+            // The rich input itself stays, so a follow-up can be queued. The
+            // turn-status row (with its Stop) stays, because the turn is still
+            // in flight.
+            let waiting = self.composer_proposal.is_some();
+            if !waiting {
+                if let Some(menu) = self.slash_menu().or_else(|| self.model_menu()) {
+                    column = column.with_child(menu);
+                }
             }
-            if !self.composer_hints.is_empty() {
+            // The live turn-status row takes the instruction strip's slot while
+            // a turn is in flight — the waiting text is what the bar is doing,
+            // and the row also carries the turn's Stop — instead of stacking
+            // above it. An idle pane keeps the strip and pays no status height.
+            if self.turn_status.is_in_flight() {
+                let mut footer = TurnStatusFooter::new(self.turn_status.clone());
+                if self.composer_stop_visible {
+                    if let Some(cb) = self.on_stop.clone() {
+                        footer = footer.with_stop(move || (cb.borrow_mut())());
+                    }
+                }
+                column = column.with_child(footer.finish());
+            } else if !waiting && !self.composer_hints.is_empty() {
                 let md = app.theme.spacing_px(SpacingToken::Md);
                 let sm = app.theme.spacing_px(SpacingToken::Sm);
                 let strip = ShortcutHints::new(self.composer_hints.clone()).finish(app);
@@ -856,6 +1033,11 @@ impl ChatView {
             // it: the pair is one block, so the column's `md` spacing does not
             // open a gap under the rule. The shell pane's bar keeps its rows
             // `xs` under its own divider; this is the same edge.
+            //
+            // The input stays while a command waits: a follow-up can be typed
+            // and queued while the card holds the decision, and the second
+            // Enter sends it now. Without it the user has no way to speak to
+            // the agent until the approval is settled.
             let input = Flex::column()
                 .with_main_axis_size(MainAxisSize::Min)
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -898,5 +1080,90 @@ impl ChatView {
                 fold.insert(key, current.next());
             }
         }
+    }
+
+    /// Open the last folded row of the transcript: grok-build's Right arrow
+    /// (`Action::Expand`), pointed at the newest row that can still open.
+    ///
+    /// The transcript tails the stream, so the row the user is looking at is
+    /// the last one: a tool run folds into its aggregated header and opens on
+    /// the first press, a member call that is still collapsed opens next, and
+    /// a thinking row that already finished opens after that. Returns whether
+    /// anything changed, so the host can tell an expansion from an idle key.
+    pub(super) fn expand_latest_fold(&mut self) -> bool {
+        let mut fold = self.tool_fold.borrow_mut();
+        for message in self.messages.iter().rev() {
+            let targets = tool_fold_targets(&message.tool_calls, &*fold);
+            for target in targets.into_iter().rev() {
+                match target {
+                    ToolFoldTarget::Group { key, .. } => {
+                        if fold.get(&key).copied() != Some(ToolDisplayMode::Expanded) {
+                            fold.insert(key, ToolDisplayMode::Expanded);
+                            return true;
+                        }
+                    }
+                    ToolFoldTarget::Call { key, index } => {
+                        let current = fold.get(&key).copied().unwrap_or_else(|| {
+                            message.tool_calls[index].default_display_mode()
+                        });
+                        if current != ToolDisplayMode::Expanded {
+                            fold.insert(key, ToolDisplayMode::Expanded);
+                            return true;
+                        }
+                    }
+                }
+            }
+            let mut expanded = self.reasoning_expanded.borrow_mut();
+            for fragment in message.fragments.iter().rev() {
+                let ChatFragmentKind::Reasoning { key, done, .. } = &fragment.kind else {
+                    continue;
+                };
+                if !expanded.get(key).copied().unwrap_or(!*done) {
+                    expanded.insert(key.clone(), true);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Close the last open row of the transcript: grok-build's Left arrow
+    /// (`Action::Collapse`). It mirrors [`Self::expand_latest_fold`], so the two
+    /// keys walk the same rows.
+    pub(super) fn collapse_latest_fold(&mut self) -> bool {
+        let mut fold = self.tool_fold.borrow_mut();
+        for message in self.messages.iter().rev() {
+            let targets = tool_fold_targets(&message.tool_calls, &*fold);
+            for target in targets.into_iter().rev() {
+                match target {
+                    ToolFoldTarget::Group { key, .. } => {
+                        if fold.get(&key).copied() == Some(ToolDisplayMode::Expanded) {
+                            fold.insert(key, ToolDisplayMode::Collapsed);
+                            return true;
+                        }
+                    }
+                    ToolFoldTarget::Call { key, index } => {
+                        let current = fold.get(&key).copied().unwrap_or_else(|| {
+                            message.tool_calls[index].default_display_mode()
+                        });
+                        if current != ToolDisplayMode::Collapsed {
+                            fold.insert(key, ToolDisplayMode::Collapsed);
+                            return true;
+                        }
+                    }
+                }
+            }
+            let mut expanded = self.reasoning_expanded.borrow_mut();
+            for fragment in message.fragments.iter().rev() {
+                let ChatFragmentKind::Reasoning { key, done, .. } = &fragment.kind else {
+                    continue;
+                };
+                if expanded.get(key).copied().unwrap_or(!*done) {
+                    expanded.insert(key.clone(), false);
+                    return true;
+                }
+            }
+        }
+        false
     }
 }

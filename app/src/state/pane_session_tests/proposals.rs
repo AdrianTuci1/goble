@@ -22,6 +22,12 @@ use super::*;
             "the proposal is held on the pane"
         );
         assert!(rt.command_selection.is_some(), "the selection is app-owned");
+        assert_eq!(
+            rt.command_draft.borrow().as_str(),
+            "git status",
+            "the card opens on the first candidate, ready to run or edit"
+        );
+        assert_eq!(*rt.command_caret.borrow(), "git status".chars().count());
         assert!(rt.busy, "a suspended command does not free the pane");
         assert!(
             state
@@ -41,6 +47,16 @@ use super::*;
             .unwrap()
             .pending_command
             .is_none());
+        assert!(
+            state
+                .pane_runtime
+                .get(&1)
+                .unwrap()
+                .command_draft
+                .borrow()
+                .is_empty(),
+            "the settled proposal takes its draft with it"
+        );
 
         // The finished turn frees the pane; a proposal still awaiting a
         // decision is not erased, and the pane keeps reporting NeedsInput.

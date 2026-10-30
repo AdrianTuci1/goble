@@ -92,6 +92,7 @@ impl LlmProvider for OllamaProvider {
         while let Some(event) = stream.next().await {
             match event {
                 CompletionStreamEvent::AssistantDelta(delta) => content.push_str(&delta),
+                CompletionStreamEvent::ReasoningDelta(_) => {}
                 CompletionStreamEvent::Usage(reported) => usage = Some(reported),
                 CompletionStreamEvent::Done => {}
                 CompletionStreamEvent::Error(message) => anyhow::bail!(message),
@@ -131,11 +132,16 @@ impl LlmProvider for OllamaProvider {
             .json(&body)
             .send()
             .await
+            .map_err(|error| {
+                crate::llm::log_transport_failure(&self.name, &body.model, &url, &error);
+                error
+            })
             .with_context(|| format!("failed to POST to {url}"))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text: String = resp.text().await.unwrap_or_default();
+            crate::llm::log_http_failure(&self.name, &body.model, &url, status.as_u16(), &text);
             anyhow::bail!("LLM request failed: {status} {text}");
         }
 

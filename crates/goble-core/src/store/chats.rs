@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use rusqlite::params;
 
@@ -301,5 +303,30 @@ impl Store {
             params![tool_calls, message_id],
         )?;
         Ok(())
+    }
+
+    /// Record the chain of thought a thinking model streamed for an assistant
+    /// message. DeepSeek's thinking mode requires it back on the next request;
+    /// nothing displays it, so it lives beside the row and not in its content.
+    pub fn set_chat_message_reasoning(&self, message_id: &str, reasoning: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chat_messages SET reasoning_content = ?1 WHERE id = ?2",
+            params![reasoning, message_id],
+        )?;
+        Ok(())
+    }
+
+    /// The stored chain of thought of every assistant message in `chat_id`,
+    /// keyed by message id. Rows that never carried one are absent.
+    pub fn list_chat_message_reasoning(&self, chat_id: &str) -> Result<HashMap<String, String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, reasoning_content FROM chat_messages WHERE chat_id = ?1 AND reasoning_content IS NOT NULL AND reasoning_content != ''",
+        )?;
+        let rows = stmt.query_map(params![chat_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<HashMap<_, _>, _>>()
+            .map_err(Into::into)
     }
 }

@@ -293,7 +293,12 @@ async fn test_approve_runs_chosen_command() {
     let (store, chat_id, runner, _) = turn_suspends_on_command().await;
     let events: Vec<_> = Harness::new(store.clone())
         .with_runner(runner.clone())
-        .resume_command(&chat_id, CommandDecision::Approve("echo hi".to_string()))
+        .resume_command(
+            &chat_id,
+            CommandDecision::Approve("echo hi".to_string()),
+            "mock",
+            "mock",
+        )
         .collect()
         .await;
     assert_eq!(runner.lines(), vec!["echo hi".to_string()]);
@@ -308,6 +313,21 @@ async fn test_approve_runs_chosen_command() {
     let records = tool_call_records(&store, &chat_id);
     assert_eq!(records[0].status, ToolCallStatus::Finished);
     assert_eq!(records[0].result.as_deref(), Some("ran: echo hi"));
+
+    // The result goes back to the model: the resumed turn does not end on the
+    // command, it carries on and writes the reply the user asked for.
+    let messages = store.list_chat_messages(&chat_id).unwrap();
+    let tool_at = messages
+        .iter()
+        .position(|(_, role, content, _, _)| role == "tool" && content.contains("ran: echo hi"))
+        .expect("the approved command's result is in the transcript");
+    assert!(
+        messages[tool_at + 1..]
+            .iter()
+            .any(|(_, role, content, _, _)| role == "assistant"
+                && content.contains("I can help with that.")),
+        "the model answers after reading the command's output: {messages:?}"
+    );
 }
 
 /// Editing runs the edited text instead of the proposal.
@@ -316,7 +336,12 @@ async fn test_edit_runs_edited_command() {
     let (store, chat_id, runner, _) = turn_suspends_on_command().await;
     let events: Vec<_> = Harness::new(store.clone())
         .with_runner(runner.clone())
-        .resume_command(&chat_id, CommandDecision::Edit("echo edited".to_string()))
+        .resume_command(
+            &chat_id,
+            CommandDecision::Edit("echo edited".to_string()),
+            "mock",
+            "mock",
+        )
         .collect()
         .await;
     assert_eq!(runner.lines(), vec!["echo edited".to_string()]);
@@ -331,7 +356,12 @@ async fn test_reject_errors() {
     let (store, chat_id, runner, _) = turn_suspends_on_command().await;
     let events: Vec<_> = Harness::new(store.clone())
         .with_runner(runner.clone())
-        .resume_command(&chat_id, CommandDecision::Reject("too risky".to_string()))
+        .resume_command(
+            &chat_id,
+            CommandDecision::Reject("too risky".to_string()),
+            "mock",
+            "mock",
+        )
         .collect()
         .await;
     assert!(runner.lines().is_empty(), "a rejected command never runs");
@@ -413,6 +443,109 @@ async fn test_execution_streams_assistant_deltas_into_one_message() {
     let msgs = store.list_chat_messages(&chat_id).unwrap();
     let assistant = msgs.into_iter().find(|m| m.1 == "assistant").unwrap();
     assert_eq!(assistant.2, "Hello world", "deltas should be concatenated into one assistant message");
+}
+
+/// A thinking model's chain of thought is stored with the assistant turn and
+/// replayed on the next request. DeepSeek rejects the iteration after a
+/// tool-call turn when that turn's `reasoning_content` is missing, so this is
+/// the regression that bricks a whole conversation.
+#[tokio::test]
+async fn a_thinking_models_reasoning_is_stored_and_replayed() {
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    use futures::Stream;
+
+    struct ThinkingProvider {
+        calls: AtomicUsize,
+        second: Mutex<Option<CompletionRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ThinkingProvider {
+        fn name(&self) -> &str {
+            "deepseek"
+        }
+
+        async fn complete(&self, _req: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            unreachable!("the harness streams")
+        }
+
+        async fn complete_stream(
+            &self,
+            req: CompletionRequest,
+        ) -> anyhow::Result<Pin<Box<dyn Stream<Item = CompletionStreamEvent> + Send>>> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events = if call == 0 {
+                vec![
+                    CompletionStreamEvent::ReasoningDelta(
+                        "I should read the file.".to_string(),
+                    ),
+                    CompletionStreamEvent::AssistantDelta("Checking.".to_string()),
+                    CompletionStreamEvent::ToolCalls(vec![LlmToolCall {
+                        id: "call_1".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: serde_json::json!({
+                            "path": format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR")),
+                        }),
+                    }]),
+                    CompletionStreamEvent::Done,
+                ]
+            } else {
+                *self.second.lock().unwrap() = Some(req);
+                vec![
+                    CompletionStreamEvent::ReasoningDelta("All clear.".to_string()),
+                    CompletionStreamEvent::AssistantDelta("The file is clean.".to_string()),
+                    CompletionStreamEvent::Done,
+                ]
+            };
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let provider = Arc::new(ThinkingProvider {
+        calls: AtomicUsize::new(0),
+        second: Mutex::new(None),
+    });
+    let harness = Harness::new(store.clone()).with_llm(provider.clone());
+
+    let _: Vec<_> = harness
+        .run_turn(&chat_id, "check the manifest", "deepseek", "deepseek-flash")
+        .collect()
+        .await;
+
+    let reasoning = store.list_chat_message_reasoning(&chat_id).unwrap();
+    assert!(
+        reasoning.values().any(|text| text == "I should read the file."),
+        "the chain of thought is stored on the tool-call turn: {reasoning:?}"
+    );
+    assert!(
+        reasoning.values().any(|text| text == "All clear."),
+        "the answer's thinking is stored too: {reasoning:?}"
+    );
+
+    let second = provider
+        .second
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the tool result drove a second request");
+    let assistant = second
+        .messages
+        .iter()
+        .find(|message| {
+            message.role == Role::Assistant
+                && message.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty())
+        })
+        .expect("the tool-call turn is replayed");
+    assert_eq!(
+        assistant.reasoning_content.as_deref(),
+        Some("I should read the file."),
+        "the next request carries the thinking back to the provider"
+    );
 }
 
 /// The token counts a provider reports are durable: each call's usage is folded
@@ -664,11 +797,112 @@ async fn test_failed_tool_call_is_failed_in_the_llm_history() {
     );
 }
 
+/// A batch of calls that suspends on its first command keeps only the call it
+/// stopped on: the ones after it never ran, and a history that promised their
+/// results would be rejected by the provider outright.
+#[tokio::test]
+async fn test_a_suspended_batch_keeps_only_the_call_it_stopped_on() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let llm = llm_with_reasoning_tools(
+        "",
+        vec![
+            LlmToolCall {
+                id: "tc_cmd".to_string(),
+                name: "run_command".to_string(),
+                arguments: serde_json::json!({"command": "pwd"}),
+            },
+            LlmToolCall {
+                id: "tc_status".to_string(),
+                name: "git_status".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        ],
+    );
+    let harness = Harness::new(store.clone()).with_llm(llm);
+    let events: Vec<_> = harness
+        .run_turn(&chat_id, "where am I?", "mock", "mock")
+        .collect()
+        .await;
+
+    assert!(events.iter().any(
+        |e| matches!(e, HarnessEvent::CommandProposed { id, .. } if id == "tc_cmd")
+    ));
+    let records = tool_call_records(&store, &chat_id);
+    assert_eq!(
+        records.len(),
+        1,
+        "the call the turn never reached is not part of the message: {records:?}"
+    );
+    assert_eq!(records[0].id, "tc_cmd");
+}
+
+/// The history never promises a call without a result, even when an older row
+/// says otherwise: the provider rejects that history, and one suspended batch
+/// would otherwise poison every later turn in the conversation.
+#[tokio::test]
+async fn test_history_drops_a_planned_call_with_no_result() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let now = Utc::now().to_rfc3339();
+    store
+        .insert_chat_message(&uuid::Uuid::new_v4().to_string(), &chat_id, "user", "where am I?", None, &now)
+        .unwrap();
+    let records = vec![
+        ChatToolCall::planned(&LlmToolCall {
+            id: "tc_cmd".to_string(),
+            name: "run_command".to_string(),
+            arguments: serde_json::json!({"command": "pwd"}),
+        }),
+        ChatToolCall::planned(&LlmToolCall {
+            id: "tc_status".to_string(),
+            name: "git_status".to_string(),
+            arguments: serde_json::json!({}),
+        }),
+    ];
+    store
+        .insert_chat_message(
+            "assistant-1",
+            &chat_id,
+            "assistant",
+            "Working on it.",
+            Some(&serde_json::to_string(&records).unwrap()),
+            &now,
+        )
+        .unwrap();
+    store
+        .insert_chat_message("tool-1", &chat_id, "tool", "tc_cmd\ngoble", None, &now)
+        .unwrap();
+
+    let mission = MissionState {
+        id: "mission-1".to_string(),
+        chat_id: chat_id.clone(),
+        goal: "where am I?".to_string(),
+        status: "clarifying".to_string(),
+        plan: None,
+        workflow_id: None,
+        reasoning_steps: Vec::new(),
+        pending_ask: None,
+    };
+    let history = build_history(&store, &chat_id, &mission, &[], &[], ThinkingMode::Direct).await;
+    let assistant = history
+        .iter()
+        .find(|m| m.role == Role::Assistant && m.tool_calls.is_some())
+        .expect("the assistant message still carries the answered call");
+    let calls = assistant.tool_calls.as_ref().unwrap();
+    assert_eq!(calls.len(), 1, "only the answered call survives: {calls:?}");
+    assert_eq!(calls[0].id, "tc_cmd");
+    assert_eq!(
+        history.iter().filter(|m| m.role == Role::Tool).count(),
+        1,
+        "the result row for the dropped call is gone with it"
+    );
+}
+
 /// A `tool_calls` row written by an older build carries only
 /// `id`/`name`/`arguments`; the new fields must default rather than fail.
 #[test]
-fn test_tool_call_row_from_older_build_still_parses() {
-    let old = r#"[{"id":"call_1","name":"ls","arguments":{"path":"/tmp"}}]"#;
+fn test_tool_call_row_from_older_build_still_parses() {    let old = r#"[{"id":"call_1","name":"ls","arguments":{"path":"/tmp"}}]"#;
     let records: Vec<ChatToolCall> = serde_json::from_str(old).expect("old row must parse");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].name, "ls");

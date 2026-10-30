@@ -68,13 +68,28 @@ pub enum RenderCommand {
 #[derive(Default)]
 pub struct Renderer {
     commands: Vec<RenderCommand>,
+    /// The regions clips in force are painted into, outermost first. They are
+    /// what [`Renderer::visible`] tests against, so a run scrolled out of its
+    /// viewport never reaches the text atlas: the atlas is packed per run and
+    /// a long terminal history would otherwise evict the window's own chrome.
+    clips: Vec<crate::geometry::RectF>,
 }
 
 impl Renderer {
     pub fn new() -> Self {
         Self {
             commands: Vec::new(),
+            clips: Vec::new(),
         }
+    }
+
+    /// Whether any part of `bounds` can reach the frame through the clips in
+    /// force. A run outside every clip of its ancestors draws nothing, so
+    /// painting it (and sizing it into the text atlas) is wasted work.
+    pub fn visible(&self, bounds: crate::geometry::RectF) -> bool {
+        self.clips
+            .last()
+            .is_none_or(|clip| clip.intersects(&bounds))
     }
 
     pub fn fill_rect(&mut self, rect: crate::geometry::RectF, color: ColorU) {
@@ -235,10 +250,12 @@ impl Renderer {
     }
 
     pub fn clip_rect(&mut self, rect: crate::geometry::RectF) {
+        self.clips.push(rect);
         self.commands.push(RenderCommand::ClipRect(rect));
     }
 
     pub fn pop_clip(&mut self) {
+        self.clips.pop();
         self.commands.push(RenderCommand::PopClip);
     }
 

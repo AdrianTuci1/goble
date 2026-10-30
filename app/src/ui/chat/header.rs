@@ -3,7 +3,8 @@ use std::rc::Rc;
 
 use goble_ui::elements::{
     AppContext, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty,
-    Expanded, Fill, Flex, Icon, MainAxisSize, Spacer, Text, Tooltip, TopbarButton,
+    Expanded, Fill, Flex, Icon, MainAxisAlignment, MainAxisSize, Spacer, Text, Tooltip,
+    TooltipPosition, TopbarButton,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -15,6 +16,39 @@ use crate::state::PaneWorkItem;
 /// Height of the agent header's tallest control (`TopbarButton`'s default
 /// size); the header is padded out to `shell::TOPBAR_HEIGHT` around it.
 pub(crate) const HEADER_CONTROL_HEIGHT: f32 = 32.0;
+
+/// What a pane prints in the middle of its own bar. A shell names the
+/// directory it runs in; an agent surface names the conversation it holds.
+pub(crate) enum PaneHeading {
+    /// The pane's working directory, shortened the way the tab strip reads it
+    /// (`~`, `~/Projects/goble`), with the full path on hover.
+    Path(String),
+    /// The agent conversation's subject, or its new-conversation placeholder.
+    Agent(String),
+}
+
+impl PaneHeading {
+    fn element(self, app: &AppContext) -> Box<dyn Element> {
+        let (text, tooltip) = match self {
+            PaneHeading::Path(path) => (crate::state::display_path(&path), Some(path)),
+            PaneHeading::Agent(subject) => (subject, None),
+        };
+        let label = Text::new(text)
+            .with_font_size(12.0)
+            .with_theme_color(ColorToken::Text, app)
+            .with_max_lines(1)
+            .finish();
+        let label = match tooltip {
+            Some(tooltip) => Tooltip::new(label, tooltip)
+                .with_position(TooltipPosition::Below)
+                .finish(),
+            None => label,
+        };
+        // A long path or subject stops short of the pane's own controls; the
+        // tooltip still carries the whole path.
+        ConstrainedBox::new(label).with_max_width(340.0).finish()
+    }
+}
 
 /// Agent header row: a right-aligned work chip, the pane's expand control and
 /// a close X.
@@ -40,6 +74,7 @@ pub(crate) fn build_agent_header(
     actions: &UiActions,
     pane_id: u64,
     harness_open: bool,
+    heading: Option<PaneHeading>,
 ) -> Box<dyn Element> {
     build_agent_header_with(
         app,
@@ -47,7 +82,10 @@ pub(crate) fn build_agent_header(
         actions,
         pane_id,
         harness_open,
-        HeaderSlots::default(),
+        HeaderSlots {
+            center: heading.map(|heading| heading.element(app)),
+            ..HeaderSlots::default()
+        },
     )
 }
 
@@ -63,6 +101,10 @@ pub(crate) struct HeaderSlots {
     /// words. It takes the space left over after the bar's controls, so a long
     /// title cannot push them off a narrow pane.
     pub leading: Option<Box<dyn Element>>,
+    /// Drawn in the middle of the bar, between two equal flexible spaces: the
+    /// pane's identity (a shell's path, an agent's subject). The bar stays
+    /// balanced whatever the leading or trailing slots hold.
+    pub center: Option<Box<dyn Element>>,
     /// Drawn at the bar's trailing edge, before the expand and close controls:
     /// the pane's own controls, to the left of the ones every pane shares.
     pub trailing: Option<Box<dyn Element>>,
@@ -132,11 +174,7 @@ pub(crate) fn build_agent_header_with(
     .with_on_click(move || (on_close.borrow_mut())())
     .finish();
 
-    let mut row = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(spacing);
-    if harness_open {
+    let esc_hint = harness_open.then(|| {
         // Clicking the hint is the switch itself: the harness closes and the
         // bar's editor lets go of the keys, which is what Esc does.
         let on_harness_mode = actions.on_set_pane_harness_mode.clone();
@@ -146,35 +184,92 @@ pub(crate) fn build_agent_header_with(
             .get(&pane_id)
             .cloned()
             .unwrap_or_else(|| Rc::new(RefCell::new(false)));
-        row = row.with_child(super::super::panes::build_esc_hint(app, hover, move || {
+        super::super::panes::build_esc_hint(app, hover, move || {
             (on_harness_mode.borrow_mut())(pane_id, false);
             (on_composer_focus.borrow_mut())(false);
-        }));
-    }
-    // The pane's own content takes the leading edge and the leftover space: it
-    // is the bar's only flexible child, so the controls after it stay against
-    // the trailing edge however wide the pane is. A pane with nothing to say
-    // leaves the space empty, exactly as the bar always did.
-    let row = match slots.leading {
-        Some(leading) => row.with_child(Expanded::new(leading).finish()),
-        None => row.with_child(Spacer::new().finish()),
-    };
-    let row = row.with_child(build_work_chip(
+        })
+    });
+    let work_chip = build_work_chip(
         app,
         state.pane_live_work.get(&pane_id).map(Vec::as_slice).unwrap_or(&[]),
-    ));
-    let row = match slots.trailing {
-        Some(trailing) => row.with_child(trailing),
-        None => row,
+    );
+    let HeaderSlots {
+        leading,
+        center,
+        trailing,
+    } = slots;
+
+    // A titled bar keeps the marker's room inside its left group instead of
+    // padding the whole bar, so the title sits in the pane's true middle.
+    let bar_inset = if center.is_some() { 0.0 } else { marker_inset };
+
+    let row = if let Some(center) = center {
+        // A titled bar splits into two equal flexible halves with the title
+        // between them, so the title sits in the middle of the pane however
+        // much room the pane's own content takes on either side.
+        let mut left = Flex::row()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(spacing);
+        if let Some(esc_hint) = esc_hint {
+            left = left.with_child(esc_hint);
+        }
+        if let Some(leading) = leading {
+            left = left.with_child(leading);
+        }
+        let left = Container::new(left.finish())
+            .with_padding(EdgeInsets::new(marker_inset, 0.0, 0.0, 0.0))
+            .finish();
+        let mut right = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::End)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(spacing)
+            .with_child(work_chip);
+        if let Some(trailing) = trailing {
+            right = right.with_child(trailing);
+        }
+        let right = right
+            .with_child(expand_button)
+            .with_child(close_button)
+            .finish();
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(spacing)
+            .with_child(Expanded::new(left).finish())
+            .with_child(center)
+            .with_child(Expanded::new(right).finish())
+            .finish()
+    } else {
+        let mut row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(spacing);
+        if let Some(esc_hint) = esc_hint {
+            row = row.with_child(esc_hint);
+        }
+        // The pane's own content takes the leading edge and the leftover
+        // space: it is the bar's only flexible child, so the controls after it
+        // stay against the trailing edge however wide the pane is. A pane with
+        // nothing to say leaves the space empty, exactly as the bar always did.
+        let row = match leading {
+            Some(leading) => row.with_child(Expanded::new(leading).finish()),
+            None => row.with_child(Spacer::new().finish()),
+        };
+        let row = row.with_child(work_chip);
+        let row = match trailing {
+            Some(trailing) => row.with_child(trailing),
+            None => row,
+        };
+        row.with_child(expand_button)
+            .with_child(close_button)
+            .finish()
     };
-    let row = row
-        .with_child(expand_button)
-        .with_child(close_button)
-        .finish();
 
     Container::new(row)
     .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-    .with_padding(EdgeInsets::new(marker_inset, v_pad, 0.0, v_pad))
+    .with_padding(EdgeInsets::new(bar_inset, v_pad, 0.0, v_pad))
     .finish()
 }
 
@@ -953,11 +1048,11 @@ mod tests {
             header_rules(&cmds, &app, bar.1).is_empty(),
             "and no separator, so the header looks exactly as it did"
         );
-        assert!(
-            header_texts(&cmds, bar.1).is_empty(),
-            "and no count: {:?}",
-            header_texts(&cmds, bar.1)
-        );
+        let counts: Vec<(String, Vector2F)> = header_texts(&cmds, bar.1)
+            .into_iter()
+            .filter(|(text, _)| text.chars().all(|c| c.is_ascii_digit()))
+            .collect();
+        assert!(counts.is_empty(), "and no count: {counts:?}");
 
         {
             let mut s = state.borrow_mut();
@@ -998,6 +1093,105 @@ mod tests {
         assert!(
             diamond.x < bar.0,
             "the whole chip sits left of the expand control: {diamond:?} vs {bar:?}"
+        );
+    }
+
+    /// The middle of a pane, from the bounds the pane recorded while painting.
+    fn pane_center(state: &Rc<RefCell<UiState>>, pane_id: u64) -> f32 {
+        let bounds = state
+            .borrow()
+            .pane_bounds
+            .borrow()
+            .get(&pane_id)
+            .copied()
+            .expect("the pane recorded its bounds");
+        (bounds.min_x() + bounds.max_x()) / 2.0
+    }
+
+    /// The horizontal middle of the one run `needle` the pane bar draws.
+    fn heading_center(cmds: &[RenderCommand], bar_y: f32, needle: &str) -> f32 {
+        use goble_ui::elements::text::measure_text;
+        let mut drawn = header_texts(cmds, bar_y)
+            .into_iter()
+            .filter(|(text, _)| text == needle);
+        let (_, origin) = drawn
+            .next()
+            .unwrap_or_else(|| panic!("{needle:?} is drawn in the bar"));
+        assert!(drawn.next().is_none(), "{needle:?} is drawn once");
+        origin.x + measure_text(needle, 12.0, 1.2, f32::INFINITY).x / 2.0
+    }
+
+    /// A pane that talks to an agent names itself in the middle of its bar —
+    /// the placeholder while its conversation has no subject — and the pane's
+    /// own content on either side does not move it off that middle.
+    #[test]
+    fn an_agent_pane_centres_its_placeholder_subject() {
+        let app = AppContext::default();
+        let (mut root, state, _desktop, _dir) = pane_root();
+        let _ = frame(&mut root, &app, None);
+        let cmds = frame(&mut root, &app, None);
+        let bar = topmost_icon(&cmds, "maximize-01");
+        let pane_id = state.borrow().active_pane_id;
+
+        let centred = heading_center(&cmds, bar.1, "New Agent");
+        let pane_middle = pane_center(&state, pane_id);
+        assert!(
+            (centred - pane_middle).abs() <= 0.5,
+            "the placeholder sits in the pane's middle: {centred} vs {pane_middle}"
+        );
+
+        // The work chip takes room on the right only; the two flexible halves
+        // around the title keep it where it was.
+        {
+            let mut s = state.borrow_mut();
+            s.pane_runtime
+                .entry(pane_id)
+                .or_default()
+                .in_flight_tools
+                .insert("call-1".to_string(), tool_call("call-1", "run_command"));
+        }
+        let cmds = frame(&mut root, &app, None);
+        let with_work = heading_center(&cmds, bar.1, "New Agent");
+        assert!(
+            (with_work - centred).abs() <= 0.5,
+            "the chip on the right does not shift the title: {with_work} vs {centred}"
+        );
+    }
+
+    /// Once the conversation has a subject, the bar centres that instead of
+    /// the placeholder.
+    #[test]
+    fn an_agent_pane_centres_the_conversations_subject() {
+        let app = AppContext::default();
+        let (mut root, state, desktop, _dir) = pane_root();
+        let subject = desktop
+            .create_chat("Demo · Hot reload", None, None)
+            .expect("a conversation with a subject");
+        {
+            let mut s = state.borrow_mut();
+            s.refresh_conversations(&desktop);
+            let pane_id = s.active_pane_id;
+            s.pane_sessions
+                .get_mut(&pane_id)
+                .expect("the pane's session")
+                .conversation_id = subject;
+        }
+        let _ = frame(&mut root, &app, None);
+        let cmds = frame(&mut root, &app, None);
+        let bar = topmost_icon(&cmds, "maximize-01");
+        let pane_id = state.borrow().active_pane_id;
+
+        let centred = heading_center(&cmds, bar.1, "Demo · Hot reload");
+        let pane_middle = pane_center(&state, pane_id);
+        assert!(
+            (centred - pane_middle).abs() <= 0.5,
+            "the subject sits in the pane's middle: {centred} vs {pane_middle}"
+        );
+        assert!(
+            !header_texts(&cmds, bar.1)
+                .iter()
+                .any(|(text, _)| text == "New Agent"),
+            "the placeholder is gone once there is a subject"
         );
     }
 

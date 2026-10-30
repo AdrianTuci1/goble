@@ -1,10 +1,13 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use crate::elements::{
-    AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Flex, Icon, LayoutContext,
-    MainAxisAlignment, MainAxisSize, PaintContext, Point, RunningIndicator, SizeConstraint, Spacer,
-    Text,
+    AppContext, ComposerButton, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext,
+    Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point,
+    RunningIndicator, SizeConstraint, Spacer, Text, Tooltip, TooltipPosition,
 };
+use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
 
@@ -150,8 +153,10 @@ impl TurnStatus {
 /// and the in-flight count), idle with work in flight (one line naming each kind
 /// still running), and nothing in flight (zero height).
 ///
-/// It is information only: no state here is a hit target. The composer keeps the
-/// only control on a turn.
+/// It is information with one control: while the host wires one, the row ends
+/// with the turn's Stop, so the action that ends the turn sits on the line that
+/// says what the turn is doing (and stays reachable while the approval surface
+/// has replaced the input).
 ///
 /// The spinner's frame and the elapsed label both come from the app's real
 /// clock: the element layer owns neither a clock nor a frame counter, so the app
@@ -171,6 +176,9 @@ impl TurnStatus {
 /// conversation has spent, not the context the next request carries.
 pub struct TurnStatusFooter {
     status: TurnStatus,
+    /// The turn's Stop, when the host offers one. It is drawn at the row's far
+    /// edge in both live states.
+    stop: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -180,10 +188,18 @@ impl TurnStatusFooter {
     pub fn new(status: TurnStatus) -> Self {
         Self {
             status,
+            stop: None,
             root: None,
             size: None,
             origin: None,
         }
+    }
+
+    /// Draw the turn's Stop at the row's far edge. Without it the footer keeps
+    /// its information-only shape.
+    pub fn with_stop<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.stop = Some(Rc::new(RefCell::new(callback)));
+        self
     }
 
     pub fn status(&self) -> &TurnStatus {
@@ -195,6 +211,21 @@ impl TurnStatusFooter {
             return;
         }
         let sm = app.theme.spacing_px(SpacingToken::Sm);
+        let stop = self.stop.clone().map(|callback| {
+            let button = ComposerButton::new(
+                Icon::new("stop")
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Error, app)
+                    .finish(),
+            )
+            .with_height(22.0)
+            .with_h_pad(6.0)
+            .with_on_click(move || (callback.borrow_mut())())
+            .finish();
+            Tooltip::new(button, "Stop")
+                .with_position(TooltipPosition::Above)
+                .finish()
+        });
         let root: Box<dyn Element> = match &self.status {
             // Nothing in flight: no root, so `paint` draws nothing and the row
             // takes zero height.
@@ -233,8 +264,11 @@ impl TurnStatusFooter {
                             .finish(),
                     );
                 }
+                if *work_count > 0 || stop.is_some() {
+                    row = row.with_child(Spacer::new().finish());
+                }
                 if *work_count > 0 {
-                    row = row.with_child(Spacer::new().finish()).with_child(
+                    row = row.with_child(
                         Flex::row()
                             .with_cross_axis_alignment(CrossAxisAlignment::Center)
                             .with_spacing(4.0)
@@ -254,12 +288,15 @@ impl TurnStatusFooter {
                             .finish(),
                     );
                 }
+                if let Some(stop) = stop {
+                    row = row.with_child(stop);
+                }
                 Container::new(row.finish())
                     .with_padding(EdgeInsets::new(PADDING_Y, sm, PADDING_Y, sm))
                     .finish()
             }
             TurnStatus::StillRunning { kinds } => {
-                let row = Flex::row()
+                let mut row = Flex::row()
                     .with_main_axis_size(MainAxisSize::Max)
                     .with_main_axis_alignment(MainAxisAlignment::Start)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -276,9 +313,11 @@ impl TurnStatusFooter {
                             .with_font_size(FONT_SIZE)
                             .with_max_lines(1)
                             .finish(),
-                    )
-                    .finish();
-                Container::new(row)
+                    );
+                if let Some(stop) = stop {
+                    row = row.with_child(Spacer::new().finish()).with_child(stop);
+                }
+                Container::new(row.finish())
                     .with_padding(EdgeInsets::new(PADDING_Y, sm, PADDING_Y, sm))
                     .finish()
             }
@@ -322,6 +361,23 @@ impl Element for TurnStatusFooter {
     fn origin(&self) -> Option<Point> {
         self.origin
     }
+
+    /// The row is information except for the Stop it can carry, so events go to
+    /// the root and reach nothing else.
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        if !self.status.is_in_flight() {
+            return false;
+        }
+        match self.root.as_mut() {
+            Some(root) => root.dispatch_event(event, ctx, app),
+            None => false,
+        }
+    }
 }
 
 /// The spinner's phase from the turn's real elapsed time.
@@ -356,6 +412,9 @@ fn still_running_label(kinds: &[WorkKindCount]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use super::*;
     use crate::elements::running_indicator::SPINNER_FRAMES;
     use crate::elements::{AppContext, EventContext, LayoutContext, PaintContext, SizeConstraint};
@@ -606,6 +665,52 @@ mod tests {
                 "the footer takes no pointer event"
             );
         }
+    }
+
+    /// The row that says what the turn is doing also ends it: Stop is drawn at
+    /// the far edge and clicking it invokes the host's callback.
+    #[test]
+    fn the_footer_carries_the_turns_stop_at_its_far_edge() {
+        let clicked = Rc::new(RefCell::new(false));
+        let flag = clicked.clone();
+        let status = TurnStatus::busy(TurnActivity::Thinking, Some(Duration::from_secs(3)), 0);
+        let mut element: Box<dyn Element> =
+            TurnStatusFooter::new(status).with_stop(move || *flag.borrow_mut() = true).finish();
+
+        let app = AppContext::default();
+        let commands = render_element(&mut element, vec2f(600.0, 40.0), &app);
+        let rect = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::StrokeRect { rect, .. } => Some(*rect),
+                _ => None,
+            })
+            .expect("the stop control draws its outline");
+        assert!(
+            rect.min_x() > 480.0,
+            "the stop sits at the row's far edge: {rect:?}"
+        );
+
+        let position = vec2f(
+            (rect.min_x() + rect.max_x()) / 2.0,
+            (rect.min_y() + rect.max_y()) / 2.0,
+        );
+        let mut ctx = EventContext::default();
+        assert!(
+            element.dispatch_event(
+                &DispatchedEvent::MouseUp {
+                    position,
+                    button: 0,
+                },
+                &mut ctx,
+                &app,
+            ),
+            "the stop takes the release"
+        );
+        assert!(
+            *clicked.borrow(),
+            "clicking the stop invokes the host's callback"
+        );
     }
 
     #[test]

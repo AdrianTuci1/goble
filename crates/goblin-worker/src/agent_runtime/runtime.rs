@@ -84,6 +84,7 @@ impl AgentRuntime {
                 tool_calls: None,
                 tool_call_id: None,
                 tool_status: None,
+                reasoning_content: None,
             },
             Message {
                 role: Role::User,
@@ -91,6 +92,7 @@ impl AgentRuntime {
                 tool_calls: None,
                 tool_call_id: None,
                 tool_status: None,
+                reasoning_content: None,
             },
         ];
 
@@ -181,6 +183,7 @@ impl AgentRuntime {
                 tool_calls: Some(response.tool_calls.clone()),
                 tool_call_id: None,
                 tool_status: None,
+                reasoning_content: None,
             });
             for (tool_call_id, content) in tool_results {
                 messages.push(Message {
@@ -189,6 +192,7 @@ impl AgentRuntime {
                     tool_calls: None,
                     tool_call_id: Some(tool_call_id),
                     tool_status: None,
+                    reasoning_content: None,
                 });
             }
 
@@ -274,6 +278,7 @@ async fn summarize_if_needed(
         tool_calls: None,
         tool_call_id: None,
         tool_status: None,
+        reasoning_content: None,
     };
     messages.push(summary);
     Ok(messages)

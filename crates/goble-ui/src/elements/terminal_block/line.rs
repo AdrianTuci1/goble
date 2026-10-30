@@ -11,19 +11,53 @@ pub enum TerminalLineKind {
 }
 
 /// A styled run of a terminal line: the text a command emitted and the
-/// foreground, weight and emphasis in force when it did.
+/// foreground, background, weight and emphasis in force when it did.
 ///
-/// A run comes from either the command line highlighted as shell or the output
-/// parsed as ANSI. `color: None` is the terminal's default foreground, which is
-/// drawn in the line kind's own colour rather than a fixed palette entry, so a
-/// plain command still reads as the block's text.
+/// A run comes from either the command line highlighted as shell, the output
+/// parsed as ANSI, or the cells of a block's own screen. `color: None` is the
+/// terminal's default foreground, which is drawn in the line kind's own colour
+/// rather than a fixed palette entry, so a plain command still reads as the
+/// block's text. `background: None` paints nothing behind the run: the default
+/// background is the block's own, so a line without reverse video or a
+/// background colour costs no fill.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalRun {
     pub text: String,
     pub color: Option<ColorU>,
+    pub background: Option<ColorU>,
     pub bold: bool,
+    pub dim: bool,
     pub italic: bool,
     pub underline: bool,
+    pub strikeout: bool,
+}
+
+impl TerminalRun {
+    /// A run of plain text in the line's own colour: what the shell highlighter
+    /// and a plain stretch of output both leave behind.
+    pub fn plain(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            color: None,
+            background: None,
+            bold: false,
+            dim: false,
+            italic: false,
+            underline: false,
+            strikeout: false,
+        }
+    }
+
+    /// Whether the run paints the same as `other` and so can be drawn with it.
+    pub fn same_style(&self, other: &Self) -> bool {
+        self.color == other.color
+            && self.background == other.background
+            && self.bold == other.bold
+            && self.dim == other.dim
+            && self.italic == other.italic
+            && self.underline == other.underline
+            && self.strikeout == other.strikeout
+    }
 }
 
 /// A single line inside a [`TerminalBlock`](super::block::TerminalBlock).

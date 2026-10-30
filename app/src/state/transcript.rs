@@ -233,7 +233,7 @@ impl MessageParseCache {
             messages.push(message);
         }
         self.entries = next;
-        messages
+        merge_tool_chains(messages)
     }
 
     /// How many rows this cache has parsed. Test observability for the
@@ -241,6 +241,50 @@ impl MessageParseCache {
     pub fn parse_count(&self) -> u64 {
         self.parses
     }
+}
+
+/// Collapse the agent's tool-only steps into the reply they belong to.
+///
+/// The harness writes one assistant row per execution step: a preamble with
+/// calls, then a tool-only row per following step, then the final answer. Drawn
+/// one bubble at a time, a chain of ten calls becomes ten separate blocks with
+/// no shared run and an empty bubble between each pair. Grok-build keeps the
+/// whole chain in the reply it advances, so the steps merge into the first
+/// assistant message that carries calls: its prose leads, then every call of
+/// the chain, and the run grouping sees the chain as one sequence. A step that
+/// carries prose of its own starts a new reply, which is where grok-build's
+/// agent message also ends the run.
+fn merge_tool_chains(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let mut merged: Vec<ChatMessage> = Vec::with_capacity(messages.len());
+    for message in messages {
+        let tool_only = message.role == ChatRole::Assistant
+            && !message.tool_calls.is_empty()
+            && message.fragments.is_empty();
+        if tool_only {
+            if let Some(previous) = merged.last_mut() {
+                if previous.role == ChatRole::Assistant && !previous.tool_calls.is_empty() {
+                    previous.tool_calls.extend(message.tool_calls);
+                    continue;
+                }
+            }
+        }
+        merged.push(message);
+    }
+    merged
+}
+
+/// Whether this message is the synthetic reasoning block [`overlay_reasoning`]
+/// inserts, rather than a row the store wrote.
+pub(crate) fn is_reasoning_overlay(message: &ChatMessage) -> bool {
+    message.role == ChatRole::Assistant
+        && message.tool_calls.is_empty()
+        && !message.fragments.is_empty()
+        && message.fragments.iter().all(|fragment| {
+            matches!(
+                fragment.kind,
+                goble_ui::elements::chat_content::ChatFragmentKind::Reasoning { .. }
+            )
+        })
 }
 
 /// Convert a live `chat:tool` event into the renderable [`ToolCall`] the
@@ -285,10 +329,13 @@ pub(crate) fn overlay_in_flight(messages: &mut Vec<ChatMessage>, in_flight: &Has
             }
             continue;
         }
+        // The synthetic reasoning block is not a reply: an in-flight call
+        // belongs to the assistant row after it (or to a fresh one), or the
+        // call would be drawn inside the thinking block.
         match messages
             .iter_mut()
             .rev()
-            .find(|m| m.role == ChatRole::Assistant)
+            .find(|m| m.role == ChatRole::Assistant && !is_reasoning_overlay(m))
         {
             Some(message) => message.tool_calls.push(call.clone()),
             None => {
@@ -300,29 +347,20 @@ pub(crate) fn overlay_in_flight(messages: &mut Vec<ChatMessage>, in_flight: &Has
     }
 }
 
-/// Overlay the pane's accumulated reasoning steps on the transcript: they are
-/// pulled out of and re-inserted into the trailing assistant message so each
-/// step renders as its own row ahead of that message's prose. Re-running is
-/// idempotent, so a refresh or a live delta never duplicates a row.
+/// Overlay the pane's accumulated reasoning steps on the transcript as their
+/// own block at the start of the turn.
+///
+/// The harness plans first and executes after, so the block sits directly after
+/// the turn's user message instead of riding the trailing assistant message:
+/// there it would migrate down the transcript on every execution step and end
+/// up under the tools it drove. The synthetic block is replaced on every call,
+/// so a live delta or a refresh never duplicates it.
 pub(crate) fn overlay_reasoning(messages: &mut Vec<ChatMessage>, reasoning: &[ReasoningRow]) {
+    messages.retain(|message| !is_reasoning_overlay(message));
     if reasoning.is_empty() {
         return;
     }
-    let index = match messages.iter().rposition(|m| m.role == ChatRole::Assistant) {
-        Some(index) => index,
-        None => {
-            messages.push(ChatMessage::new(ChatRole::Assistant, Vec::new()));
-            messages.len() - 1
-        }
-    };
-    let message = &mut messages[index];
-    message.fragments.retain(|f| {
-        !matches!(
-            f.kind,
-            goble_ui::elements::chat_content::ChatFragmentKind::Reasoning { .. }
-        )
-    });
-    let mut fragments: Vec<ChatFragment> = reasoning
+    let fragments: Vec<ChatFragment> = reasoning
         .iter()
         .map(|row| {
             ChatFragment::reasoning(
@@ -333,8 +371,14 @@ pub(crate) fn overlay_reasoning(messages: &mut Vec<ChatMessage>, reasoning: &[Re
             )
         })
         .collect();
-    fragments.extend(std::mem::take(&mut message.fragments));
-    message.fragments = fragments;
+    let index = match messages.iter().rposition(|m| m.role == ChatRole::User) {
+        Some(index) => index + 1,
+        None => 0,
+    };
+    messages.insert(
+        index,
+        ChatMessage::new(ChatRole::Assistant, fragments),
+    );
 }
 
 /// The app-owned expand-state key for one reasoning step. It is stable while

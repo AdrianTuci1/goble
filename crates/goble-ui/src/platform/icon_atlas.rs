@@ -37,6 +37,10 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("layers-three-01", "layers-three-01.svg"),
     icon_bytes!("users-02", "users-02.svg"),
     icon_bytes!("chevron-down", "chevron-down.svg"),
+    // The prompt marker before a user's own message: a wide, short-armed
+    // chevron. The bundled mono face draws `❯` tall and narrow, so the row's
+    // marker comes from its own asset instead of that glyph.
+    icon_bytes!("prompt-arrow", "prompt-arrow.svg"),
     icon_bytes!("chevron-left", "chevron-left.svg"),
     icon_bytes!("chevron-right", "chevron-right.svg"),
     icon_bytes!("plus", "plus.svg"),
@@ -439,6 +443,65 @@ mod tests {
             at(width - 1, height - 1),
             0,
             "while the diagonal leaves the opposite corner empty"
+        );
+    }
+
+    /// The prompt marker before a user's message is a wide, short-armed
+    /// chevron: the bundled mono face's `❯` is tall and narrow, so the row
+    /// draws this asset instead. Its ink is wider than it is tall, and the
+    /// tip reaches the right edge while the arms stay short.
+    #[test]
+    fn the_prompt_arrow_is_a_wide_short_armed_chevron() {
+        let (_, bytes) = ICON_FILES
+            .iter()
+            .find(|(name, _)| *name == "prompt-arrow")
+            .expect("the prompt arrow is registered");
+        let (alpha, width, height) = rasterize_icon(bytes).expect("the prompt arrow rasterizes");
+        let ink = |x: u32, y: u32| alpha[(y * width + x) as usize] > 0;
+
+        let mut min_x = width;
+        let mut max_x = 0;
+        let mut min_y = height;
+        let mut max_y = 0;
+        for y in 0..height {
+            for x in 0..width {
+                if ink(x, y) {
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        let ink_width = max_x - min_x + 1;
+        let ink_height = max_y - min_y + 1;
+        assert!(
+            ink_width > ink_height,
+            "the marker is wider than tall: {ink_width} x {ink_height}"
+        );
+        assert!(
+            ink(max_x, height / 2),
+            "the tip reaches the right edge at the row's middle"
+        );
+        let leftmost_in = |rows: std::ops::Range<u32>| {
+            let mut best = width;
+            for y in rows {
+                for x in 0..width {
+                    if ink(x, y) {
+                        best = best.min(x);
+                    }
+                }
+            }
+            best
+        };
+        let (top_left, bottom_left) = (leftmost_in(0..height / 2), leftmost_in(height / 2..height));
+        assert!(
+            (top_left as i32 - bottom_left as i32).abs() <= 1,
+            "the arms are symmetric: top ends at {top_left}, bottom at {bottom_left}"
+        );
+        assert!(
+            min_x < max_x && min_y < max_y,
+            "the marker is a chevron, not a point"
         );
     }
 

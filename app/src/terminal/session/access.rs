@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use goble_terminal::blocks::BlockView;
-use goble_terminal::{BlockId, HookEvent, OscEvent};
+use goble_terminal::{BlockId, HookEvent, OscEvent, Palette, ScreenLine};
 
 use crate::emulator::VisibleBlock;
 
@@ -74,6 +76,30 @@ impl TerminalSession {
             .lock()
             .map(|state| state.visible_blocks(view))
             .unwrap_or_default()
+    }
+
+    /// The cells of the blocks a view draws, keyed by block id: what a drawn
+    /// block needs beyond [`VisibleBlock::output`]'s plain text.
+    pub fn block_output_lines(&self, view: &BlockView) -> HashMap<BlockId, Vec<ScreenLine>> {
+        self.state
+            .lock()
+            .map(|state| state.block_output_lines(view))
+            .unwrap_or_default()
+    }
+
+    /// The cells of one block's output, when the block list still holds it.
+    pub fn block_output_lines_of(&self, id: BlockId) -> Option<Vec<ScreenLine>> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.block_output_lines_of(id))
+    }
+
+    /// The palette this session paints with — the pane sets it from the theme
+    /// on every frame, so a block drawn outside the pane's own build (the
+    /// transcript's executed-command block) resolves the same colours.
+    pub fn palette(&self) -> Palette {
+        self.palette
     }
 
     /// Push the card standing for `conversation_id` into this session's block

@@ -20,7 +20,7 @@ pub use platform::current as platform_current;
 
 pub use color::{hsv_to_rgb, rgb_to_hsv, ColorU};
 pub use elements::{
-    AgentCard, Align, Alignment, AppContext, AskUserCard, AskUserUi, Avatar, AvatarShape, Axis,
+    AgentCard, Align, Alignment, AppContext, ApprovalMode, AskUserCard, AskUserUi, Avatar, AvatarShape, Axis,
     Border, Button, ButtonVariant, Caption, ChatAction, ChatComposer, ChatFragment,
     ChatFragmentKind, ChatHeader, ChatLayout, ChatMessage, ChatMessageBubble, ChatRole, ChatSidebar,
     CommandProposalUi,

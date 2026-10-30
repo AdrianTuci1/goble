@@ -155,8 +155,10 @@ impl InternalHarness {
     /// Resume a turn that suspended on a command proposal, running the user's
     /// decision through the inner harness's command-review path.
     ///
-    /// Approve/Edit run the chosen text; Reject fails the tool call. The mapped
-    /// event stream is wrapped as a [`HarnessRun`], exactly as [`Self::resume`].
+    /// Approve/Edit run the chosen text; Reject fails the tool call. The mission
+    /// then continues with the command's outcome, so the model answers. The
+    /// mapped event stream is wrapped as a [`HarnessRun`], exactly as
+    /// [`Self::resume`].
     pub fn resume_command(
         &self,
         session_id: &SessionId,
@@ -164,8 +166,12 @@ impl InternalHarness {
     ) -> Option<HarnessRun> {
         Some(HarnessRun {
             events: map_stream(
-                self.harness
-                    .resume_command(&session_id.0, to_core_decision(decision)),
+                self.harness.resume_command(
+                    &session_id.0,
+                    to_core_decision(decision),
+                    &self.provider,
+                    &self.model,
+                ),
                 session_id,
             ),
         })

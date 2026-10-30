@@ -14,6 +14,7 @@ pub mod control;
 pub mod daemon;
 pub mod emulator;
 pub mod features;
+pub mod logging;
 pub mod media;
 pub mod projects;
 pub mod root_view;

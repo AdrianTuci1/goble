@@ -2,7 +2,7 @@ use crate::color::ColorU;
 use crate::elements::AppContext;
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::ColorToken;
-use goble_terminal::{Palette, ScreenColor, ScreenLine, Underline};
+use goble_terminal::{Palette, ScreenCell, ScreenLine};
 use super::block::TerminalBlock;
 use super::line::{TerminalLine, TerminalLineKind, TerminalRun};
 
@@ -112,12 +112,21 @@ impl TerminalData {
         meta: TerminalMeta,
         status: TerminalStatus,
     ) -> Self {
-        let mut section = Self::for_command(command, output, status).with_meta(meta);
-        // The command is drawn once, on the section's own `❯` line. A header
-        // title repeating it would say the same thing twice, so the header is
-        // only the block's context.
-        section.title = String::new();
-        section
+        Self::section_of(Self::for_command(command, output, status), meta)
+    }
+
+    /// The section a block's own screen draws: the same shape as
+    /// [`TerminalData::for_section`], but read from the cells the command
+    /// painted into rather than from its text, so the colours, backgrounds and
+    /// attributes survive into the drawn runs.
+    pub fn for_section_lines(
+        command: impl Into<String>,
+        output: &[ScreenLine],
+        palette: Palette,
+        meta: TerminalMeta,
+        status: TerminalStatus,
+    ) -> Self {
+        Self::section_of(Self::for_command_lines(command, output, palette, status), meta)
     }
 
     /// The block a command produces: the command line, then its output, with the
@@ -126,25 +135,51 @@ impl TerminalData {
     /// A command the agent ran and one that ran in the pane are the same block
     /// shape, so both are drawn by [`terminal_block`](super::block::terminal_block) — one block, one renderer.
     pub fn for_command(command: impl Into<String>, output: &str, status: TerminalStatus) -> Self {
+        Self::for_command_lines(
+            command,
+            &goble_terminal::ansi::render_lines(output.as_bytes()),
+            Palette::default(),
+            status,
+        )
+    }
+
+    /// The same block, from output the screen already parsed. The palette is
+    /// what the block was painted with, so the three default colours resolve the
+    /// way the pane's grid resolves them.
+    pub fn for_command_lines(
+        command: impl Into<String>,
+        output: &[ScreenLine],
+        palette: Palette,
+        status: TerminalStatus,
+    ) -> Self {
         let command = command.into();
         let mut lines = vec![TerminalLine::styled(
             command.clone(),
             TerminalLineKind::Command,
             command_runs(&command),
         )];
-        for line in goble_terminal::ansi::render_lines(output.as_bytes()) {
-            let text = line.text();
-            if text.is_empty() {
-                lines.push(TerminalLine::info(" "));
-            } else {
-                lines.push(TerminalLine::styled(
-                    text,
-                    TerminalLineKind::Output,
-                    output_runs(&line),
-                ));
-            }
-        }
+        lines.extend(output_lines(output, &palette));
         Self::new(command, lines).with_status(status)
+    }
+
+    /// A block of output with no command line of its own, read from cells: the
+    /// live screen a shell that has not delimited a block yet leaves behind.
+    pub fn from_output_lines(
+        title: impl Into<String>,
+        output: &[ScreenLine],
+        palette: Palette,
+        status: TerminalStatus,
+    ) -> Self {
+        Self::new(title, output_lines(output, &palette)).with_status(status)
+    }
+
+    fn section_of(mut section: Self, meta: TerminalMeta) -> Self {
+        section.meta = Some(meta);
+        // The command is drawn once, on the section's own `❯` line. A header
+        // title repeating it would say the same thing twice, so the header is
+        // only the block's context.
+        section.title = String::new();
+        section
     }
 
     /// A stable per-block key (title + line text) used to look up the block's
@@ -212,91 +247,160 @@ fn command_runs(command: &str) -> Vec<TerminalRun> {
     if lines.len() != 1 {
         return Vec::new();
     }
-    let mut runs = Vec::new();
+    let mut runs: Vec<TerminalRun> = Vec::new();
     for span in &lines[0] {
-        push_run(
-            &mut runs,
-            span.text.clone(),
-            Some(span.color),
-            span.weight == FontWeight::Bold,
-            span.italic,
-            false,
-        );
+        let run = TerminalRun {
+            text: span.text.clone(),
+            color: Some(span.color),
+            background: None,
+            bold: span.weight == FontWeight::Bold,
+            dim: false,
+            italic: span.italic,
+            underline: false,
+            strikeout: false,
+        };
+        push_run(&mut runs, run);
     }
     runs
 }
 
+/// A screen's output rows as the block draws them: each row's text and the runs
+/// its cells produced. A row that draws nothing is the single space the block
+/// keeps for a blank line, so the rows stay aligned with the block's text.
+fn output_lines(output: &[ScreenLine], palette: &Palette) -> Vec<TerminalLine> {
+    output
+        .iter()
+        .map(|line| {
+            let text = line.text();
+            let runs = output_runs(line, palette);
+            if text.is_empty() && runs.is_empty() {
+                TerminalLine::info(" ")
+            } else {
+                TerminalLine::styled(text, TerminalLineKind::Output, runs)
+            }
+        })
+        .collect()
+}
+
 /// A parsed output line's styled runs. A line that is entirely the terminal's
 /// default yields no runs, so the ordinary case is still drawn as one plain
-/// `Text` run and only coloured output changes.
-fn output_runs(line: &ScreenLine) -> Vec<TerminalRun> {
-    let palette = Palette::default();
-    let mut runs = Vec::new();
-    for cell in &line.cells {
+/// `Text` run and only styled output changes.
+///
+/// Adjacent cells of one style become one run, so a word, a coloured stretch or
+/// a background band is one draw; cells whose style differs split it. Wide
+/// characters keep their one glyph (the spacer cell that follows them carries
+/// no glyph of its own) and their advance comes from the font, so a TUI's box
+/// drawing and emoji keep the grid's shape.
+fn output_runs(line: &ScreenLine, palette: &Palette) -> Vec<TerminalRun> {
+    let mut runs: Vec<TerminalRun> = Vec::new();
+    let mut pending: Option<TerminalRun> = None;
+
+    let flush = |run: &mut Option<TerminalRun>, runs: &mut Vec<TerminalRun>| {
+        if let Some(run) = run.take() {
+            if !run.text.is_empty() {
+                push_run(runs, run);
+            }
+        }
+    };
+
+    // A row's trailing blanks paint nothing: the block's own background shows
+    // through them, and keeping them would draw a run of spaces on every line.
+    // A blank cell that carries a background or a rule is not trailing filler.
+    let end = line
+        .cells
+        .iter()
+        .rposition(|cell| paints(cell))
+        .map_or(0, |index| index + 1);
+
+    for cell in &line.cells[..end] {
         if cell.attrs.wide_spacer || cell.attrs.leading_wide_spacer {
             continue;
         }
+        let style = cell_run(cell, palette);
         let mut text = String::new();
         text.push(cell.ch);
-        for mark in &cell.zerowidth {
-            text.push(*mark);
+        text.extend(cell.zerowidth.iter());
+        match &mut pending {
+            Some(run) if run.same_style(&style) => run.text.push_str(&text),
+            _ => {
+                flush(&mut pending, &mut runs);
+                pending = Some(TerminalRun { text, ..style });
+            }
         }
-        push_run(
-            &mut runs,
-            text,
-            run_color(cell.fg, &palette),
-            cell.attrs.bold,
-            cell.attrs.italic,
-            cell.attrs.underline != Underline::None,
-        );
     }
+    flush(&mut pending, &mut runs);
+
     if runs.len() == 1 {
         let only = &runs[0];
-        if only.color.is_none() && !only.bold && !only.italic && !only.underline {
+        if only.color.is_none()
+            && only.background.is_none()
+            && !only.bold
+            && !only.dim
+            && !only.italic
+            && !only.underline
+            && !only.strikeout
+        {
             return Vec::new();
         }
     }
     runs
 }
 
-/// A cell's foreground as a painted colour. The terminal's default colours have
-/// no fixed value, so they are left to the renderer's theme.
-fn run_color(color: ScreenColor, palette: &Palette) -> Option<ColorU> {
-    if color.is_default() {
-        return None;
+/// Whether a cell draws anything at all: a glyph, a mark, a background or a
+/// rule. A blank cell of the terminal's own colours is not part of the row.
+fn paints(cell: &ScreenCell) -> bool {
+    if cell.attrs.wide_spacer || cell.attrs.leading_wide_spacer {
+        return false;
     }
-    let (r, g, b) = palette.rgb(color);
-    Some(ColorU::new(r, g, b, 255))
+    cell.ch != ' '
+        || !cell.zerowidth.is_empty()
+        || !cell.bg.is_default()
+        || cell.attrs.inverse
+        || cell.attrs.hidden
+        || cell.attrs.underline != goble_terminal::Underline::None
+        || cell.attrs.strikeout
+}
+
+/// A cell's drawn style. Inverse swaps the two colours; hidden paints the text
+/// in the background colour; dim darkens it. The three default colours have no
+/// fixed value, so they are left to the renderer's theme — except under inverse,
+/// where the theme's own foreground becomes the cell's background and has to be
+/// painted.
+fn cell_run(cell: &ScreenCell, palette: &Palette) -> TerminalRun {
+    let (foreground, background) = palette.cell_colors(cell);
+    let default_text = cell.fg.is_default()
+        && !cell.attrs.inverse
+        && !cell.attrs.dim
+        && !cell.attrs.hidden;
+    let default_background = cell.bg.is_default() && !cell.attrs.inverse;
+    TerminalRun {
+        text: String::new(),
+        color: (!default_text).then(|| rgb(foreground)),
+        background: (!default_background).then(|| rgb(background)),
+        bold: cell.attrs.bold,
+        dim: cell.attrs.dim,
+        italic: cell.attrs.italic,
+        underline: cell.attrs.underline != goble_terminal::Underline::None,
+        strikeout: cell.attrs.strikeout,
+    }
+}
+
+fn rgb((r, g, b): (u8, u8, u8)) -> ColorU {
+    ColorU::new(r, g, b, 255)
 }
 
 /// Append a run, merging it with the previous one when they share a style so a
 /// plain stretch of output stays one run.
-fn push_run(
-    runs: &mut Vec<TerminalRun>,
-    text: String,
-    color: Option<ColorU>,
-    bold: bool,
-    italic: bool,
-    underline: bool,
-) {
-    if text.is_empty() {
+fn push_run(runs: &mut Vec<TerminalRun>, mut run: TerminalRun) {
+    if run.text.is_empty() {
         return;
     }
     if let Some(last) = runs.last_mut() {
-        if last.color == color
-            && last.bold == bold
-            && last.italic == italic
-            && last.underline == underline
-        {
-            last.text.push_str(&text);
+        if last.same_style(&run) {
+            last.text.push_str(&run.text);
             return;
         }
     }
-    runs.push(TerminalRun {
-        text,
-        color,
-        bold,
-        italic,
-        underline,
-    });
+    run.text.shrink_to_fit();
+    runs.push(run);
 }

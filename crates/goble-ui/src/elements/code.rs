@@ -246,6 +246,12 @@ impl Element for Code {
         let Some(renderer) = ctx.renderer.as_mut() else {
             return;
         };
+        // A block scrolled out of its viewport paints nothing, and puts no run
+        // into the text atlas.
+        let size = self.size.unwrap_or_default();
+        if !renderer.visible(crate::geometry::rectf(origin.x, origin.y, size.x, size.y)) {
+            return;
+        }
         // The drawing wrap width is the one the layout measured at, so the drawn
         // lines break where the box was sized to break.
         let max_width = self.wrap_width;

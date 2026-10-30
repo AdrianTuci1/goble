@@ -20,9 +20,9 @@ mod overlays;
 mod sub_agent;
 
 pub(crate) use agent::build_agent_chat;
-pub(crate) use composer::build_terminal_composer;
+pub(crate) use composer::{build_pending_approval, build_terminal_composer};
 pub(crate) use header::{
-    build_agent_header, build_agent_header_with, HeaderSlots, HEADER_CONTROL_HEIGHT,
+    build_agent_header, build_agent_header_with, HeaderSlots, PaneHeading, HEADER_CONTROL_HEIGHT,
 };
 pub(crate) use overlays::{
     build_agent_error, build_chat_panel_overlay, build_onboarding_tip, build_workspace_choice,
@@ -45,8 +45,7 @@ fn chat_action_relay(
 
 /// This pane's own chat data, falling back to the global active view for a pane
 /// that somehow has no entry yet (so the first frame still reads sane values).
-fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneChatSnapshot {
-    state
+pub(crate) fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneChatSnapshot {    state
         .pane_chat
         .get(&pane_id)
         .cloned()
@@ -63,6 +62,10 @@ fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneChatSnapshot {
             pending_ask: state.pending_ask.clone(),
             pending_command: None,
             command_selection: Rc::new(RefCell::new(0)),
+            command_scroll: Rc::new(RefCell::new(goble_ui::ScrollState::default())),
+            command_draft: Rc::new(RefCell::new(String::new())),
+            command_caret: Rc::new(RefCell::new(0)),
+            command_editor_scroll: Rc::new(RefCell::new(goble_ui::ScrollState::default())),
             queued_prompt: state.queued_prompt.clone(),
             agent_busy: state.agent_busy,
             turn_status: goble_ui::TurnStatus::Idle,

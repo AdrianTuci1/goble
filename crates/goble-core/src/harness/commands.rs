@@ -39,7 +39,7 @@ pub(crate) async fn run_approved_command(
     line: &str,
 ) -> Result<String> {
     let line = expand_credential_refs(store, line)?;
-    runner.run(&line, &[]).await
+    runner.run_line(&line).await
 }
 
 pub(super) async fn run_command(

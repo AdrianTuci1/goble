@@ -29,7 +29,5 @@ mod tests;
 pub use tools::build_reasoning_tools;
 pub use types::{MissionState, PendingAsk, ReasoningDecision, ReasoningStep};
 
-pub use resume::resume_command_turn;
-
 pub(crate) use mission::run_mission_turn;
-pub(crate) use resume::resume_mission_turn;
+pub(crate) use resume::{resume_command_turn, resume_mission_turn};

@@ -117,6 +117,7 @@ pub(crate) fn run_child_turn<'a>(
                 tool_calls: None,
                 tool_call_id: None,
                 tool_status: None,
+                reasoning_content: None,
             },
             Message {
                 role: Role::User,
@@ -124,6 +125,7 @@ pub(crate) fn run_child_turn<'a>(
                 tool_calls: None,
                 tool_call_id: None,
                 tool_status: None,
+                reasoning_content: None,
             },
         ];
 
@@ -202,6 +204,7 @@ pub(crate) fn run_child_turn<'a>(
                     .then_some(response.tool_calls.clone()),
                 tool_call_id: None,
                 tool_status: None,
+                reasoning_content: None,
             });
 
             if response.tool_calls.is_empty() {
@@ -273,6 +276,7 @@ pub(crate) fn run_child_turn<'a>(
                     tool_calls: None,
                     tool_call_id: Some(call.id.clone()),
                     tool_status: Some(status),
+                    reasoning_content: None,
                 });
             }
         }

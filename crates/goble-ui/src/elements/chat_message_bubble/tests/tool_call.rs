@@ -10,7 +10,7 @@ use crate::geometry::vec2f;
 use crate::render::RenderCommand;
 use crate::test_util::render_element;
 use crate::platform::text_atlas::FontWeight;
-use crate::theme::{ColorToken, FontFamily};
+use crate::theme::ColorToken;
 use goble_core::harness::ToolCallStatus;
 use goble_core::harness::{tool_kind_for, tool_row, ToolKind};
 use super::*;
@@ -141,7 +141,7 @@ fn expanded_generic_tool_call_draws_its_result_and_never_prints_json() {
     );
     assert_eq!(
         drawn_row_texts(&commands),
-        vec!["┃ ◆ list_entities agent".to_string(), "2 entities".to_string()],
+        vec!["◆ list_entities agent".to_string(), "2 entities".to_string()],
         "the row and its result are the whole body, got {texts:?}"
     );
     assert!(
@@ -585,7 +585,7 @@ fn expanded_read_draws_a_gutter_and_highlighted_lines_on_a_band() {
 
     // The body is highlighted, not one muted blob: drop the gutter and the
     // header's own runs and require more than one code colour.
-    let header = ["┃ ", "◆ ", "Read ", "src/lib.rs"];
+    let header = ["◆ ", "Read ", "src/lib.rs"];
     let body_colours: std::collections::HashSet<ColorU> = commands
         .iter()
         .filter_map(|c| match c {
@@ -926,32 +926,81 @@ fn web_search_call_shows_the_query_and_its_sources() {
     );
 }
 
-/// A call that is open draws the rail down its left edge; a folded one draws
-/// none. The rail is what says the rows under a header belong to that call, so
-/// a folded row is one line with nothing hanging off it.
+/// A tool row starts where prose starts: no left rail, in either fold, and
+/// the mark is the row's first run. The row and its body read as part of the
+/// reply rather than as a nested block.
 #[test]
-fn the_rail_is_drawn_only_while_the_call_is_open() {
-    let call = || {
-        call(
+fn a_tool_row_aligns_with_the_text_around_it() {
+    let app = AppContext::default();
+    for mode in [ToolDisplayMode::Collapsed, ToolDisplayMode::Expanded] {
+        let key = tool_fold_key(
+            &call(
+                "read_file",
+                r#"{"path":"src/lib.rs"}"#,
+                ToolCallStatus::Finished,
+                Some("fn main() {}\n"),
+            ),
+            0,
+        );
+        let mut bubble = ChatMessageBubble::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Prose starts here.")],
+        )
+        .with_tool_calls(vec![call(
             "read_file",
             r#"{"path":"src/lib.rs"}"#,
             ToolCallStatus::Finished,
             Some("fn main() {}\n"),
-        )
-    };
-    let (folded, _) = paint_tool_calls(vec![call()]);
-    assert!(
-        !drawn_texts(&folded).iter().any(|t| t == "┃ "),
-        "a folded call draws no rail"
-    );
+        )])
+        .with_tool_fold(Rc::new(RefCell::new(HashMap::from([(key, mode)]))));
+        bubble.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx
+            .renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default();
 
-    let (open, _) = paint_tool_calls_with_fold(vec![call()], Some(ToolDisplayMode::Expanded));
-    let rail = text_runs(&open)
-        .into_iter()
-        .find(|(text, _, _, _)| text == "┃ ")
-        .expect("an open call draws its rail");
-    assert_eq!(rail.2, FontFamily::Mono, "the rail is a mono cell");
-    assert_eq!(rail.3, 13.0, "the rail is drawn at the row's own size");
+        let origin_x = |prefix: &str| {
+            commands.iter().find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text.starts_with(prefix) => {
+                    Some(origin.x)
+                }
+                _ => None,
+            })
+        };
+        let prose = origin_x("Prose starts here.").expect("the prose is drawn");
+        let mark = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text.starts_with("◆ ") || text.starts_with("◈ ") =>
+                {
+                    Some(origin.x)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "{mode:?}: the row's mark is drawn: {:?}",
+                    drawn_texts(&commands)
+                )
+            });
+        assert!(
+            (mark - prose).abs() < 0.5,
+            "{mode:?}: the tool row starts in the prose column, but the mark is at {mark} and prose at {prose}"
+        );
+        assert!(
+            !drawn_texts(&commands).iter().any(|text| text == "┃ "),
+            "{mode:?} row draws no rail: {:?}",
+            drawn_texts(&commands)
+        );
+    }
 }
 
 /// The state is the mark's colour, and it is dimmed while the call is folded.
@@ -1220,9 +1269,12 @@ fn tool_rows_underline_nothing_they_did_not_receive() {
         runs: vec![TerminalRun {
             text: "underlined".to_string(),
             color: None,
+            background: None,
             bold: false,
+            dim: false,
             italic: false,
             underline: true,
+            strikeout: false,
         }],
     };
     let spans = crate::elements::chat_message_bubble::tool_body::output_spans(

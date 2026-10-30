@@ -104,7 +104,18 @@ impl UiState {
                 crate::state::display_path(&event.cwd),
             ));
             rt.command_selection = Some(Rc::new(RefCell::new(0)));
+            *rt.command_scroll.borrow_mut() = goble_ui::ScrollState::default();
+            // The card opens on the first candidate, ready to run or edit.
+            let first = event.candidates.first().cloned().unwrap_or_default();
+            *rt.command_caret.borrow_mut() = first.chars().count();
+            *rt.command_draft.borrow_mut() = first;
+            *rt.command_editor_scroll.borrow_mut() = goble_ui::ScrollState::default();
             rt.agent_state = PaneAgentState::NeedsInput;
+        }
+        // The card takes the keyboard when it appears: Enter approves the
+        // command until the user clicks the composer to queue a follow-up.
+        if pane_id == self.active_pane_id {
+            self.composer_focused = false;
         }
         self.raise_inbox(
             pane_id,
@@ -175,8 +186,7 @@ impl UiState {
         let rt = self.pane_runtime.entry(pane_id).or_default();
         rt.busy = false;
         rt.turn_started_at = None;
-        rt.pending_command = None;
-        rt.command_selection = None;
+        rt.reset_command_edit();
         rt.agent_state = PaneAgentState::Idle;
     }
 
@@ -186,8 +196,7 @@ impl UiState {
     pub fn clear_command_proposal(&mut self, pane_id: u64, proposal_id: &str) {
         if let Some(rt) = self.pane_runtime.get_mut(&pane_id) {
             if rt.pending_command.as_ref().map(|p| p.id.as_str()) == Some(proposal_id) {
-                rt.pending_command = None;
-                rt.command_selection = None;
+                rt.reset_command_edit();
                 // The decision resumes the suspended turn; without a further
                 // signal the pane is simply running its turn again.
                 if rt.agent_state == PaneAgentState::NeedsInput {
@@ -230,8 +239,7 @@ impl UiState {
             if still_pending {
                 rt.agent_state = PaneAgentState::NeedsInput;
             } else {
-                rt.pending_command = None;
-                rt.command_selection = None;
+                rt.reset_command_edit();
                 rt.agent_state = match &outcome {
                     TurnOutcome::Success => {
                         rt.turn_error = None;

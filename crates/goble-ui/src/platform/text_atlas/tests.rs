@@ -1,7 +1,7 @@
 use super::*;
 use crate::theme::FontFamily;
 
-use super::atlas::{text_key, AtlasStore, Placement, ATLAS_SIZE, PADDING};
+use super::atlas::{pack, text_key, AtlasStore, Placement, ATLAS_SIZE, PADDING};
 use super::fonts::{advance_width, font_set, measure_uncached, rasterize_text};
 
 #[test]
@@ -399,6 +399,54 @@ fn clearing_the_atlas_wipes_the_pixels_it_held() {
     assert!(
         !gutter_has_ink(store.pixels(), region),
         "the run placed after a reset sits on ink the clear did not wipe"
+    );
+}
+
+/// A frame that overflows the atlas keeps the runs drawn last — the window's
+/// chrome — and drops the scrollback that filled it. Restarting the placement
+/// from the first run instead would keep the scrollback and leave the chrome
+/// with no text at all, which is exactly how a long `docker -h` broke the UI.
+#[test]
+fn an_overflowing_frame_keeps_the_chrome_drawn_last() {
+    let mut store = AtlasStore::for_test(128);
+    let mut keys: Vec<_> = (0..12)
+        .map(|index| {
+            text_key(
+                &format!("line {index}"),
+                14.0,
+                FontWeight::Regular,
+                FontFamily::Mono,
+                false,
+                f32::INFINITY,
+                1.3,
+            )
+        })
+        .collect();
+    let chrome = text_key(
+        "Settings",
+        12.0,
+        FontWeight::Regular,
+        FontFamily::System,
+        false,
+        f32::INFINITY,
+        1.2,
+    );
+    keys.push(chrome.clone());
+
+    let (restarted, placed) = pack(&mut store, &keys);
+
+    assert!(restarted, "the frame must overflow the test atlas");
+    assert!(
+        store.contains(&chrome),
+        "the chrome drawn last must be placed"
+    );
+    assert!(
+        !store.contains(&keys[0]),
+        "the earliest scrollback run is the one dropped"
+    );
+    assert!(
+        !placed.is_empty(),
+        "the pass after the clear uploads its runs"
     );
 }
 

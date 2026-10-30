@@ -249,6 +249,52 @@ fn test_chat_messages() {
     assert_eq!(msgs[0].2, "hello");
 }
 
+/// A thinking model's chain of thought is stored beside its assistant message
+/// and only read back for the messages that carried one.
+#[test]
+fn chat_messages_keep_the_reasoning_content_they_came_with() {
+    let store = Store::open_in_memory().unwrap();
+    store
+        .insert_chat(
+            "c1",
+            "Test",
+            None,
+            None,
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z",
+        )
+        .unwrap();
+    store
+        .insert_chat_message(
+            "m1",
+            "c1",
+            "assistant",
+            "It is clean.",
+            None,
+            "2024-01-01T00:00:01Z",
+        )
+        .unwrap();
+    store
+        .insert_chat_message("m2", "c1", "user", "thanks", None, "2024-01-01T00:00:02Z")
+        .unwrap();
+    store
+        .set_chat_message_reasoning("m1", "The file has no warnings.")
+        .unwrap();
+
+    let reasoning = store.list_chat_message_reasoning("c1").unwrap();
+
+    assert_eq!(
+        reasoning.get("m1").map(String::as_str),
+        Some("The file has no warnings.")
+    );
+    assert!(
+        !reasoning.contains_key("m2"),
+        "a row without thinking is absent from the map"
+    );
+    // The reply itself is untouched: the thinking lives beside it, not in it.
+    assert_eq!(store.list_chat_messages("c1").unwrap()[0].2, "It is clean.");
+}
+
 #[test]
 fn test_mcp_server_crud() {
     let store = Store::open_in_memory().unwrap();

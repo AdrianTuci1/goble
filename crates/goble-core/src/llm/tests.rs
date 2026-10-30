@@ -160,8 +160,9 @@ fn failed_tool_message_carries_a_failure_marker_on_the_wire() {
         tool_calls: None,
         tool_call_id: Some("call_1".to_string()),
         tool_status: Some(ToolCallStatus::Error),
+        reasoning_content: None,
     };
-    let wire = into_openai_messages(vec![message]);
+    let wire = into_openai_messages(vec![message], false);
     assert_eq!(
         wire[0].content.as_deref(),
         Some("[tool call failed]\nunknown tool")
@@ -177,7 +178,81 @@ fn a_successful_tool_message_is_sent_as_its_body() {
         tool_calls: None,
         tool_call_id: Some("call_1".to_string()),
         tool_status: Some(ToolCallStatus::Finished),
+        reasoning_content: None,
     };
-    let wire = into_openai_messages(vec![message]);
+    let wire = into_openai_messages(vec![message], false);
     assert_eq!(wire[0].content.as_deref(), Some("ok"));
+}
+
+/// DeepSeek's thinking mode checks the field on every replayed assistant
+/// message: a tool-call turn carries the empty string, and a reply that ended
+/// the turn carries the chain of thought it streamed. Without it the next
+/// request fails with "the reasoning_content must be passed back".
+#[test]
+fn a_deepseek_turn_echoes_its_reasoning_content() {
+    let tool_turn = Message {
+        role: Role::Assistant,
+        content: "Checking.".to_string(),
+        tool_calls: Some(vec![LlmToolCall {
+            id: "call_1".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "src/lib.rs"}),
+        }]),
+        tool_call_id: None,
+        tool_status: None,
+        reasoning_content: Some("I should read the file.".to_string()),
+    };
+    let answer = Message {
+        role: Role::Assistant,
+        content: "It is clean.".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        tool_status: None,
+        reasoning_content: Some("The file has no warnings.".to_string()),
+    };
+
+    let wire = into_openai_messages(vec![tool_turn, answer], true);
+
+    assert_eq!(
+        wire[0].reasoning_content.as_deref(),
+        Some(""),
+        "a tool-call turn carries the empty string DeepSeek requires"
+    );
+    assert_eq!(
+        wire[1].reasoning_content.as_deref(),
+        Some("The file has no warnings."),
+        "the answer echoes the thinking it streamed"
+    );
+}
+
+#[test]
+fn a_non_thinking_provider_is_sent_no_reasoning_field() {
+    let answer = Message {
+        role: Role::Assistant,
+        content: "Done.".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        tool_status: None,
+        reasoning_content: Some("private thinking".to_string()),
+    };
+
+    let wire = into_openai_messages(vec![answer], false);
+
+    assert_eq!(wire[0].reasoning_content, None);
+}
+
+#[test]
+fn a_stream_delta_carries_the_thinking_separately_from_the_reply() {
+    let json = serde_json::json!({
+        "choices": [{
+            "delta": { "content": "hi", "reasoning_content": "weighing it" },
+            "finish_reason": null
+        }]
+    });
+    let chunk: OpenAiStreamChunk = serde_json::from_value(json).unwrap();
+    assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("hi"));
+    assert_eq!(
+        chunk.choices[0].delta.reasoning_content.as_deref(),
+        Some("weighing it")
+    );
 }

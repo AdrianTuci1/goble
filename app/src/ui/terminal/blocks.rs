@@ -3,7 +3,8 @@
 use std::time::Duration;
 
 use goble_terminal::blocks::BlockView;
-use goble_ui::elements::{TerminalData, TerminalLine, TerminalMeta, TerminalStatus};
+use goble_terminal::{Palette, ScreenLine};
+use goble_ui::elements::{TerminalData, TerminalMeta, TerminalStatus};
 
 use crate::emulator::VisibleBlock;
 use crate::terminal::TerminalSession;
@@ -23,30 +24,28 @@ pub fn executed_command_block(session: &TerminalSession) -> Option<TerminalData>
     // belongs in the block's header. The newest block with a command is the
     // block this view draws, streaming as its output grows.
     if session.is_bootstrapped() {
-        return session
-            .visible_blocks(&BlockView::Terminal)
+        let view = BlockView::Terminal;
+        let block = session
+            .visible_blocks(&view)
             .into_iter()
             .rev()
-            .find(|block| block.card.is_none() && !block.command.trim().is_empty())
-            .and_then(|block| section_data(&block));
+            .find(|block| block.card.is_none() && !block.command.trim().is_empty())?;
+        let cells = session.block_output_lines_of(block.id);
+        return section_data_with(&block, cells.as_deref(), session.palette());
     }
 
-    let snapshot = session.snapshot(48);
-    if snapshot.lines.is_empty() {
+    // A shell that has not delimited a block yet: the live screen is the block,
+    // and its rows keep the colours the programs on it painted.
+    let mut rows = session.view().rows;
+    while rows.last().is_some_and(ScreenLine::is_blank) {
+        rows.pop();
+    }
+    if rows.len() > 48 {
+        rows.drain(..rows.len() - 48);
+    }
+    if rows.is_empty() {
         return None;
     }
-    let lines = snapshot
-        .lines
-        .iter()
-        .map(|line| {
-            let text = line.trim_end().to_string();
-            if text.is_empty() {
-                TerminalLine::info(" ")
-            } else {
-                TerminalLine::output(text)
-            }
-        })
-        .collect();
     // The live screen belongs to the newest command, and a finished command
     // leaves an empty prompt block behind it, so the block to read is the
     // newest one that actually carries a command.
@@ -56,7 +55,12 @@ pub fn executed_command_block(session: &TerminalSession) -> Option<TerminalData>
         .rev()
         .find(|block| block.card.is_none() && !block.command.is_empty())
         .map_or(TerminalStatus::Success, |block| block_status(&block));
-    Some(TerminalData::new("terminal", lines).with_status(status))
+    Some(TerminalData::from_output_lines(
+        "terminal",
+        &rows,
+        session.palette(),
+        status,
+    ))
 }
 
 /// The status a block draws, read from its lifecycle and exit code rather than
@@ -79,6 +83,28 @@ pub(super) fn block_status(block: &VisibleBlock) -> TerminalStatus {
 /// card (drawn as a card) or one of the shell's own prompt blocks, which the
 /// block view hides rather than draws as an empty section.
 pub fn section_data(block: &VisibleBlock) -> Option<TerminalData> {
+    section_data_with(block, None, Palette::xterm())
+}
+
+/// The same section, with the block's own output cells: the command's screen
+/// keeps the colours, backgrounds and attributes the program painted, and the
+/// plain [`VisibleBlock::output`] text has already lost them.
+///
+/// `palette` is the palette the block was painted with, so a cell that asked for
+/// one of the three default colours resolves the way the pane's grid does.
+pub fn styled_section_data(
+    block: &VisibleBlock,
+    output: &[ScreenLine],
+    palette: Palette,
+) -> Option<TerminalData> {
+    section_data_with(block, Some(output), palette)
+}
+
+fn section_data_with(
+    block: &VisibleBlock,
+    output: Option<&[ScreenLine]>,
+    palette: Palette,
+) -> Option<TerminalData> {
     let command = block.command.trim_end();
     if block.card.is_some() || command.is_empty() {
         return None;
@@ -95,12 +121,16 @@ pub fn section_data(block: &VisibleBlock) -> Option<TerminalData> {
     if let Some(duration) = block.duration {
         meta = meta.with_duration(duration_text(duration));
     }
-    Some(TerminalData::for_section(
-        command,
-        &block.output,
-        meta,
-        block_status(block),
-    ))
+    Some(match output {
+        Some(lines) => TerminalData::for_section_lines(
+            command,
+            lines,
+            palette,
+            meta,
+            block_status(block),
+        ),
+        None => TerminalData::for_section(command, &block.output, meta, block_status(block)),
+    })
 }
 
 /// A command's duration the way warp's block label writes it: seconds under a

@@ -12,9 +12,9 @@ use std::rc::Rc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
-    AskUserUi, CommandProposalUi, DiffSummary, Element, PanelScroll, Point, PopupMenuItem,
-    ScrollState, SelectableText, ShortcutHint, SlashMenuItem, TerminalFilter, TranscriptSelection,
-    TurnStatus,
+    ApprovalMode, AskUserUi, CommandProposalUi, DiffSummary, Element, PanelScroll, Point,
+    PopupMenuItem, ScrollState, SelectableText, ShortcutHint, SlashMenuItem, TerminalFilter,
+    TranscriptSelection, TurnStatus,
 };
 use crate::geometry::{RectF, Vector2F};
 use crate::vim::{Clipboard, VimState};
@@ -127,6 +127,13 @@ pub struct ChatView {
     composer_harness_items: Vec<PopupMenuItem>,
     composer_harness_menu_open: Rc<RefCell<bool>>,
     on_select_harness_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    /// The pane's approval mode, drawn next to the model select. `None` on a
+    /// surface with no agent turn to police; an agent view always has one.
+    composer_approval_mode: Option<ApprovalMode>,
+    /// The approval-mode menu's app-owned open flag, and the callback a picked
+    /// or cycled mode goes through.
+    composer_approval_menu_open: Rc<RefCell<bool>>,
+    on_select_approval_mode: Option<Rc<RefCell<dyn FnMut(ApprovalMode) + 'static>>>,
     composer_dir_items: Vec<PopupMenuItem>,
     composer_dir_menu_open: Rc<RefCell<bool>>,
     composer_dir_menu_scroll: PanelScroll,
@@ -149,13 +156,23 @@ pub struct ChatView {
     pending_ask: Option<AskUserUi>,
     on_answer_ask: Option<Rc<RefCell<dyn FnMut(String, Option<(String, String)>) + 'static>>>,
     on_skip_ask: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
-    /// The command the harness suspended on for approval (A6/R1). While set, the
-    /// composer draws the proposal card and its editor holds the selected
-    /// candidate as the in-place edit surface.
+    /// The command the harness suspended on for approval (A6/R1). While set, an
+    /// approval card closes the agent's output and the composer's keys answer
+    /// the proposal until the user decides.
     composer_proposal: Option<CommandProposalUi>,
     /// The selected candidate index. App-owned so the choice survives the
-    /// per-frame composer rebuild.
+    /// per-frame rebuild.
     composer_proposal_selection: Rc<RefCell<usize>>,
+    /// The approval card's command viewport. App-owned for the same reason: a
+    /// long command or candidate list keeps the position the user scrolled it
+    /// to.
+    composer_proposal_scroll: Rc<RefCell<ScrollState>>,
+    /// The approval card's editable command: its text, the caret and the
+    /// viewport the field scrolls in. App-owned so a command the user edits
+    /// survives the per-frame rebuild.
+    composer_proposal_draft: Rc<RefCell<String>>,
+    composer_proposal_caret: Rc<RefCell<usize>>,
+    composer_proposal_editor_scroll: Rc<RefCell<ScrollState>>,
     on_command_decision: Option<Rc<RefCell<dyn FnMut(String, CommandDecision) + 'static>>>,
     /// A prompt the user sent while the agent was running, queued (not
     /// interrupted) and shown inline as a pending block (warp-new model).
@@ -246,6 +263,9 @@ impl ChatView {
             composer_harness_items: Vec::new(),
             composer_harness_menu_open: Rc::new(RefCell::new(false)),
             on_select_harness_item: None,
+            composer_approval_mode: None,
+            composer_approval_menu_open: Rc::new(RefCell::new(false)),
+            on_select_approval_mode: None,
             composer_dir_items: Vec::new(),
             composer_dir_menu_open: Rc::new(RefCell::new(false)),
             composer_dir_menu_scroll: PanelScroll::default(),
@@ -268,6 +288,10 @@ impl ChatView {
             on_skip_ask: None,
             composer_proposal: None,
             composer_proposal_selection: Rc::new(RefCell::new(0)),
+            composer_proposal_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            composer_proposal_draft: Rc::new(RefCell::new(String::new())),
+            composer_proposal_caret: Rc::new(RefCell::new(0)),
+            composer_proposal_editor_scroll: Rc::new(RefCell::new(ScrollState::default())),
             on_command_decision: None,
             queued_prompt: None,
             on_send_queued: None,

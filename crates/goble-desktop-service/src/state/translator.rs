@@ -314,6 +314,13 @@ impl DesktopState {
                 // A terminal error is its own report (the following
                 // `TraceFinished` says only that the turn failed), so the app
                 // can carry the message into its inbox and pane state.
+                //
+                // The same message goes to the log store and the process log:
+                // an LLM rejection (a 400 explaining a malformed request, an
+                // expired key) is the one failure whose reason only exists in
+                // this text, and the pane's inline error is not a record.
+                log::error!("chat {} failed: {message}", session_id.0);
+                self.add_log(format!("chat {} failed: {message}", session_id.0));
                 self.emit(
                     "chat:error",
                     serde_json::json!({ "chat_id": session_id.0, "message": message }),

@@ -60,6 +60,14 @@ struct TerminalView {
     /// The shared rich input bar pinned to the bottom of the pane, taken by the
     /// frame that draws it (the tree is rebuilt from scratch every frame).
     bar: Option<Box<dyn Element>>,
+    /// The approval card for a command this pane's harness is suspended on,
+    /// drawn at the end of the shell's output with the height the pane reserved
+    /// for it. Taken by the frame that draws it, like the bar.
+    approval: Option<(Box<dyn Element>, f32)>,
+    /// Whether a command approval is waiting, read before the card is handed
+    /// to the tree. While it waits the card owns the keyboard: the shell bar
+    /// and the pty get no keys.
+    approval_pending: bool,
     /// Why the pane last refused the switch into agent mode, when it refused.
     /// The pane stayed on its shell, so the reason is drawn over that shell —
     /// the chord never does nothing silently. Taken by the frame that draws it,

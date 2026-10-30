@@ -201,8 +201,7 @@ impl UiState {
             if let Some(rt) = self.pane_runtime.get_mut(&self.active_pane_id) {
                 rt.messages.clear();
                 rt.pending_ask = None;
-                rt.pending_command = None;
-                rt.command_selection = None;
+                rt.reset_command_edit();
                 rt.queued_prompt = None;
             }
             self.sync_active_view();
@@ -374,6 +373,18 @@ impl UiState {
                     command_selection: rt
                         .and_then(|r| r.command_selection.clone())
                         .unwrap_or_else(|| Rc::new(RefCell::new(0))),
+                    command_scroll: rt
+                        .map(|r| r.command_scroll.clone())
+                        .unwrap_or_else(|| Rc::new(RefCell::new(goble_ui::ScrollState::default()))),
+                    command_draft: rt
+                        .map(|r| r.command_draft.clone())
+                        .unwrap_or_else(|| Rc::new(RefCell::new(String::new()))),
+                    command_caret: rt
+                        .map(|r| r.command_caret.clone())
+                        .unwrap_or_else(|| Rc::new(RefCell::new(0))),
+                    command_editor_scroll: rt
+                        .map(|r| r.command_editor_scroll.clone())
+                        .unwrap_or_else(|| Rc::new(RefCell::new(goble_ui::ScrollState::default()))),
                     queued_prompt: rt.and_then(|r| r.queued_prompt.clone()),
                     agent_busy: rt.map(|r| r.busy).unwrap_or(false),
                     turn_status: pane_turn_status(
@@ -593,6 +604,11 @@ impl UiState {
     pub fn adopt_reported_cwds(&mut self) {
         let moves: Vec<(u64, String)> = {
             let mut terminal = self.terminal.borrow_mut();
+            // Every live shell reads its pty here, before a surface is built:
+            // the harness's shell tool is serviced by these pumps, and a pane
+            // that draws its agent view (or sits in a background tab) still
+            // owns the shell its commands run in.
+            terminal.pump_sessions();
             terminal
                 .sessions
                 .iter_mut()

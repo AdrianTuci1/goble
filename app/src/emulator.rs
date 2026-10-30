@@ -378,6 +378,29 @@ impl Emulator {
             .collect()
     }
 
+    /// The output rows of every block `view` draws, keyed by block id, with the
+    /// cells the command painted into rather than their flattened text.
+    ///
+    /// [`VisibleBlock::output`] is plain text: it is what a copy, a filter and a
+    /// tool result read. A block that is *drawn* needs the colours, backgrounds
+    /// and attributes too, and those only exist in the block's own screen.
+    pub fn block_output_lines(
+        &self,
+        view: &BlockView,
+    ) -> std::collections::HashMap<BlockId, Vec<ScreenLine>> {
+        self.blocks
+            .visible_blocks(view)
+            .into_iter()
+            .map(|block| (block.id(), block.output_lines()))
+            .collect()
+    }
+
+    /// The output rows of one block, cells and all. `None` for an id the list
+    /// no longer holds.
+    pub fn block_output_lines_of(&self, id: BlockId) -> Option<Vec<ScreenLine>> {
+        self.blocks.get(id).map(Block::output_lines)
+    }
+
     /// Push the card standing for `conversation_id` into the block list, or
     /// return the one already there.
     ///

@@ -14,6 +14,10 @@ pub struct Chip {
     state: InteractiveState,
     disabled: bool,
     selected: bool,
+    /// Whether the chip adds the padding that makes it a stand-alone control.
+    /// A chip that is only a hit target around a row of text turns this off, so
+    /// the row stays where the text around it starts.
+    padded: bool,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -26,9 +30,19 @@ impl Chip {
             state: InteractiveState::default(),
             disabled: false,
             selected: false,
+            padded: true,
             on_click: None,
             size: None,
             origin: None,
+        }
+    }
+
+    /// A chip with no padding: a click target around a row that is part of the
+    /// surrounding text, not a control standing on its own.
+    pub fn flat(child: Box<dyn Element>) -> Self {
+        Self {
+            padded: false,
+            ..Self::new(child)
         }
     }
 
@@ -48,11 +62,19 @@ impl Chip {
     }
 
     fn horizontal_padding(&self, app: &AppContext) -> f32 {
-        app.theme.spacing_px(SpacingToken::Md)
+        if self.padded {
+            app.theme.spacing_px(SpacingToken::Md)
+        } else {
+            0.0
+        }
     }
 
     fn vertical_padding(&self, app: &AppContext) -> f32 {
-        app.theme.spacing_px(SpacingToken::Xs)
+        if self.padded {
+            app.theme.spacing_px(SpacingToken::Xs)
+        } else {
+            0.0
+        }
     }
 }
 

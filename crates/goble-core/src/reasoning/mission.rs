@@ -70,6 +70,7 @@ fn parse_reasoning_tool_calls(
 /// Run one harness turn. Crate-private: it takes the crate-private
 /// [`SubAgentHost`] a `spawn_subagent` call registers its child with, and only
 /// `Harness::run_turn` drives it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_mission_turn(
     store: Store,
     runner: Arc<dyn crate::harness::CommandRunner>,
@@ -101,7 +102,57 @@ pub(crate) fn run_mission_turn(
             yield HarnessEvent::Error(e.to_string());
             return;
         }
+        // The rest of the turn does not care that the prompt just arrived: a
+        // command approval resumes the very same mission, with the tool result
+        // already in its history and no new user message to add.
+        let mut inner = run_mission(
+            store,
+            runner,
+            llm,
+            deploy_sender,
+            mcp_manager,
+            cancel,
+            workspace_dir,
+            docs_dir,
+            chat_id,
+            prompt,
+            provider,
+            model,
+            reasoning_enabled,
+            auto_approve,
+            web_search,
+            subagents,
+        );
+        while let Some(event) = inner.next().await {
+            yield event;
+        }
+    })
+}
 
+/// Advance an existing mission from its persisted state, without adding a user
+/// message. A new turn reaches this through [`run_mission_turn`]; a resumed
+/// command reaches it directly, so the model sees the command's result and
+/// answers instead of the turn ending on the approval.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_mission(
+    store: Store,
+    runner: Arc<dyn crate::harness::CommandRunner>,
+    llm: Arc<dyn LlmProvider>,
+    deploy_sender: Option<Arc<dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync>>,
+    mcp_manager: McpManager,
+    cancel: Arc<AtomicBool>,
+    workspace_dir: std::path::PathBuf,
+    docs_dir: std::path::PathBuf,
+    chat_id: String,
+    prompt: String,
+    provider: String,
+    model: String,
+    reasoning_enabled: bool,
+    auto_approve: bool,
+    web_search: WebSearchConfig,
+    subagents: SubAgentHost,
+) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
+    Box::pin(async_stream::stream! {
         let mut mission = match load_or_create_mission(&store, &chat_id, &prompt) {
             Ok(m) => m,
             Err(e) => {
@@ -127,7 +178,7 @@ pub(crate) fn run_mission_turn(
         tools.push(McpManager::generic_mcp_call_tool());
 
         let reasoning_tools = build_reasoning_tools();
-        let enable_reasoning = reasoning_enabled && (is_orchestration_goal(&prompt) || !mission.reasoning_steps.is_empty() || mission.pending_ask.is_some());
+        let enable_reasoning = reasoning_enabled && (is_orchestration_goal(&mission.goal) || !mission.reasoning_steps.is_empty() || mission.pending_ask.is_some());
 
         let mut reasoning_step = 0usize;
         let mut pending_decision = ReasoningDecision::Execute;
@@ -171,6 +222,9 @@ pub(crate) fn run_mission_turn(
                             content.push_str(&delta);
                             yield HarnessEvent::ReasoningDelta(delta);
                         }
+                        // The planning reply is read as JSON; a thinking
+                        // model's chain of thought is not part of that plan.
+                        CompletionStreamEvent::ReasoningDelta(_) => {}
                         CompletionStreamEvent::ToolCalls(calls) => {
                             tool_calls = calls;
                         }
@@ -303,6 +357,7 @@ pub(crate) fn run_mission_turn(
                 tool_calls: None,
                 tool_call_id: None,
                 tool_status: None,
+                reasoning_content: None,
             });
 
             let request = CompletionRequest::new(provider.clone(), model.clone())
@@ -319,6 +374,11 @@ pub(crate) fn run_mission_turn(
             };
 
             let mut assistant_content = String::new();
+            // The thinking model's chain of thought for this reply. DeepSeek
+            // rejects the iteration that follows when the assistant turn it
+            // just answered is replayed without it, so it is stored beside the
+            // message as it streams.
+            let mut assistant_reasoning = String::new();
             let mut tool_calls = Vec::new();
             // Stream the assistant reply into a single chat message row as deltas
             // arrive, so the renderer can show it progressively instead of only at
@@ -358,6 +418,9 @@ pub(crate) fn run_mission_turn(
                         }
                         yield HarnessEvent::AssistantDelta(delta);
                     }
+                    CompletionStreamEvent::ReasoningDelta(delta) => {
+                        assistant_reasoning.push_str(&delta);
+                    }
                     CompletionStreamEvent::ToolCalls(calls) => {
                         tool_calls = calls;
                     }
@@ -372,6 +435,15 @@ pub(crate) fn run_mission_turn(
                     CompletionStreamEvent::Done => break,
                     CompletionStreamEvent::Error(message) => {
                         yield HarnessEvent::Error(message);
+                        return;
+                    }
+                }
+            }
+
+            if !assistant_reasoning.is_empty() {
+                if let Some(id) = &assistant_msg_id {
+                    if let Err(e) = store.set_chat_message_reasoning(id, &assistant_reasoning) {
+                        yield HarnessEvent::Error(e.to_string());
                         return;
                     }
                 }
@@ -418,6 +490,17 @@ pub(crate) fn run_mission_turn(
                     assistant_msg_id = Some(id);
                 }
             }
+            // A reply that carried only calls and thinking has no message row
+            // until the block above creates one; its chain of thought is
+            // stored now, with the calls it planned.
+            if !assistant_reasoning.is_empty() {
+                if let Some(id) = &assistant_msg_id {
+                    if let Err(e) = store.set_chat_message_reasoning(id, &assistant_reasoning) {
+                        yield HarnessEvent::Error(e.to_string());
+                        return;
+                    }
+                }
+            }
 
             for (index, call) in tool_calls.iter().enumerate() {
                 if cancel.load(Ordering::Relaxed) {
@@ -452,6 +535,19 @@ pub(crate) fn run_mission_turn(
                         }
                     };
                     let message_id = assistant_msg_id.clone().unwrap_or_default();
+                    // The model planned this whole batch in one assistant
+                    // message, and this call suspends the batch: the calls after
+                    // it never run. Drop their records, or the message would
+                    // carry `tool_calls` with no tool responses and every later
+                    // model request would be rejected. The continuation
+                    // re-plans them from this command's result.
+                    call_records.truncate(index + 1);
+                    if let Some(id) = &assistant_msg_id {
+                        if let Err(e) = persist_tool_call_records(&store, id, &call_records) {
+                            yield HarnessEvent::Error(e.to_string());
+                            return;
+                        }
+                    }
                     if let Err(e) = store.insert_pending_command(
                         &call.id,
                         &chat_id,

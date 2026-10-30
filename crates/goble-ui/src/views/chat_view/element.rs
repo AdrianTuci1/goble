@@ -110,15 +110,25 @@ impl Element for ChatView {
         // the composer is not holding the keyboard, so typing an `e` into a
         // draft still inserts it.
         if let DispatchedEvent::KeyDown { key, modifiers } = event {
-            if self.pane_active
+            let transcript_key = self.pane_active
                 && !self.composer_focused
-                && key == "e"
                 && !modifiers.ctrl
                 && !modifiers.command
-                && !modifiers.alt
-            {
-                self.advance_tool_folds();
-                return true;
+                && !modifiers.alt;
+            if transcript_key {
+                match key.as_str() {
+                    // grok-build's fold keys: Right opens the selected entry,
+                    // Left closes it. The transcript has no cursor of its own,
+                    // so the newest foldable row is the one they act on — the
+                    // live run is what the pane tails.
+                    "ArrowRight" => return self.expand_latest_fold(),
+                    "ArrowLeft" => return self.collapse_latest_fold(),
+                    "e" => {
+                        self.advance_tool_folds();
+                        return true;
+                    }
+                    _ => {}
+                }
             }
         }
         let consumed = self

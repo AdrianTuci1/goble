@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use super::proposal::CommandProposalUi;
 use crate::elements::{
-    AppContext, Chip, Clipped, ComposerButton, ConstrainedBox, Container, ContextPill,
+    AppContext, ApprovalMode, Chip, Clipped, ComposerButton, ConstrainedBox, Container, ContextPill,
     CrossAxisAlignment, DiffSummary, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisSize,
     Padding, PaintContext, PanelScroll, PillTraySide, Point, PopupMenu, PopupMenuItem,
     PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Text, TextArea,
@@ -53,13 +53,27 @@ pub struct ChatComposer {
     placeholder: String,
     attachments: Vec<String>,
     model_label: Option<String>,
-    path_label: Option<String>,
+    pub(super) path_label: Option<String>,
     /// The SSH session this pane's shell is bound to, when a submitted `ssh`
     /// line put it on a host (S1). While it is set the context row draws a chip
     /// naming the host; a local shell has none, so the chip's absence is itself
     /// the statement that the session is local.
     ssh_session: Option<SshSession>,
     pub(super) focused: bool,
+    /// Whether the input is waiting on something outside itself — a command
+    /// approval, whose card owns the keyboard until the user decides. A
+    /// disabled input draws its waiting placeholder and takes no keys or
+    /// presses, so typing cannot land in a draft the turn will not read.
+    disabled: bool,
+    /// Whether a command approval is holding the turn. The input stays
+    /// writable — a follow-up can be queued while the decision waits — but its
+    /// placeholder says what the turn is waiting for, and Enter keeps deciding
+    /// the proposal until the user types or a prompt is already queued.
+    waiting: bool,
+    /// Whether a prompt is already queued for this turn. A second Enter then
+    /// means "send now": Enter must fall through to the submit path instead of
+    /// approving the waiting command.
+    pub(super) queued_prompt_present: bool,
     /// Whether a press outside the editor blurs it. Off for a host that makes
     /// this composer the only typing surface of its pane (the terminal pane):
     /// clicking the output above the bar must leave the caret where it was.
@@ -127,14 +141,21 @@ pub struct ChatComposer {
     /// on one file (`None` opens it on every file). A host that has a review
     /// surface sets this; the shell bar and the agent view both do.
     diff_open: Option<Rc<RefCell<dyn FnMut(Option<String>) + 'static>>>,
-    /// The command the harness is waiting on an approval for (A6). While set,
-    /// the composer shows the proposal card and the editor holds the selected
-    /// candidate so it can be run as-is or edited in place.
+    /// The command the harness is waiting on an approval for (A6). The approval
+    /// card itself is drawn by the transcript at the end of the agent's output;
+    /// the composer keeps the proposal so its keys answer the decision.
     pub(super) proposal: Option<CommandProposalUi>,
     /// Which candidate is selected. App-owned, like the footer menus' `open`
     /// flags, because the composer element is rebuilt every frame.
     pub(super) proposal_selected: Rc<RefCell<usize>>,
     pub(super) on_decision: Option<Rc<RefCell<dyn FnMut(String, CommandDecision) + 'static>>>,
+    /// The pane's approval mode, when the host draws its control here. `None`
+    /// on a surface that has no agent turn to police (the shell bar).
+    approval_mode: Option<ApprovalMode>,
+    /// The mode menu's open flag and the callback a picked or cycled mode goes
+    /// through. Host-owned, like the model menu's, so both survive the rebuild.
+    approval_menu_open: Rc<RefCell<bool>>,
+    on_select_approval_mode: Option<Rc<RefCell<dyn FnMut(ApprovalMode) + 'static>>>,
     pub(super) on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     /// Cmd/Ctrl+Enter submit: start a NEW agent conversation (warp-new). The
@@ -185,6 +206,9 @@ impl ChatComposer {
             path_label: None,
             ssh_session: None,
             focused: false,
+            disabled: false,
+            waiting: false,
+            queued_prompt_present: false,
             blur_on_outside_click: true,
             context_above_editor: false,
             edge_to_edge: false,
@@ -237,6 +261,9 @@ impl ChatComposer {
             proposal: None,
             proposal_selected: Rc::new(RefCell::new(0)),
             on_decision: None,
+            approval_mode: None,
+            approval_menu_open: Rc::new(RefCell::new(false)),
+            on_select_approval_mode: None,
             root: None,
             size: None,
             origin: None,
@@ -568,6 +595,31 @@ impl ChatComposer {
         self
     }
 
+    /// Wait on a decision taken outside the input: the editor is not focused,
+    /// its placeholder says what the bar is waiting for, and the input takes no
+    /// keys or presses. A command approval is the only caller — its card owns
+    /// the keyboard until the user decides.
+    pub fn with_disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// Mark the turn as waiting on a command decision. The input keeps its
+    /// keys (a follow-up may be queued while the card waits), but its
+    /// placeholder names the decision the turn is suspended on.
+    pub fn with_waiting(mut self, waiting: bool) -> Self {
+        self.waiting = waiting;
+        self
+    }
+
+    /// Tell the proposal key path that a prompt is already queued: Enter then
+    /// belongs to the editor's submit (the "send now" gesture), not to the
+    /// approval.
+    pub fn with_queued_prompt_present(mut self, queued: bool) -> Self {
+        self.queued_prompt_present = queued;
+        self
+    }
+
     /// Whether a press outside the editor blurs it (the default). A host whose
     /// pane types only here turns it off, so a click on what the pane shows
     /// above the bar does not take the keyboard away from the editor.
@@ -688,6 +740,30 @@ impl ChatComposer {
 
     pub fn with_on_stop<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_stop = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Draw the pane's approval mode beside the model select: the control opens
+    /// the four-mode menu, and Shift+Tab cycles them from the keyboard.
+    pub fn with_approval_mode(mut self, mode: ApprovalMode) -> Self {
+        self.approval_mode = Some(mode);
+        self
+    }
+
+    /// The mode menu's app-owned open flag, so it survives the per-frame
+    /// rebuild the way the model menu's does.
+    pub fn with_approval_menu_open(mut self, open: Rc<RefCell<bool>>) -> Self {
+        self.approval_menu_open = open;
+        self
+    }
+
+    /// Report the mode the user picked (or cycled to). The host stores it on
+    /// the pane and hands it back on the next frame.
+    pub fn with_on_select_approval_mode<F: FnMut(ApprovalMode) + 'static>(
+        mut self,
+        callback: F,
+    ) -> Self {
+        self.on_select_approval_mode = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -1072,6 +1148,59 @@ impl ChatComposer {
             .finish()
     }
 
+    /// The approval-mode control: the mode the pane runs under, next to the
+    /// model it runs on. The control opens the four-mode menu; Shift+Tab cycles
+    /// them without opening it. The label is the mode's own word, so the pane
+    /// never has to open the menu to say what policy is in force.
+    fn approval_control(&self, app: &AppContext, mode: ApprovalMode) -> Box<dyn Element> {
+        // No glyph: the mode's word is the control, and its colour says which
+        // policy is in force.
+        let mut pill = ContextPill::new("sliders", mode.label())
+            .without_icon()
+            .with_label_color(mode.color())
+            .with_tooltip(format!(
+                "Approval mode · {} · shift+tab to cycle",
+                mode.description()
+            ))
+            .with_tray_side(PillTraySide::Above);
+        if let Some(cb) = self.on_select_approval_mode.clone() {
+            let items = ApprovalMode::ALL
+                .iter()
+                .map(|option| {
+                    let mut item = PopupMenuItem::new(option.label()).with_icon(option.icon());
+                    if *option == mode {
+                        item = item.selected();
+                    }
+                    item
+                })
+                .collect();
+            pill = pill.with_menu(items, self.approval_menu_open.clone(), move |index| {
+                (cb.borrow_mut())(ApprovalMode::from_index(index))
+            });
+        }
+        pill.finish(app)
+    }
+
+    /// Shift+Tab cycles the pane's approval mode. Taken before the editor sees
+    /// the key, and only when the host wired the control and the callback.
+    fn handle_approval_mode_key(&mut self, event: &DispatchedEvent) -> bool {
+        if !self.focused {
+            return false;
+        }
+        let (Some(mode), Some(cb)) = (self.approval_mode, self.on_select_approval_mode.clone())
+        else {
+            return false;
+        };
+        let DispatchedEvent::KeyDown { key, modifiers } = event else {
+            return false;
+        };
+        if key != "Tab" || !modifiers.shift || modifiers.command || modifiers.ctrl || modifiers.alt {
+            return false;
+        }
+        (cb.borrow_mut())(mode.next());
+        true
+    }
+
     /// The action controls, left to right: the model the draft runs on, stop
     /// while a turn streams, and the modal-editing badge. A plain shell command
     /// runs no model, so a terminal composer contributes nothing here.
@@ -1081,6 +1210,9 @@ impl ChatComposer {
         let badge = self.vim.as_ref().map(|vim| self.mode_badge(app, vim));
         if let Some(label) = self.model_label.clone() {
             children.push(self.model_control(app, label));
+        }
+        if let Some(mode) = self.approval_mode {
+            children.push(self.approval_control(app, mode));
         }
         if has_stop {
             if let Some(cb) = self.on_stop.clone() {
@@ -1211,8 +1343,6 @@ impl ChatComposer {
     /// the block, under the action row.
     fn rebuild(&mut self, app: &AppContext) {
         let sm = app.theme.spacing_px(SpacingToken::Sm);
-        let md = app.theme.spacing_px(SpacingToken::Md);
-        let xs = app.theme.spacing_px(SpacingToken::Xs);
 
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -1231,24 +1361,6 @@ impl ChatComposer {
                 attachment_row = attachment_row.with_child(chip);
             }
             column = column.with_child(attachment_row.finish());
-        }
-
-        // Command-proposal mode (A6). The editor below the card is the in-place
-        // edit surface, so an empty draft is seeded with the selected candidate;
-        // a draft the user typed or cycled to is left alone.
-        if let Some(handles) = self.proposal_handles() {
-            if self.value.borrow().trim().is_empty() {
-                if let Some(seed) = handles.selected_candidate() {
-                    // The beam goes after the seeded candidate: an edit to it is
-                    // an edit to the end of the command, not an insertion before
-                    // its first word.
-                    *self.caret.borrow_mut() = seed.chars().count();
-                    *self.value.borrow_mut() = seed;
-                }
-            }
-        }
-        if let Some(card) = self.proposal_card(app) {
-            column = column.with_child(card);
         }
 
         // Send closure shared between Enter-to-submit and the (removed) send
@@ -1270,7 +1382,10 @@ impl ChatComposer {
                     (cb.borrow_mut())(text.clone());
                 }
                 *value_for_send.borrow_mut() = String::new();
-            } else if !text.is_empty() {
+            } else {
+                // An empty submit is the host's own gesture: while a prompt is
+                // queued it is the second Enter that sends it now, and every
+                // other host treats it as a no-op.
                 if let Some(cb) = on_send.as_ref() {
                     (cb.borrow_mut())(text.clone());
                 }
@@ -1295,11 +1410,28 @@ impl ChatComposer {
         let on_change = self.on_change.clone();
         let on_focus_change = self.on_focus_change.clone();
         let send_for_submit = send.clone();
+        // A disabled bar draws no draft: the preserved text is the app's,
+        // handed back once the decision lands, but showing it here would read
+        // as an editor that still takes keys. The bar says what it waits for
+        // instead. A bar that only *waits* keeps its draft and its keys: the
+        // follow-up is exactly what the input is for.
         let textarea = TextArea::new()
-            .with_value(self.value.borrow().clone())
-            .with_placeholder(self.placeholder.clone())
+            .with_value(if self.disabled {
+                String::new()
+            } else {
+                self.value.borrow().clone()
+            })
+            .with_placeholder(if self.disabled {
+                "Waiting for your decision…".to_string()
+            } else if self.waiting {
+                // The decision still owns Enter; typing is a follow-up that
+                // waits its turn, so the bar says what the input is for.
+                "Message the agent while it waits…".to_string()
+            } else {
+                self.placeholder.clone()
+            })
             .with_min_height(48.0)
-            .with_focused(self.focused)
+            .with_focused(self.focused && !self.disabled)
             .with_blur_on_outside_click(self.blur_on_outside_click)
             // The editor owns its whole line: a press to the right of the text
             // is a press in the editor and puts the beam at the end.
@@ -1360,21 +1492,7 @@ impl ChatComposer {
         // editor's text lines up with the conversation's text column, while the
         // vertical is `xs`: the rows hug the card instead of floating in a
         // gutter of their own.
-        let horizontal = if self.edge_to_edge { 0.0 } else { md };
-        let card = Container::new(column.finish())
-            .with_padding(EdgeInsets::new(horizontal, xs, horizontal, xs))
-            .with_corner_radius(COMPOSER_CONTROL_RADIUS)
-            .finish();
-        // The input's own horizontal margin is the transcript rows' margin
-        // (`xs`), so the block sits as close to the pane's side edges as the
-        // conversation does; it carries no vertical margin of its own, so the
-        // rows are only `xs` from the top and bottom of the block. A bar pinned
-        // edge to edge has no such margin.
-        let card = if self.edge_to_edge {
-            card
-        } else {
-            Padding::new(card, EdgeInsets::new(xs, 0.0, xs, 0.0)).finish()
-        };
+        let card = self.into_card(column.finish(), app);
         // The two bands share one slot over the input, and both are the host's
         // to draw (the command list and the model list, in that order): while
         // the draft is a command that list holds the slot, so the model band is
@@ -1383,7 +1501,37 @@ impl ChatComposer {
         if self.slash_band_open() {
             *self.model_menu_open.borrow_mut() = false;
         }
+        // A waiting decision puts both bands away: the card above the input is
+        // the surface the next key belongs to.
+        if self.disabled {
+            *self.model_menu_open.borrow_mut() = false;
+            *self.approval_menu_open.borrow_mut() = false;
+        }
         self.root = Some(card);
+    }
+
+    /// Wrap the rich input in the composer's own card: the gutters and radius
+    /// the input lives in, with no background or border. The approval is drawn
+    /// by the transcript at the end of the agent's output, so the input keeps
+    /// this shape whether or not a command is waiting.
+    fn into_card(&self, content: Box<dyn Element>, app: &AppContext) -> Box<dyn Element> {
+        let md = app.theme.spacing_px(SpacingToken::Md);
+        let xs = app.theme.spacing_px(SpacingToken::Xs);
+        let horizontal = if self.edge_to_edge { 0.0 } else { md };
+        let card = Container::new(content)
+            .with_padding(EdgeInsets::new(horizontal, xs, horizontal, xs))
+            .with_corner_radius(COMPOSER_CONTROL_RADIUS)
+            .finish();
+        // The input's own horizontal margin is the transcript rows' margin
+        // (`xs`), so the block sits as close to the pane's side edges as the
+        // conversation does; it carries no vertical margin of its own, so the
+        // rows are only `xs` from the top and bottom of the block. A bar pinned
+        // edge to edge has no such margin.
+        if self.edge_to_edge {
+            card
+        } else {
+            Padding::new(card, EdgeInsets::new(xs, 0.0, xs, 0.0)).finish()
+        }
     }
 }
 
@@ -1425,7 +1573,16 @@ impl Element for ChatComposer {
         ctx: &mut crate::elements::EventContext,
         app: &AppContext,
     ) -> bool {
+        // A disabled input is not a typing surface: the approval card that is
+        // waiting owns both the keys and the presses, so nothing here is
+        // allowed to take focus, open a menu or submit a draft.
+        if self.disabled {
+            return false;
+        }
         if self.handle_send_to_cloud_key(event) {
+            return true;
+        }
+        if self.handle_approval_mode_key(event) {
             return true;
         }
         if self.handle_proposal_key(event) {

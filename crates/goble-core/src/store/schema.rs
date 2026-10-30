@@ -68,6 +68,7 @@ impl Store {
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 tool_calls TEXT,
+                reasoning_content TEXT,
                 created_at TEXT NOT NULL
             ) STRICT;
 
@@ -354,6 +355,24 @@ impl Store {
                 conn.execute(&format!("ALTER TABLE chats ADD COLUMN {column} {ty}"), [])
                     .with_context(|| format!("failed to add chats.{column}"))?;
             }
+        }
+
+        // The chain of thought a thinking model streamed for an assistant
+        // message. DeepSeek's thinking mode rejects the next request when the
+        // turn is replayed without it, so old tables grow the column here.
+        let has_reasoning: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('chat_messages') WHERE name = 'reasoning_content'",
+                [],
+                |r| r.get(0),
+            )
+            .context("failed to check for chat_messages.reasoning_content")?;
+        if !has_reasoning {
+            conn.execute(
+                "ALTER TABLE chat_messages ADD COLUMN reasoning_content TEXT",
+                [],
+            )
+            .context("failed to add chat_messages.reasoning_content")?;
         }
 
         Ok(())

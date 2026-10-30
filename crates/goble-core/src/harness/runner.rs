@@ -13,6 +13,19 @@ use goble_sandbox::{
 #[async_trait::async_trait]
 pub trait CommandRunner: Send + Sync {
     async fn run(&self, command: &str, args: &[String]) -> Result<String>;
+
+    /// Run a full command line, as an approval card shows it.
+    ///
+    /// The line is split back into an executable and arguments, so an argv-based
+    /// runner still checks the executable against its allow-list instead of
+    /// looking for a literal `"ls -la"` entry. A runner that hands the line to a
+    /// shell ([`RoutedCommandRunner`] with a pane) overrides this to keep the
+    /// text verbatim.
+    async fn run_line(&self, line: &str) -> Result<String> {
+        let (command, args) =
+            split_command_line(line).ok_or_else(|| anyhow::anyhow!("the command line is empty"))?;
+        self.run(&command, &args).await
+    }
 }
 
 /// A no-op / safe command runner for tests and environments where shell execution
@@ -71,6 +84,31 @@ impl SandboxedCommandRunner {
     pub fn with_sandbox(mut self, sandbox: Option<Box<dyn Sandbox>>) -> Self {
         self.sandbox = sandbox;
         self
+    }
+
+    /// Run `command` with its arguments, with no allow-list check.
+    ///
+    /// This is the body both entry points share: [`CommandRunner::run`] checks
+    /// the static allow-list first (the unattended path), while
+    /// [`CommandRunner::run_line`] is reached only after the user approved the
+    /// exact line in the approval card.
+    async fn run_argv(&self, command: &str, args: &[String]) -> Result<String> {
+        let prepared = PreparedCommand::new(command)
+            .args(args.iter().cloned())
+            .cwd(self.working_dir.clone());
+        let output = tokio::time::timeout(
+            Duration::from_secs(self.timeout_seconds),
+            self.run_prepared(&prepared),
+        )
+        .await
+        .context("command timed out")?
+        .context("failed to execute command")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success() {
+            anyhow::bail!("command failed: {stderr}");
+        }
+        Ok(format!("{stdout}{stderr}").trim().to_string())
     }
 
     /// Run `command`, applying the configured sandbox when present.
@@ -157,22 +195,19 @@ impl CommandRunner for SandboxedCommandRunner {
         if !self.allowed_commands.contains(command) {
             anyhow::bail!("command `{command}` is not in the allowed list");
         }
-        let prepared = PreparedCommand::new(command)
-            .args(args.iter().cloned())
-            .cwd(self.working_dir.clone());
-        let output = tokio::time::timeout(
-            Duration::from_secs(self.timeout_seconds),
-            self.run_prepared(&prepared),
-        )
-        .await
-        .context("command timed out")?
-        .context("failed to execute command")?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !output.status.success() {
-            anyhow::bail!("command failed: {stderr}");
-        }
-        Ok(format!("{stdout}{stderr}").trim().to_string())
+        self.run_argv(command, args).await
+    }
+
+    /// Run an approved line verbatim.
+    ///
+    /// The user's approval is the authorization for this exact command, so the
+    /// static allow-list (which bounds what the agent may run unattended) does
+    /// not apply. The sandbox, when one is configured, still confines the
+    /// process and the timeout still bounds it.
+    async fn run_line(&self, line: &str) -> Result<String> {
+        let (command, args) =
+            split_command_line(line).ok_or_else(|| anyhow::anyhow!("the command line is empty"))?;
+        self.run_argv(&command, &args).await
     }
 }
 
@@ -245,6 +280,15 @@ impl CommandRunner for RoutedCommandRunner {
             None => self.sandbox.run(command, args).await,
         }
     }
+
+    async fn run_line(&self, line: &str) -> Result<String> {
+        match &self.pane {
+            // The pane's shell gets the approved text exactly as the user saw
+            // it, so pipes and redirections behave the way that shell does.
+            Some(pane) => pane.run_in_pane(line).await,
+            None => self.sandbox.run_line(line).await,
+        }
+    }
 }
 
 /// Compose the command line the pane's shell will run, or `None` for an empty
@@ -264,6 +308,76 @@ pub(super) fn shell_line(command: &str, args: &[String]) -> Option<String> {
         line.push_str(&quote_arg(arg));
     }
     Some(line)
+}
+
+/// Split a command line back into its executable and arguments.
+///
+/// Undoes the quoting [`shell_line`] applies (single quotes, the `'\''` escape
+/// for an embedded quote, and backslash escapes) so the sandbox runner can
+/// enforce its allow-list on the executable while passing each argument as one
+/// word. Shell operators stay literal words: this runner executes an argv, not
+/// a shell. `None` for an empty line.
+pub(super) fn split_command_line(line: &str) -> Option<(String, Vec<String>)> {
+    let mut words: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match quote {
+            Some('\'') => {
+                if c == '\'' {
+                    quote = None;
+                } else {
+                    current.push(c);
+                }
+            }
+            Some('"') => {
+                if c == '"' {
+                    quote = None;
+                } else if c == '\\' {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    }
+                } else {
+                    current.push(c);
+                }
+            }
+            _ => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    in_word = true;
+                }
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    }
+                    in_word = true;
+                }
+                c if c.is_whitespace() => {
+                    if in_word {
+                        words.push(std::mem::take(&mut current));
+                        in_word = false;
+                    }
+                }
+                _ => {
+                    current.push(c);
+                    in_word = true;
+                }
+            },
+        }
+    }
+    if in_word {
+        words.push(current);
+    }
+
+    let mut words = words.into_iter();
+    let command = words.next()?;
+    if command.is_empty() {
+        return None;
+    }
+    Some((command, words.collect()))
 }
 
 /// Single-quote `arg` when the shell would otherwise change it.

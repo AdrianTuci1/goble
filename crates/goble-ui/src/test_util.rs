@@ -223,10 +223,13 @@ pub fn assert_no_row_border(commands: &[RenderCommand], what: &str) {
 mod tests {
     use super::*;
     use crate::elements::chat_content::{ChatFragment, ChatMessage, ChatRole};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use crate::elements::{
-        AgentCard, AppContext, Avatar, Button, ButtonVariant, Checkbox, ConnectorCard, Container,
-        Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, Rect, ShellState, ShellView,
-        SizeConstraint, Switch, Text, TitleBar,
+        AgentCard, AppContext, Avatar, Axis, Button, ButtonVariant, Checkbox, ConnectorCard,
+        Container, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, Rect, ScrollState,
+        Scrollable, ShellState, ShellView, SizeConstraint, Switch, Text, TitleBar,
     };
     use crate::geometry::vec2f;
     use crate::views::settings_view::SettingsPage;
@@ -234,6 +237,41 @@ mod tests {
 
     fn app() -> AppContext {
         AppContext::default()
+    }
+
+    /// A run scrolled out of its viewport draws nothing. It would otherwise
+    /// still be packed into the text atlas, where a long terminal history can
+    /// crowd out the window's own chrome.
+    #[test]
+    fn a_run_scrolled_out_of_its_viewport_is_not_drawn() {
+        let app = app();
+        let mut list = Flex::column().with_main_axis_size(MainAxisSize::Min);
+        for index in 0..40 {
+            list = list.with_child(Text::new(format!("row {index:02}")).finish());
+        }
+        let state = Rc::new(RefCell::new(ScrollState::following()));
+        let mut scroll = Scrollable::new(list.finish(), Axis::Vertical)
+            .with_state(state)
+            .with_bottom_anchor(true)
+            .finish();
+
+        let commands = render_element(&mut scroll, vec2f(200.0, 100.0), &app);
+        let drawn: Vec<String> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            drawn.iter().all(|text| text != "row 00"),
+            "the first row is scrolled off the top, got {drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|text| text == "row 39"),
+            "the last row is in the viewport, got {drawn:?}"
+        );
     }
 
     #[test]

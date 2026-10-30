@@ -412,6 +412,7 @@ impl TerminalBlock {
                 .with_font_family(FontFamily::Mono)
                 .finish();
         }
+        let cell_backgrounds = line.runs.iter().any(|run| run.background.is_some());
         let spans = line
             .runs
             .iter()
@@ -419,6 +420,9 @@ impl TerminalBlock {
                 let mut span = TextSpan::plain(run.text.clone())
                     .with_family(FontFamily::Mono)
                     .with_color(run.color.unwrap_or_else(|| app.theme.color(color)));
+                if let Some(background) = run.background {
+                    span = span.with_background(background);
+                }
                 if run.bold {
                     span = span.with_weight(FontWeight::Bold);
                 }
@@ -428,12 +432,16 @@ impl TerminalBlock {
                 if run.underline {
                     span = span.with_underline(true);
                 }
+                if run.strikeout {
+                    span = span.with_strikeout(true);
+                }
                 span
             })
             .collect();
         InlineText::new(spans)
             .with_font_size(FONT_SIZE)
             .with_line_height(LINE_HEIGHT)
+            .with_cell_backgrounds(cell_backgrounds)
             .finish()
     }
 

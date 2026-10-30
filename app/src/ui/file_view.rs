@@ -1251,7 +1251,7 @@ pub(crate) fn build_file_view(
         false,
         chat::HeaderSlots {
             leading: Some(title),
-            trailing: None,
+            ..chat::HeaderSlots::default()
         },
     );
     let pane = Stack::new()
@@ -2734,10 +2734,10 @@ mod tests {
 
             assert_eq!(
                 drawn,
-                (viewport / LINE_BOX).ceil() as usize + WINDOW_SLACK,
-                "{name}: the frames with a viewport draw its own lines and the window's \
-                 slack, {} rows in {viewport} points",
-                (viewport / LINE_BOX).ceil() as usize + WINDOW_SLACK
+                (viewport / LINE_BOX).ceil() as usize,
+                "{name}: the frames with a viewport draw the lines it shows, {} rows \
+                 in {viewport} points",
+                (viewport / LINE_BOX).ceil() as usize
             );
             assert_eq!(
                 pitch, LINE_BOX,
@@ -2923,9 +2923,9 @@ mod tests {
         let rows = (viewport / LINE_BOX).ceil() as usize;
         assert_eq!(
             drawn.len(),
-            rows + WINDOW_SLACK,
-            "the editing pane draws its own rows and the window's slack, {rows} \
-             rows in {viewport} points"
+            rows,
+            "the editing pane draws the rows its viewport shows, {rows} rows in \
+             {viewport} points"
         );
         assert_eq!(drawn[0], 1, "and opens at the buffer's first line");
         assert!(

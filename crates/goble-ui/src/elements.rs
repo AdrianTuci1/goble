@@ -1,5 +1,6 @@
 pub use agent_card::AgentCard;
 pub use align::{Align, Alignment};
+pub use approval_mode::ApprovalMode;
 pub use ask_user::{AskUserCard, AskUserUi};
 pub use avatar::{Avatar, AvatarShape};
 pub use button::{Button, ButtonVariant};
@@ -27,6 +28,10 @@ pub use checkbox::Checkbox;
 pub use chip::Chip;
 pub use clipped::Clipped;
 pub use code::Code;
+pub use command_approval::{
+    command_approval_card, CommandApprovalState, DecisionHandler, APPROVAL_BODY_MAX_HEIGHT,
+    APPROVAL_EDITOR_MAX_HEIGHT,
+};
 pub use composer_button::{ComposerButton, COMPOSER_CONTROL_RADIUS};
 pub use connector_card::ConnectorCard;
 pub use constrained_box::ConstrainedBox;
@@ -579,6 +584,7 @@ where
 
 pub mod agent_card;
 pub mod align;
+pub mod approval_mode;
 pub mod ask_user;
 pub mod avatar;
 pub mod button;
@@ -594,6 +600,7 @@ pub mod checkbox;
 pub mod chip;
 pub mod clipped;
 pub mod code;
+pub mod command_approval;
 pub mod composer_button;
 pub mod connector_card;
 pub mod constrained_box;

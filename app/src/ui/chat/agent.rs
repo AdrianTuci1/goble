@@ -12,7 +12,7 @@ use crate::state::PaneControls;
 use super::super::{UiActions, UiSnapshot};
 use super::{
     build_agent_error, build_agent_header, build_sub_agent_child_view, chat_action_relay,
-    pane_session_snapshot, PaneChatSnapshot,
+    pane_session_snapshot, PaneChatSnapshot, PaneHeading,
 };
 
 /// If `pane_id` has a live PTY session with output, append it as an inline
@@ -154,7 +154,21 @@ pub fn build_agent_chat(
     // pane reaches it through `build_terminal`'s escape closure, and it is the
     // only caller that wires one.
     let harness_open = on_escape.is_some();
-    let header = build_agent_header(app, state, actions, pane_id, harness_open);
+    // The bar names the conversation this pane talks to, or the placeholder
+    // while it has no subject yet.
+    let heading = state
+        .pane_titles
+        .get(&pane_id)
+        .cloned()
+        .unwrap_or_else(|| crate::state::NEW_AGENT_TAB_LABEL.to_string());
+    let header = build_agent_header(
+        app,
+        state,
+        actions,
+        pane_id,
+        harness_open,
+        Some(PaneHeading::Agent(heading)),
+    );
 
     // The rich-input controls belong to this pane, not to the workspace: two
     // pty/agent panes side by side keep their own model, branch and dropdown
@@ -179,6 +193,7 @@ pub fn build_agent_chat(
     let on_attach = actions.on_attach.clone();
     let on_voice = actions.on_voice.clone();
     let on_select_model = actions.on_select_model.clone();
+    let on_select_approval_mode = actions.on_select_approval_mode.clone();
     let on_stop = actions.on_stop.clone();
     let on_answer_ask = actions.on_answer_ask.clone();
     let on_skip_ask = actions.on_skip_ask.clone();
@@ -318,6 +333,17 @@ pub fn build_agent_chat(
         .with_on_skip_ask(move || (on_skip_ask.borrow_mut())())
         .with_command_proposal(session.pending_command.clone())
         .with_command_proposal_selection(session.command_selection.clone())
+        .with_command_proposal_scroll(session.command_scroll.clone())
+        .with_command_proposal_draft(
+            session.command_draft.clone(),
+            session.command_caret.clone(),
+            session.command_editor_scroll.clone(),
+        )
+        .with_composer_approval_mode(controls.approval_mode)
+        .with_composer_approval_menu_open(controls.approval_menu_open.clone())
+        .with_on_select_approval_mode(move |mode| {
+            (on_select_approval_mode.borrow_mut())(pane_id, mode)
+        })
         .with_on_command_decision(move |id, decision| {
             (on_command_decision.borrow_mut())(pane_id, id, decision)
         })
@@ -574,8 +600,9 @@ mod transcript_scroll_tests {
 /// R1: the pane's transcript is full-width rows, not pills. The app's own chat
 /// surface is rendered over a real store, so the geometry is asserted where the
 /// user sees it: the user's message is one square band running to the pane's
-/// edges, the agent's reply starts at the same edge with no box of its own, and
-/// both keep the transcript's 10-15 px of padding.
+/// edges with no box of its own behind the agent's reply, and the agent's row
+/// keeps the transcript's 10-15 px of padding. The user's row is led by the
+/// prompt marker, which sets its text one marker-width further right.
 #[cfg(test)]
 mod chat_geometry_tests {
     use super::*;
@@ -627,9 +654,9 @@ mod chat_geometry_tests {
             pane_run_origin(&commands, "Salut!").expect("the user's message is drawn");
         let (reply_x, _) =
             pane_run_origin(&commands, "Bine ai venit!").expect("the agent's reply is drawn");
-        assert_eq!(
-            user_x, reply_x,
-            "the user's message and the agent's reply share the pane's left edge"
+        assert!(
+            user_x > reply_x,
+            "the user's message starts at {user_x}, past the agent's reply at {reply_x}"
         );
 
         // The user's own message: the square band behind its text, running from
@@ -663,10 +690,33 @@ mod chat_geometry_tests {
             1024.0 - crate::ui::panes::PANE_INSET,
             "the agent surface runs to the pane's right edge, past the frame inset"
         );
-        let padded = user_x - band.0.min_x();
+        let padded = reply_x - band.0.min_x();
         assert!(
             (10.0..=15.0).contains(&padded),
-            "the transcript keeps 10-15 px of padding, got {padded}"
+            "the agent's row keeps 10-15 px of padding, got {padded}"
+        );
+
+        // The user's message opens with the prompt marker on its first line,
+        // inside the band, and the text starts past it.
+        let marker = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon {
+                    name, origin, size, ..
+                } if name == "prompt-arrow" => Some((*origin, *size)),
+                _ => None,
+            })
+            .expect("the user's message draws its prompt marker");
+        assert!(
+            marker.0.x >= band.0.min_x() && marker.0.y >= band.0.min_y(),
+            "the marker sits inside the user's band: {:?} in {:?}",
+            marker.0,
+            band.0
+        );
+        assert!(
+            user_x >= marker.0.x + marker.1 + 2.0,
+            "the user's text starts at {user_x}, past the marker ending at {}",
+            marker.0.x + marker.1
         );
     }
 }
@@ -892,8 +942,11 @@ mod agent_pill_tests {
     /// sidebar quoting the conversation, not the transcript.
     fn pane_run_origin(commands: &[RenderCommand], label: &str) -> Option<goble_ui::Vector2F> {
         commands.iter().find_map(|command| match command {
+            // The row's operand may share its drawn run with a detail in the
+            // same colour (a folded edit's diffstat), so the labels match the
+            // run's head.
             RenderCommand::DrawText { origin, text, .. }
-                if text == label && origin.x >= crate::ui::SIDEBAR_WIDTH =>
+                if text.starts_with(label) && origin.x >= crate::ui::SIDEBAR_WIDTH =>
             {
                 Some(*origin)
             }

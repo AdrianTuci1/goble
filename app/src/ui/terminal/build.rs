@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use goble_terminal::blocks::BlockView;
-use goble_terminal::{Palette, SearchMatch};
+use goble_terminal::SearchMatch;
 use goble_ui::elements::terminal_block::terminal_filter_bar;
 use goble_ui::elements::{
     AppContext, Axis, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded,
@@ -19,7 +19,7 @@ use goble_ui::theme::{ColorToken, FontFamily, SpacingToken};
 use crate::terminal::{Cell, FindBar, Selection, TerminalMode, TerminalRegistry};
 use crate::ui::chat;
 
-use super::blocks::section_data;
+use super::blocks::{section_data, styled_section_data};
 use super::cards::{build_card, CardProbe};
 use super::grid::GridProbe;
 use super::TerminalView;
@@ -89,8 +89,15 @@ pub fn build_terminal(
 
     // The shell view wears the pane's one topbar, the same bar the harness's
     // agent view draws — without the `esc`, which is only the way back *from*
-    // the harness.
-    let header = chat::build_agent_header(app, state, actions, pane_id, false);
+    // the harness. A shell names the directory it runs in, centred.
+    let header = chat::build_agent_header(
+        app,
+        state,
+        actions,
+        pane_id,
+        false,
+        Some(chat::PaneHeading::Path(cwd.clone())),
+    );
     // Whether the pane's whole-output filter bar holds the caret (see the input
     // rule below).
     let filter_typing = state
@@ -118,9 +125,29 @@ pub fn build_terminal(
     // would otherwise focus the bar.
     let owns_screen = owner.program_owns_screen(pane_id);
     let bar_focused = active && !owns_screen && !filter_typing && !copy_or_find;
-    let bar =
-        (!owns_screen).then(|| chat::build_terminal_composer(state, actions, pane_id, bar_focused));
     drop(owner);
+    // A command the harness suspended on closes the shell's output, the way the
+    // same card closes the agent transcript. The bar's own keys decide it, so
+    // the shell shows what those keys will act on. A full-screen program owns
+    // the pane's screen, so it has no output of ours to close.
+    let approval = (!owns_screen)
+        .then(|| chat::build_pending_approval(app, state, actions, pane_id))
+        .flatten()
+        .map(|approval| (approval.element, approval.height));
+    // While the card waits it is the pane's only typing surface: the shell bar
+    // is not drawn, so there is no rich input under the decision. It comes back
+    // with the pane's draft once the command is approved or rejected.
+    let bar_focused = bar_focused && approval.is_none();
+    let bar = if approval.is_none() && !owns_screen {
+        Some(chat::build_terminal_composer(
+            state,
+            actions,
+            pane_id,
+            bar_focused,
+        ))
+    } else {
+        None
+    };
     // Why the pane's last Cmd+Enter was refused, if it was. The reason is only
     // good while the state that produced it holds, so it is read while the
     // pane's shell is still running the command that refused the switch: a
@@ -149,6 +176,7 @@ pub fn build_terminal(
         actions.on_copy_terminal.clone(),
     )
     .with_harness_refusal(refusal)
+    .with_approval(approval)
     // The pane's history scrolls on the app's own per-pane state, and each
     // section draws through the same block plumbing the transcript uses, so a
     // filter tray opened on a block survives the per-frame rebuild wherever the
@@ -211,19 +239,6 @@ fn filter_line_counts(
 /// The pane's whole-output filter bar's field, named the way the transcript's
 /// filter row names it.
 const TERMINAL_FILTER_PLACEHOLDER: &str = "Filter terminal output";
-
-/// The terminal palette: the app's own text, background and caret colours over
-/// the standard sixteen, so a shell in a pane matches the window it is in.
-fn terminal_palette(app: &AppContext) -> Palette {
-    let text = app.theme.color(ColorToken::Text);
-    let background = app.theme.color(ColorToken::Bg);
-    let cursor = app.theme.color(ColorToken::Accent);
-    Palette::xterm().with_defaults(
-        (text.r, text.g, text.b),
-        (background.r, background.g, background.b),
-        (cursor.r, cursor.g, cursor.b),
-    )
-}
 
 /// The find bar over a terminal pane: a query field, a regex toggle and the
 /// current/total count or the error that stopped the search.
@@ -440,6 +455,8 @@ impl TerminalView {
             active,
             view,
             bar,
+            approval: None,
+            approval_pending: false,
             harness_refusal: None,
             composer_focused,
             on_activate,
@@ -475,6 +492,14 @@ impl TerminalView {
         self
     }
 
+    /// Attach the approval card for a command this pane's harness is suspended
+    /// on, so the shell view keeps the decision at the end of its output.
+    pub(super) fn with_approval(mut self, approval: Option<(Box<dyn Element>, f32)>) -> Self {
+        self.approval_pending = approval.is_some();
+        self.approval = approval;
+        self
+    }
+
     /// Attach the reason the pane's last Cmd+Enter was refused, so the pane —
     /// which stayed on its shell — draws it there.
     pub(super) fn with_harness_refusal(mut self, reason: Option<String>) -> Self {
@@ -485,7 +510,10 @@ impl TerminalView {
     /// Ensure the session exists, tell it the grid size, and (re)build the
     /// subtree for this frame.
     pub(super) fn rebuild(&mut self, app: &AppContext, constraint: SizeConstraint) {
-        let palette = terminal_palette(app);
+        // The terminal palette: the app's own text, background and caret
+        // colours over the standard sixteen, so a shell in a pane matches the
+        // window it is in.
+        let palette = app.theme.terminal_palette();
         let sm = app.theme.spacing_px(SpacingToken::Sm);
         let md = app.theme.spacing_px(SpacingToken::Md);
         let lg = app.theme.spacing_px(SpacingToken::Lg);
@@ -514,7 +542,15 @@ impl TerminalView {
         } else {
             0.0
         };
-        let chrome = badge_lines as f32 * row_pitch + bar_height + find_chrome;
+        // The approval card is output, not chrome over it, but the pty is told
+        // the rows it can actually paint: a suspended turn's card takes its
+        // room from the grid the same way the bar does.
+        let approval_height = self
+            .approval
+            .as_ref()
+            .map_or(0.0, |(_, height)| *height);
+        let chrome =
+            badge_lines as f32 * row_pitch + bar_height + find_chrome + approval_height;
         let rows = (((constraint.max.y - lg * 2.0 - chrome) / row_pitch).floor() as usize).max(1);
         let cols = ((constraint.max.x - lg * 2.0) / TerminalGrid::cell_width(FONT_SIZE))
             .floor()
@@ -553,6 +589,13 @@ impl TerminalView {
             .terminal
             .borrow()
             .visible_blocks(self.pane_id, &self.view);
+        // The cells behind those blocks. A block's `output` is plain text — a
+        // copy and a tool result read it — so a drawn section takes its colours
+        // and attributes from the block's own screen.
+        let block_cells = self
+            .terminal
+            .borrow()
+            .block_output_lines(self.pane_id, &self.view);
         self.cards.borrow_mut().clear();
         self.block_geometry.borrow_mut().clear();
 
@@ -635,7 +678,11 @@ impl TerminalView {
                     listed += 1;
                     continue;
                 }
-                if let Some(data) = section_data(block) {
+                let cells = block_cells.get(&block.id);
+                if let Some(data) = cells
+                    .map(|cells| styled_section_data(block, cells, palette))
+                    .unwrap_or_else(|| section_data(block))
+                {
                     let selection = block_selection.and_then(|selection| {
                         block_text_selection(selection, line_base, data.lines.len())
                     });
@@ -799,6 +846,13 @@ impl TerminalView {
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(Expanded::new(body).finish());
+        if let Some((approval, _)) = self.approval.take() {
+            outer = outer.with_child(
+                Container::new(approval)
+                    .with_padding(EdgeInsets::new(0.0, lg, lg, lg))
+                    .finish(),
+            );
+        }
         if let Some(bar) = self.bar.take() {
             outer = outer.with_child(Divider::horizontal().finish());
             outer = outer.with_child(bar);

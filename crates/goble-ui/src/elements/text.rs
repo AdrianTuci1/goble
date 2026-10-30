@@ -166,6 +166,13 @@ impl Element for Text {
         let Some(renderer) = ctx.renderer.as_mut() else {
             return;
         };
+        // A run scrolled out of its viewport paints nothing. Skipping it here
+        // keeps it out of the text atlas as well: the atlas packs whole runs,
+        // and a long scrollback would otherwise crowd out the window's chrome.
+        let size = self.size.unwrap_or_default();
+        if !renderer.visible(crate::geometry::rectf(origin.x, origin.y, size.x, size.y)) {
+            return;
+        }
         renderer.draw_text_with_font(
             origin,
             self.text.clone(),

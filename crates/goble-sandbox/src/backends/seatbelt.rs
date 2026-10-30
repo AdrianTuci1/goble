@@ -112,12 +112,18 @@ fn normalize_workspace(cwd: &Path) -> PathBuf {
     cwd.to_path_buf()
 }
 
-/// One Seatbelt rule: `(allow|deny <operation>[ (subpath "<path>")])`.
+/// One Seatbelt rule: `(allow|deny <operation>[ (subpath|literal "<path>")])`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SbRule {
     pub allow: bool,
     pub operation: &'static str,
-    pub subpath: Option<String>,
+    pub target: Option<SbTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SbTarget {
+    Subpath(String),
+    Literal(String),
 }
 
 impl SbRule {
@@ -125,7 +131,7 @@ impl SbRule {
         Self {
             allow: true,
             operation,
-            subpath: None,
+            target: None,
         }
     }
 
@@ -133,7 +139,7 @@ impl SbRule {
         Self {
             allow: false,
             operation,
-            subpath: None,
+            target: None,
         }
     }
 
@@ -141,10 +147,34 @@ impl SbRule {
         Self {
             allow: true,
             operation,
-            subpath: Some(path.to_string_lossy().into_owned()),
+            target: Some(SbTarget::Subpath(path.to_string_lossy().into_owned())),
+        }
+    }
+
+    fn allow_literal(operation: &'static str, path: &str) -> Self {
+        Self {
+            allow: true,
+            operation,
+            target: Some(SbTarget::Literal(path.to_string())),
         }
     }
 }
+
+/// Device nodes a confined command may write.
+///
+/// `/dev/stdout` and `/dev/stderr` resolve to `/dev/fd/<n>`, so the descriptor
+/// directory is allowed as a subpath below (`DEVICE_WRITE_SUBPATHS`).
+const DEVICE_WRITE_LITERALS: &[&str] = &[
+    "/dev/null",
+    "/dev/zero",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
+    "/dev/dtracehelper",
+];
+
+/// Descriptor paths a confined command may write: the process's own open fds.
+const DEVICE_WRITE_SUBPATHS: &[&str] = &["/dev/fd"];
 
 /// The allow/deny decision table: the ordered Seatbelt rules implied by
 /// `profile` for a workspace rooted at `workspace`.
@@ -173,6 +203,21 @@ pub(crate) fn rules_for(profile: &SandboxProfile, workspace: &Path) -> Vec<SbRul
         SbRule::deny("file-write*"),
     ];
 
+    // `(deny default)` also denies the standard device sinks. Allow them
+    // explicitly: `bash` redirections, `git status` and many other tools open
+    // `/dev/null` for reading *and* writing, and a denied open surfaces as
+    // "Operation not permitted" even though no file on disk is written.
+    //
+    // A write to `/dev/null` discards, the random devices only matter to reads
+    // (already allowed), and `/dev/fd` is the process's own open descriptors, so
+    // none of these allowances reach the filesystem.
+    for literal in DEVICE_WRITE_LITERALS {
+        rules.push(SbRule::allow_literal("file-write*", literal));
+    }
+    for subpath in DEVICE_WRITE_SUBPATHS {
+        rules.push(SbRule::allow_on("file-write*", Path::new(subpath)));
+    }
+
     // When the profile keeps the workspace writable (`read_only_fs` false, as
     // the harness does so the file/git tools keep working) a path-scoped allow
     // overrides the broad deny; otherwise the workspace is read-only and every
@@ -194,8 +239,10 @@ pub(crate) fn rules_for(profile: &SandboxProfile, workspace: &Path) -> Vec<SbRul
 fn render_rule(rule: &SbRule) -> String {
     let action = if rule.allow { "allow" } else { "deny" };
     let mut line = format!("({action} {}", rule.operation);
-    if let Some(subpath) = &rule.subpath {
-        line.push_str(&format!(" (subpath \"{subpath}\")"));
+    match &rule.target {
+        Some(SbTarget::Subpath(path)) => line.push_str(&format!(" (subpath \"{path}\")")),
+        Some(SbTarget::Literal(path)) => line.push_str(&format!(" (literal \"{path}\")")),
+        None => {}
     }
     line.push_str(")\n");
     line
@@ -303,11 +350,75 @@ mod tests {
     }
 
     #[test]
-    fn read_only_profile_denies_all_writes() {
+    fn read_only_profile_denies_workspace_writes() {
         let profile = SandboxProfile::hardened("prod"); // read_only_fs defaults true
         let rules = rules_for(&profile, Path::new("/workspace"));
-        assert!(rules.iter().any(|r| !r.allow && r.operation == "file-write*"));
-        assert!(!rules.iter().any(|r| r.allow && r.operation == "file-write*"));
+        assert!(rules
+            .iter()
+            .any(|r| !r.allow && r.operation == "file-write*"));
+        assert!(
+            !rules.iter().any(|r| r.allow
+                && r.operation == "file-write*"
+                && r.target == Some(SbTarget::Subpath("/workspace".to_string()))),
+            "a read-only profile must not allow workspace writes"
+        );
+    }
+
+    #[test]
+    fn device_sinks_stay_writable_after_the_broad_write_deny() {
+        let rules = rules_for(&harness_profile(), Path::new("/workspace"));
+        let deny = rules
+            .iter()
+            .position(|r| !r.allow && r.operation == "file-write*")
+            .expect("the broad write deny");
+        let null = rules
+            .iter()
+            .position(|r| {
+                r.allow
+                    && r.operation == "file-write*"
+                    && r.target == Some(SbTarget::Literal("/dev/null".to_string()))
+            })
+            .expect("`/dev/null` must be writable");
+        let fd = rules
+            .iter()
+            .position(|r| {
+                r.allow
+                    && r.operation == "file-write*"
+                    && r.target == Some(SbTarget::Subpath("/dev/fd".to_string()))
+            })
+            .expect("`/dev/fd` must be writable");
+        assert!(
+            deny < null && deny < fd,
+            "the deny must precede the allowances"
+        );
+    }
+
+    /// `bash` redirections and `git status` open `/dev/null` for reading and
+    /// writing; before this allowance the confined command failed with
+    /// "Operation not permitted" while succeeding outside the sandbox.
+    #[test]
+    fn a_sandboxed_shell_can_write_the_standard_devices() {
+        if !SeatbeltSandbox::launcher_available() {
+            eprintln!("skip device write probe: {SANDBOX_EXEC} is not installed");
+            return;
+        }
+        let cwd = std::env::current_dir().expect("cwd");
+        let profile = build_profile(&harness_profile(), &command_cwd(&cwd));
+        let output = std::process::Command::new(SANDBOX_EXEC)
+            .arg("-p")
+            .arg(&profile)
+            .arg("/bin/bash")
+            .arg("-c")
+            .arg("echo discarded > /dev/null && echo fd > /dev/fd/1 && echo err > /dev/stderr")
+            .current_dir(&cwd)
+            .output()
+            .expect("spawn the sandboxed shell");
+        assert!(
+            output.status.success(),
+            "a confined shell must reach its standard devices; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("fd"));
     }
 
     #[test]

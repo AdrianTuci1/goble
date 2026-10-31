@@ -56,6 +56,10 @@ pub struct VisibleBlock {
     /// How long the command took: its finished duration, or how long it has been
     /// running so far. `None` before the shell reported the command.
     pub duration: Option<Duration>,
+    /// When the command started, on the wall clock, so a conversation view can
+    /// interleave this block with chat rows by their `created_at`. `None` for a
+    /// block that never ran.
+    pub started_at: Option<std::time::SystemTime>,
     /// The prompt line this command was typed at, drawn as the block's header:
     /// the shell's own prompt when it drew one, otherwise the prompt its shell
     /// would draw at this directory. The body never repeats it.
@@ -365,6 +369,7 @@ impl Emulator {
                 pwd: block.metadata().pwd.clone(),
                 git_branch: block.metadata().git_branch.clone(),
                 duration: block.duration().or_else(|| block.elapsed()),
+                started_at: block.started_wall(),
                 prompt: block
                     .prompt_text()
                     .or_else(|| synthesized_prompt(block, host, shell)),

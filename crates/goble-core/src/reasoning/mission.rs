@@ -572,7 +572,8 @@ pub(crate) fn run_mission(
                 let sender_ref = deploy_sender.as_ref().map(|f| arc_to_sender_ref(f));
                 let result = execute_tool_call(&store, &*runner, sender_ref, &mcp_manager, &workspace_dir, &docs_dir, call, &web_search, &turn_ctx).await;
                 match result {
-                    Ok(value) => {
+                    Ok(outcome) => {
+                        let value = outcome.output;
                         let tool_result_text = format!("{}\n{}", call.id, value);
                         if let Err(e) = store.insert_chat_message(
                             &uuid::Uuid::new_v4().to_string(),
@@ -587,6 +588,7 @@ pub(crate) fn run_mission(
                         }
                         call_records[index].status = ToolCallStatus::Finished;
                         call_records[index].result = Some(value.clone());
+                        call_records[index].diff = outcome.diff;
                         if let Some(id) = &assistant_msg_id {
                             if let Err(e) = persist_tool_call_records(&store, id, &call_records) {
                                 yield HarnessEvent::Error(e.to_string());

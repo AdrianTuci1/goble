@@ -1,12 +1,16 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::FontFamily;
 
 use super::atlas::AtlasEntry;
 use super::cache;
+use super::emoji;
 
 /// Bundled Roboto font weight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -347,10 +351,24 @@ fn append_with_fallback(
         if ch.is_whitespace() || ch.is_control() {
             return 0;
         }
-        fonts
-            .iter()
-            .position(|font| draws_glyph(font, ch))
-            .unwrap_or(0)
+        if let Some(face) = fonts.iter().position(|font| draws_glyph(font, ch)) {
+            return face;
+        }
+        // A variation selector or joiner names a zero-metric glyph in the
+        // emoji face, so `draws_glyph` rejects it for its lack of ink. Face 0
+        // would then rasterize its `.notdef` box beside the symbol; a fallback
+        // that names it advances nothing and draws nothing.
+        if is_zero_width_ignorable(ch) {
+            if let Some((face, _)) = fonts
+                .iter()
+                .enumerate()
+                .skip(1)
+                .find(|(_, font)| font.has_glyph(ch))
+            {
+                return face;
+            }
+        }
+        0
     };
     let mut start = 0;
     let mut current = face_for(first);
@@ -436,6 +454,16 @@ fn draws_glyph(font: &fontdue::Font, ch: char) -> bool {
 /// by terminal art.
 fn is_blank_filler(ch: char) -> bool {
     matches!(ch, '\u{2800}' | '\u{3164}' | '\u{ffa0}')
+}
+
+/// Default-ignorable code points that advance by nothing: variation selectors,
+/// zero-width spaces and joiners, and the invisible operators. They modify the
+/// character before them rather than occupying a cell of their own.
+fn is_zero_width_ignorable(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{206f}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}'
+    )
 }
 
 /// Faces tried after the bundled primary, in coverage order: the system's
@@ -732,12 +760,26 @@ fn glyph_bitmap(
     })
 }
 
+/// A colour emoji drawn over its text run: a straight-alpha RGBA8 bitmap and
+/// where its top-left sits relative to the run's atlas quad, in physical
+/// pixels.
+#[derive(Clone)]
+pub(crate) struct EmojiQuad {
+    /// Stable texture key: the cluster and the pixel size it was rasterized at.
+    pub source: String,
+    pub data: Arc<[u8]>,
+    pub width: u32,
+    pub height: u32,
+    pub offset: [f32; 2],
+}
+
 /// Rasterize a run into an atlas bitmap.
 ///
 /// The size and the wrap width are the exact values the element measured with
 /// (in physical pixels), not rounded ones: a run rasterized at a size or a
 /// width the measurement never used can break its lines somewhere else and
 /// produce a block taller than the box it was measured into.
+#[cfg(test)]
 pub(super) fn rasterize_text(
     text: &str,
     font_size: f32,
@@ -747,6 +789,23 @@ pub(super) fn rasterize_text(
     max_width: f32,
     line_height: f32,
 ) -> Option<(AtlasEntry, Vec<u8>, u32, u32)> {
+    rasterize_text_with_emoji(
+        text, font_size, weight, mono, italic, max_width, line_height,
+    )
+    .map(|(entry, atlas, width, height, _)| (entry, atlas, width, height))
+}
+
+/// [`rasterize_text`], plus the colour emoji the run draws over its coverage
+/// bitmap.
+pub(super) fn rasterize_text_with_emoji(
+    text: &str,
+    font_size: f32,
+    weight: FontWeight,
+    mono: bool,
+    italic: bool,
+    max_width: f32,
+    line_height: f32,
+) -> Option<(AtlasEntry, Vec<u8>, u32, u32, Vec<EmojiQuad>)> {
     let font_set = font_set()?;
     let family = if mono {
         FontFamily::Mono
@@ -755,7 +814,7 @@ pub(super) fn rasterize_text(
     };
     let font = font_set.select(weight, family, italic);
     let chain = font_chain(font, text);
-    let layout = layout_text(text, font_size, max_width, line_height, &chain);
+    let (layout, runs) = layout_text_with_runs(text, font_size, max_width, line_height, &chain);
 
     let glyphs = layout.glyphs();
     // The quad spans the block's line box, so the drawn ink lands exactly where
@@ -775,7 +834,63 @@ pub(super) fn rasterize_text(
             size: [1.0, height as f32],
             offset: [0.0; 2],
         };
-        return Some((entry, vec![0u8; height as usize], 1, height));
+        return Some((entry, vec![0u8; height as usize], 1, height, Vec::new()));
+    }
+
+    // The baseline of each glyph's line, so a colour cluster is placed on the
+    // line the fallback face laid it out on.
+    let mut baselines = vec![f32::NAN; glyphs.len()];
+    if let Some(lines) = layout.lines() {
+        for line in lines {
+            let start = line.glyph_start.min(glyphs.len());
+            let end = line.glyph_end.saturating_add(1).min(glyphs.len());
+            for baseline in &mut baselines[start..end.max(start)] {
+                *baseline = line.baseline_y;
+            }
+        }
+    }
+
+    // Emoji clusters get their ink from the system's colour face. The run's
+    // geometry still comes from fontdue, so the cluster keeps the cell the
+    // fallback face reserved for it; only the outline is suppressed.
+    let clusters: Vec<(Range<usize>, &str)> = text
+        .grapheme_indices(true)
+        .filter(|(_, cluster)| emoji::is_emoji_cluster(cluster))
+        .map(|(start, cluster)| (start..start + cluster.len(), cluster))
+        .collect();
+    let mut suppressed = vec![false; glyphs.len()];
+    let mut emoji_boxes: Vec<(f32, f32, String, Arc<emoji::EmojiBitmap>)> = Vec::new();
+    for (range, cluster) in &clusters {
+        let mut indices = Vec::new();
+        for (index, glyph) in glyphs.iter().enumerate() {
+            let byte = run_base(index, &runs) + glyph.byte_offset;
+            if range.contains(&byte) {
+                indices.push(index);
+            }
+        }
+        if indices.is_empty() {
+            continue;
+        }
+        let Some(bitmap) = emoji::rasterize(cluster, font_size) else {
+            continue;
+        };
+        let first = indices[0];
+        let baseline = baselines[first];
+        let x = glyphs[first].x;
+        let top = if baseline.is_finite() {
+            baseline - bitmap.ascent
+        } else {
+            glyphs[first].y
+        };
+        for index in indices {
+            suppressed[index] = true;
+        }
+        emoji_boxes.push((
+            x,
+            top,
+            format!("emoji:{cluster}:{:08x}", font_size.to_bits()),
+            bitmap,
+        ));
     }
 
     // Fontdue already bakes a glyph's bearings into its position (`glyph.x` is
@@ -789,7 +904,12 @@ pub(super) fn rasterize_text(
     // are rasterized here.
     let rasterized: Vec<(f32, f32, Rc<GlyphBitmap>)> = glyphs
         .iter()
-        .map(|glyph| {
+        .enumerate()
+        // Layout gives a control character zero metrics and a glyph index of
+        // zero, but rasterizing that index yields the face's inked `.notdef`
+        // box: a newline would stamp a tofu box at the end of its line.
+        .filter(|(index, glyph)| !glyph.char_data.is_control() && !suppressed[*index])
+        .map(|(_, glyph)| {
             (
                 glyph.x,
                 glyph.y,
@@ -810,6 +930,14 @@ pub(super) fn rasterize_text(
         min_y = min_y.min(*y);
         max_x = max_x.max(*x + metrics.width as f32);
         max_y = max_y.max(*y + metrics.height as f32);
+    }
+    // The emoji bitmaps belong to the run's own box too: the quad has to cover
+    // them so their offsets stay non-negative inside it.
+    for (x, y, _, bitmap) in &emoji_boxes {
+        min_x = min_x.min(*x);
+        min_y = min_y.min(*y);
+        max_x = max_x.max(*x + bitmap.width as f32);
+        max_y = max_y.max(*y + bitmap.height as f32);
     }
 
     // Anchor the bitmap at the line-box origin so the quad aligns with the
@@ -849,7 +977,18 @@ pub(super) fn rasterize_text(
         offset: [-left, -top],
     };
 
-    Some((entry, atlas, width, height))
+    let emoji_quads = emoji_boxes
+        .into_iter()
+        .map(|(x, y, source, bitmap)| EmojiQuad {
+            source,
+            data: Arc::clone(&bitmap.rgba),
+            width: bitmap.width,
+            height: bitmap.height,
+            offset: [x - left, y - top],
+        })
+        .collect();
+
+    Some((entry, atlas, width, height, emoji_quads))
 }
 
 #[cfg(test)]
@@ -875,6 +1014,95 @@ mod tests {
         };
         let ink = alpha.iter().filter(|pixel| **pixel > 0).count();
         assert_eq!(ink, 0, "a blank filler draws no .notdef box");
+    }
+
+    /// A newline is laid out with a zero-width glyph whose index is zero.
+    /// Rasterizing that index paints the face's `.notdef` box on the line it
+    /// breaks: a run of spaces and newlines has to stay blank.
+    #[test]
+    fn a_newline_draws_no_notdef_box() {
+        for text in [" \n ", "\n"] {
+            let Some((_, alpha, _, _)) =
+                rasterize_text(text, 12.0, FontWeight::Regular, false, false, 100.0, 1.35)
+            else {
+                return;
+            };
+            let ink = alpha.iter().filter(|pixel| **pixel > 0).count();
+            assert_eq!(ink, 0, "a newline draws no .notdef box");
+        }
+    }
+
+    /// A variation selector advances by nothing: `⚠️` draws the warning
+    /// triangle alone, not the primary face's `.notdef` box beside it. The
+    /// selector is named only by a fallback face, with zero metrics, so
+    /// `draws_glyph` alone would leave it on face 0.
+    #[test]
+    fn a_variation_selector_adds_no_notdef_box() {
+        let Some(set) = font_set() else {
+            return;
+        };
+        let primary = set.select(FontWeight::Regular, FontFamily::Mono, false);
+        let fallbacks = fallback_fonts();
+        if primary.has_glyph('\u{fe0f}')
+            || !fallbacks.iter().any(|font| font.has_glyph('\u{fe0f}'))
+            || !fallbacks.iter().any(|font| draws_glyph(font, '⚠'))
+        {
+            return;
+        }
+        let plain = measure_text_family(
+            "⚠",
+            12.0,
+            1.2,
+            f32::INFINITY,
+            FontWeight::Regular,
+            FontFamily::Mono,
+            false,
+        );
+        let selected = measure_text_family(
+            "⚠\u{fe0f}",
+            12.0,
+            1.2,
+            f32::INFINITY,
+            FontWeight::Regular,
+            FontFamily::Mono,
+            false,
+        );
+        assert_eq!(
+            selected.x, plain.x,
+            "the selector adds width: {selected:?} against {plain:?}"
+        );
+
+        let (_, plain_atlas, _, _) = rasterize_text(
+            "⚠",
+            12.0,
+            FontWeight::Regular,
+            true,
+            false,
+            f32::INFINITY,
+            1.2,
+        )
+        .expect("the sign rasterizes");
+        let (_, selected_atlas, _, _, emoji) = rasterize_text_with_emoji(
+            "⚠\u{fe0f}",
+            12.0,
+            FontWeight::Regular,
+            true,
+            false,
+            f32::INFINITY,
+            1.2,
+        )
+        .expect("the sign with its selector rasterizes");
+        assert!(
+            plain_atlas.iter().any(|pixel| *pixel > 0),
+            "the sign draws ink"
+        );
+        let emoji_ink = emoji
+            .iter()
+            .any(|quad| quad.data.chunks_exact(4).any(|pixel| pixel[3] > 0));
+        assert!(
+            selected_atlas.iter().any(|pixel| *pixel > 0) || emoji_ink,
+            "the sign with its selector still draws ink"
+        );
     }
 
     /// A run holding a character the bundled face omits lays that character out
@@ -979,12 +1207,16 @@ mod tests {
             }
             let mut text = String::new();
             text.push(ch);
-            let (_, atlas, width, height) =
-                rasterize_text(&text, 13.0, FontWeight::Regular, false, false, 100.0, 1.2)
+            let (_, atlas, width, height, emoji) =
+                rasterize_text_with_emoji(&text, 13.0, FontWeight::Regular, false, false, 100.0, 1.2)
                     .unwrap_or_else(|| panic!("{ch:?} must rasterize"));
             assert!(width > 0 && height > 0, "{ch:?} has an empty box");
+            let atlas_ink = atlas.iter().any(|coverage| *coverage > 0);
+            let emoji_ink = emoji
+                .iter()
+                .any(|quad| quad.data.chunks_exact(4).any(|pixel| pixel[3] > 0));
             assert!(
-                atlas.iter().any(|coverage| *coverage > 0),
+                atlas_ink || emoji_ink,
                 "{ch:?} is covered by a fallback but drew no ink"
             );
         }

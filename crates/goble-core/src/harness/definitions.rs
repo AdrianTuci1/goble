@@ -407,17 +407,6 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "execute_python_code".to_string(),
-            description: "Execute Python code in a temporary file and return stdout/stderr.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "code": { "type": "string" }
-                },
-                "required": ["code"]
-            }),
-        },
-        ToolDefinition {
             name: "run_agent".to_string(),
             description: "Run a local agent once and return its prompt output.".to_string(),
             parameters: serde_json::json!({

@@ -1,18 +1,15 @@
-use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::chat_content::{
-    tool_fold_key, ChatFragmentKind, ToolDisplayMode,
-};
+use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind, ToolDisplayMode};
 use crate::elements::chat_message_bubble::{tool_fold_targets, ToolFoldTarget};
 use crate::elements::terminal_block::{terminal_filter_bar, TerminalFilter};
 use crate::elements::{
     command_approval_card, slash_menu_open, AppContext, AskUserCard, Axis, Border, Button,
     ButtonVariant, ChatComposer, ChatMessageBubble, CommandApprovalState, ConstrainedBox,
     Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex,
-    FocusHandler, HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding,
-    QuickActionButton, Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip,
-    TooltipPosition, TurnStatusFooter,
+    HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding, QuickActionButton,
+    Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
+    TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
@@ -140,7 +137,10 @@ mod failure_tests {
 
     #[test]
     fn a_plain_error_is_its_first_line_and_a_long_one_is_capped() {
-        assert_eq!(brief_failure("\n  network unreachable  \nmore"), "network unreachable");
+        assert_eq!(
+            brief_failure("\n  network unreachable  \nmore"),
+            "network unreachable"
+        );
         let long = "x".repeat(400);
         let brief = brief_failure(&long);
         assert_eq!(brief.chars().count(), 180);
@@ -329,8 +329,10 @@ impl ChatView {
     /// Both are hover affordances — no fill at rest, a band under the pointer,
     /// the shape the reference tool's response footer gives them — rather than
     /// the raised controls a button draws. The counts are the provider's own,
-    /// summed over the conversation's model calls (input, the cached part when
-    /// the provider reports one, and output). Nothing here is a price. A
+    /// summed over the conversation's model calls: the prompt tokens that
+    /// missed the cache plus the output, which is what the conversation spent
+    /// rather than the size of the calls (the cached share is billed at a
+    /// discount). Nothing here is a price. A
     /// conversation whose provider has reported nothing yet says so rather than
     /// drawing a zero, and its disclosure does not open.
     ///
@@ -395,7 +397,7 @@ impl ChatView {
         if has_usage {
             let open = self.usage_open.clone();
             let is_open = *open.borrow();
-            let label = format!("{} tokens", group_digits(self.usage.total()));
+            let label = format!("{} tokens", group_digits(self.usage.spend()));
             let usage = HoverRow::new(
                 Flex::row()
                     .with_spacing(6.0)
@@ -413,10 +415,14 @@ impl ChatView {
                             .finish(),
                     )
                     .with_child(
-                        Icon::new(if is_open { "chevron-down" } else { "chevron-right" })
-                            .with_size(12.0)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .finish(),
+                        Icon::new(if is_open {
+                            "chevron-down"
+                        } else {
+                            "chevron-right"
+                        })
+                        .with_size(12.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
                     )
                     .finish(),
             )
@@ -427,9 +433,12 @@ impl ChatView {
             })
             .finish();
             row = row.with_child(
-                Tooltip::new(usage, "Show this conversation's token usage")
-                    .with_position(TooltipPosition::Above)
-                    .finish(),
+                Tooltip::new(
+                    usage,
+                    "Show this conversation's token spend (cache hits excluded)",
+                )
+                .with_position(TooltipPosition::Above)
+                .finish(),
             );
         } else {
             // Nothing reported yet: the slot stays, saying so, so the footer of
@@ -495,7 +504,8 @@ impl ChatView {
     /// The expanded usage line, shaped like the reference tool's readout: the
     /// prompt side carries its cached share in parentheses, because the cache is
     /// a subset of the input rather than a bucket beside it, so the three
-    /// numbers never read as a sum. Then the generated side and the total.
+    /// numbers never read as a sum. Then the generated side and the spend the
+    /// meter shows: the prompt tokens that missed the cache plus the output.
     fn usage_detail(&self) -> String {
         let input = match self.usage.cached {
             Some(cached) => format!(
@@ -506,9 +516,9 @@ impl ChatView {
             None => format!("Input {}", group_digits(self.usage.input)),
         };
         format!(
-            "{input}  ·  Output {}  ·  Total {}",
+            "{input}  ·  Output {}  ·  Spent {}",
             group_digits(self.usage.output),
-            group_digits(self.usage.total())
+            group_digits(self.usage.spend())
         )
     }
 
@@ -661,20 +671,10 @@ impl ChatView {
                     editor_scroll: self.composer_proposal_editor_scroll.clone(),
                     draft: self.composer_proposal_draft.clone(),
                     caret: self.composer_proposal_caret.clone(),
-                    // Clicking the composer hands it the keyboard; until then
-                    // the card's command field answers Enter and Escape. A
-                    // click on the field itself takes the keys back from the
-                    // composer, so the two never type at once.
-                    field_focused: !self.composer_focused,
-                    on_focus_change: self.on_composer_focus_change.as_ref().map(|cb| {
-                        let cb = cb.clone();
-                        Rc::new(RefCell::new(move |focused: bool| {
-                            if focused {
-                                (cb.borrow_mut())(false);
-                            }
-                        }))
-                            as FocusHandler
-                    }),
+                    // The rich input is not built while the card waits, so the
+                    // card is the pane's only typing surface and always holds
+                    // the keys.
+                    field_focused: true,
                 };
                 message_column = message_column.with_child(command_approval_card(
                     &proposal,
@@ -709,8 +709,7 @@ impl ChatView {
                     .finish();
                     header = header.with_child(dismiss);
                 }
-                let mut footer = Flex::row()
-                    .with_main_axis_alignment(MainAxisAlignment::End);
+                let mut footer = Flex::row().with_main_axis_alignment(MainAxisAlignment::End);
                 if let Some(cb) = self.on_send_queued.clone() {
                     let send_now = Button::new(
                         Text::new("Send now")
@@ -818,11 +817,9 @@ impl ChatView {
             // The files the attach control picked: one chip per file, over the
             // editor they belong to.
             .with_attachments(self.composer_attachments.clone())
-            // The approval card above owns the keyboard until the user clicks
-            // the input, so the composer stays writable: a follow-up can be
-            // queued while the decision waits.
+            // A waiting command hides the input below, so this focus state
+            // only describes the composer while the pane is free to type.
             .with_focused(self.composer_focused)
-            .with_waiting(self.composer_proposal.is_some())
             .with_queued_prompt_present(self.queued_prompt.is_some())
             .with_caret(self.composer_caret.clone())
             // While a turn is in flight the status row above the input carries
@@ -911,10 +908,11 @@ impl ChatView {
         if let Some(mode) = self.composer_approval_mode {
             composer = composer
                 .with_approval_mode(mode)
-                .with_approval_menu_open(self.composer_approval_menu_open.clone());
+                .with_approval_menu_open(self.composer_approval_menu_open.clone())
+                .with_approval_menu_highlight(self.composer_approval_menu_highlight.clone());
             if let Some(cb) = self.on_select_approval_mode.clone() {
-                composer = composer
-                    .with_on_select_approval_mode(move |mode| (cb.borrow_mut())(mode));
+                composer =
+                    composer.with_on_select_approval_mode(move |mode| (cb.borrow_mut())(mode));
             }
         }
         if let Some(proposal) = self.composer_proposal.clone() {
@@ -949,13 +947,17 @@ impl ChatView {
                 move |idx| (cb.borrow_mut())(idx),
             );
             composer = composer.with_dir_menu_scroll(self.composer_dir_menu_scroll.clone());
+            composer =
+                composer.with_dir_menu_highlight(self.composer_dir_menu_highlight.clone());
         }
         if let Some(cb) = self.on_select_branch_item.clone() {
-            composer = composer.with_branch_menu(
-                self.composer_branch_items.clone(),
-                self.composer_branch_menu_open.clone(),
-                move |idx| (cb.borrow_mut())(idx),
-            );
+            composer = composer
+                .with_branch_menu(
+                    self.composer_branch_items.clone(),
+                    self.composer_branch_menu_open.clone(),
+                    move |idx| (cb.borrow_mut())(idx),
+                )
+                .with_branch_menu_highlight(self.composer_branch_menu_highlight.clone());
         }
         // The slash-command menu: the draft is its query, so the host hands the
         // view the commands it matches and the view keeps the editor focused.
@@ -997,10 +999,9 @@ impl ChatView {
         // draft's own command list holds while the draft is a command, the way
         // grok-build puts them over the prompt and not over the pane.
         if self.show_composer {
-            // A waiting command puts the card's keys first: the command list
-            // and the instruction strip stay away, and the card's command
-            // field holds the keyboard until the user clicks the composer.
-            // The rich input itself stays, so a follow-up can be queued. The
+            // A waiting command puts the card's keys first: the command list,
+            // the instruction strip and the rich input all stay away, so the
+            // card's command field is the pane's only typing surface. The
             // turn-status row (with its Stop) stays, because the turn is still
             // in flight.
             let waiting = self.composer_proposal.is_some();
@@ -1037,8 +1038,11 @@ impl ChatView {
                 // six points lower than `sm` alone did, with the block's own
                 // height unchanged.
                 column = column.with_child(
-                    Padding::new(strip, EdgeInsets::new(md, 4.0 + STRIP_RISE, md, sm - STRIP_RISE))
-                        .finish(),
+                    Padding::new(
+                        strip,
+                        EdgeInsets::new(md, 4.0 + STRIP_RISE, md, sm - STRIP_RISE),
+                    )
+                    .finish(),
                 );
             }
             // The separator is the input's top edge and the composer sits on
@@ -1046,17 +1050,19 @@ impl ChatView {
             // open a gap under the rule. The shell pane's bar keeps its rows
             // `xs` under its own divider; this is the same edge.
             //
-            // The input stays while a command waits: a follow-up can be typed
-            // and queued while the card holds the decision, and the second
-            // Enter sends it now. Without it the user has no way to speak to
-            // the agent until the approval is settled.
-            let input = Flex::column()
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_child(Divider::horizontal().finish())
-                .with_child(composer)
-                .finish();
-            column = column.with_child(input);
+            // A waiting command hides the whole input: the card above is the
+            // pane's only typing surface until Run or Reject settles the
+            // decision. The turn-status row stays as the mark that the turn is
+            // suspended.
+            if !waiting {
+                let input = Flex::column()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                    .with_child(Divider::horizontal().finish())
+                    .with_child(composer)
+                    .finish();
+                column = column.with_child(input);
+            }
         }
 
         // No outer padding: the header and composer span the full width and
@@ -1115,9 +1121,10 @@ impl ChatView {
                         }
                     }
                     ToolFoldTarget::Call { key, index } => {
-                        let current = fold.get(&key).copied().unwrap_or_else(|| {
-                            message.tool_calls[index].default_display_mode()
-                        });
+                        let current = fold
+                            .get(&key)
+                            .copied()
+                            .unwrap_or_else(|| message.tool_calls[index].default_display_mode());
                         if current != ToolDisplayMode::Expanded {
                             fold.insert(key, ToolDisplayMode::Expanded);
                             return true;
@@ -1155,9 +1162,10 @@ impl ChatView {
                         }
                     }
                     ToolFoldTarget::Call { key, index } => {
-                        let current = fold.get(&key).copied().unwrap_or_else(|| {
-                            message.tool_calls[index].default_display_mode()
-                        });
+                        let current = fold
+                            .get(&key)
+                            .copied()
+                            .unwrap_or_else(|| message.tool_calls[index].default_display_mode());
                         if current != ToolDisplayMode::Collapsed {
                             fold.insert(key, ToolDisplayMode::Collapsed);
                             return true;

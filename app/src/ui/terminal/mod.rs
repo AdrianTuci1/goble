@@ -43,7 +43,7 @@ mod input;
 #[cfg(test)]
 mod tests;
 
-pub use blocks::{executed_command_block, section_data};
+pub use blocks::{executed_command_block, executed_command_block_at, section_data};
 pub use build::build_terminal;
 
 const FONT_SIZE: f32 = 12.0;

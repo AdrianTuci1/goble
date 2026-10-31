@@ -50,6 +50,10 @@ pub struct ToolCall {
     pub arguments: String,
     pub status: ToolCallStatus,
     pub result: Option<String>,
+    /// The unified diff the harness recorded while the tool ran, for a file
+    /// mutation. `None` for every other call and for rows written before the
+    /// harness recorded one.
+    pub diff: Option<String>,
 }
 
 impl ToolCall {
@@ -76,6 +80,8 @@ impl ToolCall {
             status: ToolCallStatus,
             #[serde(default)]
             result: Option<String>,
+            #[serde(default)]
+            diff: Option<String>,
         }
         serde_json::from_str::<Vec<Raw>>(json)
             .unwrap_or_default()
@@ -86,6 +92,7 @@ impl ToolCall {
                 arguments: serde_json::to_string(&raw.arguments).unwrap_or_default(),
                 status: raw.status,
                 result: raw.result,
+                diff: raw.diff,
             })
             .collect()
     }

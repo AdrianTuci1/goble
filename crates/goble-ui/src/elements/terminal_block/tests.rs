@@ -259,13 +259,13 @@ fn a_selected_line_repaints_its_glyphs_in_the_contrast_colour() {
         geometry,
     );
     let commands = crate::test_util::render_element(&mut block, vec2f(600.0, 300.0), &app);
-    let accent = app.theme.color(ColorToken::Accent);
+    let band = app.theme.color(ColorToken::Selection);
     let contrast = app.theme.color(ColorToken::Bg);
     assert!(
-        commands
-            .iter()
-            .any(|c| matches!(c, crate::render::RenderCommand::FillRect { color, .. } if *color == accent)),
-        "the selection is a band in the accent colour"
+        commands.iter().any(
+            |c| matches!(c, crate::render::RenderCommand::FillRect { color, .. } if *color == band)
+        ),
+        "the selection is a band in the desaturated accent colour"
     );
     assert!(
         commands.iter().any(|c| matches!(

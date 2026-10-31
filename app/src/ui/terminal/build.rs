@@ -781,6 +781,7 @@ impl TerminalView {
                     .with_bottom_anchor(!screen.alt_screen)
                     .with_cursor_visible(false)
                     .with_selection(selection)
+                    .with_selection_color(app.theme.color(ColorToken::Selection))
                     .with_highlights(highlights, active_highlight)
                     .with_copy_cursor(copy_cursor)
                     .with_images(screen.images)

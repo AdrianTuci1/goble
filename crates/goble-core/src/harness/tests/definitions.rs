@@ -12,6 +12,18 @@ fn test_list_tools() {
     assert!(tools.iter().any(|t| t.name == "read_file"));
 }
 
+/// The harness exposes the tool set the transcript's grok-build families can
+/// name. `execute_python_code` was a leftover outside that set: it rendered as
+/// a raw tool name and failed when called.
+#[test]
+fn the_python_tool_is_not_defined() {
+    assert!(
+        harness_tool_definitions()
+            .iter()
+            .all(|definition| definition.name != "execute_python_code")
+    );
+}
+
 #[test]
 fn spawn_subagent_is_declared_with_its_schema() {
     let definition = harness_tool_definitions()

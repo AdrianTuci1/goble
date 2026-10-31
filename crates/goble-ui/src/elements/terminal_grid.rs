@@ -67,6 +67,9 @@ pub struct TerminalGrid {
     bottom_anchor: bool,
     /// The mouse selection, one range per row.
     selection: Vec<GridRange>,
+    /// The colour the selection is filled with. `None` keeps the palette's blue
+    /// (ANSI 4), which is what a grid built outside an app theme paints with.
+    selection_color: Option<ColorU>,
     /// Search matches, one range per row, and which one is current.
     highlights: Vec<GridRange>,
     active_highlight: Option<usize>,
@@ -99,6 +102,7 @@ impl TerminalGrid {
             show_cursor: true,
             bottom_anchor: false,
             selection: Vec::new(),
+            selection_color: None,
             highlights: Vec::new(),
             active_highlight: None,
             copy_cursor: None,
@@ -145,6 +149,13 @@ impl TerminalGrid {
     /// Paint a mouse selection, one cell range per row.
     pub fn with_selection(mut self, selection: Vec<GridRange>) -> Self {
         self.selection = selection;
+        self
+    }
+
+    /// The colour the selection is filled with, so a pane's selection agrees
+    /// with the other surfaces' bands. Unset, the grid keeps the palette's blue.
+    pub fn with_selection_color(mut self, color: ColorU) -> Self {
+        self.selection_color = Some(color);
         self
     }
 
@@ -396,7 +407,11 @@ impl TerminalGrid {
         }
         // A selection sits on top of a match, so the range the user chose is
         // still readable under the find bar.
-        self.paint_ranges(renderer, origin, &self.selection, self.palette.ansi[4]);
+        let band = self
+            .selection_color
+            .map(|color| (color.r, color.g, color.b))
+            .unwrap_or(self.palette.ansi[4]);
+        self.paint_ranges(renderer, origin, &self.selection, band);
     }
 
     /// Images as one textured quad each, anchored to the cursor cell they were
@@ -946,6 +961,8 @@ mod tests {
         );
     }
 
+    /// A grid built outside the app theme falls back to the palette's blue for
+    /// its selection; the find bar's active match keeps the cursor colour.
     #[test]
     fn a_selection_and_a_search_match_are_painted_in_the_palette() {
         let column = TerminalGrid::column_pitch(DEFAULT_FONT_SIZE, FontWeight::Regular);
@@ -973,6 +990,34 @@ mod tests {
                 ) && (*width - column * 5.0).abs() < 0.01
             }),
             "the active match is five cells in the accent: {rects:?}"
+        );
+    }
+
+    /// A grid the app builds is handed the theme's selection band, so a pane's
+    /// selection is the same desaturated accent as the block and transcript
+    /// surfaces instead of the palette's blue.
+    #[test]
+    fn a_configured_selection_colour_replaces_the_palette_blue() {
+        let column = TerminalGrid::column_pitch(DEFAULT_FONT_SIZE, FontWeight::Regular);
+        let palette = Palette::xterm();
+        let band = ColorU::new(0x4d, 0x4d, 0x4d, 255);
+        let mut grid = grid_from(b"hello", 20, 1)
+            .with_cursor_visible(false)
+            .with_selection(vec![GridRange::new((0, 0), (0, 4))])
+            .with_selection_color(band);
+        let commands = painted(&mut grid);
+        let rects = rects(&commands);
+        assert!(
+            rects.iter().any(|(_, _, width, _, color)| {
+                *color == band && (*width - column * 5.0).abs() < 0.01
+            }),
+            "the selection is five cells in the configured colour: {rects:?}"
+        );
+        assert!(
+            !rects.iter().any(|(_, _, _, _, color)| {
+                *color == ColorU::new(palette.ansi[4].0, palette.ansi[4].1, palette.ansi[4].2, 255)
+            }),
+            "the palette's blue is not painted once a colour is configured: {rects:?}"
         );
     }
 

@@ -38,6 +38,7 @@ mod guide;
 mod mcp;
 mod presentation;
 mod runner;
+mod text_diff;
 mod types;
 mod web;
 mod workflows;
@@ -46,16 +47,17 @@ mod workflows;
 mod tests;
 
 pub use presentation::{
-    edit_change_counts, edit_diffstat, one_line, skill_name, string_argument, subagent_subject,
-    tool_kind_for, tool_row, web_search_sources, ToolKind, ToolRow,
+    edit_change_counts, edit_diffstat, is_hidden_tool, one_line, skill_name, string_argument,
+    subagent_subject, tool_kind_for, tool_row, web_search_sources, ToolKind, ToolRow,
 };
 pub use runner::{
     harness_sandbox, harness_sandbox_profile, CommandRunner, MockCommandRunner, PaneSession,
     RoutedCommandRunner, SandboxedCommandRunner,
 };
+pub use text_diff::{unified_diff, unified_diff_with_context, DIFF_CONTEXT};
 pub use types::{
-    ChatToolCall, CommandDecision, HarnessEvent, ThinkingMode, ToolCallStatus, ToolSchema,
-    WebSearchConfig,
+    ChatToolCall, CommandDecision, HarnessEvent, ThinkingMode, ToolCallStatus, ToolOutcome,
+    ToolSchema, WebSearchConfig,
 };
 
 pub(crate) use commands::{command_candidates, run_approved_command, COMMAND_TOOL};

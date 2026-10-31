@@ -146,6 +146,8 @@ impl WgpuRenderEngine {
                     max_width,
                     line_height,
                 } => {
+                    let mut emoji = Vec::new();
+                    let mut atlas_offset = [0.0f32; 2];
                     if let Some(entry) = self.text_atlas.entry_with_family(
                         text,
                         *font_size * scale,
@@ -187,6 +189,68 @@ impl WgpuRenderEngine {
                                 color,
                             },
                         ]);
+
+                        atlas_offset = entry.offset;
+                        // Colour emoji are RGBA bitmaps, not coverage the text
+                        // shader can tint: draw each one over its run as an
+                        // image quad at the offset the run recorded.
+                        emoji = self
+                            .text_atlas
+                            .emoji_with_family(
+                                text,
+                                *font_size * scale,
+                                *font_weight,
+                                *font_family,
+                                *font_italic,
+                                *max_width * scale,
+                                *line_height,
+                            )
+                            .map(|quads| quads.to_vec())
+                            .unwrap_or_default();
+                    }
+                    for quad in emoji {
+                        let quad_left =
+                            origin.x * scale + atlas_offset[0] + quad.offset[0];
+                        let quad_top =
+                            origin.y * scale + atlas_offset[1] + quad.offset[1];
+                        let quad_right = quad_left + quad.width as f32;
+                        let quad_bottom = quad_top + quad.height as f32;
+                        let vertex_index = image_vertices.len();
+                        image_vertices.extend_from_slice(&[
+                            TextVertex {
+                                position: [quad_left, quad_top],
+                                uv: [0.0, 0.0],
+                                color: [1.0; 4],
+                            },
+                            TextVertex {
+                                position: [quad_right, quad_top],
+                                uv: [1.0, 0.0],
+                                color: [1.0; 4],
+                            },
+                            TextVertex {
+                                position: [quad_left, quad_bottom],
+                                uv: [0.0, 1.0],
+                                color: [1.0; 4],
+                            },
+                            TextVertex {
+                                position: [quad_right, quad_bottom],
+                                uv: [1.0, 1.0],
+                                color: [1.0; 4],
+                            },
+                        ]);
+                        let bind_group = self.ensure_image_texture(
+                            device,
+                            queue,
+                            &quad.source,
+                            quad.width,
+                            quad.height,
+                            0,
+                            quad.data,
+                        );
+                        image_draws.push(ImageDraw {
+                            vertex_index,
+                            bind_group,
+                        });
                     }
                 }
                 RenderCommand::DrawIcon {

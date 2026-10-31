@@ -246,9 +246,13 @@ pub(crate) fn run_child_turn<'a>(
                     &turn,
                 )
                 .await;
-                let (status, body) = match &result {
-                    Ok(value) => (ToolCallStatus::Finished, value.clone()),
-                    Err(e) => (ToolCallStatus::Error, e.to_string()),
+                let (status, body, diff) = match &result {
+                    Ok(outcome) => (
+                        ToolCallStatus::Finished,
+                        outcome.output.clone(),
+                        outcome.diff.clone(),
+                    ),
+                    Err(e) => (ToolCallStatus::Error, e.to_string(), None),
                 };
                 if let Err(e) = deps.host.store.insert_chat_message(
                     &uuid::Uuid::new_v4().to_string(),
@@ -263,6 +267,7 @@ pub(crate) fn run_child_turn<'a>(
                 }
                 call_records[index].status = status;
                 call_records[index].result = Some(body.clone());
+                call_records[index].diff = diff;
                 if let Err(e) = deps.host.store.set_chat_message_tool_calls(
                     &assistant_msg_id,
                     &serde_json::to_string(&call_records).unwrap_or_default(),

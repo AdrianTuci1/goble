@@ -595,6 +595,7 @@ mod tests {
             arguments: "{}".to_string(),
             status: ToolCallStatus::Running,
             result: None,
+            diff: None,
         }
     }
 

@@ -3,14 +3,14 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Axis, Clipped, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
-    EventContext, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize,
-    PaintContext, Point, ScrollState, Scrollable, SizeConstraint, Text,
+    AppContext, Axis, Clipped, ConstrainedBox, Container, CrossAxisAlignment, Element, EventContext,
+    Expanded, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point,
+    ScrollState, Scrollable, SizeConstraint, Text,
 };
 use crate::event::{DispatchedEvent, BUTTON_PRIMARY};
 use crate::geometry::{rectf, vec2f, PointF, RectF, Size2F, Vector2F};
 use crate::platform::text_atlas::FontWeight;
-use crate::theme::{ColorToken, SpacingToken};
+use crate::theme::ColorToken;
 
 const POPUP_MAX_WIDTH: f32 = 220.0;
 const POPUP_ITEM_HEIGHT: f32 = 32.0;
@@ -160,6 +160,11 @@ pub struct PopupMenu {
     /// `paint` (where hover is decided) and read by the next frame's `layout`,
     /// which is what builds the tray.
     hover_index: Rc<RefCell<Option<usize>>>,
+    /// The item the keyboard is on, shared with the app. Like the hover cell
+    /// the tree is rebuilt every frame, so the row Up/Down moved to has to live
+    /// outside the element. `None` while the menu is closed; an open menu with
+    /// no highlight starts on the item marked `.selected()` (or the first row).
+    highlight_index: Rc<RefCell<Option<usize>>>,
     /// A row drawn after every item, in the panel's own flow — the tab menu's
     /// colour dots, which are a row of controls rather than a labelled item.
     /// `None` leaves the panel exactly the items it was given.
@@ -199,6 +204,7 @@ impl PopupMenu {
             on_select: None,
             hover_tray: None,
             hover_index: Rc::new(RefCell::new(None)),
+            highlight_index: Rc::new(RefCell::new(None)),
             footer_row: None,
             on_close: None,
             state: InteractiveState::default(),
@@ -246,9 +252,10 @@ impl PopupMenu {
         self
     }
 
-    /// The panel's corner radius, and the source of its rows' radius (two
-    /// pixels smaller, so a row sits inside the panel's border). Zero squares
-    /// both.
+    /// The panel's corner radius, and the source of its rows' radius. A row is
+    /// as round as the panel: a full-bleed row sits on the panel's own edges, so
+    /// the two must share the corner curve to keep the row inside the panel's
+    /// rounded bounds. Zero squares both.
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = radius;
         self
@@ -289,6 +296,15 @@ impl PopupMenu {
         self
     }
 
+    /// Share the keyboard highlight with the app, so Up/Down/Enter survive the
+    /// per-frame rebuild (the open flag is app-owned for the same reason). An
+    /// open menu with no highlight starts on its `.selected()` item, or the
+    /// first row; a closed menu resets the cell to `None`.
+    pub fn with_highlight_index(mut self, highlight_index: Rc<RefCell<Option<usize>>>) -> Self {
+        self.highlight_index = highlight_index;
+        self
+    }
+
     /// Add a row after the items, in the panel's own column and at its own
     /// height: warp-new's tab menu carries the tab's colours as one such row —
     /// a strip of dots, each its own click target — rather than as a labelled
@@ -305,11 +321,6 @@ impl PopupMenu {
     pub fn with_on_close<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_close = Some(Rc::new(RefCell::new(callback)));
         self
-    }
-
-    /// The panel's inner padding (the gap between the panel edge and a row).
-    fn panel_padding(app: &AppContext) -> f32 {
-        app.theme.spacing_px(SpacingToken::Sm)
     }
 
     pub fn is_open(&self) -> bool {
@@ -346,18 +357,18 @@ impl PopupMenu {
 
     /// The bounds of item `index`'s row, in window coordinates. Rows are a
     /// fixed height with a fixed spacing between them, so a row's rect follows
-    /// from the panel's geometry without asking the row element. A capped panel
-    /// draws its rows shifted by the scroll offset and clipped to the window, so
-    /// a row scrolled out of sight has no bounds: nothing hangs from it and the
-    /// pointer cannot hover it.
-    fn row_bounds(&self, index: usize, app: &AppContext) -> Option<RectF> {
+    /// from the panel's geometry without asking the row element. A row spans
+    /// the panel edge to edge — the panel adds no padding of its own — and a
+    /// capped panel draws its rows shifted by the scroll offset and clipped to
+    /// the window, so a row scrolled out of sight has no bounds: nothing hangs
+    /// from it and the pointer cannot hover it.
+    fn row_bounds(&self, index: usize, _app: &AppContext) -> Option<RectF> {
         let origin = self.origin?;
         let panel_size = self.panel_size?;
-        let pad = Self::panel_padding(app);
-        let x = origin.x() + self.panel_origin.x + pad;
-        let top = pad + index as f32 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING) - self.scroll_offset();
+        let x = origin.x() + self.panel_origin.x;
+        let top = index as f32 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING) - self.scroll_offset();
         if self.max_visible_rows.is_some() {
-            let window = (panel_size.y - pad * 2.0).max(0.0);
+            let window = panel_size.y.max(0.0);
             if top + POPUP_ITEM_HEIGHT <= 0.0 || top >= window {
                 return None;
             }
@@ -365,7 +376,7 @@ impl PopupMenu {
         let y = origin.y() + self.panel_origin.y + top;
         Some(RectF::new(
             PointF::new(x, y),
-            Size2F::new((panel_size.x - pad * 2.0).max(0.0), POPUP_ITEM_HEIGHT),
+            Size2F::new(panel_size.x.max(0.0), POPUP_ITEM_HEIGHT),
         ))
     }
 
@@ -393,10 +404,11 @@ impl PopupMenu {
         let Some(panel_size) = self.panel_size else {
             return;
         };
-        let pad = Self::panel_padding(app);
         // Menu-relative, like `panel_origin`: the tray hangs from the hovered
-        // row's top edge and sits just past the panel's trailing edge.
-        let row_top = self.panel_origin.y + pad + index as f32 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING)
+        // row's top edge and sits just past the panel's trailing edge. Rows
+        // start at the panel's top edge: the panel pads none of them.
+        let row_top = self.panel_origin.y
+            + index as f32 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING)
             - self.scroll_offset();
         let panel_right = self.panel_origin.x + panel_size.x;
 
@@ -446,6 +458,74 @@ impl PopupMenu {
         }
     }
 
+    /// The keys an open menu owns: Up/Down move the highlight through the
+    /// enabled rows, Enter selects the highlighted row and closes the menu,
+    /// Escape closes it through `on_close`. A closed menu consumes nothing and
+    /// every other key is left to the surface behind it.
+    fn handle_key(&mut self, event: &DispatchedEvent) -> bool {
+        if !*self.open.borrow() {
+            return false;
+        }
+        let DispatchedEvent::KeyDown { key, modifiers } = event else {
+            return false;
+        };
+        // A chorded key is a shortcut of the surface behind the menu, not a
+        // menu key: Cmd/Ctrl+Enter still belongs to the composer.
+        if modifiers.command || modifiers.ctrl || modifiers.alt {
+            return false;
+        }
+        match key.as_str() {
+            "ArrowDown" | "ArrowUp" => {
+                let len = self.items.len();
+                if len == 0 {
+                    return true;
+                }
+                let delta = if key == "ArrowDown" { 1 } else { -1 };
+                let current = *self.highlight_index.borrow();
+                let Some(current) = current else {
+                    // Nothing highlighted yet: the first enabled row is where a
+                    // move starts.
+                    *self.highlight_index.borrow_mut() =
+                        (0..len).find(|index| !self.items[*index].disabled);
+                    return true;
+                };
+                let mut index = current.min(len - 1);
+                for _ in 0..len {
+                    index = (index as isize + delta).rem_euclid(len as isize) as usize;
+                    if !self.items[index].disabled {
+                        *self.highlight_index.borrow_mut() = Some(index);
+                        break;
+                    }
+                }
+                true
+            }
+            "Enter" => {
+                let Some(index) = *self.highlight_index.borrow() else {
+                    return false;
+                };
+                let Some(item) = self.items.get(index) else {
+                    return false;
+                };
+                if item.disabled {
+                    return true;
+                }
+                if let Some(cb) = self.on_select.as_ref() {
+                    (cb.borrow_mut())(index);
+                }
+                *self.open.borrow_mut() = false;
+                true
+            }
+            "Escape" => {
+                *self.open.borrow_mut() = false;
+                if let Some(cb) = self.on_close.as_ref() {
+                    (cb.borrow_mut())();
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn rebuild(&mut self, app: &AppContext) {
         if !*self.open.borrow() {
             self.panel = None;
@@ -453,17 +533,30 @@ impl PopupMenu {
             self.tray = None;
             self.tray_size = None;
             *self.hover_index.borrow_mut() = None;
+            *self.highlight_index.borrow_mut() = None;
             return;
         }
+        // An open menu with no highlight starts on the item in force (or the
+        // first row), the way a dropdown opens on the value it holds.
+        let mut highlight = self.highlight_index.borrow_mut();
+        let stale = matches!(*highlight, Some(index) if index >= self.items.len());
+        if highlight.is_none() || stale {
+            *highlight = self
+                .items
+                .iter()
+                .position(|item| item.selected)
+                .or_else(|| (!self.items.is_empty()).then_some(0));
+        }
+        drop(highlight);
         if self.panel.is_none() {
             self.panel = Some(self.build_panel(app));
         }
     }
 
     fn build_panel(&mut self, app: &AppContext) -> Box<dyn Element> {
-        let sm = app.theme.spacing_px(SpacingToken::Sm);
         let on_select = self.on_select.clone();
         let open = self.open.clone();
+        let highlight = self.highlight_index.clone();
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(POPUP_ITEM_SPACING);
@@ -476,13 +569,15 @@ impl PopupMenu {
             let cb = on_select.clone();
             let diff = item.diff;
             let row = PopupMenuItemView::new(
+                index,
+                highlight.clone(),
                 label,
                 icon,
                 selected,
                 disabled,
                 diff,
                 self.max_width,
-                (self.corner_radius - 2.0).max(0.0),
+                self.corner_radius,
                 move || {
                     if !disabled {
                         if let Some(cb) = cb.as_ref() {
@@ -525,7 +620,6 @@ impl PopupMenu {
             None => list,
         };
         Container::new(content)
-            .with_padding(EdgeInsets::uniform(sm))
             .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
             .with_border(app.theme.color(ColorToken::Border).into())
             .with_corner_radius(self.corner_radius)
@@ -542,7 +636,9 @@ impl PopupMenu {
         if self.max_visible_rows.is_none() {
             return;
         }
-        let Some(index) = self.items.iter().position(|item| item.selected) else {
+        let highlighted = *self.highlight_index.borrow();
+        let Some(index) = highlighted.or_else(|| self.items.iter().position(|item| item.selected))
+        else {
             return;
         };
         if self.panel_scroll.revealed() == Some(index) {
@@ -673,6 +769,11 @@ impl Element for PopupMenu {
         };
 
         if *self.open.borrow() {
+            // An open menu owns the keys that pick from it; a closed one takes
+            // none of them.
+            if self.handle_key(event) {
+                return true;
+            }
             // A wheel carries no position to hit-test with, so it goes to the
             // panel and is taken by whichever region was under the pointer at
             // the last paint — the row list of a capped tray.
@@ -703,11 +804,11 @@ impl Element for PopupMenu {
                         .as_mut()
                         .map(|p| p.dispatch_event(event, ctx, app))
                         .unwrap_or(false);
-                    // The panel is a surface, not only its rows: a press on its
-                    // padding, or in the gap between two of its controls, is
-                    // still a press on the open menu. Letting it through would
-                    // reach whatever the panel is drawn over — the tab a tab
-                    // menu hangs on would take the click as its own.
+                    // The panel is a surface, not only its rows: a press in the
+                    // gap between two of its controls is still a press on the
+                    // open menu. Letting it through would reach whatever the
+                    // panel is drawn over — the tab a tab menu hangs on would
+                    // take the click as its own.
                     return consumed
                         || matches!(
                             event,
@@ -788,6 +889,12 @@ impl PanelInside for PopupMenu {
 
 /// A single clickable row inside the popup panel.
 struct PopupMenuItemView {
+    index: usize,
+    /// The app-owned keyboard highlight. The row paints its background from
+    /// this, not from `selected`: the current value still marks the active item
+    /// in its label colour, while the keyboard highlight moves on its own until
+    /// Enter commits it.
+    highlight: Rc<RefCell<Option<usize>>>,
     label: String,
     icon: Option<&'static str>,
     selected: bool,
@@ -806,6 +913,8 @@ struct PopupMenuItemView {
 impl PopupMenuItemView {
     #[allow(clippy::too_many_arguments)]
     fn new(
+        index: usize,
+        highlight: Rc<RefCell<Option<usize>>>,
         label: String,
         icon: Option<&'static str>,
         selected: bool,
@@ -816,6 +925,8 @@ impl PopupMenuItemView {
         on_select: impl FnMut() + 'static,
     ) -> Self {
         Self {
+            index,
+            highlight,
             label,
             icon,
             selected,
@@ -941,7 +1052,8 @@ impl Element for PopupMenuItemView {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
         let hit = rectf(origin.x, origin.y, size.x, size.y);
-        let bg = if self.selected && !self.disabled {
+        let highlighted = *self.highlight.borrow() == Some(self.index);
+        let bg = if highlighted && !self.disabled {
             Some(app.theme.color(ColorToken::Selected))
         } else if ctx.hovered(hit) && !self.disabled {
             Some(app.theme.color(ColorToken::Hover))
@@ -1373,7 +1485,7 @@ mod tests {
         menu.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
 
         let panel = menu.panel_size.expect("the panel is built");
-        let expected = cap_height() + PopupMenu::panel_padding(&app) * 2.0;
+        let expected = cap_height();
         assert!(
             (panel.y - expected).abs() < 0.01,
             "twenty rows are drawn in an eight-row window: panel {} px, expected {expected}",
@@ -1490,6 +1602,178 @@ mod tests {
         assert!(
             offset <= top && offset + viewport >= top + POPUP_ITEM_HEIGHT,
             "row two is inside the window: offset {offset}, window {viewport}"
+        );
+    }
+
+    /// Send one key to a laid-out menu; the app supplies the default (no)
+    /// modifiers.
+    fn press(menu: &mut PopupMenu, key: &str, app: &AppContext) -> bool {
+        let mut ctx = EventContext::default();
+        menu.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: key.to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            app,
+        )
+    }
+
+    /// An open menu with no app highlight starts on the item in force, and the
+    /// keys move that highlight through enabled rows only.
+    #[test]
+    fn arrow_keys_move_the_highlight_through_enabled_rows() {
+        let highlight: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let items = vec![
+            PopupMenuItem::new("One"),
+            PopupMenuItem::new("Two").disabled(),
+            PopupMenuItem::new("Three").selected(),
+        ];
+        let mut menu = PopupMenu::new(trigger(), items)
+            .with_open(Rc::new(RefCell::new(true)))
+            .with_highlight_index(Rc::clone(&highlight));
+        let app = AppContext::default();
+        lay_out_open(&mut menu, &app, 600.0, vec2f(0.0, 0.0));
+
+        assert_eq!(
+            *highlight.borrow(),
+            Some(2),
+            "an open menu starts on the item in force"
+        );
+
+        assert!(press(&mut menu, "ArrowDown", &app));
+        assert_eq!(
+            *highlight.borrow(),
+            Some(0),
+            "the highlight wraps past the last row and skips the disabled one"
+        );
+        assert!(press(&mut menu, "ArrowUp", &app));
+        assert_eq!(
+            *highlight.borrow(),
+            Some(2),
+            "and wraps back the other way over the disabled row"
+        );
+    }
+
+    /// Enter selects the highlighted row and closes the menu; a rebuild after
+    /// the close resets the app's highlight to `None`.
+    #[test]
+    fn enter_selects_the_highlighted_row_and_closes_the_menu() {
+        let highlight: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let open = Rc::new(RefCell::new(true));
+        let picked = Rc::new(RefCell::new(None));
+        let click = Rc::clone(&picked);
+        let items = vec![PopupMenuItem::new("One"), PopupMenuItem::new("Two")];
+        let mut menu = PopupMenu::new(trigger(), items)
+            .with_open(Rc::clone(&open))
+            .with_highlight_index(Rc::clone(&highlight))
+            .with_on_select(move |index| *click.borrow_mut() = Some(index));
+        let app = AppContext::default();
+        lay_out_open(&mut menu, &app, 600.0, vec2f(0.0, 0.0));
+
+        assert!(press(&mut menu, "ArrowDown", &app));
+        assert_eq!(*highlight.borrow(), Some(1));
+        assert!(press(&mut menu, "Enter", &app));
+        assert_eq!(*picked.borrow(), Some(1), "Enter takes the highlighted row");
+        assert!(!*open.borrow(), "and closes the menu");
+
+        let _ = menu.layout(
+            SizeConstraint::loose(vec2f(600.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert_eq!(
+            *highlight.borrow(),
+            None,
+            "the closed menu resets the shared highlight"
+        );
+    }
+
+    /// Escape closes through `on_close`, and Enter on a disabled row selects
+    /// nothing.
+    #[test]
+    fn escape_closes_through_on_close_and_disabled_rows_are_not_selected() {
+        let highlight: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let open = Rc::new(RefCell::new(true));
+        let closed = Rc::new(RefCell::new(false));
+        let on_close = Rc::clone(&closed);
+        let picked = Rc::new(RefCell::new(None));
+        let click = Rc::clone(&picked);
+        let items = vec![PopupMenuItem::new("One").disabled(), PopupMenuItem::new("Two")];
+        let mut menu = PopupMenu::new(trigger(), items)
+            .with_open(Rc::clone(&open))
+            .with_highlight_index(Rc::clone(&highlight))
+            .with_on_select(move |index| *click.borrow_mut() = Some(index))
+            .with_on_close(move || *on_close.borrow_mut() = true);
+        let app = AppContext::default();
+        lay_out_open(&mut menu, &app, 600.0, vec2f(0.0, 0.0));
+
+        // The menu opens on row zero even though it is disabled; Enter there
+        // neither selects nor closes.
+        assert_eq!(*highlight.borrow(), Some(0));
+        assert!(press(&mut menu, "Enter", &app));
+        assert_eq!(*picked.borrow(), None);
+        assert!(*open.borrow());
+
+        assert!(press(&mut menu, "Escape", &app));
+        assert!(!*open.borrow(), "Escape closes the menu");
+        assert!(*closed.borrow(), "and reports the close through on_close");
+    }
+
+    /// A closed menu consumes no keys, so the surface behind it keeps them.
+    #[test]
+    fn a_closed_menu_consumes_no_keys() {
+        let highlight: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(Some(1)));
+        let closed = Rc::new(RefCell::new(false));
+        let on_close = Rc::clone(&closed);
+        let items = vec![PopupMenuItem::new("One"), PopupMenuItem::new("Two")];
+        let mut menu = PopupMenu::new(trigger(), items)
+            .with_open(Rc::new(RefCell::new(false)))
+            .with_highlight_index(Rc::clone(&highlight))
+            .with_on_close(move || *on_close.borrow_mut() = true);
+        let app = AppContext::default();
+        lay_out_open(&mut menu, &app, 600.0, vec2f(0.0, 0.0));
+
+        for key in ["ArrowDown", "ArrowUp", "Enter", "Escape"] {
+            assert!(
+                !press(&mut menu, key, &app),
+                "{key} is not the closed menu's to take"
+            );
+        }
+        assert!(!*closed.borrow());
+        assert_eq!(*highlight.borrow(), None, "a closed menu holds no highlight");
+    }
+
+    /// The panel adds no padding, so a row's highlight spans it edge to edge
+    /// left and right — only the label keeps its own inset.
+    #[test]
+    fn a_highlighted_row_spans_the_panel_edge_to_edge() {
+        let highlight: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(Some(1)));
+        let items = vec![
+            PopupMenuItem::new("One"),
+            PopupMenuItem::new("Two"),
+            PopupMenuItem::new("Three"),
+        ];
+        let mut menu = PopupMenu::new(trigger(), items)
+            .with_open(Rc::new(RefCell::new(true)))
+            .with_highlight_index(Rc::clone(&highlight));
+        let app = AppContext::default();
+        let at = vec2f(30.0, 40.0);
+        lay_out_open(&mut menu, &app, 600.0, at);
+
+        let panel = menu.panel_bounds().expect("the panel has bounds");
+        let row = menu.row_bounds(1, &app).expect("the highlighted row");
+        assert!(
+            (row.min_x() - panel.min_x()).abs() < 0.01,
+            "the highlight starts at the panel's left edge ({} against {})",
+            row.min_x(),
+            panel.min_x()
+        );
+        assert!(
+            (row.max_x() - panel.max_x()).abs() < 0.01,
+            "and ends at its right edge ({} against {})",
+            row.max_x(),
+            panel.max_x()
         );
     }
 }

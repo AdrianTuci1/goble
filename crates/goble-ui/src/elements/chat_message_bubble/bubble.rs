@@ -9,6 +9,7 @@ use crate::geometry::Vector2F;
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 use super::quote_rail::QuoteRail;
+use crate::elements::table_grid::{self, TableCell, TableGrid};
 use crate::elements::terminal_block::TerminalBlockPlumbing;
 use super::tool_call::{build_tool_call_rows, to_text_span, TOOL_MARK, TOOL_ROW_FONT_SIZE};
 
@@ -476,7 +477,12 @@ impl ChatMessageBubble {
                 },
             };
             let content = self.render_blocks(&group_fragments_into_blocks(&item.content), app);
+            // The row claims the width it was given and the item's content
+            // takes what the marker leaves, so its paragraphs wrap at the
+            // pane's edge. A content-sized row measures the text unbounded and
+            // draws a long item past the panel.
             let row = Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Start)
                 .with_spacing(2.0)
                 .with_child(
@@ -487,7 +493,7 @@ impl ChatMessageBubble {
                     )
                     .finish(),
                 )
-                .with_child(content)
+                .with_child(Expanded::new(content).with_flex(1.0).finish())
                 .finish();
             column = column.with_child(row);
         }
@@ -501,32 +507,20 @@ impl ChatMessageBubble {
         app: &crate::elements::AppContext,
     ) -> Box<dyn Element> {
         let spacing = app.theme.spacing_px(SpacingToken::Sm);
-        // One width budget for the whole table: a column whose cells are longer
-        // gets a wider share, and every row uses the same shares, so the
-        // columns line up down the table instead of each row splitting its own
-        // width. The square root keeps one long cell (a path, a URL) from
-        // squeezing the other columns to a sliver.
-        let columns = header.len().max(rows.iter().map(Vec::len).max().unwrap_or(0));
-        let weights: Vec<f32> = (0..columns)
-            .map(|index| {
-                let longest = std::iter::once(header.get(index))
-                    .chain(rows.iter().map(|row| row.get(index)))
-                    .flatten()
-                    .map(|cell| cell.chars().count())
-                    .max()
-                    .unwrap_or(0);
-                (longest as f32).sqrt().max(1.0)
-            })
-            .collect();
-        let mut column = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(spacing / 2.0)
-            .with_child(self.render_table_row(header, true, &weights, app));
-        column = column.with_child(Divider::horizontal().finish());
-        for row in rows {
-            column = column.with_child(self.render_table_row(row, false, &weights, app));
+        let weights = table_grid::column_weights(header, rows);
+        let grid = TableGrid::new(spacing);
+        let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        column = column.with_child(grid.row(
+            self.render_table_row(header, true, &weights, &grid, app),
+            !rows.is_empty(),
+        ));
+        for (index, row) in rows.iter().enumerate() {
+            column = column.with_child(grid.row(
+                self.render_table_row(row, false, &weights, &grid, app),
+                index + 1 < rows.len(),
+            ));
         }
-        column.finish()
+        grid.outline(column.finish(), app)
     }
 
     fn render_table_row(
@@ -534,31 +528,30 @@ impl ChatMessageBubble {
         cells: &[String],
         header: bool,
         weights: &[f32],
+        grid: &TableGrid,
         app: &crate::elements::AppContext,
-    ) -> Box<dyn Element> {
-        let spacing = app.theme.spacing_px(SpacingToken::Sm);
+    ) -> Vec<TableCell> {
         // The row claims the transcript's width and splits it by the table's
         // column weights. A cell is an inline flow so even an over-wide token
         // breaks inside its column instead of running past the pane's edge.
-        let mut row = Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_spacing(spacing);
-        for (index, weight) in weights.iter().enumerate() {
-            let text = cells.get(index).cloned().unwrap_or_default();
-            let span = crate::elements::TextSpan::plain(text)
-                .with_color(app.theme.color(ColorToken::Text))
-                .with_weight(if header {
-                    FontWeight::SemiBold
-                } else {
-                    FontWeight::Regular
-                });
-            let cell = self
-                .recorded(InlineText::new(vec![span]).with_font_size(14.0))
-                .finish();
-            row = row.with_child(Expanded::new(cell).with_flex(*weight).finish());
-        }
-        row.finish()
+        weights
+            .iter()
+            .enumerate()
+            .map(|(index, weight)| {
+                let text = cells.get(index).cloned().unwrap_or_default();
+                let span = crate::elements::TextSpan::plain(text)
+                    .with_color(app.theme.color(ColorToken::Text))
+                    .with_weight(if header {
+                        FontWeight::SemiBold
+                    } else {
+                        FontWeight::Regular
+                    });
+                let cell = self
+                    .recorded(InlineText::new(vec![span]).with_font_size(14.0))
+                    .finish();
+                grid.cell(cell, *weight)
+            })
+            .collect()
     }
 }
 

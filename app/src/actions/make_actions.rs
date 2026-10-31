@@ -689,9 +689,9 @@ pub fn make_actions(
             on_create_focus_change.borrow_mut().create_focused = focused;
         })),
         // "New conversation" — the sidebar's row and the palette's entry — opens
-        // a tab of its own: a fresh space holding one terminal leaf, in terminal
-        // + agent mode over a conversation of its own. The tab on screen is left
-        // alone, so the row never disturbs the pane the user is working in.
+        // a tab of its own: a fresh space holding one agent leaf over a
+        // conversation of its own. The tab on screen is left alone, so the row
+        // never disturbs the pane the user is working in.
         //
         // The row carries no model check: with nothing runnable the tab still
         // opens and the agent view's notice band names what is missing, which is
@@ -703,9 +703,10 @@ pub fn make_actions(
             let id = state.next_pane_id;
             state.next_pane_id += 1;
             // An unnamed space: its tab derives its label from what it holds —
-            // here the conversation bound to its pane.
+            // here the conversation bound to its pane, so the tab reads `New
+            // Agent` until that conversation has a subject.
             state.spaces.push(
-                Space::unnamed(Pane::Leaf { id, kind: PaneKind::Terminal })
+                Space::unnamed(Pane::Leaf { id, kind: PaneKind::Chat })
                     .with_medium(medium_id.clone()),
             );
             state.active_space = state.spaces.len() - 1;
@@ -751,7 +752,7 @@ pub fn make_actions(
             // shell is the worker's, so the pane is never given a local
             // terminal it would only have to be torn out of (and never a pty
             // process it should not have spawned). A local environment keeps
-            // the terminal pane it always had.
+            // the agent pane it always had.
             if let Some(desktop) = &desktop_create {
                 state.adopt_routing(
                     id,

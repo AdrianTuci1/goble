@@ -193,6 +193,7 @@ pub(crate) fn build_terminal_composer(
             },
         );
         composer = composer.with_dir_menu_scroll(context.dir_menu_scroll.clone());
+        composer = composer.with_dir_menu_highlight(context.dir_menu_highlight.clone());
         if !context.branch_label.is_empty() {
             let branch_ids = context.branch_ids.clone();
             let on_select_branch = actions.on_select_branch.clone();
@@ -206,7 +207,8 @@ pub(crate) fn build_terminal_composer(
                             (on_select_branch.borrow_mut())(pane_id, id.clone());
                         }
                     },
-                );
+                )
+                .with_branch_menu_highlight(context.branch_menu_highlight.clone());
         }
         if let Some(diff) = context.diff.clone() {
             let open = actions.on_diff_panel.clone();
@@ -273,7 +275,6 @@ pub(crate) fn build_pending_approval(
             // A terminal pane has no follow-up input of its own while the
             // command waits, so the card always holds the keyboard.
             field_focused: true,
-            on_focus_change: None,
         },
         Some(handler),
         app,

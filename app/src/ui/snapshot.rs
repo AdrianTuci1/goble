@@ -165,6 +165,9 @@ pub struct ComposerContext {
     pub dir_ids: Vec<String>,
     pub dir_items: Vec<PopupMenuItem>,
     pub dir_menu_open: Rc<RefCell<bool>>,
+    /// The row the directory tray's keyboard highlight is on. App-owned so the
+    /// highlight survives the per-frame rebuild.
+    pub dir_menu_highlight: Rc<RefCell<Option<usize>>>,
     /// The directory tray's scroll offset, shared with the app so a tray longer
     /// than its row cap keeps its position across the per-frame rebuild.
     pub dir_menu_scroll: PanelScroll,
@@ -172,6 +175,8 @@ pub struct ComposerContext {
     pub branch_ids: Vec<String>,
     pub branch_items: Vec<PopupMenuItem>,
     pub branch_menu_open: Rc<RefCell<bool>>,
+    /// The row the branch tray's keyboard highlight is on.
+    pub branch_menu_highlight: Rc<RefCell<Option<usize>>>,
     /// The working tree's changed files. `None` outside a local repository;
     /// a clean repository arrives as an empty summary and draws no control.
     pub diff: Option<DiffSummary>,

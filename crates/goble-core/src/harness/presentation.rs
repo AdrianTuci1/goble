@@ -17,6 +17,8 @@ pub enum ToolKind {
     Edit,
     /// A file being written: the path, then the write's confirmation.
     Create,
+    /// A file being deleted: the path, then the lines the deletion removed.
+    Delete,
     /// A directory listing: the path, then the entries.
     List,
     /// A search: the pattern, its scope, then the matches.
@@ -40,6 +42,19 @@ pub enum ToolKind {
     Other,
 }
 
+/// Tools whose calls the transcript never draws. They answer the harness's own
+/// lookups — a stored record, a credential's name, a page of the guide — and
+/// would be noise in the reply. Hidden here rather than from the model: the
+/// call still runs and its result still reaches the model.
+const HIDDEN_TOOLS: &[&str] = &["search_store", "credentials", "user_guide"];
+
+/// Whether a call of this tool is left out of the transcript. Matched
+/// case-insensitively, like [`tool_kind_for`].
+pub fn is_hidden_tool(name: &str) -> bool {
+    let name = name.to_lowercase();
+    HIDDEN_TOOLS.contains(&name.as_str())
+}
+
 /// The family a tool name belongs to. The reference pager's own names come
 /// first, so a call made with one of them parses the way it parses there even
 /// when this harness would have spelled it differently.
@@ -50,6 +65,7 @@ pub fn tool_kind_for(name: &str) -> ToolKind {
         "read" | "read_file" => ToolKind::Read,
         "search_replace" | "edit" | "apply_patch" | "strreplace" | "edit_file" => ToolKind::Edit,
         "write" | "write_file" => ToolKind::Create,
+        "delete_file" | "remove_file" => ToolKind::Delete,
         "list_dir" | "ls" => ToolKind::List,
         "grep" | "search" | "glob" | "codebase_search" | "search_store" => ToolKind::Search,
         "web_search" => ToolKind::WebSearch,
@@ -133,6 +149,12 @@ pub fn tool_row(name: &str, arguments: &Value, result: Option<&str>) -> ToolRow 
         ToolKind::Create => ToolRow {
             kind,
             verb: "Creating ",
+            subject,
+            detail: String::new(),
+        },
+        ToolKind::Delete => ToolRow {
+            kind,
+            verb: "Delete ",
             subject,
             detail: String::new(),
         },
@@ -224,7 +246,7 @@ fn named_row(name: &str, arguments: &Value) -> ToolRow {
 fn operand(kind: ToolKind, arguments: &Value) -> Option<String> {
     let key = match kind {
         ToolKind::Execute => "command",
-        ToolKind::Read | ToolKind::Create | ToolKind::List => "path",
+        ToolKind::Read | ToolKind::Create | ToolKind::Delete | ToolKind::List => "path",
         ToolKind::Edit => "path",
         ToolKind::Search => "pattern",
         ToolKind::WebSearch | ToolKind::SearchTools | ToolKind::MemorySearch => "query",
@@ -535,5 +557,16 @@ mod tests {
     #[test]
     fn an_mcp_tool_is_other() {
         assert_eq!(tool_kind_for("mcp__postgres__query"), ToolKind::Other);
+    }
+
+    /// The harness's own lookups never reach the transcript, however they are
+    /// spelled; a tool the user can see is not hidden.
+    #[test]
+    fn the_internal_lookups_are_hidden_from_the_transcript() {
+        for name in ["search_store", "credentials", "user_guide", "User_Guide"] {
+            assert!(is_hidden_tool(name), "{name}");
+        }
+        assert!(!is_hidden_tool("read_file"));
+        assert!(!is_hidden_tool("run_command"));
     }
 }

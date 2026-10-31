@@ -155,9 +155,21 @@ pub struct TokenUsage {
 }
 
 impl TokenUsage {
-    /// The tokens billed against the context window and the completion.
+    /// Prompt tokens plus generated tokens, as the provider reported them.
+    /// `input` already includes the cached share, so this is the size of the
+    /// calls, not the spend.
     pub fn total(&self) -> u64 {
         self.input.saturating_add(self.output)
+    }
+
+    /// The tokens the conversation actually paid for: the prompt tokens the
+    /// provider did not serve from its cache, plus the completion. Cache hits
+    /// are billed below the full prompt rate, so the meter leaves them out and
+    /// counts what was spent.
+    pub fn spend(&self) -> u64 {
+        self.input
+            .saturating_sub(self.cached.unwrap_or(0))
+            .saturating_add(self.output)
     }
 
     /// Whether the provider reported anything at all. A call with no accounted

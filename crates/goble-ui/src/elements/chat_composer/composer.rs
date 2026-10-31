@@ -121,6 +121,9 @@ pub struct ChatComposer {
     on_select_harness_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     dir_menu_items: Vec<PopupMenuItem>,
     dir_menu_open: Rc<RefCell<bool>>,
+    /// The directory tray's keyboard highlight, app-owned like its open flag so
+    /// the row Up/Down moved to survives the per-frame rebuild.
+    dir_menu_highlight: Rc<RefCell<Option<usize>>>,
     /// The directory tray's scroll offset, owned by the app for the same reason
     /// its open flag is: the tray is capped at [`MENU_MAX_VISIBLE_ROWS`] rows, so
     /// a deep directory scrolls, and the per-frame rebuild would otherwise put
@@ -130,6 +133,8 @@ pub struct ChatComposer {
     branch_label: Option<String>,
     branch_menu_items: Vec<PopupMenuItem>,
     branch_menu_open: Rc<RefCell<bool>>,
+    /// The branch tray's keyboard highlight, app-owned like its open flag.
+    branch_menu_highlight: Rc<RefCell<Option<usize>>>,
     on_select_branch_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     /// The working tree's changed files, or `None` when the pane is not in a
     /// repository (or has nothing changed). The control shows the totals and
@@ -155,6 +160,8 @@ pub struct ChatComposer {
     /// The mode menu's open flag and the callback a picked or cycled mode goes
     /// through. Host-owned, like the model menu's, so both survive the rebuild.
     approval_menu_open: Rc<RefCell<bool>>,
+    /// The mode menu's keyboard highlight, app-owned like its open flag.
+    approval_menu_highlight: Rc<RefCell<Option<usize>>>,
     on_select_approval_mode: Option<Rc<RefCell<dyn FnMut(ApprovalMode) + 'static>>>,
     pub(super) on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_send: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
@@ -248,11 +255,13 @@ impl ChatComposer {
             on_select_harness_item: None,
             dir_menu_items: Vec::new(),
             dir_menu_open: Rc::new(RefCell::new(false)),
+            dir_menu_highlight: Rc::new(RefCell::new(None)),
             dir_menu_scroll: PanelScroll::default(),
             on_select_dir_item: None,
             branch_label: None,
             branch_menu_items: Vec::new(),
             branch_menu_open: Rc::new(RefCell::new(false)),
+            branch_menu_highlight: Rc::new(RefCell::new(None)),
             on_select_branch_item: None,
             diff_summary: None,
             diff_menu_open: Rc::new(RefCell::new(false)),
@@ -263,6 +272,7 @@ impl ChatComposer {
             on_decision: None,
             approval_mode: None,
             approval_menu_open: Rc::new(RefCell::new(false)),
+            approval_menu_highlight: Rc::new(RefCell::new(None)),
             on_select_approval_mode: None,
             root: None,
             size: None,
@@ -356,6 +366,13 @@ impl ChatComposer {
         self
     }
 
+    /// Share the directory tray's keyboard highlight with the app, so the row
+    /// Up/Down moved to survives the per-frame rebuild.
+    pub fn with_dir_menu_highlight(mut self, highlight: Rc<RefCell<Option<usize>>>) -> Self {
+        self.dir_menu_highlight = highlight;
+        self
+    }
+
     /// Label for the git-branch context pill.
     pub fn with_branch_label(mut self, label: impl Into<String>) -> Self {
         self.branch_label = Some(label.into());
@@ -372,6 +389,13 @@ impl ChatComposer {
         self.branch_menu_items = items;
         self.branch_menu_open = open;
         self.on_select_branch_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Share the branch tray's keyboard highlight with the app, like the
+    /// directory tray's.
+    pub fn with_branch_menu_highlight(mut self, highlight: Rc<RefCell<Option<usize>>>) -> Self {
+        self.branch_menu_highlight = highlight;
         self
     }
 
@@ -757,6 +781,12 @@ impl ChatComposer {
         self
     }
 
+    /// The mode menu's app-owned keyboard highlight, like its open flag.
+    pub fn with_approval_menu_highlight(mut self, highlight: Rc<RefCell<Option<usize>>>) -> Self {
+        self.approval_menu_highlight = highlight;
+        self
+    }
+
     /// Report the mode the user picked (or cycled to). The host stores it on
     /// the pane and hands it back on the next frame.
     pub fn with_on_select_approval_mode<F: FnMut(ApprovalMode) + 'static>(
@@ -991,6 +1021,7 @@ impl ChatComposer {
                 &label,
                 &self.harness_menu_items,
                 self.harness_menu_open.clone(),
+                None,
                 &self.on_select_harness_item,
                 "Select environment",
             ));
@@ -1041,6 +1072,7 @@ impl ChatComposer {
             let dir = if let Some(cb) = self.on_select_dir_item.clone() {
                 PopupMenu::new(trigger, self.dir_menu_items.clone())
                     .with_open(self.dir_menu_open.clone())
+                    .with_highlight_index(self.dir_menu_highlight.clone())
                     .with_position(PopupMenuPosition::Above)
                     .with_max_visible_rows(MENU_MAX_VISIBLE_ROWS)
                     .with_panel_scroll(self.dir_menu_scroll.clone())
@@ -1058,6 +1090,7 @@ impl ChatComposer {
                 &label,
                 &self.branch_menu_items,
                 self.branch_menu_open.clone(),
+                Some(self.branch_menu_highlight.clone()),
                 &self.on_select_branch_item,
                 "Select branch",
             ));
@@ -1167,16 +1200,18 @@ impl ChatComposer {
             let items = ApprovalMode::ALL
                 .iter()
                 .map(|option| {
-                    let mut item = PopupMenuItem::new(option.label()).with_icon(option.icon());
+                    let mut item = PopupMenuItem::new(option.label());
                     if *option == mode {
                         item = item.selected();
                     }
                     item
                 })
                 .collect();
-            pill = pill.with_menu(items, self.approval_menu_open.clone(), move |index| {
-                (cb.borrow_mut())(ApprovalMode::from_index(index))
-            });
+            pill = pill
+                .with_menu(items, self.approval_menu_open.clone(), move |index| {
+                    (cb.borrow_mut())(ApprovalMode::from_index(index))
+                })
+                .with_highlight_index(self.approval_menu_highlight.clone());
         }
         pill.finish(app)
     }
@@ -1287,6 +1322,7 @@ impl ChatComposer {
         label: &str,
         items: &[PopupMenuItem],
         open: Rc<RefCell<bool>>,
+        highlight: Option<Rc<RefCell<Option<usize>>>>,
         on_select: &Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
         tooltip: &str,
     ) -> Box<dyn Element> {
@@ -1297,6 +1333,9 @@ impl ChatComposer {
         // pill whose rows are read when it opens has none while it is closed.
         if let Some(cb) = on_select.clone() {
             pill = pill.with_menu(items.to_vec(), open, move |idx| (cb.borrow_mut())(idx));
+            if let Some(highlight) = highlight {
+                pill = pill.with_highlight_index(highlight);
+            }
         }
         pill.finish(app)
     }

@@ -133,6 +133,19 @@ fn tool_call_carries_status_and_result() {
     assert_eq!(failed[0].status, ToolCallStatus::Error);
 }
 
+/// The diff a mutating tool recorded travels with its call, so the row can
+/// draw the change after a restart.
+#[test]
+fn tool_call_carries_the_diff_it_recorded() {
+    let diff = "@@ -1,2 +1,2 @@\\n one\\n-two\\n+TWO\\n";
+    let json = format!(
+        r#"[{{"id":"call_4","name":"edit_file","arguments":{{"path":"src/lib.rs"}},"status":"finished","result":"edited","diff":{}}}]"#,
+        serde_json::to_string(diff).unwrap()
+    );
+    let calls = ToolCall::from_llm_json(&json);
+    assert_eq!(calls[0].diff.as_deref(), Some(diff));
+}
+
 /// Rows persisted before the status carrier existed carry only
 /// `id`/`name`/`arguments`; they must still parse.
 #[test]

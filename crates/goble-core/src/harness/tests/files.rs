@@ -50,6 +50,76 @@ async fn test_harness_read_write_edit_file() {
     std::fs::remove_file("harness_test.txt").ok();
 }
 
+/// A file mutation records the change it made on its own tool call: a write
+/// states what it added, and an edit states its hunk against the file it read,
+/// with the line numbers the replacement sits at.
+#[tokio::test]
+async fn a_file_mutation_records_its_diff_on_the_tool_call() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let path = "harness_diff.txt";
+    std::fs::remove_file(path).ok();
+    let llm = Arc::new(MockProvider::new(
+        "mock",
+        CompletionResponse {
+            content: String::new(),
+            tool_calls: vec![
+                LlmToolCall {
+                    id: "tc_write".to_string(),
+                    name: "write_file".to_string(),
+                    arguments: serde_json::json!({"path": path, "content": "one\ntwo\nthree\n"}),
+                },
+                LlmToolCall {
+                    id: "tc_edit".to_string(),
+                    name: "edit_file".to_string(),
+                    arguments: serde_json::json!({"path": path, "old_text": "two", "new_text": "TWO"}),
+                },
+            ],
+            usage: None,
+        },
+    ));
+    let harness = Harness::new(store.clone()).with_llm(llm);
+    harness
+        .run_turn(&chat_id, "file diffs", "mock", "mock")
+        .collect::<Vec<_>>()
+        .await;
+
+    let records: Vec<ChatToolCall> = store
+        .list_chat_messages(&chat_id)
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, _, _, tool_calls, _)| tool_calls)
+        .flat_map(|json| serde_json::from_str::<Vec<ChatToolCall>>(&json).unwrap_or_default())
+        .collect();
+    let write = records
+        .iter()
+        .find(|record| record.id == "tc_write")
+        .expect("the write was recorded");
+    assert_eq!(
+        write.diff.as_deref(),
+        Some("@@ -0,0 +1,3 @@\n+one\n+two\n+three\n"),
+        "a new file's diff is everything it added"
+    );
+    let edit = records
+        .iter()
+        .find(|record| record.id == "tc_edit")
+        .expect("the edit was recorded");
+    assert_eq!(
+        edit.diff.as_deref(),
+        Some("@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n"),
+        "an edit's diff is its hunk against the file, with context"
+    );
+    // The diff is the row's to draw, not part of what the model reads back.
+    assert!(
+        write.result.as_deref().unwrap_or("").contains(path),
+        "the result is the write's own confirmation, got {:?}",
+        write.result
+    );
+    assert!(!write.result.as_deref().unwrap_or("").contains("+one"));
+
+    std::fs::remove_file(path).ok();
+}
+
 #[tokio::test]
 async fn test_harness_rename_and_delete_file() {
     let store = Store::open_in_memory().unwrap();

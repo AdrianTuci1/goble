@@ -384,6 +384,7 @@ async fn spawn_through_tool(
         &turn,
     )
     .await
+    .map(|outcome| outcome.output)
 }
 
 fn background_args(prompt: &str) -> serde_json::Value {

@@ -225,10 +225,14 @@ fn agents_view(
         visible.iter().take(COLLAPSED_CONVERSATIONS).copied().collect()
     };
 
-    // Group conversations into folders (preserving insertion order), each with
-    // a collapsible section header, then the items under it.
+    // Group the environment's conversations into folders (preserving insertion
+    // order), each with a collapsible section header, then the items under it.
+    // The groups span the whole list, not only the cards the collapsed digest
+    // happens to draw, so a header counts what its folder holds.
+    let shown_ids: std::collections::HashSet<&str> =
+        shown.iter().map(|entry| entry.id.as_str()).collect();
     let mut ordered: Vec<(String, Vec<&ConversationEntry>)> = Vec::new();
-    for entry in &shown {
+    for entry in &visible {
         if let Some((_, items)) = ordered.iter_mut().find(|(folder, _)| folder == &entry.folder) {
             items.push(entry);
         } else {
@@ -291,6 +295,15 @@ fn agents_view(
     for (folder, entries) in ordered {
         let key = folder_section(&folder);
         let collapsed = state.collapsed_sections.iter().any(|section| section == &key);
+        // A folder the digest draws no card for is not a section here: its
+        // header would stand over nothing. A folder the user folded keeps its
+        // header whatever the digest draws, because the header is the section.
+        let draws_a_card = entries
+            .iter()
+            .any(|entry| shown_ids.contains(entry.id.as_str()));
+        if !collapsed && !draws_a_card {
+            continue;
+        }
         list = list.with_child(section_header(
             app,
             &folder,
@@ -303,7 +316,9 @@ fn agents_view(
             continue;
         }
         for entry in entries {
-            list = list.with_child(conversation_card(app, state, actions, entry));
+            if shown_ids.contains(entry.id.as_str()) {
+                list = list.with_child(conversation_card(app, state, actions, entry));
+            }
         }
     }
 
@@ -698,6 +713,7 @@ mod sidebar_surface_tests {
                     Rc::new(RefCell::new(AgentCardUi {
                         hover: hovered_card,
                         menu_open: hovered_card,
+                        ..Default::default()
                     })),
                 );
             }
@@ -1024,6 +1040,46 @@ mod sidebar_surface_tests {
             );
         }
         assert!(drawn.iter().any(|run| run == "Ops"), "another section is untouched");
+    }
+
+    /// The header counts the folder's whole list, not the cards the collapsed
+    /// digest happens to draw: a conversation the digest leaves out is still
+    /// one the folder holds.
+    #[test]
+    fn a_folder_header_counts_every_conversation_and_not_only_the_shown_cards() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let view = seeded_view(&app, &desktop);
+        {
+            let state = view.state_rc();
+            let mut s = state.borrow_mut();
+            s.conversations = (0..7)
+                .map(|index| {
+                    conversation(&format!("c{index}"), &format!("Agent {index}"), "Frontend")
+                })
+                .collect();
+        }
+
+        let mut root: Box<dyn Element> = Box::new(view);
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        let drawn = drawn_text(&commands);
+
+        assert!(
+            drawn.iter().any(|run| run == "7"),
+            "the header counts all seven conversations: {drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|run| run == "View all (7)"),
+            "and the switch to the whole list does too: {drawn:?}"
+        );
+        assert!(
+            !drawn.iter().any(|run| run == "Agent 4"),
+            "the collapsed digest still draws only its four cards: {drawn:?}"
+        );
     }
 
     /// A starred conversation is listed in the Starred section, which sits above
@@ -1439,7 +1495,11 @@ mod sidebar_surface_tests {
                     let view = long_titled_view(&app, &desktop, width, expanded);
                     view.state_rc().borrow_mut().agent_cards.insert(
                         "c0".to_string(),
-                        Rc::new(RefCell::new(AgentCardUi { hover, menu_open })),
+                        Rc::new(RefCell::new(AgentCardUi {
+                            hover,
+                            menu_open,
+                            ..Default::default()
+                        })),
                     );
                     let mut root: Box<dyn Element> = Box::new(view);
                     let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);

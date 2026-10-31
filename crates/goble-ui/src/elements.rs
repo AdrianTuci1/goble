@@ -29,8 +29,7 @@ pub use chip::Chip;
 pub use clipped::Clipped;
 pub use code::Code;
 pub use command_approval::{
-    command_approval_card, CommandApprovalState, DecisionHandler, FocusHandler,
-    APPROVAL_BODY_MAX_HEIGHT,
+    command_approval_card, CommandApprovalState, DecisionHandler, APPROVAL_BODY_MAX_HEIGHT,
     APPROVAL_EDITOR_MAX_HEIGHT,
 };
 pub use composer_button::{ComposerButton, COMPOSER_CONTROL_RADIUS};
@@ -657,6 +656,7 @@ pub mod split;
 pub mod stack;
 pub mod switch;
 pub mod tab_bar;
+mod table_grid;
 pub mod terminal_block;
 pub mod terminal_grid;
 pub mod text;

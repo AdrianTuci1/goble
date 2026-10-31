@@ -1677,6 +1677,87 @@ fn the_approval_mode_is_a_word_whose_colour_names_the_policy() {
     }
 }
 
+/// The menu the approval control opens lists the four modes as words, with no
+/// glyph in front of any of them.
+#[test]
+fn the_approval_mode_menu_lists_words_without_icons() {
+    use crate::elements::ApprovalMode;
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let mut composer = ChatComposer::new()
+        .with_focused(true)
+        .with_approval_mode(ApprovalMode::Manual)
+        .with_approval_menu_open(Rc::new(RefCell::new(true)))
+        .with_on_select_approval_mode(|_| {});
+    let (_, commands) = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0));
+
+    for mode in ApprovalMode::ALL {
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text == mode.label()
+            )),
+            "{:?} is listed in the open menu",
+            mode
+        );
+    }
+    let mode_icons = ["check", "user", "prompt", "sparkle"];
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if mode_icons.contains(&name.as_str())
+        )),
+        "the mode rows draw no icons: {commands:?}"
+    );
+}
+
+/// The composer hands each menu the app's highlight cell, so Up/Down and Enter
+/// keep their row across the per-frame rebuild.
+#[test]
+fn a_composer_menu_shares_the_apps_keyboard_highlight() {
+    let app = AppContext::default();
+    let open = Rc::new(RefCell::new(true));
+    let highlight: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+    let picked = Rc::new(RefCell::new(None));
+    let click = Rc::clone(&picked);
+    let mut composer = ChatComposer::new()
+        .with_context_above_editor(true)
+        .with_path_label("/work/project")
+        .with_dir_menu(
+            vec![
+                PopupMenuItem::new("/work/project").selected(),
+                PopupMenuItem::new("/work/other"),
+            ],
+            Rc::clone(&open),
+            move |index| *click.borrow_mut() = Some(index),
+        )
+        .with_dir_menu_highlight(Rc::clone(&highlight));
+    let _ = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0));
+    assert_eq!(
+        *highlight.borrow(),
+        Some(0),
+        "the open menu starts on the item in force"
+    );
+
+    let mut ctx = crate::elements::EventContext::default();
+    let mut key = |composer: &mut ChatComposer, key: &str| {
+        composer.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: key.to_string(),
+                modifiers: ModifiersState::default(),
+            },
+            &mut ctx,
+            &app,
+        )
+    };
+    assert!(key(&mut composer, "ArrowDown"), "the menu takes the arrow");
+    assert_eq!(*highlight.borrow(), Some(1));
+    assert!(key(&mut composer, "Enter"), "and Enter");
+    assert_eq!(*picked.borrow(), Some(1));
+    assert!(!*open.borrow(), "selecting the row closes the menu");
+}
+
 #[test]
 fn a_press_anywhere_in_the_rich_input_focuses_the_editor() {
     let app = AppContext::default();

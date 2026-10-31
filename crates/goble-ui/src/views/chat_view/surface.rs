@@ -91,15 +91,15 @@ impl Element for TranscriptSurface {
         let Some(renderer) = ctx.renderer.as_mut() else {
             return;
         };
-        let accent = app.theme.color(ColorToken::Accent);
-        // The band is the accent itself, and the glyphs over it are redrawn in
-        // the background colour: a selected line reads as inverted text, the
-        // way a terminal's own selection does, instead of staying the same
-        // colour under a tint.
+        let band = app.theme.color(ColorToken::Selection);
+        // The band is the desaturated accent, and the glyphs over it are
+        // redrawn in the background colour: a selected line reads as inverted
+        // text, the way a terminal's own selection does, instead of staying the
+        // same colour under a tint.
         let contrast = app.theme.color(ColorToken::Bg);
         renderer.clip_rect(bounds);
         for rect in rects {
-            renderer.fill_rect(rect, accent);
+            renderer.fill_rect(rect, band);
         }
         for fragment in fragments {
             renderer.draw_text_with_font(

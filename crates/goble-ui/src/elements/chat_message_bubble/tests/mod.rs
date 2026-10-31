@@ -64,6 +64,112 @@ fn a_long_code_fence_wraps_inside_the_pane() {
     }
 }
 
+/// A table is drawn as a full grid: an outline around the whole table, a rule
+/// between every pair of columns, and a rule between every pair of rows.
+#[test]
+fn a_table_draws_a_full_grid() {
+    let app = AppContext::default();
+    let width = 600.0;
+    let mut element: Box<dyn Element> = Box::new(ChatMessageBubble::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::table(
+            vec!["File".into(), "Summary".into(), "Notes".into()],
+            vec![
+                vec!["a.rs".into(), "beta".into(), "gamma".into()],
+                vec!["b.rs".into(), "delta".into(), "epsilon".into()],
+            ],
+        )],
+    ));
+    let commands = render_element(&mut element, vec2f(width, 900.0), &app);
+    let rows = 3;
+    let columns = 3;
+
+    let outline = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::StrokeRect { rect, .. } => Some(*rect),
+            _ => None,
+        })
+        .expect("the table must be outlined");
+
+    let border = app.theme.color(ColorToken::Border);
+    let horizontal: Vec<_> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == border && rect.height() == 1.0 && rect.width() > 1.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .collect();
+    let vertical: Vec<_> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == border && rect.width() == 1.0 && rect.height() > 1.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .collect();
+
+    // Header plus every body row but the last: the outline closes the bottom.
+    assert_eq!(
+        horizontal.len(),
+        rows - 1,
+        "one rule under each row but the last, got {horizontal:?}"
+    );
+    for rule in &horizontal {
+        assert!(
+            (rule.width() - outline.width()).abs() < 0.5 && (rule.min_x() - outline.min_x()).abs() < 0.5,
+            "a row rule spans the table: {rule:?} against outline {outline:?}"
+        );
+    }
+    for pair in horizontal.windows(2) {
+        assert!(
+            pair[1].min_y() > pair[0].min_y(),
+            "row rules sit on distinct boundaries, got {horizontal:?}"
+        );
+    }
+
+    assert_eq!(
+        vertical.len(),
+        (columns - 1) * rows,
+        "one rule between each pair of columns, in every row, got {vertical:?}"
+    );
+    let mut xs: Vec<f32> = vertical.iter().map(|rule| rule.min_x()).collect();
+    xs.sort_by(f32::total_cmp);
+    xs.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+    assert_eq!(xs.len(), columns - 1, "one rule per column boundary, got {xs:?}");
+    for x in &xs {
+        assert!(
+            *x > outline.min_x() + 1.0 && *x < outline.max_x() - 1.0,
+            "a column rule stands inside the outline, at {x}"
+        );
+        let seen = vertical
+            .iter()
+            .filter(|rule| (rule.min_x() - x).abs() < 0.5)
+            .count();
+        assert_eq!(seen, rows, "the rule at {x} must run through every row");
+    }
+    let top = vertical
+        .iter()
+        .map(|rule| rule.min_y())
+        .fold(f32::INFINITY, f32::min);
+    let bottom = vertical
+        .iter()
+        .map(|rule| rule.max_y())
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        (bottom - top - outline.height()).abs() < 0.5,
+        "the column rules run the table's height: {} against outline {outline:?}",
+        bottom - top
+    );
+}
+
 /// A table's columns share one set of widths: a body cell starts at the same x
 /// as its header, and no cell — including an unbroken token — runs past the
 /// bubble's right edge.
@@ -620,6 +726,7 @@ fn call(name: &str, arguments: &str, status: ToolCallStatus, result: Option<&str
         arguments: arguments.to_string(),
         status,
         result: result.map(str::to_string),
+        diff: None,
     }
 }
 

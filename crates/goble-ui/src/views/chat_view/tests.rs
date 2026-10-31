@@ -28,7 +28,9 @@ fn a_failed_turn_draws_its_reason_in_the_transcript() {
         .collect();
     assert!(texts.iter().any(|text| *text == "Agent turn failed"));
     assert!(
-        texts.iter().any(|text| text.contains("Incorrect API key provided")),
+        texts
+            .iter()
+            .any(|text| text.contains("Incorrect API key provided")),
         "the reason the turn failed is drawn in the transcript"
     );
 }
@@ -469,9 +471,7 @@ fn the_pane_header_tray_paints_over_the_transcript_and_fits_the_view() {
     // The trigger is flush with the view's right edge, so a leftwards panel
     // stops exactly there and extends back into the view.
     assert!(
-        (panel.max_x() - width).abs() < 0.01
-            && panel.min_x() >= 0.0
-            && panel.max_y() <= 480.0,
+        (panel.max_x() - width).abs() < 0.01 && panel.min_x() >= 0.0 && panel.max_y() <= 480.0,
         "the tray opens leftwards and stays inside the view: {panel:?}"
     );
 }
@@ -525,9 +525,10 @@ fn e_cycles_the_transcript_tool_folds_and_survives_a_rebuild() {
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
+        diff: None,
     };
-    let messages = vec![ChatMessage::new(ChatRole::Assistant, Vec::new())
-        .with_tool_calls(vec![call])];
+    let messages =
+        vec![ChatMessage::new(ChatRole::Assistant, Vec::new()).with_tool_calls(vec![call])];
     let fold = Rc::new(RefCell::new(HashMap::new()));
 
     // A builder so every "frame" is a fresh view over the same app-owned map
@@ -624,6 +625,7 @@ fn right_opens_the_newest_fold_and_left_closes_it() {
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
+        diff: None,
     };
     let messages = vec![ChatMessage::new(ChatRole::Assistant, Vec::new())
         .with_tool_calls(vec![call("call_a", "src/a.rs"), call("call_b", "src/b.rs")])];
@@ -724,9 +726,10 @@ fn a_background_chat_pane_does_not_take_the_fold_key() {
         arguments: r#"{"path":"src/lib.rs"}"#.to_string(),
         status: ToolCallStatus::Finished,
         result: Some("line 1\nline 2".to_string()),
+        diff: None,
     };
-    let messages = vec![ChatMessage::new(ChatRole::Assistant, Vec::new())
-        .with_tool_calls(vec![call])];
+    let messages =
+        vec![ChatMessage::new(ChatRole::Assistant, Vec::new()).with_tool_calls(vec![call])];
     let fold = Rc::new(RefCell::new(HashMap::new()));
     let mut view: Box<dyn Element> = ChatView::new()
         .with_messages(messages)
@@ -775,19 +778,46 @@ fn the_agent_transcript_paints_no_pill() {
     use goble_core::harness::ToolCallStatus;
 
     let app = AppContext::default();
-    let call = |name: &str, arguments: &str, status: ToolCallStatus, result: Option<&str>| ToolCall {
-        id: format!("call_{name}"),
-        name: name.to_string(),
-        arguments: arguments.to_string(),
-        status,
-        result: result.map(str::to_string),
-    };
+    let call =
+        |name: &str, arguments: &str, status: ToolCallStatus, result: Option<&str>| ToolCall {
+            id: format!("call_{name}"),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+            status,
+            result: result.map(str::to_string),
+            diff: None,
+        };
 
-    let read = call("read_file", r#"{"path":"src/lib.rs","start_line":1,"end_line":3}"#, ToolCallStatus::Finished, Some("1: one\n2: two"));
-    let command = call("run_command", r#"{"command":"cargo test"}"#, ToolCallStatus::Error, Some("2 tests failed"));
-    let edit = call("edit_file", r#"{"path":"src/lib.rs","old_text":"let a = 1;","new_text":"let a = 2;"}"#, ToolCallStatus::Finished, Some("edited"));
-    let in_flight = call("codebase_search", r#"{"pattern":"fn main","path":"src"}"#, ToolCallStatus::Running, None);
-    let spawn = call("spawn_subagent", r#"{"subagent_type":"reviewer","input":"audit the migration"}"#, ToolCallStatus::Running, None);
+    let read = call(
+        "read_file",
+        r#"{"path":"src/lib.rs","start_line":1,"end_line":3}"#,
+        ToolCallStatus::Finished,
+        Some("1: one\n2: two"),
+    );
+    let command = call(
+        "run_command",
+        r#"{"command":"cargo test"}"#,
+        ToolCallStatus::Error,
+        Some("2 tests failed"),
+    );
+    let edit = call(
+        "edit_file",
+        r#"{"path":"src/lib.rs","old_text":"let a = 1;","new_text":"let a = 2;"}"#,
+        ToolCallStatus::Finished,
+        Some("edited"),
+    );
+    let in_flight = call(
+        "codebase_search",
+        r#"{"pattern":"fn main","path":"src"}"#,
+        ToolCallStatus::Running,
+        None,
+    );
+    let spawn = call(
+        "spawn_subagent",
+        r#"{"subagent_type":"reviewer","input":"audit the migration"}"#,
+        ToolCallStatus::Running,
+        None,
+    );
 
     let calls = vec![read, command, edit, in_flight, spawn.clone()];
     // Every fold is drawn at once: each call is painted in its default fold,
@@ -811,7 +841,12 @@ fn the_agent_transcript_paints_no_pill() {
         ChatMessage::new(
             ChatRole::Assistant,
             vec![
-                ChatFragment::reasoning("step-0", "Thinking", "the build fails on the parser", true),
+                ChatFragment::reasoning(
+                    "step-0",
+                    "Thinking",
+                    "the build fails on the parser",
+                    true,
+                ),
                 ChatFragment::text("Reading the parser's own row, then running the tests."),
             ],
         )
@@ -875,7 +910,11 @@ fn the_agent_transcript_paints_no_pill() {
             _ => None,
         })
         .collect();
-    for expected in ["OK if I run this command and read the output?", "cargo test", "Run"] {
+    for expected in [
+        "OK if I run this command and read the output?",
+        "cargo test",
+        "Run",
+    ] {
         assert!(
             drawn.iter().any(|text| text == expected),
             "the transcript closes with the approval card drawing {expected:?}, got {drawn:?}"
@@ -883,10 +922,10 @@ fn the_agent_transcript_paints_no_pill() {
     }
 }
 
-/// While the approval card waits, the rich input keeps its place and its own
-/// instruction: the card is the decision, the input the follow-up.
+/// While the approval card waits, the whole rich input is gone: the card is
+/// the pane's only typing surface until Run or Reject settles the decision.
 #[test]
-fn a_pending_command_puts_the_rich_input_in_its_waiting_state() {
+fn a_pending_command_hides_the_rich_input() {
     use crate::render::RenderCommand;
     use crate::test_util::render_element;
 
@@ -897,6 +936,10 @@ fn a_pending_command_puts_the_rich_input_in_its_waiting_state() {
             vec![ChatFragment::text("Running the suite.")],
         )])
         .with_composer_focused(true)
+        .with_composer_value("a half-written prompt")
+        .with_composer_caret(Rc::new(RefCell::new(
+            "a half-written prompt".chars().count(),
+        )))
         .with_command_proposal(Some(CommandProposalUi::new(
             "cmd-1",
             vec!["cargo test".to_string()],
@@ -910,25 +953,29 @@ fn a_pending_command_puts_the_rich_input_in_its_waiting_state() {
             _ => None,
         })
         .collect();
+    for hidden in [
+        "Ask anything...",
+        "Waiting for your decision…",
+        "Message the agent while it waits…",
+        "a half-written prompt",
+    ] {
+        assert!(
+            !drawn.iter().any(|text| text == hidden),
+            "the rich input is not drawn at all while the card waits ({hidden:?}): {drawn:?}"
+        );
+    }
     assert!(
-        !drawn.iter().any(|text| text == "Ask anything..."),
-        "a suspended turn does not invite a new draft: {drawn:?}"
-    );
-    assert!(
-        !drawn.iter().any(|text| text == "Waiting for your decision…"),
-        "the rich input is not drawn at all while the card waits: {drawn:?}"
-    );
-    assert!(
-        drawn.iter().any(|text| text == "OK if I run this command and read the output?"),
+        drawn
+            .iter()
+            .any(|text| text == "OK if I run this command and read the output?"),
         "the approval card is the only input surface: {drawn:?}"
     );
 }
 
-/// While the card waits, the rich input stays a follow-up surface: once it
-/// holds the keyboard, the keys it receives edit its draft instead of the
-/// card's command.
+/// The card keeps the keys while it waits, whatever the composer's last focus
+/// state was: typing edits the command Enter will run.
 #[test]
-fn a_pending_command_leaves_typing_to_the_focused_composer() {
+fn a_pending_command_keeps_the_keys_on_the_card() {
     use crate::elements::EventContext;
     use crate::event::{DispatchedEvent, ModifiersState};
     use crate::test_util::render_element;
@@ -942,63 +989,12 @@ fn a_pending_command_leaves_typing_to_the_focused_composer() {
             ChatRole::Assistant,
             vec![ChatFragment::text("Running the suite.")],
         )])
+        // The composer held the keyboard before the proposal arrived.
         .with_composer_focused(true)
         .with_composer_value("a half-written prompt")
-        .with_composer_caret(Rc::new(RefCell::new("a half-written prompt".chars().count())))
-        .with_composer_on_change(move |text| log.borrow_mut().push(text))
-        .with_command_proposal(Some(CommandProposalUi::new(
-            "cmd-1",
-            vec!["cargo test".to_string()],
-            "~/Projects/goble",
+        .with_composer_caret(Rc::new(RefCell::new(
+            "a half-written prompt".chars().count(),
         )))
-        .with_command_proposal_draft(
-            draft.clone(),
-            Rc::new(RefCell::new("cargo test".chars().count())),
-            Rc::new(RefCell::new(ScrollState::default())),
-        )
-        .finish();
-    render_element(&mut view, vec2f(600.0, 500.0), &app);
-
-    view.dispatch_event(
-        &DispatchedEvent::KeyDown {
-            key: "x".to_string(),
-            modifiers: ModifiersState::none(),
-        },
-        &mut EventContext::default(),
-        &app,
-    );
-
-    assert_eq!(
-        changed.borrow().last().map(String::as_str),
-        Some("a half-written promptx"),
-        "the focused composer takes the follow-up draft: {:?}",
-        changed.borrow()
-    );
-    assert_eq!(
-        draft.borrow().as_str(),
-        "cargo test",
-        "the card's command is untouched while the composer is focused"
-    );
-}
-
-/// With the composer unfocused the card still owns the keyboard: typing edits
-/// the command Enter will run, not a draft the suspended turn will not read.
-#[test]
-fn a_pending_command_owns_the_keys_until_the_composer_is_clicked() {
-    use crate::elements::EventContext;
-    use crate::event::{DispatchedEvent, ModifiersState};
-    use crate::test_util::render_element;
-
-    let app = AppContext::default();
-    let changed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let log = changed.clone();
-    let draft = Rc::new(RefCell::new("cargo test".to_string()));
-    let mut view = ChatView::new()
-        .with_messages(vec![ChatMessage::new(
-            ChatRole::Assistant,
-            vec![ChatFragment::text("Running the suite.")],
-        )])
-        .with_composer_focused(false)
         .with_composer_on_change(move |text| log.borrow_mut().push(text))
         .with_command_proposal(Some(CommandProposalUi::new(
             "cmd-1",
@@ -1026,7 +1022,7 @@ fn a_pending_command_owns_the_keys_until_the_composer_is_clicked() {
 
     assert!(
         changed.borrow().is_empty(),
-        "the unfocused composer took a draft: {:?}",
+        "the hidden composer takes no draft: {:?}",
         changed.borrow()
     );
     assert_eq!(
@@ -1036,70 +1032,14 @@ fn a_pending_command_owns_the_keys_until_the_composer_is_clicked() {
     );
 }
 
-/// A press on the card's command field takes the keyboard back from the
-/// composer, so the user can edit the command after typing a follow-up.
-#[test]
-fn clicking_the_waiting_command_field_takes_the_keys_back_from_the_composer() {
-    use crate::elements::EventContext;
-    use crate::event::DispatchedEvent;
-    use crate::render::RenderCommand;
-    use crate::test_util::render_element;
-
-    let app = AppContext::default();
-    let focus_log: Rc<RefCell<Vec<bool>>> = Rc::default();
-    let log = focus_log.clone();
-    let draft = Rc::new(RefCell::new("cargo test".to_string()));
-    let mut view = ChatView::new()
-        .with_messages(vec![ChatMessage::new(
-            ChatRole::Assistant,
-            vec![ChatFragment::text("Running the suite.")],
-        )])
-        .with_composer_focused(true)
-        .with_composer_on_focus_change(move |focused| log.borrow_mut().push(focused))
-        .with_command_proposal(Some(CommandProposalUi::new(
-            "cmd-1",
-            vec!["cargo test".to_string()],
-            "~/Projects/goble",
-        )))
-        .with_command_proposal_draft(
-            draft.clone(),
-            Rc::new(RefCell::new("cargo test".chars().count())),
-            Rc::new(RefCell::new(ScrollState::default())),
-        )
-        .finish();
-    let commands = render_element(&mut view, vec2f(600.0, 500.0), &app);
-    let origin = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawText { text, origin, .. } if text == "cargo test" => Some(*origin),
-            _ => None,
-        })
-        .expect("the card draws the command");
-
-    view.dispatch_event(
-        &DispatchedEvent::MouseDown {
-            position: vec2f(origin.x + 2.0, origin.y + 4.0),
-            button: 0,
-        },
-        &mut EventContext::default(),
-        &app,
-    );
-
-    assert_eq!(
-        *focus_log.borrow(),
-        [false],
-        "the card reports that it took the keys from the composer"
-    );
-}
-
 /// The transcript's own rows keep a real tool call drawn in every fold, so the
 /// pane-level pill lock above is not vacuous.
 #[test]
 fn the_transcript_draws_the_tool_rows_the_lock_covers() {
+    use crate::elements::chat_content::ToolCall;
     use crate::render::RenderCommand;
     use crate::test_util::render_element;
     use goble_core::harness::ToolCallStatus;
-    use crate::elements::chat_content::ToolCall;
 
     let app = AppContext::default();
     let read = ToolCall {
@@ -1108,6 +1048,7 @@ fn the_transcript_draws_the_tool_rows_the_lock_covers() {
         arguments: r#"{"path":"src/lib.rs"}"#.to_string(),
         status: ToolCallStatus::Finished,
         result: Some("1: fn main() {}".to_string()),
+        diff: None,
     };
     let edit = ToolCall {
         id: "call_edit".to_string(),
@@ -1115,6 +1056,7 @@ fn the_transcript_draws_the_tool_rows_the_lock_covers() {
         arguments: r#"{"path":"src/main.rs","old_text":"a","new_text":"b"}"#.to_string(),
         status: ToolCallStatus::Running,
         result: None,
+        diff: None,
     };
     let messages = vec![ChatMessage::new(ChatRole::Assistant, Vec::new())
         .with_tool_calls(vec![read.clone(), edit.clone()])];
@@ -1297,11 +1239,7 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
         app: &AppContext,
     ) -> Vec<RenderCommand> {
         let size = vec2f(600.0, 800.0);
-        let _ = view.layout(
-            SizeConstraint::loose(size),
-            &mut LayoutContext,
-            app,
-        );
+        let _ = view.layout(SizeConstraint::loose(size), &mut LayoutContext, app);
         let mut ctx = PaintContext::new(Renderer::new());
         if let Some(position) = cursor {
             ctx.cursor_inside = true;
@@ -1386,25 +1324,32 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
     // At rest: both affordances are there, and neither is a filled control.
     let rest = paint_with(&mut view, None, &app);
     let drawn = texts(&rest);
-    assert!(drawn.iter().any(|t| t == "Fork"), "no fork affordance: {drawn:?}");
     assert!(
-        drawn.iter().any(|t| t == "1,290 tokens"),
-        "the total is input + output, grouped: {drawn:?}"
+        drawn.iter().any(|t| t == "Fork"),
+        "no fork affordance: {drawn:?}"
+    );
+    assert!(
+        drawn.iter().any(|t| t == "490 tokens"),
+        "the meter shows the spend: prompt tokens that missed the cache plus output: {drawn:?}"
     );
     assert!(
         !drawn.iter().any(|t| t.contains("cached")),
         "the detail stays collapsed until asked for: {drawn:?}"
     );
     let fork_origin = text_origin(&rest, "Fork");
-    let usage_origin = text_origin(&rest, "1,290 tokens");
+    let usage_origin = text_origin(&rest, "490 tokens");
     let probe = |origin: Vector2F| origin + vec2f(1.0, 1.0);
     let resting = bands(&rest);
     assert!(
-        !resting.iter().any(|band| contains(*band, probe(fork_origin))),
+        !resting
+            .iter()
+            .any(|band| contains(*band, probe(fork_origin))),
         "a resting fork draws no band: {resting:?}"
     );
     assert!(
-        !resting.iter().any(|band| contains(*band, probe(usage_origin))),
+        !resting
+            .iter()
+            .any(|band| contains(*band, probe(usage_origin))),
         "a resting usage readout draws no band: {resting:?}"
     );
 
@@ -1441,7 +1386,7 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
         .unwrap_or_else(|| panic!("no usage detail: {drawn:?}"));
     assert!(detail.contains("Input 1,234 (800 cached)"), "{detail}");
     assert!(detail.contains("Output 56"), "{detail}");
-    assert!(detail.contains("Total 1,290"), "{detail}");
+    assert!(detail.contains("Spent 490"), "{detail}");
 
     // A conversation whose provider has reported nothing keeps the slot and
     // says so, with no number invented to fill it, and no disclosure to open.
@@ -1504,7 +1449,9 @@ fn the_footer_waits_until_the_turn_finishes() {
         .finish();
     let labels = drawn(&mut busy);
     assert!(
-        !labels.iter().any(|text| text == "Fork" || text.contains("tokens")),
+        !labels
+            .iter()
+            .any(|text| text == "Fork" || text.contains("tokens")),
         "a running turn draws no closing row: {labels:?}"
     );
 
@@ -1520,7 +1467,9 @@ fn the_footer_waits_until_the_turn_finishes() {
         .finish();
     let labels = drawn(&mut waiting);
     assert!(
-        !labels.iter().any(|text| text == "Fork" || text.contains("tokens")),
+        !labels
+            .iter()
+            .any(|text| text == "Fork" || text.contains("tokens")),
         "a pending decision draws no closing row: {labels:?}"
     );
 
@@ -1531,7 +1480,8 @@ fn the_footer_waits_until_the_turn_finishes() {
         .finish();
     let labels = drawn(&mut done);
     assert!(
-        labels.iter().any(|text| text == "Fork") && labels.iter().any(|text| text.contains("tokens")),
+        labels.iter().any(|text| text == "Fork")
+            && labels.iter().any(|text| text.contains("tokens")),
         "once the turn is over the row is back: {labels:?}"
     );
 }
@@ -1583,7 +1533,11 @@ fn the_composer_hints_sit_over_the_separator_and_only_when_given() {
         );
     }
     let plain_rules = rules(&commands);
-    assert_eq!(plain_rules.len(), 1, "one separator divides input from content");
+    assert_eq!(
+        plain_rules.len(),
+        1,
+        "one separator divides input from content"
+    );
 
     let mut view = ChatView::new()
         .with_messages(messages)
@@ -1679,11 +1633,11 @@ fn the_strip_sits_lower_than_its_own_spacing_over_the_input() {
     let caps: Vec<crate::geometry::RectF> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::StrokeRect { rect, corner_radius, .. }
-                if *corner_radius == 0.0
-                    && rect.height() < 20.0
-                    && rect.max_y() <= separator =>
-            {
+            RenderCommand::StrokeRect {
+                rect,
+                corner_radius,
+                ..
+            } if *corner_radius == 0.0 && rect.height() < 20.0 && rect.max_y() <= separator => {
                 Some(*rect)
             }
             _ => None,
@@ -1744,9 +1698,7 @@ fn the_input_hugs_its_separator_like_the_shell_bar() {
         .iter()
         .filter_map(|command| match command {
             RenderCommand::FillRect { rect, .. }
-                if rect.height() <= 2.0
-                    && rect.width() >= width - 0.5
-                    && rect.min_y() < editor =>
+                if rect.height() <= 2.0 && rect.width() >= width - 0.5 && rect.min_y() < editor =>
             {
                 Some((rect.min_y(), rect.max_y()))
             }
@@ -2085,11 +2037,7 @@ mod the_footers_place {
         app: &AppContext,
         cursor: Option<Vector2F>,
     ) -> Vec<RenderCommand> {
-        let _ = view.layout(
-            SizeConstraint::loose(size),
-            &mut LayoutContext,
-            app,
-        );
+        let _ = view.layout(SizeConstraint::loose(size), &mut LayoutContext, app);
         let mut ctx = PaintContext::new(Renderer::new());
         if let Some(position) = cursor {
             ctx.cursor_inside = true;
@@ -2156,7 +2104,9 @@ mod the_footers_place {
         bands(hovered)
             .into_iter()
             .find(|band| contains(*band, point) && !resting.contains(band))
-            .unwrap_or_else(|| panic!("the affordance at {point:?} paints a band under the pointer"))
+            .unwrap_or_else(|| {
+                panic!("the affordance at {point:?} paints a band under the pointer")
+            })
     }
 
     /// The viewport the transcript clips its content to.
@@ -2186,7 +2136,7 @@ mod the_footers_place {
 
         let rest = frame(&mut view, size, &app, None);
         let fork = text_origin(&rest, "Fork");
-        let usage = text_origin(&rest, "1,290 tokens");
+        let usage = text_origin(&rest, "490 tokens");
         assert_eq!(fork.y, usage.y, "the two affordances are one closing row");
         assert!(
             usage.x > fork.x,
@@ -2297,7 +2247,11 @@ mod the_footers_place {
         // All the way back: the footer has left the viewport, with the message.
         scroll.borrow_mut().scroll_by(-10_000.0);
         let top = frame(&mut view, size, &app, None);
-        assert_eq!(scroll.borrow().offset(), 0.0, "the transcript is at its start");
+        assert_eq!(
+            scroll.borrow().offset(),
+            0.0,
+            "the transcript is at its start"
+        );
         assert!(
             !texts(&top).iter().any(|text| text == "Fork"),
             "at the start of the history the footer is out of the viewport, not stranded over \
@@ -2412,11 +2366,7 @@ mod drag_to_copy {
     /// fills the transcript's text recording, so every test here paints once
     /// before it presses.
     fn paint(view: &mut ChatView, size: Vector2F, app: &AppContext) -> Vec<RenderCommand> {
-        let _ = view.layout(
-            SizeConstraint::loose(size),
-            &mut LayoutContext,
-            app,
-        );
+        let _ = view.layout(SizeConstraint::loose(size), &mut LayoutContext, app);
         let mut ctx = PaintContext::new(Renderer::new());
         view.paint(vec2f(0.0, 0.0), &mut ctx, app);
         ctx.renderer
@@ -2427,21 +2377,12 @@ mod drag_to_copy {
 
     fn two_messages() -> Vec<ChatMessage> {
         vec![
-            ChatMessage::new(
-                ChatRole::Assistant,
-                vec![ChatFragment::text("alpha beta")],
-            ),
-            ChatMessage::new(
-                ChatRole::Assistant,
-                vec![ChatFragment::text("gamma delta")],
-            ),
+            ChatMessage::new(ChatRole::Assistant, vec![ChatFragment::text("alpha beta")]),
+            ChatMessage::new(ChatRole::Assistant, vec![ChatFragment::text("gamma delta")]),
         ]
     }
 
-    fn copy_sink() -> (
-        Rc<RefCell<Vec<String>>>,
-        Rc<RefCell<dyn FnMut(String)>>,
-    ) {
+    fn copy_sink() -> (Rc<RefCell<Vec<String>>>, Rc<RefCell<dyn FnMut(String)>>) {
         let copied = Rc::new(RefCell::new(Vec::new()));
         let sink = copied.clone();
         (
@@ -2452,12 +2393,7 @@ mod drag_to_copy {
         )
     }
 
-    fn drag(
-        view: &mut ChatView,
-        start: Vector2F,
-        end: Vector2F,
-        app: &AppContext,
-    ) {
+    fn drag(view: &mut ChatView, start: Vector2F, end: Vector2F, app: &AppContext) {
         let mut ctx = crate::elements::EventContext;
         for event in [
             DispatchedEvent::MouseDown {
@@ -2520,12 +2456,12 @@ mod drag_to_copy {
         // the glyphs under it are redrawn in the background colour so selected
         // text changes colour instead of keeping its own.
         let commands = paint(&mut view, vec2f(600.0, 480.0), &app);
-        let accent = app.theme.color(ColorToken::Accent);
+        let band = app.theme.color(ColorToken::Selection);
         assert!(
             commands.iter().any(|command| matches!(
                 command,
                 RenderCommand::FillRect { rect, color, .. }
-                    if *color == accent && rect.height() > 1.0
+                    if *color == band && rect.height() > 1.0
             )),
             "the selection is drawn over the text it covers"
         );
@@ -2557,7 +2493,10 @@ mod drag_to_copy {
 
         drag(&mut view, point, point, &app);
 
-        assert!(copied.borrow().is_empty(), "a click never replaces the clipboard");
+        assert!(
+            copied.borrow().is_empty(),
+            "a click never replaces the clipboard"
+        );
         assert!(
             !selection.borrow().has_selection(),
             "and leaves no one-character highlight behind"
@@ -2594,5 +2533,77 @@ mod drag_to_copy {
             &app,
         );
         assert!(!selection.borrow().has_selection());
+    }
+
+    #[test]
+    fn a_bulleted_reply_wraps_inside_the_pane_at_every_width() {
+        use crate::elements::chat_content::ListItem;
+        use crate::platform::text_atlas::advance_width;
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = AppContext::default();
+        let items = ["Agents", "Teams & Workflows", "MCP servers"]
+            .into_iter()
+            .map(|name| {
+                ListItem::new(vec![ChatFragment::text(format!(
+                    "{name} — create or update agents with specific prompts and tool \
+                     access, then let them run on the work you describe in the \
+                     conversation."
+                ))])
+            })
+            .collect();
+        let messages = vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::list(items, None)],
+        )];
+        let mut view = ChatView::new().with_messages(messages).finish();
+
+        let widest = |commands: &[RenderCommand]| {
+            commands
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::DrawText {
+                        origin,
+                        text,
+                        font_size,
+                        font_weight,
+                        font_family,
+                        font_italic,
+                        max_width,
+                        ..
+                    } => {
+                        let advance = advance_width(
+                            text,
+                            *font_size,
+                            *font_weight,
+                            *font_family,
+                            *font_italic,
+                        );
+                        Some(origin.x + advance.min(*max_width))
+                    }
+                    _ => None,
+                })
+                .fold(0.0f32, f32::max)
+        };
+
+        // A wide frame first, then a series of shrinks: a cached tree would
+        // keep the wide run's lines and draw them past the new edge.
+        let _ = render_element(&mut view, vec2f(900.0, 600.0), &app);
+        for width in [600.0, 400.0, 260.0, 180.0] {
+            let commands = render_element(&mut view, vec2f(width, 600.0), &app);
+            let marker = commands.iter().any(|command| {
+                matches!(
+                    command,
+                    RenderCommand::DrawText { text, .. } if text == "• "
+                )
+            });
+            assert!(marker, "the reply is drawn as a list in a {width}-wide pane");
+            let ink = widest(&commands);
+            assert!(
+                ink <= width + 0.5,
+                "the list's ink ends at {ink} in a {width}-wide pane"
+            );
+        }
     }
 }

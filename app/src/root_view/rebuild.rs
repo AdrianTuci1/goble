@@ -89,6 +89,7 @@ impl RootView {
                 harness_items: Vec::new(),
                 harness_menu_open: state_s.harness_menu_open.clone(),
                 dir_menu_open: state_s.dir_menu_open.clone(),
+                dir_menu_highlight: Rc::new(RefCell::new(None)),
                 dir_menu_scroll: state_s.dir_menu_scroll.clone(),
                 dir_ids: Vec::new(),
                 dir_items: Vec::new(),
@@ -96,6 +97,7 @@ impl RootView {
                 branch_ids: Vec::new(),
                 branch_items: Vec::new(),
                 branch_menu_open: state_s.branch_menu_open.clone(),
+                branch_menu_highlight: Rc::new(RefCell::new(None)),
                 diff: None,
                 diff_menu_open: Rc::new(RefCell::new(false)),
                 diff_menu_scroll: Default::default(),
@@ -193,6 +195,7 @@ impl RootView {
                         }
 
                         ctx.dir_menu_open = controls.dir_menu_open.clone();
+                        ctx.dir_menu_highlight = controls.dir_menu_highlight.clone();
                         ctx.dir_menu_scroll = controls.dir_menu_scroll.clone();
                         let dir_rows =
                             pickers.directories(&cwd, *controls.dir_menu_open.borrow());
@@ -218,6 +221,7 @@ impl RootView {
                         // no repository has no branch and draws no branch pill.
                         ctx.branch_label = controls.branch.clone();
                         ctx.branch_menu_open = controls.branch_menu_open.clone();
+                        ctx.branch_menu_highlight = controls.branch_menu_highlight.clone();
                         let branch_rows =
                             pickers.branches(&cwd, *controls.branch_menu_open.borrow());
                         ctx.branch_ids = branch_rows.iter().map(|row| row.name.clone()).collect();

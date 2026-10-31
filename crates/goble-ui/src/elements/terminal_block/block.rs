@@ -710,8 +710,9 @@ impl TerminalBlock {
     /// Draw the text selection over the block's lines. The lines recorded their
     /// boxes as they painted, so this runs after the root and a selected line is
     /// highlighted in place, from the first selected character to the last. The
-    /// selected glyphs are redrawn in the background colour, so the text itself
-    /// changes colour under the band instead of keeping its own tint.
+    /// band is the desaturated accent, and the selected glyphs are redrawn in
+    /// the background colour, so the text itself changes colour under the band
+    /// instead of keeping its own tint.
     fn paint_selection(&self, ctx: &mut PaintContext, app: &AppContext) {
         let Some(selection) = self.selection else {
             return;
@@ -719,7 +720,7 @@ impl TerminalBlock {
         let Some(geometry) = &self.line_geometry else {
             return;
         };
-        let accent = app.theme.color(ColorToken::Accent);
+        let band = app.theme.color(ColorToken::Selection);
         let contrast = app.theme.color(ColorToken::Bg);
         let Some(renderer) = ctx.renderer.as_mut() else {
             return;
@@ -742,7 +743,7 @@ impl TerminalBlock {
             }
             let x = line.origin.x + (line.prefix_columns + from) as f32 * line.column_width;
             let width = (to - from + 1) as f32 * line.column_width;
-            renderer.fill_rect(rectf(x, line.origin.y, width, line.size.y), accent);
+            renderer.fill_rect(rectf(x, line.origin.y, width, line.size.y), band);
             let fragment: String = text[from..=to].iter().collect();
             renderer.draw_text_with_font(
                 Vector2F::new(x, line.origin.y),

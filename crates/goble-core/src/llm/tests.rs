@@ -272,11 +272,7 @@ fn a_deepseek_endpoint_behind_the_openai_provider_replays_reasoning() {
     let declared = OpenAiProvider::new("openai", "key", "https://api.deepseek.com");
     assert!(declared.replays_reasoning("deepseek-flash"));
 
-    let openrouter = OpenAiProvider::new(
-        "openrouter",
-        "key",
-        "https://openrouter.ai/api/v1",
-    );
+    let openrouter = OpenAiProvider::new("openrouter", "key", "https://openrouter.ai/api/v1");
     assert!(
         openrouter.replays_reasoning("deepseek/deepseek-reasoner"),
         "the model id identifies a proxied DeepSeek model"
@@ -316,4 +312,43 @@ fn a_stream_delta_carries_the_thinking_separately_from_the_reply() {
         chunk.choices[0].delta.reasoning_content.as_deref(),
         Some("weighing it")
     );
+}
+
+#[test]
+fn spend_leaves_the_cached_prompt_share_out() {
+    let usage = TokenUsage {
+        input: 1_234,
+        cached: Some(800),
+        output: 56,
+    };
+    assert_eq!(
+        usage.total(),
+        1_290,
+        "the calls' size keeps the whole prompt"
+    );
+    assert_eq!(
+        usage.spend(),
+        490,
+        "the meter counts prompt misses plus output"
+    );
+}
+
+#[test]
+fn spend_without_cache_accounting_is_prompt_plus_output() {
+    let usage = TokenUsage {
+        input: 900,
+        cached: None,
+        output: 100,
+    };
+    assert_eq!(usage.spend(), 1_000);
+}
+
+#[test]
+fn spend_clamps_a_cached_share_larger_than_the_prompt() {
+    let usage = TokenUsage {
+        input: 100,
+        cached: Some(250),
+        output: 10,
+    };
+    assert_eq!(usage.spend(), 10);
 }

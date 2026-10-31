@@ -33,6 +33,11 @@ pub struct ChatToolCall {
     pub status: ToolCallStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    /// A file mutation's unified diff, captured while the tool ran (see
+    /// [`super::unified_diff`]). The transcript draws the change from it, so a
+    /// write shows what it added and a restart still has the line numbers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
 }
 
 impl ChatToolCall {
@@ -44,6 +49,42 @@ impl ChatToolCall {
             arguments: call.arguments.clone(),
             status: ToolCallStatus::Pending,
             result: None,
+            diff: None,
+        }
+    }
+}
+
+/// What a tool call produced: the text the model reads back, plus what the
+/// transcript can show beyond it. The output is the call's whole result; a
+/// diff is the file change the tool made, kept out of the output so the model
+/// is not handed the file twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOutcome {
+    pub output: String,
+    pub diff: Option<String>,
+}
+
+/// The largest diff a call records. A diff is stored in the conversation row it
+/// belongs to, and a change past this size costs more to keep than it is worth
+/// to read: the row falls back to the tool's own confirmation.
+pub const MAX_RECORDED_DIFF: usize = 256 * 1024;
+
+impl ToolOutcome {
+    /// An outcome with nothing to show beyond its text.
+    pub fn text(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            diff: None,
+        }
+    }
+
+    /// An outcome carrying the change it made. An empty diff is no diff — a
+    /// write that changed nothing has no band to draw — and neither is one past
+    /// [`MAX_RECORDED_DIFF`].
+    pub fn with_diff(output: impl Into<String>, diff: Option<String>) -> Self {
+        Self {
+            output: output.into(),
+            diff: diff.filter(|diff| !diff.is_empty() && diff.len() <= MAX_RECORDED_DIFF),
         }
     }
 }

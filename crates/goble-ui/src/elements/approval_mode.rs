@@ -55,15 +55,6 @@ impl ApprovalMode {
         }
     }
 
-    pub fn icon(self) -> &'static str {
-        match self {
-            Self::AlwaysApprove => "check",
-            Self::Manual => "user",
-            Self::Plan => "prompt",
-            Self::AutoReview => "sparkle",
-        }
-    }
-
     /// What the mode means, said on the control's tooltip.
     pub fn description(self) -> &'static str {
         match self {

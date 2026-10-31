@@ -41,10 +41,6 @@ pub const APPROVAL_EDITOR_MAX_HEIGHT: f32 = 140.0;
 /// [`CommandDecision`].
 pub type DecisionHandler = Rc<RefCell<dyn FnMut(String, CommandDecision) + 'static>>;
 
-/// Where the command field's focus changes go: `true` when the field takes the
-/// keyboard, `false` when it loses it.
-pub type FocusHandler = Rc<RefCell<dyn FnMut(bool) + 'static>>;
-
 /// The app-owned state the card edits through.
 ///
 /// Every handle is owned outside the element, because the card is rebuilt every
@@ -63,15 +59,11 @@ pub struct CommandApprovalState {
     pub draft: Rc<RefCell<String>>,
     /// The insertion beam's character index into `draft`.
     pub caret: Rc<RefCell<usize>>,
-    /// Whether the command field holds the keyboard. Off while the rich input
-    /// is focused: the user is typing a follow-up into the composer, and the
-    /// card's command must not take those keys. Clicks on Run/Reject still
-    /// decide either way.
+    /// Whether the command field holds the keyboard. The card is the pane's
+    /// only typing surface while a command waits, so this stays on; a host
+    /// that also draws a rich input hides that input instead of sharing the
+    /// keys.
     pub field_focused: bool,
-    /// Reports the command field taking or losing the keyboard. A host that
-    /// also draws a rich input clears that input's focus when the field takes
-    /// the keys, so one surface types at a time.
-    pub on_focus_change: Option<FocusHandler>,
 }
 
 impl CommandApprovalState {
@@ -89,7 +81,6 @@ impl CommandApprovalState {
             draft,
             caret,
             field_focused: true,
-            on_focus_change: None,
         }
     }
 }
@@ -103,7 +94,6 @@ impl Default for CommandApprovalState {
             draft: Rc::new(RefCell::new(String::new())),
             caret: Rc::new(RefCell::new(0)),
             field_focused: true,
-            on_focus_change: None,
         }
     }
 }
@@ -296,14 +286,6 @@ pub fn command_approval_card(
         .with_blur_on_outside_click(false)
         .with_caret(caret.clone())
         .with_scroll_state(editor_scroll.clone())
-        .with_on_focus_change({
-            let on_focus_change = state.on_focus_change.clone();
-            move |focused: bool| {
-                if let Some(cb) = on_focus_change.as_ref() {
-                    (cb.borrow_mut())(focused);
-                }
-            }
-        })
         .with_on_change({
             let draft = draft.clone();
             move |text| *draft.borrow_mut() = text
@@ -681,44 +663,6 @@ mod tests {
                 CommandDecision::Edit("git status --short".to_string())
             )),
             "an edited command is reported as an edit"
-        );
-    }
-
-    #[test]
-    fn clicking_the_command_field_takes_the_keyboard_back_from_the_composer() {
-        let proposal = proposal(&["git status"]);
-        let mut state = state_for(&proposal);
-        // The rich input holds the keyboard: the card's field is unfocused.
-        state.field_focused = false;
-        let changes: Rc<RefCell<Vec<bool>>> = Rc::default();
-        let log = changes.clone();
-        state.on_focus_change = Some(Rc::new(RefCell::new(move |focused: bool| {
-            log.borrow_mut().push(focused);
-        })));
-        let app = AppContext::default();
-        let mut element = command_approval_card(&proposal, &state, None, &app);
-        let commands = render_element(&mut element, vec2f(640.0, 300.0), &app);
-        let origin = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "git status" => {
-                    Some(*origin)
-                }
-                _ => None,
-            })
-            .expect("the command is drawn");
-        element.dispatch_event(
-            &DispatchedEvent::MouseDown {
-                position: vec2f(origin.x + 2.0, origin.y + 4.0),
-                button: 0,
-            },
-            &mut EventContext::default(),
-            &app,
-        );
-        assert_eq!(
-            *changes.borrow(),
-            [true],
-            "a press on the field reports that the card owns the keys"
         );
     }
 

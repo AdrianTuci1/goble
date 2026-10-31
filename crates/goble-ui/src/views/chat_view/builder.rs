@@ -381,6 +381,15 @@ impl ChatView {
         self
     }
 
+    /// Share the directory tray's keyboard highlight with the app, so the row
+    /// Up/Down moved to survives the per-frame rebuild.
+    pub fn with_composer_dir_menu_highlight(
+        mut self,
+        highlight: Rc<RefCell<Option<usize>>>,
+    ) -> Self {
+        self.composer_dir_menu_highlight = highlight;
+        self
+    }
     /// Set the composer's git-branch dropdown.
     pub fn with_composer_branch_menu<F: FnMut(usize) + 'static>(
         mut self,
@@ -391,6 +400,16 @@ impl ChatView {
         self.composer_branch_items = items;
         self.composer_branch_menu_open = open;
         self.on_select_branch_item = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Share the branch tray's keyboard highlight with the app, like the
+    /// directory tray's.
+    pub fn with_composer_branch_menu_highlight(
+        mut self,
+        highlight: Rc<RefCell<Option<usize>>>,
+    ) -> Self {
+        self.composer_branch_menu_highlight = highlight;
         self
     }
 
@@ -542,6 +561,15 @@ impl ChatView {
     /// The mode menu's app-owned open flag.
     pub fn with_composer_approval_menu_open(mut self, open: Rc<RefCell<bool>>) -> Self {
         self.composer_approval_menu_open = open;
+        self
+    }
+
+    /// The mode menu's app-owned keyboard highlight, like its open flag.
+    pub fn with_composer_approval_menu_highlight(
+        mut self,
+        highlight: Rc<RefCell<Option<usize>>>,
+    ) -> Self {
+        self.composer_approval_menu_highlight = highlight;
         self
     }
 

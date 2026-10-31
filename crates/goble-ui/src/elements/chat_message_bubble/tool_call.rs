@@ -70,6 +70,21 @@ pub(super) fn to_text_span(
     })
 }
 
+/// The diffstat a recorded diff states, in the row's own ` +N/-M` style. Empty
+/// when the diff carries no change, so a row never states ` +0/-0`.
+fn recorded_diffstat(diff: &str) -> String {
+    let (mut added, mut removed) = (0usize, 0usize);
+    for hunk in crate::elements::parse_unified_diff(diff) {
+        added += hunk.added();
+        removed += hunk.removed();
+    }
+    if added == 0 && removed == 0 {
+        String::new()
+    } else {
+        format!(" +{added}/-{removed}")
+    }
+}
+
 /// The colour a tool call's mark carries: the state, not the tool. Every call
 /// walks the same four states, and each one owns a colour a reader can tell
 /// apart at a glance — queued is quiet, work in flight is amber, a call that
@@ -126,6 +141,7 @@ fn tool_subject_color(
     match kind {
         ToolKind::Read
         | ToolKind::Create
+        | ToolKind::Delete
         | ToolKind::Edit
         | ToolKind::List
         | ToolKind::WebFetch => app.theme.color(ColorToken::Path),
@@ -237,7 +253,12 @@ fn verb_group_kind(call: &ToolCall) -> Option<VerbGroupKind> {
         ToolKind::MemorySearch => Some(VerbGroupKind::MemorySearch),
         ToolKind::SearchTools => Some(VerbGroupKind::IntegrationSearch),
         ToolKind::SubAgent => Some(VerbGroupKind::Subagent),
-        ToolKind::Execute | ToolKind::Create | ToolKind::Edit | ToolKind::UseTool | ToolKind::Other => None,
+        ToolKind::Execute
+        | ToolKind::Create
+        | ToolKind::Delete
+        | ToolKind::Edit
+        | ToolKind::UseTool
+        | ToolKind::Other => None,
     }
 }
 
@@ -656,6 +677,14 @@ pub(super) fn tool_call_header(
     let arguments: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
     let mut parsed = tool_row(&call.name, &arguments, call.result.as_deref());
+    // A recorded change states its own diffstat: what the tool actually added
+    // and removed, which a write's arguments alone cannot say.
+    if let Some(diff) = call.diff.as_deref() {
+        let stat = recorded_diffstat(diff);
+        if !stat.is_empty() {
+            parsed.detail = stat;
+        }
+    }
     if let Some(record) = sub_agent {
         // A child's own record carries what the arguments cannot: what the
         // child is doing and how long it has been doing it.

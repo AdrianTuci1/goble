@@ -160,8 +160,9 @@ surface is locked pill-free. Two pieces, both landed:
 
 - **The parse is one function, shared by every shape.** `goble_core::harness::presentation`
   answers `tool_row(name, arguments, result) -> ToolRow { verb, subject, detail, kind }`
-  and `tool_kind_for(name) -> ToolKind` (`Execute, Read, Edit, Create, List, Search,
-  WebSearch, WebFetch, SearchTools, UseTool, MemorySearch, Skill, SubAgent, Other`).
+  and `tool_kind_for(name) -> ToolKind` (`Execute, Read, Edit, Create, Delete, List,
+  Search, WebSearch, WebFetch, SearchTools, UseTool, MemorySearch, Skill, SubAgent,
+  Other`).
   grok-build's names come first (`read`, `edit`, `write`, `bash`, `grep`, `ls`,
   `web_fetch`, `search_tool`, `use_tool`, `memory_search`, `skill`), then our harness
   names (`crates/goble-core/src/harness/definitions.rs`). The row is the bold verb, the
@@ -175,6 +176,17 @@ surface is locked pill-free. Two pieces, both landed:
   runs inside a paint-free `Chip`: the status glyph, the bold verb, the subject and the
   detail. The bodies stay the family's own (`tool_body.rs`): a command is the shared
   terminal block, a read is an excerpt, an edit is a diff, a sub-agent is its own rows.
+- **A file change is recorded by the tool that made it.** The arguments alone cannot
+  draw a write (they carry no pre-image) and give an edit no line numbers or context,
+  so the three mutating file tools return a `ToolOutcome` (`harness::types`) whose
+  `diff` is a real unified diff taken against the file on disk
+  (`harness::unified_diff`, `harness::files`) and persisted on the call
+  (`ChatToolCall::diff`). The row draws it back through `parse_unified_diff`: a write
+  shows the lines it added (`+N/-0`), an edit its hunk at the file's own line numbers,
+  a deletion the lines it removed. The confirmation text stays out of the body while a
+  diff is drawn; a failed call, or a row written before diffs were recorded, falls back
+  to the replacement the arguments spell and then to the result. The diff is not part
+  of the tool result, so the model never reads the file twice.
 
 **The pill lock.** `crates/goble-ui/src/test_util.rs` now owns the predicate
 (`is_pill`, `pills`, `assert_pill_free`, `assert_no_row_border`, `pill_rects`), and every

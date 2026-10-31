@@ -82,7 +82,6 @@ fn family_calls() -> Vec<ToolCall> {
         ("list_mcp_servers", "{}", "github"),
         ("web_search", r#"{"query":"grok build","max_results":3,"advanced":false}"#, "URL: https://x.ai"),
         ("read_url", r#"{"url":"https://x.ai/docs"}"#, "the page"),
-        ("execute_python_code", r#"{"code":"print(1)"}"#, "1"),
         ("run_agent", r#"{"agent_id":"researcher","input":"summarize the changelog"}"#, "the summary"),
         ("edit_file", r#"{"path":"src/lib.rs","old_text":"let a = 1;","new_text":"let a = 2;"}"#, "edited"),
         ("memory_write", r#"{"agent_id":"researcher","content":"prefers tabs"}"#, "stored"),

@@ -17,9 +17,9 @@ fn every_harness_tool_parses_into_a_family() {
         ("create_agent", ToolKind::SubAgent),
         ("run_agent", ToolKind::SubAgent),
         (SPAWN_SUBAGENT_TOOL, ToolKind::SubAgent),
+        ("delete_file", ToolKind::Delete),
         // A tool with no family of its own is named by its own name.
         ("credentials", ToolKind::Other),
-        ("delete_file", ToolKind::Other),
         ("memory_read", ToolKind::Other),
         ("mcp__srv__tool", ToolKind::Other),
     ];

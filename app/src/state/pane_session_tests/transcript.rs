@@ -378,6 +378,7 @@ use super::*;
                     .collect::<Vec<_>>()
                     .join("\n"),
             ),
+            diff: None,
         };
         let messages =
             vec![ChatMessage::new(ChatRole::Assistant, Vec::new())
@@ -428,5 +429,65 @@ use super::*;
         assert!(
             has_text(&expanded, "line 7"),
             "the rebuilt transcript reads the app-owned fold"
+        );
+    }
+
+    /// The harness's own lookups (`search_store`, `credentials`,
+    /// `user_guide`) never reach the transcript: their calls are dropped, the
+    /// result folded into them goes with them, and a step that carried nothing
+    /// else is not left as an empty reply.
+    #[test]
+    fn the_harnesss_internal_lookups_are_not_drawn() {
+        let calls = serde_json::json!([
+            {"id": "c1", "name": "credentials", "arguments": {"name": "openai"}, "status": "finished"},
+            {"id": "c2", "name": "read_file", "arguments": {"path": "a.rs"}, "status": "finished"},
+        ])
+        .to_string();
+        let assistant = goble_desktop_service::ChatMessage {
+            id: "m1".into(),
+            role: "assistant".into(),
+            content: String::new(),
+            tool_calls: Some(calls),
+            created_at: "2026-09-10T00:00:00Z".into(),
+        };
+        let hidden_result = goble_desktop_service::ChatMessage {
+            id: "m2".into(),
+            role: "tool".into(),
+            content: "c1\nsecret-key-name".into(),
+            tool_calls: None,
+            created_at: "2026-09-10T00:00:01Z".into(),
+        };
+
+        let messages = MessageParseCache::default().resolve(&[assistant, hidden_result]);
+
+        assert_eq!(messages.len(), 1, "the reply is still one message");
+        let calls = &messages[0].tool_calls;
+        assert_eq!(calls.len(), 1, "only the visible call is kept");
+        assert_eq!(calls[0].name, "read_file");
+        assert!(
+            !messages
+                .iter()
+                .flat_map(|message| message.fragments.iter())
+                .any(|fragment| format!("{:?}", fragment.kind).contains("secret-key-name")),
+            "the hidden call's output is not drawn as a row of its own"
+        );
+
+        // A step that carried nothing but a hidden call is not an empty bubble.
+        let only_hidden = goble_desktop_service::ChatMessage {
+            id: "m3".into(),
+            role: "assistant".into(),
+            content: String::new(),
+            tool_calls: Some(
+                serde_json::json!([
+                    {"id": "c3", "name": "user_guide", "arguments": {"topic": "x"}, "status": "finished"}
+                ])
+                .to_string(),
+            ),
+            created_at: "2026-09-10T00:00:02Z".into(),
+        };
+        let messages = MessageParseCache::default().resolve(&[only_hidden]);
+        assert!(
+            messages.is_empty(),
+            "a step with nothing to show is not a message: {messages:?}"
         );
     }

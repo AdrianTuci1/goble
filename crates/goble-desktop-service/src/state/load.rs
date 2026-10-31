@@ -112,6 +112,9 @@ impl DesktopState {
         }
         drop(exec_map);
 
+        // Top-level conversations only: `Store::list_chats` leaves out a
+        // sub-agent's own row (it carries `parent_chat_id`), so a child never
+        // becomes a sidebar card.
         let chats = self.store.lock().list_chats()?;
         let mut chats_vec = self.chats.lock();
         for (id, title, provider, model, _created_at, updated_at) in chats {
@@ -148,6 +151,19 @@ impl DesktopState {
             .unwrap_or_else(UserId::generate);
         let mut summaries = Vec::new();
         for conv in self.list_chats() {
+            // A sub-agent's conversation is not a thread of its own: it carries
+            // `parent_chat_id` and is reached through the child view that
+            // spawned it. `list_chats` already leaves those rows out; this keeps
+            // the migration honest if a cache ever held one.
+            if self
+                .store
+                .lock()
+                .get_chat_parent(&conv.id)
+                .map_err(|e| e.to_string())?
+                .is_some()
+            {
+                continue;
+            }
             let participants = vec![Participant::User(owner.clone())];
             let thread = self
                 .thread_store()

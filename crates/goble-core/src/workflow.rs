@@ -27,6 +27,11 @@ pub struct Workflow {
     pub enabled: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// The Rhai body the workflow runs. When present, `steps` mirror the phases
+    /// its `meta` declares and the daemon runs the script instead of walking
+    /// the step list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +54,7 @@ impl Workflow {
             enabled: true,
             created_at: chrono::Utc::now().to_rfc3339(),
             updated_at: chrono::Utc::now().to_rfc3339(),
+            script: None,
         }
     }
 

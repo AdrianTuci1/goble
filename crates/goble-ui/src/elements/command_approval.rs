@@ -59,10 +59,10 @@ pub struct CommandApprovalState {
     pub draft: Rc<RefCell<String>>,
     /// The insertion beam's character index into `draft`.
     pub caret: Rc<RefCell<usize>>,
-    /// Whether the command field holds the keyboard. Off while the rich input
-    /// is focused: the user is typing a follow-up into the composer, and the
-    /// card's command must not take those keys. Clicks on Run/Reject still
-    /// decide either way.
+    /// Whether the command field holds the keyboard. The card is the pane's
+    /// only typing surface while a command waits, so this stays on; a host
+    /// that also draws a rich input hides that input instead of sharing the
+    /// keys.
     pub field_focused: bool,
 }
 

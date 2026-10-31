@@ -236,9 +236,49 @@ fn terminal_global_filter_composes_with_block_filter() {
     );
 }
 
-/// The rendered commands of a block, so a test can read the drawn runs.
-fn paint_block(data: &TerminalData) -> Vec<crate::render::RenderCommand> {
+/// A selected line is painted as an accent band and its own glyphs are redrawn
+/// in the background colour, so the text inside the selection changes colour.
+#[test]
+fn a_selected_line_repaints_its_glyphs_in_the_contrast_colour() {
     let app = app();
+    let data = TerminalData::new(
+        "section",
+        vec![
+            TerminalLine::command("cargo test"),
+            TerminalLine::output("hello"),
+        ],
+    );
+    let geometry = Rc::new(RefCell::new(Vec::new()));
+    let mut block = terminal_block_with_selection(
+        &data,
+        TerminalFilter::default(),
+        None,
+        None,
+        Some(TerminalTextSelection::new((1, 0), (1, 4))),
+        0,
+        geometry,
+    );
+    let commands = crate::test_util::render_element(&mut block, vec2f(600.0, 300.0), &app);
+    let band = app.theme.color(ColorToken::Selection);
+    let contrast = app.theme.color(ColorToken::Bg);
+    assert!(
+        commands.iter().any(
+            |c| matches!(c, crate::render::RenderCommand::FillRect { color, .. } if *color == band)
+        ),
+        "the selection is a band in the desaturated accent colour"
+    );
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            crate::render::RenderCommand::DrawText { text, color, .. }
+                if text == "hello" && *color == contrast
+        )),
+        "the selected glyphs are repainted in the contrast colour"
+    );
+}
+
+/// The rendered commands of a block, so a test can read the drawn runs.
+fn paint_block(data: &TerminalData) -> Vec<crate::render::RenderCommand> {    let app = app();
     let mut block = terminal_block(data, TerminalFilter::default(), None, None);
     crate::test_util::render_element(&mut block, vec2f(600.0, 300.0), &app)
 }

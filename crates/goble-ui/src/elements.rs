@@ -87,7 +87,8 @@ pub use terminal_grid::{GridRange, TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE
 pub use text::Text;
 pub use text_area::{LineRuns, TextArea};
 pub use text_selection::{
-    RunMetrics, SelectableLine, SelectableText, SelectionPoint, SelectionRun, TranscriptSelection,
+    RunMetrics, SelectableLine, SelectableText, SelectedFragment, SelectionPoint, SelectionRun,
+    TranscriptSelection,
 };
 pub use text_input::TextInput;
 pub use thread_list_item::ThreadListItem;
@@ -655,6 +656,7 @@ pub mod split;
 pub mod stack;
 pub mod switch;
 pub mod tab_bar;
+mod table_grid;
 pub mod terminal_block;
 pub mod terminal_grid;
 pub mod text;

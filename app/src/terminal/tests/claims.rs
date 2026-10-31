@@ -24,6 +24,85 @@ use super::*;
         );
     }
 
+    /// A multi-line command reaches the editor wrapped as one paste, so its
+    /// own newlines do not run it line by line: only the claim's carriage
+    /// return submits it.
+    #[test]
+    fn a_multi_line_claim_reaches_the_editor_as_one_paste() {
+        let mut session = detached();
+        feed_bytes(&mut session, b"\x1b[?2004h");
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
+        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+
+        session
+            .claim_command("bash -c 'one\ntwo'", agent_owner())
+            .unwrap();
+
+        assert_eq!(
+            &*captured.lock().unwrap(),
+            b"\x1b[200~bash -c 'one\ntwo'\x1b[201~\r"
+        );
+    }
+
+    /// A command approved from the proposal composer runs under the harness's
+    /// claim, so the transcript's inline block — the user's own newest command —
+    /// leaves it alone: the conversation draws it as the agent's tool call.
+    #[test]
+    fn a_claimed_command_is_not_the_transcripts_inline_block() {
+        let mut session = detached();
+        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+        let owner = agent_owner();
+        assert!(
+            session
+                .state
+                .lock()
+                .unwrap()
+                .claim_active_block(owner.clone()),
+            "the shell is at a prompt and can arm the claim"
+        );
+        session.claim_command("echo approved", owner).unwrap();
+        run_hook(&mut session, preexec("echo approved"));
+        feed_bytes(&mut session, b"approved\r\n");
+
+        assert!(
+            crate::ui::terminal::executed_command_block_at(&session).is_none(),
+            "an agent's command is drawn by its tool call, not as the user's block"
+        );
+
+        // The user's own command still is that block.
+        run_hook(&mut session, HookEvent::Precmd(Default::default()));
+        run_hook(&mut session, preexec("echo mine"));
+        feed_bytes(&mut session, b"mine\r\n");
+        let (block, _) = crate::ui::terminal::executed_command_block_at(&session)
+            .expect("the user's command draws its block");
+        assert_eq!(block.lines[0].text, "echo mine");
+    }
+
+    /// The line editor can hand the command back with different spacing than
+    /// it was written with (a newline becomes a break in bash's history, a
+    /// trailing space is dropped); that is the same command, and the claim
+    /// resolves rather than failing the tool call.
+    #[test]
+    fn a_claim_resolves_across_spacing_the_editor_changed() {
+        let mut session = detached();
+        let owner = agent_owner();
+        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+        session
+            .claim_command("bash -c 'one\ntwo'  ", owner.clone())
+            .unwrap();
+
+        run_hook(&mut session, preexec("bash -c 'one two'"));
+
+        assert_eq!(
+            session.claim_outcomes(),
+            vec![ClaimOutcome::Resolved {
+                owner,
+                command: "bash -c 'one\ntwo'".to_string(),
+            }]
+        );
+    }
+
     #[test]
     fn a_claimed_command_resolves_on_its_own_preexec() {
         let mut session = detached();

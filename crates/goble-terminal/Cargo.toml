@@ -2,6 +2,8 @@
 name = "goble-terminal"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+publish.workspace = true
 description = "Terminal core: vendored VT emulator, host->PTY key encoding, shell-hook decoding, and the command block model."
 
 [dependencies]

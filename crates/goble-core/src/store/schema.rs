@@ -139,6 +139,17 @@ impl Store {
                 updated_at TEXT NOT NULL
             ) STRICT;
 
+            CREATE TABLE IF NOT EXISTS workflow_runs (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                run_json TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT
+            ) STRICT;
+
+            CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id, started_at);
+
             CREATE INDEX IF NOT EXISTS idx_chat_messages_chat_id ON chat_messages(chat_id);
             CREATE INDEX IF NOT EXISTS idx_executions_agent_id ON executions(agent_id);
             CREATE INDEX IF NOT EXISTS idx_team_members_team_id ON team_members(team_id);

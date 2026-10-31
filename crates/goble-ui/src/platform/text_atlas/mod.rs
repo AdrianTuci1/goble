@@ -8,6 +8,7 @@
 
 mod atlas;
 mod cache;
+mod emoji;
 mod fonts;
 
 #[cfg(test)]

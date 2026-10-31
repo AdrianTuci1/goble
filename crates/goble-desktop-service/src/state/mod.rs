@@ -48,7 +48,9 @@ mod translator;
 mod turns;
 mod types;
 mod vault;
+mod workflow_scheduler;
 mod worker_messages;
+mod workflows;
 mod workers;
 
 #[cfg(test)]
@@ -60,12 +62,13 @@ pub use remote::{
     REPO_URL_ENV, WORKER_ID_ENV, WORKER_TOKEN_ENV, WORKSPACE_PATH_ENV,
 };
 pub use sandboxes::{binding_for_local_project, binding_for_project};
+pub use workflow_scheduler::start_workflow_scheduler;
 pub use types::{
     AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, CommandProposedEvent, ExecutionInfo, Intent,
     IntentParams, LlmSetting, LogEntry, ReasoningEvent, ReasoningPhase, SubAgentFinishedEvent,
     SubAgentProgressEvent, SubAgentSpawnedEvent, TeamInfo, ThreadMessageSummary,
     ThreadReactionSummary, ThreadSummary, TokenUsageEvent, ToolCallEvent, VaultSecretInfo, WorkerConnection,
-    WorkerInvite, WorkflowInfo,
+    WorkerInvite, WorkflowInfo, WorkflowRunInfo, WorkflowRunStep,
 };
 
 pub struct DesktopState {

@@ -1,5 +1,11 @@
 use crate::color::ColorU;
 
+/// How much of the background a selection band carries. The accent at full
+/// strength is an opaque band that swamps the glyphs it covers, so the band is
+/// the accent pulled this far toward the background: desaturated, but still a
+/// step away from the surface it sits on.
+const SELECTION_BG_MIX: f32 = 0.55;
+
 /// A complete theme for Goble UI.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
@@ -172,6 +178,10 @@ impl Theme {
             ColorToken::Selected => self.colors.selected,
             ColorToken::Focus => self.colors.focus,
             ColorToken::Accent => self.custom_accent.unwrap_or_else(|| self.accent.color()),
+            ColorToken::Selection => self
+                .custom_accent
+                .unwrap_or_else(|| self.accent.color())
+                .mix(&self.colors.bg, SELECTION_BG_MIX),
             ColorToken::Success => self.colors.success,
             ColorToken::Warning => self.colors.warning,
             ColorToken::Path => self.colors.path,
@@ -249,6 +259,11 @@ pub enum ColorToken {
     /// The focused text field's caret and ring — see `ColorScheme::focus`.
     Focus,
     Accent,
+    /// A text selection's band: the accent mixed toward the background, so a
+    /// selected line reads as a tint under its glyphs rather than as a solid
+    /// accent strip. The glyphs over it are still repainted in the background
+    /// colour by the surfaces that paint a selection.
+    Selection,
     Success,
     Warning,
     /// A tool row's file path — grok-build's warm orange (`theme.path`).
@@ -500,6 +515,35 @@ mod tests {
     #[test]
     fn accent_color_resolves() {
         assert_eq!(AccentColor::Blue.color(), ColorU::hex(0x9a9a9a));
+    }
+
+    /// A selection band is a tint, not a solid accent strip: the accent pulled
+    /// 55% of the way toward the background, and still a step away from both so
+    /// the band and the inverted glyphs over it stay apart.
+    #[test]
+    fn selection_is_a_desaturated_accent() {
+        for theme in [Theme::dark(), Theme::light(), Theme::midnight()] {
+            let accent = theme.color(ColorToken::Accent);
+            let bg = theme.color(ColorToken::Bg);
+            let band = theme.color(ColorToken::Selection);
+            assert_eq!(
+                band,
+                accent.mix(&bg, 0.55),
+                "{}: the band is the accent mixed toward the background",
+                theme.name
+            );
+            assert_ne!(band, accent, "{}: not the accent itself", theme.name);
+            assert_ne!(band, bg, "{}: not the background", theme.name);
+        }
+    }
+
+    /// A custom accent tints the selection too, the same way it tints the accent.
+    #[test]
+    fn a_custom_accent_tints_the_selection() {
+        let accent = ColorU::hex(0x8b5cf6);
+        let theme = Theme::dark().with_overrides(None, None, Some(accent));
+        let bg = theme.color(ColorToken::Bg);
+        assert_eq!(theme.color(ColorToken::Selection), accent.mix(&bg, 0.55));
     }
 
     /// The focus blue is warp-new's own default dark theme accent, and it is

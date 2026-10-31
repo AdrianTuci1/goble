@@ -672,6 +672,89 @@ fn a_write_is_not_drawn_as_a_numbered_read() {
     );
 }
 
+/// A write whose harness recorded a diff draws the change: the added lines as
+/// diff rows, and the diffstat on the row that folds them. The tool's own
+/// confirmation only repeats the path, so it is not drawn beside the change.
+#[test]
+fn a_recorded_write_diff_draws_the_change() {
+    let mut write = call(
+        "write_file",
+        r#"{"path":"src/lib.rs","content":"fn main() {}\nlet x = 1;\n"}"#,
+        ToolCallStatus::Finished,
+        Some(r#"wrote "src/lib.rs""#),
+    );
+    write.diff = Some("@@ -0,0 +1,2 @@\n+fn main() {}\n+let x = 1;\n".to_string());
+    let (commands, _) =
+        paint_tool_calls_with_fold(vec![write], Some(ToolDisplayMode::Expanded));
+
+    let rows = drawn_row_texts(&commands);
+    let header = rows
+        .iter()
+        .find(|row| row.contains("Creating"))
+        .unwrap_or_else(|| panic!("the write draws its row, got {rows:?}"));
+    assert!(
+        header.ends_with("+2/-0"),
+        "the row states the change it made, got {header:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.ends_with("fn main() {}")),
+        "the added lines are diff rows, got {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.ends_with("let x = 1;")),
+        "every added line is drawn, got {rows:?}"
+    );
+    let texts = drawn_texts(&commands);
+    assert!(
+        !texts.iter().any(|text| text.contains("wrote")),
+        "the confirmation is not drawn beside the change, got {texts:?}"
+    );
+}
+
+/// A recorded edit is drawn from the tool's own diff, so its hunks carry the
+/// file's line numbers and the unchanged lines around the replacement.
+#[test]
+fn a_recorded_edit_diff_carries_the_files_context() {
+    let mut edit = call(
+        "edit_file",
+        r#"{"path":"src/lib.rs","old_text":"let x = 1;","new_text":"let x = 2;"}"#,
+        ToolCallStatus::Finished,
+        Some(r#"edited "src/lib.rs""#),
+    );
+    edit.diff = Some(
+        "@@ -2,3 +2,3 @@\n let x = 1;\n-let x = 2;\n+let x = 3;\n let x = 4;\n".to_string(),
+    );
+    let (commands, _) =
+        paint_tool_calls_with_fold(vec![edit], Some(ToolDisplayMode::Expanded));
+
+    let rows = drawn_row_texts(&commands);
+    let header = rows
+        .iter()
+        .find(|row| row.contains("Edit"))
+        .unwrap_or_else(|| panic!("the edit draws its row, got {rows:?}"));
+    assert!(
+        header.ends_with("+1/-1"),
+        "the row's diffstat comes from the recorded diff, got {header:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.ends_with("let x = 1;")),
+        "the context before the change is drawn, got {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.ends_with("let x = 3;")),
+        "the added line is drawn, got {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.ends_with("let x = 4;")),
+        "the context after the change is drawn, got {rows:?}"
+    );
+    let texts = drawn_texts(&commands);
+    assert!(
+        texts.iter().any(|text| text == "3"),
+        "the hunk's own line numbers are drawn, got {texts:?}"
+    );
+}
+
 /// The base line comes from the call's own data: a `cat -n`-style gutter
 /// already in the result is kept, so it is never re-numbered.
 #[test]

@@ -43,16 +43,19 @@ impl Element for RootView {
     }
 
     /// Whether the frame clock still has a reason to run: an agent turn, a tool
-    /// call, a pending approval or question, a command printing into a pane, or
-    /// a transcript gliding to content that arrived while it was following.
-    /// Everything else is event-driven, so an idle window idles instead of
-    /// rebuilding and repainting the same frame.
+    /// call, a running sub-agent child, a pending approval or question, a
+    /// command printing into a pane, or a transcript gliding to content that
+    /// arrived while it was following. Everything else is event-driven, so an
+    /// idle window idles instead of rebuilding and repainting the same frame.
     fn wants_animation(&self) -> bool {
         let state = self.state.borrow();
         let live = state.live_work();
         if live.turn_busy
             || !live.executions.is_empty()
             || !live.tool_calls.is_empty()
+            // A pane whose only work is a background child still has a row and
+            // a chip to keep current, so the clock stays live for it.
+            || live.running_sub_agents > 0
             || live.pending_approval.is_some()
             || live.pending_question.is_some()
         {

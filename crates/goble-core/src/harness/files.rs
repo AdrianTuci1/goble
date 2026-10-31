@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 
-use super::CommandRunner;
+use super::{unified_diff, CommandRunner, ToolOutcome};
 
 pub(super) fn read_file(
     args: &serde_json::Value,
@@ -16,21 +16,31 @@ pub(super) fn read_file(
 pub(super) fn write_file(
     args: &serde_json::Value,
     workspace_dir: &std::path::Path,
-) -> Result<String> {
+) -> Result<ToolOutcome> {
     let path = args["path"].as_str().context("path is required")?;
     let content = args["content"].as_str().context("content is required")?;
     let path = resolve_path(path, workspace_dir)?;
+    // A write is the one place both versions exist: the file's previous text
+    // and the new one. The diff is taken here so the row can draw what the
+    // write added after a restart. A file that exists but cannot be read as
+    // text (a binary) is no pre-image, so no diff is claimed for it.
+    let previous = match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(_) if path.exists() => None,
+        Err(_) => Some(String::new()),
+    };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&path, content).with_context(|| format!("failed to write {path:?}"))?;
-    Ok(format!("wrote {path:?}"))
+    let diff = previous.map(|previous| unified_diff(&previous, content));
+    Ok(ToolOutcome::with_diff(format!("wrote {path:?}"), diff))
 }
 
 pub(super) fn edit_file(
     args: &serde_json::Value,
     workspace_dir: &std::path::Path,
-) -> Result<String> {
+) -> Result<ToolOutcome> {
     let path = args["path"].as_str().context("path is required")?;
     let old_text = args["old_text"].as_str().context("old_text is required")?;
     let new_text = args["new_text"].as_str().context("new_text is required")?;
@@ -41,18 +51,29 @@ pub(super) fn edit_file(
     if replaced == content {
         anyhow::bail!("old_text not found in file");
     }
-    std::fs::write(&path, replaced).with_context(|| format!("failed to write {path:?}"))?;
-    Ok(format!("edited {path:?}"))
+    std::fs::write(&path, replaced.as_str())
+        .with_context(|| format!("failed to write {path:?}"))?;
+    // Diffed against the whole file, so the hunk carries its real line
+    // numbers and the context around the replacement.
+    let diff = unified_diff(&content, &replaced);
+    Ok(ToolOutcome::with_diff(
+        format!("edited {path:?}"),
+        Some(diff),
+    ))
 }
 
 pub(super) fn delete_file(
     args: &serde_json::Value,
     workspace_dir: &std::path::Path,
-) -> Result<String> {
+) -> Result<ToolOutcome> {
     let path = args["path"].as_str().context("path is required")?;
     let path = resolve_path(path, workspace_dir)?;
+    // The removed text is the diff that is left: the file is gone, so nothing
+    // else can reconstruct what the deletion took away.
+    let removed = std::fs::read_to_string(&path).ok();
     std::fs::remove_file(&path).with_context(|| format!("failed to delete {path:?}"))?;
-    Ok(format!("deleted {path:?}"))
+    let diff = removed.map(|removed| unified_diff(&removed, ""));
+    Ok(ToolOutcome::with_diff(format!("deleted {path:?}"), diff))
 }
 
 pub(super) fn rename_file(

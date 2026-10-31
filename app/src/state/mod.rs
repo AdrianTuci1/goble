@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use goble_core::agent::Trigger;
-use goble_core::harness::{tool_kind_for, ToolCallStatus, ToolKind};
+use goble_core::harness::{is_hidden_tool, tool_kind_for, ToolCallStatus, ToolKind};
 use goble_core::store::SecretGroup;
 use goble_desktop_service::DesktopState;
 use goble_ui::{
@@ -33,7 +33,8 @@ use crate::terminal::TerminalRegistry;
 use crate::ui::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, FloatingDrag, HarnessEntry, LayoutKind,
     LlmFormField, Pane, PaneChatSnapshot, PaneDropTarget, PaneKind, RemoteAgentEntry, SearchRow, SettingsCategory, SettingsControl, SettingsFocus, SidebarView,
-    Space, TaskEntry, TimelineEntry, WorkflowEntry, WorkflowStepEntry, WorkerPaneSnapshot,
+    Space, TaskEntry, TimelineEntry, WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry,
+    WorkflowStepEntry, WorkerPaneSnapshot,
     WorkspaceRouting, SIDEBAR_WIDTH,
 };
 use crate::ui::global_search::SearchWorker;

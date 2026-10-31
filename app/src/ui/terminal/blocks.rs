@@ -1,9 +1,9 @@
 //! The block an executed command is drawn as, shared with the transcript.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use goble_terminal::blocks::BlockView;
-use goble_terminal::{Palette, ScreenLine};
+use goble_terminal::{BlockOwner, Palette, ScreenLine};
 use goble_ui::elements::{TerminalData, TerminalMeta, TerminalStatus};
 
 use crate::emulator::VisibleBlock;
@@ -19,19 +19,38 @@ use crate::terminal::TerminalSession;
 /// an assumed success, so a command still running is not drawn as finished.
 /// `None` while the session has drawn nothing.
 pub fn executed_command_block(session: &TerminalSession) -> Option<TerminalData> {
+    executed_command_block_at(session).map(|(data, _)| data)
+}
+
+/// The same block, with the wall-clock time its command started so a transcript
+/// can place it where it ran instead of at the end. The time is `None` for a
+/// block that never ran or a shell that has not delimited blocks yet.
+///
+/// Only a block the user owns is this view's block. A command the agent ran —
+/// including one the user approved from the proposal composer — is claimed for
+/// the harness, and its conversation already draws it as the tool call it is;
+/// drawing it here as well would show an approved command as one the user sent.
+pub fn executed_command_block_at(
+    session: &TerminalSession,
+) -> Option<(TerminalData, Option<SystemTime>)> {
     // An integrated shell reports its commands as blocks, so the live screen is
     // not the source: the screen carries the prompt row too, and a prompt
-    // belongs in the block's header. The newest block with a command is the
-    // block this view draws, streaming as its output grows.
+    // belongs in the block's header. The newest user block with a command is
+    // the block this view draws, streaming as its output grows.
     if session.is_bootstrapped() {
         let view = BlockView::Terminal;
         let block = session
             .visible_blocks(&view)
             .into_iter()
             .rev()
-            .find(|block| block.card.is_none() && !block.command.trim().is_empty())?;
+            .find(|block| {
+                block.card.is_none()
+                    && block.owner == BlockOwner::User
+                    && !block.command.trim().is_empty()
+            })?;
         let cells = session.block_output_lines_of(block.id);
-        return section_data_with(&block, cells.as_deref(), session.palette());
+        let data = section_data_with(&block, cells.as_deref(), session.palette())?;
+        return Some((data, block.started_at));
     }
 
     // A shell that has not delimited a block yet: the live screen is the block,
@@ -55,11 +74,11 @@ pub fn executed_command_block(session: &TerminalSession) -> Option<TerminalData>
         .rev()
         .find(|block| block.card.is_none() && !block.command.is_empty())
         .map_or(TerminalStatus::Success, |block| block_status(&block));
-    Some(TerminalData::from_output_lines(
-        "terminal",
-        &rows,
-        session.palette(),
-        status,
+    // A shell without blocks has no start time to compare with the transcript,
+    // so the block keeps the end of the conversation.
+    Some((
+        TerminalData::from_output_lines("terminal", &rows, session.palette(), status),
+        None,
     ))
 }
 

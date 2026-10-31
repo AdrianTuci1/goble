@@ -11,8 +11,8 @@ use anyhow::{Context, Result};
 
 use crate::protocol::{write_message, MessageReader, ProtocolError, Request, ServerMessage};
 use crate::{
-    cleanup_stale, log_path_for, pid_alive, pid_path_for, read_pidfile, resolve_socket_path,
-    wait_for_socket,
+    cleanup_stale, log_path_for, pid_alive, pid_path_for, read_pidfile, remove_stale_record,
+    resolve_socket_path, wait_for_socket,
 };
 
 /// A connection to the PTY daemon.
@@ -62,24 +62,42 @@ impl Client {
     ///
     /// A stale socket and pidfile are removed only when the pidfile names a
     /// dead process; a live pid is waited for (bounded) rather than duplicated.
+    /// A live pid with no socket at all is a stale record: after a crash the
+    /// pid can be reused by an unrelated process, and with no socket there is
+    /// nothing that could answer, so the record is cleaned and a fresh daemon
+    /// starts instead of failing every connection.
     pub fn connect_or_start_at(socket: &Path, exe: &Path) -> Result<Self> {
         match Self::connect(socket) {
             Ok(client) => return Ok(client),
             Err(first) => {
                 let pidfile = pid_path_for(socket);
-                if let Some(pid) = read_pidfile(&pidfile) {
-                    if pid_alive(pid) {
-                        wait_for_socket(socket, Duration::from_secs(5)).with_context(|| {
-                            format!(
-                                "a daemon (pid {pid}) owns {} but did not answer: {first}",
+                match read_pidfile(&pidfile).filter(|pid| pid_alive(*pid)) {
+                    Some(pid) => {
+                        // The daemon binds its socket before it writes the
+                        // pidfile, so a live pid with no socket file cannot be
+                        // a daemon that is still starting: the pid was reused
+                        // after a crash. Nothing could answer, so recover
+                        // instead of waiting out the connect timeout.
+                        if socket.exists() {
+                            if wait_for_socket(socket, Duration::from_secs(5)).is_ok() {
+                                return Self::connect(socket).map_err(anyhow::Error::from);
+                            }
+                            // An existing socket that refuses is left alone: a
+                            // daemon may be busy, and deleting its socket would
+                            // break it.
+                            return Err(anyhow::Error::from(first)).context(format!(
+                                "a daemon (pid {pid}) owns {} but did not answer",
                                 socket.display()
-                            )
-                        })?;
-                        return Self::connect(socket).map_err(anyhow::Error::from);
+                            ));
+                        }
+                        remove_stale_record(socket, &pidfile)
+                            .with_context(|| format!("clean stale socket {}", socket.display()))?;
+                    }
+                    None => {
+                        cleanup_stale(socket, &pidfile)
+                            .with_context(|| format!("clean stale socket {}", socket.display()))?;
                     }
                 }
-                cleanup_stale(socket, &pidfile)
-                    .with_context(|| format!("clean stale socket {}", socket.display()))?;
             }
         }
 
@@ -258,6 +276,30 @@ mod tests {
         assert!(cleanup_stale(&socket, &pidfile).unwrap());
         assert!(!socket.exists());
         assert!(!pidfile.exists());
+    }
+
+    #[test]
+    fn a_live_pid_without_a_socket_is_force_cleaned() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("pty.sock");
+        let pidfile = pid_path_for(&socket);
+        std::fs::write(&pidfile, format!("{}\n", std::process::id())).unwrap();
+        assert!(
+            !cleanup_stale(&socket, &pidfile).unwrap(),
+            "the live pid is left alone by the ordinary path"
+        );
+        assert!(remove_stale_record(&socket, &pidfile).unwrap());
+        assert!(!pidfile.exists());
+    }
+
+    #[test]
+    fn force_cleanup_still_refuses_a_non_socket_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("pty.sock");
+        let pidfile = pid_path_for(&socket);
+        std::fs::write(&socket, b"not a socket").unwrap();
+        assert!(remove_stale_record(&socket, &pidfile).is_err());
+        assert!(socket.exists(), "the file must not be deleted");
     }
 
     #[test]

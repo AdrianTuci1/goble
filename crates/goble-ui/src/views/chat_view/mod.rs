@@ -24,6 +24,7 @@ use goble_core::ssh_command::SshSession;
 
 mod builder;
 mod element;
+mod sticky;
 mod surface;
 mod transcript;
 
@@ -133,13 +134,19 @@ pub struct ChatView {
     /// The approval-mode menu's app-owned open flag, and the callback a picked
     /// or cycled mode goes through.
     composer_approval_menu_open: Rc<RefCell<bool>>,
+    /// The approval-mode menu's app-owned keyboard highlight.
+    composer_approval_menu_highlight: Rc<RefCell<Option<usize>>>,
     on_select_approval_mode: Option<Rc<RefCell<dyn FnMut(ApprovalMode) + 'static>>>,
     composer_dir_items: Vec<PopupMenuItem>,
     composer_dir_menu_open: Rc<RefCell<bool>>,
+    /// The directory tray's app-owned keyboard highlight.
+    composer_dir_menu_highlight: Rc<RefCell<Option<usize>>>,
     composer_dir_menu_scroll: PanelScroll,
     on_select_dir_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     composer_branch_items: Vec<PopupMenuItem>,
     composer_branch_menu_open: Rc<RefCell<bool>>,
+    /// The branch tray's app-owned keyboard highlight.
+    composer_branch_menu_highlight: Rc<RefCell<Option<usize>>>,
     on_select_branch_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     /// The working tree's changed files, when the pane is in a local
     /// repository. The composer draws the diff control from it.
@@ -265,13 +272,16 @@ impl ChatView {
             on_select_harness_item: None,
             composer_approval_mode: None,
             composer_approval_menu_open: Rc::new(RefCell::new(false)),
+            composer_approval_menu_highlight: Rc::new(RefCell::new(None)),
             on_select_approval_mode: None,
             composer_dir_items: Vec::new(),
             composer_dir_menu_open: Rc::new(RefCell::new(false)),
+            composer_dir_menu_highlight: Rc::new(RefCell::new(None)),
             composer_dir_menu_scroll: PanelScroll::default(),
             on_select_dir_item: None,
             composer_branch_items: Vec::new(),
             composer_branch_menu_open: Rc::new(RefCell::new(false)),
+            composer_branch_menu_highlight: Rc::new(RefCell::new(None)),
             on_select_branch_item: None,
             composer_diff: None,
             composer_diff_menu_open: Rc::new(RefCell::new(false)),

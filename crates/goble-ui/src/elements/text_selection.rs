@@ -292,6 +292,26 @@ impl TranscriptSelection {
             _ => Vec::new(),
         }
     }
+
+    /// The selected glyphs, for the surface to redraw over its highlight in a
+    /// contrast colour.
+    pub fn selected_fragments(&self) -> Vec<SelectedFragment> {
+        match (self.anchor, self.cursor) {
+            (Some(anchor), Some(cursor)) => self.text.selected_fragments(anchor, cursor),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// A selected run of glyphs: where it starts on the row it was drawn on, what
+/// it spells, and the face it was drawn with. A surface repaints these over
+/// its selection band so the characters themselves change colour.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectedFragment {
+    pub left: f32,
+    pub top: f32,
+    pub text: String,
+    pub metrics: RunMetrics,
 }
 
 /// Every visual line a surface drew this frame, in paint order.
@@ -451,6 +471,73 @@ impl SelectableText {
         }
         out
     }
+
+    /// The selected glyphs, one fragment per run slice. A surface repaints
+    /// these over its highlight band, so selected characters change colour
+    /// instead of only gaining a tinted background.
+    pub fn selected_fragments(
+        &self,
+        anchor: SelectionPoint,
+        cursor: SelectionPoint,
+    ) -> Vec<SelectedFragment> {
+        if self.lines.is_empty() {
+            return Vec::new();
+        }
+        let (start, end) = if anchor <= cursor {
+            (anchor, cursor)
+        } else {
+            (cursor, anchor)
+        };
+        let last_line = self.lines.len() - 1;
+        let end_line = end.line.min(last_line);
+        let start_line = start.line.min(end_line);
+        let mut out = Vec::new();
+        for index in start_line..=end_line {
+            let line = &self.lines[index];
+            let count = line.char_count();
+            if count == 0 {
+                continue;
+            }
+            let from = if index == start_line {
+                start.column.min(count - 1)
+            } else {
+                0
+            };
+            let to = if index == end_line {
+                end.column.min(count - 1)
+            } else {
+                count - 1
+            };
+            if from > to {
+                continue;
+            }
+            let mut seen = 0usize;
+            for run in &line.runs {
+                let run_count = run.text.chars().count();
+                let run_start = seen;
+                seen += run_count;
+                if run_count == 0 {
+                    continue;
+                }
+                // The selection is expressed in the line's columns; clip it to
+                // this run and redraw only the characters it covers.
+                let first = from.max(run_start);
+                let last = (to + 1).min(run_start + run_count);
+                if first >= last {
+                    continue;
+                }
+                let offset = first - run_start;
+                let text: String = run.text.chars().skip(offset).take(last - first).collect();
+                out.push(SelectedFragment {
+                    left: run.left + run.char_advance(offset),
+                    top: run.top,
+                    text,
+                    metrics: run.metrics,
+                });
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -506,6 +593,34 @@ mod tests {
         let width = metrics().mono_width();
         assert!((rects[0].min().x - (10.0 + width)).abs() < 0.01);
         assert!((rects[0].width() - width * 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_selection_reports_the_glyphs_it_covers_on_each_row() {
+        let mut text = SelectableText::default();
+        text.lines.push(line(0.0, "hello"));
+        text.lines.push(line(20.0, "world"));
+        let fragments =
+            text.selected_fragments(SelectionPoint::new(0, 1), SelectionPoint::new(1, 2));
+        assert_eq!(fragments.len(), 2);
+        assert_eq!(fragments[0].text, "ello");
+        assert_eq!(fragments[0].left, 10.0 + metrics().mono_width());
+        assert_eq!(fragments[0].top, 0.0);
+        assert_eq!(fragments[1].text, "wor");
+        assert_eq!(fragments[1].top, 20.0);
+    }
+
+    #[test]
+    fn a_selection_splits_a_row_between_the_runs_it_covers() {
+        let mut text = SelectableText::default();
+        text.push_run(SelectionRun::new(10.0, 0.0, 18.2, "bold ", metrics()));
+        text.push_run(SelectionRun::new(50.0, 0.0, 18.2, "plain", metrics()));
+        let fragments =
+            text.selected_fragments(SelectionPoint::new(0, 4), SelectionPoint::new(0, 7));
+        assert_eq!(fragments.len(), 2);
+        assert_eq!(fragments[0].text, " ");
+        assert_eq!(fragments[1].text, "pla");
+        assert_eq!(fragments[1].left, 50.0);
     }
 
     #[test]

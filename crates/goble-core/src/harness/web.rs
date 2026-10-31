@@ -187,27 +187,6 @@ pub(super) async fn read_url(args: &serde_json::Value) -> Result<String> {
     Ok(text.chars().take(12000).collect())
 }
 
-pub(super) async fn execute_python_code(args: &serde_json::Value) -> Result<String> {
-    let code = args["code"].as_str().context("code is required")?;
-    let dir = tempfile::tempdir().context("failed to create temp dir")?;
-    let file = dir.path().join("script.py");
-    std::fs::write(&file, code).context("failed to write python script")?;
-    let output = tokio::process::Command::new("python3")
-        .arg(&file)
-        .current_dir(&dir)
-        .output()
-        .await
-        .context("failed to execute python3")?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Ok(format!(
-        "exit_code: {}\nstdout:\n{}\nstderr:\n{}",
-        output.status.code().unwrap_or(-1),
-        stdout,
-        stderr
-    ))
-}
-
 fn html_to_text(html: &str) -> String {
     let mut text = String::new();
     let mut in_tag = false;

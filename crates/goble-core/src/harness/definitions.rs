@@ -48,27 +48,31 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "create_workflow".to_string(),
-            description: "Create a new workflow.".to_string(),
+            description: "Create a new workflow. Pass `script` to make it a Rhai automation: the body must start with `let meta = #{ name: \"...\", description: \"...\", phases: [#{ title: \"...\" }] };` and uses `agent(prompt, #{ label, phase })`, `parallel([...])`, `phase(title)`, `log(message)`, `budget()` and `complete(value)`. When `script` is present the phases it declares become the workflow's steps and a `cron` expression (5 fields: minute hour day month weekday) schedules it.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "name": { "type": "string" },
                     "description": { "type": "string" },
-                    "steps": { "type": "array", "items": { "type": "object" } }
+                    "steps": { "type": "array", "items": { "type": "object" } },
+                    "script": { "type": "string", "description": "Rhai body, starting with `let meta = #{ ... }`." },
+                    "cron": { "type": "string", "description": "5-field cron expression that schedules this workflow." }
                 },
                 "required": ["name"]
             }),
         },
         ToolDefinition {
             name: "update_workflow".to_string(),
-            description: "Update an existing workflow by replacing its definition.".to_string(),
+            description: "Update an existing workflow by replacing its definition. `script` replaces the Rhai body (see create_workflow) and `cron` reschedules it.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "id": { "type": "string" },
                     "name": { "type": "string" },
                     "description": { "type": "string" },
-                    "steps": { "type": "array", "items": { "type": "object" } }
+                    "steps": { "type": "array", "items": { "type": "object" } },
+                    "script": { "type": "string", "description": "Rhai body, starting with `let meta = #{ ... }`." },
+                    "cron": { "type": "string", "description": "5-field cron expression that schedules this workflow." }
                 },
                 "required": ["id"]
             }),
@@ -404,17 +408,6 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
                     "url": { "type": "string" }
                 },
                 "required": ["url"]
-            }),
-        },
-        ToolDefinition {
-            name: "execute_python_code".to_string(),
-            description: "Execute Python code in a temporary file and return stdout/stderr.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "code": { "type": "string" }
-                },
-                "required": ["code"]
             }),
         },
         ToolDefinition {

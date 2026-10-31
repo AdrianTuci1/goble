@@ -11,15 +11,81 @@
 //! Like `goble-workflow`, this stays framework-agnostic: it depends only on the
 //! harness-seam crates and the workflow engine model — no `goble-core`, no UI.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use goble_harness_types::{HarnessId, HarnessTurn, MediumId, ProjectId, SessionId};
 use goble_workflow::{
-    Step, StepExecutor, StepOutcome, Workflow, WorkflowEngine, WorkflowHostRequest, WorkflowId,
-    WorkflowRun,
+    AgentOpts, AgentOutcome, ScriptEngine, ScriptHost, Step, StepExecutor, StepOutcome, Workflow,
+    WorkflowEngine, WorkflowHostRequest, WorkflowId, WorkflowRun,
 };
 
 type RunSeam = dyn Fn(HarnessTurn) -> StepOutcome + Send + Sync;
+
+/// The richer run seam a script body drives: one turn, its settled outcome and
+/// the assistant text it produced.
+pub type TextRunSeam = dyn Fn(HarnessTurn) -> (StepOutcome, String) + Send + Sync;
+
+/// A [`ScriptHost`] that answers each `agent()` call with one harness turn on
+/// the daemon's run seam. Session ids derive from `session_prefix` plus a
+/// per-call counter, so two calls never share a session.
+pub struct ScriptTurnHost {
+    harness_id: HarnessId,
+    project_id: ProjectId,
+    medium_id: MediumId,
+    session_prefix: String,
+    run_seam: Arc<TextRunSeam>,
+    counter: Mutex<u64>,
+}
+
+impl ScriptTurnHost {
+    pub fn new(
+        harness_id: HarnessId,
+        project_id: ProjectId,
+        medium_id: MediumId,
+        session_prefix: impl Into<String>,
+        run_seam: Arc<TextRunSeam>,
+    ) -> Self {
+        Self {
+            harness_id,
+            project_id,
+            medium_id,
+            session_prefix: session_prefix.into(),
+            run_seam,
+            counter: Mutex::new(0),
+        }
+    }
+}
+
+impl ScriptHost for ScriptTurnHost {
+    fn agent(&self, opts: &AgentOpts) -> AgentOutcome {
+        let index = {
+            let mut counter = self.counter.lock().unwrap();
+            let index = *counter;
+            *counter += 1;
+            index
+        };
+        let session_id = SessionId::new(format!("{}-{}", self.session_prefix, index));
+        let mut turn = HarnessTurn::new(self.harness_id.clone(), session_id, opts.prompt.clone());
+        turn.project_id = self.project_id.clone();
+        turn.medium_id = self.medium_id.clone();
+        let (outcome, output) = (self.run_seam)(turn);
+        let (success, error) = match outcome {
+            StepOutcome::Succeeded => (true, None),
+            StepOutcome::Failed(message) => (false, Some(message)),
+        };
+        AgentOutcome {
+            agent_id: format!("{}-agent-{index}", self.session_prefix),
+            success,
+            output: if output.trim().is_empty() {
+                error.unwrap_or_default()
+            } else {
+                output
+            },
+            tokens_used: 0,
+            duration_ms: 0,
+        }
+    }
+}
 
 /// A [`StepExecutor`] that drives each step through the daemon's run seam.
 ///
@@ -83,6 +149,9 @@ impl StepExecutor for HarnessStepExecutor {
 /// the engine, and the run is persisted before being returned.
 pub struct WorkflowHost {
     engine: WorkflowEngine,
+    /// The runner a workflow with a Rhai body uses. `None` keeps the step-list
+    /// engine only, which is how test hosts stay runnable.
+    script_host: Option<Arc<dyn ScriptHost>>,
     workflows: Mutex<Vec<Workflow>>,
     journal: Mutex<Vec<WorkflowHostRequest>>,
     runs: Mutex<Vec<WorkflowRun>>,
@@ -94,11 +163,18 @@ impl WorkflowHost {
     pub fn new(executor: impl StepExecutor + 'static) -> Self {
         Self {
             engine: WorkflowEngine::new(executor),
+            script_host: None,
             workflows: Mutex::new(Vec::new()),
             journal: Mutex::new(Vec::new()),
             runs: Mutex::new(Vec::new()),
             next_seq: Mutex::new(0),
         }
+    }
+
+    /// Give the host a runner for workflows that carry a Rhai body.
+    pub fn with_script_host(mut self, host: Arc<dyn ScriptHost>) -> Self {
+        self.script_host = Some(host);
+        self
     }
 
     /// Register a workflow so it can be looked up and run. The workflow must
@@ -163,7 +239,38 @@ impl WorkflowHost {
         let workflow = self
             .workflow(&entry.workflow_id)
             .ok_or_else(|| anyhow::anyhow!("no workflow registered for {}", entry.workflow_id))?;
-        let run = self.engine.run(&workflow);
+        self.execute(&workflow, &entry)
+    }
+
+    /// Run `workflow` without registering it first. The journal still records
+    /// the request, so a run keeps the same audit trail as a registered one.
+    pub fn run_workflow(
+        &self,
+        workflow: &Workflow,
+        request: WorkflowHostRequest,
+    ) -> anyhow::Result<WorkflowRun> {
+        let entry = self.journal(request);
+        self.execute(workflow, &entry)
+    }
+
+    fn execute(
+        &self,
+        workflow: &Workflow,
+        entry: &WorkflowHostRequest,
+    ) -> anyhow::Result<WorkflowRun> {
+        let run = match (&workflow.script, &self.script_host) {
+            (Some(source), Some(host)) => {
+                let script = ScriptEngine::new()
+                    .run(source, &entry.payload, Arc::clone(host))
+                    .map_err(anyhow::Error::msg)?;
+                script.to_workflow_run(workflow.id.clone())
+            }
+            (Some(_), None) => anyhow::bail!(
+                "workflow {} has a Rhai body but this host has no script runner",
+                workflow.id
+            ),
+            (None, _) => self.engine.run(workflow),
+        };
         self.runs.lock().unwrap().push(run.clone());
         Ok(run)
     }

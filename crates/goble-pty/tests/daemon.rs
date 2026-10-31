@@ -439,6 +439,42 @@ fn a_stale_socket_is_cleaned_and_the_daemon_auto_starts() {
     }
 }
 
+/// A crashed daemon leaves a pidfile, and the OS can hand that pid to an
+/// unrelated live process. The record then names a live pid with no socket
+/// behind it; the old recovery path refused to clean it, so every connect
+/// failed with "a daemon (pid …) owns … but did not answer". A fresh daemon
+/// must start instead.
+#[test]
+fn a_live_pid_with_no_socket_does_not_block_the_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("pty.sock");
+    let pidfile = pid_path_for(&socket);
+    std::fs::write(&pidfile, format!("{}\n", std::process::id())).unwrap();
+    assert!(!socket.exists());
+
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_goble-pty-daemon"));
+    let mut client = Client::connect_or_start_at(&socket, &exe)
+        .expect("a live pid without a socket is a stale record");
+
+    let id = client.next_id();
+    let list = client.request(Request::List { id }).unwrap();
+    assert!(matches!(list, ServerMessage::Sessions { .. }));
+
+    let daemon_pid = read_pidfile(&pidfile).expect("the fresh daemon wrote its pidfile");
+    assert_ne!(daemon_pid, std::process::id());
+    assert!(pid_alive(daemon_pid));
+    assert!(socket.exists());
+
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(daemon_pid.to_string())
+        .status();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pid_alive(daemon_pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// A shell that exits releases its pty and its session. Holding either would
 /// leak one master descriptor per closed pane until the machine runs out of
 /// ptys; a pane that has finished must also not look attachable.

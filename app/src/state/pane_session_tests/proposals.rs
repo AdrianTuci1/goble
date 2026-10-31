@@ -84,6 +84,28 @@ use super::*;
     }
 
     #[test]
+    fn focusing_a_pane_that_waits_takes_the_keys_from_the_composer() {
+        let mut state = UiState::mock();
+        state.active_pane_id = 2;
+        state.composer_focused = true;
+        {
+            let rt = state.pane_runtime.entry(1).or_default();
+            rt.pending_command = Some(CommandProposalUi::new(
+                "call-1".to_string(),
+                vec!["git status".to_string()],
+                "/workspace".to_string(),
+            ));
+        }
+
+        state.focus_pane(1);
+
+        assert!(
+            !state.composer_focused,
+            "the waiting card owns the keyboard, so the composer gives it up"
+        );
+    }
+
+    #[test]
     fn rebinding_without_a_store_drops_the_pending_approval() {
         let mut state = UiState::mock();
         state.active_pane_id = 1;

@@ -232,6 +232,7 @@ fn a_command_block_renders_identically_in_the_transcript_and_the_pane() {
         arguments: r#"{"command":"echo hi"}"#.to_string(),
         status: ToolCallStatus::Finished,
         result: Some("hi".to_string()),
+        diff: None,
     };
     // The command starts folded; expand it so the transcript draws the
     // output under the row.
@@ -290,6 +291,7 @@ fn a_command_block_is_drawn_from_its_lifecycle_not_a_guess() {
         pwd: None,
         git_branch: None,
         duration: None,
+        started_at: None,
         prompt: None,
         card: None,
     };
@@ -374,6 +376,30 @@ fn the_executed_command_block_reads_the_blocks_status() {
     let failed = executed_command_block(&session("boom", Some(2)))
         .expect("a failed command draws its block");
     assert_eq!(failed.status, Some(TerminalStatus::Error));
+}
+
+/// The inline block carries the wall-clock time its command started, so the
+/// transcript can place it among the chat rows instead of at the end.
+#[test]
+fn the_executed_command_block_reports_when_its_command_started() {
+    use goble_terminal::hooks::{encode_hook, PreexecValue};
+    use goble_terminal::HookEvent;
+
+    let before = std::time::SystemTime::now();
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+    emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+        command: Some("echo hi".to_string()),
+    })));
+    emulator.feed(b"echo hi\r\nhi\r\n");
+    let session = TerminalSession::with_emulator(emulator);
+
+    let (_, started) = executed_command_block_at(&session).expect("a run command draws its block");
+    let started = started.expect("a run command carries its start time");
+    assert!(
+        started >= before,
+        "the start time is when the command ran, not the block's creation"
+    );
 }
 
 /// A `RootView` mounted on a single shell (PTY) space, so the pane's own
@@ -2794,12 +2820,22 @@ fn mouse_drag_selects_block_text_and_cmd_c_copies_it() {
     );
 
     let highlighted = render_element(&mut pane, window, &app);
+    let band = app.theme.color(goble_ui::theme::ColorToken::Selection);
+    let contrast = app.theme.color(goble_ui::theme::ColorToken::Bg);
     assert!(
         highlighted.iter().any(|command| matches!(
             command,
-            RenderCommand::FillRect { color, .. } if color.a == 70
+            RenderCommand::FillRect { color, .. } if *color == band
         )),
         "the block selection is drawn over the text: {highlighted:?}"
+    );
+    assert!(
+        highlighted.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { text, color, .. }
+                if *color == contrast && text.starts_with("hello")
+        )),
+        "the selected glyphs are repainted in the contrast colour: {highlighted:?}"
     );
 
     copied.borrow_mut().clear();
@@ -2907,8 +2943,7 @@ fn copy_mode_chord_moves_the_cursor_and_yanks_the_line() {
     // colour, not only yanked: three cells of "one".
     let drawn = render_element(&mut pane, vec2f(900.0, 500.0), &app);
     let pitch = TerminalGrid::cell_width(FONT_SIZE);
-    let blue = goble_terminal::Palette::xterm().ansi[4];
-    let selection = ColorU::new(blue.0, blue.1, blue.2, 255);
+    let selection = app.theme.color(goble_ui::theme::ColorToken::Selection);
     assert!(
         drawn.iter().any(|command| matches!(
             command,

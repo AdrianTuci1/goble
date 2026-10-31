@@ -62,6 +62,7 @@ impl UiState {
             shortcuts_help_scroll: Rc::new(RefCell::new(ScrollState::default())),
             crons: Vec::new(),
             workflows: Vec::new(),
+            workflow_runs: Vec::new(),
             executions: Vec::new(),
             tasks: Vec::new(),
             timeline: Vec::new(),
@@ -240,6 +241,7 @@ impl UiState {
     /// timeline, costs) from the embedded daemon / store.
     pub fn refresh_observability(&mut self, desktop: &DesktopState) {
         self.refresh_workflows(desktop);
+        self.refresh_workflow_runs(desktop);
         self.refresh_executions(desktop);
         self.refresh_tasks(desktop);
         self.refresh_timeline(desktop);
@@ -268,6 +270,40 @@ impl UiState {
                 created_at: time_ago(&wf.created_at),
             })
             .collect();
+    }
+
+    /// Settled workflow runs from the persisted run ledger, newest first.
+    pub fn refresh_workflow_runs(&mut self, desktop: &DesktopState) {
+        self.workflow_runs = desktop
+            .list_workflow_runs()
+            .into_iter()
+            .map(|run| WorkflowRunEntry {
+                id: run.id,
+                workflow_id: run.workflow_id,
+                status: run.status,
+                error: run.error,
+                steps: run
+                    .steps
+                    .into_iter()
+                    .map(|step| WorkflowRunStepEntry {
+                        name: step.name,
+                        status: step.status,
+                        detail: step.detail,
+                    })
+                    .collect(),
+                started_at: time_ago(&run.started_at),
+                finished_at: run.finished_at.as_deref().map(time_ago),
+                output: run.output,
+                log: run.log,
+            })
+            .collect();
+    }
+
+    /// The newest run recorded for `workflow_id`.
+    pub fn latest_run(&self, workflow_id: &str) -> Option<&WorkflowRunEntry> {
+        self.workflow_runs
+            .iter()
+            .find(|run| run.workflow_id == workflow_id)
     }
 
     /// Executions from the daemon execution ledger.
@@ -456,6 +492,28 @@ impl UiState {
         }
     }
 
+    /// Whether a turn is still writing into `conversation_id` — running, or
+    /// suspended on an approval or a question.
+    ///
+    /// While that is true the conversation's transcript is growing token by
+    /// token, so its sidebar card keeps the preview it already shows instead
+    /// of re-reading the half-written reply on every delta.
+    fn conversation_is_live(&self, conversation_id: &str) -> bool {
+        let Some(rt) = self
+            .pane_id_for_conversation(conversation_id)
+            .and_then(|pane_id| self.pane_runtime.get(&pane_id))
+        else {
+            return false;
+        };
+        rt.busy
+            || rt.pending_command.is_some()
+            || rt.pending_ask.is_some()
+            || matches!(
+                rt.agent_state,
+                PaneAgentState::Working | PaneAgentState::NeedsInput
+            )
+    }
+
     /// Re-derive every conversation's card status from the pane runtime.
     ///
     /// A turn settling — or a pane stopping — changes a card's colour without
@@ -478,42 +536,74 @@ impl UiState {
     /// only when the subject actually changes — a conversation the agent has
     /// already named, or one the user named, is left alone — so the
     /// `chats:updated` the write emits cannot feed this call back into itself.
+    ///
+    /// A conversation whose turn is still running keeps the preview and reply
+    /// flag its card already carries. Every streamed delta rewrites its
+    /// transcript, and re-reading that would rewrite the card on every token —
+    /// a list that flickers while the harness works. The settled refresh after
+    /// the turn ends picks the finished text up once.
     pub fn refresh_conversations(&mut self, desktop: &DesktopState) {
         let chats = desktop.list_chats();
+        // What each card reads now, by conversation id, so a live turn has
+        // something settled to keep showing.
+        let settled: std::collections::HashMap<String, (String, bool)> = self
+            .conversations
+            .iter()
+            .map(|entry| {
+                (
+                    entry.id.clone(),
+                    (entry.last_response.clone(), entry.has_agent_reply),
+                )
+            })
+            .collect();
         self.conversations = chats
             .iter()
             .map(|c| {
-                // One read of the conversation's messages answers what its card
-                // previews, whether the agent has said anything in it, and what
-                // the conversation is about.
-                let messages = desktop.list_chat_messages(&c.id).unwrap_or_default();
-                let last = messages
-                    .last()
-                    .map(|m| m.content.clone())
-                    .filter(|s| !s.trim().is_empty())
-                    .unwrap_or_else(|| "New conversation".to_string());
-                // An assistant delta is written the moment the model starts
-                // answering and a tool result the moment one runs, so this
-                // turns true as soon as the conversation stops being a place
-                // the user typed into and becomes one the agent answered. The
-                // roles are the store's own strings; `system` is neither.
-                let has_agent_reply = messages
-                    .iter()
-                    .any(|m| m.role == "assistant" || m.role == "tool");
-                let title = match agent_subject(
-                    &c.title,
-                    &messages
-                        .iter()
-                        .map(|m| (m.role.as_str(), m.content.as_str()))
-                        .collect::<Vec<_>>(),
-                ) {
-                    Some(subject) => {
-                        if let Err(e) = desktop.set_chat_title(&c.id, &subject) {
-                            log::warn!("set_chat_title for {} failed: {e}", c.id);
+                let live = self.conversation_is_live(&c.id);
+                let previous = settled.get(&c.id);
+                let mut title = c.title.clone();
+                let (last, has_agent_reply) = match previous {
+                    Some((last, has_agent_reply)) if live => (last.clone(), *has_agent_reply),
+                    _ => {
+                        // One read of the conversation's messages answers what
+                        // its card previews, whether the agent has said
+                        // anything in it, and what it is about.
+                        let messages = desktop.list_chat_messages(&c.id).unwrap_or_default();
+                        let last = messages
+                            .last()
+                            .map(|m| m.content.clone())
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or_else(|| "New conversation".to_string());
+                        // An assistant delta is written the moment the model
+                        // starts answering and a tool result the moment one
+                        // runs, so this turns true as soon as the conversation
+                        // stops being a place the user typed into and becomes
+                        // one the agent answered. The roles are the store's own
+                        // strings; `system` is neither.
+                        let has_agent_reply = messages
+                            .iter()
+                            .any(|m| m.role == "assistant" || m.role == "tool");
+                        // A live turn's reply is half-written, so it cannot
+                        // name the conversation yet: the settled refresh after
+                        // the turn is what derives the subject. That also keeps
+                        // a title write (and the `chats:updated` it emits) out
+                        // of the per-token path.
+                        if !live {
+                            if let Some(subject) = agent_subject(
+                                &c.title,
+                                &messages
+                                    .iter()
+                                    .map(|m| (m.role.as_str(), m.content.as_str()))
+                                    .collect::<Vec<_>>(),
+                            ) {
+                                if let Err(e) = desktop.set_chat_title(&c.id, &subject) {
+                                    log::warn!("set_chat_title for {} failed: {e}", c.id);
+                                }
+                                title = subject;
+                            }
                         }
-                        subject
+                        (last, has_agent_reply)
                     }
-                    None => c.title.clone(),
                 };
                 ConversationEntry::new(c.id.clone(), title, last, time_ago(&c.updated_at))
                     .with_workspace_routing(
@@ -672,5 +762,52 @@ mod tests {
         state.finish_turn(1, TurnOutcome::Success);
         state.refresh_conversation_statuses();
         assert_eq!(card(&state, "c1"), Some(ConversationStatus::Success));
+    }
+
+    /// A live turn's card keeps the preview it already shows. The harness
+    /// appends the reply delta by delta, and following that would rewrite the
+    /// card on every token; the refresh after the turn ends reads the finished
+    /// text once.
+    #[test]
+    fn a_live_turn_keeps_the_card_preview_until_it_settles() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("thread store"),
+        );
+        let chat = desktop.create_chat("Ada", None, None).expect("create chat");
+        desktop
+            .add_chat_message(&chat, "assistant", "the settled reply")
+            .expect("settled reply");
+
+        let mut state = UiState::mock();
+        state
+            .pane_sessions
+            .get_mut(&1)
+            .expect("pane 1")
+            .conversation_id = chat.clone();
+        state.conversations =
+            vec![
+                ConversationEntry::new(chat.clone(), "Ada", "the settled reply", "10:42")
+                    .with_has_agent_reply(true),
+            ];
+        state.begin_turn(1);
+
+        // The harness writes the reply as its deltas arrive.
+        desktop
+            .add_chat_message(&chat, "assistant", "the reply, half")
+            .expect("streamed reply");
+        state.refresh_conversations(&desktop);
+        assert_eq!(
+            state.conversations[0].last_response, "the settled reply",
+            "a live turn does not rewrite the card's preview"
+        );
+
+        state.finish_turn(1, TurnOutcome::Success);
+        state.refresh_conversations(&desktop);
+        assert_eq!(
+            state.conversations[0].last_response, "the reply, half",
+            "the settled refresh reads the finished transcript"
+        );
     }
 }

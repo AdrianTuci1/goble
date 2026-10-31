@@ -201,6 +201,7 @@ fn recorded_tool_calls(events: &[HarnessServerEvent]) -> Vec<ChatToolCall> {
                 arguments: arguments.clone(),
                 status: ToolCallStatus::Running,
                 result: None,
+                diff: None,
             }),
             HarnessServerEvent::ToolCallFinished { id, result, .. } => {
                 if let Some(call) = calls.iter_mut().find(|call| &call.id == id) {

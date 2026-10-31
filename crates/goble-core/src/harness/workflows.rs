@@ -10,7 +10,16 @@ pub(super) fn create_workflow(store: &Store, args: &serde_json::Value) -> Result
     let name = args["name"].as_str().context("name is required")?;
     let description = args["description"].as_str().unwrap_or_default();
     let steps = parse_workflow_steps(&args["steps"]);
-    let workflow = Workflow::new(name, description).with_steps(steps);
+    let mut workflow = Workflow::new(name, description).with_steps(steps);
+    if let Some(source) = args["script"].as_str() {
+        apply_script(&mut workflow, source)?;
+    }
+    if let Some(cron) = args["cron"].as_str() {
+        goble_workflow::schedule::validate_cron(cron).map_err(|e| anyhow::anyhow!("{e}"))?;
+        workflow.trigger = Trigger::Cron {
+            expression: cron.to_string(),
+        };
+    }
     let spec_json = serde_json::to_string(&workflow)?;
     let trigger_str = serde_json::to_string(&workflow.trigger)?;
     let now = workflow.created_at.clone();
@@ -44,6 +53,15 @@ pub(super) fn update_workflow(store: &Store, args: &serde_json::Value) -> Result
     if args["steps"].is_array() {
         workflow.steps = parse_workflow_steps(&args["steps"]);
     }
+    if let Some(source) = args["script"].as_str() {
+        apply_script(&mut workflow, source)?;
+    }
+    if let Some(cron) = args["cron"].as_str() {
+        goble_workflow::schedule::validate_cron(cron).map_err(|e| anyhow::anyhow!("{e}"))?;
+        workflow.trigger = Trigger::Cron {
+            expression: cron.to_string(),
+        };
+    }
     workflow.updated_at = Utc::now().to_rfc3339();
     let spec_json = serde_json::to_string(&workflow)?;
     let trigger_str = serde_json::to_string(&workflow.trigger)?;
@@ -58,6 +76,33 @@ pub(super) fn update_workflow(store: &Store, args: &serde_json::Value) -> Result
         &workflow.updated_at,
     )?;
     Ok(format!("workflow {id} updated"))
+}
+
+/// Attach a Rhai body: compile it, adopt the phases it declares as the
+/// workflow's steps, and keep the source on the workflow. A script with a
+/// syntax error or no `meta` header is rejected here, before anything is
+/// stored.
+fn apply_script(workflow: &mut Workflow, source: &str) -> Result<()> {
+    let parsed = goble_workflow::Workflow::new(
+        goble_workflow::WorkflowId::new(workflow.id.to_string()),
+        workflow.name.clone(),
+    )
+    .with_script(source)
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    workflow.steps = parsed
+        .steps
+        .iter()
+        .map(|step| WorkflowStep {
+            id: step.id.0.clone(),
+            name: step.name.clone(),
+            agent_id: AgentId(String::new()),
+            input_template: String::new(),
+            depends_on: Vec::new(),
+        })
+        .collect();
+    workflow.name = parsed.name;
+    workflow.script = Some(source.to_string());
+    Ok(())
 }
 
 fn parse_workflow_steps(value: &serde_json::Value) -> Vec<WorkflowStep> {
@@ -204,9 +249,13 @@ pub(super) fn schedule_workflow(store: &Store, args: &serde_json::Value) -> Resu
         .context("workflow not found")?;
     let mut workflow: Workflow = serde_json::from_str(&existing.3)?;
     workflow.trigger = match trigger_type {
-        "cron" => Trigger::Cron {
-            expression: trigger_value.to_string(),
-        },
+        "cron" => {
+            goble_workflow::schedule::validate_cron(trigger_value)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            Trigger::Cron {
+                expression: trigger_value.to_string(),
+            }
+        }
         "http" => Trigger::Http {
             path: trigger_value.to_string(),
         },

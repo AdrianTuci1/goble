@@ -3,9 +3,9 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Button, ButtonVariant, Container, CrossAxisAlignment, EdgeInsets, Element, Empty,
-    EventContext, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize,
-    PaintContext, Point, SizeConstraint, Text, TopbarButton,
+    AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, EventContext, Expanded,
+    Fill, Flex, HoverRow, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point,
+    SizeConstraint, Text, TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -32,7 +32,7 @@ const DOTS_CLEARANCE: f32 = 6.0;
 const STATUS_SIZE: f32 = 12.0;
 
 /// The widest the card's tray grows before its rows' own width is what it takes.
-/// Wide enough for "Delete conversation" on one line with the button's own
+/// Wide enough for "Delete conversation" on one line with the row's own
 /// padding, since the tray now opens beside the dots where that width is free.
 const TRAY_MAX_WIDTH: f32 = 200.0;
 
@@ -43,7 +43,14 @@ const TRAY_GAP: f32 = 4.0;
 /// the rich input's controls open beside themselves, so the two trays read as
 /// one surface (see `PopupMenu`).
 const TRAY_RADIUS: f32 = 6.0;
+/// The tray's vertical padding, and the horizontal inset each of its rows keeps
+/// for its own content. The tray itself has no horizontal padding: a row's band
+/// spans the tray edge to edge.
 const TRAY_PADDING: f32 = 8.0;
+
+/// The tray's rows, in paint order: the star toggle first, then delete.
+const STAR_ROW: usize = 0;
+const DELETE_ROW: usize = 1;
 
 /// Per-card interaction state that must survive the per-frame element rebuild.
 /// Owned by the app (a map keyed by conversation id) and shared with the card
@@ -52,6 +59,19 @@ const TRAY_PADDING: f32 = 8.0;
 pub struct AgentCardUi {
     pub hover: bool,
     pub menu_open: bool,
+    /// The tray's highlighted row, [`STAR_ROW`] or [`DELETE_ROW`]. The app owns
+    /// it with the rest of the card's state so the keyboard selection survives
+    /// the rebuild; it is reset when the tray closes.
+    pub highlight: usize,
+}
+
+impl AgentCardUi {
+    /// Put the tray away with its highlight back on the first row, where the
+    /// next open starts.
+    fn close_menu(&mut self) {
+        self.menu_open = false;
+        self.highlight = STAR_ROW;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -245,6 +265,7 @@ impl ConversationListItem {
         let ui = self.ui.borrow();
         let hover = ui.hover;
         let menu_open = ui.menu_open;
+        let highlight = self.menu_row(ui.highlight);
 
         // The band's own colour, which `paint` fills the whole card with (and
         // the fade blends into): the pointer over the card, the selected
@@ -365,22 +386,22 @@ impl ConversationListItem {
 
         // The card's own tray: star the conversation or delete it, in a card
         // anchored to the right of the 3-dot control rather than in rows under
-        // the row — the buttons open their own trays beside themselves the same
+        // the row — the controls open their own trays beside themselves the same
         // way. It is laid out here and placed by `paint`, so it takes no room in
         // the list and opening it does not push the cards below it down.
         if menu_open {
             let mut rows = Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_spacing(xs);
-            if let Some(star) = self.star_button(app) {
+            if let Some(star) = self.star_row(app, highlight == STAR_ROW) {
                 rows = rows.with_child(star);
             }
-            rows = rows.with_child(self.delete_button(app));
+            rows = rows.with_child(self.delete_row(app, highlight == DELETE_ROW));
             let tray = Container::new(rows.finish())
                 .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
                 .with_border(app.theme.color(ColorToken::Border).into())
                 .with_corner_radius(TRAY_RADIUS)
-                .with_padding(EdgeInsets::uniform(TRAY_PADDING))
+                .with_padding(EdgeInsets::new(0.0, TRAY_PADDING, 0.0, TRAY_PADDING))
                 .finish();
             self.menu = Some(Rc::new(RefCell::new(tray)));
         }
@@ -388,6 +409,8 @@ impl ConversationListItem {
         // 3-dot menu, visible on hover or while the delete menu is open.
         if hover || menu_open {
             let ui_dots = Rc::clone(&self.ui);
+            let first_row = self.first_menu_row();
+            let has_star = self.on_toggle_star.is_some();
             self.dots = Some(
                 TopbarButton::new(
                     Icon::new("dots-horizontal")
@@ -399,10 +422,36 @@ impl ConversationListItem {
                 .with_corner_radius(0.0)
                 .with_on_click(move || {
                     let mut ui = ui_dots.borrow_mut();
-                    ui.menu_open = !ui.menu_open;
+                    if ui.menu_open {
+                        ui.close_menu();
+                    } else {
+                        ui.menu_open = true;
+                        if !has_star || ui.highlight > DELETE_ROW {
+                            ui.highlight = first_row;
+                        }
+                    }
                 })
                 .finish(),
             );
+        }
+    }
+
+    /// The tray's first row, which is where opening it puts the highlight.
+    fn first_menu_row(&self) -> usize {
+        if self.on_toggle_star.is_some() {
+            STAR_ROW
+        } else {
+            DELETE_ROW
+        }
+    }
+
+    /// `index` clamped to a row this card actually draws: a card with no star
+    /// action has only the delete row.
+    fn menu_row(&self, index: usize) -> usize {
+        if self.on_toggle_star.is_some() {
+            index.min(DELETE_ROW)
+        } else {
+            DELETE_ROW
         }
     }
 
@@ -499,7 +548,7 @@ impl ConversationListItem {
     /// The menu's star row, or `None` when the card was given no star action.
     /// Starring closes the menu: the choice is made, and the card and the
     /// sidebar's Starred section already show it.
-    fn star_button(&self, app: &AppContext) -> Option<Box<dyn Element>> {
+    fn star_row(&self, app: &AppContext, selected: bool) -> Option<Box<dyn Element>> {
         let on_toggle = self.on_toggle_star.clone()?;
         let xs = app.theme.spacing_px(SpacingToken::Xs);
         let starred = self.starred;
@@ -522,18 +571,18 @@ impl ConversationListItem {
             .finish();
         let ui = Rc::clone(&self.ui);
         Some(
-            Button::new(row)
-                .with_variant(ButtonVariant::Ghost)
-                .with_corner_radius(0.0)
+            HoverRow::new(row)
+                .with_padding(menu_row_padding(app))
+                .with_selected(selected)
                 .with_on_click(move || {
-                    ui.borrow_mut().menu_open = false;
+                    ui.borrow_mut().close_menu();
                     (on_toggle.borrow_mut())();
                 })
                 .finish(),
         )
     }
 
-    fn delete_button(&self, app: &AppContext) -> Box<dyn Element> {
+    fn delete_row(&self, app: &AppContext, selected: bool) -> Box<dyn Element> {
         let xs = app.theme.spacing_px(SpacingToken::Xs);
         let on_delete = self.on_delete.clone();
         let row = Flex::row()
@@ -553,9 +602,9 @@ impl ConversationListItem {
                     .finish(),
             )
             .finish();
-        Button::new(row)
-            .with_variant(ButtonVariant::Ghost)
-            .with_corner_radius(0.0)
+        HoverRow::new(row)
+            .with_padding(menu_row_padding(app))
+            .with_selected(selected)
             .with_on_click(move || {
                 if let Some(cb) = on_delete.as_ref() {
                     (cb.borrow_mut())();
@@ -563,6 +612,66 @@ impl ConversationListItem {
             })
             .finish()
     }
+
+    /// The tray's keys, answered only while it is open: the arrows move the
+    /// highlight between its rows, Enter runs the highlighted row and puts the
+    /// tray away, and Escape puts it away. A key the tray does not take is left
+    /// to the row.
+    fn menu_key(&mut self, event: &DispatchedEvent) -> bool {
+        let DispatchedEvent::KeyDown { key, modifiers } = event else {
+            return false;
+        };
+        if modifiers.command || modifiers.ctrl || modifiers.alt || !self.ui.borrow().menu_open {
+            return false;
+        }
+        match key.as_str() {
+            "ArrowUp" | "ArrowDown" => {
+                let current = self.menu_row(self.ui.borrow().highlight);
+                let first = self.first_menu_row();
+                let next = if key == "ArrowDown" {
+                    (current + 1).min(DELETE_ROW)
+                } else {
+                    current.saturating_sub(1).max(first)
+                };
+                self.ui.borrow_mut().highlight = next;
+                true
+            }
+            "Enter" => {
+                let highlighted = self.menu_row(self.ui.borrow().highlight);
+                self.run_menu_row(highlighted);
+                true
+            }
+            "Escape" => {
+                self.ui.borrow_mut().close_menu();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Run the action of the tray's row `index` and put the tray away: the
+    /// keyboard's Enter, which chooses a row the pointer never touched.
+    fn run_menu_row(&self, index: usize) {
+        self.ui.borrow_mut().close_menu();
+        let callback = if index == STAR_ROW {
+            self.on_toggle_star.clone()
+        } else {
+            self.on_delete.clone()
+        };
+        if let Some(cb) = callback {
+            (cb.borrow_mut())();
+        }
+    }
+}
+
+/// The inset a tray row gives its content. The tray has no horizontal padding
+/// of its own, so the band a row paints spans the tray edge to edge; the label
+/// keeps the inset the ghost button gave it — the tray's padding plus the
+/// control's own horizontal padding.
+fn menu_row_padding(app: &AppContext) -> EdgeInsets {
+    let horizontal = TRAY_PADDING + app.theme.spacing_px(SpacingToken::Md);
+    let vertical = app.theme.spacing_px(SpacingToken::Sm);
+    EdgeInsets::new(horizontal, vertical, horizontal, vertical)
 }
 
 impl Element for ConversationListItem {
@@ -684,6 +793,12 @@ impl Element for ConversationListItem {
             None => return false,
         };
 
+        // The tray's keys are its own while it is open; every other key and
+        // every key while it is closed reaches the row.
+        if self.menu_key(event) {
+            return true;
+        }
+
         // Let the 3-dot control first (it is painted over the row and its
         // gutter is its own), then the tray's rows, then the row: otherwise the
         // card itself would swallow the click. The tray is anchored outside the
@@ -713,7 +828,7 @@ impl Element for ConversationListItem {
             let mut ui = self.ui.borrow_mut();
             ui.hover = inside;
             if !inside {
-                ui.menu_open = false;
+                ui.close_menu();
             }
             return false;
         }
@@ -903,6 +1018,7 @@ mod tests {
             Rc::new(RefCell::new(AgentCardUi {
                 hover: true,
                 menu_open: false,
+                ..Default::default()
             })),
             false,
         )
@@ -928,6 +1044,7 @@ mod tests {
             Rc::new(RefCell::new(AgentCardUi {
                 hover: true,
                 menu_open: false,
+                ..Default::default()
             })),
             false,
         )
@@ -970,6 +1087,7 @@ mod tests {
         let ui = Rc::new(RefCell::new(AgentCardUi {
             hover: true,
             menu_open: true,
+            ..Default::default()
         }));
         let mut item = ConversationListItem::new(
             "c1",
@@ -1040,6 +1158,7 @@ mod tests {
         let ui = Rc::new(RefCell::new(AgentCardUi {
             hover: true,
             menu_open: true,
+            ..Default::default()
         }));
         let toggled = Rc::new(RefCell::new(0usize));
         let ran = Rc::clone(&toggled);
@@ -1086,6 +1205,329 @@ mod tests {
 
         assert_eq!(*toggled.borrow(), 1, "the star row ran the toggle");
         assert!(!ui.borrow().menu_open, "starring closes the menu");
+    }
+
+    /// A key press the way the window sends it.
+    fn press(key: &str) -> DispatchedEvent {
+        DispatchedEvent::KeyDown {
+            key: key.to_string(),
+            modifiers: crate::event::ModifiersState::none(),
+        }
+    }
+
+    /// A card with both tray actions, laid out and painted so it has bounds to
+    /// dispatch keys into. The counters are the two actions' runs.
+    fn open_tray_card(
+        app: &AppContext,
+        ui: AgentCardUi,
+    ) -> (
+        Box<dyn Element>,
+        Rc<RefCell<AgentCardUi>>,
+        Rc<RefCell<usize>>,
+        Rc<RefCell<usize>>,
+    ) {
+        let ui = Rc::new(RefCell::new(ui));
+        let stars = Rc::new(RefCell::new(0usize));
+        let deletes = Rc::new(RefCell::new(0usize));
+        let on_star = Rc::clone(&stars);
+        let on_delete = Rc::clone(&deletes);
+        let item = ConversationListItem::new(
+            "c1",
+            "Ada",
+            "A long last message",
+            "5 min ago",
+            Rc::clone(&ui),
+            false,
+        )
+        .with_on_toggle_star(move || *on_star.borrow_mut() += 1)
+        .with_on_delete(move || *on_delete.borrow_mut() += 1);
+        let mut element: Box<dyn Element> = Box::new(item);
+        let _ = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), app);
+        (element, ui, stars, deletes)
+    }
+
+    /// The tray's own rounded card, around its rows.
+    fn tray_box(commands: &[RenderCommand], app: &AppContext) -> RectF {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                    && *corner_radius > 0.0 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the open tray draws its card")
+    }
+
+    /// The square band a row paints: the tray's selection, or its hover.
+    fn row_band(commands: &[RenderCommand], color: crate::color::ColorU) -> Option<RectF> {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color: fill,
+                corner_radius,
+            } if *fill == color && *corner_radius == 0.0 => Some(*rect),
+            _ => None,
+        })
+    }
+
+    fn icon_box(commands: &[RenderCommand], name: &str) -> Option<RectF> {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawIcon {
+                name: icon,
+                origin,
+                size,
+                ..
+            } if icon == name => Some(rectf(origin.x, origin.y, *size, *size)),
+            _ => None,
+        })
+    }
+
+    /// Paint the card with the pointer at `cursor`, so its tray rows answer
+    /// hover the way they do in the window.
+    fn paint_with_cursor(
+        element: &mut Box<dyn Element>,
+        app: &AppContext,
+        cursor: Vector2F,
+    ) -> Vec<RenderCommand> {
+        let _ = element.layout(
+            SizeConstraint::loose(vec2f(260.0, 200.0)),
+            &mut LayoutContext::default(),
+            app,
+        );
+        let mut ctx = PaintContext::new(crate::render::Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = cursor;
+        element.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        ctx.renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_trays_arrows_move_the_highlight_between_its_rows() {
+        let app = AppContext::default();
+        let (mut element, ui, _, _) = open_tray_card(
+            &app,
+            AgentCardUi {
+                menu_open: true,
+                ..Default::default()
+            },
+        );
+        let mut ctx = EventContext::default();
+
+        assert!(element.dispatch_event(&press("ArrowDown"), &mut ctx, &app));
+        assert_eq!(ui.borrow().highlight, DELETE_ROW, "Down moves to delete");
+        assert!(element.dispatch_event(&press("ArrowDown"), &mut ctx, &app));
+        assert_eq!(
+            ui.borrow().highlight,
+            DELETE_ROW,
+            "the highlight stops at the last row"
+        );
+        assert!(element.dispatch_event(&press("ArrowUp"), &mut ctx, &app));
+        assert_eq!(ui.borrow().highlight, STAR_ROW, "Up moves back to star");
+        assert!(element.dispatch_event(&press("ArrowUp"), &mut ctx, &app));
+        assert_eq!(
+            ui.borrow().highlight,
+            STAR_ROW,
+            "and stops at the first row"
+        );
+        assert!(ui.borrow().menu_open, "moving the highlight leaves it open");
+    }
+
+    #[test]
+    fn the_tray_answers_its_keys_only_while_it_is_open() {
+        let app = AppContext::default();
+        let (mut element, ui, stars, deletes) = open_tray_card(&app, AgentCardUi::default());
+        let mut ctx = EventContext::default();
+
+        for key in ["ArrowUp", "ArrowDown", "Enter", "Escape"] {
+            assert!(
+                !element.dispatch_event(&press(key), &mut ctx, &app),
+                "{key} is left to the card while the tray is closed"
+            );
+        }
+        assert_eq!(ui.borrow().highlight, STAR_ROW);
+        assert_eq!(*stars.borrow(), 0, "Enter runs no row while it is closed");
+        assert_eq!(*deletes.borrow(), 0);
+    }
+
+    #[test]
+    fn enter_runs_the_highlighted_star_row_and_closes_the_tray() {
+        let app = AppContext::default();
+        let (mut element, ui, stars, deletes) = open_tray_card(
+            &app,
+            AgentCardUi {
+                menu_open: true,
+                ..Default::default()
+            },
+        );
+        let mut ctx = EventContext::default();
+
+        assert!(element.dispatch_event(&press("Enter"), &mut ctx, &app));
+        assert_eq!(*stars.borrow(), 1, "Enter ran Star");
+        assert_eq!(*deletes.borrow(), 0);
+        assert!(!ui.borrow().menu_open, "and put the tray away");
+        assert_eq!(
+            ui.borrow().highlight,
+            STAR_ROW,
+            "closing resets the highlight for the next open"
+        );
+    }
+
+    #[test]
+    fn enter_runs_the_highlighted_delete_row_and_closes_the_tray() {
+        let app = AppContext::default();
+        let (mut element, ui, stars, deletes) = open_tray_card(
+            &app,
+            AgentCardUi {
+                menu_open: true,
+                highlight: DELETE_ROW,
+                ..Default::default()
+            },
+        );
+        let mut ctx = EventContext::default();
+
+        assert!(element.dispatch_event(&press("Enter"), &mut ctx, &app));
+        assert_eq!(*deletes.borrow(), 1, "Enter ran Delete conversation");
+        assert_eq!(*stars.borrow(), 0);
+        assert!(!ui.borrow().menu_open, "and put the tray away");
+        assert_eq!(ui.borrow().highlight, STAR_ROW);
+    }
+
+    #[test]
+    fn escape_closes_the_tray_and_resets_the_highlight() {
+        let app = AppContext::default();
+        let (mut element, ui, stars, deletes) = open_tray_card(
+            &app,
+            AgentCardUi {
+                menu_open: true,
+                highlight: DELETE_ROW,
+                ..Default::default()
+            },
+        );
+        let mut ctx = EventContext::default();
+
+        assert!(element.dispatch_event(&press("Escape"), &mut ctx, &app));
+        assert!(!ui.borrow().menu_open);
+        assert_eq!(ui.borrow().highlight, STAR_ROW);
+        assert_eq!(*stars.borrow(), 0, "Escape runs neither row");
+        assert_eq!(*deletes.borrow(), 0);
+    }
+
+    /// The highlighted row's band spans the tray's full inner width, with no
+    /// padding around it, while its icon keeps the row's own inset. The row
+    /// under the pointer paints the same band.
+    #[test]
+    fn the_trays_highlight_band_spans_the_tray_edge_to_edge() {
+        let app = AppContext::default();
+        let (mut element, ui, _, _) = open_tray_card(
+            &app,
+            AgentCardUi {
+                hover: true,
+                menu_open: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(ui.borrow().highlight, STAR_ROW);
+        let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
+
+        let tray = tray_box(&commands, &app);
+        let band = row_band(&commands, app.theme.color(ColorToken::Selected))
+            .expect("the highlighted row paints a selection band");
+        assert!(
+            (band.min_x() - tray.min_x()).abs() < 0.01
+                && (band.max_x() - tray.max_x()).abs() < 0.01,
+            "the band spans the tray edge to edge: band {band:?} tray {tray:?}"
+        );
+        assert!(
+            (band.width() - tray.width()).abs() < 0.01,
+            "and no inset narrows it: band {band:?} tray {tray:?}"
+        );
+
+        let icon = icon_box(&commands, "star").expect("the star row draws its icon");
+        let inset = TRAY_PADDING + app.theme.spacing_px(SpacingToken::Md);
+        assert!(
+            (icon.min_x() - band.min_x() - inset).abs() < 0.01,
+            "the row's label keeps its horizontal inset: icon {icon:?} band {band:?}"
+        );
+
+        // The pointer's row: the same full-bleed band, in the hover colour. A
+        // card that is not hovered keeps its own band out of the way.
+        let delete = icon_box(&commands, "trash-02").expect("the delete row draws its icon");
+        let cursor = vec2f(delete.min_x() + 2.0, delete.min_y() + 2.0);
+        let (mut hovered, _, _, _) = open_tray_card(
+            &app,
+            AgentCardUi {
+                menu_open: true,
+                ..Default::default()
+            },
+        );
+        let commands = paint_with_cursor(&mut hovered, &app, cursor);
+        let hover = row_band(&commands, app.theme.color(ColorToken::Hover))
+            .expect("the row under the pointer paints its hover band");
+        assert!(
+            (hover.min_x() - tray.min_x()).abs() < 0.01
+                && (hover.max_x() - tray.max_x()).abs() < 0.01,
+            "the hovered row uses the same geometry: hover {hover:?} tray {tray:?}"
+        );
+    }
+
+    /// The tray opens on its first row unless the shared state already names a
+    /// row it draws, and closing puts the highlight back on row 0 for the next
+    /// open.
+    #[test]
+    fn opening_the_tray_keeps_a_valid_highlight_and_closing_resets_it() {
+        let app = AppContext::default();
+        let (mut element, ui, _, _) = open_tray_card(
+            &app,
+            AgentCardUi {
+                hover: true,
+                highlight: DELETE_ROW,
+                ..Default::default()
+            },
+        );
+        let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
+        let dots = icon_box(&commands, "dots-horizontal").expect("a hovered card draws its dots");
+        let at = vec2f(
+            dots.min_x() + dots.width() / 2.0,
+            dots.min_y() + dots.height() / 2.0,
+        );
+        let click = DispatchedEvent::MouseUp {
+            position: at,
+            button: 0,
+        };
+        let mut ctx = EventContext::default();
+
+        assert!(element.dispatch_event(&click, &mut ctx, &app));
+        assert!(ui.borrow().menu_open);
+        assert_eq!(
+            ui.borrow().highlight,
+            DELETE_ROW,
+            "a valid highlight survives the open"
+        );
+
+        assert!(element.dispatch_event(&click, &mut ctx, &app));
+        assert!(!ui.borrow().menu_open);
+        assert_eq!(
+            ui.borrow().highlight,
+            STAR_ROW,
+            "closing resets the highlight to row 0"
+        );
+
+        assert!(element.dispatch_event(&click, &mut ctx, &app));
+        assert_eq!(
+            ui.borrow().highlight,
+            STAR_ROW,
+            "and the next open starts there"
+        );
     }
 
     /// The status square the card paints: its box and its fill.

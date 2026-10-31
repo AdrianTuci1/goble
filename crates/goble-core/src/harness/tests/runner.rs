@@ -227,6 +227,22 @@ async fn test_harness_sandboxed_command_blocks_disallowed() {
     assert!(events.iter().any(|e| matches!(e, HarnessEvent::ToolCallError { message, .. } if message.contains("not in the allowed list"))));
 }
 
+/// A confined `bash` must reach `/dev/null` and its own descriptors. A shell
+/// redirection, and `git status` opening `/dev/null` read-write, failed with
+/// "Operation not permitted" inside the sandbox before the seatbelt device
+/// allowances, though the same line worked outside it.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_sandboxed_bash_reaches_the_standard_devices() {
+    let sandbox = harness_sandbox().expect("the seatbelt backend is available on macOS");
+    let runner = SandboxedCommandRunner::default_tools().with_sandbox(Some(sandbox));
+    let out = runner
+        .run_line("bash -c 'echo hi > /dev/null && git --version > /dev/null && echo ok'")
+        .await
+        .expect("the confined shell reaches its standard devices");
+    assert_eq!(out.trim(), "ok");
+}
+
 #[tokio::test]
 async fn sandboxed_runner_without_sandbox_runs_directly() {
     let runner = SandboxedCommandRunner::default_tools();

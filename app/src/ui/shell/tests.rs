@@ -786,6 +786,83 @@ fn topbar_label_origin(commands: &[RenderCommand], label: &str) -> Option<Vector
     })
 }
 
+/// The centre of the topbar icon drawn from `name`, which is the control that
+/// icon sits in.
+fn topbar_icon_center(commands: &[RenderCommand], name: &str) -> Option<Vector2F> {
+    commands.iter().find_map(|c| match c {
+        RenderCommand::DrawIcon {
+            name: drawn,
+            origin,
+            size,
+            ..
+        } if drawn == name && origin.y < TOPBAR_HEIGHT => {
+            Some(vec2f(origin.x + size / 2.0, origin.y + size / 2.0))
+        }
+        _ => None,
+    })
+}
+
+/// The global inbox sits at the right end of the bar beside Settings, past the
+/// tab strip and its "+ ▾" control — not next to the sidebar toggle it used to
+/// flank.
+#[test]
+fn the_inbox_sits_beside_settings_at_the_right_end_of_the_bar() {
+    let app = AppContext::default();
+    let (mut root, _state, _desktop, _dir) = app_root();
+    let commands = render_element(&mut root, window(), &app);
+
+    let toggle = topbar_icon_center(&commands, "menu-01").expect("the sidebar toggle");
+    let add = topbar_icon_center(&commands, "chevron-down").expect("the environment menu");
+    let inbox = topbar_icon_center(&commands, "inbox-01").expect("the inbox control");
+    let settings = topbar_icon_center(&commands, "settings").expect("the settings control");
+
+    assert!(
+        toggle.x < add.x,
+        "the sidebar toggle leads the bar: {toggle:?} against {add:?}"
+    );
+    assert!(
+        inbox.x > add.x,
+        "the inbox is past the tab strip and its controls: {inbox:?} against {add:?}"
+    );
+    assert!(
+        inbox.x < settings.x,
+        "the inbox sits before Settings: {inbox:?} against {settings:?}"
+    );
+    // The right group is packed: one `group_spacing` between two 32-point
+    // buttons puts their centres `32 + spacing` apart, and Settings sits on
+    // the bar's right edge.
+    let sm = app.theme.spacing_px(goble_ui::theme::SpacingToken::Sm);
+    let packed = 32.0 + sm;
+    assert!(
+        (settings.x - inbox.x - packed).abs() < 0.5,
+        "the inbox is Settings' immediate neighbour, {packed} points apart: {inbox:?} against \
+         {settings:?}"
+    );
+    assert!(
+        window().x - settings.x < 100.0,
+        "Settings is the bar's last control on its right edge: {settings:?} in a {:?}-wide \
+         window",
+        window()
+    );
+
+    // In draw order the bar ends with the two of them: nothing stands between
+    // the inbox and Settings.
+    let icons: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawIcon { name, origin, .. } if origin.y < TOPBAR_HEIGHT => {
+                Some(name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        &icons[icons.len().saturating_sub(2)..],
+        ["inbox-01", "settings"],
+        "the inbox is the control right before Settings: {icons:?}"
+    );
+}
+
 /// One key through the whole app tree, after a frame — so the field that reads
 /// its own value was built from the last frame's state, as it is in the app.
 fn press(root: &mut Box<dyn Element>, app: &AppContext, name: &str) {

@@ -671,3 +671,95 @@ use super::*;
             "the row's body is folded in verbatim"
         );
     }
+
+    /// The topbar's cue, the pane header's chip and the footer's count read the
+    /// same pane, so they must agree: a running tool, a running background
+    /// child and a foreground spawn in flight each read as one item everywhere.
+    #[test]
+    fn the_topbar_chip_and_footer_count_the_same_live_work() {
+        fn footer_count(status: &TurnStatus) -> usize {
+            match status {
+                TurnStatus::Busy { work_count, .. } => *work_count,
+                TurnStatus::StillRunning { kinds } => kinds.iter().map(|kind| kind.count).sum(),
+                TurnStatus::Idle => 0,
+            }
+        }
+        fn counts(state: &UiState) -> (usize, usize, usize) {
+            let status = state
+                .pane_chat_snapshot()
+                .get(&1)
+                .expect("the mock pane")
+                .turn_status
+                .clone();
+            (
+                state.live_work().work_count(),
+                state.pane_live_work(1).len(),
+                footer_count(&status),
+            )
+        }
+        let tool = |id: &str, name: &str| goble_desktop_service::ToolCallEvent {
+            chat_id: "c1".into(),
+            id: id.into(),
+            name: name.into(),
+            arguments: serde_json::json!({ "command": "cargo test" }),
+            status: ToolCallStatus::Running,
+            result: None,
+        };
+        let spawned = |background: bool| goble_desktop_service::SubAgentSpawnedEvent {
+            chat_id: "c1".into(),
+            subagent_id: "conv-child-1".into(),
+            subagent_type: "reviewer".into(),
+            description: "audit the migration".into(),
+            parent_call_id: "call_spawn_1".into(),
+            run_in_background: background,
+        };
+
+        let mut state = UiState::mock();
+        state.begin_turn(1);
+        state.apply_tool_event(&tool("call-1", "run_command"));
+        assert_eq!(counts(&state), (1, 1, 1), "one running foreground tool");
+
+        let mut state = UiState::mock();
+        state.apply_subagent_spawned(&spawned(true));
+        assert_eq!(counts(&state), (1, 1, 1), "one running background child");
+
+        // A foreground spawn is one unit: the call and the child it awaits are
+        // the same work, so no surface counts them twice.
+        let mut state = UiState::mock();
+        state.begin_turn(1);
+        state.apply_tool_event(&tool("call_spawn_1", "spawn_subagent"));
+        state.apply_subagent_spawned(&spawned(false));
+        assert_eq!(counts(&state), (1, 1, 1), "a foreground spawn in flight");
+    }
+
+    /// The harness's own lookups are not work the user sees: the topbar, the
+    /// pane chip and the footer leave a hidden call out together.
+    #[test]
+    fn hidden_tool_calls_are_counted_by_no_surface() {
+        let mut state = UiState::mock();
+        state.begin_turn(1);
+        state.apply_tool_event(&goble_desktop_service::ToolCallEvent {
+            chat_id: "c1".into(),
+            id: "hidden-1".into(),
+            name: "search_store".into(),
+            arguments: serde_json::json!({ "query": "deploy" }),
+            status: ToolCallStatus::Running,
+            result: None,
+        });
+        assert_eq!(
+            state.live_work().work_count(),
+            0,
+            "the topbar does not count a hidden lookup"
+        );
+        assert!(
+            state.pane_live_work(1).is_empty(),
+            "the chip does not list a hidden lookup"
+        );
+        assert!(
+            matches!(
+                state.pane_chat_snapshot().get(&1).unwrap().turn_status,
+                TurnStatus::Busy { work_count: 0, .. }
+            ),
+            "the footer does not count a hidden lookup either"
+        );
+    }

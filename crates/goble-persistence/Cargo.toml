@@ -2,6 +2,8 @@
 name = "goble-persistence"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+publish.workspace = true
 description = "Durable storage for reversible-execution checkpoints (SQLite/rusqlite)."
 
 [dependencies]

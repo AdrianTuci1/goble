@@ -183,8 +183,14 @@ pub struct LiveExecution {
 pub struct LiveWork {
     /// Worker agent executions currently running.
     pub executions: Vec<LiveExecution>,
-    /// The active pane's tool calls that have started and not yet finished.
+    /// The active pane's tool calls that have started and not yet finished. The
+    /// harness's hidden lookups are left out, as is a spawn call whose child is
+    /// counted in [`Self::running_sub_agents`]: that child is the work, and
+    /// counting both would make one spawn read as two items.
     pub tool_calls: Vec<ToolCall>,
+    /// The active pane's sub-agent children still running, the same set the
+    /// pane header's chip counts.
+    pub running_sub_agents: usize,
     /// Whether the active pane's turn is running.
     pub turn_busy: bool,
     /// The proposal id the active pane is waiting on for approval, if any.
@@ -196,11 +202,12 @@ pub struct LiveWork {
 }
 
 impl LiveWork {
-    /// Items in flight beside the active pane's turn: its tool calls plus every
-    /// running execution. This is the number the topbar's live cue shows, and
-    /// zero is its inert state.
+    /// Items in flight beside the active pane's turn: its tool calls, its
+    /// running sub-agent children and every running execution — the same items
+    /// the pane header's chip lists, plus the app-wide executions. This is the
+    /// number the topbar's live cue shows, and zero is its inert state.
     pub fn work_count(&self) -> usize {
-        self.tool_calls.len() + self.executions.len()
+        self.tool_calls.len() + self.running_sub_agents + self.executions.len()
     }
 
     /// The topbar spinner's phase, from the age of the observed turn start. A
@@ -550,6 +557,9 @@ pub struct PaneControls {
     /// Whether the approval-mode menu is open. App-owned like the model menu's
     /// flag, so it survives the per-frame rebuild.
     pub approval_menu_open: Rc<RefCell<bool>>,
+    /// The row the approval-mode menu's keyboard highlight is on. App-owned so
+    /// Up/Down survive the per-frame rebuild.
+    pub approval_menu_highlight: Rc<RefCell<Option<usize>>>,
     /// This pane's model (shown as the composer's model label).
     pub model: String,
     /// The environment (medium) this pane's conversation runs on, as the
@@ -589,11 +599,15 @@ pub struct PaneControls {
     pub model_index: Rc<RefCell<usize>>,
     pub harness_menu_open: Rc<RefCell<bool>>,
     pub dir_menu_open: Rc<RefCell<bool>>,
+    /// The row the directory tray's keyboard highlight is on.
+    pub dir_menu_highlight: Rc<RefCell<Option<usize>>>,
     /// This pane's directory tray scroll offset. The tray is capped at
     /// `MENU_MAX_VISIBLE_ROWS` rows, and the tree is rebuilt every frame, so the
     /// offset the wheel left has to live here to survive it.
     pub dir_menu_scroll: PanelScroll,
     pub branch_menu_open: Rc<RefCell<bool>>,
+    /// The row the branch tray's keyboard highlight is on.
+    pub branch_menu_highlight: Rc<RefCell<Option<usize>>>,
     /// Whether this pane's changed-files menu is open, and the position the
     /// wheel left it at. App-owned like the other dropdowns, so both survive
     /// the per-frame rebuild.
@@ -673,6 +687,7 @@ impl PaneControls {
                 ApprovalMode::Manual
             },
             approval_menu_open: Rc::new(RefCell::new(false)),
+            approval_menu_highlight: Rc::new(RefCell::new(None)),
             model,
             environment: String::new(),
             branch,
@@ -683,8 +698,10 @@ impl PaneControls {
             model_index: Rc::new(RefCell::new(0)),
             harness_menu_open: Rc::new(RefCell::new(false)),
             dir_menu_open: Rc::new(RefCell::new(false)),
+            dir_menu_highlight: Rc::new(RefCell::new(None)),
             dir_menu_scroll: PanelScroll::default(),
             branch_menu_open: Rc::new(RefCell::new(false)),
+            branch_menu_highlight: Rc::new(RefCell::new(None)),
             diff_menu_open: Rc::new(RefCell::new(false)),
             diff_menu_scroll: PanelScroll::default(),
             diff_selected: Rc::new(RefCell::new(None)),

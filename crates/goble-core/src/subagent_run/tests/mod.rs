@@ -148,7 +148,7 @@ fn parent_chat(store: &Store) -> String {
 
 fn child_of(store: &Store, parent_chat: &str) -> String {
     store
-        .list_chats()
+        .list_child_chats()
         .unwrap()
         .into_iter()
         .find(|(id, ..)| {
@@ -384,6 +384,7 @@ async fn spawn_through_tool(
         &turn,
     )
     .await
+    .map(|outcome| outcome.output)
 }
 
 fn background_args(prompt: &str) -> serde_json::Value {

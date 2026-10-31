@@ -3,15 +3,15 @@
 //! and status, the phases it declares with the active one marked, and the agents
 //! that run them.
 //!
-//! goble's daemon keeps no run ledger: a registered workflow is the whole record,
-//! and the only progress beside it is the execution ledger. So a registered
-//! workflow stands in for a run — its steps are the phases and a phase's agents
-//! are that step's agent's executions, read from the real records behind
-//! [`UiSnapshot::workflows`] and [`UiSnapshot::executions`]. What grok-build
-//! reports and goble has no source for — elapsed time, phase progress, the agent
-//! budget, and the pause / resume / stop / save affordances its rows carry — is
-//! left out rather than invented. The full tasks / executions dump is still its
-//! own page, so nothing is dropped for being out of place here.
+//! A workflow row still stands for the registered definition, and when the run
+//! ledger holds a run for it the panel reports that run instead: its status,
+//! every phase's own status (from the script's `phase` calls), the failure
+//! reason, the value a script passed to `complete()`, and its log lines. A
+//! workflow that has never run falls back to its definition plus the execution
+//! ledger, and says so. What grok-build reports and goble has no source for —
+//! the agent budget and the pause / resume / stop / save affordances — is left
+//! out rather than invented. The full tasks / executions dump is still its own
+//! page, so nothing is dropped for being out of place here.
 //!
 //! It is an overlay rather than a page: the workspace (the pane tree and its
 //! transcript) stays mounted underneath, the backdrop closes it, and nothing
@@ -28,7 +28,9 @@ use goble_ui::theme::{ColorToken, SpacingToken};
 use super::harness::{
     build_execution_row, build_workflow_run_row, workflow_run_agent_count, workflow_run_step_count,
 };
-use super::{ExecutionEntry, UiActions, UiSnapshot, WorkflowEntry, WorkflowStepEntry};
+use super::{
+    ExecutionEntry, UiActions, UiSnapshot, WorkflowEntry, WorkflowRunEntry, WorkflowStepEntry,
+};
 
 /// How far the panel stands off every edge of the window. The overlay is a card
 /// floating over the workspace, never a strip of the layout.
@@ -131,15 +133,26 @@ fn build_run_detail(
         .with_child(muted(app, &run_counts(wf), 11.0))
         .finish();
 
-    // What the record itself says: how the workflow is triggered, whether it is
-    // enabled, and when it was created. There is no run status to report beside
-    // it, so this line is the run's status.
-    let status = format!(
-        "{} · {} · created {}",
-        wf.trigger,
-        if wf.enabled { "enabled" } else { "disabled" },
-        wf.created_at
-    );
+    // The newest recorded run is the run's status. A workflow that never ran
+    // reports its definition instead, which is what the panel always did.
+    let run = state.latest_run(&wf.id);
+    let status = match run {
+        Some(run) => format!(
+            "{} · started {}{}",
+            run.status,
+            run.started_at,
+            run.finished_at
+                .as_ref()
+                .map(|finished| format!(" · finished {finished}"))
+                .unwrap_or_default()
+        ),
+        None => format!(
+            "never run · {} · {} · created {}",
+            wf.trigger,
+            if wf.enabled { "enabled" } else { "disabled" },
+            wf.created_at
+        ),
+    };
 
     let selected_phase = phase.min(wf.steps.len().saturating_sub(1));
     let body = Flex::row()
@@ -147,7 +160,7 @@ fn build_run_detail(
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(sm)
         .with_child(
-            ConstrainedBox::new(build_phase_rail(app, state, wf, selected_phase))
+            ConstrainedBox::new(build_phase_rail(app, state, wf, selected_phase, run))
                 .with_width(PHASE_RAIL_WIDTH)
                 .with_min_width(PHASE_RAIL_WIDTH)
                 .finish(),
@@ -170,11 +183,33 @@ fn build_run_detail(
     if !wf.enabled {
         column = column.with_child(muted(
             app,
-            "This workflow is disabled: nothing runs it until it is enabled.",
+            "This workflow is disabled: only a manual run starts it.",
             11.0,
         ));
     }
+    if let Some(run) = run {
+        if let Some(error) = &run.error {
+            column = column.with_child(muted(app, &format!("failed: {error}"), 11.0));
+        }
+        if let Some(output) = &run.output {
+            column = column.with_child(muted(app, &format!("result: {}", compact_output(output)), 11.0));
+        }
+        for line in run.log.iter().take(6) {
+            column = column.with_child(muted(app, line, 11.0));
+        }
+    }
     column.with_child(Expanded::new(body.finish()).finish()).finish()
+}
+
+/// One JSON value on one line, capped so a large `complete()` value cannot
+/// push the panel's content out of its column.
+fn compact_output(value: &serde_json::Value) -> String {
+    let text = value.to_string();
+    let mut out: String = text.chars().take(240).collect();
+    if text.chars().count() > 240 {
+        out.push('…');
+    }
+    out
 }
 
 /// The phases of `wf`, in the record's own order. `❯` marks the phase the roster
@@ -185,6 +220,7 @@ fn build_phase_rail(
     state: &UiSnapshot,
     wf: &WorkflowEntry,
     selected: usize,
+    run: Option<&WorkflowRunEntry>,
 ) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let steps = &wf.steps;
@@ -202,16 +238,17 @@ fn build_phase_rail(
     for (index, step) in steps.iter().enumerate() {
         let executions = executions_for_agent(state, &step.agent_id);
         let running = executions.iter().any(|ex| ex.status == "running");
-        // What the phase is doing, from the phase's own agent's ledger: running,
-        // its last recorded status, or nothing recorded at all.
-        let phase_state = if step.agent_id.trim().is_empty() {
-            "no agent named".to_string()
-        } else if running {
-            "● running".to_string()
-        } else if executions.is_empty() {
-            "no execution yet".to_string()
-        } else {
-            executions[0].status.clone()
+        // A recorded run owns the phase status. Without one, fall back to the
+        // phase's own agent's ledger: running, its last status, or nothing.
+        let phase_state = match run.and_then(|run| run.steps.get(index)) {
+            Some(step) => match &step.detail {
+                Some(detail) => format!("failed · {detail}"),
+                None => step.status.clone(),
+            },
+            None if step.agent_id.trim().is_empty() => "no agent named".to_string(),
+            None if running => "● running".to_string(),
+            None if executions.is_empty() => "no execution yet".to_string(),
+            None => executions[0].status.clone(),
         };
         let marker = if index == selected { "❯" } else { " " };
         let phase_cell = state.task_workflow_phase.clone();
@@ -400,7 +437,9 @@ mod tests {
     use super::*;
     use crate::root_view::RootView;
     use crate::state::UiState;
-    use crate::ui::{ExecutionEntry, WorkflowEntry, WorkflowStepEntry};
+    use crate::ui::{
+        ExecutionEntry, WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry, WorkflowStepEntry,
+    };
     use goble_core::agent::Trigger;
     use goble_core::store::Store;
     use goble_desktop_service::{DesktopState, ThreadStore};
@@ -576,7 +615,7 @@ mod tests {
             "1 registered",
             "Nightly digest",
             "summarise the day",
-            "cron 0 12 * * * · enabled · created 3 min ago",
+            "never run · cron 0 12 * * * · enabled · created 3 min ago",
             "1 phase · 1 agent",
             "Phases",
             "❯ Digest",
@@ -669,6 +708,47 @@ mod tests {
         );
     }
 
+    /// A recorded run is what the detail reports: its status, its phase statuses
+    /// and the script's `complete()` output replace the definition's "never
+    /// run" line and the execution-ledger fallback.
+    #[test]
+    fn the_detail_draws_the_latest_recorded_run() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_with_records();
+        {
+            let mut s = state.borrow_mut();
+            s.workflow_runs = vec![WorkflowRunEntry {
+                id: "run-1".to_string(),
+                workflow_id: "wf-1".to_string(),
+                status: "succeeded".to_string(),
+                error: None,
+                steps: vec![WorkflowRunStepEntry {
+                    name: "Digest".to_string(),
+                    status: "succeeded".to_string(),
+                    detail: None,
+                }],
+                started_at: "2 min ago".to_string(),
+                finished_at: Some("just now".to_string()),
+                output: Some(serde_json::json!({ "summary": "done" })),
+                log: vec!["phase Run".to_string()],
+            }];
+            s.task_workflow_open = true;
+        }
+        let commands = frame(&mut root, &app);
+        for text in [
+            "succeeded · started 2 min ago · finished just now",
+            "result: {\"summary\":\"done\"}",
+            "phase Run",
+            "succeeded",
+        ] {
+            assert!(drawn(&commands, text), "the detail draws {text:?}");
+        }
+        assert!(!drawn(
+            &commands,
+            "never run · cron 0 12 * * * · enabled · created 3 min ago"
+        ));
+    }
+
     /// The run list picks the run whose detail is drawn, and a phase row moves
     /// the roster onto that phase's agent.
     #[test]
@@ -706,7 +786,7 @@ mod tests {
         assert!(
             drawn(
                 &commands,
-                "This workflow is disabled: nothing runs it until it is enabled."
+                "This workflow is disabled: only a manual run starts it."
             ),
             "a disabled run says so"
         );

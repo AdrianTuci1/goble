@@ -147,17 +147,30 @@ impl DaemonState {
     /// stream is drained with the standalone futures executor so it does not
     /// need an ambient tokio runtime.
     pub fn run_turn_blocking(&self, turn: HarnessTurn) -> StepOutcome {
+        self.run_turn_blocking_with_output(turn).0
+    }
+
+    /// [`Self::run_turn_blocking`] that also returns the assistant text the
+    /// turn streamed, which is what a script's `agent()` call hands back.
+    pub fn run_turn_blocking_with_output(&self, turn: HarnessTurn) -> (StepOutcome, String) {
         let harness_id = turn.harness_id.clone();
         let harness = match self.registry.resolve(&harness_id) {
             Some(harness) => harness,
-            None => return StepOutcome::Failed(format!("no harness resolved for {harness_id}")),
+            None => {
+                return (
+                    StepOutcome::Failed(format!("no harness resolved for {harness_id}")),
+                    String::new(),
+                )
+            }
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let run = harness.run(turn, cancel);
         let mut stream = run.events;
         let mut outcome = StepOutcome::Succeeded;
+        let mut text = String::new();
         while let Some(event) = futures::executor::block_on(stream.next()) {
             match event {
+                HarnessServerEvent::AssistantDelta { delta, .. } => text.push_str(&delta),
                 HarnessServerEvent::Done { .. } => outcome = StepOutcome::Succeeded,
                 HarnessServerEvent::Error { message, .. } => {
                     outcome = StepOutcome::Failed(message)
@@ -165,6 +178,6 @@ impl DaemonState {
                 _ => {}
             }
         }
-        outcome
+        (outcome, text)
     }
 }

@@ -1,5 +1,8 @@
 use crate::elements::chat_content::{SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode};
-use crate::elements::{Diff, DiffLine, DiffLineKind, Element, Hunk, InlineText, TerminalData, TerminalLine, TerminalStatus, TextSpan};
+use crate::elements::{
+    parse_unified_diff, Diff, DiffLine, DiffLineKind, Element, Hunk, InlineText, TerminalData,
+    TerminalLine, TerminalStatus, TextSpan,
+};
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily};
 use goble_core::harness::{one_line, tool_kind_for, web_search_sources, ToolCallStatus, ToolKind};
@@ -95,8 +98,8 @@ pub(super) fn build_tool_call_body(
     match tool_kind_for(&call.name) {
         ToolKind::Execute => command_body(&arguments, call, mode, app),
         ToolKind::Read => read_body(&arguments, call, mode, app),
-        ToolKind::Create => path_body(call, mode, app),
-        ToolKind::Edit => diff_body(&arguments, call, mode, app),
+        ToolKind::Create => write_body(&arguments, call, mode, app),
+        ToolKind::Edit | ToolKind::Delete => diff_body(&arguments, call, mode, app),
         ToolKind::Search | ToolKind::WebSearch => search_body(call, mode, app),
         // A fetch, a listing, a memory read and a tool search all draw what the
         // tool returned and nothing else: their row already names the operand.
@@ -243,9 +246,25 @@ pub(super) fn read_body(
     )]
 }
 
-/// A file being written: what the tool returned — its confirmation or its
-/// error — under the row that already names the path. Its result is not a
-/// file's contents, so it is never numbered.
+/// A file being written: the change the write recorded, drawn as diff rows
+/// under the row that names the path. A write that recorded no diff — a row an
+/// older build wrote, or a write that changed nothing — falls back to the
+/// tool's own confirmation, which is not a file's contents and so is never
+/// numbered.
+pub(super) fn write_body(
+    arguments: &serde_json::Value,
+    call: &ToolCall,
+    mode: ToolDisplayMode,
+    app: &crate::elements::AppContext,
+) -> Vec<Box<dyn Element>> {
+    match recorded_hunks(call) {
+        Some(hunks) => diff_rows(hunks, argument_str(arguments, "path"), call, mode, app),
+        None => path_body(call, mode, app),
+    }
+}
+
+/// The confirmation a mutation reports, drawn alone: its result, which is not
+/// a file's contents and so is never numbered.
 pub(super) fn path_body(
     call: &ToolCall,
     mode: ToolDisplayMode,
@@ -254,33 +273,72 @@ pub(super) fn path_body(
     result_rows(call, mode, READ_TRUNCATION, app)
 }
 
-/// An edit: the replaced text as diff rows, under the row that already names
-/// the path. The diff is highlighted as the edited file's language, resolved
-/// from its path.
+/// A mutation of an existing file — an edit or a deletion — as diff rows under
+/// the row that already names the path. The recorded diff is the one the tool
+/// took while it ran, so its line numbers are the file's own and its hunks
+/// carry their context. A row with no recorded diff falls back to the
+/// replacement the arguments spell, which is all an older record has.
 pub(super) fn diff_body(
     arguments: &serde_json::Value,
     call: &ToolCall,
     mode: ToolDisplayMode,
     app: &crate::elements::AppContext,
 ) -> Vec<Box<dyn Element>> {
-    let mut rows = Vec::new();
     let path = argument_str(arguments, "path");
+    if let Some(hunks) = recorded_hunks(call) {
+        return diff_rows(hunks, path, call, mode, app);
+    }
+    let mut rows = Vec::new();
     if let (Some(old_text), Some(new_text)) = (
         argument_str(arguments, "old_text"),
         argument_str(arguments, "new_text"),
     ) {
-        let hunks = edit_hunks(old_text, new_text);
-        if !hunks.is_empty() {
-            let diff = match path {
-                Some(path) => Diff::new(hunks).with_language(path),
-                None => Diff::new(hunks),
-            };
-            rows.push(Box::new(diff) as Box<dyn Element>);
-        }
+        rows = diff_rows(edit_hunks(old_text, new_text), path, call, mode, app);
     }
-    // The result is what an edit reports when it fails ("old_text not found"),
-    // so it is shown rather than hidden behind the diff.
-    rows.extend(result_rows(call, mode, READ_TRUNCATION, app));
+    // A call with no diff to draw (a failed edit whose replacement was never
+    // found) still reports what it said.
+    if rows.is_empty() {
+        rows = result_rows(call, mode, READ_TRUNCATION, app);
+    }
+    rows
+}
+
+/// The change the harness recorded for this call, parsed. `None` when the row
+/// carries no diff or the text is not a diff this build can read.
+fn recorded_hunks(call: &ToolCall) -> Option<Vec<Hunk>> {
+    let hunks = parse_unified_diff(call.diff.as_deref()?);
+    if hunks.is_empty() {
+        None
+    } else {
+        Some(hunks)
+    }
+}
+
+/// One file change as the rows it draws: the hunks highlighted as the file's
+/// language, then the tool's own words when it failed. A finished mutation's
+/// confirmation only repeats the path the header already names, so a drawn
+/// diff stands without it.
+fn diff_rows(
+    hunks: Vec<Hunk>,
+    path: Option<&str>,
+    call: &ToolCall,
+    mode: ToolDisplayMode,
+    app: &crate::elements::AppContext,
+) -> Vec<Box<dyn Element>> {
+    let mut rows: Vec<Box<dyn Element>> = Vec::new();
+    if !hunks.is_empty() {
+        let diff = match path {
+            Some(path) => Diff::new(hunks).with_language(path),
+            None => Diff::new(hunks),
+        };
+        rows.push(Box::new(diff) as Box<dyn Element>);
+    }
+    // The result is what a mutation reports when it fails ("old_text not
+    // found", "no such file"), so it is shown rather than hidden behind the
+    // diff.
+    if rows.is_empty() || call.status == ToolCallStatus::Error {
+        rows.extend(result_rows(call, mode, READ_TRUNCATION, app));
+    }
     rows
 }
 

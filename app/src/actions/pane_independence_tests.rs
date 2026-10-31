@@ -6,11 +6,10 @@ use std::sync::Arc;
 use goble_core::store::Store;
 use goble_desktop_service::DesktopState;
 use goble_desktop_service::ThreadStore;
-use goble_terminal::blocks::BlockView;
 use goble_ui::platform::WindowControl;
 
 use crate::media::MediaState;
-use crate::state::UiState;
+use crate::state::{UiState, NEW_AGENT_TAB_LABEL};
 use crate::ui::{
     AppTab, Pane, PaneKind, SettingsCategory, SettingsControl, SettingsFocus, UiActions,
     WorkspaceRouting,
@@ -402,11 +401,13 @@ fn send_to_cloud_routes_the_conversation_remote() {
 }
 
 /// The sidebar's "New conversation" row (and the palette's entry, which runs the
-/// same action) opens a tab of its own: one new space holding one terminal leaf,
-/// in terminal + agent mode over a conversation of its own, focused. Clicking it
-/// again opens another, so the row never disturbs the tab the user is in.
+/// same action) opens a tab of its own: one new space holding one agent leaf
+/// over a conversation of its own, focused. Clicking it again opens another, so
+/// the row never disturbs the tab the user is in. The tab is named after its
+/// conversation: `New Agent` while that conversation has no subject, and the
+/// subject from then on.
 #[test]
-fn new_conversation_opens_a_tab_in_terminal_and_agent_mode() {
+fn new_conversation_opens_a_tab_named_by_its_conversation() {
     let (desktop, _dir) = desktop_state();
     let (state, actions, _media) = build(&desktop);
     let spaces_before = state.borrow().spaces.len();
@@ -429,20 +430,21 @@ fn new_conversation_opens_a_tab_in_terminal_and_agent_mode() {
         first_pane = s.active_pane_id;
         let space = s.spaces.last().expect("the new space");
         assert!(
-            matches!(space.root, Pane::Leaf { id, kind: PaneKind::Terminal } if id == first_pane),
-            "the tab's pane is one terminal leaf"
-        );
-        assert!(
-            s.pane_controls(first_pane).harness_mode,
-            "the pane is in terminal + agent mode"
+            matches!(space.root, Pane::Leaf { id, kind: PaneKind::Chat } if id == first_pane),
+            "the tab's pane is one agent leaf"
         );
         assert!(
             s.pane_owns_conversation(first_pane),
             "the pane is bound to a conversation of its own"
         );
-        assert!(
-            matches!(s.pane_view(first_pane), BlockView::Agent { .. }),
-            "the tab opens on the agent view"
+        assert_eq!(
+            s.space_label(s.active_space),
+            NEW_AGENT_TAB_LABEL,
+            "a fresh conversation has no subject yet, so the tab reads New Agent"
+        );
+        assert_eq!(
+            space.name, NEW_AGENT_TAB_LABEL,
+            "and the tab draws the derived label, not its working directory"
         );
     }
     let first_conversation = state
@@ -453,6 +455,29 @@ fn new_conversation_opens_a_tab_in_terminal_and_agent_mode() {
         desktop.list_chats().iter().any(|c| c.id == first_conversation),
         "the conversation was persisted, so the sidebar can list it"
     );
+
+    // The tab follows the conversation: once it has a subject, the label the
+    // strip draws is that subject.
+    desktop
+        .set_chat_title(&first_conversation, "Ship the topbar")
+        .expect("rename the conversation");
+    {
+        let mut s = state.borrow_mut();
+        s.refresh_conversations(&desktop);
+        s.refresh_space_labels();
+    }
+    let s = state.borrow();
+    assert_eq!(
+        s.space_label(s.active_space),
+        "Ship the topbar",
+        "the tab takes the conversation's subject"
+    );
+    assert_eq!(
+        s.spaces.last().expect("the new space").name,
+        "Ship the topbar",
+        "and that is what the strip draws"
+    );
+    drop(s);
 
     // A second click is another tab with another conversation, never a reuse of
     // the one on screen.
@@ -467,7 +492,11 @@ fn new_conversation_opens_a_tab_in_terminal_and_agent_mode() {
         second_conversation, first_conversation,
         "each tab opens its own conversation"
     );
-    assert!(s.pane_controls(s.active_pane_id).harness_mode);
+    assert_eq!(
+        s.space_label(s.active_space),
+        NEW_AGENT_TAB_LABEL,
+        "the second tab reads New Agent until its own conversation is named"
+    );
 }
 
 #[test]

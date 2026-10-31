@@ -1,0 +1,42 @@
+# Dependency updates. Patch and minor bumps are grouped into one PR per ecosystem
+# so review stays about the code; a major bump keeps its own PR and its own
+# migration notes. Security fixes arrive through Dependabot alerts as well.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Bucharest
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      rust-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # The vendored emulator is pinned by scripts/fetch-alacritty-terminal.sh,
+      # not by the crates.io graph.
+      - dependency-name: alacritty_terminal
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Bucharest
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

@@ -387,6 +387,12 @@ impl UiState {
 
     /// Apply one live `chat:subagent_finished` event: the child's terminal
     /// status, its outcome and the time it took.
+    ///
+    /// A failure raises an inbox item with the error; a **background** child's
+    /// success raises one too, because nothing else tells the user it finished —
+    /// a foreground child's answer is already the spawn call's result in the
+    /// parent transcript. The background flag comes from the live record, so a
+    /// child whose spawn this app never saw raises nothing.
     pub fn apply_subagent_finished(
         &mut self,
         event: &goble_desktop_service::SubAgentFinishedEvent,
@@ -398,6 +404,11 @@ impl UiState {
             .entry(pane_id)
             .or_default()
             .apply_subagent_finished(event);
+        let record = self
+            .pane_runtime
+            .get(&pane_id)
+            .and_then(|rt| rt.sub_agents.get(&event.subagent_id))
+            .cloned();
         if event.status == "failed" {
             let detail = event
                 .error
@@ -409,6 +420,22 @@ impl UiState {
                 InboxKind::Agent,
                 "Sub-agent failed",
                 detail,
+            );
+        } else if event.status == "completed"
+            && record
+                .as_ref()
+                .is_some_and(|record| record.row.background)
+        {
+            let description = record
+                .as_ref()
+                .map(|record| record.row.description.as_str())
+                .unwrap_or_default();
+            self.raise_inbox(
+                pane_id,
+                event.chat_id.clone(),
+                InboxKind::Task,
+                "Sub-agent finished",
+                background_task_detail(description, event.output.as_deref()),
             );
         }
     }
@@ -504,20 +531,35 @@ impl UiState {
 
     /// The one answer to "what work is in flight right now": every worker agent
     /// execution the app has seen start and not yet seen finish, the active
-    /// pane's in-flight tool calls and busy flag, and whether that pane is
-    /// waiting on an approval or a question.
+    /// pane's in-flight tool calls, its running sub-agent children and busy
+    /// flag, and whether that pane is waiting on an approval or a question.
+    ///
+    /// The pane's work is the same set its header chip lists: the harness's
+    /// hidden lookups are left out, and a spawn call whose child is running is
+    /// counted as that child rather than as both.
     pub fn live_work(&self) -> LiveWork {
         let pane_id = self.active_pane_id;
         let runtime = self.pane_runtime.get(&pane_id);
         let mut executions: Vec<LiveExecution> = self.live_executions.values().cloned().collect();
         executions.sort_by(|a, b| a.trace_id.cmp(&b.trace_id));
+        let children: Vec<&SubAgentRecord> = runtime
+            .map(|rt| rt.sub_agents.values().filter(|r| r.row.is_running()).collect())
+            .unwrap_or_default();
         let mut tool_calls: Vec<ToolCall> = runtime
-            .map(|rt| rt.in_flight_tools.values().cloned().collect())
+            .map(|rt| {
+                rt.in_flight_tools
+                    .values()
+                    .filter(|call| !is_hidden_tool(&call.name))
+                    .filter(|call| !children.iter().any(|child| child.parent_call_id == call.id))
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
         tool_calls.sort_by(|a, b| a.id.cmp(&b.id));
         LiveWork {
             executions,
             tool_calls,
+            running_sub_agents: children.len(),
             turn_busy: runtime.map(|rt| rt.busy).unwrap_or(false),
             pending_approval: runtime
                 .and_then(|rt| rt.pending_command.as_ref().map(|p| p.id.clone())),
@@ -536,6 +578,11 @@ impl UiState {
     /// is keyed by trace id and carries no pane, and the scheduled tasks and
     /// workflows are registered globally, so none of them can be attributed to
     /// the pane a chip sits in — they stay on the app-level cue.
+    ///
+    /// A call is named by the row its family gives it (`Run cargo test`), never
+    /// by its tool's own name, and the harness's hidden lookups are left out —
+    /// the same phrasing and filter the footer uses. A spawn call whose child is
+    /// still running is that child's entry, not a second one.
     pub fn pane_live_work(&self, pane_id: u64) -> Vec<PaneWorkItem> {
         let Some(rt) = self.pane_runtime.get(&pane_id) else {
             return Vec::new();
@@ -546,11 +593,20 @@ impl UiState {
         calls.sort_by(|a, b| a.id.cmp(&b.id));
         let mut children: Vec<&SubAgentRecord> = rt.sub_agents.values().collect();
         children.sort_by(|a, b| a.row.child_id.cmp(&b.row.child_id));
+        // The calls a running child already accounts for, read before the
+        // children are consumed below.
+        let spawned_by_running: HashSet<&str> = children
+            .iter()
+            .filter(|record| record.row.is_running())
+            .map(|record| record.parent_call_id.as_str())
+            .collect();
         calls
             .into_iter()
+            .filter(|call| !is_hidden_tool(&call.name))
+            .filter(|call| !spawned_by_running.contains(call.id.as_str()))
             .map(|call| PaneWorkItem {
                 kind: PaneWorkKind::Task,
-                description: call.name.clone(),
+                description: work_call_description(call),
             })
             .chain(
                 children
@@ -647,6 +703,40 @@ impl UiState {
         true
     }
 
+}
+
+/// The chip's line for one in-flight tool call: the row its family gives it,
+/// the same phrasing the footer draws (`Run cargo test`, `Search "fn main"`),
+/// rather than the tool's own name. A call no family claims keeps its name.
+fn work_call_description(call: &ToolCall) -> String {
+    let arguments: serde_json::Value =
+        serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
+    let row = goble_core::harness::tool_row(&call.name, &arguments, None);
+    format!("{}{}", row.verb, row.subject).trim_end().to_string()
+}
+
+/// The one line a finished background child's inbox item carries: what it was
+/// asked to do, then the first line of what it answered, shortened so the item
+/// stays one row.
+fn background_task_detail(description: &str, output: Option<&str>) -> String {
+    let snippet = output
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| {
+            let mut short: String = line.chars().take(80).collect();
+            if line.chars().count() > 80 {
+                short.push('…');
+            }
+            short
+        })
+        .unwrap_or_default();
+    match (description.is_empty(), snippet.is_empty()) {
+        (false, false) => format!("{description} · {snippet}"),
+        (false, true) => description.to_string(),
+        (true, _) => snippet,
+    }
 }
 
 /// The state a pane's TUI agent reports through its terminal: `Some(Working)`

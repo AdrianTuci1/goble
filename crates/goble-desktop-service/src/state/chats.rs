@@ -195,6 +195,8 @@ impl DesktopState {
     /// list until the app restarts. The in-memory cache carries the fields each
     /// row's card draws, and the order the app created them in.
     pub fn list_chats(&self) -> Vec<Chat> {
+        // `Store::list_chats` returns top-level conversations only, so a
+        // sub-agent's own row never reaches the sidebar through this cache.
         let live: std::collections::HashSet<String> = match self.store.lock().list_chats() {
             Ok(rows) => rows.into_iter().map(|row| row.0).collect(),
             // A store that cannot be read leaves the cache as the app's own

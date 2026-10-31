@@ -109,6 +109,7 @@ impl UiState {
             shortcuts_help_scroll: Rc::new(RefCell::new(ScrollState::default())),
             crons,
             workflows: Vec::new(),
+            workflow_runs: Vec::new(),
             executions: Vec::new(),
             tasks: Vec::new(),
             timeline: Vec::new(),

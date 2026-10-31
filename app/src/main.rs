@@ -40,6 +40,9 @@ fn main() -> anyhow::Result<()> {
     let desktop = DesktopState::open_default()?;
     let bus = CollectingEventBus::new();
     desktop.set_event_bus(Arc::new(bus.clone()));
+    // Cron workflows live in the store; this is the clock that fires them. It
+    // starts after the bus so a due run's `workflows:updated` is delivered.
+    goble_desktop_service::start_workflow_scheduler(&desktop);
 
     let app_context = Rc::new(RefCell::new(AppContext::default()));
     let root = {

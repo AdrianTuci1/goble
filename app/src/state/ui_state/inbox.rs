@@ -24,6 +24,8 @@ pub enum InboxKind {
     Error,
     /// A sub-agent failed.
     Agent,
+    /// A background sub-agent finished successfully.
+    Task,
 }
 
 impl InboxKind {
@@ -35,6 +37,7 @@ impl InboxKind {
             Self::Done => "DONE",
             Self::Error => "ERROR",
             Self::Agent => "AGENT",
+            Self::Task => "TASK",
         }
     }
 }
@@ -527,5 +530,67 @@ mod tests {
             PaneAgentState::Idle,
             "an agent mode with no command under way is at its prompt"
         );
+    }
+
+    /// A background child that ends successfully raises a task item: nothing
+    /// else tells the user it finished, because its turn may have ended long
+    /// before the child did.
+    #[test]
+    fn a_background_subagent_completion_raises_a_task_item() {
+        let mut state = UiState::mock();
+        state.apply_subagent_spawned(&goble_desktop_service::SubAgentSpawnedEvent {
+            chat_id: "c1".to_string(),
+            subagent_id: "child-1".to_string(),
+            subagent_type: "reviewer".to_string(),
+            description: "audit the migration".to_string(),
+            parent_call_id: "call-spawn".to_string(),
+            run_in_background: true,
+        });
+        state.apply_subagent_finished(&goble_desktop_service::SubAgentFinishedEvent {
+            chat_id: "c1".to_string(),
+            subagent_id: "child-1".to_string(),
+            status: "completed".to_string(),
+            output: Some("audit clean\nsecond line".to_string()),
+            error: None,
+            duration_ms: 1200,
+            turns: 2,
+            tool_calls: 3,
+            tokens: 100,
+        });
+        assert_eq!(state.inbox[0].kind, InboxKind::Task);
+        assert_eq!(state.inbox[0].title, "Sub-agent finished");
+        assert_eq!(
+            state.inbox[0].detail,
+            "audit the migration · audit clean",
+            "the item names the child and the first line it answered"
+        );
+        assert_eq!(state.inbox[0].pane_id, 1);
+    }
+
+    /// A foreground child's answer is already the spawn call's result in the
+    /// parent transcript, so its completion raises nothing.
+    #[test]
+    fn a_foreground_subagent_completion_raises_nothing() {
+        let mut state = UiState::mock();
+        state.apply_subagent_spawned(&goble_desktop_service::SubAgentSpawnedEvent {
+            chat_id: "c1".to_string(),
+            subagent_id: "child-1".to_string(),
+            subagent_type: "reviewer".to_string(),
+            description: "audit the migration".to_string(),
+            parent_call_id: "call-spawn".to_string(),
+            run_in_background: false,
+        });
+        state.apply_subagent_finished(&goble_desktop_service::SubAgentFinishedEvent {
+            chat_id: "c1".to_string(),
+            subagent_id: "child-1".to_string(),
+            status: "completed".to_string(),
+            output: Some("audit clean".to_string()),
+            error: None,
+            duration_ms: 1200,
+            turns: 2,
+            tool_calls: 3,
+            tokens: 100,
+        });
+        assert!(state.inbox.is_empty());
     }
 }

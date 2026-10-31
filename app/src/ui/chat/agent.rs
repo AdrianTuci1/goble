@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::SystemTime;
 
 use goble_terminal::blocks::BlockView;
 use goble_terminal::BlockOwner;
@@ -15,13 +16,14 @@ use super::{
     pane_session_snapshot, PaneChatSnapshot, PaneHeading,
 };
 
-/// If `pane_id` has a live PTY session with output, append it as an inline
-/// terminal block after the transcript so a terminal command (`!cmd`) actually
-/// shows its output (warp-new style executed-command block). The block is
+/// If `pane_id` has a live PTY session with output, draw its newest command as
+/// an inline terminal block in the transcript so a terminal command (`!cmd`)
+/// shows its output (warp-new style executed-command block). The block sits
+/// where its command started, ordered with the chat rows by time. It is
 /// recomputed each frame from the session buffer, so a long-running command
 /// streams as it runs without ever growing the stored transcript.
 fn with_inline_terminal(
-    mut messages: Vec<ChatMessage>,
+    messages: Vec<ChatMessage>,
     terminal: &std::rc::Rc<std::cell::RefCell<crate::terminal::TerminalRegistry>>,
     pane_id: u64,
 ) -> Vec<ChatMessage> {
@@ -33,15 +35,20 @@ fn with_inline_terminal(
         let reg = terminal.borrow();
         reg.sessions
             .get(&pane_id)
-            .and_then(crate::ui::terminal::executed_command_block)
+            .and_then(crate::ui::terminal::executed_command_block_at)
     };
-    if let Some(data) = block {
-        messages.push(ChatMessage::new(
-            ChatRole::Tool,
-            vec![ChatFragment::terminal(data)],
-        ));
-    }
-    messages
+    let Some((data, started)) = block else {
+        return messages;
+    };
+    // Where the command began, not where the transcript ends: a `!` line typed
+    // between two replies stays between them.
+    merge_conversation_commands(
+        messages,
+        vec![(
+            started,
+            ChatMessage::new(ChatRole::Tool, vec![ChatFragment::terminal(data)]),
+        )],
+    )
 }
 
 /// The transcript rows for the commands typed *inside* a conversation — the `!`
@@ -56,19 +63,32 @@ fn with_inline_terminal(
 /// block. The caller passes the conversation's own blocks, so a shell block is
 /// never among them: the shell's history keeps its blocks to itself, and a
 /// conversation opened from the terminal still starts on a clean sheet.
-fn conversation_command_rows(blocks: &[VisibleBlock]) -> Vec<ChatMessage> {
+fn conversation_command_rows(blocks: &[VisibleBlock]) -> Vec<(Option<SystemTime>, ChatMessage)> {
     blocks
         .iter()
         .filter(|block| block.owner == BlockOwner::User)
-        .filter_map(crate::ui::terminal::section_data)
-        .map(|data| ChatMessage::new(ChatRole::Tool, vec![ChatFragment::terminal(data)]))
+        .filter_map(|block| {
+            crate::ui::terminal::section_data(block).map(|data| {
+                (
+                    block.started_at,
+                    ChatMessage::new(ChatRole::Tool, vec![ChatFragment::terminal(data)]),
+                )
+            })
+        })
         .collect()
 }
 
 /// Append the commands typed inside `conversation_id` to the transcript. See
 /// [`conversation_command_rows`].
+///
+/// A command is placed where it started, not at the end: each row carries the
+/// time its block began, each chat row the time it was written, so a `!` line
+/// typed mid-turn stays between the reply it followed and the reply that came
+/// after it. A row with no time to compare (the live reasoning block, an
+/// in-flight call) keeps its place, and a command with no start time stays at
+/// the end — the order is only as good as the clocks the two sides carry.
 fn with_conversation_commands(
-    mut messages: Vec<ChatMessage>,
+    messages: Vec<ChatMessage>,
     state: &UiSnapshot,
     pane_id: u64,
     conversation_id: &str,
@@ -80,8 +100,42 @@ fn with_conversation_commands(
         conversation_id: conversation_id.to_string(),
     };
     let blocks = state.terminal.borrow().visible_blocks(pane_id, &view);
-    messages.extend(conversation_command_rows(&blocks));
-    messages
+    merge_conversation_commands(messages, conversation_command_rows(&blocks))
+}
+
+/// Fold the conversation's commands into its transcript in the order they
+/// began. A command is due before the first chat row written after it started,
+/// and a row with no time keeps its place; whatever is left is appended.
+fn merge_conversation_commands(
+    messages: Vec<ChatMessage>,
+    commands: Vec<(Option<SystemTime>, ChatMessage)>,
+) -> Vec<ChatMessage> {
+    if commands.is_empty() {
+        return messages;
+    }
+    let mut merged = Vec::with_capacity(messages.len() + commands.len());
+    let mut commands = commands.into_iter().peekable();
+    for message in messages {
+        if let Some(at) = message_start(&message) {
+            while commands
+                .peek()
+                .is_some_and(|(start, _)| start.is_some_and(|start| start < at))
+            {
+                merged.push(commands.next().expect("peeked").1);
+            }
+        }
+        merged.push(message);
+    }
+    merged.extend(commands.map(|(_, row)| row));
+    merged
+}
+
+/// When a chat row was written, from the store's RFC3339 `created_at` that
+/// [`parse_chat_row`](crate::state::parse_chat_row) keeps on the message.
+fn message_start(message: &ChatMessage) -> Option<SystemTime> {
+    let raw = message.timestamp.as_deref()?;
+    let parsed = chrono::DateTime::parse_from_rfc3339(raw).ok()?;
+    Some(parsed.with_timezone(&chrono::Utc).into())
 }
 
 /// The notice a pane leads its transcript with.
@@ -341,6 +395,7 @@ pub fn build_agent_chat(
         )
         .with_composer_approval_mode(controls.approval_mode)
         .with_composer_approval_menu_open(controls.approval_menu_open.clone())
+        .with_composer_approval_menu_highlight(controls.approval_menu_highlight.clone())
         .with_on_select_approval_mode(move |mode| {
             (on_select_approval_mode.borrow_mut())(pane_id, mode)
         })
@@ -420,7 +475,8 @@ pub fn build_agent_chat(
                     }
                 },
             )
-            .with_composer_dir_menu_scroll(context.dir_menu_scroll.clone());
+            .with_composer_dir_menu_scroll(context.dir_menu_scroll.clone())
+            .with_composer_dir_menu_highlight(context.dir_menu_highlight.clone());
         if !context.branch_label.is_empty() {
             let branch_ids = context.branch_ids.clone();
             chat = chat
@@ -433,7 +489,8 @@ pub fn build_agent_chat(
                             (on_select_branch.borrow_mut())(pane_id, id.clone());
                         }
                     },
-                );
+                )
+                .with_composer_branch_menu_highlight(context.branch_menu_highlight.clone());
         }
         if let Some(diff) = context.diff.clone() {
             let open = on_diff_panel.clone();
@@ -879,6 +936,7 @@ mod link_action_tests {
             arguments: r#"{"subagent_type":"reviewer","input":"audit the migration"}"#.to_string(),
             status: goble_core::harness::ToolCallStatus::Running,
             result: None,
+            diff: None,
         };
         let message =
             ChatMessage::new(ChatRole::Assistant, vec![]).with_tool_calls(vec![call.clone()]);
@@ -973,6 +1031,7 @@ mod agent_pill_tests {
             arguments: r#"{"path":"src/sidebar.rs"}"#.to_string(),
             status: ToolCallStatus::Finished,
             result: Some("1: fn main() {}".to_string()),
+            diff: None,
         };
         let edit = ToolCall {
             id: "call_edit".to_string(),
@@ -981,6 +1040,7 @@ mod agent_pill_tests {
                 .to_string(),
             status: ToolCallStatus::Error,
             result: Some("old_text not found".to_string()),
+            diff: None,
         };
         let search = ToolCall {
             id: "call_search".to_string(),
@@ -988,6 +1048,7 @@ mod agent_pill_tests {
             arguments: r#"{"pattern":"fn build","path":"src"}"#.to_string(),
             status: ToolCallStatus::Running,
             result: None,
+            diff: None,
         };
         let spawn = ToolCall {
             id: "call_spawn".to_string(),
@@ -995,6 +1056,7 @@ mod agent_pill_tests {
             arguments: r#"{"subagent_type":"reviewer","input":"audit the migration"}"#.to_string(),
             status: ToolCallStatus::Running,
             result: None,
+            diff: None,
         };
 
         {
@@ -1136,6 +1198,7 @@ mod conversation_command_tests {
             pwd: Some("/tmp".to_string()),
             git_branch: None,
             duration: None,
+            started_at: None,
             prompt: None,
             card: None,
         }
@@ -1158,8 +1221,9 @@ mod conversation_command_tests {
         let rows = conversation_command_rows(&[typed, ran_by_the_agent]);
 
         assert_eq!(rows.len(), 1, "a command is one row");
-        assert_eq!(rows[0].role, ChatRole::Tool);
-        match &rows[0].fragments[0].kind {
+        let row = &rows[0].1;
+        assert_eq!(row.role, ChatRole::Tool);
+        match &row.fragments[0].kind {
             ChatFragmentKind::Terminal(data) => {
                 assert_eq!(data.lines[0].text, "pwd", "the row is the command's block");
                 assert_eq!(
@@ -1177,5 +1241,76 @@ mod conversation_command_tests {
     #[test]
     fn a_pane_without_a_conversation_adds_no_rows() {
         assert!(conversation_command_rows(&[]).is_empty());
+    }
+
+    /// A command typed mid-conversation keeps the place it was sent in: it sits
+    /// after the reply it followed and before the reply the agent wrote after
+    /// it, rather than floating at the end of the transcript.
+    #[test]
+    fn a_command_is_placed_where_it_started() {
+        let at = |secs: u64| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        let stamped = |role, text: &str, secs: u64| {
+            let time = chrono::DateTime::<chrono::Utc>::from(at(secs)).to_rfc3339();
+            ChatMessage::new(role, vec![ChatFragment::text(text)]).with_timestamp(time)
+        };
+        let messages = vec![
+            stamped(ChatRole::User, "first", 100),
+            stamped(ChatRole::Assistant, "reply one", 110),
+            stamped(ChatRole::User, "second", 200),
+            stamped(ChatRole::Assistant, "reply two", 210),
+        ];
+        let commands = vec![
+            (
+                Some(at(150)),
+                ChatMessage::new(ChatRole::Tool, vec![ChatFragment::text("!mid")]),
+            ),
+            (
+                Some(at(250)),
+                ChatMessage::new(ChatRole::Tool, vec![ChatFragment::text("!late")]),
+            ),
+        ];
+
+        let merged = merge_conversation_commands(messages, commands);
+        let order: Vec<String> = merged
+            .iter()
+            .filter_map(|message| match message.fragments.first().map(|f| &f.kind) {
+                Some(ChatFragmentKind::Text(text)) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            order,
+            vec!["first", "reply one", "!mid", "second", "reply two", "!late"],
+            "the transcript keeps the order the turn happened in"
+        );
+    }
+
+    /// A row with nothing to compare (a live reasoning block) keeps its place,
+    /// and a command with no start time stays at the end rather than forcing
+    /// the whole transcript to reorder around it.
+    #[test]
+    fn an_undated_row_keeps_its_place() {
+        let at = |secs: u64| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        let messages = vec![
+            ChatMessage::new(ChatRole::Assistant, vec![ChatFragment::text("live")]),
+            ChatMessage::new(ChatRole::User, vec![ChatFragment::text("next")])
+                .with_timestamp(chrono::DateTime::<chrono::Utc>::from(at(200)).to_rfc3339()),
+        ];
+        let commands = vec![(
+            None,
+            ChatMessage::new(ChatRole::Tool, vec![ChatFragment::text("!undated")]),
+        )];
+
+        let merged = merge_conversation_commands(messages, commands);
+        assert_eq!(
+            merged
+                .iter()
+                .filter_map(|message| match message.fragments.first().map(|f| &f.kind) {
+                    Some(ChatFragmentKind::Text(text)) => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["live", "next", "!undated"]
+        );
     }
 }

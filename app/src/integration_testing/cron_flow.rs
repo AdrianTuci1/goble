@@ -81,7 +81,7 @@ fn delete_workflow_removes_cron() {
 }
 
 #[test]
-fn trigger_cron_appends_message_and_sets_busy() {
+fn trigger_cron_records_a_real_run() {
     let (desktop, _dir) = common::desktop_state();
     let (state, actions) = build(&desktop);
 
@@ -89,14 +89,37 @@ fn trigger_cron_appends_message_and_sets_busy() {
     let cron_id = state.borrow().crons[0].id.clone();
     let cron_name = state.borrow().crons[0].name.clone();
 
-    (actions.on_cron_trigger.borrow_mut())(cron_id);
+    (actions.on_cron_trigger.borrow_mut())(cron_id.clone());
 
     let state = state.borrow();
-    assert!(state.agent_busy);
+    // A run is not a chat turn: it reports through the run ledger instead of
+    // pretending the agent is busy in the transcript.
+    assert!(!state.agent_busy);
     assert_eq!(state.chat_messages.len(), 1);
     assert_eq!(state.chat_messages[0].role, ChatRole::Assistant);
     let text = message_text(&state.chat_messages[0]);
     assert!(text.contains(&cron_name), "expected cron name in: {text}");
+    assert!(
+        text.contains("Started"),
+        "expected a start notice in: {text}"
+    );
+
+    let runs = desktop.list_workflow_runs();
+    assert_eq!(runs.len(), 1, "a trigger must record one run");
+    assert_eq!(runs[0].workflow_id, cron_id);
+    assert_eq!(runs[0].steps.len(), 1, "the script's phase becomes a step");
+    assert_eq!(runs[0].steps[0].name, "Run");
+    assert!(
+        matches!(runs[0].steps[0].status.as_str(), "succeeded" | "failed"),
+        "the step carries its settled status: {}",
+        runs[0].steps[0].status
+    );
+    assert!(!state.crons.is_empty());
+    assert!(
+        state.crons[0].last_run.contains("succeeded"),
+        "the drawer shows the run: {}",
+        state.crons[0].last_run
+    );
 }
 
 #[test]

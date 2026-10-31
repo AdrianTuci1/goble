@@ -5,6 +5,7 @@ use crate::elements::chat_content::{
     ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, ListItem,
 };
 use crate::elements::chat_message_bubble::QuoteRail;
+use crate::elements::table_grid::{self, TableCell, TableGrid};
 use crate::elements::{
     terminal_block, AppContext, Avatar, Chip, Container, CrossAxisAlignment, Divider, EdgeInsets,
     Element, Empty, Fill, Flex, LayoutContext, PaintContext, Point, SizeConstraint, Spacer,
@@ -410,35 +411,41 @@ impl GroupChatMessage {
         rows: &[Vec<String>],
         spacing: f32,
     ) -> Box<dyn Element> {
-        let mut column = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(spacing / 4.0);
-        column = column.with_child(self.render_table_row(app, header, spacing));
-        column = column.with_child(Divider::horizontal().finish());
-        for row in rows {
-            column = column.with_child(self.render_table_row(app, row, spacing));
+        let weights = table_grid::column_weights(header, rows);
+        let grid = TableGrid::new(spacing);
+        let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        column = column.with_child(grid.row(
+            self.render_table_row(app, header, &weights, &grid),
+            !rows.is_empty(),
+        ));
+        for (index, row) in rows.iter().enumerate() {
+            column = column.with_child(grid.row(
+                self.render_table_row(app, row, &weights, &grid),
+                index + 1 < rows.len(),
+            ));
         }
-        column.finish()
+        grid.outline(column.finish(), app)
     }
 
     fn render_table_row(
         &self,
         app: &AppContext,
         cells: &[String],
-        spacing: f32,
-    ) -> Box<dyn Element> {
-        let mut row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_spacing(spacing);
-        for cell in cells {
-            row = row.with_child(
-                Text::new(cell.clone())
+        weights: &[f32],
+        grid: &TableGrid,
+    ) -> Vec<TableCell> {
+        weights
+            .iter()
+            .enumerate()
+            .map(|(index, weight)| {
+                let text = cells.get(index).cloned().unwrap_or_default();
+                let cell = Text::new(text)
                     .with_theme_color(ColorToken::Text, app)
                     .with_font_size(12.0)
-                    .finish(),
-            );
-        }
-        row.finish()
+                    .finish();
+                grid.cell(cell, *weight)
+            })
+            .collect()
     }
 }
 
@@ -724,6 +731,117 @@ mod tests {
         assert!(
             runs.iter().any(|(text, _)| text == "quoted line"),
             "the quoted text must be drawn, got {runs:?}"
+        );
+    }
+
+    /// A table in the thread view is a full grid too: an outline around the
+    /// whole table, a rule between each pair of columns, and a rule between
+    /// each pair of rows.
+    #[test]
+    fn table_draws_a_full_grid() {
+        let app = AppContext::default();
+        let message = ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::table(
+                vec!["File".into(), "Summary".into()],
+                vec![
+                    vec!["a.rs".into(), "beta".into()],
+                    vec!["b.rs".into(), "delta".into()],
+                ],
+            )],
+        );
+        let mut msg = GroupChatMessage::new(message).with_show_header(false);
+        msg.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        msg.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx.renderer.take().unwrap().commands().to_vec();
+        let rows = 3;
+        let columns = 2;
+
+        let outline = commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::StrokeRect { rect, .. } => Some(*rect),
+                _ => None,
+            })
+            .expect("the table must be outlined");
+
+        let border = app.theme.color(ColorToken::Border);
+        let horizontal: Vec<_> = commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == border && rect.height() == 1.0 && rect.width() > 1.0 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .collect();
+        let vertical: Vec<_> = commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == border && rect.width() == 1.0 && rect.height() > 1.0 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            horizontal.len(),
+            rows - 1,
+            "one rule under each row but the last, got {horizontal:?}"
+        );
+        for rule in &horizontal {
+            assert!(
+                (rule.width() - outline.width()).abs() < 0.5
+                    && (rule.min_x() - outline.min_x()).abs() < 0.5,
+                "a row rule spans the table: {rule:?} against outline {outline:?}"
+            );
+        }
+        assert_eq!(
+            vertical.len(),
+            (columns - 1) * rows,
+            "one rule between each pair of columns, in every row, got {vertical:?}"
+        );
+        let mut xs: Vec<f32> = vertical.iter().map(|rule| rule.min_x()).collect();
+        xs.sort_by(f32::total_cmp);
+        xs.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+        assert_eq!(
+            xs.len(),
+            columns - 1,
+            "one rule per column boundary, got {xs:?}"
+        );
+        for x in &xs {
+            assert!(
+                *x > outline.min_x() + 1.0 && *x < outline.max_x() - 1.0,
+                "a column rule stands inside the outline, at {x}"
+            );
+            let seen = vertical
+                .iter()
+                .filter(|rule| (rule.min_x() - x).abs() < 0.5)
+                .count();
+            assert_eq!(seen, rows, "the rule at {x} must run through every row");
+        }
+        let top = vertical
+            .iter()
+            .map(|rule| rule.min_y())
+            .fold(f32::INFINITY, f32::min);
+        let bottom = vertical
+            .iter()
+            .map(|rule| rule.max_y())
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            (bottom - top - outline.height()).abs() < 0.5,
+            "the column rules run the table's height: {} against outline {outline:?}",
+            bottom - top
         );
     }
 }

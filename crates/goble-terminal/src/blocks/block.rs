@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::id::BlockId;
 use super::state::{BlockKind, BlockOwner, BlockState};
@@ -39,6 +39,10 @@ pub struct Block {
     metadata: BlockMetadata,
     honor_ps1: bool,
     started_at: Option<Instant>,
+    /// When the command started, on the wall clock, so a view can place this
+    /// block among records written by other parts of the app (a chat row's
+    /// `created_at`). `Instant` alone cannot be compared to them.
+    started_wall: Option<SystemTime>,
     finished_at: Option<Instant>,
     /// Bytes that arrived after the block was finished and were discarded.
     dropped_bytes: usize,
@@ -60,6 +64,7 @@ impl Block {
             metadata: BlockMetadata::default(),
             honor_ps1: false,
             started_at: None,
+            started_wall: None,
             finished_at: None,
             dropped_bytes: 0,
         }
@@ -198,6 +203,11 @@ impl Block {
         Some(self.finished_at?.duration_since(self.started_at?))
     }
 
+    /// When the command started, on the wall clock. `None` before it starts.
+    pub fn started_wall(&self) -> Option<SystemTime> {
+        self.started_wall
+    }
+
     /// How long the command has been running so far. `None` before it starts;
     /// a finished command reads [`Block::duration`] instead, since this keeps
     /// growing after the command is done.
@@ -240,6 +250,7 @@ impl Block {
         self.command_text = command;
         self.state = BlockState::Executing;
         self.started_at = Some(Instant::now());
+        self.started_wall = Some(SystemTime::now());
     }
 
     /// The shell moved on while this command was still running: it will never

@@ -57,7 +57,10 @@ pub(crate) fn tool_result_body(content: &str) -> String {
 /// produced: none yet means the model has not started streaming, an open newest
 /// row means it is still reasoning, a closed one means it is writing. `elapsed`
 /// is the age of the observed turn start; a turn whose start was not observed
-/// reports `None` rather than an invented time.
+/// reports `None` rather than an invented time. The busy count is the same work
+/// the topbar and the pane header count: the pane's non-hidden tool calls, its
+/// running sub-agent children and the workspace's executions, with a spawn call
+/// folded into the child it is awaiting.
 pub(crate) fn pane_turn_status(
     rt: Option<&PaneRuntime>,
     executions: usize,
@@ -68,13 +71,37 @@ pub(crate) fn pane_turn_status(
         // running executions are still in flight.
         return still_running_status(0, executions, sub_agents);
     };
-    let in_flight = rt.in_flight_tools.len();
+    // A hidden lookup is still running, but it is not work the user sees:
+    // counting it would name a tool the transcript does not draw.
+    let hidden = rt
+        .in_flight_tools
+        .values()
+        .filter(|call| is_hidden_tool(&call.name))
+        .count();
+    let in_flight = rt.in_flight_tools.len() - hidden;
+    // A spawn call and the child it awaits are one unit of work: while the
+    // child is running it is the child that is counted, not the call as well.
+    let doubled = rt
+        .in_flight_tools
+        .values()
+        .filter(|call| !is_hidden_tool(&call.name))
+        .filter(|call| {
+            rt.sub_agents
+                .values()
+                .any(|record| record.row.is_running() && record.parent_call_id == call.id)
+        })
+        .count();
     if rt.busy {
         let activity = if rt.pending_command.is_some() {
             TurnActivity::WaitingOnApproval
         } else if rt.pending_ask.is_some() {
             TurnActivity::WaitingOnQuestion
-        } else if let Some(call) = rt.in_flight_tools.values().min_by(|a, b| a.id.cmp(&b.id)) {
+        } else if let Some(call) = rt
+            .in_flight_tools
+            .values()
+            .filter(|call| !is_hidden_tool(&call.name))
+            .min_by(|a, b| a.id.cmp(&b.id))
+        {
             // A spawn is awaited: while its call is in flight the turn is doing
             // nothing but waiting on the child, so the child is what it names.
             if tool_kind_for(&call.name) == ToolKind::SubAgent {
@@ -103,11 +130,11 @@ pub(crate) fn pane_turn_status(
         return TurnStatus::Busy {
             activity,
             elapsed: rt.turn_started_at.map(|started| started.elapsed()),
-            work_count: in_flight + executions,
+            work_count: (in_flight + executions + sub_agents).saturating_sub(doubled),
         };
     }
 
-    still_running_status(in_flight, executions, sub_agents)
+    still_running_status(in_flight.saturating_sub(doubled), executions, sub_agents)
 }
 
 /// The idle-with-work state: one entry per kind that is really running, in the
@@ -233,7 +260,7 @@ impl MessageParseCache {
             messages.push(message);
         }
         self.entries = next;
-        merge_tool_chains(messages)
+        hide_internal_tools(merge_tool_chains(messages))
     }
 
     /// How many rows this cache has parsed. Test observability for the
@@ -273,6 +300,23 @@ fn merge_tool_chains(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     merged
 }
 
+/// Drop the harness's internal lookups (`search_store`, `credentials`,
+/// `user_guide`) from a built transcript. Their results were already folded
+/// into the call they answer, so removing the call takes the whole row with it;
+/// an assistant step that carried nothing but hidden calls is not a bubble.
+fn hide_internal_tools(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    messages
+        .into_iter()
+        .filter_map(|mut message| {
+            message.tool_calls.retain(|call| !is_hidden_tool(&call.name));
+            let empty = message.role == ChatRole::Assistant
+                && message.fragments.is_empty()
+                && message.tool_calls.is_empty();
+            (!empty).then_some(message)
+        })
+        .collect()
+}
+
 /// Whether this message is the synthetic reasoning block [`overlay_reasoning`]
 /// inserts, rather than a row the store wrote.
 pub(crate) fn is_reasoning_overlay(message: &ChatMessage) -> bool {
@@ -296,6 +340,9 @@ pub(crate) fn tool_call_from_event(call: &goble_desktop_service::ToolCallEvent) 
         arguments: serde_json::to_string(&call.arguments).unwrap_or_default(),
         status: call.status,
         result: call.result.clone(),
+        // The live event carries no diff; the persisted record the next
+        // `chat:updated` re-reads does, and the row draws it from there.
+        diff: None,
     }
 }
 
@@ -313,6 +360,11 @@ pub(crate) fn overlay_in_flight(messages: &mut Vec<ChatMessage>, in_flight: &Has
         return;
     }
     for call in in_flight.values() {
+        // The harness's own lookups are not drawn (see `hide_internal_tools`),
+        // so an in-flight one must not flash into the reply either.
+        if is_hidden_tool(&call.name) {
+            continue;
+        }
         if let Some(existing) = messages
             .iter_mut()
             .flat_map(|m| m.tool_calls.iter_mut())
@@ -412,6 +464,10 @@ pub(crate) fn parse_chat_row(row: &goble_desktop_service::ChatMessage) -> ChatMe
     } else {
         ChatMessage::from_markdown(role, row.content.clone())
     };
+    // The row's creation time is kept on the message: a conversation's `!`
+    // commands are placed among these rows by it, so the transcript keeps the
+    // order the user saw the turn happen in.
+    message = message.with_timestamp(row.created_at.clone());
     if let Some(tc) = row.tool_calls.as_deref() {
         message = message.with_tool_calls(ToolCall::from_llm_json(tc));
     }

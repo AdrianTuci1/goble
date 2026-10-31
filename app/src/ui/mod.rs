@@ -61,7 +61,8 @@ pub use snapshot::{
 pub use types::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, HarnessKind,
     LlmFormField, McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow, SettingsCategory, SettingsControl, SettingsFocus, SidebarView, TaskEntry,
-    TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkflowStepEntry, WorkspaceRouting,
+    TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry,
+    WorkflowStepEntry, WorkspaceRouting,
 };
 
 /// Width of the left conversation sidebar.

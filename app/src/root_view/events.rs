@@ -18,9 +18,15 @@ impl RootView {
             return;
         }
         let mut state = self.state.borrow_mut();
+        // One refresh for the whole batch. A streaming turn emits an event per
+        // delta, and re-reading every conversation (and every pane's
+        // transcript) once per event made the sidebar redraw faster than the
+        // eye can follow. The batch is drained per frame, so this is one
+        // refresh per frame at most.
+        let mut conversations_dirty = false;
         for (name, payload) in events {
             match name.as_str() {
-                "chats:updated" | "chat:updated" => state.refresh_conversations(&desktop),
+                "chats:updated" | "chat:updated" => conversations_dirty = true,
                 "chat:turn_finished" => {
                     // The conversation names the pane that started the turn and
                     // is authoritative even after the focus moved. Only a
@@ -45,6 +51,10 @@ impl RootView {
                         None => crate::state::TurnOutcome::Unknown,
                     };
                     state.finish_turn(pane_id, outcome);
+                    // The turn ended: the card reads the finished reply (and
+                    // the subject it names) now, before a queued prompt starts
+                    // the next turn and makes the conversation live again.
+                    state.refresh_conversations(&desktop);
                     log::warn!(
                         "chat:turn_finished for {}: {}",
                         payload.get("chat_id").and_then(|v| v.as_str()).unwrap_or(""),
@@ -333,6 +343,9 @@ impl RootView {
                 }
                 _ => {}
             }
+        }
+        if conversations_dirty {
+            state.refresh_conversations(&desktop);
         }
     }
 }

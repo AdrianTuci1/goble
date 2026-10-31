@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use goble_terminal::hooks::PreexecValue;
-use goble_terminal::BlockOwner;
+use goble_terminal::{BlockOwner, KeyEncoder};
 
 use crate::terminal::claim::{ClaimError, ClaimOutcome, PendingCommandClaim};
 
@@ -31,7 +31,13 @@ impl TerminalSession {
         }
         // Enter, as the terminal sees it: a carriage return. A program in raw
         // mode does not read a line feed as "run this".
-        let mut bytes = command.as_bytes().to_vec();
+        //
+        // The line reaches the editor the way a paste does: a long or
+        // multi-line command must stay one command, and its own newlines must
+        // not submit it early. With bracketed paste on (mode 2004, which the
+        // shell's line editor enables by default) the text travels wrapped;
+        // only the carriage return below runs it.
+        let mut bytes = KeyEncoder::paste(command, self.input_mode());
         bytes.push(b'\r');
         self.write(&bytes);
         self.pending_claim = Some(PendingCommandClaim {
@@ -64,7 +70,7 @@ impl TerminalSession {
             return;
         };
         let actual = value.command.clone().unwrap_or_default();
-        let outcome = if actual.trim() == claim.command {
+        let outcome = if same_command(&actual, &claim.command) {
             ClaimOutcome::Resolved {
                 owner: claim.owner,
                 command: claim.command,
@@ -100,4 +106,19 @@ impl TerminalSession {
         }
         self.claim_outcomes.push_back(outcome);
     }
+}
+
+/// Whether the shell's reported command is the one the claim wrote.
+///
+/// The line editor may hand a command back with different line endings or
+/// spacing than the bytes written — a multi-line command is one buffer to zsh
+/// and several lines to bash's history, and a line editor normalizes trailing
+/// whitespace — so both sides are compared with their whitespace collapsed.
+/// The claim is still aimed at one block, so this forgives formatting; a
+/// command that differs in what it runs is still refused.
+fn same_command(actual: &str, expected: &str) -> bool {
+    fn normalized(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+    normalized(actual) == normalized(expected)
 }

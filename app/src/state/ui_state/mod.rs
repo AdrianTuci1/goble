@@ -169,6 +169,8 @@ pub struct UiState {
     pub crons: Vec<CronEntry>,
     /// Harness workflows (real daemon workflow store).
     pub workflows: Vec<WorkflowEntry>,
+    /// Settled workflow runs, newest first (real `workflow_runs` ledger).
+    pub workflow_runs: Vec<WorkflowRunEntry>,
     /// Executions from the daemon execution ledger (real data).
     pub executions: Vec<ExecutionEntry>,
     /// Durable tasks from the persistence layer (real data).

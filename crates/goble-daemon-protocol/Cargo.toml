@@ -2,6 +2,8 @@
 name = "goble-daemon-protocol"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+publish.workspace = true
 description = "Wire types for the GUI<->daemon boundary: DaemonRequest / DaemonEvent / DaemonMessage."
 
 [dependencies]

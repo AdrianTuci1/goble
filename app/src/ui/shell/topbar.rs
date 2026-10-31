@@ -78,7 +78,7 @@ fn tab_slot(room: f32, tabs: usize) -> f32 {
 /// Single general toolbar, reduced to the essentials: a sidebar toggle, the
 /// workspace tabs (one per space, the active one editable inline), a "+ ▾"
 /// control that opens a new workspace / picks the environment it runs in, and
-/// the Settings icon pinned to the far right.
+/// the inbox beside the Settings icon pinned to the far right.
 ///
 /// The tabs sit flush next to the toggle and run the full height of the bar,
 /// separated by a single vertical rule, so a new workspace shows up *next to*
@@ -135,10 +135,10 @@ pub fn build_topbar(
     // information only — no click opens anything from it.
     let live_indicator = build_live_indicator(app, state.live_work_count, state.live_work_phase);
 
-    // The global inbox: an icon with the unread count, beside the sidebar
-    // toggle. It stays close to the conversation list and the workspace tabs;
-    // pressing it toggles the overlay (Cmd/Ctrl+Shift+I does the same), and the
-    // count is the snapshot's live unread total.
+    // The global inbox: an icon with the unread count, at the right end of the
+    // bar next to Settings. Pressing it toggles the overlay
+    // (Cmd/Ctrl+Shift+I does the same), and the count is the snapshot's live
+    // unread total.
     let inbox_button = build_inbox_control(
         app,
         state.inbox_unread_count,
@@ -159,13 +159,14 @@ pub fn build_topbar(
 
     // The strip's tabs share the room the bar has left for them, so the row is
     // laid out by the bar itself rather than by a plain flex row: the strip is
-    // given what the toggle, the "+ ▾" control, the live cue and Settings leave
-    // behind, and the controls keep the positions they had (see [`TopbarRow`]).
+    // given what the toggle, the "+ ▾" control, the live cue, the inbox and
+    // Settings leave behind, and the controls keep the positions they had (see
+    // [`TopbarRow`]).
     let row = TopbarRow::new(
-        vec![sidebar_button, inbox_button],
+        vec![sidebar_button],
         workspaces,
         vec![add_workspace],
-        vec![live_indicator, settings_button],
+        vec![live_indicator, inbox_button, settings_button],
     )
     .with_left_spacing(sm * 0.5)
     .with_group_spacing(sm)
@@ -654,26 +655,25 @@ impl Element for TabFrame {
 }
 
 /// The bar's one row: the sidebar toggle, the tab strip, the "+ ▾" control, and
-/// then the live cue and Settings spread to the right.
+/// then the live cue, the inbox and Settings packed against the right end.
 ///
 /// The engine's `Flex` gives a child either no bound along its row
 /// (`MainAxisSize::Min`) or the whole row's width to grow into, so the strip
 /// could not tell a wide window from a crowded bar — and a strip that was not
 /// told took the room it wanted and pushed the "+ ▾" control and Settings off
 /// the window. So the bar lays its own row out: the controls first, at their own
-/// widths, and the strip into the room that is left for it. Everything else is
-/// the flex row it replaces: the left group flush with `left_spacing`, the cue
-/// and Settings spread with `group_spacing` between them, every child centered
-/// on the bar's height (`SidebarLayout` solves the same problem for the shell's
-/// split).
+/// widths, the strip into the room that is left for it, and the right group as
+/// one compact run on the row's right edge, with `group_spacing` between its
+/// neighbours, every child centered on the bar's height (`SidebarLayout` solves
+/// the same problem for the shell's split).
 struct TopbarRow {
     /// The controls before the strip, in draw order.
     leading: Vec<Box<dyn Element>>,
     /// The tab strip: the one child that takes the room the rest leaves.
     strip: Box<dyn Element>,
-    /// The controls after the strip, before the cue and Settings.
+    /// The controls after the strip, before the bar's right-hand group.
     trailing: Vec<Box<dyn Element>>,
-    /// The live cue and Settings, spread to the right of the row.
+    /// The live cue, the inbox and Settings, packed against the row's right end.
     right: Vec<Box<dyn Element>>,
     left_spacing: f32,
     group_spacing: f32,
@@ -743,7 +743,7 @@ impl TopbarRow {
 
     /// The widths of the row's fixed controls: everything but the strip, plus
     /// the gaps between them at their narrowest — `left_spacing` inside each
-    /// group, and `group_spacing` before and between the row's right end, whose
+    /// group, and `group_spacing` between the right group's neighbours, whose
     /// last control sits on the row's own right edge.
     fn fixed_width(&self) -> f32 {
         let sum = |children: &Vec<Box<dyn Element>>| -> f32 {
@@ -753,7 +753,7 @@ impl TopbarRow {
                 .sum()
         };
         let left_gaps = self.left_spacing * (self.leading.len() + self.trailing.len()) as f32;
-        let group_gaps = self.group_spacing * self.right.len() as f32;
+        let group_gaps = self.group_spacing * self.right.len().saturating_sub(1) as f32;
         sum(&self.leading) + sum(&self.trailing) + sum(&self.right) + left_gaps + group_gaps
     }
 }
@@ -837,21 +837,22 @@ impl Element for TopbarRow {
             }
         }
 
-        // The cue and Settings are spread over what is left of the row, with
-        // the one gap on either side of them that a `SpaceBetween` row drew.
+        // The cue, the inbox and Settings are one compact run pinned to the
+        // row's right edge: `group_spacing` between neighbours, and the last
+        // control flush with the edge.
         let right_widths: Vec<f32> = self
             .right
             .iter()
             .map(|child| Self::width_of(child.as_ref()))
             .collect();
         let right_total: f32 = right_widths.iter().sum();
-        let gaps = self.right.len().max(1) as f32;
-        let gap = ((width - x - right_total) / gaps).max(self.group_spacing);
-        let mut x = x + gap;
+        let group_width =
+            right_total + self.group_spacing * self.right.len().saturating_sub(1) as f32;
+        let mut x = (width - group_width).max(x);
         for (child, child_width) in self.right.iter_mut().zip(right_widths) {
             let y = Self::center_y(child.as_ref(), height);
             child.paint(origin + vec2f(x, y), ctx, app);
-            x += child_width + gap;
+            x += child_width + self.group_spacing;
         }
     }
 

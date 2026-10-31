@@ -138,6 +138,67 @@ impl DesktopState {
         Ok(info)
     }
 
+    /// Create a workflow whose body is a Rhai script. The script is compiled
+    /// here, so an invalid body is refused before a row exists; its phases
+    /// become the record's steps.
+    pub fn create_workflow_with_script(
+        &self,
+        name: &str,
+        description: &str,
+        script: &str,
+        trigger: Trigger,
+    ) -> anyhow::Result<WorkflowInfo> {
+        let id = WorkflowId::generate();
+        let parsed = goble_workflow::Workflow::new(
+            goble_workflow::WorkflowId::new(id.to_string()),
+            name,
+        )
+        .with_script(script)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let mut wf = Workflow::new(name, description).with_trigger(trigger);
+        wf.id = id;
+        wf.name = parsed.name;
+        wf.script = Some(script.to_string());
+        wf.steps = parsed
+            .steps
+            .iter()
+            .map(|step| goble_core::workflow::WorkflowStep {
+                id: step.id.0.clone(),
+                name: step.name.clone(),
+                agent_id: AgentId(String::new()),
+                input_template: String::new(),
+                depends_on: Vec::new(),
+            })
+            .collect();
+        let id = wf.id.clone();
+        let now = Utc::now().to_rfc3339();
+        let spec_json = serde_json::to_string(&wf)?;
+        let trigger_json = serde_json::to_string(&wf.trigger)?;
+        self.store.lock().insert_workflow(
+            &id.to_string(),
+            &wf.name,
+            description,
+            &spec_json,
+            &trigger_json,
+            wf.enabled,
+            &now,
+            &now,
+        )?;
+        let info = WorkflowInfo {
+            id: id.to_string(),
+            name: wf.name.clone(),
+            description: description.to_string(),
+            steps: wf.steps,
+            trigger: wf.trigger,
+            enabled: wf.enabled,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        self.workflows.lock().insert(id, info.clone());
+        self.emit("workflows:updated", ());
+        Ok(info)
+    }
+
     pub fn delete_workflow(&self, id: &WorkflowId) -> anyhow::Result<()> {
         self.store.lock().delete_workflow(&id.to_string())?;
         self.workflows.lock().remove(id);
@@ -145,8 +206,43 @@ impl DesktopState {
         Ok(())
     }
 
+    /// Every workflow, rebuilt from the store.
+    ///
+    /// The harness tools write workflows straight into SQLite, so the cache is
+    /// not authoritative: reading the rows here is what makes a workflow an
+    /// agent created visible to the drawer, the run overlay and the cron loop
+    /// in the same session. A row whose spec does not parse keeps its name and
+    /// trigger and shows no steps.
     pub fn list_workflows(&self) -> Vec<WorkflowInfo> {
-        self.workflows.lock().values().cloned().collect()
+        if let Ok(rows) = self.store.lock().list_workflows() {
+            let mut fresh = std::collections::HashMap::new();
+            for (id, name, description, spec, trigger, enabled, created_at, updated_at) in rows {
+                let parsed: Option<Workflow> = serde_json::from_str(&spec).ok();
+                let trigger = serde_json::from_str(&trigger).unwrap_or(Trigger::Manual);
+                let steps = parsed
+                    .as_ref()
+                    .map(|workflow| workflow.steps.clone())
+                    .unwrap_or_default();
+                fresh.insert(
+                    WorkflowId(id.clone()),
+                    WorkflowInfo {
+                        id,
+                        name,
+                        description,
+                        steps,
+                        trigger,
+                        enabled,
+                        created_at,
+                        updated_at,
+                    },
+                );
+            }
+            *self.workflows.lock() = fresh;
+        }
+        let mut workflows: Vec<WorkflowInfo> =
+            self.workflows.lock().values().cloned().collect();
+        workflows.sort_by(|a, b| a.name.cmp(&b.name));
+        workflows
     }
 
     pub fn create_team(

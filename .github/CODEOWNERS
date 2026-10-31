@@ -1,0 +1,44 @@
+# Review ownership. GitHub gives the review request to the last matching
+# pattern, so the paths below name the owner of their own area and `*` covers
+# everything else.
+* @AdrianTuci1
+
+# The seams another harness, daemon or client builds against. A change here is
+# a protocol change and needs the docs updated with it.
+/crates/goble-harness-protocol/ @AdrianTuci1
+/crates/goble-harness-types/    @AdrianTuci1
+/crates/goble-daemon-protocol/  @AdrianTuci1
+/crates/goble-control/          @AdrianTuci1
+
+# The runtime: the daemon, its client, the worker that hosts it remotely, and
+# the harness core every turn goes through.
+/crates/goble-daemon/           @AdrianTuci1
+/crates/goble-daemon-client/    @AdrianTuci1
+/crates/goblin-worker/          @AdrianTuci1
+/crates/goble-core/             @AdrianTuci1
+
+# Identity, transport, the sandbox the worker executes inside, and updates.
+/crates/goble-gateway/          @AdrianTuci1
+/crates/goble-remote/           @AdrianTuci1
+/crates/goble-sandbox/          @AdrianTuci1
+/crates/goble-update/           @AdrianTuci1
+
+# The native surface and the terminal it is built on.
+/app/                           @AdrianTuci1
+/crates/goble-ui/               @AdrianTuci1
+/crates/goble-desktop-service/  @AdrianTuci1
+/crates/goble-desktop-native/   @AdrianTuci1
+/crates/goble-terminal/         @AdrianTuci1
+
+# Build, release and repository automation.
+/.github/                       @AdrianTuci1
+/packaging/                     @AdrianTuci1
+/deploy/                        @AdrianTuci1
+/scripts/                       @AdrianTuci1
+
+# The docs, the license and the third-party ledger ship with every release.
+/docs/                          @AdrianTuci1
+/LICENSE                        @AdrianTuci1
+/THIRD-PARTY-NOTICES.md         @AdrianTuci1
+/SECURITY.md                    @AdrianTuci1
+/CONTRIBUTING.md                @AdrianTuci1

@@ -20,6 +20,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub mod schedule;
+pub mod script;
+
+pub use schedule::{next_after, normalize_cron, parse_cron, validate_cron};
+pub use script::{
+    AgentOpts, AgentOutcome, Meta, PhaseMeta, ScriptEngine, ScriptHost, ScriptRun, ValidationReport,
+};
+
 /// Identifies a workflow.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WorkflowId(pub String);
@@ -102,6 +110,11 @@ pub struct Workflow {
     pub name: String,
     pub steps: Vec<Step>,
     pub trigger: Trigger,
+    /// The Rhai body this workflow runs. When present it is the workflow's
+    /// execution, and `steps` are the phases its `meta` declares (kept for
+    /// display and scheduling). `None` keeps the step-list engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
 }
 
 impl Workflow {
@@ -111,7 +124,29 @@ impl Workflow {
             name: name.into(),
             steps: Vec::new(),
             trigger: Trigger::Manual,
+            script: None,
         }
+    }
+
+    /// Attach a Rhai body. The script is compiled and its `meta` read here, so
+    /// a bad script is rejected before the workflow is stored; the phases it
+    /// declares become the workflow's steps.
+    pub fn with_script(mut self, source: impl Into<String>) -> Result<Self, WorkflowError> {
+        let source = source.into();
+        let meta = script::meta_of(&source).map_err(WorkflowError::Script)?;
+        if meta.name.trim().is_empty() {
+            return Err(WorkflowError::Script(
+                "the script's meta.name is empty".to_string(),
+            ));
+        }
+        self.steps = meta
+            .phases
+            .iter()
+            .map(|phase| Step::new(slug(&phase.title), phase.title.clone()))
+            .collect();
+        self.name = meta.name;
+        self.script = Some(source);
+        Ok(self)
     }
 
     pub fn with_steps(mut self, steps: Vec<Step>) -> Self {
@@ -129,9 +164,14 @@ impl Workflow {
         self
     }
 
-    /// Validate the workflow: it must be non-empty and have unique step ids.
+    /// Validate the workflow: it must be runnable and have unique step ids.
+    ///
+    /// A step-list workflow needs at least one step. A script workflow is
+    /// validated by compiling its body; its steps are display-only.
     pub fn validate(&self) -> Result<(), WorkflowError> {
-        if self.steps.is_empty() {
+        if let Some(source) = &self.script {
+            script::meta_of(source).map_err(WorkflowError::Script)?;
+        } else if self.steps.is_empty() {
             return Err(WorkflowError::NoSteps(self.id.clone()));
         }
         let mut seen = HashMap::new();
@@ -161,6 +201,33 @@ pub enum WorkflowError {
     NoSteps(WorkflowId),
     #[error("step id {0} is duplicated")]
     DuplicateStepId(StepId),
+    #[error("workflow script is invalid: {0}")]
+    Script(String),
+    #[error("invalid cron expression: {0}")]
+    Cron(String),
+}
+
+/// A stable step id for a phase title: lowercase, runs of non-alphanumerics
+/// collapsed to one `-`.
+pub fn slug(title: &str) -> String {
+    let mut out = String::with_capacity(title.len());
+    let mut dash = false;
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if dash && !out.is_empty() {
+                out.push('-');
+            }
+            dash = false;
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            dash = true;
+        }
+    }
+    if out.is_empty() {
+        "phase".to_string()
+    } else {
+        out
+    }
 }
 
 /// The outcome a [`StepExecutor`] reports for a single step.
@@ -210,6 +277,12 @@ pub struct WorkflowRun {
     pub steps: Vec<StepExecution>,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// The value a script run passed to `complete()`, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    /// Progress lines a script emitted with `log()`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub log: Vec<String>,
 }
 
 /// A request to run a workflow, as journaled by the workflow host.
@@ -394,6 +467,8 @@ impl WorkflowEngine {
             steps,
             started_at,
             finished_at,
+            output: None,
+            log: Vec::new(),
         }
     }
 }

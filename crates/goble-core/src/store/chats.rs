@@ -197,6 +197,11 @@ impl Store {
         }
     }
 
+    /// The app's top-level conversations, newest first. A sub-agent's own
+    /// conversation carries `parent_chat_id` and is not one of these: it is
+    /// reached through the child view that spawned it, so it never reaches the
+    /// sidebar or the thread migration. [`Self::list_child_chats`] returns
+    /// those.
     pub fn list_chats(
         &self,
     ) -> Result<
@@ -209,8 +214,50 @@ impl Store {
             String,
         )>,
     > {
+        self.list_chats_by_parent(false)
+    }
+
+    /// Every sub-agent conversation, newest first, in the same shape as
+    /// [`Self::list_chats`]. The rows the sidebar must not list stay readable
+    /// here, so a caller that needs a child's own row (and its messages, which
+    /// [`Self::list_chat_messages`] still returns for a child id) can find it.
+    pub fn list_child_chats(
+        &self,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        )>,
+    > {
+        self.list_chats_by_parent(true)
+    }
+
+    /// The conversation rows split by whether they are a sub-agent's, so the
+    /// two listings cannot disagree about the column that splits them.
+    fn list_chats_by_parent(
+        &self,
+        children: bool,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        )>,
+    > {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT id, title, provider, model, created_at, updated_at FROM chats ORDER BY updated_at DESC")?;
+        let sql = if children {
+            "SELECT id, title, provider, model, created_at, updated_at FROM chats WHERE parent_chat_id IS NOT NULL ORDER BY updated_at DESC"
+        } else {
+            "SELECT id, title, provider, model, created_at, updated_at FROM chats WHERE parent_chat_id IS NULL ORDER BY updated_at DESC"
+        };
+        let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,

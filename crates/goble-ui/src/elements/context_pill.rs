@@ -44,6 +44,9 @@ pub struct ContextPill {
     label_color: ColorToken,
     items: Vec<PopupMenuItem>,
     open: Option<Rc<RefCell<bool>>>,
+    /// The app-owned keyboard highlight, shared with the tray's [`PopupMenu`]
+    /// so Up/Down survives the per-frame rebuild.
+    highlight: Option<Rc<RefCell<Option<usize>>>>,
     on_select: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     tooltip: String,
     tray_side: PillTraySide,
@@ -60,6 +63,7 @@ impl ContextPill {
             label_color: ColorToken::Muted,
             items: Vec::new(),
             open: None,
+            highlight: None,
             on_select: None,
             tooltip: String::new(),
             tray_side: PillTraySide::Above,
@@ -90,6 +94,14 @@ impl ContextPill {
         self.items = items;
         self.open = Some(open);
         self.on_select = Some(Rc::new(RefCell::new(on_select)));
+        self
+    }
+
+    /// Share the tray's keyboard highlight with the app, like the open flag:
+    /// the pill is rebuilt every frame, so the row Up/Down moved to has to live
+    /// outside it.
+    pub fn with_highlight_index(mut self, highlight: Rc<RefCell<Option<usize>>>) -> Self {
+        self.highlight = Some(highlight);
         self
     }
 
@@ -160,9 +172,71 @@ impl ContextPill {
         if let Some(open) = self.open {
             menu = menu.with_open(open);
         }
+        if let Some(highlight) = self.highlight {
+            menu = menu.with_highlight_index(highlight);
+        }
         if let Some(cb) = self.on_select {
             menu = menu.with_on_select(move |idx| (cb.borrow_mut())(idx));
         }
         menu.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::elements::{EventContext, LayoutContext, PaintContext, SizeConstraint};
+    use crate::event::{DispatchedEvent, ModifiersState};
+    use crate::geometry::vec2f;
+
+    /// The pill's tray reads and writes the app's highlight cell, so Up/Down
+    /// keeps its row across the per-frame rebuild.
+    #[test]
+    fn the_pill_tray_shares_the_apps_keyboard_highlight() {
+        let app = AppContext::default();
+        let open = Rc::new(RefCell::new(true));
+        let highlight: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let picked = Rc::new(RefCell::new(None));
+        let click = Rc::clone(&picked);
+        let mut element = ContextPill::new("git-branch", "main")
+            .with_menu(
+                vec![
+                    PopupMenuItem::new("main").selected(),
+                    PopupMenuItem::new("dev"),
+                ],
+                Rc::clone(&open),
+                move |index| *click.borrow_mut() = Some(index),
+            )
+            .with_highlight_index(Rc::clone(&highlight))
+            .finish(&app);
+
+        element.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        element.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+        assert_eq!(
+            *highlight.borrow(),
+            Some(0),
+            "the open tray starts on the item in force"
+        );
+
+        let mut ctx = EventContext::default();
+        let mut press = |element: &mut Box<dyn Element>, key: &str| {
+            element.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: key.to_string(),
+                    modifiers: ModifiersState::default(),
+                },
+                &mut ctx,
+                &app,
+            )
+        };
+        assert!(press(&mut element, "ArrowDown"), "the tray takes the arrow");
+        assert_eq!(*highlight.borrow(), Some(1));
+        assert!(press(&mut element, "Enter"), "and Enter");
+        assert_eq!(*picked.borrow(), Some(1), "Enter takes the highlighted row");
+        assert!(!*open.borrow(), "and closes the tray");
     }
 }

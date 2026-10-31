@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::render::RenderCommand;
 use crate::theme::FontFamily;
 
-use super::fonts::{rasterize_text, FontWeight};
+use super::fonts::{rasterize_text_with_emoji, EmojiQuad, FontWeight};
 
 /// A 16 MB single-channel atlas. It packs whole runs, so a screen full of
 /// terminal output at 2x display scale is several megabytes of boxes on its
@@ -113,6 +113,8 @@ pub(super) struct AtlasStore {
     /// bytes the texture holds.
     pixels: Vec<u8>,
     entries: HashMap<TextKey, AtlasEntry>,
+    /// The colour emoji each placed run draws over its coverage bitmap.
+    emoji: HashMap<TextKey, Vec<EmojiQuad>>,
     cursor_x: u32,
     cursor_y: u32,
     row_height: u32,
@@ -128,6 +130,7 @@ impl AtlasStore {
             size,
             pixels: vec![0u8; (size * size) as usize],
             entries: HashMap::new(),
+            emoji: HashMap::new(),
             cursor_x: PADDING,
             cursor_y: PADDING,
             row_height: 0,
@@ -149,13 +152,17 @@ impl AtlasStore {
         self.entries.get(key)
     }
 
+    pub(super) fn emoji(&self, key: &TextKey) -> Option<&[EmojiQuad]> {
+        self.emoji.get(key).map(Vec::as_slice)
+    }
+
     pub(super) fn pixels(&self) -> &[u8] {
         &self.pixels
     }
 
     /// Rasterize and place one run, or report why it could not be placed.
     pub(super) fn place(&mut self, key: &TextKey) -> Placement {
-        let Some((entry, data, width, height)) = rasterize_text(
+        let Some((entry, data, width, height, emoji)) = rasterize_text_with_emoji(
             &key.text,
             f32::from_bits(key.font_size),
             key.weight,
@@ -180,6 +187,11 @@ impl AtlasStore {
             return Placement::Full;
         };
 
+        if emoji.is_empty() {
+            self.emoji.remove(key);
+        } else {
+            self.emoji.insert(key.clone(), emoji);
+        }
         self.entries.insert(
             key.clone(),
             AtlasEntry {
@@ -243,6 +255,7 @@ impl AtlasStore {
     /// new runs' edges, where the sampler's filter reaches it.
     pub(super) fn reset(&mut self) {
         self.entries.clear();
+        self.emoji.clear();
         self.cursor_x = PADDING;
         self.cursor_y = PADDING;
         self.row_height = 0;
@@ -543,6 +556,28 @@ impl TextAtlas {
         line_height: f32,
     ) -> Option<&AtlasEntry> {
         self.store.entry(&text_key(
+            text,
+            font_size,
+            weight,
+            family,
+            italic,
+            max_width,
+            line_height,
+        ))
+    }
+
+    /// The colour emoji a run draws over its coverage bitmap, if it holds any.
+    pub(crate) fn emoji_with_family(
+        &self,
+        text: &str,
+        font_size: f32,
+        weight: FontWeight,
+        family: FontFamily,
+        italic: bool,
+        max_width: f32,
+        line_height: f32,
+    ) -> Option<&[EmojiQuad]> {
+        self.store.emoji(&text_key(
             text,
             font_size,
             weight,

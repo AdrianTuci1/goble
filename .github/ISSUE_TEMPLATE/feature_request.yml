@@ -1,0 +1,44 @@
+name: Feature request
+description: A capability the runtime or the interface should have.
+title: "feat: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do today, and where it stops.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What the app should do instead. A sketch or a flow is enough.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use today, or another design you rejected.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Agent runtime and harness
+        - Transcript and chat surface
+        - Terminal and panes
+        - Remote workers and sandboxes
+        - Settings, identity and secrets
+        - Build, release and docs
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched open and closed issues for the same request.
+          required: true

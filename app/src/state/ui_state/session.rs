@@ -18,6 +18,16 @@ impl UiState {
             self.maximized_pane = None;
         }
         self.active_pane_id = pane_id;
+        // A pane waiting on a decision types into its card (or question), so
+        // the rich input that held the keyboard in the pane the user came from
+        // must not keep it here.
+        if self
+            .pane_runtime
+            .get(&pane_id)
+            .is_some_and(|rt| rt.pending_command.is_some() || rt.pending_ask.is_some())
+        {
+            self.composer_focused = false;
+        }
     }
 
     /// Point the global "active pane" fields at the active pane's own session +

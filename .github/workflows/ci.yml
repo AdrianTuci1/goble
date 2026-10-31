@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # vendor/alacritty_terminal is a path dependency of goble-terminal, and a
       # missing path dependency fails every cargo command in this workspace, not
@@ -112,7 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Same reason as the terminal job: the vendored emulator is a path
       # dependency of goble-terminal and cargo resolves the whole workspace to

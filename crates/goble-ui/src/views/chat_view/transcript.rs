@@ -14,6 +14,7 @@ use crate::elements::{
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
 
+use super::sticky::StickyTurn;
 use super::ChatView;
 
 /// How much lower the instruction strip sits than the block's own inset put
@@ -613,7 +614,10 @@ impl ChatView {
             if let Some(notice) = self.notice.take() {
                 message_column = message_column.with_child(notice);
             }
-            for message in &self.messages {
+            // The rows the sticky turn header reads: the latest user message and
+            // the reply after it, recorded as they paint.
+            let sticky = StickyTurn::for_messages(&self.messages);
+            for (index, message) in self.messages.iter().enumerate() {
                 let on_action = self.on_action.clone();
                 let fragments = message.fragments.clone();
                 let mut bubble = ChatMessageBubble::new(message.role, fragments)
@@ -633,7 +637,7 @@ impl ChatView {
                     bubble = bubble.with_text_selection(self.text_recording.clone());
                 }
                 let bubble = bubble.finish();
-                message_column = message_column.with_child(bubble);
+                message_column = message_column.with_child(sticky.probe(index, bubble));
             }
             // A failed turn says why under the messages it belongs to. The
             // inbox names the conversation; the transcript carries the reason,
@@ -764,6 +768,17 @@ impl ChatView {
                     self.transcript_viewport.clone(),
                 )
                 .finish(),
+                None => transcript,
+            };
+            // The latest user message pins to the transcript's top edge while
+            // its own bubble is above it (grok-build's sticky turn). The header
+            // is an overlay of the transcript's stack, so it covers the top
+            // strip instead of taking a row from the scrolling content.
+            let transcript: Box<dyn Element> = match sticky.overlay() {
+                Some(header) => Stack::new()
+                    .with_children(vec![transcript])
+                    .with_overlay(header, Vector2F::zero())
+                    .finish(),
                 None => transcript,
             };
             if self.has_terminal_blocks() {

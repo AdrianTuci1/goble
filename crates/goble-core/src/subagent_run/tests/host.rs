@@ -84,7 +84,11 @@ async fn a_background_spawn_returns_the_child_id_and_its_record_ends_completed()
     assert!(child.spec.run_in_background);
     assert_eq!(child.spec.parent_chat_id, parent_chat);
     assert_eq!(child.spec.depth, 1, "the child runs one level deeper");
-    assert_eq!(store.list_chats().unwrap().len(), 2, "the child owns a row");
+    assert_eq!(
+        store.list_child_chats().unwrap().len(),
+        1,
+        "the child owns a row"
+    );
 
     // Open the gate: the same record reaches Completed carrying the output.
     gates

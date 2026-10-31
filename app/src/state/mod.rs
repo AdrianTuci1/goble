@@ -33,7 +33,8 @@ use crate::terminal::TerminalRegistry;
 use crate::ui::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, FloatingDrag, HarnessEntry, LayoutKind,
     LlmFormField, Pane, PaneChatSnapshot, PaneDropTarget, PaneKind, RemoteAgentEntry, SearchRow, SettingsCategory, SettingsControl, SettingsFocus, SidebarView,
-    Space, TaskEntry, TimelineEntry, WorkflowEntry, WorkflowStepEntry, WorkerPaneSnapshot,
+    Space, TaskEntry, TimelineEntry, WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry,
+    WorkflowStepEntry, WorkerPaneSnapshot,
     WorkspaceRouting, SIDEBAR_WIDTH,
 };
 use crate::ui::global_search::SearchWorker;

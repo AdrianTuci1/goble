@@ -239,6 +239,7 @@ fn kind_color(kind: InboxKind) -> ColorToken {
         InboxKind::Done => ColorToken::Success,
         InboxKind::Error => ColorToken::Error,
         InboxKind::Agent => ColorToken::Muted,
+        InboxKind::Task => ColorToken::Success,
     }
 }
 

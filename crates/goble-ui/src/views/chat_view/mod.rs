@@ -24,6 +24,7 @@ use goble_core::ssh_command::SshSession;
 
 mod builder;
 mod element;
+mod sticky;
 mod surface;
 mod transcript;
 

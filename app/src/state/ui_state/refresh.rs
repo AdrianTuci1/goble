@@ -62,6 +62,7 @@ impl UiState {
             shortcuts_help_scroll: Rc::new(RefCell::new(ScrollState::default())),
             crons: Vec::new(),
             workflows: Vec::new(),
+            workflow_runs: Vec::new(),
             executions: Vec::new(),
             tasks: Vec::new(),
             timeline: Vec::new(),
@@ -240,6 +241,7 @@ impl UiState {
     /// timeline, costs) from the embedded daemon / store.
     pub fn refresh_observability(&mut self, desktop: &DesktopState) {
         self.refresh_workflows(desktop);
+        self.refresh_workflow_runs(desktop);
         self.refresh_executions(desktop);
         self.refresh_tasks(desktop);
         self.refresh_timeline(desktop);
@@ -268,6 +270,40 @@ impl UiState {
                 created_at: time_ago(&wf.created_at),
             })
             .collect();
+    }
+
+    /// Settled workflow runs from the persisted run ledger, newest first.
+    pub fn refresh_workflow_runs(&mut self, desktop: &DesktopState) {
+        self.workflow_runs = desktop
+            .list_workflow_runs()
+            .into_iter()
+            .map(|run| WorkflowRunEntry {
+                id: run.id,
+                workflow_id: run.workflow_id,
+                status: run.status,
+                error: run.error,
+                steps: run
+                    .steps
+                    .into_iter()
+                    .map(|step| WorkflowRunStepEntry {
+                        name: step.name,
+                        status: step.status,
+                        detail: step.detail,
+                    })
+                    .collect(),
+                started_at: time_ago(&run.started_at),
+                finished_at: run.finished_at.as_deref().map(time_ago),
+                output: run.output,
+                log: run.log,
+            })
+            .collect();
+    }
+
+    /// The newest run recorded for `workflow_id`.
+    pub fn latest_run(&self, workflow_id: &str) -> Option<&WorkflowRunEntry> {
+        self.workflow_runs
+            .iter()
+            .find(|run| run.workflow_id == workflow_id)
     }
 
     /// Executions from the daemon execution ledger.

@@ -4,6 +4,9 @@ use goble_core::config::RemoteMode;
 
 impl UiState {
     pub fn refresh_crons(&mut self, desktop: &DesktopState) {
+        // The drawer's "last run" is the newest recorded run, so read the run
+        // ledger first; a workflow with no run says so instead of "unknown".
+        self.refresh_workflow_runs(desktop);
         self.crons = desktop
             .list_workflows()
             .into_iter()
@@ -12,7 +15,11 @@ impl UiState {
                     Trigger::Cron { expression } => expression,
                     _ => "manual".to_string(),
                 };
-                CronEntry::new(wf.id, wf.name, schedule, "unknown").with_enabled(wf.enabled)
+                let last_run = self
+                    .latest_run(&wf.id)
+                    .map(|run| format!("{} ({})", run.started_at, run.status))
+                    .unwrap_or_else(|| "never".to_string());
+                CronEntry::new(wf.id, wf.name, schedule, last_run).with_enabled(wf.enabled)
             })
             .collect();
     }

@@ -12,3 +12,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+cron = { workspace = true }
+# `no_time` keeps the clock out of scripts: a workflow run must be
+# deterministic, so `timestamp()` must not exist at all.
+rhai = { version = "1.25", features = ["serde", "no_time"] }

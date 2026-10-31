@@ -148,7 +148,7 @@ fn parent_chat(store: &Store) -> String {
 
 fn child_of(store: &Store, parent_chat: &str) -> String {
     store
-        .list_chats()
+        .list_child_chats()
         .unwrap()
         .into_iter()
         .find(|(id, ..)| {

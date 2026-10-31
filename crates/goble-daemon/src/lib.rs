@@ -19,4 +19,4 @@ pub use goble_replay::Checkpoint;
 pub use port::DaemonPort;
 pub use sink::{DaemonEventSink, NoopSink};
 pub use state::{DaemonState, ExecutionRecord};
-pub use workflow::{HarnessStepExecutor, WorkflowHost};
+pub use workflow::{HarnessStepExecutor, ScriptTurnHost, TextRunSeam, WorkflowHost};

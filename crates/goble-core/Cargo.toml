@@ -43,6 +43,7 @@ tracing.workspace = true
 log.workspace = true
 dirs = "6"
 goble-sandbox = { path = "../goble-sandbox", features = ["tokio"] }
+goble-workflow = { path = "../goble-workflow" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

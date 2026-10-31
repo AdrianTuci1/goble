@@ -191,6 +191,35 @@ pub struct WorkflowInfo {
     pub updated_at: String,
 }
 
+/// One settled workflow run as the run overlay reads it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowRunInfo {
+    pub id: String,
+    pub workflow_id: String,
+    /// `running`, `succeeded` or `failed`.
+    pub status: String,
+    /// The failure message when the run failed.
+    pub error: Option<String>,
+    pub steps: Vec<WorkflowRunStep>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    /// The value a script passed to `complete()`.
+    pub output: Option<serde_json::Value>,
+    pub log: Vec<String>,
+}
+
+/// One phase of a run, in run order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowRunStep {
+    pub index: usize,
+    pub name: String,
+    /// `skipped`, `succeeded` or `failed`.
+    pub status: String,
+    pub detail: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamInfo {
     pub id: String,

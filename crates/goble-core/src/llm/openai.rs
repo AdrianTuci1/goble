@@ -454,7 +454,7 @@ impl LlmProvider for OpenAiProvider {
                                     }
                                     if let Some(args) = function.arguments {
                                         existing_function.arguments = Some(
-                                            existing_function.arguments.clone().unwrap_or_default() + &args,
+                                            existing_function.arguments.clone().unwrap_or_default() + args.as_str(),
                                         );
                                     }
                                 }

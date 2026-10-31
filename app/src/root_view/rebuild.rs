@@ -433,6 +433,7 @@ impl RootView {
                 shortcuts_help_scroll: s.shortcuts_help_scroll.clone(),
                 crons: s.crons.clone(),
                 workflows: s.workflows.clone(),
+                workflow_runs: s.workflow_runs.clone(),
                 executions: s.executions.clone(),
                 tasks: s.tasks.clone(),
                 timeline: s.timeline.clone(),

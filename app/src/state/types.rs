@@ -183,8 +183,14 @@ pub struct LiveExecution {
 pub struct LiveWork {
     /// Worker agent executions currently running.
     pub executions: Vec<LiveExecution>,
-    /// The active pane's tool calls that have started and not yet finished.
+    /// The active pane's tool calls that have started and not yet finished. The
+    /// harness's hidden lookups are left out, as is a spawn call whose child is
+    /// counted in [`Self::running_sub_agents`]: that child is the work, and
+    /// counting both would make one spawn read as two items.
     pub tool_calls: Vec<ToolCall>,
+    /// The active pane's sub-agent children still running, the same set the
+    /// pane header's chip counts.
+    pub running_sub_agents: usize,
     /// Whether the active pane's turn is running.
     pub turn_busy: bool,
     /// The proposal id the active pane is waiting on for approval, if any.
@@ -196,11 +202,12 @@ pub struct LiveWork {
 }
 
 impl LiveWork {
-    /// Items in flight beside the active pane's turn: its tool calls plus every
-    /// running execution. This is the number the topbar's live cue shows, and
-    /// zero is its inert state.
+    /// Items in flight beside the active pane's turn: its tool calls, its
+    /// running sub-agent children and every running execution — the same items
+    /// the pane header's chip lists, plus the app-wide executions. This is the
+    /// number the topbar's live cue shows, and zero is its inert state.
     pub fn work_count(&self) -> usize {
-        self.tool_calls.len() + self.executions.len()
+        self.tool_calls.len() + self.running_sub_agents + self.executions.len()
     }
 
     /// The topbar spinner's phase, from the age of the observed turn start. A

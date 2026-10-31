@@ -57,7 +57,10 @@ pub(crate) fn tool_result_body(content: &str) -> String {
 /// produced: none yet means the model has not started streaming, an open newest
 /// row means it is still reasoning, a closed one means it is writing. `elapsed`
 /// is the age of the observed turn start; a turn whose start was not observed
-/// reports `None` rather than an invented time.
+/// reports `None` rather than an invented time. The busy count is the same work
+/// the topbar and the pane header count: the pane's non-hidden tool calls, its
+/// running sub-agent children and the workspace's executions, with a spawn call
+/// folded into the child it is awaiting.
 pub(crate) fn pane_turn_status(
     rt: Option<&PaneRuntime>,
     executions: usize,
@@ -76,6 +79,18 @@ pub(crate) fn pane_turn_status(
         .filter(|call| is_hidden_tool(&call.name))
         .count();
     let in_flight = rt.in_flight_tools.len() - hidden;
+    // A spawn call and the child it awaits are one unit of work: while the
+    // child is running it is the child that is counted, not the call as well.
+    let doubled = rt
+        .in_flight_tools
+        .values()
+        .filter(|call| !is_hidden_tool(&call.name))
+        .filter(|call| {
+            rt.sub_agents
+                .values()
+                .any(|record| record.row.is_running() && record.parent_call_id == call.id)
+        })
+        .count();
     if rt.busy {
         let activity = if rt.pending_command.is_some() {
             TurnActivity::WaitingOnApproval
@@ -115,11 +130,11 @@ pub(crate) fn pane_turn_status(
         return TurnStatus::Busy {
             activity,
             elapsed: rt.turn_started_at.map(|started| started.elapsed()),
-            work_count: in_flight + executions,
+            work_count: (in_flight + executions + sub_agents).saturating_sub(doubled),
         };
     }
 
-    still_running_status(in_flight, executions, sub_agents)
+    still_running_status(in_flight.saturating_sub(doubled), executions, sub_agents)
 }
 
 /// The idle-with-work state: one entry per kind that is really running, in the

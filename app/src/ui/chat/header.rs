@@ -589,10 +589,14 @@ mod tests {
     }
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
+        tool_call_with(id, name, "{}")
+    }
+
+    fn tool_call_with(id: &str, name: &str, arguments: &str) -> ToolCall {
         ToolCall {
             id: id.to_string(),
             name: name.to_string(),
-            arguments: "{}".to_string(),
+            arguments: arguments.to_string(),
             status: ToolCallStatus::Running,
             result: None,
             diff: None,
@@ -601,7 +605,9 @@ mod tests {
 
     fn sub_agent(child_id: &str, kind: &str, description: &str) -> SubAgentRecord {
         SubAgentRecord {
-            parent_call_id: "call-1".to_string(),
+            // A spawn call of its own: the fixture's in-flight `call-1` is a
+            // different piece of work, not the call that spawned these.
+            parent_call_id: "call-spawn".to_string(),
             row: SubAgentRow {
                 child_id: child_id.to_string(),
                 subagent_type: kind.to_string(),
@@ -1059,8 +1065,10 @@ mod tests {
             let mut s = state.borrow_mut();
             let pane_id = s.active_pane_id;
             let rt = s.pane_runtime.entry(pane_id).or_default();
-            rt.in_flight_tools
-                .insert("call-1".to_string(), tool_call("call-1", "run_command"));
+            rt.in_flight_tools.insert(
+                "call-1".to_string(),
+                tool_call_with("call-1", "run_command", r#"{"command":"cargo test"}"#),
+            );
             rt.sub_agents.insert(
                 "child-1".to_string(),
                 sub_agent("child-1", "Explore", "Map the tree"),
@@ -1245,8 +1253,10 @@ mod tests {
             let mut s = state.borrow_mut();
             let pane_id = s.active_pane_id;
             let rt = s.pane_runtime.entry(pane_id).or_default();
-            rt.in_flight_tools
-                .insert("call-1".to_string(), tool_call("call-1", "run_command"));
+            rt.in_flight_tools.insert(
+                "call-1".to_string(),
+                tool_call_with("call-1", "run_command", r#"{"command":"cargo test"}"#),
+            );
             rt.sub_agents.insert(
                 "child-1".to_string(),
                 sub_agent("child-1", "Explore", "Map the tree"),
@@ -1282,8 +1292,8 @@ mod tests {
         );
         assert!(
             drawn.iter().any(|text| text
-                == "task · run_command\nsub-agent · Explore · Map the tree\nsub-agent · Review · Check the diff"),
-            "the tooltip names every item with its kind: {drawn:?}"
+                == "task · Run cargo test\nsub-agent · Explore · Map the tree\nsub-agent · Review · Check the diff"),
+            "the tooltip names every item with its kind and the row's own phrasing: {drawn:?}"
         );
     }
 

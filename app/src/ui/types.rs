@@ -114,6 +114,33 @@ pub struct WorkflowStepEntry {
     pub agent_id: String,
 }
 
+/// One settled run of a workflow, from the persisted run ledger.
+#[derive(Clone, Debug)]
+pub struct WorkflowRunEntry {
+    pub id: String,
+    pub workflow_id: String,
+    /// `running`, `succeeded` or `failed`.
+    pub status: String,
+    /// Why the run failed, when it did.
+    pub error: Option<String>,
+    pub steps: Vec<WorkflowRunStepEntry>,
+    /// Relative label, e.g. `2m ago`.
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    /// The value a script passed to `complete()`.
+    pub output: Option<serde_json::Value>,
+    pub log: Vec<String>,
+}
+
+/// One phase of a run, in run order.
+#[derive(Clone, Debug)]
+pub struct WorkflowRunStepEntry {
+    pub name: String,
+    /// `skipped`, `succeeded` or `failed`.
+    pub status: String,
+    pub detail: Option<String>,
+}
+
 /// An execution (agent run) shown in the tasks/executions page. Real data from
 /// the daemon execution ledger ([`goble_desktop_service::DesktopState`]).
 #[derive(Clone, Debug)]

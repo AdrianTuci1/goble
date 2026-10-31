@@ -52,6 +52,58 @@ impl Store {
         Ok(())
     }
 
+    /// Persist one settled workflow run. `run_json` is the full
+    /// [`goble_workflow::WorkflowRun`] as the overlay reads it back.
+    pub fn insert_workflow_run(
+        &self,
+        id: &str,
+        workflow_id: &str,
+        status: &str,
+        run_json: &str,
+        started_at: &str,
+        finished_at: Option<&str>,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO workflow_runs (id, workflow_id, status, run_json, started_at, finished_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET status=excluded.status, run_json=excluded.run_json,
+                                           finished_at=excluded.finished_at",
+            params![id, workflow_id, status, run_json, started_at, finished_at],
+        )?;
+        Ok(())
+    }
+
+    /// Workflow runs, newest first, as `(id, workflow_id, status, run_json,
+    /// started_at, finished_at)`.
+    pub fn list_workflow_runs(
+        &self,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+        )>,
+    > {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, workflow_id, status, run_json, started_at, finished_at FROM workflow_runs ORDER BY started_at DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn insert_execution(
         &self,
         id: &str,

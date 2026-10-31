@@ -132,6 +132,19 @@ fn flush_queued_prompt(
     state.refresh_messages(desktop);
 }
 
+/// The body a "New cron" starts from: one phase and one agent call, so the row
+/// it creates is runnable immediately instead of being an empty definition.
+const NEW_CRON_SCRIPT: &str = r#"let meta = #{
+    name: "New scheduled task",
+    description: "Created from the crons drawer",
+    phases: [#{ title: "Run" }]
+};
+
+phase("Run");
+let result = agent("Carry out this scheduled task and report what you did.");
+complete(#{ output: result.output });
+"#;
+
 pub fn make_actions(
     state: Rc<RefCell<UiState>>,
     desktop: Option<Arc<DesktopState>>,
@@ -354,6 +367,7 @@ pub fn make_actions(
     let desktop_send_queued = desktop.clone();
     let desktop_cron_create = desktop.clone();
     let desktop_cron_delete = desktop.clone();
+    let desktop_cron_trigger = desktop.clone();
     let desktop_save_llm = desktop.clone();
     let desktop_dark_mode = desktop.clone();
     let desktop_theme_primary = desktop.clone();
@@ -1990,10 +2004,10 @@ pub fn make_actions(
         on_cron_create: Rc::new(RefCell::new(move || {
             let mut state = on_cron_create.borrow_mut();
             if let Some(desktop) = &desktop_cron_create {
-                match desktop.create_workflow(
+                match desktop.create_workflow_with_script(
                     "New scheduled task",
                     "Created from the crons drawer",
-                    vec![],
+                    NEW_CRON_SCRIPT,
                     Trigger::Cron {
                         expression: "0 12 * * *".to_string(),
                     },
@@ -2030,15 +2044,34 @@ pub fn make_actions(
                 .find(|cron| cron.id == id)
                 .map(|cron| cron.name.clone())
                 .unwrap_or_else(|| id.clone());
-            state.push_active_message(ChatMessage::from_markdown(
-                ChatRole::Assistant,
-                format!("Am pornit cron-ul „{name}”."),
-            ));
-            let pane_id = state.active_pane_id;
-            if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                rt.busy = true;
+            match &desktop_cron_trigger {
+                // A trigger starts a real run on the workflow's body; the run
+                // ledger and the run overlay are what report its progress.
+                Some(desktop) => match desktop.run_workflow(&id) {
+                    Ok(()) => {
+                        state.refresh_crons(desktop);
+                        state.push_active_message(ChatMessage::from_markdown(
+                            ChatRole::Assistant,
+                            format!("Started “{name}”. Its run appears in Workflow Runs."),
+                        ));
+                    }
+                    Err(e) => state.push_active_message(ChatMessage::from_markdown(
+                        ChatRole::Assistant,
+                        format!("Could not start “{name}”: {e}"),
+                    )),
+                },
+                None => {
+                    state.push_active_message(ChatMessage::from_markdown(
+                        ChatRole::Assistant,
+                        format!("Started “{name}”."),
+                    ));
+                    let pane_id = state.active_pane_id;
+                    if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
+                        rt.busy = true;
+                    }
+                    state.agent_busy = true;
+                }
             }
-            state.agent_busy = true;
         })),
         on_sidebar_drag_start: Rc::new(RefCell::new(move |pointer_x: f32| {
             let mut state = on_sidebar_drag_start.borrow_mut();

@@ -22,7 +22,7 @@ use super::types::{
     AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, LlmFormField,
     McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow,
     SettingsCategory, SettingsFocus, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
-    WorkflowEntry, WorkspaceRouting,
+    WorkflowEntry, WorkflowRunEntry, WorkspaceRouting,
 };
 
 /// What a pane's sub-agent child view (S6) shows: the child's own conversation,
@@ -302,6 +302,8 @@ pub struct UiSnapshot {
     pub crons: Vec<CronEntry>,
     /// Workflows registered with the embedded daemon (real data).
     pub workflows: Vec<WorkflowEntry>,
+    /// Settled workflow runs, newest first (real run ledger).
+    pub workflow_runs: Vec<WorkflowRunEntry>,
     /// Executions from the daemon execution ledger (real data).
     pub executions: Vec<ExecutionEntry>,
     /// Durable tasks from the persistence layer (real data).
@@ -551,6 +553,15 @@ pub struct UiSnapshot {
     /// App-owned open flag for the terminal pane's "Run agent" menu, so the
     /// popup survives the per-frame element rebuild.
     pub terminal_run_agent_menu_open: Rc<RefCell<bool>>,
+}
+
+impl UiSnapshot {
+    /// The newest recorded run for `workflow_id`, if any.
+    pub fn latest_run(&self, workflow_id: &str) -> Option<&WorkflowRunEntry> {
+        self.workflow_runs
+            .iter()
+            .find(|run| run.workflow_id == workflow_id)
+    }
 }
 
 /// Plain snapshot of the AI domain state (vault + MCP connectors) used to

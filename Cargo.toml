@@ -88,7 +88,7 @@ wgpu = "25.0"
 winit = "0.30"
 glam = { version = "0.31", features = ["bytemuck"] }
 bytemuck = { version = "1.23", features = ["derive"] }
-pollster = "0.4"
+pollster = "1.0"
 raw-window-handle = "0.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
 

@@ -360,7 +360,7 @@ jobs:
           echo "GOBLE_VERSION=${TAG#v}" >> "$GITHUB_ENV"
 
       - name: Download app artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: goble-app-*
           merge-multiple: true
@@ -427,13 +427,13 @@ jobs:
           cargo test --workspace
 
       - name: Download worker artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: worker-artifacts
           pattern: goblin-worker-*
 
       - name: Download app artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: app-artifacts
           pattern: goble-app-*

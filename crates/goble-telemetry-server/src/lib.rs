@@ -22,7 +22,10 @@
 //!
 //! The wire types are the ones the client already uses, from the client crate:
 //! there is one schema, defined once, and both sides deserialize the same
-//! `QueuedItem`.
+//! `QueuedItem`. Events may arrive one at a time or as a JSON array; the client
+//! batches them, and the production deployment is the Cloudflare Worker in
+//! `deploy/telemetry-worker`, which writes one NDJSON object per batch to S3.
+//! This server is the self-hosted implementation of the same protocol.
 //!
 //! Layout on disk:
 //!
@@ -62,6 +65,10 @@ use sink::{Sink, SinkFailure};
 /// Largest ingest body accepted. A report is capped well below this by the
 /// client; the limit is here so a hand-written request cannot fill the disk.
 pub const MAX_BODY: usize = 512 * 1024;
+
+/// Most events one request may carry. Matches the production Worker in
+/// `deploy/telemetry-worker`.
+pub const MAX_BATCH: usize = 200;
 
 /// A summary of one crash, grouped the way reports are fingerprinted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -559,6 +566,19 @@ async fn ingest_crash(
     (StatusCode::ACCEPTED, Json(Ingested { accepted: 1 })).into_response()
 }
 
+/// One item, or a batch. Batching is the client's default, but a single item
+/// stays accepted so a client from before batching keeps working.
+fn parse_event_batch(body: &[u8]) -> Result<Vec<IncomingItem>, String> {
+    let first = body.iter().find(|byte| !byte.is_ascii_whitespace());
+    if first == Some(&b'[') {
+        serde_json::from_slice(body).map_err(|err| format!("malformed event batch: {err}"))
+    } else {
+        let item =
+            serde_json::from_slice(body).map_err(|err| format!("malformed event: {err}"))?;
+        Ok(vec![item])
+    }
+}
+
 async fn ingest_event(
     State(state): State<ServerState>,
     headers: HeaderMap,
@@ -568,49 +588,61 @@ async fn ingest_event(
         return rejected(StatusCode::UNAUTHORIZED, "a collector token is required");
     }
 
-    let item: IncomingItem = match serde_json::from_slice(&body) {
-        Ok(item) => item,
-        Err(err) => return rejected(StatusCode::BAD_REQUEST, &format!("malformed event: {err}")),
-    };
-
-    let IncomingItem::Event(value) = item else {
-        return rejected(StatusCode::BAD_REQUEST, "this endpoint takes events");
-    };
-
-    let received_at = Utc::now();
-    let envelope = match normalise_event(*value, received_at) {
-        Ok(Some(envelope)) => envelope,
-        Ok(None) => {
-            tracing::debug!("dropped a schema-1 event with no catalog feature name");
-            return (StatusCode::ACCEPTED, Json(Ingested { accepted: 0 })).into_response();
-        }
+    let items = match parse_event_batch(&body) {
+        Ok(items) => items,
         Err(err) => return rejected(StatusCode::BAD_REQUEST, &err),
     };
-
-    let event = StoredEvent::new(envelope, received_at);
-    let stored = match state.store.put_event(&event) {
-        Ok(stored) => stored,
-        Err(err) => {
-            tracing::error!("could not store an event: {err}");
-            return rejected(StatusCode::INTERNAL_SERVER_ERROR, "could not store the event");
-        }
-    };
-
-    if stored == Stored::Duplicate {
-        // A retry of an event already on disk: one row, and the sink is asked
-        // again because the retry may be finishing a copy that failed.
-        tracing::debug!(event_id = %event.envelope.event_id, "an event was already stored");
-    } else if event.envelope.is_legacy() {
-        tracing::debug!(event_id = %event.envelope.event_id, "normalised a schema-1 event");
+    if items.len() > MAX_BATCH {
+        return rejected(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &format!("a batch carries at most {MAX_BATCH} events"),
+        );
     }
 
-    if let Some(sink) = state.sink() {
-        if let Err(failure) = sink.put_event(&event).await {
-            return sink_failed(failure);
+    let received_at = Utc::now();
+    let mut accepted = 0;
+
+    for item in items {
+        let IncomingItem::Event(value) = item else {
+            return rejected(StatusCode::BAD_REQUEST, "this endpoint takes events");
+        };
+
+        let envelope = match normalise_event(*value, received_at) {
+            Ok(Some(envelope)) => envelope,
+            Ok(None) => {
+                tracing::debug!("dropped a schema-1 event with no catalog feature name");
+                continue;
+            }
+            Err(err) => return rejected(StatusCode::BAD_REQUEST, &err),
+        };
+
+        let event = StoredEvent::new(envelope, received_at);
+        let stored = match state.store.put_event(&event) {
+            Ok(stored) => stored,
+            Err(err) => {
+                tracing::error!("could not store an event: {err}");
+                return rejected(StatusCode::INTERNAL_SERVER_ERROR, "could not store the event");
+            }
+        };
+
+        if stored == Stored::Duplicate {
+            // A retry of an event already on disk: one row, and the sink is
+            // asked again because the retry may be finishing a copy that
+            // failed.
+            tracing::debug!(event_id = %event.envelope.event_id, "an event was already stored");
+        } else if event.envelope.is_legacy() {
+            tracing::debug!(event_id = %event.envelope.event_id, "normalised a schema-1 event");
         }
+
+        if let Some(sink) = state.sink() {
+            if let Err(failure) = sink.put_event(&event).await {
+                return sink_failed(failure);
+            }
+        }
+        accepted += 1;
     }
 
-    (StatusCode::ACCEPTED, Json(Ingested { accepted: 1 })).into_response()
+    (StatusCode::ACCEPTED, Json(Ingested { accepted })).into_response()
 }
 
 async fn summary(State(state): State<ServerState>, headers: HeaderMap) -> Response {
@@ -780,6 +812,31 @@ mod tests {
             .event_day_dir(today)
             .join(format!("{}.json", stored[0].envelope.event_id));
         assert!(path.is_file(), "{path:?}");
+    }
+
+    #[tokio::test]
+    async fn a_batch_of_events_is_one_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path(), None);
+        let batch = vec![QueuedItem::event(event()), QueuedItem::event(event())];
+        let body = serde_json::to_vec(&batch).unwrap();
+
+        assert_eq!(post(&state, "/v1/events", body, None).await, 202);
+
+        let stored = state.store().events_on(Utc::now().date_naive()).unwrap();
+        assert_eq!(stored.len(), 2);
+
+        let mut expected: Vec<String> = batch
+            .iter()
+            .map(|item| match item {
+                QueuedItem::Event(envelope) => envelope.event_id.clone(),
+                QueuedItem::Crash(_) => unreachable!("the batch holds events"),
+            })
+            .collect();
+        expected.sort();
+        let actual: Vec<String> =
+            stored.iter().map(|event| event.envelope.event_id.clone()).collect();
+        assert_eq!(actual, expected, "the batch keeps the ids the client sent");
     }
 
     #[tokio::test]

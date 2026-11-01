@@ -1,0 +1,37 @@
+# Cloudflare Worker for Octomus telemetry ingest.
+#
+#   npx wrangler deploy            # from this directory
+#   npx wrangler dev               # local worker; S3 calls still go to AWS
+#   npx wrangler tail              # watch rejected batches in production
+#
+# The client batches events on disk and posts them here; the Worker writes one
+# NDJSON object per batch into S3. There is no server to run and no request per
+# event.
+
+name = "goble-telemetry"
+main = "src/index.mjs"
+compatibility_date = "2026-11-01"
+workers_dev = false
+preview_urls = false
+
+[vars]
+# The bucket is shared by projects; `octomus/telemetry` is this project's
+# namespace. The IAM writer is scoped to exactly that prefix.
+AWS_REGION = "eu-central-1"
+S3_BUCKET = "staticlabs-data"
+S3_PREFIX = "octomus/telemetry"
+
+# The ingest host. `telemetry.` is a new name in the `octomus.dev` zone, so a
+# custom domain claims it without a competing route.
+[[routes]]
+pattern = "telemetry.octomus.dev"
+custom_domain = true
+
+# AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are secrets and never appear in
+# this file. Set them with:
+#   npx wrangler secret put AWS_ACCESS_KEY_ID
+#   npx wrangler secret put AWS_SECRET_ACCESS_KEY
+#
+# TELEMETRY_TOKEN is optional. Set it only if the endpoint needs to reject
+# anonymous posts; the client sends no token today.
+#   npx wrangler secret put TELEMETRY_TOKEN

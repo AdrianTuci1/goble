@@ -20,9 +20,9 @@ pub const ENV_ENDPOINT: &str = "GOBLE_TELEMETRY_ENDPOINT";
 pub const ENV_ROLE: &str = "GOBLE_TELEMETRY_ROLE";
 /// The cross-project convention for opting out of telemetry.
 pub const ENV_DO_NOT_TRACK: &str = "DO_NOT_TRACK";
-/// Where reports go unless something overrides it. This host is not deployed
-/// yet; until it is, uploads fail and stay queued on disk.
-pub const DEFAULT_ENDPOINT: &str = "https://telemetry.goble.dev";
+/// Where reports go unless something overrides it. This is the Cloudflare
+/// Worker in `deploy/telemetry-worker`, which writes batches into S3.
+pub const DEFAULT_ENDPOINT: &str = "https://telemetry.octomus.dev";
 
 /// Where a build came from. A developer's working tree is not a user's machine,
 /// so the two do not report the same way.
@@ -336,8 +336,12 @@ pub struct TelemetryConfig {
     pub max_attempts: u32,
     /// Delay before the second attempt; later attempts back off from it.
     pub retry_backoff: Duration,
-    /// Reports kept on disk; the oldest are dropped past this.
+    /// Items kept on disk; the oldest are dropped past this. Large enough that
+    /// a batch waits for the next drain instead of being evicted between two
+    /// of them.
     pub max_queued: usize,
+    /// Events sent in one request. The collector promises to accept this many.
+    pub max_batch: usize,
     /// Reports older than this are dropped.
     pub max_age: Duration,
     /// Per-request timeout.
@@ -377,7 +381,8 @@ impl TelemetryConfig {
             paths,
             max_attempts: 3,
             retry_backoff: Duration::from_secs(5),
-            max_queued: 50,
+            max_queued: 1_000,
+            max_batch: 100,
             max_age: Duration::from_secs(30 * 24 * 60 * 60),
             request_timeout: Duration::from_secs(10),
             secrets: Vec::new(),

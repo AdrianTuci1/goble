@@ -44,22 +44,33 @@ Decisions worth keeping:
 - **The fingerprint is over the message, with digits folded to `N`.** Grouping by location would split
   one bug into one group per build; grouping by raw message would split "the len is 3" from "the len
   is 7".
-- **Nothing is lost when the collector is unreachable.** Items wait in `~/.goble/telemetry-queue/`,
-  retry with backoff, and survive a restart. A permanent rejection (a 4xx that is not a timeout or a
-  rate limit) deletes the item, because retrying cannot change the answer.
+- **Nothing is lost when the endpoint is unreachable.** Items wait in `~/.goble/telemetry-queue/`,
+  drain in batches of up to 100 when 20 are waiting or the oldest has waited ten minutes, retry with
+  backoff, and survive a restart. A permanent rejection (a 4xx that is not a timeout or a rate
+  limit) deletes the batch, because retrying cannot change the answer.
 - **Release builds keep line tables** (`[profile.release] debug = 1`, `strip = false`). Without them a
   backtrace is a list of addresses and a crash report is not actionable.
 
-## 2. The collector — `crates/goble-telemetry-server`
+## 2. Ingest — `deploy/telemetry-worker` and `crates/goble-telemetry-server`
 
-`POST /v1/crashes`, `POST /v1/events`, `GET /v1/summary`, `GET /health`. It stores one file per report
-under `crashes/<fingerprint>/<id>.json` and appends events to `events/<date>.jsonl`, which makes
-"how many people hit this, and on which version" a directory listing.
+The production endpoint is the Cloudflare Worker in `deploy/telemetry-worker`, served at
+`https://telemetry.octomus.dev`. It accepts a batch of up to 200 events and writes one NDJSON object
+per batch to the shared S3 bucket under
+`octomus/telemetry/events/dt=YYYY-MM-DD/hour=HH/batch-<first-id>-<last-id>.jsonl`. The key is derived
+from the batch's event ids, so a retry overwrites the same object instead of duplicating a row.
+Crashes stay one object each under `octomus/telemetry/crashes/<fingerprint>/<id>.json`. The bucket,
+its IAM writer and the retention rule are recorded in `docs/telemetry-storage.md`.
 
-It deliberately does not log IP addresses, set cookies, or call a third party. It refuses an unknown
-`schema`, bounds every body (`MAX_BODY`), and refuses a fingerprint that would escape the store
+The same protocol has a self-hosted Rust implementation in `crates/goble-telemetry-server`:
+`POST /v1/crashes`, `POST /v1/events` (a single item or an array), `GET /v1/summary`, `GET /health`.
+Local disk is the source of truth: one file per report under `crashes/<fingerprint>/<id>.json`, one
+file per event under `events/dt=<date>/<event_id>.json`, and an idempotency marker per event id. An
+optional object-store copy is configured with `GOBLE_TELEMETRY_S3_BUCKET`.
+
+Neither path logs IP addresses, sets cookies, or calls a third party. Both refuse an unknown
+`schema`, bound every body (`MAX_BODY`), and refuse a fingerprint that would escape the store
 directory. Setting `GOBLE_TELEMETRY_TOKEN` makes every ingest and summary request require the token —
-which it must be, the moment it is reachable from the internet.
+which it must be, the moment the endpoint is reachable from the internet.
 
 ## 3. Update delivery — `crates/goble-update`
 
@@ -161,8 +172,10 @@ so there is nothing to learn from it beyond the tag and breadcrumb taxonomy.
       assessment, and `signtool verify` on a real artifact. The signing code path is exercised with an
       ad-hoc signature and the DMG pipeline runs end to end, but nothing downstream of a real
       certificate has been tried.
-- [ ] Deploy a collector host, set `GOBLE_TELEMETRY_ENDPOINT` for release builds, and confirm an
-      end-to-end upload (staging → collector → summary) against the real host.
+- [x] Deploy the ingest endpoint and bucket: `deploy/telemetry-worker` at
+      `https://telemetry.octomus.dev`, writing to `s3://staticlabs-data/octomus/telemetry` (see
+      `docs/telemetry-storage.md`).
+- [ ] Confirm an end-to-end upload from a release build against the real endpoint.
 - [ ] Generate the release signing key pair, publish the public key, and make `--manifest` sign in CI.
 - [ ] Deploy `deploy/downloads-worker`, point `downloads.goble.dev` at it, and set
       `GOBLE_WORKER_URL` / `GOBLE_WORKER_ADMIN_TOKEN` so a published release moves the channel. The

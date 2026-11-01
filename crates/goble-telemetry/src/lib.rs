@@ -91,16 +91,50 @@ pub use report::{
     TelemetryEvent, LEGACY_EVENT_PREFIX, LEGACY_SCHEMA, SCHEMA,
 };
 pub use upload::{
-    drain, HttpUploader, UploadConfig, UploadError, UploadErrorKind, UploadOutcome, UploadWorker,
-    Uploader,
+    drain, drain_if_due, HttpUploader, UploadConfig, UploadError, UploadErrorKind, UploadOutcome,
+    UploadWorker, Uploader,
 };
 
 /// Crash reports kept on this machine.
 pub const ARCHIVE_LIMIT: usize = 20;
-/// How often a run retries the queue on its own.
-pub const DRAIN_INTERVAL: Duration = Duration::from_secs(30);
+/// How often a run checks the queue. Events are batched, so a minute of
+/// latency costs one request instead of one per event.
+pub const DRAIN_INTERVAL: Duration = Duration::from_secs(60);
+/// Fewest pending items an automatic drain sends. A queue below this waits for
+/// the next check, so a quiet client writes fewer, fuller objects.
+pub const MIN_BATCH: usize = 20;
+/// Longest an item waits for a batch to fill before the automatic drain sends
+/// it anyway.
+pub const MAX_WAIT: Duration = Duration::from_secs(10 * 60);
 /// Longest the uploader will wait between retries.
 pub const RETRY_CEILING: Duration = Duration::from_secs(10 * 60);
+
+/// Build the upload thread from the collector settings. A client that cannot
+/// be built leaves uploading off for this run rather than failing startup.
+fn upload_worker(config: &TelemetryConfig, queue: &Arc<CrashQueue>) -> Option<UploadWorker> {
+    match HttpUploader::new(
+        format!("goble/{}", config.app_version),
+        config.request_timeout,
+    ) {
+        Ok(uploader) => Some(UploadWorker::spawn(
+            Arc::clone(queue),
+            Arc::new(uploader),
+            UploadConfig {
+                base: config.collector().to_owned(),
+                max_attempts: config.max_attempts,
+                max_batch: config.max_batch,
+                min_batch: MIN_BATCH,
+                max_wait: MAX_WAIT,
+                backoff: RETRY_CEILING,
+                interval: DRAIN_INTERVAL,
+            },
+        )),
+        Err(err) => {
+            log::warn!("telemetry upload is off: {err}");
+            None
+        }
+    }
+}
 
 /// Everything that could go wrong while starting telemetry.
 ///
@@ -150,6 +184,9 @@ pub fn feature_once(feature: Feature, outcome: Outcome, duration: Option<Duratio
 #[derive(Debug)]
 pub struct Telemetry {
     config: TelemetryConfig,
+    /// The upload switch in force. Behind a lock because onboarding and the
+    /// settings page can change it while the app is running.
+    consent: RwLock<Consent>,
     /// The identity every event carries. Behind a lock because a pairing
     /// handshake can adopt a link id while events are being recorded.
     context: RwLock<ClientContext>,
@@ -191,9 +228,15 @@ impl Telemetry {
         let context = ClientContext {
             app_version: config.app_version.clone(),
             channel: config.channel,
-            os: config.os.clone().unwrap_or_else(|| std::env::consts::OS.to_owned()),
+            os: config
+                .os
+                .clone()
+                .unwrap_or_else(|| std::env::consts::OS.to_owned()),
             os_version: config.os_version.clone().or_else(detect_os_version),
-            arch: config.arch.clone().unwrap_or_else(|| std::env::consts::ARCH.to_owned()),
+            arch: config
+                .arch
+                .clone()
+                .unwrap_or_else(|| std::env::consts::ARCH.to_owned()),
             install_id,
             link_id: state.link_id.clone(),
             role: config.role,
@@ -204,34 +247,21 @@ impl Telemetry {
         };
 
         let archive = ReportArchive::new(config.paths.reports_dir(), ARCHIVE_LIMIT);
-        let queue =
-            Arc::new(CrashQueue::new(config.paths.queue_dir(), config.max_queued, config.max_age));
+        let queue = Arc::new(CrashQueue::new(
+            config.paths.queue_dir(),
+            config.max_queued,
+            config.max_age,
+        ));
 
-        let worker = if config.consent.upload {
-            match HttpUploader::new(
-                format!("goble/{}", config.app_version),
-                config.request_timeout,
-            ) {
-                Ok(uploader) => Some(UploadWorker::spawn(
-                    Arc::clone(&queue),
-                    Arc::new(uploader),
-                    UploadConfig {
-                        base: config.collector().to_owned(),
-                        max_attempts: config.max_attempts,
-                        backoff: RETRY_CEILING,
-                        interval: DRAIN_INTERVAL,
-                    },
-                )),
-                Err(err) => {
-                    log::warn!("telemetry upload is off: {err}");
-                    None
-                }
-            }
+        let consent = config.consent;
+        let worker = if consent.upload {
+            upload_worker(&config, &queue)
         } else {
             None
         };
 
         Ok(Arc::new(Self {
+            consent: RwLock::new(consent),
             config,
             context: RwLock::new(context),
             state: Mutex::new(state),
@@ -312,7 +342,58 @@ impl Telemetry {
     }
 
     pub fn consent(&self) -> Consent {
-        self.config.consent
+        match self.consent.read() {
+            Ok(consent) => *consent,
+            Err(poisoned) => *poisoned.into_inner(),
+        }
+    }
+
+    /// Turn uploading on or off for this run and for later runs, returning the
+    /// consent actually in force.
+    ///
+    /// The stored choice is always written, so a later launch starts from what
+    /// the user picked. `DO_NOT_TRACK` and `GOBLE_TELEMETRY` still win for the
+    /// current process: when one of them decided, the preference is recorded
+    /// but the switch does not move.
+    pub fn set_upload_consent(&self, enabled: bool) -> bool {
+        if let Ok(mut state) = self.state.lock() {
+            state.upload = Some(enabled);
+            state.notice_shown = true;
+            // Best effort: the in-memory switch below still applies when the
+            // file cannot be written.
+            let _ = state.store(&self.state_path);
+        }
+
+        let current = self.consent();
+        if matches!(
+            current.source,
+            ConsentSource::Environment | ConsentSource::DoNotTrack
+        ) {
+            return current.upload;
+        }
+
+        let next = Consent {
+            upload: enabled,
+            source: ConsentSource::UserSetting,
+        };
+        if let Ok(mut consent) = self.consent.write() {
+            *consent = next;
+        }
+
+        // Start or stop the upload thread with the switch. Taking the worker
+        // out before shutting it down keeps the join off the lock.
+        let stopped = self.worker.lock().ok().and_then(|mut worker| worker.take());
+        if let Some(worker) = stopped {
+            worker.shutdown(Duration::from_secs(2));
+        }
+        if enabled {
+            if let Ok(mut worker) = self.worker.lock() {
+                if worker.is_none() {
+                    *worker = upload_worker(&self.config, &self.queue);
+                }
+            }
+        }
+        enabled
     }
 
     pub fn breadcrumbs(&self) -> &Arc<Breadcrumbs> {
@@ -362,11 +443,7 @@ impl Telemetry {
     /// Build a report for this process, with the recent log tail attached.
     /// Nothing is stored until [`Self::crash`] or [`Self::capture_crash`] is
     /// called.
-    pub fn crash_report(
-        &self,
-        kind: CrashKind,
-        message: impl Into<String>,
-    ) -> CrashReport {
+    pub fn crash_report(&self, kind: CrashKind, message: impl Into<String>) -> CrashReport {
         CrashReport::new(&self.context(), kind, message)
             .with_breadcrumbs(self.breadcrumbs.snapshot())
     }
@@ -400,7 +477,7 @@ impl Telemetry {
                 }
             }
 
-            if !self.config.consent.upload {
+            if !self.consent().upload {
                 return;
             }
             if let Err(err) = self.queue.enqueue(QueuedItem::crash(report.clone())) {
@@ -424,7 +501,7 @@ impl Telemetry {
     /// Record an event. Dropped silently when uploading is off, because an
     /// event that is never sent has no reason to be on disk.
     pub fn record(&self, event: TelemetryEvent) {
-        if !self.config.consent.upload {
+        if !self.consent().upload {
             log::debug!("telemetry: dropping an event because uploading is off");
             return;
         }
@@ -434,7 +511,7 @@ impl Telemetry {
     /// Record an already-built envelope. Used by callers that must keep the id
     /// and clock they were given, such as a queued item being replayed.
     pub fn record_envelope(&self, envelope: EventEnvelope) {
-        if !self.config.consent.upload {
+        if !self.consent().upload {
             log::debug!("telemetry: dropping an event because uploading is off");
             return;
         }
@@ -454,7 +531,10 @@ impl Telemetry {
 
     pub fn app_exited(&self, exit_code: Option<i32>) {
         let uptime = self.started_at.elapsed();
-        self.record(TelemetryEvent::AppExited { uptime_secs: uptime.as_secs(), exit_code });
+        self.record(TelemetryEvent::AppExited {
+            uptime_secs: uptime.as_secs(),
+            exit_code,
+        });
         // How long a session lasted, in the same table as every other feature.
         self.feature(Feature::SessionSummary, Outcome::Success, Some(uptime));
     }
@@ -485,7 +565,7 @@ impl Telemetry {
         outcome: Outcome,
         duration: Option<Duration>,
     ) -> bool {
-        if !self.config.consent.upload {
+        if !self.consent().upload {
             return false;
         }
         if !self.sampled(feature) {
@@ -551,7 +631,10 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Best-effort OS version, used to interpret a crash. Failing is fine.
 #[cfg(target_os = "macos")]
 fn detect_os_version() -> Option<String> {
-    let output = std::process::Command::new("sw_vers").arg("-productVersion").output().ok()?;
+    let output = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -563,7 +646,8 @@ fn detect_os_version() -> Option<String> {
 fn detect_os_version() -> Option<String> {
     let release = std::fs::read_to_string("/etc/os-release").ok()?;
     release.lines().find_map(|line| {
-        line.strip_prefix("PRETTY_NAME=").map(|value| value.trim().trim_matches('"').to_owned())
+        line.strip_prefix("PRETTY_NAME=")
+            .map(|value| value.trim().trim_matches('"').to_owned())
     })
 }
 
@@ -577,8 +661,7 @@ mod tests {
     use super::*;
 
     fn config(dir: &Path) -> TelemetryConfig {
-        TelemetryConfig::new("1.0.0", Channel::Dev, TelemetryPaths::under(dir))
-            .without_upload()
+        TelemetryConfig::new("1.0.0", Channel::Dev, TelemetryPaths::under(dir)).without_upload()
     }
 
     #[test]
@@ -607,6 +690,32 @@ mod tests {
     }
 
     #[test]
+    fn upload_consent_can_be_turned_on_and_off_while_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config(dir.path());
+        config.endpoint = "http://127.0.0.1:9".into();
+        config.request_timeout = Duration::from_millis(50);
+        let telemetry = Telemetry::start(config).unwrap();
+        assert!(!telemetry.consent().upload);
+
+        assert!(telemetry.set_upload_consent(true));
+        assert!(telemetry.consent().upload);
+        assert_eq!(
+            TelemetryState::load(&telemetry.config.paths.state_path()).upload,
+            Some(true),
+            "the choice is written for the next launch"
+        );
+
+        assert!(!telemetry.set_upload_consent(false));
+        assert!(!telemetry.consent().upload);
+        assert_eq!(
+            TelemetryState::load(&telemetry.config.paths.state_path()).upload,
+            Some(false)
+        );
+        telemetry.shutdown(Duration::from_millis(50));
+    }
+
+    #[test]
     fn a_crash_is_archived_even_when_uploading_is_off() {
         let dir = tempfile::tempdir().unwrap();
         let telemetry = Telemetry::start(config(dir.path())).unwrap();
@@ -614,7 +723,10 @@ mod tests {
         telemetry.crash(telemetry.crash_report(CrashKind::Reported, "something went wrong"));
 
         assert_eq!(telemetry.local_reports().len(), 1);
-        assert!(telemetry.queue().is_empty(), "nothing may be uploaded without consent");
+        assert!(
+            telemetry.queue().is_empty(),
+            "nothing may be uploaded without consent"
+        );
 
         let report = std::fs::read_to_string(&telemetry.local_reports()[0]).unwrap();
         assert!(report.contains("something went wrong"), "{report}");
@@ -640,7 +752,10 @@ mod tests {
     /// The config a test uses when it wants the queue filled.
     fn uploading(dir: &Path) -> TelemetryConfig {
         let mut config = config(dir);
-        config.consent = Consent { upload: true, source: ConsentSource::Default };
+        config.consent = Consent {
+            upload: true,
+            source: ConsentSource::Default,
+        };
         config.endpoint = "http://127.0.0.1:9".into();
         config
     }
@@ -671,7 +786,10 @@ mod tests {
         let ids: std::collections::BTreeSet<_> =
             events.iter().map(|e| e.event_id.clone()).collect();
         assert_eq!(ids.len(), events.len(), "ids are unique");
-        assert!(events.iter().all(|event| event.schema == SCHEMA), "{events:?}");
+        assert!(
+            events.iter().all(|event| event.schema == SCHEMA),
+            "{events:?}"
+        );
         assert!(events
             .iter()
             .all(|event| event.context.install_id == telemetry.context().install_id));
@@ -689,7 +807,11 @@ mod tests {
         assert_eq!(events.len(), 1, "{events:?}");
         assert!(matches!(
             events[0].event,
-            TelemetryEvent::FeatureUsed { feature: Feature::Crash, outcome: Outcome::Error, .. }
+            TelemetryEvent::FeatureUsed {
+                feature: Feature::Crash,
+                outcome: Outcome::Error,
+                ..
+            }
         ));
     }
 
@@ -733,7 +855,11 @@ mod tests {
     fn a_link_id_is_absent_until_it_is_set_then_survives_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let telemetry = Telemetry::start(config(dir.path())).unwrap();
-        assert_eq!(telemetry.link_id(), None, "a machine that never linked has none");
+        assert_eq!(
+            telemetry.link_id(),
+            None,
+            "a machine that never linked has none"
+        );
         assert_eq!(telemetry.context().link_id, None);
 
         let link = telemetry.ensure_link().expect("a link id is minted");
@@ -760,7 +886,10 @@ mod tests {
         telemetry.app_started(None);
 
         let events = queued_events(&telemetry);
-        assert_eq!(events[0].context.link_id.as_deref(), Some("linked-installation"));
+        assert_eq!(
+            events[0].context.link_id.as_deref(),
+            Some("linked-installation")
+        );
 
         // An empty link is not an identity, so it is refused.
         assert!(!telemetry.link_with("  "));
@@ -783,7 +912,9 @@ mod tests {
     fn an_archived_report_has_the_recent_log_tail() {
         let dir = tempfile::tempdir().unwrap();
         let telemetry = Telemetry::start(config(dir.path())).unwrap();
-        telemetry.breadcrumbs().record(log::Level::Warn, "app::service", "the worker restarted");
+        telemetry
+            .breadcrumbs()
+            .record(log::Level::Warn, "app::service", "the worker restarted");
 
         let report = telemetry.crash_report(CrashKind::Reported, "boom");
         assert_eq!(report.breadcrumbs.len(), 1);
@@ -794,7 +925,10 @@ mod tests {
     fn consent_decides_whether_the_upload_thread_exists() {
         let dir = tempfile::tempdir().unwrap();
         let mut with_upload = config(dir.path());
-        with_upload.consent = Consent { upload: true, source: ConsentSource::Default };
+        with_upload.consent = Consent {
+            upload: true,
+            source: ConsentSource::Default,
+        };
         with_upload.endpoint = "http://127.0.0.1:9".into();
 
         let telemetry = Telemetry::start(with_upload).unwrap();
@@ -804,7 +938,9 @@ mod tests {
 
         // The collector in this test does not exist, so the item must survive
         // the attempt: this is the "endpoint not deployed yet" path.
-        let outcome = telemetry.shutdown(Duration::from_secs(5)).expect("the worker answered");
+        let outcome = telemetry
+            .shutdown(Duration::from_secs(5))
+            .expect("the worker answered");
         assert_eq!(outcome.uploaded, 0);
         assert!(outcome.remaining >= 1);
     }

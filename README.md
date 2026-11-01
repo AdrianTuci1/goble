@@ -354,9 +354,10 @@ it off takes one of these:
 - `GOBLE_TELEMETRY=0` — disables telemetry uploads for the process.
 - The stored setting — set `"upload": false` in `~/.goble/telemetry.json`.
 
-The public telemetry collector (`https://telemetry.goble.dev`) is not deployed yet. Until it is,
-uploads are queued on disk rather than delivered. This is why attaching a crash report to an issue is
-the reliable path today.
+The public telemetry endpoint is `https://telemetry.octomus.dev`, served by the Worker in
+[`deploy/telemetry-worker`](deploy/telemetry-worker). The client batches events on disk and sends up
+to 100 per request; a batch that cannot be delivered stays queued for the next drain. Attaching a
+crash report to an issue is still the reliable path when you want a maintainer to see it.
 
 ## Open source dependencies
 

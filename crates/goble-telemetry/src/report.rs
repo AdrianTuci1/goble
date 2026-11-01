@@ -330,7 +330,7 @@ impl LegacyEventV1 {
 
         Some(EventEnvelope {
             schema: SCHEMA,
-            event_id: format!("{LEGACY_EVENT_PREFIX}{}", uuid::Uuid::new_v4().to_string()),
+            event_id: format!("{LEGACY_EVENT_PREFIX}{}", uuid::Uuid::new_v4()),
             occurred_at: received_at,
             context,
             event,

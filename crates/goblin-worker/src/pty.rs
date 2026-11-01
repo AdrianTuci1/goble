@@ -381,27 +381,44 @@ impl PtyManager {
 
         let manager = Arc::clone(self);
         tokio::spawn(async move {
+            // A chunk that did not fit in the previous frame; it goes out
+            // before the queue is read again so no byte is dropped.
+            let mut pending: Option<Vec<u8>> = None;
             loop {
-                let first = tokio::select! {
-                    biased;
-                    // Closing a pane stops its stream even if the child is slow
-                    // to die; the reader ends when the pty does.
-                    changed = cancel.changed() => {
-                        let _ = changed;
-                        break;
+                let first = if let Some(pending) = pending.take() {
+                    pending
+                } else {
+                    tokio::select! {
+                        biased;
+                        // Closing a pane stops its stream even if the child is slow
+                        // to die; the reader ends when the pty does.
+                        changed = cancel.changed() => {
+                            let _ = changed;
+                            break;
+                        }
+                        chunk = chunks_rx.recv() => match chunk {
+                            Some(chunk) => chunk,
+                            None => break,
+                        },
                     }
-                    chunk = chunks_rx.recv() => match chunk {
-                        Some(chunk) => chunk,
-                        None => break,
-                    },
                 };
                 // Coalesce what the queue already holds into one frame. Bounded
                 // by MAX_OUTPUT_EVENT so a fast producer cannot make the worker
-                // spend an unbounded time on one message.
+                // spend an unbounded time on one message. A chunk that would
+                // cross the cap is split: the tail waits for the next frame.
                 let mut batch = first;
                 while batch.len() < MAX_OUTPUT_EVENT {
                     match chunks_rx.try_recv() {
-                        Ok(next) => batch.extend_from_slice(&next),
+                        Ok(next) => {
+                            let room = MAX_OUTPUT_EVENT - batch.len();
+                            if next.len() <= room {
+                                batch.extend_from_slice(&next);
+                            } else {
+                                batch.extend_from_slice(&next[..room]);
+                                pending = Some(next[room..].to_vec());
+                                break;
+                            }
+                        }
                         Err(_) => break,
                     }
                 }

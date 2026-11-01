@@ -44,6 +44,14 @@ impl UiState {
             agent_name: "Goble Agent".to_string(),
             agent_busy: false,
             auto_approve: false,
+            approval_mode: ApprovalMode::Manual,
+            onboarding_open: false,
+            onboarding_step: 0,
+            onboarding_usage: String::new(),
+            onboarding_name: String::new(),
+            onboarding_share: false,
+            share_telemetry: false,
+            settings_default_model: String::new(),
             right_sidebar_open: false,
             fullscreen: false,
             sub_agent_views: HashMap::new(),
@@ -146,6 +154,9 @@ impl UiState {
             explorer_scroll: Rc::new(RefCell::new(ScrollState::default())),
             global_search_scroll: Rc::new(RefCell::new(ScrollState::default())),
             settings_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            settings_model_menu_open: Rc::new(RefCell::new(false)),
+            settings_model_anchor: Rc::new(RefCell::new(None)),
+            settings_model_painted: Rc::new(RefCell::new(false)),
             space_rename_editing: false,
             space_press_run: Rc::new(RefCell::new(None)),
             space_rename_draft: String::new(),
@@ -222,14 +233,18 @@ impl UiState {
         state.ensure_pane_sessions(Some(desktop));
         state.refresh_messages(desktop);
         state.sync_active_view();
-        // A returning run that already finished (or skipped) first run skips
-        // the onboarding overlays and getting-started tip.
+        // The answers the onboarding flow and the Profile page share. Whether
+        // the overlay opens is the app entry point's call (it knows this is a
+        // real launch, not a test mounting the tree): see
+        // `UiState::open_onboarding_if_first_run`.
         state.onboarding_done = desktop.onboarding_done();
-        if state.onboarding_done {
-            state.show_llm_key_banner = false;
-            state.show_workspace_choice = false;
-            state.show_onboarding_tip = false;
-        }
+        state.settings_profile_name = desktop.get_friendly_name();
+        state.onboarding_name = state.settings_profile_name.clone();
+        state.onboarding_usage = desktop.get_usage();
+        state.share_telemetry = goble_telemetry::global()
+            .map(|telemetry| telemetry.consent().upload)
+            .unwrap_or(false);
+        state.onboarding_share = state.share_telemetry;
         state
     }
 
@@ -240,6 +255,17 @@ impl UiState {
         self.refresh_agent_name(desktop);
         self.refresh_settings(desktop);
         self.auto_approve = desktop.get_auto_approve();
+        // The app-wide approval policy: a stored mode wins; before one was
+        // stored, mirror the legacy auto-approve switch.
+        let mode = desktop
+            .get_approval_mode()
+            .map(|value| ApprovalMode::from_label(&value))
+            .unwrap_or(if self.auto_approve {
+                ApprovalMode::AlwaysApprove
+            } else {
+                ApprovalMode::Manual
+            });
+        self.apply_approval_mode(mode);
         self.refresh_observability(desktop);
     }
 

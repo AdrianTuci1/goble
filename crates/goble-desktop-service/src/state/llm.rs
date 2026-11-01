@@ -287,7 +287,11 @@ impl DesktopState {
     /// the base catalog comes from [`goble_core::llm::provider_models`]. The
     /// configured model (if any) is promoted to the front.
     pub fn available_models(&self, provider: &str) -> Vec<String> {
-        let provider = if provider.is_empty() { "openai" } else { provider };
+        let provider = if provider.is_empty() {
+            "openai"
+        } else {
+            provider
+        };
         let mut models = self.config_models();
         if models.is_empty() {
             models = llm::provider_models(provider);
@@ -317,7 +321,11 @@ impl DesktopState {
     /// be the label over a tray that does not list it, with no key to reach it.
     /// The declared catalog decides in that case.
     pub fn default_model(&self, provider: &str) -> String {
-        let provider = if provider.is_empty() { "openai" } else { provider };
+        let provider = if provider.is_empty() {
+            "openai"
+        } else {
+            provider
+        };
         let offered = self.available_models(provider);
         if let Some(default) = self.config_default_model() {
             if offered.contains(&default) {
@@ -333,6 +341,20 @@ impl DesktopState {
             .into_iter()
             .next()
             .unwrap_or_else(|| llm::default_model_for(provider).to_string())
+    }
+
+    /// Write `[models] default` into `~/.goble/config.toml`. The settings page
+    /// owns this choice, so every surface that reads the config — the composer
+    /// on the next launch, the workflow runner, a newly opened pane — starts on
+    /// the same model.
+    pub fn set_default_model(&self, model: &str) -> anyhow::Result<()> {
+        let model = model.trim();
+        if model.is_empty() {
+            anyhow::bail!("the default model cannot be blank");
+        }
+        let mut config = self.config();
+        config.models.default = Some(model.to_string());
+        self.save_config(&config)
     }
 }
 

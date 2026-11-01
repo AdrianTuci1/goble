@@ -307,6 +307,9 @@ pub enum AppTab {
 /// `PaneKind::Settings`), so it survives a save/load and a pane lift.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SettingsCategory {
+    /// The friendly name, the default model and the telemetry choice the
+    /// onboarding flow also edits.
+    Profile,
     Appearance,
     Mouse,
     EditorInput,
@@ -329,6 +332,7 @@ pub enum SettingsCategory {
 
 impl SettingsCategory {
     pub const ALL: &'static [SettingsCategory] = &[
+        SettingsCategory::Profile,
         SettingsCategory::Appearance,
         SettingsCategory::Mouse,
         SettingsCategory::EditorInput,
@@ -341,6 +345,7 @@ impl SettingsCategory {
 
     pub fn label(self) -> &'static str {
         match self {
+            SettingsCategory::Profile => "Profile",
             SettingsCategory::Appearance => "Appearance",
             SettingsCategory::Mouse => "Mouse",
             SettingsCategory::EditorInput => "Editor & Input",
@@ -371,6 +376,15 @@ pub enum SettingsFocus {
 /// drawing its rows, so the order and the drawn rows cannot drift apart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SettingsControl {
+    /// Profile: the friendly name the onboarding flow asks for.
+    FriendlyName,
+    /// Profile: whether anonymous crash reports and usage counts may be sent.
+    DataSharing,
+    /// Agent & Approval: the model new agents start on, chosen from a menu
+    /// anchored to its own field.
+    DefaultModel,
+    /// Agent & Approval: the app-wide command-approval policy.
+    ApprovalMode,
     /// Appearance: the dark-mode switch.
     DarkMode,
     /// Appearance: one channel of the colour-target column.
@@ -441,6 +455,7 @@ impl SettingsControl {
             SettingsControl::ScrollSpeed
                 | SettingsControl::FontSize
                 | SettingsControl::ThemeChannel(_)
+                | SettingsControl::ApprovalMode
         )
     }
 
@@ -449,11 +464,24 @@ impl SettingsControl {
     pub fn is_text_field(&self) -> bool {
         matches!(
             self,
-            SettingsControl::EnvironmentGroupName
+            SettingsControl::FriendlyName
+                | SettingsControl::EnvironmentGroupName
                 | SettingsControl::EnvironmentSecretName
                 | SettingsControl::EnvironmentSecretValue
         )
     }
+}
+
+/// One interaction in the first-run onboarding overlay. The action layer owns
+/// the store handle, so finishing and replaying run there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OnboardingAction {
+    SelectUsage(String),
+    NameChanged(String),
+    SetDataSharing(bool),
+    Next,
+    Back,
+    Replay,
 }
 
 /// Which of the sidebar's views is showing. The conversations list is the

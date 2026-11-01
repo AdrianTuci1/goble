@@ -7,7 +7,7 @@ use goble_ui::SettingsPage;
 use super::color_picker;
 use super::pane::{FloatingDragMode, NavDir, PaneDropTarget, PaneRect};
 use super::tab_menu::TabMenuAction;
-use super::types::{AppTab, SettingsCategory, SidebarView, WorkspaceRouting};
+use super::types::{AppTab, OnboardingAction, SettingsCategory, SidebarView, WorkspaceRouting};
 
 /// Start a floating pane drag: the pane, the mode, the pointer where the press
 /// landed, and the space's pane area in pixels.
@@ -276,6 +276,19 @@ pub struct UiActions {
     pub on_space_rename_commit: Rc<RefCell<dyn FnMut()>>,
     /// Cancel the inline space rename without changing the name.
     pub on_space_rename_cancel: Rc<RefCell<dyn FnMut()>>,
+    /// First-run onboarding: the usage card, the name field, the consent step,
+    /// and the step buttons. The action layer persists the answers and finishes
+    /// the flow.
+    pub on_onboarding: Rc<RefCell<dyn FnMut(OnboardingAction)>>,
+    /// Settings → Profile: the friendly name field.
+    pub on_profile_name_change: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings → Profile: the name field gained (`true`) or lost the caret.
+    /// Losing it abandons the edit, putting back what the field held.
+    pub on_profile_name_focus: Rc<RefCell<dyn FnMut(bool)>>,
+    /// Settings → Agent & Approval: pick a default model from that menu.
+    pub on_select_default_model: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings → Profile: allow or refuse anonymous telemetry uploads.
+    pub on_toggle_telemetry: Rc<RefCell<dyn FnMut(bool)>>,
     /// Settings: switch the page the settings tab shows.
     pub on_settings_category: Rc<RefCell<dyn FnMut(SettingsCategory)>>,
     /// Settings: step the active category by `delta` (with wraparound). The

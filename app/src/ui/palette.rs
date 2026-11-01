@@ -10,6 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use goble_ui::elements::SlashMenuItem;
 use goble_ui::elements::{
     AppContext, Axis, Button, ButtonVariant, Container, CrossAxisAlignment, Divider, EdgeInsets,
     Element, EventContext, Expanded, Fill, Flex, LayoutContext, MainAxisSize, PaintContext, Point,
@@ -17,7 +18,6 @@ use goble_ui::elements::{
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
-use goble_ui::elements::SlashMenuItem;
 use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::Dialog;
 
@@ -122,14 +122,10 @@ pub fn slash_commands(state: &UiSnapshot, actions: &UiActions) -> Vec<SlashComma
             "Clear this conversation's transcript",
             run(&actions.on_clear_transcript),
         ),
-        SlashCommand::new(
-            "fork",
-            "Branch this conversation into a new one",
-            {
-                let act = actions.on_fork_conversation.clone();
-                move || (act.borrow_mut())(pane_id)
-            },
-        ),
+        SlashCommand::new("fork", "Branch this conversation into a new one", {
+            let act = actions.on_fork_conversation.clone();
+            move || (act.borrow_mut())(pane_id)
+        }),
         SlashCommand::new("stop", "Stop the running turn", run(&actions.on_stop)),
         SlashCommand::new("shortcuts", "Show every keyboard shortcut", {
             run(&actions.on_toggle_shortcuts_help)
@@ -153,7 +149,11 @@ pub fn slash_commands(state: &UiSnapshot, actions: &UiActions) -> Vec<SlashComma
             let act = actions.on_toggle_pane_maximized.clone();
             move || (act.borrow_mut())(pane_id)
         }),
-        SlashCommand::new("projects", "Open the project list", run(&actions.on_projects)),
+        SlashCommand::new(
+            "projects",
+            "Open the project list",
+            run(&actions.on_projects),
+        ),
         SlashCommand::new("scheduled", "Open the scheduled tasks", {
             run(&actions.on_open_crons)
         }),
@@ -182,18 +182,31 @@ pub fn slash_commands(state: &UiSnapshot, actions: &UiActions) -> Vec<SlashComma
             "Toggle vim-style editing",
             move || (toggle_vim.borrow_mut())(!vim_mode),
         ));
-        // grok-build's permission-mode command, applied to the pane that typed
-        // it: running it while it is on turns it back off.
-        let toggle_approve = actions.on_toggle_auto_approve.clone();
-        let auto_approve = state
-            .pane_controls
-            .get(&pane_id)
-            .map(|controls| controls.auto_approve)
-            .unwrap_or(state.auto_approve);
+        // grok-build's permission-mode command. The mode is app-wide, so the
+        // command writes the same policy the composer menu and Settings do.
+        let select_mode = actions.on_select_approval_mode.clone();
+        let current_mode = state.approval_mode;
         commands.push(SlashCommand::new(
             "always-approve",
             "Stop asking before running commands",
-            move || (toggle_approve.borrow_mut())(pane_id, !auto_approve),
+            move || {
+                let next = if current_mode == goble_ui::ApprovalMode::AlwaysApprove {
+                    goble_ui::ApprovalMode::Manual
+                } else {
+                    goble_ui::ApprovalMode::AlwaysApprove
+                };
+                (select_mode.borrow_mut())(pane_id, next);
+            },
+        ));
+    }
+    if cfg!(debug_assertions) {
+        // Dev builds can re-enter onboarding from the slash menu, beside the
+        // `GOBLE_ONBOARDING=1` startup switch, so the flow can be iterated on.
+        let replay = actions.on_onboarding.clone();
+        commands.push(SlashCommand::new(
+            "onboarding",
+            "Replay the first-run setup (dev build)",
+            move || (replay.borrow_mut())(crate::ui::OnboardingAction::Replay),
         ));
     }
     // One entry per configured model: `/model <name>`, so `/` lists them and
@@ -225,9 +238,7 @@ pub fn matching_slash_commands(commands: &[SlashCommand], query: &str) -> Vec<Sl
 pub fn slash_items(commands: &[SlashCommand]) -> Vec<SlashMenuItem> {
     commands
         .iter()
-        .map(|command| {
-            SlashMenuItem::new(command.name.clone(), command.description.clone())
-        })
+        .map(|command| SlashMenuItem::new(command.name.clone(), command.description.clone()))
         .collect()
 }
 
@@ -250,12 +261,7 @@ pub fn slash_accept(
 pub fn slash_query(draft: &str) -> Option<String> {
     let trimmed = draft.trim_start();
     let rest = trimmed.strip_prefix('/')?;
-    Some(
-        rest.split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_string(),
-    )
+    Some(rest.split_whitespace().next().unwrap_or("").to_string())
 }
 
 /// Build the Cmd+K command palette overlay. When `open` is false the overlay
@@ -497,12 +503,20 @@ impl Element for PaletteContent {
                 match key.as_str() {
                     "ArrowDown" => {
                         let len = self.filtered.len();
-                        let target = if len == 0 { 0 } else { (self.clamped_index() + 1).min(len - 1) };
+                        let target = if len == 0 {
+                            0
+                        } else {
+                            (self.clamped_index() + 1).min(len - 1)
+                        };
                         (self.on_move.borrow_mut())(target);
                     }
                     "ArrowUp" => {
                         let len = self.filtered.len();
-                        let target = if len == 0 { 0 } else { self.clamped_index().saturating_sub(1) };
+                        let target = if len == 0 {
+                            0
+                        } else {
+                            self.clamped_index().saturating_sub(1)
+                        };
                         (self.on_move.borrow_mut())(target);
                     }
                     "Enter" => {
@@ -528,7 +542,11 @@ impl Element for PaletteContent {
             }
             // Mouse interactions (clicking a row) are handled by the row
             // Buttons, so forward them to the built tree.
-            _ => self.root.as_mut().map(|r| r.dispatch_event(event, ctx, app)).unwrap_or(false),
+            _ => self
+                .root
+                .as_mut()
+                .map(|r| r.dispatch_event(event, ctx, app))
+                .unwrap_or(false),
         }
     }
 }
@@ -543,11 +561,7 @@ mod tests {
 
     #[test]
     fn filter_commands_matches_substring_ignoring_case() {
-        let commands = vec![
-            cmd("Split right"),
-            cmd("Close pane"),
-            cmd("New space"),
-        ];
+        let commands = vec![cmd("Split right"), cmd("Close pane"), cmd("New space")];
         let idx = filter_commands(&commands, "split");
         assert_eq!(idx, vec![0]);
         let idx = filter_commands(&commands, "PANE");

@@ -21,8 +21,8 @@ use crate::terminal::{classify_input, InputClass};
 use crate::ui::color_picker::ColorTarget;
 use crate::ui::{
     AgentDashboardAction, AppTab, CronEntry, DiffPanelAction, FloatingDrag, FloatingDragMode,
-    LayoutKind, NavDir, Pane, PaneKind, SettingsCategory, SettingsControl, SidebarView, Space,
-    SplitDir, TabMenuAction, UiActions, WorkspaceRouting,
+    LayoutKind, NavDir, OnboardingAction, Pane, PaneKind, SettingsCategory, SettingsControl,
+    SidebarView, Space, SplitDir, TabMenuAction, UiActions, WorkspaceRouting,
 };
 
 use super::pane_ops::{
@@ -332,6 +332,10 @@ pub fn make_actions(
     let on_set_theme_secondary = Rc::clone(&state);
     let on_set_theme_accent = Rc::clone(&state);
     let on_save_profile = Rc::clone(&state);
+    let on_profile_name_change = Rc::clone(&state);
+    let on_default_model_state = Rc::clone(&state);
+    let on_toggle_telemetry_state = Rc::clone(&state);
+    let on_onboarding_state = Rc::clone(&state);
     let on_save_llm = Rc::clone(&state);
     let on_add_worker = Rc::clone(&state);
     let on_remove_worker = Rc::clone(&state);
@@ -363,8 +367,12 @@ pub fn make_actions(
     let desktop_skip = desktop.clone();
     let desktop_command = desktop.clone();
     let desktop_auto = desktop.clone();
+    let desktop_approval_mode = desktop.clone();
     let desktop_vim = desktop.clone();
     let desktop_auto_save = desktop.clone();
+    let desktop_default_model = desktop.clone();
+    let desktop_onboarding = desktop.clone();
+    let desktop_commit_settings_field = desktop.clone();
     let desktop_fork = desktop.clone();
     let desktop_set_harness = desktop.clone();
     let desktop_send_queued = desktop.clone();
@@ -574,11 +582,17 @@ pub fn make_actions(
     }));
     let action_toggle_auto_approve: Rc<RefCell<dyn FnMut(u64, bool)>> =
         Rc::new(RefCell::new(move |pane_id: u64, enabled: bool| {
+            // The switch is the two-state shortcut for the app-wide policy:
+            // on means always-approve, off means manual. The stepper on the
+            // same page writes the other two modes.
+            let mode = if enabled {
+                goble_ui::ApprovalMode::AlwaysApprove
+            } else {
+                goble_ui::ApprovalMode::Manual
+            };
             let mut state = on_toggle_auto_approve.borrow_mut();
             state.pane_controls_mut(pane_id).auto_approve = enabled;
-            if pane_id == state.active_pane_id {
-                state.auto_approve = enabled;
-            }
+            state.set_approval_mode(mode, desktop_auto.as_deref());
             if let Some(desktop) = &desktop_auto {
                 if let Err(e) = desktop.set_auto_approve(enabled) {
                     log::warn!("set_auto_approve failed: {e}");
@@ -591,9 +605,13 @@ pub fn make_actions(
     let action_select_approval_mode: Rc<RefCell<dyn FnMut(u64, goble_ui::ApprovalMode)>> =
         Rc::new(RefCell::new(move |pane_id: u64, mode| {
             let mut state = on_select_approval_mode_state.borrow_mut();
-            let controls = state.pane_controls_mut(pane_id);
-            controls.approval_mode = mode;
-            *controls.approval_menu_open.borrow_mut() = false;
+            // The mode is app-wide: a choice in one pane's menu is the policy
+            // the proposal path, every other composer and the next launch read.
+            state.set_approval_mode(mode, desktop_approval_mode.as_deref());
+            *state
+                .pane_controls_mut(pane_id)
+                .approval_menu_open
+                .borrow_mut() = false;
         }));
     // Modal (vim) editing for the rich input, off by default. The choice is
     // persisted; turning it off drops every pane's half-typed command and
@@ -674,6 +692,69 @@ pub fn make_actions(
             // shortcut and menubar use, so the settings control reflects 1:1.
             *ui_zoom_font.borrow_mut() = state.settings_font_size;
         }));
+    // First-run onboarding: the three answers and the step buttons. Finishing
+    // writes the same store keys the Profile page edits.
+    let action_onboarding: Rc<RefCell<dyn FnMut(OnboardingAction)>> = {
+        let state = on_onboarding_state;
+        let desktop = desktop_onboarding;
+        Rc::new(RefCell::new(move |action: OnboardingAction| {
+            let mut state = state.borrow_mut();
+            match action {
+                OnboardingAction::SelectUsage(usage) => state.onboarding_usage = usage,
+                OnboardingAction::NameChanged(name) => state.onboarding_name = name,
+                OnboardingAction::SetDataSharing(share) => state.onboarding_share = share,
+                OnboardingAction::Next => {
+                    if state.onboarding_is_last_step() {
+                        state.complete_onboarding(desktop.as_deref());
+                    } else {
+                        state.onboarding_next_step();
+                    }
+                }
+                OnboardingAction::Back => state.onboarding_back(),
+                OnboardingAction::Replay => state.replay_onboarding(),
+            }
+        }))
+    };
+    let action_profile_name_change: Rc<RefCell<dyn FnMut(String)>> =
+        Rc::new(RefCell::new(move |value: String| {
+            on_profile_name_change.borrow_mut().settings_profile_name = value;
+        }));
+    // The name field's caret: taking it remembers what the field held, and
+    // leaving it without pressing Enter puts that value back.
+    let action_profile_name_focus: Rc<RefCell<dyn FnMut(bool)>> = {
+        let state = Rc::clone(&state);
+        Rc::new(RefCell::new(move |gained: bool| {
+            state.borrow_mut().settings_profile_name_focus(gained);
+        }))
+    };
+    // The Agent & Approval page's default model: one pick from the menu writes
+    // `[models] default`, so a new agent and the next launch start on it.
+    let action_select_default_model: Rc<RefCell<dyn FnMut(String)>> = {
+        let state = Rc::clone(&on_default_model_state);
+        let desktop = desktop_default_model.clone();
+        Rc::new(RefCell::new(move |model: String| {
+            let mut state = state.borrow_mut();
+            state.settings_default_model = model.clone();
+            // New panes read `selected_model`, so the choice takes effect now
+            // as well as on the next launch.
+            state.selected_model = model.clone();
+            *state.settings_model_menu_open.borrow_mut() = false;
+            if let Some(desktop) = &desktop {
+                if let Err(e) = desktop.set_default_model(&model) {
+                    log::warn!("set_default_model failed: {e}");
+                }
+            }
+        }))
+    };
+    let action_toggle_telemetry: Rc<RefCell<dyn FnMut(bool)>> = {
+        let state = on_toggle_telemetry_state;
+        Rc::new(RefCell::new(move |enabled: bool| {
+            let in_force = goble_telemetry::global()
+                .map(|telemetry| telemetry.set_upload_consent(enabled))
+                .unwrap_or(enabled);
+            state.borrow_mut().share_telemetry = in_force;
+        }))
+    };
     // The focused row's own value step, shared by the arrow keys and by `Enter`
     // on a row that holds one (a stepper advances, the channel column moves on).
     // The steppers run through the actions that own their bounds and, for the
@@ -682,6 +763,7 @@ pub fn make_actions(
         let step_state = Rc::clone(&state);
         let on_speed = action_set_scroll_speed.clone();
         let on_font = action_set_font_size.clone();
+        let on_mode = action_select_approval_mode.clone();
         Rc::new(RefCell::new(move |delta: i32| {
             // Read the focused control into a local first: the arms below run
             // the actions that own the value, and those borrow the same state,
@@ -695,6 +777,18 @@ pub fn make_actions(
                 Some(SettingsControl::FontSize) => {
                     let next = step_state.borrow().settings_font_size + delta as f32 * 0.1;
                     (on_font.borrow_mut())(next);
+                }
+                Some(SettingsControl::ApprovalMode) => {
+                    let (pane_id, mode) = {
+                        let state = step_state.borrow();
+                        (state.active_pane_id, state.approval_mode)
+                    };
+                    let next = if delta >= 0 {
+                        mode.next()
+                    } else {
+                        mode.previous()
+                    };
+                    (on_mode.borrow_mut())(pane_id, next);
                 }
                 _ => step_state.borrow_mut().settings_adjust_control(delta),
             }
@@ -2021,6 +2115,11 @@ pub fn make_actions(
                 .borrow_mut()
                 .open_settings_tab(desktop_settings.as_deref());
         })),
+        on_onboarding: action_onboarding.clone(),
+        on_profile_name_change: action_profile_name_change.clone(),
+        on_profile_name_focus: action_profile_name_focus.clone(),
+        on_select_default_model: action_select_default_model.clone(),
+        on_toggle_telemetry: action_toggle_telemetry.clone(),
         on_settings_category: Rc::new(RefCell::new(move |category: SettingsCategory| {
             on_settings_category
                 .borrow_mut()
@@ -2076,8 +2175,15 @@ pub fn make_actions(
                         (on_theme.borrow_mut())(target);
                     }
                     // A stepper advances: the same step the arrow keys take.
-                    Some(SettingsControl::ScrollSpeed) | Some(SettingsControl::FontSize) => {
+                    Some(SettingsControl::ScrollSpeed)
+                    | Some(SettingsControl::FontSize)
+                    | Some(SettingsControl::ApprovalMode) => {
                         (on_step.borrow_mut())(1);
+                    }
+                    // The default model is a list, not a stepper: Enter opens
+                    // the menu the field hangs, and a row picks the value.
+                    Some(SettingsControl::DefaultModel) => {
+                        *activate_state.borrow().settings_model_menu_open.borrow_mut() = true;
                     }
                     Some(SettingsControl::AutoApprove) => {
                         let (pane, next) = {
@@ -2110,6 +2216,22 @@ pub fn make_actions(
             move |delta: i32| (step.borrow_mut())(delta)
         })),
         on_settings_commit_field: Rc::new(RefCell::new(move || {
+            // The name is the one field whose commit is also a write: every
+            // other field is either an action of its own or a draft.
+            let (control, name) = {
+                let state = on_settings_commit_field.borrow();
+                (
+                    state.settings_focused_control(),
+                    state.settings_profile_name.clone(),
+                )
+            };
+            if control == Some(SettingsControl::FriendlyName) {
+                if let Some(desktop) = &desktop_commit_settings_field {
+                    if let Err(e) = desktop.set_friendly_name(&name) {
+                        log::warn!("set_friendly_name failed: {e}");
+                    }
+                }
+            }
             on_settings_commit_field
                 .borrow_mut()
                 .settings_commit_field();

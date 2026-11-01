@@ -69,7 +69,7 @@ impl UiState {
             self.selected_model.clone()
         };
         if let Some(s) = desktop.effective_llm_setting(&provider, &model) {
-            self.settings_llm_provider = provider;
+            self.settings_llm_provider = provider.clone();
             self.settings_llm_model = s.model;
             self.settings_llm_api_key = s.api_key;
             self.settings_llm_base_url = s.base_url.unwrap_or_default();
@@ -78,6 +78,13 @@ impl UiState {
             }
         }
         self.refresh_llm_models(desktop);
+        self.settings_default_model = desktop.default_model(&provider);
+        if self.settings_field_edit_start.is_none() {
+            self.settings_profile_name = desktop.get_friendly_name();
+        }
+        self.share_telemetry = goble_telemetry::global()
+            .map(|telemetry| telemetry.consent().upload)
+            .unwrap_or(false);
         self.refresh_remote_agents(Some(desktop));
         self.refresh_environment_groups(Some(desktop));
     }
@@ -312,6 +319,7 @@ impl UiState {
     /// The text field a control names, if it names one.
     fn settings_field_mut(&mut self, control: &SettingsControl) -> Option<&mut String> {
         match control {
+            SettingsControl::FriendlyName => Some(&mut self.settings_profile_name),
             SettingsControl::EnvironmentGroupName => {
                 Some(&mut self.settings_environment_group_draft)
             }
@@ -357,6 +365,26 @@ impl UiState {
                     *value = start;
                 }
             }
+        }
+        self.settings_pane_field_active = false;
+    }
+
+    /// The Profile name field took (`true`) or lost the caret.
+    ///
+    /// Taking it remembers what the field held; losing it without a commit is
+    /// the click-outside path, which abandons the edit and puts the stored name
+    /// back. `Enter` commits through [`Self::settings_commit_field`], which
+    /// clears the remembered value, so a later blur has nothing to undo.
+    pub fn settings_profile_name_focus(&mut self, gained: bool) {
+        if gained {
+            if self.settings_field_edit_start.is_none() {
+                self.settings_field_edit_start = Some(self.settings_profile_name.clone());
+            }
+            self.settings_pane_field_active = true;
+            return;
+        }
+        if let Some(start) = self.settings_field_edit_start.take() {
+            self.settings_profile_name = start;
         }
         self.settings_pane_field_active = false;
     }

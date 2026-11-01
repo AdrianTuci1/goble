@@ -6,7 +6,6 @@ use super::*;
 /// read by the next frame.
 pub type DiffGitResult = Arc<Mutex<Option<Result<String, String>>>>;
 
-
 /// Per-pane conversation identity + composer draft + working directory.
 ///
 /// Each chat leaf pane owns a distinct conversation in the store plus its own
@@ -441,7 +440,10 @@ impl PaneRuntime {
     /// Open the row for a child S4 just spawned. The map is keyed by the child's
     /// own conversation id, because that is the only id the progress and finish
     /// events carry.
-    pub(crate) fn apply_subagent_spawned(&mut self, event: &goble_desktop_service::SubAgentSpawnedEvent) {
+    pub(crate) fn apply_subagent_spawned(
+        &mut self,
+        event: &goble_desktop_service::SubAgentSpawnedEvent,
+    ) {
         self.sub_agents.insert(
             event.subagent_id.clone(),
             SubAgentRecord {
@@ -466,7 +468,10 @@ impl PaneRuntime {
     /// Fold one live progress transition into the child's record. A record that
     /// never spawned (an app that joined mid-turn) is opened from the event, so
     /// the row still reads its status rather than falling back to the arguments.
-    pub(crate) fn apply_subagent_progress(&mut self, event: &goble_desktop_service::SubAgentProgressEvent) {
+    pub(crate) fn apply_subagent_progress(
+        &mut self,
+        event: &goble_desktop_service::SubAgentProgressEvent,
+    ) {
         let entry = self
             .sub_agents
             .entry(event.subagent_id.clone())
@@ -498,7 +503,10 @@ impl PaneRuntime {
 
     /// Fold a child's terminal status into its record: the outcome it ended with
     /// and the duration it took, replacing the live elapsed clock.
-    pub(crate) fn apply_subagent_finished(&mut self, event: &goble_desktop_service::SubAgentFinishedEvent) {
+    pub(crate) fn apply_subagent_finished(
+        &mut self,
+        event: &goble_desktop_service::SubAgentFinishedEvent,
+    ) {
         let Some(entry) = self.sub_agents.get_mut(&event.subagent_id) else {
             return;
         };
@@ -678,14 +686,10 @@ pub struct PaneControls {
 }
 
 impl PaneControls {
-    pub fn new(model: String, auto_approve: bool, branch: String) -> Self {
+    pub fn new(model: String, approval_mode: ApprovalMode, branch: String) -> Self {
         Self {
-            auto_approve,
-            approval_mode: if auto_approve {
-                ApprovalMode::AlwaysApprove
-            } else {
-                ApprovalMode::Manual
-            },
+            auto_approve: matches!(approval_mode, ApprovalMode::AlwaysApprove),
+            approval_mode,
             approval_menu_open: Rc::new(RefCell::new(false)),
             approval_menu_highlight: Rc::new(RefCell::new(None)),
             model,
@@ -750,6 +754,6 @@ impl PaneControls {
 
 impl Default for PaneControls {
     fn default() -> Self {
-        Self::new(String::new(), false, String::new())
+        Self::new(String::new(), ApprovalMode::Manual, String::new())
     }
 }

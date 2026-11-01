@@ -9,8 +9,8 @@ use super::actions::{AiActions, MediaActions, ProjectsActions, UiActions};
 use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, UiSnapshot};
 use super::types::AppTab;
 use super::{
-    agent_dashboard, chat, connectors, crons, hosts, inbox, media, model_form, shell,
-    shortcuts_help, sidebar, task_workflow, vault, CONNECTORS_WIDTH,
+    agent_dashboard, chat, connectors, crons, hosts, inbox, media, model_form, onboarding, settings,
+    shell, shortcuts_help, sidebar, task_workflow, vault, CONNECTORS_WIDTH,
 };
 
 /// The snapshots and callbacks one frame is built from.
@@ -209,17 +209,35 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         );
     }
 
+    // Settings' default-model menu hangs from the field that opens it. The
+    // settings page scrolls inside a viewport, so the menu is drawn here, at
+    // the window's top layer, where neither the viewport nor the rows below it
+    // can clip or cover it.
+    if let Some((menu, offset)) = settings::build_model_menu_overlay(app, state, actions) {
+        stack = stack.with_overlay(menu, offset);
+    }
+
     // The model-provider dialog floats above everything (including the sheets).
     stack = stack.with_overlay(
         model_form::build_llm_dialog(app, state, actions),
         vec2f(0.0, 0.0),
-    );
-    // "Add a new environment" dialog, opened from the topbar "+" menu. It only
+    );    // "Add a new environment" dialog, opened from the topbar "+" menu. It only
     // paints/intercepts events while open (see [`super::media::build_add_medium_dialog`]).
     stack = stack.with_overlay(
         media::build_add_medium_dialog(app, state, media_actions, actions),
         vec2f(0.0, 0.0),
     );
+    // First-run onboarding is the top-most surface: it fills the window, so
+    // nothing behind it takes a click or a key until the flow is finished.
+    if state.onboarding_open {
+        stack = stack.with_overlay(
+            Dialog::new(onboarding::build_onboarding(app, state, actions))
+                .with_open(true)
+                .with_inset(0.0)
+                .finish(),
+            vec2f(0.0, 0.0),
+        );
+    }
     Container::new(stack.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
         .finish()

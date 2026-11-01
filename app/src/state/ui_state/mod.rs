@@ -16,6 +16,7 @@ mod agents;
 mod close;
 mod inbox;
 mod mock;
+mod onboarding;
 mod pane_move;
 mod panes;
 mod refresh;
@@ -27,6 +28,7 @@ mod worker;
 
 pub use agents::{PaneAgentState, TurnOutcome};
 pub use inbox::{InboxItem, InboxKind};
+pub use onboarding::{ONBOARDING_STEPS, ONBOARDING_USAGE};
 pub use pane_move::{PaneDrag, PaneDrop, PaneMove};
 
 /// The title a conversation gets when it is created without a subject of its
@@ -116,6 +118,26 @@ pub struct UiState {
     pub agent_busy: bool,
     /// Whether the agent auto-approves `ask_user` questions (skip the ask).
     pub auto_approve: bool,
+    /// The app-wide command-approval policy. A change here is written to the
+    /// store and copied into every pane, so the composer, the proposal path and
+    /// a restart all read the same mode.
+    pub approval_mode: ApprovalMode,
+    /// Whether the first-run onboarding overlay is up.
+    pub onboarding_open: bool,
+    /// Which of the three onboarding steps is up: usage, name, telemetry.
+    pub onboarding_step: usize,
+    /// The usage card the onboarding flow has selected (`work`, `personal`,
+    /// `learning`), empty until one is picked.
+    pub onboarding_usage: String,
+    /// The friendly name being typed in onboarding, before it is committed.
+    pub onboarding_name: String,
+    /// Whether the onboarding consent step is set to share. Applied only when
+    /// the flow finishes.
+    pub onboarding_share: bool,
+    /// The telemetry consent in force, as the profile page draws it.
+    pub share_telemetry: bool,
+    /// The default model the profile page shows and changes.
+    pub settings_default_model: String,
     pub right_sidebar_open: bool,
     /// Whether the agent/window is currently fullscreen (borderless). Lives in
     /// app state so it survives the per-frame element rebuild.
@@ -353,6 +375,17 @@ pub struct UiState {
     pub global_search_scroll: Rc<RefCell<ScrollState>>,
     /// Scroll offset of the settings overlay's content pane.
     pub settings_scroll: Rc<RefCell<ScrollState>>,
+    /// Settings → Agent & Approval: whether the default-model menu is open.
+    /// The menu is drawn at the window's top layer, so the page cannot hold it
+    /// as a child of the field it hangs from.
+    pub settings_model_menu_open: Rc<RefCell<bool>>,
+    /// Where the default-model field last painted, in window coordinates. The
+    /// overlay hangs from this rect, one frame behind the field.
+    pub settings_model_anchor: Rc<RefCell<Option<goble_ui::geometry::RectF>>>,
+    /// Whether the default-model field painted on the frame the overlay was
+    /// built from. A field that did not paint (its tab is not on screen) has
+    /// no menu to hang anywhere.
+    pub settings_model_painted: Rc<RefCell<bool>>,
     /// Whether the topbar workspace frame is in inline-rename mode (entered by
     /// double-clicking the tab, or from its menu's "Rename tab" row).
     pub space_rename_editing: bool,

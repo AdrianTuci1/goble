@@ -435,11 +435,10 @@ impl UiState {
     /// window globals) on first use.
     pub fn pane_controls_mut(&mut self, pane_id: u64) -> &mut PaneControls {
         let model = self.selected_model.clone();
-        let auto_approve = self.auto_approve;
         let branch = self.composer_branch.clone();
         self.pane_controls
             .entry(pane_id)
-            .or_insert_with(|| PaneControls::new(model, auto_approve, branch))
+            .or_insert_with(|| PaneControls::new(model, self.approval_mode, branch))
     }
 
     /// Take any finished git job's word for the review pane. The worker runs
@@ -479,7 +478,7 @@ impl UiState {
             .unwrap_or_else(|| {
                 PaneControls::new(
                     self.selected_model.clone(),
-                    self.auto_approve,
+                    self.approval_mode,
                     self.composer_branch.clone(),
                 )
             })

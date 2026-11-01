@@ -426,6 +426,9 @@ impl UiState {
         self.settings_pane_focus = 0;
         self.settings_pane_field_active = false;
         self.settings_field_edit_start = None;
+        // The model menu hangs at the window's top layer, so it has to close
+        // with the page it belongs to.
+        *self.settings_model_menu_open.borrow_mut() = false;
     }
 
     /// The pane a tab's label follows: the focused leaf of the active tab, and
@@ -487,6 +490,9 @@ impl UiState {
             return false;
         }
         self.active_space = target;
+        // A menu opened over the previous tab's settings page has no page to
+        // hang from on this one.
+        *self.settings_model_menu_open.borrow_mut() = false;
         self.spaces[target].recompute_layout();
         self.active_pane_id = self.spaces[target].root.first_leaf_id();
         if matches!(

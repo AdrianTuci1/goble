@@ -226,6 +226,20 @@ pub struct UiSnapshot {
     pub pane_live_work: HashMap<u64, Vec<PaneWorkItem>>,
     /// Whether the agent auto-approves `ask_user` questions.
     pub auto_approve: bool,
+    /// The app-wide approval policy the composer menu and the settings page
+    /// draw.
+    pub approval_mode: goble_ui::ApprovalMode,
+    /// First-run onboarding: whether the overlay is up and which step it shows,
+    /// plus the answers being collected.
+    pub onboarding_open: bool,
+    pub onboarding_step: usize,
+    pub onboarding_usage: String,
+    pub onboarding_name: String,
+    pub onboarding_share: bool,
+    /// Telemetry consent in force, for the Profile page's switch.
+    pub share_telemetry: bool,
+    /// The model new agents start on.
+    pub settings_default_model: String,
     pub right_sidebar_open: bool,
     /// Whether the agent/window is fullscreen (borderless). Rendered as the
     /// checked state of `/fullscreen` in the palette.
@@ -333,6 +347,12 @@ pub struct UiSnapshot {
     pub settings_pane_focus: usize,
     /// Whether the focused pane control is a text field holding the caret.
     pub settings_pane_field_active: bool,
+    /// Settings → Agent & Approval: the default-model menu's open flag, and the
+    /// rect its field last painted at. The menu is drawn at the window's top
+    /// layer, hung from that rect.
+    pub settings_model_menu_open: Rc<RefCell<bool>>,
+    pub settings_model_anchor: Rc<RefCell<Option<goble_ui::geometry::RectF>>>,
+    pub settings_model_painted: Rc<RefCell<bool>>,
     /// Settings → Environment: the persisted groups with their secrets, the
     /// group the pane has open, and the fields a new or edited secret is typed
     /// into.
@@ -562,6 +582,17 @@ pub struct UiSnapshot {
 }
 
 impl UiSnapshot {
+    /// Whether the onboarding step on screen has an answer worth advancing
+    /// with. Mirrors [`crate::state::UiState::onboarding_can_advance`] for the
+    /// element tree, which only sees the snapshot.
+    pub fn onboarding_can_advance(&self) -> bool {
+        match self.onboarding_step {
+            0 => !self.onboarding_usage.trim().is_empty(),
+            1 => !self.onboarding_name.trim().is_empty(),
+            _ => true,
+        }
+    }
+
     /// The newest recorded run for `workflow_id`, if any.
     pub fn latest_run(&self, workflow_id: &str) -> Option<&WorkflowRunEntry> {
         self.workflow_runs

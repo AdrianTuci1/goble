@@ -104,6 +104,11 @@ fn main() -> anyhow::Result<()> {
     // Keep a handle after the window is handed to the event loop: a clean quit
     // has to close the pane shells, because dropping a session only detaches.
     let ui_state = root.state_rc();
+    // First run shows the three-step onboarding over the window. This is the
+    // real-launch seam: mounting the tree in a test never opens it.
+    ui_state
+        .borrow_mut()
+        .open_onboarding_if_first_run(Some(&desktop));
 
     let result = run_with_root(Box::new(root), app_context);
     ui_state.borrow().kill_terminal_sessions();

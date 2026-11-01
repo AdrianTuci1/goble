@@ -17,7 +17,11 @@ use super::*;
 fn categories_match_grok_build_labels() {
     let labels: Vec<&str> = SettingsCategory::ALL
         .iter()
-        .filter(|c| **c != SettingsCategory::Connections && **c != SettingsCategory::Updates)
+        .filter(|c| {
+            **c != SettingsCategory::Profile
+                && **c != SettingsCategory::Connections
+                && **c != SettingsCategory::Updates
+        })
         .map(|c| c.label())
         .collect();
     assert_eq!(
@@ -46,9 +50,18 @@ fn connections_sits_after_the_agent_page() {
     assert_eq!(labels[at - 1], "Agent & Approval");
     assert_eq!(
         labels[..at],
-        ["Appearance", "Mouse", "Editor & Input", "Agent & Approval"]
+        [
+            "Profile",
+            "Appearance",
+            "Mouse",
+            "Editor & Input",
+            "Agent & Approval"
+        ]
     );
-    assert_eq!(&labels[at..], ["Connections", "Models", "Updates", "Advanced"]);
+    assert_eq!(
+        &labels[at..],
+        ["Connections", "Models", "Updates", "Advanced"]
+    );
 }
 
 /// The Environment menu is gone from the rail; the page it used to open has no
@@ -103,6 +116,8 @@ fn settings_root_with_desktop(
     // page reads and writes a file: point it inside the test's own directory
     // rather than at the user's real home.
     desktop.set_environment_path(dir.path().join("environment.toml"));
+    // The Profile page's default model lands in `config.toml`; keep it here too.
+    desktop.set_config_path(dir.path().join("config.toml"));
     let root = RootView::new(&AppContext::default(), &desktop, None);
     let state = root.state_rc();
     {
@@ -272,11 +287,11 @@ fn the_arrow_keys_move_the_page_and_escape_leaves_the_tab_open() {
     // Stepping up from the first page wraps to the last and back.
     state
         .borrow_mut()
-        .settings_set_page(SettingsCategory::Appearance);
+        .settings_set_page(SettingsCategory::Profile);
     press(&mut root, &app, "ArrowUp");
     assert_eq!(state.borrow().settings_page(), SettingsCategory::Advanced);
     press(&mut root, &app, "ArrowDown");
-    assert_eq!(state.borrow().settings_page(), SettingsCategory::Appearance);
+    assert_eq!(state.borrow().settings_page(), SettingsCategory::Profile);
 
     // `Esc` from the rail is not the tab's key: it falls through the tree and
     // the tab is left exactly as it was.
@@ -946,6 +961,101 @@ fn the_arrows_move_the_region_that_holds_the_keyboard() {
     );
 }
 
+/// Settings → Profile edits the friendly name the onboarding flow collects;
+/// Settings → Agent & Approval picks the default model from the menu its field
+/// opens. Both are read back out of the store.
+#[test]
+fn the_profile_page_renames_and_the_agent_page_picks_the_default_model() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir, desktop) = settings_root_with_desktop(SettingsCategory::Profile);
+
+    assert_eq!(
+        state.borrow().settings_pane_controls(),
+        vec![SettingsControl::FriendlyName, SettingsControl::DataSharing],
+        "the page's focus order is the rows it draws"
+    );
+    let commands = frame(&mut root, &app, window);
+    assert!(drawn(&commands, "Friendly name"));
+    assert!(drawn(&commands, "Share anonymous data"));
+
+    // Into the pane on the name field, take the caret, type, commit.
+    press(&mut root, &app, "ArrowRight");
+    assert_eq!(
+        state.borrow().settings_focused_control(),
+        Some(SettingsControl::FriendlyName)
+    );
+    press(&mut root, &app, "Enter");
+    for c in ["a", "d", "a"] {
+        press(&mut root, &app, c);
+    }
+    press(&mut root, &app, "Enter");
+    assert_eq!(
+        desktop.get_friendly_name(),
+        "ada",
+        "committing the field writes the store"
+    );
+    assert_eq!(state.borrow().settings_profile_name, "ada");
+}
+
+/// The default model is not a stepper: its row opens a menu, and picking a row
+/// there writes the same `[models] default` a new agent and the next launch
+/// read.
+#[test]
+fn the_agent_page_picks_the_default_model_from_the_menu_its_field_opens() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir, desktop) =
+        settings_root_with_desktop(SettingsCategory::AgentApproval);
+
+    assert_eq!(
+        state.borrow().settings_pane_controls(),
+        vec![
+            SettingsControl::ApprovalMode,
+            SettingsControl::DefaultModel,
+            SettingsControl::AutoApprove,
+            SettingsControl::VimMode,
+            SettingsControl::OpenConfigFile,
+            SettingsControl::ReloadRemoteAgents,
+        ],
+        "the model row sits under the approval mode"
+    );
+    let _ = frame(&mut root, &app, window);
+    assert!(drawn(&frame(&mut root, &app, window), "Default model"));
+
+    // Arrow onto the row and Enter: the menu hangs from the field.
+    press(&mut root, &app, "ArrowRight");
+    press(&mut root, &app, "ArrowDown");
+    assert_eq!(
+        state.borrow().settings_focused_control(),
+        Some(SettingsControl::DefaultModel)
+    );
+    press(&mut root, &app, "Enter");
+    assert!(
+        *state.borrow().settings_model_menu_open.borrow(),
+        "Enter opens the menu the field hangs"
+    );
+
+    // A pick persists the same way the old stepper did.
+    let (model, provider) = {
+        let s = state.borrow();
+        assert!(s.models.len() > 1, "the catalog offers somewhere to pick");
+        (s.models[1].clone(), s.settings_llm_provider.clone())
+    };
+    let actions = actions_for(&state, &desktop);
+    (actions.on_select_default_model.borrow_mut())(model.clone());
+    assert_eq!(state.borrow().settings_default_model, model);
+    assert_eq!(
+        desktop.default_model(&provider),
+        model,
+        "the pick writes `models.default`"
+    );
+    assert!(
+        !*state.borrow().settings_model_menu_open.borrow(),
+        "the menu closes on the pick"
+    );
+}
+
 /// `Enter` on a focused switch flips it, and the flip is persisted: the
 /// assertion reads the setting back out of the store, not out of the pane.
 #[test]
@@ -955,7 +1065,9 @@ fn enter_flips_a_switch_and_the_setting_is_persisted() {
         settings_root_with_desktop(SettingsCategory::AgentApproval);
     assert!(!desktop.get_vim_mode(), "vim mode starts off");
 
-    press(&mut root, &app, "ArrowRight"); // into the pane: Auto-approve
+    press(&mut root, &app, "ArrowRight"); // into the pane: Approval mode
+    press(&mut root, &app, "ArrowDown"); // Default model
+    press(&mut root, &app, "ArrowDown"); // Auto-approve
     press(&mut root, &app, "ArrowDown"); // Vim mode
     assert_eq!(
         state.borrow().settings_focused_control(),
@@ -1153,17 +1265,22 @@ fn the_agent_page_reports_where_turns_run_without_buttons() {
     assert_eq!(
         state.borrow().settings_pane_controls(),
         vec![
+            SettingsControl::ApprovalMode,
+            SettingsControl::DefaultModel,
             SettingsControl::AutoApprove,
             SettingsControl::VimMode,
             SettingsControl::OpenConfigFile,
             SettingsControl::ReloadRemoteAgents,
         ],
-        "the switches, the config row and the reload: no routing control"
+        "the mode, the model, the switches, the config row and the reload: no routing control"
     );
 
     state.borrow_mut().workspace_routing = Some(WorkspaceRouting::Local);
     let commands = frame(&mut root, &app, window);
-    assert!(any_run_contains(&commands, "Local"), "it follows the routing");
+    assert!(
+        any_run_contains(&commands, "Local"),
+        "it follows the routing"
+    );
 }
 
 /// The footer is the page's key map, drawn: each region and each kind of row
@@ -1262,6 +1379,7 @@ fn the_focus_order_walks_down_the_rows_the_page_draws() {
     let app = AppContext::default();
     let window = vec2f(1024.0, 768.0);
     for category in [
+        SettingsCategory::Profile,
         SettingsCategory::Appearance,
         SettingsCategory::Mouse,
         SettingsCategory::EditorInput,

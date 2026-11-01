@@ -17,7 +17,7 @@ use goble_ui::elements::{
     KeyHandler, MainAxisSize, Padding, Scrollable, Spacer, Text, TextInput, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
-use goble_ui::{ApprovalMode, ChatMessage, ChatMessageBubble, ChatRole};
+use goble_ui::{ChatMessage, ChatMessageBubble, ChatRole};
 
 use super::{AgentDashboardAction, AgentDashboardGrouping, UiActions, UiSnapshot};
 use crate::state::InboxKind;
@@ -914,11 +914,7 @@ fn response_card(
     // The footer names the turn's model and approval policy the way
     // grok-build's does: plain text at the right end of a rule, with no pill
     // to click.
-    let mode = if state.auto_approve {
-        ApprovalMode::AlwaysApprove
-    } else {
-        ApprovalMode::Manual
-    };
+    let mode = state.approval_mode;
     let mut footer_parts: Vec<String> = Vec::new();
     if !state.selected_model.is_empty() {
         footer_parts.push(state.selected_model.clone());

@@ -25,6 +25,7 @@ pub mod hosts;
 pub mod inbox;
 pub mod media;
 pub mod model_form;
+pub mod onboarding;
 pub mod palette;
 pub mod panes;
 pub mod pickers;
@@ -53,21 +54,21 @@ pub use actions::{
 };
 pub use build::{build_ui, BuildContext};
 pub use pane::{
-    DropSide, FloatingDrag, FloatingDragMode, FloatingPane, LayoutKind, NavDir, Pane, PaneDropTarget,
-    PaneKind, PaneRect, Space, SplitDir,
+    DropSide, FloatingDrag, FloatingDragMode, FloatingPane, LayoutKind, NavDir, Pane,
+    PaneDropTarget, PaneKind, PaneRect, Space, SplitDir,
 };
-pub use tab_menu::{TabMenuAction, TabMenuTab};
 pub use snapshot::{
     AiSnapshot, ComposerContext, MediaNode, MediaProject, MediaSession, MediaSnapshot,
     PaneChatSnapshot, ProjectEntry, ProjectSessionEntry, ProjectsSnapshot, SubAgentViewSnapshot,
     UiSnapshot, WorkerPaneSnapshot,
 };
+pub use tab_menu::{TabMenuAction, TabMenuTab};
 pub use types::{
     AgentDashboardGrouping, AgentDashboardState, AppTab, CostEntry, CronEntry, ExecutionEntry,
-    ExplorerRow, HarnessEntry, HarnessKind,
-    LlmFormField, McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow, SettingsCategory, SettingsControl, SettingsFocus, SidebarView, TaskEntry,
-    TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry,
-    WorkflowStepEntry, WorkspaceRouting,
+    ExplorerRow, HarnessEntry, HarnessKind, LlmFormField, McpSearchEntry, McpServerEntry,
+    OnboardingAction, RemoteAgentEntry, SearchRow, SettingsCategory, SettingsControl,
+    SettingsFocus, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry,
+    WorkflowRunEntry, WorkflowRunStepEntry, WorkflowStepEntry, WorkspaceRouting,
 };
 
 /// Width of the left conversation sidebar.

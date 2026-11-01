@@ -1,0 +1,260 @@
+.core-platform {
+  padding: 10rem 2.5rem;
+  background-color: #ffffff;
+  /* Pure white background */
+  color: #0b0c10;
+  position: relative;
+  z-index: 2;
+}
+
+.core-header {
+  width: 100%;
+  max-width: var(--container-width);
+  margin-left: auto;
+  margin-right: auto;
+  margin-bottom: 5rem;
+}
+
+.core-header .label-wrapper {
+  justify-content: flex-start;
+}
+
+.core-title {
+  font-size: 3.5rem;
+  font-weight: 500;
+  max-width: 800px;
+  line-height: 1.1;
+  color: #0b0c10;
+  letter-spacing: -1.5px;
+}
+
+.core-grid {
+  max-width: var(--container-width);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2.5rem;
+}
+
+.core-card {
+  background: #fcfdfe;
+  border: 1px solid #eef2f6;
+  border-radius: 0;
+  /* Removing border radius */
+  padding: 3rem;
+  overflow: hidden;
+  position: relative;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.02);
+  min-height: 600px;
+}
+
+.tech-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tech-card-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-image: url('/gradients/mask4.png');
+  /* Updated to mask4 */
+  background-size: cover;
+  background-position: center;
+  opacity: 0.8;
+  /* Increased opacity as requested masks are often more subtle */
+  z-index: 0;
+  pointer-events: none;
+}
+
+.tech-grid {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+}
+
+.tech-row {
+  display: flex;
+  justify-content: center;
+  gap: 2rem;
+  width: 100%;
+}
+
+.tech-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.tech-icon-placeholder {
+  width: 84px;
+  height: 84px;
+  background: #000000;
+  border: 1px solid #1a1a1a;
+  border-radius: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);
+  overflow: hidden;
+  /* Ensure square and icon stay within bounds */
+}
+
+.tech-square {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  z-index: 2;
+  border-top-left-radius: 0;
+  /* Ensuring no border radius on outer edge as requested */
+}
+
+.tech-icon {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 6px;
+  display: block;
+  filter: grayscale(100%) opacity(0.8);
+  /* Grayscale as requested + subtle opacity */
+  transition: filter 0.3s ease, opacity 0.3s ease;
+}
+
+.tech-icon:hover {
+  filter: grayscale(0%) opacity(1);
+  /* Optional: return to color on hover for better UX */
+}
+
+.tech-name {
+  font-size: 0.9rem;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.dashboard-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+}
+
+.dashboard-card-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-image: url('/gradients/mask5.png');
+  /* Updated to mask5 */
+  background-size: cover;
+  background-position: center;
+  opacity: 0.8;
+  /* Increased opacity */
+  z-index: 0;
+  pointer-events: none;
+}
+
+.dashboard-placeholder {
+  position: absolute;
+  bottom: -40px;
+  /* Pushing it slightly out to look like it's coming from the corner */
+  right: -40px;
+  z-index: 1;
+  width: 95%;
+  height: 95%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+
+.observability-img {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 20px 40px rgba(0, 0, 0, 0.1));
+}
+
+.placeholder-icon {
+  font-size: 3rem;
+  opacity: 0.5;
+}
+
+.placeholder-text {
+  font-size: 1.1rem;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
+@media (max-width: 1024px) {
+  .core-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .core-title {
+    font-size: 2.8rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .core-platform {
+    padding: 6rem 1.25rem;
+  }
+
+  .core-header {
+    margin-bottom: 2.5rem;
+  }
+
+  .core-title {
+    max-width: 100%;
+    font-size: clamp(2rem, 10vw, 2.55rem);
+    line-height: 1.08;
+    letter-spacing: -0.8px;
+  }
+
+  .core-grid {
+    gap: 1.25rem;
+  }
+
+  .core-card {
+    aspect-ratio: 1 / 1;
+    min-height: 0;
+    padding: clamp(1rem, 5vw, 1.5rem);
+  }
+
+  .tech-grid {
+    gap: clamp(1rem, 5vw, 1.75rem);
+  }
+
+  .tech-row {
+    gap: clamp(0.75rem, 4vw, 1.25rem);
+  }
+
+  .tech-icon-placeholder {
+    width: clamp(54px, 16.5vw, 68px);
+    height: clamp(54px, 16.5vw, 68px);
+  }
+
+  .tech-icon {
+    width: clamp(28px, 8.5vw, 34px);
+    height: clamp(28px, 8.5vw, 34px);
+  }
+
+  .dashboard-placeholder {
+    bottom: -7%;
+    right: -9%;
+    width: 104%;
+    height: 104%;
+  }
+}

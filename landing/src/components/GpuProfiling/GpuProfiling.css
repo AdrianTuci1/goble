@@ -1,0 +1,176 @@
+.gpu-section {
+  width: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+.gpu-container {
+  width: 100%;
+  max-width: var(--container-width);
+  margin: 0 auto;
+  padding: 8rem 2.5rem;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  z-index: 1;
+}
+
+
+
+.gpu-top-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.1rem;
+  margin-bottom: 2rem;
+}
+
+.gpu-content-top {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--gap-lg);
+  margin-bottom: 4rem;
+}
+
+.gpu-title {
+  font-size: var(--fs-title-lg);
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: -1px;
+  max-width: 600px;
+  color: var(--text-primary);
+  text-align: left;
+  /* Left aligned on padding line */
+}
+
+.gpu-description-box {
+  max-width: 450px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.gpu-text {
+  font-size: var(--fs-body);
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.gpu-logos {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-md);
+  margin-top: 1rem;
+}
+
+.gpu-logo-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  opacity: 0.8;
+}
+
+.gpu-square {
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+
+.gpu-square.commands {
+  background-color: #3b82f6;
+}
+
+.gpu-square.autocomplete {
+  background-color: #10b981;
+}
+
+.gpu-square.agents {
+  background-color: #ec4899;
+}
+
+.gpu-dashboard-placeholder {
+  width: 100%;
+  /* The screenshot sits lower than the copy block, and inside a frame that
+     carries the frosted colour behind it. */
+  margin-top: 2.5rem;
+  padding: 4.5rem 0 0;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  border: 1px solid var(--border-color);
+  /* Blue at the top left, orange at the bottom right, with a dark spine
+     between them so the screenshot keeps its contrast. */
+  background:
+    radial-gradient(120% 140% at 6% -10%, rgba(64, 132, 255, 0.62), transparent 62%),
+    radial-gradient(110% 130% at 102% 108%, rgba(255, 138, 61, 0.5), transparent 64%),
+    linear-gradient(155deg, #0a1226 0%, #0b1220 52%, #1a100a 100%);
+}
+
+/* Frost: a soft haze over the gradient, so the colour reads as ice rather
+   than a clean wash. */
+.gpu-dashboard-placeholder::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(60% 80% at 22% 8%, rgba(226, 240, 255, 0.24), transparent 68%),
+    radial-gradient(50% 70% at 82% 96%, rgba(255, 233, 214, 0.18), transparent 70%),
+    radial-gradient(120% 40% at 50% 0%, rgba(255, 255, 255, 0.08), transparent 70%);
+  backdrop-filter: blur(0.5px);
+  pointer-events: none;
+}
+
+/* Grain on top of the haze: a fractal-noise tile, blended so it texturises the
+   gradient instead of greying it. */
+.gpu-dashboard-placeholder::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+  opacity: 0.22;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+.gpu-dashboard-img {
+  width: 85%;
+  height: auto;
+  object-fit: contain;
+  display: block;
+  position: relative;
+  z-index: 1;
+}
+
+@media (max-width: 1024px) {
+  .gpu-content-top {
+    flex-direction: column;
+    gap: 2rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .gpu-container {
+    padding: 6rem 1.25rem;
+  }
+
+  .gpu-content-top {
+    margin-bottom: 3rem;
+  }
+
+  .gpu-dashboard-placeholder {
+    width: min(760px, 190vw);
+    max-width: none;
+    align-self: flex-start;
+  }
+}

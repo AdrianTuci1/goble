@@ -1,0 +1,278 @@
+.download-section {
+  padding: 8rem 0;
+  background-color: #0b0c10;
+  color: #fff;
+  width: 100%;
+}
+
+.download-container {
+  max-width: var(--container-width);
+  margin: 0 auto;
+  padding: 0 2.5rem;
+}
+
+.download-header {
+  margin-bottom: 5rem;
+}
+
+.download-label {
+  font-size: 0.8rem;
+  letter-spacing: 0.1em;
+  color: #888;
+  display: block;
+  margin-bottom: 1rem;
+}
+
+.download-title {
+  font-size: var(--fs-title-lg);
+  font-weight: 500;
+  margin-bottom: 1.25rem;
+  letter-spacing: -1px;
+}
+
+.download-subtitle {
+  color: #888;
+  font-size: var(--fs-subtitle);
+}
+
+.download-subtitle a {
+  color: #fff;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.download-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3rem;
+}
+
+.os-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.os-icon, .os-icon-img {
+  width: 20px;
+  height: 20px;
+  color: #fff;
+  object-fit: contain;
+}
+
+.os-name {
+  font-size: 1.2rem;
+  font-weight: 500;
+}
+
+/* The column that matches the browser's platform: a quiet marker, not a
+   different layout. */
+.os-current {
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #888;
+  border: 1px solid #222;
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+}
+
+.download-col.is-current .os-name {
+  color: #fff;
+}
+
+.arch-btns .arch-btn.current {
+  border-color: #444;
+  background: #1c1c1c;
+  color: #fff;
+}
+
+.download-main-card {
+  background: #fdfaf5; /* Creamy white from image */
+  color: #000;
+  padding: 1.5rem;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+  margin-bottom: 1rem;
+}
+
+.download-main-card:hover {
+  opacity: 0.9;
+}
+
+.download-main-card.half {
+  flex: 1;
+  padding: 1.25rem;
+}
+
+.multi-download-cards {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.file-type {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.version-info {
+  font-size: 0.75rem;
+  color: #666;
+}
+
+.terminal-command {
+  background: #111;
+  border: 1px solid #222;
+  padding: 0.8rem 0.85rem;
+  border-radius: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  color: #888;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.68rem;
+  margin-bottom: 1.5rem;
+}
+
+.command-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.copy-icon {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.other-formats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.format-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid #1a1a1a;
+  color: #888;
+  font-size: 0.8rem;
+}
+
+.format-row small {
+  margin-left: 0.5rem;
+  opacity: 0.6;
+}
+
+.arch-btns {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.arch-btns button, .arch-btns .arch-btn {
+  background: #111;
+  border: 1px solid #222;
+  color: #888;
+  padding: 0.4rem 0.8rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.arch-btns button:hover, .arch-btns .arch-btn:hover {
+  border-color: #444;
+  color: #fff;
+}
+
+/* Disabled styles for Mobile devices */
+.download-main-card.disabled,
+.arch-btns button.disabled,
+.arch-btns .arch-btn.disabled,
+.terminal-command.disabled {
+  opacity: 0.45;
+  cursor: not-allowed !important;
+  pointer-events: auto !important; /* Keep events active so onClick can show explanation toast */
+}
+
+.download-main-card.disabled:hover,
+.arch-btns button.disabled:hover,
+.arch-btns .arch-btn.disabled:hover,
+.terminal-command.disabled:hover {
+  opacity: 0.45;
+  border-color: #222;
+  background-color: inherit;
+  color: inherit;
+}
+
+.download-main-card.disabled .version-info,
+.download-main-card.disabled .file-type {
+  color: #666 !important;
+}
+
+.terminal-command.disabled .copy-icon {
+  cursor: not-allowed;
+}
+
+/* Glassmorphism Toast notification */
+.download-toast {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  background: rgba(15, 16, 20, 0.9);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 20px rgba(139, 92, 246, 0.1);
+  color: #fff;
+  padding: 0.9rem 1.4rem;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  z-index: 9999;
+  pointer-events: none;
+  animation: slideInUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideInUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+
+@media (max-width: 1380px) {
+  .download-grid {
+    grid-template-columns: 1fr;
+    gap: 5rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .download-title {
+    font-size: 2.5rem;
+  }
+}

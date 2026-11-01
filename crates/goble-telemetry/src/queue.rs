@@ -179,8 +179,11 @@ impl CrashQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Channel;
-    use crate::report::{ClientContext, CrashKind, CrashReport, TelemetryEvent};
+    use crate::config::{Channel, Role};
+    use crate::features::{Feature, Outcome};
+    use crate::report::{
+        ClientContext, CrashKind, CrashReport, EventEnvelope, TelemetryEvent,
+    };
 
     fn context() -> ClientContext {
         ClientContext {
@@ -190,6 +193,8 @@ mod tests {
             os_version: None,
             arch: "aarch64".into(),
             install_id: "install".into(),
+            link_id: None,
+            role: Role::default(),
             session_id: "session".into(),
         }
     }
@@ -326,10 +331,14 @@ mod tests {
         let queue = queue(dir.path());
         queue.enqueue(crash("boom")).unwrap();
         queue
-            .enqueue(QueuedItem::event(TelemetryEvent::FeatureUsed {
-                name: "terminal".into(),
-                duration_ms: Some(120),
-            }))
+            .enqueue(QueuedItem::event(EventEnvelope::new(
+                context(),
+                TelemetryEvent::FeatureUsed {
+                    feature: Feature::TerminalCommandRun,
+                    outcome: Outcome::Success,
+                    duration_ms: Some(120),
+                },
+            )))
             .unwrap();
 
         assert_eq!(queue.len(), 2);

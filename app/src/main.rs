@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use goble_app::root_view::RootView;
 use goble_desktop_service::{CollectingEventBus, DesktopState};
-use goble_telemetry::{Channel, Outcome, ProcessEnv, Telemetry, TelemetryConfig, TelemetryPaths};
+use goble_telemetry::{Channel, ProcessEnv, Telemetry, TelemetryConfig, TelemetryPaths};
 use goble_ui::elements::AppContext;
 use goble_ui::platform::run_with_root;
 

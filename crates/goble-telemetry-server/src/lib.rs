@@ -12,6 +12,14 @@
 //!   before it reaches the store, and a schema this build does not know is
 //!   refused rather than written as a half-understood file.
 //!
+//! - **It is idempotent.** An event is stored under its own `event_id`, and a
+//!   marker remembers that id, so a retry after a timeout is one row rather
+//!   than two. Nothing a client can do short of lying about the id inflates a
+//!   count.
+//! - **It keeps the client's clock.** `occurred_at` says when the event
+//!   happened and decides its day; `received_at` says when the collector got
+//!   it. An event queued offline for two days lands in the day it happened.
+//!
 //! The wire types are the ones the client already uses, from the client crate:
 //! there is one schema, defined once, and both sides deserialize the same
 //! `QueuedItem`.
@@ -21,11 +29,19 @@
 //! ```text
 //! <root>/
 //!   crashes/<fingerprint>/<report-id>.json   one file per report, grouped by crash
-//!   events/<YYYY-MM-DD>.jsonl                append-only event stream
+//!   events/dt=YYYY-MM-DD/<event_id>.json     one file per event, day from occurred_at
+//!   events/seen/<event_id>                   idempotency marker, one per id
 //! ```
+//!
+//! When `GOBLE_TELEMETRY_S3_BUCKET` is set the same items are copied to the
+//! bucket under `raw/` (see [`sink`]). Local disk stays the source of truth, and
+//! a sink write that fails makes the request a retryable 5xx.
+
+pub mod sink;
 
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use axum::Json;
 use axum::body::Bytes;
@@ -35,9 +51,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{DateTime, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
+use serde::de;
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use goble_telemetry::{CrashReport, EventEnvelope, LegacyEventV1, LEGACY_SCHEMA, SCHEMA};
+
+use sink::{Sink, SinkFailure};
 
 /// Largest ingest body accepted. A report is capped well below this by the
 /// client; the limit is here so a hand-written request cannot fill the disk.
@@ -65,6 +85,74 @@ pub enum StoreError {
     Encode(#[from] serde_json::Error),
 }
 
+/// One event as the collector stores it: the client's envelope, plus the
+/// collector's own receipt stamp.
+///
+/// It serialises flat, with `received_at` alongside the envelope's fields, so a
+/// row in the local store has the same shape as an object in the bucket and
+/// one Athena table can read both.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredEvent {
+    pub received_at: DateTime<Utc>,
+    pub envelope: EventEnvelope,
+}
+
+impl StoredEvent {
+    pub fn new(envelope: EventEnvelope, received_at: DateTime<Utc>) -> Self {
+        Self { received_at, envelope }
+    }
+
+    pub fn occurred_at(&self) -> DateTime<Utc> {
+        self.envelope.occurred_at
+    }
+
+    /// The day this event belongs to: the day it happened, not the day it
+    /// arrived.
+    pub fn day(&self) -> NaiveDate {
+        self.occurred_at().date_naive()
+    }
+}
+
+impl Serialize for StoredEvent {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::Error as _;
+
+        let envelope = serde_json::to_value(&self.envelope).map_err(S::Error::custom)?;
+        let serde_json::Value::Object(fields) = envelope else {
+            return Err(S::Error::custom("an envelope serialises to an object"));
+        };
+
+        let mut map = serializer.serialize_map(Some(fields.len() + 1))?;
+        map.serialize_entry("received_at", &self.received_at)?;
+        for (key, value) in fields {
+            map.serialize_entry(&key, &value)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredEvent {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let received_at = value
+            .get("received_at")
+            .cloned()
+            .ok_or_else(|| de::Error::missing_field("received_at"))?;
+        let received_at = serde_json::from_value(received_at).map_err(de::Error::custom)?;
+        // `received_at` rides along in the envelope's fields; the envelope
+        // ignores what it does not know, exactly as it does on the wire.
+        let envelope = serde_json::from_value(value).map_err(de::Error::custom)?;
+        Ok(Self { received_at, envelope })
+    }
+}
+
+/// What storing an event found: a new row, or one that was already there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stored {
+    New,
+    Duplicate,
+}
+
 /// A crash/event store rooted in one directory.
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -88,6 +176,16 @@ impl Store {
         self.root.join("events")
     }
 
+    /// The directory holding one day's events, named by `occurred_at`.
+    pub fn event_day_dir(&self, day: NaiveDate) -> PathBuf {
+        self.events_dir().join(format!("dt={day}"))
+    }
+
+    /// The directory of idempotency markers, one file per `event_id` seen.
+    pub fn seen_dir(&self) -> PathBuf {
+        self.events_dir().join("seen")
+    }
+
     /// Store one report. Uploading the same report twice overwrites it, so a
     /// client that retries after a timeout does not create duplicates.
     pub fn put_crash(&self, report: &CrashReport) -> Result<PathBuf, StoreError> {
@@ -106,26 +204,59 @@ impl Store {
         Ok(path)
     }
 
-    /// Append one event to the day's stream.
-    pub fn put_event(&self, envelope: &EventEnvelope) -> Result<(), StoreError> {
-        let dir = self.events_dir();
-        std::fs::create_dir_all(&dir).map_err(|source| StoreError::Io {
-            path: dir.clone(),
+    /// Store one event under the day it happened.
+    ///
+    /// The first write of an `event_id` creates its marker and its file. A
+    /// second write of the same id is a [`Stored::Duplicate`]: the file is left
+    /// alone, so the day holds one row per event even if the client retried.
+    pub fn put_event(&self, event: &StoredEvent) -> Result<Stored, StoreError> {
+        let seen = self.seen_dir();
+        std::fs::create_dir_all(&seen).map_err(|source| StoreError::Io {
+            path: seen.clone(),
             source,
         })?;
 
-        let path = dir.join(format!("{}.jsonl", Utc::now().format("%Y-%m-%d")));
-        let mut line = serde_json::to_string(envelope)?;
-        line.push('\n');
+        let id = sanitise(&event.envelope.event_id);
+        let marker = seen.join(&id);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&marker) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Ok(Stored::Duplicate);
+            }
+            Err(source) => return Err(StoreError::Io { path: marker, source }),
+        }
 
-        use std::io::Write as _;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|source| StoreError::Io { path: path.clone(), source })?;
-        file.write_all(line.as_bytes())
-            .map_err(|source| StoreError::Io { path, source })
+        let dir = self.event_day_dir(event.day());
+        let path = dir.join(format!("{id}.json"));
+        let body = serde_json::to_vec(event)?;
+        let written = std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(&path, &body))
+            .map_err(|source| StoreError::Io { path: path.clone(), source });
+        if let Err(error) = written {
+            // The marker must not outlive a write that did not happen, or the
+            // retry would look like a duplicate and the event would be lost.
+            let _ = std::fs::remove_file(&marker);
+            return Err(error);
+        }
+        Ok(Stored::New)
+    }
+
+    /// Every event stored for one day, in id order. Unreadable files are
+    /// skipped the way unreadable crash files are.
+    pub fn events_on(&self, day: NaiveDate) -> Result<Vec<StoredEvent>, StoreError> {
+        let dir = self.event_day_dir(day);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Ok(Vec::new());
+        };
+
+        let mut events: Vec<StoredEvent> = entries
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "json"))
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .filter_map(|text| serde_json::from_str(&text).ok())
+            .collect();
+        events.sort_by(|left, right| left.envelope.event_id.cmp(&right.envelope.event_id));
+        Ok(events)
     }
 
     /// One entry per crash, newest crash first.
@@ -214,16 +345,26 @@ pub struct ServerState {
     store: Store,
     /// When set, ingest requires this token.
     token: Option<String>,
+    /// A copy destination beyond the local store; `None` means local only.
+    sink: Option<Arc<dyn Sink>>,
 }
 
 impl ServerState {
     pub fn new(store: Store, token: Option<String>) -> Self {
+        Self::with_sink(store, token, None)
+    }
+
+    pub fn with_sink(store: Store, token: Option<String>, sink: Option<Arc<dyn Sink>>) -> Self {
         let token = token.filter(|value| !value.trim().is_empty());
-        Self { store, token }
+        Self { store, token, sink }
     }
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    pub fn sink(&self) -> Option<&dyn Sink> {
+        self.sink.as_deref()
     }
 
     pub fn requires_token(&self) -> bool {
@@ -268,7 +409,9 @@ impl ServerState {
 /// The collector's routes.
 pub fn router(state: ServerState) -> Router {
     Router::new()
+        // `/health` stays for the probes that already point at it.
         .route("/health", get(health))
+        .route("/v1/health", get(health))
         .route("/v1/crashes", post(ingest_crash))
         .route("/v1/events", post(ingest_event))
         .route("/v1/summary", get(summary))
@@ -276,8 +419,25 @@ pub fn router(state: ServerState) -> Router {
         .with_state(state)
 }
 
-async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({ "status": "ok", "schema": SCHEMA }))
+/// Liveness and sink reachability.
+///
+/// It never authenticates and never names a credential: an unconfigured sink is
+/// `configured: false` with no probe, a configured one is probed and reduced to
+/// a boolean plus a fixed reason label.
+async fn health(State(state): State<ServerState>) -> Response {
+    let s3 = match state.sink() {
+        None => serde_json::json!({ "configured": false, "reachable": null }),
+        Some(sink) => match sink.probe().await {
+            Ok(()) => serde_json::json!({ "configured": true, "reachable": true }),
+            Err(failure) => serde_json::json!({
+                "configured": true,
+                "reachable": false,
+                "reason": failure.as_str(),
+            }),
+        },
+    };
+
+    Json(serde_json::json!({ "status": "ok", "schema": SCHEMA, "s3": s3 })).into_response()
 }
 
 /// An ingest answer. Kept tiny: the client only needs to know whether to retry.
@@ -337,6 +497,23 @@ fn rejected(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
 
+/// A sink write that did not happen.
+///
+/// The status is retryable on purpose: the client keeps the item and sends it
+/// again, and the second attempt overwrites the same object. Acknowledging now
+/// would lose the copy until somebody noticed the bucket was thin.
+fn sink_failed(failure: SinkFailure) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::RETRY_AFTER, "5")],
+        Json(serde_json::json!({
+            "error": "the collector could not copy the item to the object store",
+            "reason": failure.as_str(),
+        })),
+    )
+        .into_response()
+}
+
 async fn ingest_crash(
     State(state): State<ServerState>,
     headers: HeaderMap,
@@ -365,15 +542,21 @@ async fn ingest_crash(
     }
 
     match state.store.put_crash(&report) {
-        Ok(_) => {
-            tracing::info!(fingerprint = %report.fingerprint, version = %report.context.app_version, "stored a crash report");
-            (StatusCode::ACCEPTED, Json(Ingested { accepted: 1 })).into_response()
-        }
+        Ok(_) => {}
         Err(err) => {
             tracing::error!("could not store a crash report: {err}");
-            rejected(StatusCode::INTERNAL_SERVER_ERROR, "could not store the report")
+            return rejected(StatusCode::INTERNAL_SERVER_ERROR, "could not store the report");
         }
     }
+
+    if let Some(sink) = state.sink() {
+        if let Err(failure) = sink.put_crash(&report).await {
+            return sink_failed(failure);
+        }
+    }
+
+    tracing::info!(fingerprint = %report.fingerprint, version = %report.context.app_version, "stored a crash report");
+    (StatusCode::ACCEPTED, Json(Ingested { accepted: 1 })).into_response()
 }
 
 async fn ingest_event(
@@ -394,7 +577,8 @@ async fn ingest_event(
         return rejected(StatusCode::BAD_REQUEST, "this endpoint takes events");
     };
 
-    let envelope = match normalise_event(*value, Utc::now()) {
+    let received_at = Utc::now();
+    let envelope = match normalise_event(*value, received_at) {
         Ok(Some(envelope)) => envelope,
         Ok(None) => {
             tracing::debug!("dropped a schema-1 event with no catalog feature name");
@@ -403,18 +587,30 @@ async fn ingest_event(
         Err(err) => return rejected(StatusCode::BAD_REQUEST, &err),
     };
 
-    match state.store.put_event(&envelope) {
-        Ok(()) => {
-            if envelope.is_legacy() {
-                tracing::debug!(event_id = %envelope.event_id, "normalised a schema-1 event");
-            }
-            (StatusCode::ACCEPTED, Json(Ingested { accepted: 1 })).into_response()
-        }
+    let event = StoredEvent::new(envelope, received_at);
+    let stored = match state.store.put_event(&event) {
+        Ok(stored) => stored,
         Err(err) => {
             tracing::error!("could not store an event: {err}");
-            rejected(StatusCode::INTERNAL_SERVER_ERROR, "could not store the event")
+            return rejected(StatusCode::INTERNAL_SERVER_ERROR, "could not store the event");
+        }
+    };
+
+    if stored == Stored::Duplicate {
+        // A retry of an event already on disk: one row, and the sink is asked
+        // again because the retry may be finishing a copy that failed.
+        tracing::debug!(event_id = %event.envelope.event_id, "an event was already stored");
+    } else if event.envelope.is_legacy() {
+        tracing::debug!(event_id = %event.envelope.event_id, "normalised a schema-1 event");
+    }
+
+    if let Some(sink) = state.sink() {
+        if let Err(failure) = sink.put_event(&event).await {
+            return sink_failed(failure);
         }
     }
+
+    (StatusCode::ACCEPTED, Json(Ingested { accepted: 1 })).into_response()
 }
 
 async fn summary(State(state): State<ServerState>, headers: HeaderMap) -> Response {
@@ -483,6 +679,24 @@ mod tests {
         ServerState::new(Store::new(dir), token.map(str::to_owned))
     }
 
+    /// A sink that always fails, standing in for an unreachable bucket.
+    #[derive(Debug)]
+    struct FailingSink;
+
+    impl sink::Sink for FailingSink {
+        fn put_event<'a>(&'a self, _: &'a StoredEvent) -> sink::SinkFuture<'a, ()> {
+            Box::pin(async { Err(SinkFailure::Unavailable) })
+        }
+
+        fn put_crash<'a>(&'a self, _: &'a CrashReport) -> sink::SinkFuture<'a, ()> {
+            Box::pin(async { Err(SinkFailure::Unavailable) })
+        }
+
+        fn probe<'a>(&'a self) -> sink::SinkFuture<'a, ()> {
+            Box::pin(async { Err(SinkFailure::Unavailable) })
+        }
+    }
+
     async fn post(state: &ServerState, path: &str, body: Vec<u8>, token: Option<&str>) -> u16 {
         let mut builder = Request::builder().method("POST").uri(path);
         if let Some(token) = token {
@@ -549,20 +763,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_event_is_appended_to_the_days_stream() {
+    async fn an_event_is_stored_under_the_day_it_happened() {
         let dir = tempfile::tempdir().unwrap();
         let state = state(dir.path(), None);
         let body = serde_json::to_vec(&QueuedItem::event(event())).unwrap();
 
         assert_eq!(post(&state, "/v1/events", body, None).await, 202);
-        // The day rollover is not simulated; today's file must exist.
-        let path =
-            state.store().events_dir().join(format!("{}.jsonl", Utc::now().format("%Y-%m-%d")));
+
+        let today = Utc::now().date_naive();
+        let stored = state.store().events_on(today).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(stored[0].received_at >= stored[0].occurred_at());
+        // The file is named by the event, under the day it happened.
+        let path = state
+            .store()
+            .event_day_dir(today)
+            .join(format!("{}.json", stored[0].envelope.event_id));
         assert!(path.is_file(), "{path:?}");
-        let stored = std::fs::read_to_string(path).unwrap();
-        assert!(stored.contains("app_started"), "{stored}");
-        assert!(stored.contains("\"schema\":2"), "{stored}");
-        assert!(stored.contains("\"event_id\""), "{stored}");
+    }
+
+    #[tokio::test]
+    async fn an_event_queued_offline_lands_in_the_day_it_happened() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path(), None);
+
+        let mut envelope = event();
+        envelope.occurred_at = Utc::now() - chrono::Duration::days(2);
+        let day = envelope.occurred_at.date_naive();
+        let body = serde_json::to_vec(&QueuedItem::event(envelope)).unwrap();
+
+        assert_eq!(post(&state, "/v1/events", body, None).await, 202);
+
+        assert_eq!(state.store().events_on(day).unwrap().len(), 1);
+        assert!(state.store().events_on(Utc::now().date_naive()).unwrap().is_empty());
+        assert!(state.store().event_day_dir(day).is_dir());
+    }
+
+    #[tokio::test]
+    async fn the_same_event_twice_is_one_logical_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path(), None);
+        let envelope = event();
+        let event_id = envelope.event_id.clone();
+        let body = serde_json::to_vec(&QueuedItem::event(envelope)).unwrap();
+
+        assert_eq!(post(&state, "/v1/events", body.clone(), None).await, 202);
+        assert_eq!(post(&state, "/v1/events", body, None).await, 202);
+
+        let stored = state.store().events_on(Utc::now().date_naive()).unwrap();
+        assert_eq!(stored.len(), 1, "a retry is not a second row");
+        assert_eq!(stored[0].envelope.event_id, event_id);
+        assert!(state.store().seen_dir().join(&event_id).is_file());
     }
 
     #[tokio::test]
@@ -589,14 +840,15 @@ mod tests {
 
         assert_eq!(post(&state, "/v1/events", body, None).await, 202);
 
-        let path =
-            state.store().events_dir().join(format!("{}.jsonl", Utc::now().format("%Y-%m-%d")));
-        let stored: EventEnvelope =
-            serde_json::from_str(std::fs::read_to_string(path).unwrap().trim()).unwrap();
-        assert!(stored.event_id.starts_with(LEGACY_EVENT_PREFIX), "{}", stored.event_id);
-        assert_eq!(stored.context.install_id, "install-1");
-        assert_eq!(stored.arrived_as_schema(), LEGACY_SCHEMA);
-        assert_eq!(stored.schema, SCHEMA);
+        let stored = state.store().events_on(Utc::now().date_naive()).unwrap();
+        assert_eq!(stored.len(), 1);
+        let row = &stored[0];
+        assert!(row.envelope.event_id.starts_with(LEGACY_EVENT_PREFIX), "{}", row.envelope.event_id);
+        assert_eq!(row.envelope.context.install_id, "install-1");
+        assert_eq!(row.envelope.arrived_as_schema(), LEGACY_SCHEMA);
+        assert_eq!(row.envelope.schema, SCHEMA);
+        // A v1 client sent no clock, so the collector's receipt is both stamps.
+        assert_eq!(row.envelope.occurred_at, row.received_at);
     }
 
     #[tokio::test]
@@ -626,13 +878,11 @@ mod tests {
 
         assert_eq!(post(&state, "/v1/events", body, None).await, 202);
 
-        let path =
-            state.store().events_dir().join(format!("{}.jsonl", Utc::now().format("%Y-%m-%d")));
-        let stored: EventEnvelope =
-            serde_json::from_str(std::fs::read_to_string(path).unwrap().trim()).unwrap();
-        assert_eq!(stored.event_id, event_id);
-        assert_eq!(stored.occurred_at, occurred_at);
-        assert!(!stored.is_legacy());
+        let stored = state.store().events_on(occurred_at.date_naive()).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].envelope.event_id, event_id);
+        assert_eq!(stored[0].envelope.occurred_at, occurred_at);
+        assert!(!stored[0].envelope.is_legacy());
     }
 
     #[tokio::test]
@@ -695,6 +945,56 @@ mod tests {
         let (status, body) = get(&state, "/health", None).await;
         assert_eq!(status, 200);
         assert_eq!(body["schema"], SCHEMA);
+
+        let (status, body) = get(&state, "/v1/health", None).await;
+        assert_eq!(status, 200);
+        assert_eq!(body["s3"]["configured"], false);
+        assert!(body["s3"]["reachable"].is_null());
+    }
+
+    #[tokio::test]
+    async fn health_reports_a_sink_that_cannot_be_reached_without_naming_why_in_detail() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = ServerState::with_sink(
+            Store::new(dir.path()),
+            None,
+            Some(Arc::new(FailingSink)),
+        );
+
+        let (status, body) = get(&state, "/v1/health", None).await;
+        assert_eq!(status, 200);
+        assert_eq!(body["s3"]["configured"], true);
+        assert_eq!(body["s3"]["reachable"], false);
+        assert_eq!(body["s3"]["reason"], "unavailable");
+        let text = body.to_string();
+        for leak in ["aws", "secret", "token", "AKIA"] {
+            assert!(!text.to_ascii_lowercase().contains(leak), "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sink_failure_is_retryable_and_leaves_the_local_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let state =
+            ServerState::with_sink(Store::new(dir.path()), None, Some(Arc::new(FailingSink)));
+        let body = serde_json::to_vec(&QueuedItem::event(event())).unwrap();
+
+        // The local store has the event, so the response is a retry rather
+        // than a loss, and the retry does not add a second row.
+        assert_eq!(post(&state, "/v1/events", body.clone(), None).await, 503);
+        assert_eq!(post(&state, "/v1/events", body, None).await, 503);
+        assert_eq!(state.store().events_on(Utc::now().date_naive()).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_sink_failure_on_a_crash_is_retryable_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let state =
+            ServerState::with_sink(Store::new(dir.path()), None, Some(Arc::new(FailingSink)));
+        let body = serde_json::to_vec(&QueuedItem::crash(report("boom"))).unwrap();
+
+        assert_eq!(post(&state, "/v1/crashes", body, None).await, 503);
+        assert_eq!(state.store().summaries().unwrap().len(), 1);
     }
 
     #[tokio::test]

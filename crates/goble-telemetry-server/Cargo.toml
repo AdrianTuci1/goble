@@ -9,6 +9,8 @@ description = "Collector for Goble telemetry: accepts crash reports and events a
 
 [dependencies]
 goble-telemetry = { path = "../goble-telemetry" }
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

@@ -25,6 +25,7 @@ impl WorkerClient {
         worker_id: WorkerId,
         config: &WorkerConfig,
         pairing_code: String,
+        link_id: Option<String>,
     ) -> anyhow::Result<Self> {
         let url = config.websocket_url();
         let ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>> =
@@ -49,6 +50,7 @@ impl WorkerClient {
         let pair_msg = DesktopMessage::PairRequest {
             worker_id: worker_id.clone(),
             pairing_code_hash: Some(hash),
+            link_id: link_id.clone(),
         };
         let json = serde_json::to_string(&pair_msg)?;
         write
@@ -72,6 +74,7 @@ impl WorkerClient {
 
         let state_clone = state.clone();
         let seed_tx = tx.clone();
+        let link_id_clone = link_id.clone();
         tokio::spawn(async move {
             let mut seeded = false;
             while let Some(Ok(msg)) = read.next().await {
@@ -86,6 +89,15 @@ impl WorkerClient {
                         // — its vault is the authority for the value.
                         if !seeded && matches!(worker_msg, WorkerMessage::Paired) {
                             seeded = true;
+                            // The worker accepted the desktop, so the link it
+                            // now holds is this installation's. Adopting it
+                            // here keeps both sides on one id even if the
+                            // desktop's own state was reset.
+                            if let Some(link_id) = &link_id_clone {
+                                if let Some(telemetry) = goble_telemetry::global() {
+                                    telemetry.link_with(link_id);
+                                }
+                            }
                             if let Some(secret) = state_clone.llm_api_key_secret() {
                                 let _ = seed_tx.send(DesktopMessage::PushSecrets {
                                     secrets: vec![secret],
@@ -141,6 +153,7 @@ mod tests {
                             DesktopMessage::PairRequest {
                                 worker_id,
                                 pairing_code_hash: _,
+                                link_id: _,
                             } => {
                                 let resp = WorkerMessage::Paired;
                                 let _ = ws
@@ -174,6 +187,7 @@ mod tests {
                 .with_worker_id(worker_id.clone())
                 .with_port(port),
             "0000".to_string(),
+            None,
         )
         .await;
         assert!(client.is_ok(), "{:?}", client.err());
@@ -239,6 +253,7 @@ mod tests {
                 .with_worker_id(worker_id.clone())
                 .with_port(port),
             "0000".to_string(),
+            None,
         )
         .await
         .expect("connect");

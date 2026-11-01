@@ -9,6 +9,10 @@ use crate::state::AppState;
 #[derive(Debug, Deserialize)]
 pub struct PairRequest {
     pub pairing_code_hash: Option<String>,
+    /// The desktop's telemetry link id. Optional: a desktop that has not
+    /// started telemetry pairs exactly as before.
+    #[serde(default)]
+    pub link_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -22,6 +26,11 @@ pub async fn pair_handler(
     Json(req): Json<PairRequest>,
 ) -> impl IntoResponse {
     if state.is_mtls_active() {
+        // The client certificate authenticates the desktop, so it may set or
+        // replace the link.
+        if let Some(link_id) = &req.link_id {
+            state.adopt_link_id(link_id);
+        }
         return (
             StatusCode::OK,
             Json(PairResponse {
@@ -29,6 +38,14 @@ pub async fn pair_handler(
                 paired: true,
             }),
         );
+    }
+    // No certificate yet: this is the provisioning call that teaches the
+    // worker its pairing code. A link set here is only the first one, so a
+    // later request cannot move an existing link to another desktop.
+    if state.link_id().is_none() {
+        if let Some(link_id) = &req.link_id {
+            state.adopt_link_id(link_id);
+        }
     }
     if let Some(hash) = req.pairing_code_hash {
         state.set_pairing_hash(hash);

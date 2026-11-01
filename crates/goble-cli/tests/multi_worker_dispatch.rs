@@ -31,6 +31,8 @@ async fn test_multi_worker_round_robin_dispatch() {
     let pair = DesktopMessage::PairRequest {
         worker_id: worker_a_id.clone(),
         pairing_code_hash: Some(hash_pairing_code(code, &[0u8; 16]).unwrap()),
+        // The CLI does not run telemetry, so it carries no link id.
+        link_id: None,
     };
     ws_a.send(Message::Text(serde_json::to_string(&pair).unwrap().into()))
         .await
@@ -39,6 +41,7 @@ async fn test_multi_worker_round_robin_dispatch() {
     let pair_b = DesktopMessage::PairRequest {
         worker_id: worker_b_id.clone(),
         pairing_code_hash: Some(hash_pairing_code(code, &[0u8; 16]).unwrap()),
+        link_id: None,
     };
     ws_b.send(Message::Text(
         serde_json::to_string(&pair_b).unwrap().into(),

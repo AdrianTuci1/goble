@@ -128,6 +128,9 @@ fn try_start_telemetry() -> Result<Arc<Telemetry>, Box<dyn std::error::Error>> {
     let max_level = logger.max_level();
     telemetry.install_logger(Box::new(logger), max_level)?;
     telemetry.clone().install_panic_hook();
+    // Publish the handle so outcome sites elsewhere in the app (a finished
+    // turn, an approval, a command block) can record without being handed it.
+    goble_telemetry::set_global(telemetry.clone());
     Ok(telemetry)
 }
 

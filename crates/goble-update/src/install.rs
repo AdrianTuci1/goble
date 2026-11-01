@@ -10,6 +10,16 @@
 //! shell script that waits for this process to exit. No privileged helper, no
 //! daemon, no unsafe code.
 //!
+//! # Reversible
+//!
+//! Before anything is replaced, the current copy goes into
+//! `~/.goble/updates/previous/` and a `pending` marker names the version being
+//! installed. A build that stays up for [`HEALTHY_AFTER`] writes `healthy` and
+//! clears `pending`; a build that never gets there is undone at the next start
+//! by [`UpdatePaths::recover`], which puts the copy back and records the failed
+//! version in `~/.goble/update-state.json`. The original is copied, never
+//! moved, so a failed install cannot leave the user without a binary.
+//!
 //! # Known limitation
 //!
 //! The macOS bundle swap is not atomic. It moves the old bundle aside and puts
@@ -21,8 +31,18 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
+
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 use crate::client::StagedArtifact;
+use crate::state::UpdateState;
+
+/// How long a freshly installed build must stay up before it is called healthy.
+/// A build that cannot survive its own startup is exactly the build the
+/// rollback exists for.
+pub const HEALTHY_AFTER: Duration = Duration::from_secs(60);
 
 /// Extra flags the Windows installer understands, kept in one place because the
 /// updater and the packaging script both depend on them.
@@ -114,6 +134,307 @@ pub enum InstallError {
     Io { path: PathBuf, reason: String },
     #[error("could not start {program}: {reason}")]
     Spawn { program: String, reason: String },
+    #[error("there is no previous copy of {path} to fall back to")]
+    NoBackup { path: PathBuf },
+    #[error("the update markers could not be read: {path}: {reason}")]
+    Marker { path: PathBuf, reason: String },
+    #[error("the update state could not be written: {0}")]
+    State(String),
+}
+
+/// Where the update markers live: `<goble home>/updates`.
+///
+/// | File | Meaning |
+/// | --- | --- |
+/// | `pending` | a version was staged and swapped in, and has not proved itself |
+/// | `healthy` | the staged version ran for [`HEALTHY_AFTER`] |
+/// | `previous/<name>` | the copy of what the swap replaced |
+/// | `downloads/` | staged artifacts, before they are installed |
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdatePaths {
+    root: PathBuf,
+}
+
+impl UpdatePaths {
+    pub fn under(goble_home: impl AsRef<Path>) -> Self {
+        Self { root: goble_home.as_ref().join("updates") }
+    }
+
+    /// `~/.goble/updates`, or an error when there is no home directory.
+    pub fn detect() -> Result<Self, InstallError> {
+        crate::home_dir().map(Self::under).ok_or_else(|| InstallError::Io {
+            path: PathBuf::from("~/.goble/updates"),
+            reason: "the home directory could not be determined".to_owned(),
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Where downloads are staged before they are verified and installed.
+    pub fn downloads_dir(&self) -> PathBuf {
+        self.root.join("downloads")
+    }
+
+    pub fn previous_dir(&self) -> PathBuf {
+        self.root.join("previous")
+    }
+
+    pub fn pending_path(&self) -> PathBuf {
+        self.root.join("pending")
+    }
+
+    pub fn healthy_path(&self) -> PathBuf {
+        self.root.join("healthy")
+    }
+
+    /// `<goble home>/update-state.json`, beside the marker directory.
+    pub fn state_path(&self) -> PathBuf {
+        self.root
+            .parent()
+            .map(UpdateState::path_in)
+            .unwrap_or_else(|| UpdateState::path_in(&self.root))
+    }
+
+    pub fn is_healthy(&self) -> bool {
+        self.healthy_path().is_file()
+    }
+
+    /// What is waiting to prove itself, if anything.
+    pub fn pending(&self) -> Result<Option<PendingInstall>, InstallError> {
+        let path = self.pending_path();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(InstallError::Marker { path, reason: err.to_string() });
+            }
+        };
+        serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|err| InstallError::Marker { path, reason: err.to_string() })
+    }
+
+    /// Write the pending marker. Called before the swap, so a build that never
+    /// reaches its healthy marker can be undone.
+    pub fn write_pending(&self, pending: &PendingInstall) -> Result<(), InstallError> {
+        std::fs::create_dir_all(&self.root).map_err(|err| io_error(&self.root, err))?;
+        let path = self.pending_path();
+        let text = serde_json::to_string_pretty(pending)
+            .map_err(|err| InstallError::Marker { path: path.clone(), reason: err.to_string() })?;
+        let mut bytes = text.into_bytes();
+        bytes.push(b'\n');
+        write_atomic(&path, &bytes)
+    }
+
+    /// Write the healthy marker and clear the pending one.
+    ///
+    /// This is the moment an install counts. Until it happens the update state
+    /// keeps naming the previous version; [`Self::recover`] undoes the swap when
+    /// the app is started again without it.
+    pub fn mark_healthy(&self) -> Result<Option<PendingInstall>, InstallError> {
+        std::fs::create_dir_all(&self.root).map_err(|err| io_error(&self.root, err))?;
+        let healthy = self.healthy_path();
+        let at = Utc::now().to_rfc3339();
+        write_atomic(&healthy, format!("{at}\n").as_bytes())?;
+
+        let pending = self.pending()?;
+        if pending.is_some() {
+            let path = self.pending_path();
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(io_error(&path, err)),
+            }
+        }
+        Ok(pending)
+    }
+
+    /// Copy what is about to be replaced into `previous/`, and return the copy's
+    /// path. The copy is what a rollback restores; the original is never moved,
+    /// so a failure here leaves the running build untouched.
+    pub fn backup(&self, target: &Path) -> Result<PathBuf, InstallError> {
+        let name = target
+            .file_name()
+            .ok_or_else(|| InstallError::NoBackup { path: target.to_path_buf() })?;
+        let previous_dir = self.previous_dir();
+        std::fs::create_dir_all(&previous_dir).map_err(|err| io_error(&previous_dir, err))?;
+        let destination = previous_dir.join(name);
+
+        // Backing up a path that is already the backup would delete it first.
+        if destination == target {
+            return Ok(destination);
+        }
+        match std::fs::remove_dir_all(&destination) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                let _ = std::fs::remove_file(&destination);
+            }
+        }
+
+        if target.is_dir() {
+            copy_tree(target, &destination)?;
+        } else if target.is_file() {
+            std::fs::copy(target, &destination).map_err(|err| io_error(target, err))?;
+        } else {
+            return Err(InstallError::NoBackup { path: target.to_path_buf() });
+        }
+
+        if !destination.exists() {
+            return Err(InstallError::NoBackup { path: target.to_path_buf() });
+        }
+        Ok(destination)
+    }
+
+    /// Undo a swap that never reached its healthy marker.
+    ///
+    /// Called at startup, before the UI exists, so a build that cannot run its
+    /// own window is not the build the user is left with. The failed version is
+    /// recorded in the update state.
+    pub fn recover(&self) -> Result<LocalRollback, InstallError> {
+        let Some(pending) = self.pending()? else {
+            return Ok(LocalRollback::None);
+        };
+
+        // A healthy marker means the swap was accepted; the pending file is
+        // then a leftover from a crash between the two writes.
+        if self.is_healthy() {
+            let path = self.pending_path();
+            let _ = std::fs::remove_file(path);
+            return Ok(LocalRollback::None);
+        }
+
+        let previous = match pending.previous.clone() {
+            Some(previous) if previous.exists() => previous,
+            _ => {
+                // Nothing to put back: keep the failed version visible instead
+                // of pretending the update succeeded.
+                self.record_failure(&pending)?;
+                let _ = std::fs::remove_file(self.pending_path());
+                return Ok(LocalRollback::NothingToRestore {
+                    failed_version: pending.version,
+                    failed_epoch: pending.epoch,
+                });
+            }
+        };
+
+        restore(&previous, &pending.target)?;
+
+        let _ = std::fs::remove_file(self.healthy_path());
+        let _ = std::fs::remove_file(self.pending_path());
+        self.record_failure(&pending)?;
+
+        Ok(LocalRollback::Restored {
+            failed_version: pending.version,
+            failed_epoch: pending.epoch,
+            target: pending.target,
+        })
+    }
+
+    fn record_failure(&self, pending: &PendingInstall) -> Result<(), InstallError> {
+        let path = self.state_path();
+        let mut state = UpdateState::load(&path).map_err(|err| InstallError::State(err.to_string()))?;
+        state.record_failed(pending.version.clone(), pending.epoch);
+        state.save(&path).map_err(|err| InstallError::State(err.to_string()))
+    }
+}
+
+/// The update that is staged and waiting to prove itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingInstall {
+    pub version: String,
+    pub epoch: u64,
+    /// The path the swap replaces.
+    pub target: PathBuf,
+    /// The copy of what was there before, under `previous/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<PathBuf>,
+    /// `app-bundle` or `appimage`.
+    pub kind: String,
+}
+
+impl PendingInstall {
+    pub fn for_appimage(version: impl Into<String>, epoch: u64, target: PathBuf) -> Self {
+        Self {
+            version: version.into(),
+            epoch,
+            target,
+            previous: None,
+            kind: "appimage".to_owned(),
+        }
+    }
+
+    pub fn for_bundle(version: impl Into<String>, epoch: u64, target: PathBuf) -> Self {
+        Self {
+            version: version.into(),
+            epoch,
+            target,
+            previous: None,
+            kind: "app-bundle".to_owned(),
+        }
+    }
+
+    pub fn with_previous(mut self, previous: Option<PathBuf>) -> Self {
+        self.previous = previous;
+        self
+    }
+}
+
+/// What [`UpdatePaths::recover`] did at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalRollback {
+    /// There was no unfinished install.
+    None,
+    /// The previous copy is back in place; the failed version is recorded.
+    Restored { failed_version: String, failed_epoch: u64, target: PathBuf },
+    /// An install never became healthy, and there was no copy to restore.
+    NothingToRestore { failed_version: String, failed_epoch: u64 },
+}
+
+impl LocalRollback {
+    /// Whether the app should hand over to the restored build.
+    pub fn restart_required(&self) -> bool {
+        matches!(self, Self::Restored { .. })
+    }
+
+    pub fn message(&self) -> Option<String> {
+        match self {
+            Self::None => None,
+            Self::Restored { failed_version, .. } => Some(format!(
+                "Goble {failed_version} did not start cleanly, so the previous version was restored"
+            )),
+            Self::NothingToRestore { failed_version, .. } => Some(format!(
+                "Goble {failed_version} did not start cleanly, and there was no previous copy to restore"
+            )),
+        }
+    }
+}
+
+/// Undo an install that never reached its healthy marker, using the default
+/// `~/.goble/updates` directory.
+///
+/// This is the call the app makes at startup, before the UI exists: a build
+/// that swaps itself in and cannot run its own window is undone by the next
+/// launch, which puts the previous copy back and hands over to it.
+pub fn rollback_local() -> Result<LocalRollback, InstallError> {
+    UpdatePaths::detect()?.recover()
+}
+
+/// What an install is for: where the markers live, and the version and epoch
+/// that are being put in place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallRequest {
+    pub paths: UpdatePaths,
+    pub version: String,
+    pub epoch: u64,
+}
+
+impl InstallRequest {
+    pub fn new(paths: UpdatePaths, version: impl Into<String>, epoch: u64) -> Self {
+        Self { paths, version: version.into(), epoch }
+    }
 }
 
 /// Decide how to install a staged artifact.
@@ -191,11 +512,26 @@ pub fn bundle_root(exe: &Path) -> Option<PathBuf> {
 }
 
 impl InstallPlan {
-    /// Do it.
-    pub fn apply(&self) -> Result<InstallOutcome, InstallError> {
+    /// Do it, keeping what is replaced recoverable.
+    ///
+    /// The current copy goes into `previous/` and the pending marker names the
+    /// version being installed *before* anything is swapped, so a build that
+    /// never reaches its healthy marker can be undone by
+    /// [`UpdatePaths::recover`]. The original is only ever copied, never moved,
+    /// so a failed install leaves the running build where it is.
+    pub fn apply(&self, request: &InstallRequest) -> Result<InstallOutcome, InstallError> {
         match self {
             Self::ReplaceAppImage { staged, target } => {
-                replace_file(staged, target)?;
+                let previous = request.paths.backup(target)?;
+                let pending =
+                    PendingInstall::for_appimage(&request.version, request.epoch, target.clone())
+                        .with_previous(Some(previous));
+                request.paths.write_pending(&pending)?;
+                if let Err(err) = replace_file(staged, target) {
+                    // Nothing was swapped, so there is nothing to undo.
+                    let _ = std::fs::remove_file(request.paths.pending_path());
+                    return Err(err);
+                }
                 Ok(InstallOutcome::Applied { restart_required: true })
             }
             Self::RunInstaller { installer } => {
@@ -211,6 +547,11 @@ impl InstallPlan {
                 Ok(InstallOutcome::Applied { restart_required: true })
             }
             Self::ReplaceAppBundle { dmg, target, team_id } => {
+                let previous = request.paths.backup(target)?;
+                let pending =
+                    PendingInstall::for_bundle(&request.version, request.epoch, target.clone())
+                        .with_previous(Some(previous));
+                request.paths.write_pending(&pending)?;
                 let script = bundle_swap_script(dmg, target, std::process::id(), team_id.as_deref());
                 spawn_script(&script)?;
                 Ok(InstallOutcome::Applied { restart_required: true })
@@ -221,6 +562,61 @@ impl InstallPlan {
         }
     }
 }
+
+/// Write a file so a reader sees either the old bytes or the new ones.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), InstallError> {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    let temporary = PathBuf::from(temporary);
+    std::fs::write(&temporary, bytes).map_err(|err| io_error(&temporary, err))?;
+    std::fs::rename(&temporary, path).map_err(|err| io_error(path, err))
+}
+
+/// Copy a file or a directory tree. Symlinks are followed: a bundle's internal
+/// links point inside the bundle, and a rollback copy that keeps them dangling
+/// is not a bundle that runs.
+fn copy_tree(from: &Path, to: &Path) -> Result<(), InstallError> {
+    std::fs::create_dir_all(to).map_err(|err| io_error(to, err))?;
+    let entries = std::fs::read_dir(from).map_err(|err| io_error(from, err))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| io_error(from, err))?;
+        let source = entry.path();
+        let destination = to.join(entry.file_name());
+        if source.is_dir() {
+            copy_tree(&source, &destination)?;
+        } else {
+            std::fs::copy(&source, &destination).map_err(|err| io_error(&source, err))?;
+        }
+    }
+    Ok(())
+}
+
+/// Put `previous` back over `target`, leaving at least one working copy at every
+/// step: the copy is made beside the target and renamed into place.
+fn restore(previous: &Path, target: &Path) -> Result<(), InstallError> {
+    let name = target
+        .file_name()
+        .ok_or_else(|| InstallError::NoBackup { path: target.to_path_buf() })?;
+    let failed = target.with_file_name(format!("{}.failed", name.to_string_lossy()));
+
+    if previous.is_dir() {
+        let _ = std::fs::remove_dir_all(&failed);
+        if target.exists() {
+            std::fs::rename(target, &failed).map_err(|err| io_error(target, err))?;
+        }
+        copy_tree(previous, target)?;
+        let _ = std::fs::remove_dir_all(&failed);
+        return Ok(());
+    }
+
+    let mut staged = target.as_os_str().to_owned();
+    staged.push(".rollback");
+    let staged = PathBuf::from(staged);
+    std::fs::copy(previous, &staged).map_err(|err| io_error(&staged, err))?;
+    make_executable(&staged)?;
+    std::fs::rename(&staged, target).map_err(|err| io_error(target, err))
+}
+
 
 /// Replace one file with another, across a device boundary if need be.
 ///
@@ -454,14 +850,20 @@ mod tests {
         assert!(matches!(plan, InstallPlan::Manual { .. }), "{plan:?}");
     }
 
+    fn request(paths: &UpdatePaths, version: &str, epoch: u64) -> InstallRequest {
+        InstallRequest::new(paths.clone(), version, epoch)
+    }
+
     #[test]
     fn a_manual_plan_hands_the_command_to_the_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = UpdatePaths::under(dir.path());
         let plan = InstallPlan::Manual {
             command: "sudo apt install '/tmp/x.deb'".into(),
             hint: "the package manager owns this".into(),
         };
         assert_eq!(
-            plan.apply().unwrap(),
+            plan.apply(&request(&paths, "0.2.0", 7)).unwrap(),
             InstallOutcome::NeedsUser {
                 command: "sudo apt install '/tmp/x.deb'".into(),
                 hint: "the package manager owns this".into(),
@@ -473,6 +875,8 @@ mod tests {
     fn replacing_an_appimage_puts_the_new_bytes_in_place() {
         let staging = tempfile::tempdir().unwrap();
         let install = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let paths = UpdatePaths::under(home.path());
 
         let staged_path = staging.path().join("Goble-0.2.0-x86_64.AppImage");
         std::fs::write(&staged_path, b"the new build").unwrap();
@@ -480,7 +884,19 @@ mod tests {
         std::fs::write(&target, b"the old build").unwrap();
 
         let plan = InstallPlan::ReplaceAppImage { staged: staged_path.clone(), target: target.clone() };
-        assert_eq!(plan.apply().unwrap(), InstallOutcome::Applied { restart_required: true });
+        assert_eq!(
+            plan.apply(&request(&paths, "0.2.0", 7)).unwrap(),
+            InstallOutcome::Applied { restart_required: true }
+        );
+
+        // The replaced bytes are kept, and the pending marker names what is in
+        // place now.
+        let previous = paths.previous_dir().join("Goble.AppImage");
+        assert_eq!(std::fs::read(&previous).unwrap(), b"the old build");
+        let pending = paths.pending().unwrap().expect("a pending marker");
+        assert_eq!(pending.version, "0.2.0");
+        assert_eq!(pending.epoch, 7);
+        assert_eq!(pending.previous.as_deref(), Some(previous.as_path()));
 
         assert_eq!(std::fs::read(&target).unwrap(), b"the new build");
         assert!(!staged_path.exists());
@@ -534,5 +950,186 @@ mod tests {
             None,
         );
         assert!(!script.contains("codesign"), "{script}");
+    }
+
+    /// A fake bundle layout: `Goble.app/Contents/MacOS/goble-app` plus a marker
+    /// file whose contents say which build it is.
+    fn fake_bundle(root: &Path, build: &str) -> PathBuf {
+        let bundle = root.join("Goble.app");
+        let macos = bundle.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::write(macos.join("goble-app"), build).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(
+                macos.join("goble-app"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        bundle
+    }
+
+    fn build_of(bundle: &Path) -> String {
+        std::fs::read_to_string(bundle.join("Contents/MacOS/goble-app")).unwrap()
+    }
+
+    #[test]
+    fn a_backup_copies_a_bundle_and_leaves_the_original_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let install = tempfile::tempdir().unwrap();
+        let paths = UpdatePaths::under(home.path());
+        let bundle = fake_bundle(install.path(), "0.1.0");
+
+        let backup = paths.backup(&bundle).unwrap();
+        assert!(backup.is_dir());
+        assert_eq!(build_of(&backup), "0.1.0");
+        assert_eq!(build_of(&bundle), "0.1.0", "the running bundle is never moved");
+    }
+
+    #[test]
+    fn a_missing_target_is_never_replaced() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let paths = UpdatePaths::under(home.path());
+
+        let staged = staging.path().join("Goble.AppImage");
+        std::fs::write(&staged, b"new").unwrap();
+        let target = staging.path().join("does-not-exist");
+
+        let plan = InstallPlan::ReplaceAppImage { staged: staged.clone(), target };
+        let error = plan.apply(&request(&paths, "0.2.0", 7)).unwrap_err();
+        assert!(matches!(error, InstallError::NoBackup { .. }), "{error}");
+        assert_eq!(std::fs::read(&staged).unwrap(), b"new", "the staged build is kept");
+        assert!(paths.pending().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_healthy_install_clears_the_pending_marker() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = UpdatePaths::under(home.path());
+        let pending = PendingInstall::for_appimage("0.2.0", 7, PathBuf::from("/tmp/Goble.AppImage"));
+        paths.write_pending(&pending).unwrap();
+
+        assert!(paths.pending().unwrap().is_some());
+        assert!(!paths.is_healthy());
+
+        let confirmed = paths.mark_healthy().unwrap().expect("the pending install");
+        assert_eq!(confirmed.version, "0.2.0");
+        assert!(paths.is_healthy());
+        assert!(paths.pending().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_build_that_never_became_healthy_is_rolled_back_at_startup() {
+        let home = tempfile::tempdir().unwrap();
+        let install = tempfile::tempdir().unwrap();
+        let paths = UpdatePaths::under(home.path());
+
+        // 0.1.0 was installed and accepted; 0.2.1 was swapped in and never
+        // reached its healthy marker.
+        let target = install.path().join("Goble.AppImage");
+        std::fs::write(&target, b"the broken build").unwrap();
+        let previous = paths.previous_dir().join("Goble.AppImage");
+        std::fs::create_dir_all(paths.previous_dir()).unwrap();
+        std::fs::write(&previous, b"the good build").unwrap();
+        paths
+            .write_pending(
+                &PendingInstall::for_appimage("0.2.1", 8, target.clone())
+                    .with_previous(Some(previous)),
+            )
+            .unwrap();
+
+        let outcome = paths.recover().unwrap();
+        assert_eq!(
+            outcome,
+            LocalRollback::Restored {
+                failed_version: "0.2.1".into(),
+                failed_epoch: 8,
+                target: target.clone(),
+            }
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"the good build");
+        assert!(outcome.restart_required());
+        assert!(paths.pending().unwrap().is_none());
+        assert!(!paths.is_healthy());
+
+        let state = UpdateState::load(&paths.state_path()).unwrap();
+        assert_eq!(state.failed_version.as_deref(), Some("0.2.1"));
+        assert_eq!(state.failed_epoch, 8);
+
+        // Nothing is left to do on the next launch.
+        assert_eq!(paths.recover().unwrap(), LocalRollback::None);
+    }
+
+    #[test]
+    fn a_bundle_that_never_became_healthy_is_restored() {
+        let home = tempfile::tempdir().unwrap();
+        let install = tempfile::tempdir().unwrap();
+        let paths = UpdatePaths::under(home.path());
+        let target = fake_bundle(install.path(), "broken");
+
+        let previous = paths.previous_dir().join("Goble.app");
+        std::fs::create_dir_all(paths.previous_dir()).unwrap();
+        copy_tree(&fake_bundle(&home.path().join("good"), "good"), &previous).unwrap();
+        paths
+            .write_pending(
+                &PendingInstall::for_bundle("0.2.1", 8, target.clone())
+                    .with_previous(Some(previous)),
+            )
+            .unwrap();
+
+        assert!(matches!(paths.recover().unwrap(), LocalRollback::Restored { .. }));
+        assert_eq!(build_of(&target), "good");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(target.join("Contents/MacOS/goble-app"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o111, 0o111, "a restored app still has to run");
+        }
+    }
+
+    #[test]
+    fn a_recovered_install_with_nothing_to_restore_stays_visible() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = UpdatePaths::under(home.path());
+        paths
+            .write_pending(&PendingInstall::for_appimage(
+                "0.2.1",
+                8,
+                home.path().join("Goble.AppImage"),
+            ))
+            .unwrap();
+
+        let outcome = paths.recover().unwrap();
+        assert_eq!(
+            outcome,
+            LocalRollback::NothingToRestore {
+                failed_version: "0.2.1".into(),
+                failed_epoch: 8,
+            }
+        );
+        assert!(!outcome.restart_required());
+        assert_eq!(
+            UpdateState::load(&paths.state_path()).unwrap().failed_version.as_deref(),
+            Some("0.2.1")
+        );
+    }
+
+    #[test]
+    fn a_healthy_marker_makes_the_pending_file_a_leftover() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = UpdatePaths::under(home.path());
+        paths
+            .write_pending(&PendingInstall::for_appimage("0.2.0", 7, PathBuf::from("/tmp/x")))
+            .unwrap();
+        std::fs::write(paths.healthy_path(), "2026-10-01T00:00:00Z\n").unwrap();
+
+        assert_eq!(paths.recover().unwrap(), LocalRollback::None);
+        assert!(paths.pending().unwrap().is_none());
     }
 }

@@ -58,7 +58,10 @@ pub use client::{
     AvailableUpdate, CheckOutcome, StagedArtifact, StagingWriter, UpdateClient, UpdateConfig,
     UpdateError, decide_update, parse_version,
 };
-pub use install::{InstallContext, InstallError, InstallOutcome, InstallPlan};
+pub use install::{
+    HEALTHY_AFTER, InstallContext, InstallError, InstallOutcome, InstallPlan, InstallRequest,
+    LocalRollback, PendingInstall, UpdatePaths, rollback_local,
+};
 pub use manifest::{
     Artifact, Channel, ChannelManifest, ChannelRelease, Channels, ManifestError, SCHEMA,
 };

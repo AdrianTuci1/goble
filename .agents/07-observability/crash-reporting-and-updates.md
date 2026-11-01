@@ -66,10 +66,20 @@ which it must be, the moment it is reachable from the internet.
 One manifest per release, per channel, listing artifacts per platform with their digests:
 
 ```json
-{"schema": 1, "channels": {"stable": {"version": "0.2.0", "artifacts": [
+{"schema": 2, "channels": {"stable": {"version": "0.2.0", "epoch": 7, "yanked": ["0.1.9"],
+  "artifacts": [
   {"os": "macos", "arch": "aarch64", "url": "https://…", "sha256": "…", "size": 12345678}
 ], "signature": "…"}}}
 ```
+
+`epoch` rises on every publish of a channel and is the publisher's authority over which version
+should run: a document with a higher epoch than the installed one is offered even when its version is
+lower, which is how a rollback reaches machines. `yanked` names versions that must not stay installed,
+so a withdrawn build is told what replaces it. Both are covered in `docs/auto-update.md`.
+
+The manifest is served by `deploy/downloads-worker` at `downloads.goble.dev`, and published to it by
+`.github/workflows/release.yml` after a non-draft release. `docs/distribution.md` has the publishing
+and rollback runbooks.
 
 Four steps, in order: fetch and validate the manifest; compare versions with semver; download into a
 staging directory while hashing, and refuse a digest or size mismatch; verify the manifest's ed25519
@@ -132,7 +142,7 @@ copied, linked, or vendored here.
 | An anonymous install id, stored under a non-telemetry-looking key | Same idea, stored as `install_id` in `~/.goble/telemetry.json`; honesty is cheaper than obscurity for an open-source app |
 | Unconditional regex secret redaction on outbound payloads | Same idea, implemented in `redact.rs`, with the same rule: do not log secrets in the first place |
 | A hand-rolled updater per platform, `codesign` verification of the DMG | Same platform split, plus manifest signature verification and a refusal to install what it cannot authenticate |
-| Silently downloaded updates, a banner when one is ready | Not implemented yet; the app does not check for updates at all right now |
+| Silently downloaded updates, a banner when one is ready | Checks in the background at startup and every six hours, verifies signature and digest before staging, and shows the offer in Settings; a withdrawn running version gets a banner with the rollback install |
 | ~2,900 lines of packaging: `cargo bundle` + the pinned `create-dmg`, Inno Setup, and `linuxdeploy` plus deb/rpm/Arch templates | Same four installer targets, built with the tool each platform already has (`hdiutil`, Inno Setup, `appimagetool`/`dpkg-deb`, a tarball). We add what that tree turned out to be missing: Developer ID signing and notarisation, an actual EULA page on the installer, and a background image whose path exists |
 
 The reference's packaging has dead ends of its own, which is why it was not copied: no notarisation
@@ -154,9 +164,9 @@ so there is nothing to learn from it beyond the tag and breadcrumb taxonomy.
 - [ ] Deploy a collector host, set `GOBLE_TELEMETRY_ENDPOINT` for release builds, and confirm an
       end-to-end upload (staging → collector → summary) against the real host.
 - [ ] Generate the release signing key pair, publish the public key, and make `--manifest` sign in CI.
-- [ ] Surface an available update in the UI: a banner or a status-bar entry with "Restart and update",
-      plus a manual "Check for updates" action. Today the check is off and log-only.
-- [ ] Wire `plan_install().apply()` into that flow, with the restart/relaunch handoff.
+- [ ] Deploy `deploy/downloads-worker`, point `downloads.goble.dev` at it, and set
+      `GOBLE_WORKER_URL` / `GOBLE_WORKER_ADMIN_TOKEN` so a published release moves the channel. The
+      worker and the client are wired; the account, the KV namespace and the route are not.
 - [ ] A first-run telemetry notice. `TelemetryState.notice_shown` exists and nothing sets it.
 - [ ] A settings surface for the telemetry switch, writing `~/.goble/telemetry.json`.
 - [ ] Minidump capture on Linux and Windows. A panic hook catches Rust panics; a segfault or a GPU

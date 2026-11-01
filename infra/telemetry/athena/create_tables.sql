@@ -14,14 +14,19 @@
 --
 -- The events table lists the union of the schema-2 payloads. A row carries only
 -- the columns of its own event type; the rest read as NULL.
+--
+-- Timestamps arrive as RFC 3339 strings (`2026-11-01T20:10:00.123Z`). OpenX's
+-- timestamp type expects `yyyy-MM-dd HH:mm:ss`, so the columns stay strings and
+-- the views parse them with `from_iso8601_timestamp`. A wrong type here reads
+-- every row as NULL instead of failing, which is the quiet version of broken.
 
 CREATE DATABASE IF NOT EXISTS octomus;
 
 CREATE EXTERNAL TABLE IF NOT EXISTS octomus.events (
   schema       int,
   event_id     string,
-  occurred_at  timestamp,
-  received_at  timestamp,
+  occurred_at  string,
+  received_at  string,
   context      struct<
     app_version: string,
     channel:     string,
@@ -64,8 +69,8 @@ CREATE EXTERNAL TABLE IF NOT EXISTS octomus.crashes (
   schema       int,
   id           string,
   fingerprint  string,
-  captured_at  timestamp,
-  received_at  timestamp,
+  captured_at  string,
+  received_at  string,
   kind         string,
   message      string,
   location     string,
@@ -84,7 +89,7 @@ CREATE EXTERNAL TABLE IF NOT EXISTS octomus.crashes (
     session_id:  string
   >,
   breadcrumbs  array<struct<
-    at:      timestamp,
+    at:      string,
     level:   string,
     target:  string,
     message: string,

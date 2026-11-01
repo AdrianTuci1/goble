@@ -1,16 +1,39 @@
 -- Views over octomus.events and octomus.crashes.
 -- Run create_tables.sql first, then each statement here.
+--
+-- The base tables keep `occurred_at`, `received_at` and `captured_at` as the
+-- RFC 3339 strings the client wrote. These views parse them once, so every
+-- dashboard and ad-hoc query gets a real timestamp without repeating the cast.
 
 -- A retry overwrites the batch object, but an event can still arrive twice if a
 -- timeout landed after the write. Keep one row per event_id, the last receipt.
 CREATE OR REPLACE VIEW octomus.events_dedup AS
-SELECT *
+SELECT *,
+       cast(from_iso8601_timestamp(occurred_at) AS timestamp) AS event_ts
 FROM (
   SELECT *,
          row_number() OVER (PARTITION BY event_id ORDER BY received_at DESC) AS rn
   FROM octomus.events
 )
 WHERE rn = 1;
+
+-- Crash reports with parsed timestamps. One view rather than a model, because
+-- the objects are read in place and never materialised.
+CREATE OR REPLACE VIEW octomus.crashes_v AS
+SELECT schema,
+       id,
+       fingerprint,
+       cast(from_iso8601_timestamp(captured_at) AS timestamp) AS crash_ts,
+       cast(from_iso8601_timestamp(received_at) AS timestamp) AS received_ts,
+       kind,
+       message,
+       location,
+       thread,
+       backtrace,
+       note,
+       context,
+       breadcrumbs
+FROM octomus.crashes;
 
 -- Everything per day: how many events, and how many installs produced them.
 CREATE OR REPLACE VIEW octomus.event_counts AS
@@ -57,13 +80,13 @@ GROUP BY dt, feature, outcome;
 -- One row per crash fingerprint per day. `sample_message` is redacted by the
 -- client before it is sent.
 CREATE OR REPLACE VIEW octomus.top_crashes AS
-SELECT date(captured_at)                  AS dt,
+SELECT date(crash_ts)                     AS dt,
        fingerprint,
        arbitrary(kind)                    AS kind,
        arbitrary(message)                 AS sample_message,
        count(*)                           AS reports,
        count(DISTINCT context.install_id) AS installs,
-       min(captured_at)                   AS first_seen,
-       max(captured_at)                   AS last_seen
-FROM octomus.crashes
-GROUP BY date(captured_at), fingerprint;
+       min(crash_ts)                      AS first_seen,
+       max(crash_ts)                      AS last_seen
+FROM octomus.crashes_v
+GROUP BY date(crash_ts), fingerprint;

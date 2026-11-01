@@ -7,8 +7,8 @@
 //! app persists decides the pane's kind, the worker's own `worker:status` report
 //! (the payload `worker_messages.rs` emits) moves the connection between its
 //! states, and neither a drop nor a command typed at the pane ever mounts a local
-//! pty — with a sibling shell pane in the same space proving the frame is
-//! otherwise willing to.
+//! pty — with a sibling shell pane in the same space proving the app is
+//! otherwise willing to start one.
 //!
 //! A2's are asserted the same way, against a real session on a real daemon: the
 //! pane opening on a conversation with history replays that session's own
@@ -130,8 +130,8 @@ fn a_remote_routed_conversation_builds_a_pane_with_no_local_terminal() {
     pair_worker(&desktop, "vps");
     let conv = conversation(&desktop, "Ship it remotely", "remote");
 
-    // The pane starts as a shell pane with a live session behind it: the
-    // routing decision is what has to take that away.
+    // The pane starts as a shell pane with a session of its own: the routing
+    // decision is what has to take that away.
     {
         let state = root.state_rc();
         let state = state.borrow_mut();
@@ -221,7 +221,7 @@ fn a_detached_viewer_pane_never_falls_back_to_a_local_shell() {
         .bind_active_pane_conversation(conv, Some(&desktop));
 
     // A sibling shell pane in the same space: "no session" is this pane's
-    // doing, not the frame's.
+    // doing, and launch gives the sibling one.
     let second = {
         let state = root.state_rc();
         let mut state = state.borrow_mut();
@@ -249,11 +249,16 @@ fn a_detached_viewer_pane_never_falls_back_to_a_local_shell() {
         "a command at a viewer pane runs nowhere, not in a local shell"
     );
 
-    // One frame with both panes drawn. The shell pane mounts its pty; the
-    // viewer pane cannot, and draws its connection's state in place of one.
+    // Launch starts a shell for every terminal leaf; the viewer pane has none
+    // to start, whatever the frame does.
+    root.start_terminal_sessions();
     assert!(
-        !has_shell(&root.state_rc().borrow(), second),
-        "the sibling shell pane mounts its pty when the frame is drawn, not before"
+        has_shell(&root.state_rc().borrow(), second),
+        "the sibling shell pane gets its pty at launch"
+    );
+    assert!(
+        !has_shell(&root.state_rc().borrow(), 1),
+        "the viewer pane is never given a local shell"
     );
     clear_overlays(&root.state_rc());
     let state = root.state_rc();
@@ -263,7 +268,7 @@ fn a_detached_viewer_pane_never_falls_back_to_a_local_shell() {
     let state = state.borrow();
     assert!(
         has_shell(&state, second),
-        "the sibling shell pane mounted its pty, so the frame is not vacuously shell-less"
+        "the sibling shell pane has its own pty, so the frame is not vacuously shell-less"
     );
     assert!(!has_shell(&state, 1), "and the viewer pane still has none");
     assert!(

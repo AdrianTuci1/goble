@@ -557,7 +557,6 @@ impl TerminalView {
             .max(1.0) as usize;
 
         let mut reg = self.terminal.borrow_mut();
-        reg.ensure_session(self.pane_id, &self.cwd);
         let mode = reg.mode(self.pane_id);
         let mut screen = crate::terminal::TerminalViewState::empty();
         if let Some(session) = reg.sessions.get_mut(&self.pane_id) {

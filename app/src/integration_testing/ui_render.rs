@@ -444,8 +444,8 @@ fn press(
 /// unsaved, and Cmd+S writes it back to the file.
 #[test]
 fn a_file_pane_is_typed_into_and_saved() {
-    use goble_ui::elements::caret::CARET_WIDTH;
     use goble_ui::event::ModifiersState;
+    use goble_ui::platform::text_atlas::{mono_advance, FontWeight};
     use goble_ui::theme::ColorToken;
 
     let (desktop, _dir) = common::desktop_state();
@@ -485,10 +485,11 @@ fn a_file_pane_is_typed_into_and_saved() {
         RenderCommand::FillRect { rect, color, .. } if *color == focus => Some(*rect),
         _ => None,
     });
-    let beam = beam.unwrap_or_else(|| panic!("the focused pane draws its beam: {commands:?}"));
+    let beam = beam.unwrap_or_else(|| panic!("the focused pane draws its caret: {commands:?}"));
+    let cell = mono_advance(12.0, FontWeight::Regular).ceil().max(1.0);
     assert!(
-        (beam.width() - CARET_WIDTH).abs() < 0.5 && (beam.height() - line_box).abs() < 0.5,
-        "the beam is the editor's own slot: {beam:?}"
+        (beam.width() - cell).abs() < 0.5 && (beam.height() - line_box).abs() < 0.5,
+        "the caret covers one mono cell in the editor's own line box: {beam:?} against {cell}"
     );
     assert!(
         beam.min_y() >= row.y - 1.0 && beam.min_y() < row.y + line_box,

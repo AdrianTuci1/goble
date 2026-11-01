@@ -55,21 +55,39 @@ fn main() -> anyhow::Result<()> {
     // thread from the PTY daemon. A socket that cannot bind (another app
     // instance owns it) is logged, never fatal: the window still opens.
     #[cfg(unix)]
-    let root = match goble_app::control::start_default() {
+    let (root, owns_control) = match goble_app::control::start_default() {
         Ok(control) => {
             log::info!(
                 "control socket listening at {}",
                 control.socket_path().display()
             );
-            root.with_control(control)
+            (root.with_control(control), true)
         }
         Err(err) => {
             log::warn!("control socket is off for this run: {err}");
-            root
+            (root, false)
         }
     };
+    #[cfg(not(unix))]
+    let owns_control = true;
+
+    // The instance that owns the control socket is the one that may sweep the
+    // daemon: a second instance shares it and must leave the first one's
+    // shells alone. A run that was killed before it could close its panes
+    // leaves their sessions detached, and the daemon keeps those alive.
+    if owns_control {
+        root.prune_orphan_terminal_sessions();
+    }
+    // The panes in the restored layout get their shells now, before the first
+    // frame. Painting a pane must not start a process: a test that renders the
+    // shell would otherwise leave a real shell running in the user's daemon.
+    root.start_terminal_sessions();
+    // Keep a handle after the window is handed to the event loop: a clean quit
+    // has to close the pane shells, because dropping a session only detaches.
+    let ui_state = root.state_rc();
 
     let result = run_with_root(Box::new(root), app_context);
+    ui_state.borrow().kill_terminal_sessions();
 
     if let Some(telemetry) = &telemetry {
         telemetry.app_exited(Some(if result.is_ok() { 0 } else { 1 }));

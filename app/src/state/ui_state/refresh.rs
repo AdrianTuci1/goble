@@ -189,7 +189,7 @@ impl UiState {
             file_hscroll: HashMap::new(),
             pane_open_files: HashMap::new(),
             file_buffers: HashMap::new(),
-            terminal: Rc::new(RefCell::new(TerminalRegistry::default())),
+            terminal: Rc::new(RefCell::new(TerminalRegistry::for_app())),
             command_palette_open: false,
             command_palette_query: String::new(),
             command_palette_index: 0,

@@ -98,6 +98,19 @@ impl RootView {
         Rc::clone(&self.state)
     }
 
+    /// Start the shell behind every restored pane, once, before the window's
+    /// first frame. Rendering a pane never starts a process.
+    pub fn start_terminal_sessions(&self) {
+        self.state.borrow().start_terminal_sessions();
+    }
+
+    /// Close daemon sessions no pane in the restored layout owns. Only the
+    /// instance that owns the control socket calls this: a second instance
+    /// shares the daemon and must not close the first one's shells.
+    pub fn prune_orphan_terminal_sessions(&self) {
+        self.state.borrow().prune_orphan_terminal_sessions();
+    }
+
     /// Expose the backing environment state so integration render tests can
     /// assert which environment is the active/default one (the environment new
     /// spaces start in).

@@ -3,13 +3,13 @@ use std::rc::Rc;
 
 use crate::color::ColorU;
 use crate::elements::{
-    caret, vec2f, AppContext, CaretShape, Code, ConstrainedBox, Container, CrossAxisAlignment,
-    Element, Empty, EventContext, Fill, Flex, LayoutContext, MainAxisSize, PaintContext, Point,
-    ScrollState, SizeConstraint, Text, TextSpan,
+    caret, vec2f, AppContext, CaretShape, Code, Container, CrossAxisAlignment, Element, Empty,
+    EventContext, Flex, LayoutContext, MainAxisSize, PaintContext, Point, ScrollState,
+    SizeConstraint, Stack, Text, TextSpan,
 };
 use crate::event::{DispatchedEvent, ModifiersState};
-use crate::geometry::{PointF, Vector2F};
-use crate::platform::text_atlas::{measure_text_family, FontWeight};
+use crate::geometry::{rectf, PointF, Vector2F};
+use crate::platform::text_atlas::{advance_width, measure_text_family, mono_advance, FontWeight};
 use crate::syntax::HighlightedLine;
 use crate::theme::{ColorToken, FontFamily};
 use crate::vim::{Clipboard, VimBuffer, VimOutcome, VimState};
@@ -353,41 +353,67 @@ impl TextArea {
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
         if !self.focused {
             row = row.with_child(Text::new(display).with_theme_color(color, app).finish());
+        } else if empty {
+            // A placeholder is only a guide: the insertion point leads it as a
+            // thin beam painted under the guide's first letter.
+            row = row
+                .with_child(caret::caret_beam(app))
+                .with_child(Text::new(display).with_theme_color(color, app).finish());
         } else {
-            // The beam is its own slot in the row, with the text it precedes on
-            // one side and the rest on the other, so it lands between the two
-            // characters it sits between instead of always trailing the line.
-            // A placeholder is only a guide, so the beam leads it: that is where
-            // the user's own text starts.
-            let at = if empty { 0 } else { self.caret_index() };
+            // The text is drawn whole and the caret is an overlay on top of it.
+            // Cutting the line at the caret re-rasterized the tail as its own
+            // run; a tail that started with a glyph carrying a negative left
+            // bearing was blitted a pixel to the right, so every character
+            // after the caret jumped as the caret crossed that letter.
+            let at = self.caret_index();
             let len = display.chars().count();
             // Modal editing draws the caret in the mode's own shape and paints
-            // the character a visual selection covers. The placeholder is never
-            // a character the caret covers.
+            // the character a visual selection covers.
             let (shape, selection) = match self.vim.as_ref() {
                 Some(vim) => {
                     let vim = vim.borrow();
                     (caret_shape(vim.mode()), vim.selection(at, len))
                 }
-                None => (CaretShape::Bar, None),
+                None => (CaretShape::Block, None),
             };
-            let under = if empty { None } else { display.chars().nth(at) };
-            match selection {
-                Some(selected) => {
-                    row = self.selection_row(app, row, &display, at, shape, under, color, selected)
-                }
-                None => {
-                    let (before, after) = split_at_char(&display, at);
-                    row = row
-                        .with_child(text_run(app, before, color))
-                        .with_child(caret(app, shape, under))
-                        .with_child(
-                            Text::new(after_the_caret(shape, under, &after))
-                                .with_theme_color(color, app)
-                                .finish(),
-                        );
-                }
+            let under = display.chars().nth(at);
+
+            let metrics = caret::CaretMetrics::new(
+                TEXT_FONT_SIZE,
+                TEXT_LINE_HEIGHT,
+                FontWeight::Regular,
+                FontFamily::System,
+            );
+            let mut children: Vec<Box<dyn Element>> = Vec::new();
+            // One line box of room, whether or not the line has ink in it.
+            children.push(
+                Empty::new()
+                    .with_size(vec2f(0.0, caret::CARET_HEIGHT))
+                    .finish(),
+            );
+            if let Some(selected) = &selection {
+                children.push(
+                    SelectionUnderlay::new(
+                        pen_width(text_prefix(&display, selected.start)),
+                        pen_width(text_prefix(&display, selected.end)),
+                        caret::CARET_HEIGHT,
+                        app.theme.color(ColorToken::Selected),
+                    )
+                    .finish(),
+                );
             }
+            children.push(Text::new(display.clone()).with_theme_color(color, app).finish());
+            let caret_at = pen_width(text_prefix(&display, at));
+            let cell = caret_cell(shape, under, &metrics);
+            row = row.with_child(
+                Stack::new()
+                    .with_children(children)
+                    .with_overlay(
+                        caret::caret_overlay(app, shape, under, cell, caret::CARET_HEIGHT, metrics),
+                        vec2f(caret_at, 0.0),
+                    )
+                    .finish(),
+            );
         }
         self.root = Some(Container::new(row.finish()).finish());
     }
@@ -537,11 +563,16 @@ impl TextArea {
             .scroll_by(target + self.scroll_bias - offset);
     }
 
-    /// One line of the buffer: the padded line number, the line's runs cut at
-    /// the caret and at the selection's edges, and the caret where it belongs.
+    /// One line of the buffer: the padded line number, the line's runs drawn
+    /// whole, a selection painted under it and the caret over it.
     ///
     /// The line's text is the run set the host still maps to it — the syntax
-    /// read's own — or one plain run when the buffer changed the line.
+    /// read's own — or one plain run when the buffer changed the line. The runs
+    /// are never cut at the caret or the selection: a cut re-rasterizes the
+    /// tail as a new run, and a tail beginning with a glyph that carries a
+    /// negative left bearing (a `j`, for one) lands a pixel to the right of the
+    /// same glyph inside the whole run. The caret and the selection are
+    /// overlays, so the line's columns do not depend on where the caret is.
     #[allow(clippy::too_many_arguments)]
     fn line_row(
         &self,
@@ -554,25 +585,17 @@ impl TextArea {
         plain: ColorU,
     ) -> Box<dyn Element> {
         let length = line.chars().count();
-        let caret_column = (caret >= start && caret <= start + length).then(|| caret - start);
+        // A field that does not hold the keyboard shows no insertion point.
+        let caret_column =
+            (self.focused && caret >= start && caret <= start + length).then(|| caret - start);
         // The columns of this line the selection covers, when it covers any.
         let selected = selection.as_ref().and_then(|selection| {
             let from = selection.start.max(start);
             let to = selection.end.min(start + length);
             (to > from).then(|| (from - start)..(to - start))
         });
-        let mut cuts = vec![0usize, length];
-        if let Some(column) = caret_column {
-            cuts.push(column);
-        }
-        if let Some(range) = &selected {
-            cuts.push(range.start);
-            cuts.push(range.end);
-        }
-        cuts.sort_unstable();
-        cuts.dedup();
-
         let runs = self.line_runs_for(index, line, plain);
+        let advances = line_advances(&runs, TEXT_FONT_SIZE);
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Start);
         if self.line_numbers > 0 {
             let number = TextSpan::plain(format!(
@@ -583,34 +606,79 @@ impl TextArea {
             .with_color(app.theme.color(ColorToken::Muted));
             row = row.with_child(runs_code(self.line_height, vec![number]));
         }
-        for pair in cuts.windows(2) {
-            let (from, to) = (pair[0], pair[1]);
-            if caret_column == Some(from) {
-                row = row.with_child(self.line_beam(app));
-            }
-            let piece = runs_code(self.line_height, slice_runs(&runs, from, to));
-            let piece: Box<dyn Element> = match &selected {
-                Some(range) if from >= range.start && to <= range.end => Container::new(piece)
-                    .with_background(Fill::Solid(app.theme.color(ColorToken::Selected)))
-                    .finish(),
-                _ => piece,
-            };
-            row = row.with_child(piece);
+
+        let mut children: Vec<Box<dyn Element>> = Vec::new();
+        if let Some(range) = &selected {
+            let left: f32 = advances[..range.start].iter().sum();
+            let right: f32 = advances[..range.end].iter().sum();
+            children.push(
+                SelectionUnderlay::new(
+                    left,
+                    right,
+                    self.line_box(),
+                    app.theme.color(ColorToken::Selected),
+                )
+                .finish(),
+            );
         }
-        if caret_column == Some(length) {
-            row = row.with_child(self.line_beam(app));
+        let caret = caret_column.map(|column| {
+            let x: f32 = advances[..column].iter().sum();
+            let shape = self.caret_shape();
+            let under = line.chars().nth(column);
+            let metrics = self.line_metrics(&runs, column);
+            let cell = line_caret_cell(shape, under, &metrics, TEXT_FONT_SIZE);
+            (
+                x,
+                caret::caret_overlay(app, shape, under, cell, self.line_box(), metrics),
+            )
+        });
+        children.push(runs_code(self.line_height, runs));
+        let mut line_view = Stack::new().with_children(children);
+        if let Some((x, overlay)) = caret {
+            line_view = line_view.with_overlay(overlay, vec2f(x, 0.0));
         }
+        row = row.with_child(line_view.finish());
         row.finish()
     }
 
-    /// The insertion point inside a multi-line row.
-    ///
-    /// The shared beam is a fixed [`caret::CARET_HEIGHT`], which is taller than
-    /// this field's line box; a caret taller than its own row would make the
-    /// caret's line taller than every other one and shift the text under it.
-    /// The bar takes no advance, so the row's own text keeps its columns.
-    fn line_beam(&self, app: &AppContext) -> Box<dyn Element> {
-        caret::caret_bar(app, self.line_box())
+    /// The caret shape this field draws: modal editing's own shape, or the
+    /// block that covers the character the insertion point sits before.
+    fn caret_shape(&self) -> CaretShape {
+        match self.vim.as_ref() {
+            Some(vim) => caret_shape(vim.borrow().mode()),
+            None => CaretShape::Block,
+        }
+    }
+
+    /// The font metrics of the character at `column`: the caret cell and the
+    /// redrawn character have to use the style the line draws that character
+    /// with, or a bold run's cell would be the wrong width.
+    fn line_metrics(&self, runs: &[TextSpan], column: usize) -> caret::CaretMetrics {
+        let mut at = 0usize;
+        for run in runs {
+            let length = run.text.chars().count();
+            if column < at + length {
+                return caret::CaretMetrics {
+                    font_size: TEXT_FONT_SIZE,
+                    line_height: self.line_height,
+                    weight: run.weight,
+                    // `Code` paints every highlighted run in the mono face,
+                    // whatever family its span names.
+                    family: FontFamily::Mono,
+                    italic: run.italic,
+                };
+            }
+            at += length;
+        }
+        // The end of the line: the last run's face, or the line's default.
+        let run = runs.last();
+        caret::CaretMetrics {
+            font_size: TEXT_FONT_SIZE,
+            line_height: self.line_height,
+            weight: run.map_or(FontWeight::Regular, |run| run.weight),
+            family: FontFamily::Mono,
+            italic: run.is_some_and(|run| run.italic),
+        }
     }
 
     /// One line's height: what every row of a multi-line buffer is drawn at,
@@ -822,62 +890,6 @@ impl TextArea {
         .x
     }
 
-    /// The focused row while a visual selection is live: the text is cut at the
-    /// selection's edges and the caret's own position, the covered segments get
-    /// the selection background, and the caret keeps its place between them.
-    #[allow(clippy::too_many_arguments)]
-    fn selection_row(
-        &self,
-        app: &AppContext,
-        mut row: Flex,
-        display: &str,
-        at: usize,
-        shape: CaretShape,
-        under: Option<char>,
-        color: ColorToken,
-        selected: std::ops::Range<usize>,
-    ) -> Flex {
-        let len = display.chars().count();
-        let mut bounds = vec![0, selected.start.min(len), at.min(len), selected.end.min(len), len];
-        bounds.sort_unstable();
-        bounds.dedup();
-        for pair in bounds.windows(2) {
-            let (mut start, end) = (pair[0], pair[1]);
-            if start == at {
-                row = row.with_child(caret(app, shape, under));
-                // A block or an underline caret carries the character it covers
-                // (see `caret_covers_character`), and its cell takes that
-                // character's own advance: the segment after the caret starts
-                // past it, so the character is not drawn a second time and the
-                // row is not a cell wider than the text.
-                if caret::caret_covers_character(shape, under) {
-                    start += 1;
-                }
-            }
-            if end > start {
-                let segment = split_at_char(display, start).1;
-                let segment = split_at_char(&segment, end - start).0;
-                // Every segment is a run of its own, so each one starts where
-                // the pen of the one before it stopped: the caret takes no room
-                // and a run measures its ink, which would pull the covered
-                // characters out from under the selection background.
-                let text = text_run(app, segment, color);
-                let text = if start >= selected.start && end <= selected.end {
-                    Container::new(text)
-                        .with_background(crate::elements::Fill::Solid(app.theme.color(ColorToken::Selected)))
-                        .finish()
-                } else {
-                    text
-                };
-                row = row.with_child(text);
-            }
-        }
-        if bounds.last() == Some(&at) {
-            row = row.with_child(caret(app, shape, under));
-        }
-        row
-    }
-
     /// The insertion point, clamped to the value's length.
     fn caret_index(&self) -> usize {
         let index = match self.caret.as_ref() {
@@ -952,13 +964,14 @@ fn row_spacer(rows: usize, line_box: f32) -> Box<dyn Element> {
         .finish()
 }
 
-/// The caret shape a vim mode draws: a bar where typing inserts, a block where
-/// a command reads the character under the caret, an underline for replace.
+/// The caret shape a vim mode draws: a block over the character the insertion
+/// point sits before while typing or reading, and an underline for replace.
+/// The block covers the character it is in front of, so the caret always names
+/// the next character the way the reference's editor cursor does.
 fn caret_shape(mode: crate::vim::VimMode) -> CaretShape {
     use crate::vim::VimMode;
     match mode {
-        VimMode::Insert => CaretShape::Bar,
-        VimMode::Normal | VimMode::Visual(_) => CaretShape::Block,
+        VimMode::Insert | VimMode::Normal | VimMode::Visual(_) => CaretShape::Block,
         VimMode::Replace => CaretShape::Underline,
     }
 }
@@ -970,60 +983,121 @@ fn char_offset(text: &str, index: usize) -> usize {
         .map_or(text.len(), |(offset, _)| offset)
 }
 
-/// Split `text` around its `index`-th character, for the beam to sit between.
-fn split_at_char(text: &str, index: usize) -> (String, String) {
-    let offset = char_offset(text, index);
-    (text[..offset].to_string(), text[offset..].to_string())
+/// The characters of `text` before its `index`-th one.
+fn text_prefix(text: &str, index: usize) -> &str {
+    &text[..char_offset(text, index)]
 }
 
-/// The text the row draws after the caret. A bar takes no room and covers
-/// nothing, so it is the text from the caret on; a block or an underline caret
-/// draws the character it covers inside its own cell, which takes that
-/// character's advance, so the run after it starts past that character and the
-/// character is drawn exactly once.
-fn after_the_caret(shape: CaretShape, under: Option<char>, after: &str) -> String {
-    if caret::caret_covers_character(shape, under) {
-        split_at_char(after, 1).1
-    } else {
-        after.to_string()
+/// The width of the cell a caret covers the character after it with.
+///
+/// A block and an underline take the covered character's own advance, so the
+/// cell is exactly the room that character occupies. At the end of the line —
+/// or over a control character, which advances nothing — the cell is a fixed
+/// slot wide enough to read as a caret.
+fn caret_cell(shape: CaretShape, under: Option<char>, metrics: &caret::CaretMetrics) -> f32 {
+    if shape == CaretShape::Bar {
+        return 0.0;
+    }
+    under
+        .filter(|ch| !ch.is_control())
+        .map(|ch| metrics.advance(ch))
+        .filter(|advance| *advance > 0.0)
+        .unwrap_or(caret::CARET_CELL_WIDTH)
+}
+
+/// One caret cell in a multi-line row: the covered character's own mono
+/// advance, or one mono cell at the end of the line and over a control
+/// character (which the code grid draws with no advance of its own).
+fn line_caret_cell(
+    shape: CaretShape,
+    under: Option<char>,
+    metrics: &caret::CaretMetrics,
+    font_size: f32,
+) -> f32 {
+    if shape == CaretShape::Bar {
+        return 0.0;
+    }
+    under
+        .filter(|ch| !ch.is_control())
+        .map(|ch| metrics.advance(ch))
+        .filter(|advance| *advance > 0.0)
+        .unwrap_or_else(|| mono_advance(font_size, metrics.weight).ceil().max(1.0))
+}
+
+/// A selection painted under an intact run of text: one rectangle, from the
+/// column the selection starts at to the column it ends before.
+struct SelectionUnderlay {
+    left: f32,
+    right: f32,
+    height: f32,
+    color: ColorU,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl SelectionUnderlay {
+    fn new(left: f32, right: f32, height: f32, color: ColorU) -> Self {
+        Self {
+            left,
+            right,
+            height,
+            color,
+            size: None,
+            origin: None,
+        }
     }
 }
 
-/// A probe glyph wide enough that a run measured with it spans the pen.
-const PEN_PROBE: &str = "W";
+impl Element for SelectionUnderlay {
+    fn layout(
+        &mut self,
+        _constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        let size = vec2f(self.right.max(0.0), self.height);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let Some(renderer) = ctx.renderer.as_mut() else {
+            return;
+        };
+        let width = self.right - self.left;
+        if width > 0.0 {
+            renderer.fill_rect(
+                rectf(origin.x + self.left, origin.y, width, self.height),
+                self.color,
+            );
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+}
 
 /// Where the pen is after `text`: how far past its own origin the character
 /// drawn next starts.
 ///
-/// A run reports the extent of its ink, which is a side bearing short of the
-/// pen — and a whole space short when the run ends in whitespace, which has no
-/// ink at all. The field cuts the line into runs around the caret, so each cut
-/// has to be placed at the pen: measuring the distance the probe glyph moves
-/// when it is drawn after `text` gives it, whatever the text ends with.
+/// The sum of the glyph advances is the position the renderer's own layout
+/// gives that character, including a prefix that ends in whitespace: a run
+/// reports the extent of its ink, which has no room for a trailing space, so a
+/// caret placed by the ink would sit on the space instead of after it.
 fn pen_width(text: &str) -> f32 {
-    let measured = |value: &str| {
-        measure_text_family(
-            value,
-            TEXT_FONT_SIZE,
-            TEXT_LINE_HEIGHT,
-            f32::INFINITY,
-            FontWeight::Regular,
-            FontFamily::System,
-            false,
-        )
-        .x
-    };
-    (measured(&format!("{text}{PEN_PROBE}")) - measured(PEN_PROBE)).max(0.0)
-}
-
-/// One run of the field's text, laid out at the width its pen reaches rather
-/// than at what it measures: a row that is cut into runs around the caret has
-/// to place each one after a cut where the text's own columns put it.
-fn text_run(app: &AppContext, text: String, color: ColorToken) -> Box<dyn Element> {
-    let width = pen_width(&text);
-    ConstrainedBox::new(Text::new(text).with_theme_color(color, app).finish())
-        .with_min_width(width)
-        .finish()
+    advance_width(
+        text,
+        TEXT_FONT_SIZE,
+        FontWeight::Regular,
+        FontFamily::System,
+        false,
+    )
 }
 
 fn insert_char(text: &mut String, index: usize, ch: char) {
@@ -1077,16 +1151,15 @@ fn index_in(line: &str, offset: f32, family: FontFamily) -> usize {
     let mut boundary = String::new();
     for (index, ch) in line.chars().enumerate() {
         boundary.push(ch);
-        let end = measure_text_family(
+        // The pen after the prefix, not its ink extent: a prefix ending in a
+        // space has no extra ink, and its boundary still has to advance.
+        let end = advance_width(
             &boundary,
             TEXT_FONT_SIZE,
-            TEXT_LINE_HEIGHT,
-            f32::INFINITY,
             FontWeight::Regular,
             family,
             false,
-        )
-        .x;
+        );
         let distance = (end - offset).abs();
         if distance < nearest.1 {
             nearest = (index + 1, distance);
@@ -1114,25 +1187,35 @@ fn runs_spell(runs: &[TextSpan], line: &str) -> bool {
     rest.is_empty() || rest == "\r"
 }
 
-/// The runs that cover the characters `start..end` of the line they spell.
-fn slice_runs(runs: &[TextSpan], start: usize, end: usize) -> Vec<TextSpan> {
-    let mut pieces = Vec::new();
-    let mut at = 0usize;
+/// The advance of every character of a highlighted line, in column order.
+///
+/// `Code` places each run by its own advance and lays the glyphs inside a run
+/// out with `ceil` advances, so a character's column starts at the sum of the
+/// advances of the characters before it, whatever run boundaries it crosses.
+/// The selection and the caret are placed with that same sum.
+fn line_advances(runs: &[TextSpan], font_size: f32) -> Vec<f32> {
+    let mut advances = Vec::new();
+    let mut buffer = [0u8; 4];
     for run in runs {
-        let length = run.text.chars().count();
-        let from = start.max(at);
-        let to = end.min(at + length);
-        if to > from {
-            let mut piece = run.clone();
-            piece.text = run.text.chars().skip(from - at).take(to - from).collect();
-            pieces.push(piece);
-        }
-        at += length;
-        if at >= end {
-            break;
+        for ch in run.text.chars() {
+            // Per character, through the same face selection `Code` draws a
+            // run with: a fallback glyph (an emoji, a CJK character) advances
+            // by its own metric, which is not the mono cell of the primary
+            // face. Control characters advance nothing, as in `Code`.
+            advances.push(if ch.is_control() {
+                0.0
+            } else {
+                advance_width(
+                    ch.encode_utf8(&mut buffer),
+                    font_size,
+                    run.weight,
+                    FontFamily::Mono,
+                    run.italic,
+                )
+            });
         }
     }
-    pieces
+    advances
 }
 
 /// One row's piece of text, painted from the runs it is made of by the same
@@ -1746,19 +1829,17 @@ mod tests {
         );
     }
 
-    /// The beam adds nothing to the line it sits in: the text after it is drawn
-    /// where the pen of the text before it stops, so the letters keep their
-    /// places as the caret moves along the line — and the bar is painted over
-    /// the character it reaches, before that character is drawn, so what it
-    /// covers stays legible on the focus fill.
+    /// The caret is an overlay, not a cut: the line is drawn whole, so no
+    /// character moves as it moves, and the block covers exactly the character
+    /// after the insertion point, which it redraws in the cell's background.
     #[test]
-    fn the_beam_takes_no_room_and_stays_under_the_letter_it_reaches() {
-        use crate::elements::caret::CARET_WIDTH;
+    fn the_block_caret_covers_the_letter_after_it_without_moving_the_text() {
         use crate::render::RenderCommand;
         use crate::test_util::render_element;
 
         let app = app();
         let focus = app.theme.color(ColorToken::Focus);
+        let ink = app.theme.color(ColorToken::Bg);
         let caret = Rc::new(RefCell::new(3));
         let mut area: Box<dyn Element> = Box::new(
             TextArea::new()
@@ -1768,101 +1849,130 @@ mod tests {
         );
         let commands = render_element(&mut area, vec2f(200.0, 40.0), &app);
 
-        let before = pen_width("abc");
-        let beam_at = commands
+        // The line is one run, not a prefix/suffix pair around the caret. The
+        // block's own redraw of the covered letter is excluded by its colour.
+        let texts: Vec<&str> = commands
             .iter()
-            .position(|command| {
-                matches!(command, RenderCommand::FillRect { color, .. } if *color == focus)
-            })
-            .expect("the focused field paints its beam");
-        let beam = match &commands[beam_at] {
-            RenderCommand::FillRect { rect, .. } => *rect,
-            _ => unreachable!(),
-        };
-        let (tail_at, tail) = commands
-            .iter()
-            .enumerate()
-            .find_map(|(index, command)| match command {
-                RenderCommand::DrawText { origin, text, .. } if text == "def" => {
-                    Some((index, *origin))
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, color, .. } if *color != ink => {
+                    Some(text.as_str())
                 }
                 _ => None,
             })
-            .expect("the text after the beam is drawn");
+            .collect();
+        assert_eq!(texts, vec!["abcdef"], "the caret leaves the line whole");
+
+        let before = pen_width("abc");
+        let (cell_at, cell) = commands
+            .iter()
+            .enumerate()
+            .find_map(|(index, command)| match command {
+                RenderCommand::FillRect { rect, color, .. } if *color == focus => {
+                    Some((index, *rect))
+                }
+                _ => None,
+            })
+            .expect("the focused field paints its block");
         assert!(
-            (beam.min_x() - before).abs() < 1.0,
-            "the beam starts where the characters before it end: {before} against {}",
-            beam.min_x()
+            (cell.min_x() - before).abs() < 0.5,
+            "the cell starts where the characters before it end: {before} against {}",
+            cell.min_x()
+        );
+        let advance = advance_width(
+            "d",
+            TEXT_FONT_SIZE,
+            FontWeight::Regular,
+            FontFamily::System,
+            false,
         );
         assert!(
-            (tail.x - beam.min_x()).abs() < 1.0,
-            "the text after the beam starts on the beam: {} against {}",
-            tail.x,
-            beam.min_x()
+            (cell.width() - advance).abs() < 0.5,
+            "the cell covers the letter after it ({advance}): {cell:?}"
         );
-        // The bar is thicker than the beam it replaces, reaches over the
-        // character after it, and is painted before that character is drawn.
+        let (covered_at, covered) = commands
+            .iter()
+            .enumerate()
+            .find_map(|(index, command)| match command {
+                RenderCommand::DrawText {
+                    origin,
+                    text,
+                    color,
+                    ..
+                } if *color == ink && text == "d" => Some((index, *origin)),
+                _ => None,
+            })
+            .expect("the covered letter is redrawn in the cell's background");
         assert!(
-            (beam.width() - CARET_WIDTH).abs() < 0.5 && CARET_WIDTH > 3.0,
-            "the bar is a thick one: {beam:?}"
+            (covered.x - cell.min_x()).abs() < 1.0,
+            "the redrawn letter sits in its cell: {} against {}",
+            covered.x,
+            cell.min_x()
         );
         assert!(
-            tail.x < beam.max_x(),
-            "the bar reaches over the character after it: {beam:?} against {tail:?}"
+            cell_at < covered_at,
+            "the fill is painted before the letter it covers is redrawn"
         );
         assert!(
-            beam_at < tail_at,
-            "the bar is painted before the character it covers, so the letter stays drawn"
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text == "def"
+            )),
+            "the text after the caret is not cut into a run of its own"
         );
     }
 
-    /// Where the caret is does not change where the letters are: the run after
-    /// it starts at the pen of the run before it at every index, a prefix that
-    /// ends in a space included — a space has no ink, so a row that placed the
-    /// run after the caret by what the prefix measures would pull the rest of
-    /// the line a space to the left whenever the caret sat after one.
+    /// Where the caret is does not change where the letters are. The line is
+    /// one intact run at every index — the prefix that ends in a space
+    /// included — and the cell starts exactly where the pen does.
     #[test]
     fn the_text_keeps_its_columns_wherever_the_caret_sits() {
         use crate::render::RenderCommand;
         use crate::test_util::render_element;
 
         let app = app();
-        // (caret, prefix, the run the row draws after the caret)
-        let cases = [(0usize, "", "ab cd"), (1, "a", "b cd"), (2, "ab", " cd"), (3, "ab ", "cd")];
-        for (at, prefix, tail) in cases {
+        let focus = app.theme.color(ColorToken::Focus);
+        let ink = app.theme.color(ColorToken::Bg);
+        let value = "ab cd";
+        for at in 0..=value.chars().count() {
             let caret = Rc::new(RefCell::new(at));
             let mut area: Box<dyn Element> = Box::new(
                 TextArea::new()
-                    .with_value("ab cd")
+                    .with_value(value)
                     .with_focused(true)
                     .with_caret(Rc::clone(&caret)),
             );
             let commands = render_element(&mut area, vec2f(200.0, 40.0), &app);
-            let (origin, drawn) = commands
-                .iter()
-                .find_map(|command| match command {
-                    RenderCommand::DrawText { origin, text, .. } if text == tail => {
-                        Some((*origin, text.clone()))
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| panic!("the run after the caret ({tail:?}) is drawn"));
-            assert_eq!(drawn, tail);
-            assert!(
-                (origin.x - pen_width(prefix)).abs() < 0.5,
-                "the run after the caret at {at} starts where the pen is: {} against {}",
-                origin.x,
-                pen_width(prefix)
-            );
-            // The caret cuts the line into runs without changing what it says.
-            let said: String = commands
+            let runs: Vec<(&str, Vector2F)> = commands
                 .iter()
                 .filter_map(|command| match command {
-                    RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                    RenderCommand::DrawText {
+                        origin,
+                        text,
+                        color,
+                        ..
+                    } if *color != ink => Some((text.as_str(), *origin)),
                     _ => None,
                 })
                 .collect();
-            assert_eq!(said, "ab cd", "the caret at {at} leaves the text alone");
+            assert_eq!(
+                runs,
+                vec![(value, vec2f(0.0, 0.0))],
+                "the caret at {at} leaves the line one run at its own origin"
+            );
+            let cell = commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::FillRect { rect, color, .. } if *color == focus => Some(*rect),
+                    _ => None,
+                })
+                .expect("the focused field paints its block");
+            let prefix = text_prefix(value, at);
+            assert!(
+                (cell.min_x() - pen_width(prefix)).abs() < 0.5,
+                "the cell at {at} starts where the pen is: {} against {}",
+                cell.min_x(),
+                pen_width(prefix)
+            );
         }
     }
 
@@ -1876,52 +1986,22 @@ mod tests {
 
         let app = app();
         let focus = app.theme.color(ColorToken::Focus);
-        let caret = Rc::new(RefCell::new(0));
-        let vim = Rc::new(RefCell::new(VimState::new()));
+        let ink = app.theme.color(ColorToken::Bg);
+        let caret = Rc::new(RefCell::new(1));
         let mut area: Box<dyn Element> = Box::new(
             TextArea::new()
                 .with_value("a b")
                 .with_focused(true)
-                .with_caret(Rc::clone(&caret))
-                .with_vim(vim.clone()),
+                .with_caret(Rc::clone(&caret)),
         );
-        area.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "Escape".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut EventContext::default(),
-            &app,
-        );
-        assert_eq!(vim.borrow().mode(), crate::vim::VimMode::Normal);
-        // Normal mode holds the block over the character under the caret; the
-        // space between the two letters is the one that has no ink.
-        *caret.borrow_mut() = 1;
 
-        // Where the pen stops, measured on the font: the distance the probe
-        // glyph moves when it is drawn after the text.
-        let pen = |text: &str| {
-            measure_text_family(
-                &format!("{text}W"),
-                TEXT_FONT_SIZE,
-                TEXT_LINE_HEIGHT,
-                f32::INFINITY,
-                FontWeight::Regular,
-                FontFamily::System,
-                false,
-            )
-            .x - measure_text_family(
-                "W",
-                TEXT_FONT_SIZE,
-                TEXT_LINE_HEIGHT,
-                f32::INFINITY,
-                FontWeight::Regular,
-                FontFamily::System,
-                false,
-            )
-            .x
-        };
-        let space = pen("a ") - pen("a");
+        let space = advance_width(
+            " ",
+            TEXT_FONT_SIZE,
+            FontWeight::Regular,
+            FontFamily::System,
+            false,
+        );
         assert!(space > 0.0, "a space advances the pen: {space}");
 
         let commands = render_element(&mut area, vec2f(200.0, 40.0), &app);
@@ -1933,40 +2013,53 @@ mod tests {
             })
             .expect("the block caret is a filled cell");
         assert!(
-            (cell.min_x() - pen("a")).abs() < 1.0,
+            (cell.min_x() - pen_width("a")).abs() < 1.0,
             "the cell starts where the space does: {} against {}",
             cell.min_x(),
-            pen("a")
+            pen_width("a")
         );
         assert!(
             (cell.width() - space).abs() < 1.0,
             "the cell is the space's own advance ({space}): {cell:?}"
         );
-        let tail = commands
+        // The line is still one intact run: the `b` after the space is not a
+        // run of its own, and its place is the end of the space's cell.
+        let texts: Vec<&str> = commands
             .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawText { origin, text, .. } if text == "b" => Some(*origin),
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, color, .. } if *color != ink => {
+                    Some(text.as_str())
+                }
                 _ => None,
             })
-            .expect("the character after the space is drawn");
+            .collect();
+        assert_eq!(texts, vec!["a b"]);
+        let b_at = pen_width("a ");
         assert!(
-            (tail.x - cell.max_x()).abs() < 1.0,
-            "the text after the caret starts where its cell ends: {} against {}",
-            tail.x,
-            cell.max_x()
+            (cell.max_x() - b_at).abs() < 1.0,
+            "the character after the space starts where its cell ends: {} against {}",
+            cell.max_x(),
+            b_at
         );
     }
 
-    /// The beam is the focus blue — the colour the reference's editor cursor
-    /// carries — and a blurred field draws no beam at all.
+    /// The insertion point is the focus blue — the colour the reference's
+    /// editor cursor carries — and a blurred field draws no caret at all.
     #[test]
-    fn the_focused_field_paints_its_beam_in_the_focus_blue() {
-        use crate::elements::caret::{CARET_HEIGHT, CARET_WIDTH};
+    fn the_focused_field_paints_its_block_in_the_focus_blue() {
+        use crate::elements::caret::CARET_HEIGHT;
         use crate::render::RenderCommand;
         use crate::test_util::render_element;
 
         let app = app();
         let focus = app.theme.color(ColorToken::Focus);
+        let advance = advance_width(
+            "h",
+            TEXT_FONT_SIZE,
+            FontWeight::Regular,
+            FontFamily::System,
+            false,
+        );
 
         let mut area: Box<dyn Element> =
             Box::new(TextArea::new().with_value("hi").with_focused(true));
@@ -1976,10 +2069,10 @@ mod tests {
                 command,
                 RenderCommand::FillRect { rect, color, .. }
                     if *color == focus
-                        && (rect.width() - CARET_WIDTH).abs() < 0.5
+                        && (rect.width() - advance).abs() < 0.5
                         && (rect.height() - CARET_HEIGHT).abs() < 0.5
             )),
-            "the focused field draws its beam in the focus blue: {commands:?}"
+            "the focused field draws its block in the focus blue: {commands:?}"
         );
 
         let mut blurred: Box<dyn Element> = Box::new(TextArea::new().with_value("hi"));
@@ -1989,16 +2082,15 @@ mod tests {
                 command,
                 RenderCommand::FillRect { color, .. } if *color == focus
             )),
-            "a blurred field draws no beam: {commands:?}"
+            "a blurred field draws no caret: {commands:?}"
         );
     }
 
     /// A multi-line field is one row per line of its buffer, with a padded line
-    /// number in front of each and a beam exactly one line box tall, so the rows
-    /// below the caret never move as it moves.
+    /// number in front of each and a block exactly one mono cell wide and one
+    /// line box tall, so the rows below the caret never move as it moves.
     #[test]
-    fn a_multiline_field_draws_one_row_per_line_with_its_own_beam() {
-        use crate::elements::caret::CARET_WIDTH;
+    fn a_multiline_field_draws_one_row_per_line_with_its_own_caret() {
         use crate::render::RenderCommand;
         use crate::test_util::render_element;
 
@@ -2016,16 +2108,19 @@ mod tests {
         );
         let commands = render_element(&mut area, vec2f(400.0, 200.0), &app);
         let line_box = (TEXT_FONT_SIZE * 1.35).ceil();
-        let beam = commands
+        let cell = mono_advance(TEXT_FONT_SIZE, FontWeight::Regular)
+            .ceil()
+            .max(1.0);
+        let block = commands
             .iter()
             .find_map(|command| match command {
                 RenderCommand::FillRect { rect, color, .. } if *color == focus => Some(*rect),
                 _ => None,
             })
-            .expect("the focused field paints its beam");
+            .expect("the focused field paints its caret");
         assert!(
-            (beam.width() - CARET_WIDTH).abs() < 0.5 && (beam.height() - line_box).abs() < 0.5,
-            "the beam is one line box tall: {beam:?} against {line_box}"
+            (block.width() - cell).abs() < 0.5 && (block.height() - line_box).abs() < 0.5,
+            "the caret covers one mono cell in one line box: {block:?} against {cell} and {line_box}"
         );
         for (line, number) in [
             ("fn main() {", "    1 "),
@@ -2045,6 +2140,171 @@ mod tests {
                 "the line's number {number:?} is drawn"
             );
         }
+    }
+
+    /// A glyph with a negative left bearing (`j` at 12px has `xmin = -0.38`)
+    /// used to make the tail jump: the field cut the line at the caret, the
+    /// suffix was rasterized as a run of its own, and the atlas shifted that
+    /// run one pixel right to fit the overhang. The line is one run at every
+    /// caret now, so the tail never moves.
+    #[test]
+    fn a_negative_bearing_letter_does_not_move_the_tail() {
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = app();
+        let ink = app.theme.color(ColorToken::Bg);
+        let value = "ajb";
+        for at in 0..=value.chars().count() {
+            let caret = Rc::new(RefCell::new(at));
+            let mut area: Box<dyn Element> = Box::new(
+                TextArea::new()
+                    .with_value(value)
+                    .with_focused(true)
+                    .with_caret(caret),
+            );
+            let commands = render_element(&mut area, vec2f(200.0, 40.0), &app);
+            let runs: Vec<&str> = commands
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::DrawText { text, color, .. } if *color != ink => {
+                        Some(text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                runs,
+                vec![value],
+                "the line stays one run with the caret at {at}, before a glyph \
+                 whose ink overhangs its cell to the left"
+            );
+        }
+    }
+
+    /// The file editor keeps its syntax runs intact at every caret position,
+    /// the run that starts with a negative-bearing letter included. The caret
+    /// is placed on the mono grid, one cell per character.
+    #[test]
+    fn a_document_line_is_not_cut_at_the_caret() {
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = app();
+        let ink = app.theme.color(ColorToken::Bg);
+        let text = app.theme.color(ColorToken::Text);
+        let value = "if jan { }";
+        let runs = Rc::new(LineRuns {
+            lines: Rc::new(vec![vec![
+                TextSpan::plain("if ").with_color(text),
+                TextSpan::plain("jan").with_color(text),
+                TextSpan::plain(" { }").with_color(text),
+            ]]),
+            sources: vec![Some(0)],
+        });
+        let cell = mono_advance(TEXT_FONT_SIZE, FontWeight::Regular)
+            .ceil()
+            .max(1.0);
+        for at in 0..=value.chars().count() {
+            let caret = Rc::new(RefCell::new(at));
+            let mut area: Box<dyn Element> = Box::new(
+                TextArea::new()
+                    .with_value(value)
+                    .with_multiline(true)
+                    .with_focused(true)
+                    .with_line_runs(Some(Rc::clone(&runs)))
+                    .with_caret(caret),
+            );
+            let commands = render_element(&mut area, vec2f(400.0, 200.0), &app);
+            let texts: Vec<&str> = commands
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::DrawText { text, color, .. } if *color != ink => {
+                        Some(text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                texts,
+                vec!["if ", "jan", " { }"],
+                "the caret at {at} leaves the syntax runs whole"
+            );
+            let block = commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::FillRect { rect, color, .. }
+                        if *color == app.theme.color(ColorToken::Focus) =>
+                    {
+                        Some(*rect)
+                    }
+                    _ => None,
+                })
+                .expect("the focused document draws its caret");
+            assert!(
+                (block.min_x() - at as f32 * cell).abs() < 0.5,
+                "the caret at {at} sits on the mono grid: {} against {}",
+                block.min_x(),
+                at as f32 * cell
+            );
+        }
+    }
+
+    /// A visual selection is a background under the intact line, not a cut in
+    /// it: the letters keep the run they were drawn in while the selection
+    /// starts and ends inside it.
+    #[test]
+    fn a_selection_is_painted_under_the_whole_line() {
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = app();
+        let ink = app.theme.color(ColorToken::Bg);
+        let selected = app.theme.color(ColorToken::Selected);
+        let vim = Rc::new(RefCell::new(VimState::new()));
+        let mut area: Box<dyn Element> = Box::new(
+            TextArea::new()
+                .with_value("abcd")
+                .with_focused(true)
+                .with_vim(vim.clone()),
+        );
+        let mut event_ctx = EventContext::default();
+        for key in ["Escape", "v", "l", "l"] {
+            area.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: key.to_string(),
+                    modifiers: Default::default(),
+                },
+                &mut event_ctx,
+                &app,
+            );
+        }
+        assert!(vim.borrow().selection(2, 4).is_some(), "a selection is live");
+
+        let commands = render_element(&mut area, vec2f(200.0, 40.0), &app);
+        let runs: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, color, .. } if *color != ink => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            runs,
+            vec!["abcd"],
+            "the selection leaves the line in one run"
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(
+                    command,
+                    RenderCommand::FillRect { color, .. } if *color == selected
+                )),
+            "the selection is a rectangle under the text: {commands:?}"
+        );
     }
 
     /// The keys a multi-line buffer answers: a character lands where the beam
@@ -2463,4 +2723,5 @@ mod tests {
             "and the window is drawn from the top again"
         );
     }
+
 }

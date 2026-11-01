@@ -4,18 +4,18 @@ use crate::elements::{
     PaintContext, Point, SizeConstraint, Text,
 };
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::platform::text_atlas::{measure_text_family, FontWeight};
+use crate::platform::text_atlas::{advance_width, measure_text_family, FontWeight};
 use crate::theme::{ColorToken, FontFamily};
 
 /// Height of the caret beam: one line box of the 12px body text.
 pub const CARET_HEIGHT: f32 = 16.0;
 
-/// Width of the caret beam. Deliberately wider than the terminal grid's own
-/// caret: this is the pane's insertion point for the text the user is writing,
-/// and it has to be legible at a glance against the rich-input bar. The beam is
-/// painted past the insertion point rather than laid out between two glyphs
-/// (see [`CaretBeam`]), so a wider one reaches further over the character after
-/// it instead of pushing that character across.
+/// Width of the thin caret beam. It is the insertion point of a field that has
+/// no character index of its own — a search or a rename — and of an empty
+/// rich input, where it leads the placeholder. The beam is painted past the
+/// insertion point rather than laid out between two glyphs (see
+/// [`CaretBeam`]), so it reaches over the character after it instead of pushing
+/// that character across.
 pub const CARET_WIDTH: f32 = 4.0;
 
 /// Width of a block caret's cell when there is no character to cover: the end
@@ -34,9 +34,11 @@ const CELL_PROBE: &str = "W";
 /// Thickness of the underline caret drawn under the character it sits on.
 const CARET_UNDERLINE_HEIGHT: f32 = 2.0;
 
-/// Which of vim's cursor shapes the editor draws. Insert mode draws a bar
-/// (the rich input's own beam); normal and visual mode draw a block over the
-/// character under the caret; replace mode draws an underline, as vim does.
+/// The shape a field's insertion point is drawn in. A block covers the
+/// character after the insertion point, which is what the rich input and the
+/// document editor draw while typing and in vim's normal and visual modes; an
+/// underline marks the character replace mode overwrites; a bar is the thin
+/// beam of a field that has no character index of its own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CaretShape {
     #[default]
@@ -165,6 +167,170 @@ pub fn caret(app: &AppContext, shape: CaretShape, under: Option<char>) -> Box<dy
                 .with_child(bar)
                 .finish()
         }
+    }
+}
+
+/// The font a caret's cell is measured in, and the font the character under a
+/// block is redrawn in.
+///
+/// A field that draws proportional text and a field that draws a mono buffer
+/// have different cells; the caller hands the same metrics it drew the text
+/// with, so the caret covers exactly one of that text's characters.
+#[derive(Clone, Copy, Debug)]
+pub struct CaretMetrics {
+    pub font_size: f32,
+    pub line_height: f32,
+    pub weight: FontWeight,
+    pub family: FontFamily,
+    pub italic: bool,
+}
+
+impl CaretMetrics {
+    pub fn new(
+        font_size: f32,
+        line_height: f32,
+        weight: FontWeight,
+        family: FontFamily,
+    ) -> Self {
+        Self {
+            font_size,
+            line_height,
+            weight,
+            family,
+            italic: false,
+        }
+    }
+
+    /// The advance of one character in these metrics: the width of the cell a
+    /// block caret covers it with.
+    pub fn advance(&self, ch: char) -> f32 {
+        let mut buffer = [0u8; 4];
+        advance_width(
+            ch.encode_utf8(&mut buffer),
+            self.font_size,
+            self.weight,
+            self.family,
+            self.italic,
+        )
+    }
+
+    /// Draw one character, positioned exactly as the intact run draws it: the
+    /// same origin, size, line height and face.
+    fn draw(&self, renderer: &mut crate::render::Renderer, origin: Vector2F, ch: char, color: ColorU) {
+        renderer.draw_text_with_font(
+            origin,
+            ch.to_string(),
+            self.font_size,
+            color,
+            f32::INFINITY,
+            self.line_height,
+            self.weight,
+            self.family,
+            self.italic,
+        );
+    }
+}
+
+/// A caret painted over an intact run of text, in the shape the editor's mode
+/// calls for.
+///
+/// The field never cuts its text at the insertion point: a cut re-rasterizes
+/// the tail as a new run, and a run whose first glyph has a negative left
+/// bearing (a `j`, for one) is blitted one pixel to the right of the same glyph
+/// inside the whole run. That made every character after the caret jump as the
+/// caret crossed such a letter. This element takes no room in the row and
+/// paints after the text: a block fills the cell of the character it covers and
+/// redraws that character in the cell's background colour; an underline draws
+/// only the rule under the intact character; a bar is the field's own beam.
+pub fn caret_overlay(
+    app: &AppContext,
+    shape: CaretShape,
+    under: Option<char>,
+    cell: f32,
+    height: f32,
+    metrics: CaretMetrics,
+) -> Box<dyn Element> {
+    CaretOverlay {
+        shape,
+        under,
+        cell: cell.max(0.0),
+        height,
+        metrics,
+        color: app.theme.color(ColorToken::Focus),
+        ink: app.theme.color(ColorToken::Bg),
+        origin: None,
+    }
+    .finish()
+}
+
+struct CaretOverlay {
+    shape: CaretShape,
+    under: Option<char>,
+    cell: f32,
+    height: f32,
+    metrics: CaretMetrics,
+    color: ColorU,
+    /// The colour the covered character is redrawn in inside a block, so it
+    /// stays readable against the focus fill.
+    ink: ColorU,
+    origin: Option<Point>,
+}
+
+impl Element for CaretOverlay {
+    fn layout(
+        &mut self,
+        _constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        // An overlay owns no advance: the row's text keeps its columns.
+        vec2f(0.0, self.height)
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let Some(renderer) = ctx.renderer.as_mut() else {
+            return;
+        };
+        match self.shape {
+            CaretShape::Bar => {
+                renderer.fill_rect(
+                    rectf(origin.x, origin.y, CARET_WIDTH, self.height),
+                    self.color,
+                );
+            }
+            CaretShape::Block => {
+                renderer.fill_rect(
+                    rectf(origin.x, origin.y, self.cell, self.height),
+                    self.color,
+                );
+                // The fill hides the character it covers. Draw it again in the
+                // cell's background colour, at the cell's own origin, so a
+                // letter under the block stays readable.
+                if let Some(ch) = self.under.filter(|ch| !ch.is_control()) {
+                    self.metrics.draw(renderer, origin, ch, self.ink);
+                }
+            }
+            CaretShape::Underline => {
+                renderer.fill_rect(
+                    rectf(
+                        origin.x,
+                        origin.y + self.height - CARET_UNDERLINE_HEIGHT,
+                        self.cell,
+                        CARET_UNDERLINE_HEIGHT,
+                    ),
+                    self.color,
+                );
+            }
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        Some(vec2f(0.0, self.height))
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
     }
 }
 

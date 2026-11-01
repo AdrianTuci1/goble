@@ -281,11 +281,19 @@ async fn handle_desktop_message(
         DesktopMessage::PairRequest {
             worker_id,
             pairing_code_hash,
+            link_id,
         } => {
             if worker_id == state.worker_id {
                 if state.is_mtls_active()
                     || state.is_paired(pairing_code_hash.as_deref().unwrap_or_default())
                 {
+                    // The link travels only on the pairing handshake, and only
+                    // once the worker has accepted the desktop. A worker that
+                    // does not run telemetry yet keeps it for the build that
+                    // does.
+                    if let Some(link_id) = link_id {
+                        state.adopt_link_id(&link_id);
+                    }
                     state.emit(WorkerMessage::Paired);
                 }
             }

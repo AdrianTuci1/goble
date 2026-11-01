@@ -16,12 +16,15 @@
 //! - an item that has used up its attempts stays on disk for the next launch
 //!   rather than being deleted, so a future build can still upload it.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::queue::CrashQueue;
+use chrono::Utc;
+
+use crate::queue::{CrashQueue, QueueEntry};
 use crate::report::QueuedItem;
 
 /// Why an upload did not happen.
@@ -69,10 +72,21 @@ impl std::fmt::Display for UploadError {
 
 impl std::error::Error for UploadError {}
 
-/// Sends one item to a collector. Implemented for HTTP, and for tests.
+/// Sends queued items to a collector. Implemented for HTTP, and for tests.
 pub trait Uploader: Send + Sync + std::fmt::Debug {
     /// `base` is the collector root; `item.endpoint_path()` is appended.
     fn upload(&self, base: &str, item: &QueuedItem) -> Result<(), UploadError>;
+
+    /// Send several events in one request. The default falls back to one
+    /// request per item, which keeps a test double simple and remains a correct
+    /// (if expensive) collector client.
+    fn upload_events(&self, base: &str, items: &[QueuedItem]) -> Result<(), UploadError> {
+        debug_assert!(items.iter().all(|item| !item.is_crash()));
+        for item in items {
+            self.upload(base, item)?;
+        }
+        Ok(())
+    }
 }
 
 /// Posts items as JSON over HTTPS.
@@ -97,11 +111,10 @@ impl HttpUploader {
     }
 }
 
-impl Uploader for HttpUploader {
-    fn upload(&self, base: &str, item: &QueuedItem) -> Result<(), UploadError> {
-        let url = format!("{}{}", base.trim_end_matches('/'), item.endpoint_path());
-        let body = serde_json::to_vec(item)
-            .map_err(|err| UploadError::rejected(format!("could not encode item: {err}")))?;
+impl HttpUploader {
+    /// Post one encoded body and turn the answer into the retry policy the
+    /// drain loop works from.
+    fn post(&self, url: String, body: Vec<u8>) -> Result<(), UploadError> {
         let client = self.client.clone();
 
         self.runtime.block_on(async move {
@@ -130,6 +143,27 @@ impl Uploader for HttpUploader {
     }
 }
 
+impl Uploader for HttpUploader {
+    fn upload(&self, base: &str, item: &QueuedItem) -> Result<(), UploadError> {
+        let url = format!("{}{}", base.trim_end_matches('/'), item.endpoint_path());
+        let body = serde_json::to_vec(item)
+            .map_err(|err| UploadError::rejected(format!("could not encode item: {err}")))?;
+        self.post(url, body)
+    }
+
+    fn upload_events(&self, base: &str, items: &[QueuedItem]) -> Result<(), UploadError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        debug_assert!(items.iter().all(|item| !item.is_crash()));
+
+        let url = format!("{}/v1/events", base.trim_end_matches('/'));
+        let body = serde_json::to_vec(items)
+            .map_err(|err| UploadError::rejected(format!("could not encode the batch: {err}")))?;
+        self.post(url, body)
+    }
+}
+
 /// How the worker behaves.
 #[derive(Debug, Clone)]
 pub struct UploadConfig {
@@ -137,6 +171,15 @@ pub struct UploadConfig {
     pub base: String,
     /// Attempts per item within one run of the app.
     pub max_attempts: u32,
+    /// Events carried by one request. Crashes always travel alone.
+    pub max_batch: usize,
+    /// Fewest pending items worth a request of their own. A queue below this
+    /// waits for the next drain, unless a crash is waiting or the oldest item
+    /// has waited `max_wait`.
+    pub min_batch: usize,
+    /// Longest an item waits for a batch to fill. Bounds telemetry latency and
+    /// keeps a quiet client from writing one object per minute.
+    pub max_wait: Duration,
     /// Longest the worker will sleep between drains. The sleep doubles after a
     /// drain that failed, and drops back to `interval` after one that did not,
     /// so a collector that is down is not hammered.
@@ -145,7 +188,8 @@ pub struct UploadConfig {
     pub interval: Duration,
 }
 
-/// What one drain did.
+/// What one drain did. Counts are items, not requests: one batched request can
+/// move a hundred events.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UploadOutcome {
     pub uploaded: usize,
@@ -171,38 +215,91 @@ impl UploadOutcome {
 /// rest of the queue only produces more timeouts.
 pub fn drain(queue: &CrashQueue, uploader: &dyn Uploader, config: &UploadConfig) -> UploadOutcome {
     let mut outcome = UploadOutcome::default();
+    let entries = queue.entries();
+    let batch_limit = config.max_batch.max(1);
+    let mut index = 0;
 
-    for (path, mut entry) in queue.entries() {
-        if entry.attempts >= config.max_attempts {
+    while index < entries.len() {
+        if entries[index].1.attempts >= config.max_attempts {
             outcome.skipped += 1;
+            index += 1;
             continue;
         }
 
-        match uploader.upload(&config.base, &entry.item) {
-            Ok(()) => {
-                if let Err(err) = queue.remove(&path) {
-                    log::warn!("telemetry: could not delete {}: {err}", path.display());
+        // A crash is rare and large: it travels alone and never shares a
+        // request with events.
+        if entries[index].1.item.is_crash() {
+            let (path, entry) = &entries[index];
+            match uploader.upload(&config.base, &entry.item) {
+                Ok(()) => {
+                    remove(queue, path);
+                    outcome.uploaded += 1;
+                    index += 1;
                 }
-                outcome.uploaded += 1;
+                Err(err) if err.is_permanent() => {
+                    remove(queue, path);
+                    log::debug!("telemetry: collector rejected a {}: {}", entry.item.label(), err);
+                    outcome.rejected += 1;
+                    index += 1;
+                }
+                Err(err) => {
+                    let mut entry = entry.clone();
+                    record_attempt(queue, path, &mut entry);
+                    log::debug!("telemetry: upload failed, keeping the item: {err}");
+                    outcome.failed += 1;
+
+                    // One failure means the rest of this pass is probably the
+                    // same failure, so stop instead of hammering a dead
+                    // connection.
+                    outcome.skipped += entries.len() - index - 1;
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // A run of events travels as one request. An item out of attempts ends
+        // the run here; the outer loop then skips it.
+        let start = index;
+        while index < entries.len()
+            && !entries[index].1.item.is_crash()
+            && entries[index].1.attempts < config.max_attempts
+            && index - start < batch_limit
+        {
+            index += 1;
+        }
+
+        let batch = &entries[start..index];
+        let items: Vec<QueuedItem> = batch.iter().map(|(_, entry)| entry.item.clone()).collect();
+
+        match uploader.upload_events(&config.base, &items) {
+            Ok(()) => {
+                for (path, _) in batch {
+                    remove(queue, path);
+                }
+                outcome.uploaded += items.len();
             }
             Err(err) if err.is_permanent() => {
-                if let Err(remove_err) = queue.remove(&path) {
-                    log::warn!("telemetry: could not delete {}: {remove_err}", path.display());
+                for (path, _) in batch {
+                    remove(queue, path);
                 }
-                log::debug!("telemetry: collector rejected a {}: {}", entry.item.label(), err);
-                outcome.rejected += 1;
+                log::debug!("telemetry: collector rejected a batch of {}: {err}", items.len());
+                outcome.rejected += items.len();
             }
             Err(err) => {
-                if let Err(write_err) = queue.record_attempt(&path, &mut entry) {
-                    log::warn!("telemetry: could not record an attempt: {write_err}");
+                // Every item in the batch gets one attempt. A retry sends the
+                // same batch, and the collector's idempotency key makes that
+                // one row rather than two.
+                for (path, entry) in batch {
+                    let mut entry = entry.clone();
+                    record_attempt(queue, path, &mut entry);
                 }
-                log::debug!("telemetry: upload failed, keeping the item: {err}");
-                outcome.failed += 1;
-
-                // One failure means the rest of this pass is probably the same
-                // failure, so stop instead of hammering a dead connection.
-                outcome.skipped +=
-                    queue.entries().iter().filter(|(other, _)| *other != path).count();
+                log::debug!(
+                    "telemetry: batch upload failed, keeping {} items: {err}",
+                    items.len()
+                );
+                outcome.failed += items.len();
+                outcome.skipped += entries.len() - index;
                 break;
             }
         }
@@ -210,6 +307,57 @@ pub fn drain(queue: &CrashQueue, uploader: &dyn Uploader, config: &UploadConfig)
 
     outcome.remaining = queue.len();
     outcome
+}
+
+fn remove(queue: &CrashQueue, path: &Path) {
+    if let Err(err) = queue.remove(path) {
+        log::warn!("telemetry: could not delete {}: {err}", path.display());
+    }
+}
+
+fn record_attempt(queue: &CrashQueue, path: &Path, entry: &mut QueueEntry) {
+    if let Err(err) = queue.record_attempt(path, entry) {
+        log::warn!("telemetry: could not record an attempt: {err}");
+    }
+}
+
+/// Whether the queue has waited long enough for an automatic drain.
+///
+/// A request is cheap; an object is the part that adds up. Waiting for a batch
+/// keeps a quiet client from writing one object a minute, and `max_wait` bounds
+/// how long an event can sit on disk when the client really is quiet.
+fn due(queue: &CrashQueue, config: &UploadConfig) -> bool {
+    let entries = queue.entries();
+    let pending: Vec<&QueueEntry> = entries
+        .iter()
+        .filter(|(_, entry)| entry.attempts < config.max_attempts)
+        .map(|(_, entry)| entry)
+        .collect();
+
+    let Some(oldest) = pending.first() else {
+        return false;
+    };
+
+    // A crash should not wait behind a batch that has not filled.
+    if pending.iter().any(|entry| entry.item.is_crash()) {
+        return true;
+    }
+    if pending.len() >= config.min_batch.max(1) {
+        return true;
+    }
+
+    let age = Utc::now().signed_duration_since(oldest.queued_at);
+    age.to_std().unwrap_or_default() >= config.max_wait
+}
+
+/// Drain only when the queue is worth a request. `None` means the worker looked
+/// and decided to wait; `Some` is what a forced drain would have returned.
+pub fn drain_if_due(
+    queue: &CrashQueue,
+    uploader: &dyn Uploader,
+    config: &UploadConfig,
+) -> Option<UploadOutcome> {
+    due(queue, config).then(|| drain(queue, uploader, config))
 }
 
 /// How long to wait before the next automatic drain: doubles while drains keep
@@ -259,8 +407,11 @@ impl UploadWorker {
                             break;
                         }
                         Err(RecvTimeoutError::Timeout) => {
-                            let outcome = drain(&queue, uploader.as_ref(), &config);
-                            wait = advance_wait(wait, &config, &outcome);
+                            if let Some(outcome) =
+                                drain_if_due(&queue, uploader.as_ref(), &config)
+                            {
+                                wait = advance_wait(wait, &config, &outcome);
+                            }
                         }
                         // Nothing holds the sender any more.
                         Err(RecvTimeoutError::Disconnected) => {
@@ -311,7 +462,7 @@ impl UploadWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Channel;
+    use crate::config::{Channel, Role};
     use crate::queue::QueueEntry;
     use crate::report::{ClientContext, CrashKind, CrashReport, TelemetryEvent};
     use chrono::Utc;
@@ -325,6 +476,8 @@ mod tests {
             os_version: None,
             arch: "aarch64".into(),
             install_id: "install".into(),
+            link_id: None,
+            role: Role::Desktop,
             session_id: "session".into(),
         }
     }
@@ -341,9 +494,19 @@ mod tests {
         UploadConfig {
             base: "http://collector.invalid".into(),
             max_attempts: 3,
+            max_batch: 100,
+            min_batch: 1,
+            max_wait: Duration::from_secs(1),
             backoff: Duration::from_secs(1),
             interval: Duration::from_millis(20),
         }
+    }
+
+    fn event() -> QueuedItem {
+        QueuedItem::event(crate::EventEnvelope::new(
+            context(),
+            TelemetryEvent::AppExited { uptime_secs: 1, exit_code: None },
+        ))
     }
 
     /// Records what it was asked to send and answers from a script.
@@ -377,6 +540,135 @@ mod tests {
                 answers.remove(0)
             }
         }
+    }
+
+    /// Records whole batches instead of individual items.
+    #[derive(Debug, Default)]
+    struct BatchUploader {
+        batches: Mutex<Vec<Vec<QueuedItem>>>,
+        answers: Mutex<Vec<Result<(), UploadError>>>,
+    }
+
+    impl BatchUploader {
+        fn answering(answers: Vec<Result<(), UploadError>>) -> Self {
+            Self { batches: Mutex::new(Vec::new()), answers: Mutex::new(answers) }
+        }
+
+        fn batches(&self) -> Vec<Vec<QueuedItem>> {
+            self.batches.lock().unwrap().clone()
+        }
+    }
+
+    impl Uploader for BatchUploader {
+        fn upload(&self, _base: &str, _item: &QueuedItem) -> Result<(), UploadError> {
+            panic!("an event must not travel as a single-item request");
+        }
+
+        fn upload_events(&self, _base: &str, items: &[QueuedItem]) -> Result<(), UploadError> {
+            self.batches.lock().unwrap().push(items.to_vec());
+            let mut answers = self.answers.lock().unwrap();
+            if answers.is_empty() {
+                Ok(())
+            } else {
+                answers.remove(0)
+            }
+        }
+    }
+
+    #[test]
+    fn events_travel_in_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = queue(dir.path());
+        for _ in 0..3 {
+            queue.enqueue(event()).unwrap();
+        }
+
+        let uploader = BatchUploader::default();
+        let outcome = drain(&queue, &uploader, &UploadConfig { max_batch: 2, ..config() });
+
+        assert_eq!(outcome.uploaded, 3);
+        assert_eq!(outcome.remaining, 0);
+        assert!(queue.is_empty());
+
+        let batches = uploader.batches();
+        assert_eq!(batches.len(), 2, "three events at two per request is two requests");
+        assert_eq!(batches[0].len(), 2);
+        assert_eq!(batches[1].len(), 1);
+    }
+
+    #[test]
+    fn a_small_fresh_queue_waits_for_a_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = queue(dir.path());
+        queue.enqueue(event()).unwrap();
+
+        let uploader = BatchUploader::default();
+        let config = UploadConfig {
+            min_batch: 20,
+            max_wait: Duration::from_secs(3600),
+            ..config()
+        };
+
+        assert!(drain_if_due(&queue, &uploader, &config).is_none());
+        assert_eq!(queue.len(), 1);
+        assert!(uploader.batches().is_empty());
+    }
+
+    #[test]
+    fn a_queue_that_waited_long_enough_drains_anyway() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = queue(dir.path());
+        let mut entry = QueueEntry::new(event());
+        entry.queued_at = Utc::now() - chrono::Duration::hours(2);
+        queue.enqueue_entry(entry).unwrap();
+
+        let uploader = BatchUploader::default();
+        let config = UploadConfig {
+            min_batch: 20,
+            max_wait: Duration::from_secs(600),
+            ..config()
+        };
+
+        let outcome = drain_if_due(&queue, &uploader, &config).expect("an old item is due");
+        assert_eq!(outcome.uploaded, 1);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn a_crash_does_not_wait_for_a_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = queue(dir.path());
+        queue.enqueue(crash("boom")).unwrap();
+
+        let uploader = FakeUploader::always_ok();
+        let config = UploadConfig {
+            min_batch: 20,
+            max_wait: Duration::from_secs(3600),
+            ..config()
+        };
+
+        let outcome = drain_if_due(&queue, &uploader, &config).expect("a crash is due");
+        assert_eq!(outcome.uploaded, 1);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn a_failed_batch_keeps_every_item_and_counts_one_attempt_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = queue(dir.path());
+        for _ in 0..3 {
+            queue.enqueue(event()).unwrap();
+        }
+
+        let uploader =
+            BatchUploader::answering(vec![Err(UploadError::transport("offline"))]);
+        let outcome = drain(&queue, &uploader, &config());
+
+        assert_eq!(outcome.uploaded, 0);
+        assert_eq!(outcome.failed, 3);
+        assert_eq!(outcome.remaining, 3);
+        assert_eq!(queue.len(), 3);
+        assert!(queue.entries().iter().all(|(_, entry)| entry.attempts == 1));
     }
 
     #[test]
@@ -484,7 +776,10 @@ mod tests {
 
     #[test]
     fn events_are_uploaded_to_their_own_path() {
-        let item = QueuedItem::event(TelemetryEvent::AppExited { uptime_secs: 1, exit_code: None });
+        let item = QueuedItem::event(crate::EventEnvelope::new(
+            context(),
+            TelemetryEvent::AppExited { uptime_secs: 1, exit_code: None },
+        ));
         assert_eq!(item.endpoint_path(), "/v1/events");
     }
 

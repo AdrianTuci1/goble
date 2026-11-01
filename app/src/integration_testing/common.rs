@@ -14,6 +14,11 @@ use goble_desktop_service::{DesktopState, ThreadStore};
 /// `PathBuf` that points into it. Bind it (e.g. `let (desktop, _dir) = ...`)
 /// so it lives to the end of the test scope.
 pub fn desktop_state() -> (std::sync::Arc<DesktopState>, tempfile::TempDir) {
+    // An integration test must never start a real shell in the user's PTY
+    // daemon: the daemon keeps a detached session alive by design, so a test
+    // shell would outlive the run. `TerminalRegistry::for_app` reads this and
+    // stays off the default socket.
+    std::env::set_var("GOBLE_TESTING", "1");
     let dir = tempfile::tempdir().expect("create temp thread store dir");
     let state = DesktopState::new(
         Store::open_in_memory().expect("open in-memory store"),

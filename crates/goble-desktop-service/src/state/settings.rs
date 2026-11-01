@@ -37,6 +37,60 @@ impl DesktopState {
         Ok(())
     }
 
+    /// How a proposed command reaches the shell, app-wide. The stored value is
+    /// the approval mode's label; an unset key means no choice has been made
+    /// yet, so the caller can fall back to its own default.
+    pub fn get_approval_mode(&self) -> Option<String> {
+        self.store
+            .lock()
+            .get_setting("approval_mode")
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty())
+    }
+
+    /// Persist the app-wide approval mode. Every pane reads the same value on
+    /// the next frame and a restart restores it.
+    pub fn set_approval_mode(&self, mode: &str) -> anyhow::Result<()> {
+        self.store
+            .lock()
+            .set_setting("approval_mode", mode.trim())?;
+        Ok(())
+    }
+
+    /// The friendly name the onboarding flow asked for. Empty until the user
+    /// gives one.
+    pub fn get_friendly_name(&self) -> String {
+        self.store
+            .lock()
+            .get_setting("friendly_name")
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    pub fn set_friendly_name(&self, name: &str) -> anyhow::Result<()> {
+        self.store
+            .lock()
+            .set_setting("friendly_name", name.trim())?;
+        Ok(())
+    }
+
+    /// What the user said they use Goble for, as the onboarding cards name it.
+    pub fn get_usage(&self) -> String {
+        self.store
+            .lock()
+            .get_setting("usage")
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    pub fn set_usage(&self, usage: &str) -> anyhow::Result<()> {
+        self.store.lock().set_setting("usage", usage.trim())?;
+        Ok(())
+    }
+
     /// Whether modal (vim) editing is on for the rich input. Off unless the
     /// user turned it on; the setting persists across restarts.
     pub fn get_vim_mode(&self) -> bool {

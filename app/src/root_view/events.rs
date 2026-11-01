@@ -50,6 +50,14 @@ impl RootView {
                         }
                         None => crate::state::TurnOutcome::Unknown,
                     };
+                    // How long the turn ran, when the app saw it start, and how
+                    // it ended: the two facts the product needs from a turn.
+                    let ran_for = state
+                        .pane_runtime
+                        .get(&pane_id)
+                        .and_then(|rt| rt.turn_started_at)
+                        .map(|started| started.elapsed());
+                    crate::telemetry::turn_finished(&outcome, ran_for);
                     state.finish_turn(pane_id, outcome);
                     // The turn ended: the card reads the finished reply (and
                     // the subject it names) now, before a queued prompt starts
@@ -181,6 +189,9 @@ impl RootView {
                                 | goble_ui::ApprovalMode::AutoReview => None,
                             };
                             if let Some(decision) = decision {
+                                // The approval mode made this decision, not the
+                                // user, and the outcome counts the same way.
+                                crate::telemetry::approval_decision(&decision);
                                 match desktop.resume_command_chat_turn(&proposal.chat_id, decision) {
                                     Ok(_) => {
                                         state.resume_command_decision(pane_id, &proposal.id);
@@ -204,6 +215,7 @@ impl RootView {
                     if let Ok(call) =
                         serde_json::from_value::<goble_desktop_service::ToolCallEvent>(payload)
                     {
+                        crate::telemetry::tool_call_finished(call.status);
                         state.apply_tool_event(&call);
                     }
                 }

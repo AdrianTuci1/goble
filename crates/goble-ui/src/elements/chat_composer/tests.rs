@@ -1966,17 +1966,17 @@ fn the_focused_editor_shows_the_focus_blue_caret() {
     );
 }
 
-/// The rich input's cursor does not move the letter it sits among: the beam
-/// takes no room in the editor's row, so the text after it starts on the beam
-/// rather than a caret's width past it; the beam is thicker, and it is painted
-/// before the character it reaches, which stays legible on the focus fill.
+/// The rich input's cursor does not move the letter it sits among: the editor
+/// draws its whole line as one run and the block is an overlay on top of it.
+/// The block covers exactly the letter after the insertion point, which it
+/// redraws in the cell's background colour.
 #[test]
-fn the_editor_caret_takes_no_room_and_covers_the_letter_it_reaches() {
-    use crate::elements::caret::CARET_WIDTH;
+fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
     use crate::render::RenderCommand;
 
     let app = AppContext::default();
     let focus = app.theme.color(ColorToken::Focus);
+    let ink = app.theme.color(ColorToken::Bg);
     let caret = Rc::new(RefCell::new(1));
     let mut composer = ChatComposer::new()
         .with_value("hi")
@@ -1984,46 +1984,71 @@ fn the_editor_caret_takes_no_room_and_covers_the_letter_it_reaches() {
         .with_caret(caret);
     let commands = paint_composer(&app, &mut composer);
 
-    let beam_at = commands
-        .iter()
-        .position(|command| matches!(command, RenderCommand::FillRect { color, .. } if *color == focus))
-        .expect("the focused editor paints its beam");
-    let beam = match &commands[beam_at] {
-        RenderCommand::FillRect { rect, .. } => *rect,
-        _ => unreachable!(),
-    };
-    let (tail_at, tail) = commands
-        .iter()
-        .enumerate()
-        .find_map(|(index, command)| match command {
-            RenderCommand::DrawText { origin, text, .. } if text == "i" => Some((index, *origin)),
-            _ => None,
-        })
-        .expect("the text after the beam is drawn");
-    assert!(
-        (tail.x - beam.min_x()).abs() < 0.5,
-        "the letter after the caret starts on the beam, not past it: {tail:?} against {beam:?}"
-    );
-    assert!(
-        tail.x < beam.max_x(),
-        "the beam reaches over that letter: {beam:?} against {tail:?}"
-    );
-    assert!(
-        (beam.width() - CARET_WIDTH).abs() < 0.5 && CARET_WIDTH > 3.0,
-        "the beam is a thick one: {beam:?}"
-    );
-    assert!(
-        beam_at < tail_at,
-        "the beam is painted before the letter it covers, so the letter stays drawn"
-    );
-    let said: String = commands
+    // One intact run, at the editor's own origin.
+    let runs: Vec<(&str, crate::geometry::Vector2F)> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+            RenderCommand::DrawText {
+                origin,
+                text,
+                color,
+                ..
+            } if *color != ink => Some((text.as_str(), *origin)),
             _ => None,
         })
         .collect();
-    assert_eq!(said, "hi", "the caret leaves the editor's text alone");
+    assert_eq!(runs.len(), 1, "the editor draws its line as one run");
+    assert_eq!(runs[0].0, "hi");
+
+    let (cell_at, cell) = commands
+        .iter()
+        .enumerate()
+        .find_map(|(index, command)| match command {
+            RenderCommand::FillRect { rect, color, .. } if *color == focus => {
+                Some((index, *rect))
+            }
+            _ => None,
+        })
+        .expect("the focused editor paints its block");
+    let advance = |ch: &str| {
+        crate::platform::text_atlas::advance_width(
+            ch,
+            12.0,
+            crate::platform::text_atlas::FontWeight::Regular,
+            crate::theme::FontFamily::System,
+            false,
+        )
+    };
+    assert!(
+        (cell.min_x() - (runs[0].1.x + advance("h"))).abs() < 0.5,
+        "the cell starts where the `h` ends: {cell:?}"
+    );
+    let advance_i = advance("i");
+    assert!(
+        (cell.width() - advance_i).abs() < 0.5,
+        "the cell covers the `i` after it ({advance_i}): {cell:?}"
+    );
+    let (covered_at, covered) = commands
+        .iter()
+        .enumerate()
+        .find_map(|(index, command)| match command {
+            RenderCommand::DrawText {
+                origin,
+                text,
+                color,
+                ..
+            } if *color == ink && text == "i" => Some((index, *origin)),
+            _ => None,
+        })
+        .expect("the covered letter is redrawn in the cell's background");
+    assert!(
+        cell_at < covered_at,
+        "the block is painted before the letter it covers is redrawn"
+    );
+    assert!(
+        (covered.x - cell.min_x()).abs() < 1.0,
+        "the redrawn letter sits in its cell: {covered:?} against {cell:?}"
+    );
 }
 
 /// The rich input hugs its own rows: the card's vertical padding is `xs` and

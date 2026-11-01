@@ -1,6 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+#[cfg(unix)]
+use goble_pty::protocol::{Request, ServerMessage};
+#[cfg(unix)]
+use goble_pty::Client;
 
 use goble_core::harness::PaneSession;
 use goble_core::ssh_command::SshSession;
@@ -31,9 +36,9 @@ pub struct TerminalRegistry {
     /// from the persisted pane state at startup and kept current whenever a
     /// session is spawned or reattached, so the next save persists the id.
     pub session_ids: HashMap<u64, String>,
-    /// The daemon socket to talk to. `None` uses the default socket and starts
-    /// the daemon when nothing is listening; tests point this at an in-process
-    /// daemon on a temp socket.
+    /// The daemon socket to talk to. `None` starts no shell at all, which is
+    /// the default a test gets; the app sets the default socket through
+    /// [`Self::for_app`] and a test daemon is pointed at with [`Self::use_socket`].
     pub socket: Option<PathBuf>,
     /// Per-pane copy mode, selection and find-bar state. Owned here for the
     /// same reason the sessions are: the pane's element tree is rebuilt every
@@ -42,6 +47,21 @@ pub struct TerminalRegistry {
 }
 
 impl TerminalRegistry {
+    /// The registry the running app uses: the default daemon socket.
+    ///
+    /// Test binaries keep the empty default. A test that renders the shell or
+    /// runs an action must never start a real shell in the user's daemon, and
+    /// the daemon keeps a detached session alive by design, so a leaked test
+    /// shell would outlive the run.
+    pub fn for_app() -> Self {
+        let mut registry = Self::default();
+        if cfg!(test) || std::env::var_os("GOBLE_TESTING").is_some() {
+            return registry;
+        }
+        registry.socket = Some(goble_pty::resolve_socket_path());
+        registry
+    }
+
     /// The host the pane's shell is on, or `None` when it is local.
     pub fn ssh_session(&self, pane_id: u64) -> Option<&SshSession> {
         self.ssh_sessions.get(&pane_id)
@@ -84,7 +104,7 @@ impl TerminalRegistry {
             Some(socket) => TerminalSession::spawn_at(socket, pane_id, cwd, persisted),
             #[cfg(not(unix))]
             Some(_) => TerminalSession::spawn_for(pane_id, cwd, persisted),
-            None => TerminalSession::spawn_for(pane_id, cwd, persisted),
+            None => Err("this registry has no PTY daemon socket".to_string()),
         };
         match spawned {
             Ok(session) => {
@@ -145,6 +165,52 @@ impl TerminalRegistry {
         self.ssh_sessions.remove(&pane_id);
         self.ui.remove(&pane_id);
     }
+
+    /// Close every pane's shell for good. The window calls this once it has
+    /// left the event loop: dropping a session only detaches, so without this
+    /// the daemon keeps every pane's shell alive with no app to reattach it.
+    pub fn kill_all(&mut self) {
+        let pane_ids: Vec<u64> = self.sessions.keys().copied().collect();
+        for pane_id in pane_ids {
+            self.kill_pane(pane_id);
+        }
+    }
+
+    /// Close the daemon sessions the layout does not name.
+    ///
+    /// `keep` holds the `(pane id, session id)` the restored layout persisted,
+    /// so a pane that is gone, and a second session that claims the same pane,
+    /// are both closed. A crashed or force-quit run leaves its shells detached
+    /// and the daemon keeps a detached session by design; the window that owns
+    /// the control socket calls this at launch, before it starts the restored
+    /// panes, so such a run does not accumulate them.
+    #[cfg(unix)]
+    pub fn kill_orphan_sessions(&mut self, keep: &HashSet<(String, String)>) {
+        let Some(socket) = self.socket.clone() else {
+            return;
+        };
+        let Ok(mut client) = Client::connect(socket) else {
+            return;
+        };
+        let id = client.next_id();
+        let Ok(ServerMessage::Sessions { sessions, .. }) = client.request(Request::List { id })
+        else {
+            return;
+        };
+        for session in sessions {
+            if keep.contains(&(session.pane_id.clone(), session.session_id.clone())) {
+                continue;
+            }
+            let id = client.next_id();
+            let _ = client.request(Request::Kill {
+                id,
+                session_id: session.session_id,
+            });
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub fn kill_orphan_sessions(&mut self, _keep: &HashSet<(String, String)>) {}
 
     pub fn input(&self, pane_id: u64) -> String {
         self.input.get(&pane_id).cloned().unwrap_or_default()

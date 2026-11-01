@@ -43,8 +43,9 @@ MCP_NAME="${MCP_NAME:-goble-mcp}"
 BUNDLE_ID="${BUNDLE_ID:-com.goble.app}"
 VERSION="${VERSION:-0.0.0}"
 
-# Default icon source. It is a 256x256 PNG in-repo; pass --icon with a >=1024
-# PNG or an existing .icns for a crisp Retina icon (see packaging/README.md).
+# Default icon source. It is a 1024x1024 PNG rendered from
+# packaging/icons/goble.svg; pass --icon with another >=1024 PNG or an existing
+# .icns to override it (see packaging/README.md).
 DEFAULT_ICON="$ROOT_DIR/crates/goble-desktop-native/resources/icons/icon.png"
 
 usage() {

@@ -1,0 +1,35 @@
+# Cloudflare Worker for Goble's download endpoints.
+#
+#   npx wrangler deploy            # from this directory
+#   npx wrangler dev               # local worker with emulated KV
+
+name = "goble-downloads"
+main = "src/index.mjs"
+compatibility_date = "2025-01-01"
+workers_dev = true
+
+# Manifests are stored one key per channel: `manifest:stable`, `manifest:beta`,
+# `manifest:dev`. Create the namespace once and paste the id below:
+#   npx wrangler kv namespace create MANIFESTS
+[[kv_namespaces]]
+binding = "MANIFESTS"
+id = "bd11e97c523842728c26840931f02c60" # MANIFESTS, created 2026-11-01
+
+[vars]
+# Absolute base the Worker advertises in its index links. Keep it in sync with
+# the route below when the domain moves.
+# The host the Worker answers on. `get.octomus.dev` is a proxied record in the
+# `octomus.dev` zone, so the route below takes the hostname over.
+PUBLIC_BASE_URL = "https://get.octomus.dev"
+# Placeholder owner/repo: replace with the repository that publishes the
+# release assets (`GET /dl/:tag/:asset` redirects into its releases).
+GITHUB_REPO = "AdrianTuci1/goble"
+
+# The release host. `octomus.dev` is a Cloudflare zone, and the record for
+# `get.` is proxied, so a zone route serves it without touching DNS.
+[[routes]]
+pattern = "get.octomus.dev/*"
+zone_name = "octomus.dev"
+
+# ADMIN_TOKEN is a secret and never appears in this file. Set it with:
+#   npx wrangler secret put ADMIN_TOKEN

@@ -10,6 +10,12 @@ pub enum DesktopMessage {
     PairRequest {
         worker_id: WorkerId,
         pairing_code_hash: Option<String>,
+        /// The telemetry link id the desktop shares with the installations it
+        /// pairs. Random and pseudonymous; it travels here because this is the
+        /// authenticated handshake, and it is absent on a desktop that has not
+        /// started telemetry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        link_id: Option<String>,
     },
     RunAgent {
         trace_id: String,
@@ -374,6 +380,45 @@ mod tests {
         let bytes = serde_json::to_vec(&msg).unwrap();
         let decoded: DesktopMessage = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    /// The telemetry link rides the pairing handshake, and a build that does
+    /// not know the field yet must still read the request.
+    #[test]
+    fn a_pair_request_carries_the_telemetry_link_and_stays_readable_without_it() {
+        let worker_id = WorkerId::generate();
+        let msg = DesktopMessage::PairRequest {
+            worker_id: worker_id.clone(),
+            pairing_code_hash: Some("hash".to_string()),
+            link_id: Some("link-1".to_string()),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["link_id"], "link-1");
+        assert_eq!(serde_json::from_value::<DesktopMessage>(json).unwrap(), msg);
+
+        let old: DesktopMessage = serde_json::from_value(serde_json::json!({
+            "kind": "pair_request",
+            "worker_id": worker_id,
+            "pairing_code_hash": "hash"
+        }))
+        .unwrap();
+        assert_eq!(
+            old,
+            DesktopMessage::PairRequest {
+                worker_id,
+                pairing_code_hash: Some("hash".to_string()),
+                link_id: None,
+            }
+        );
+
+        // No link means the field is not on the wire at all.
+        let without = serde_json::to_value(DesktopMessage::PairRequest {
+            worker_id: WorkerId::generate(),
+            pairing_code_hash: None,
+            link_id: None,
+        })
+        .unwrap();
+        assert!(without.get("link_id").is_none(), "{without}");
     }
 
     #[test]

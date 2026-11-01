@@ -1,4 +1,3 @@
-
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -48,9 +47,17 @@ pub(crate) fn build_terminal_composer(
     focused: bool,
 ) -> Box<dyn Element> {
     let session = pane_session_snapshot(state, pane_id);
-    let controls = state.pane_controls.get(&pane_id).cloned().unwrap_or_else(|| {
-        PaneControls::new(state.selected_model.clone(), state.auto_approve, String::new())
-    });
+    let controls = state
+        .pane_controls
+        .get(&pane_id)
+        .cloned()
+        .unwrap_or_else(|| {
+            PaneControls::new(
+                state.selected_model.clone(),
+                state.approval_mode,
+                String::new(),
+            )
+        });
     // Where this pane's shell is: the host a submitted `ssh` line bound it to
     // (S1), read from the session the binding lives in rather than from a copy.
     // A pane at a local shell has no entry, so its bar draws no chip.
@@ -149,8 +156,7 @@ pub(crate) fn build_terminal_composer(
     // the editor, narrowed by what was typed after the slash. Same list as the
     // Cmd+K overlay, drawn in place.
     let slash_commands = crate::ui::palette::slash_commands(state, actions);
-    let slash_query =
-        crate::ui::palette::slash_query(&session.composer_draft).unwrap_or_default();
+    let slash_query = crate::ui::palette::slash_query(&session.composer_draft).unwrap_or_default();
     let slash_filtered = crate::ui::palette::matching_slash_commands(&slash_commands, &slash_query);
     let slash_items = crate::ui::palette::slash_items(&slash_filtered);
     composer = composer
@@ -260,10 +266,11 @@ pub(crate) fn build_pending_approval(
     let session = pane_session_snapshot(state, pane_id);
     let proposal = session.pending_command.as_ref()?;
     let on_command_decision = actions.on_command_decision.clone();
-    let handler: goble_ui::elements::DecisionHandler =
-        Rc::new(RefCell::new(move |id: String, decision: CommandDecision| {
+    let handler: goble_ui::elements::DecisionHandler = Rc::new(RefCell::new(
+        move |id: String, decision: CommandDecision| {
             (on_command_decision.borrow_mut())(pane_id, id, decision);
-        }));
+        },
+    ));
     let element = goble_ui::elements::command_approval_card(
         proposal,
         &goble_ui::elements::CommandApprovalState {
@@ -287,12 +294,13 @@ pub(crate) fn build_pending_approval(
     let md = app.theme.spacing_px(SpacingToken::Md);
     let variants = match proposal.candidates.len() {
         0 | 1 => 0.0,
-        count => (count as f32 * 24.0 + 4.0)
-            .clamp(24.0, goble_ui::elements::APPROVAL_BODY_MAX_HEIGHT),
+        count => {
+            (count as f32 * 24.0 + 4.0).clamp(24.0, goble_ui::elements::APPROVAL_BODY_MAX_HEIGHT)
+        }
     };
     let lines = session.command_draft.borrow().matches('\n').count() + 1;
-    let editor = (lines as f32 * 16.8 + 2.0)
-        .clamp(28.0, goble_ui::elements::APPROVAL_EDITOR_MAX_HEIGHT);
+    let editor =
+        (lines as f32 * 16.8 + 2.0).clamp(28.0, goble_ui::elements::APPROVAL_EDITOR_MAX_HEIGHT);
     let mut height = md + sm + 28.0 + 1.0 + editor + sm + 12.0 + sm;
     if variants > 0.0 {
         height += variants + sm;

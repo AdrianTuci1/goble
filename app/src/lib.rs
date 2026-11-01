@@ -20,5 +20,7 @@ pub mod projects;
 pub mod root_view;
 pub mod runtime;
 pub mod state;
+pub mod telemetry;
 pub mod terminal;
 pub mod ui;
+pub mod update;

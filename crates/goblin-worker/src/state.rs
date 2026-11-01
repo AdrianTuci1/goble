@@ -24,10 +24,18 @@ use goble_core::snapshot::SnapshotProvider;
 use goble_core::store::Store;
 use goble_core::worker::WorkerId;
 
+/// Store setting holding the telemetry link id from the last pairing.
+const LINK_ID_SETTING: &str = "telemetry_link_id";
+
 /// Shared application state for the Goblin worker.
 pub struct AppState {
     pub worker_id: WorkerId,
     pub pairing_hash: Mutex<Option<String>>,
+    /// The pseudonymous link id the pairing desktop shared. Persisted in the
+    /// worker's store, so a restart keeps it. This is the adoption seam for a
+    /// worker that runs telemetry: it starts `goble_telemetry` with
+    /// `role = worker` and calls `Telemetry::link_with` with this value.
+    link_id: Mutex<Option<String>>,
     pub worker_bundle: Mutex<Option<WorkerBundle>>,
     pub desktop_identity: Mutex<Option<Identity>>,
     pub agents: Mutex<std::collections::HashMap<AgentId, AgentSpec>>,
@@ -82,6 +90,7 @@ impl AppState {
         Arc::new(Self {
             worker_id,
             pairing_hash: Mutex::new(None),
+            link_id: Mutex::new(None),
             worker_bundle: Mutex::new(None),
             desktop_identity: Mutex::new(None),
             agents: Mutex::new(std::collections::HashMap::new()),
@@ -135,6 +144,39 @@ impl AppState {
 
     pub fn set_pairing_hash(&self, hash: String) {
         *self.pairing_hash.lock() = Some(hash);
+    }
+
+    /// Remember the telemetry link id a pairing desktop shared.
+    ///
+    /// The worker does not report telemetry yet, so this value is kept rather
+    /// than used: it is what a future worker-side telemetry start adopts, and
+    /// persisting it means the adoption does not wait for another pairing.
+    /// Empty values are ignored.
+    pub fn adopt_link_id(&self, link_id: &str) {
+        let link_id = link_id.trim();
+        if link_id.is_empty() {
+            return;
+        }
+        *self.link_id.lock() = Some(link_id.to_owned());
+        if let Ok(store) = self.store() {
+            if let Err(error) = store.set_setting(LINK_ID_SETTING, link_id) {
+                tracing::warn!("could not persist the telemetry link id: {error}");
+            }
+        }
+    }
+
+    /// The link id this worker was paired with, if any. Reads the persisted
+    /// value on first use, so a restart answers the same.
+    pub fn link_id(&self) -> Option<String> {
+        if let Some(link_id) = self.link_id.lock().clone() {
+            return Some(link_id);
+        }
+        let stored = self
+            .store()
+            .ok()
+            .and_then(|store| store.get_setting(LINK_ID_SETTING).ok().flatten())?;
+        *self.link_id.lock() = Some(stored.clone());
+        Some(stored)
     }
 
     pub fn set_worker_bundle(&self, bundle: WorkerBundle) {
@@ -426,6 +468,20 @@ mod tests {
         assert!(!state.is_paired("abc"));
         state.set_pairing_hash("abc".to_string());
         assert!(state.is_paired("abc"));
+    }
+
+    #[test]
+    fn a_link_id_from_pairing_is_remembered_and_cannot_be_blank() {
+        let state = AppState::new(WorkerId::generate());
+        // No store on this state, so nothing is persisted; the in-memory value
+        // is what a worker without telemetry keeps.
+        assert_eq!(state.link_id(), None);
+
+        state.adopt_link_id("link-from-desktop");
+        assert_eq!(state.link_id().as_deref(), Some("link-from-desktop"));
+
+        state.adopt_link_id("   ");
+        assert_eq!(state.link_id().as_deref(), Some("link-from-desktop"));
     }
 
     #[test]

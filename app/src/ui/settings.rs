@@ -88,11 +88,14 @@ use std::rc::Rc;
 use goble_core::store::{SecretEntry, SecretGroup};
 use goble_ui::color::ColorU;
 use goble_ui::elements::{
-    AppContext, Axis, Border, Button, ButtonVariant, ConstrainedBox, Container,
-    CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow,
-    Icon, KeyHandler, MainAxisAlignment, MainAxisSize, Scrollable, ShortcutHint, ShortcutHints,
-    Spacer, Switch, Text, TextInput, TopbarButton,
+    AppContext, Axis, Border, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment,
+    Divider, EdgeInsets, Element, Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon,
+    KeyHandler, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point, PopupMenu,
+    PopupMenuItem, Scrollable, ShortcutHint, ShortcutHints, SizeConstraint, Spacer, Switch, Text,
+    TextInput, TopbarButton,
 };
+use goble_ui::event::DispatchedEvent;
+use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::color_picker::{ColorTarget, ColorWheel, COLOR_TARGET_ORDER};
@@ -126,6 +129,7 @@ pub fn pane_controls(
 ) -> Vec<SettingsControl> {
     use SettingsControl::*;
     match category {
+        SettingsCategory::Profile => vec![FriendlyName, DataSharing],
         SettingsCategory::Appearance => {
             let mut controls = vec![DarkMode];
             controls.extend(COLOR_TARGET_ORDER.iter().copied().map(ThemeChannel));
@@ -135,12 +139,17 @@ pub fn pane_controls(
         SettingsCategory::Mouse => vec![InvertScroll, ScrollSpeed],
         SettingsCategory::EditorInput => vec![FontSize, AutoSaveOnClose],
         SettingsCategory::AgentApproval => vec![
+            ApprovalMode,
+            DefaultModel,
             AutoApprove,
             VimMode,
             OpenConfigFile,
             ReloadRemoteAgents,
         ],
         SettingsCategory::Models => vec![OpenConfigFile, ReloadModels],
+        // The two buttons the section offers: ask now, and install what the
+        // last ask found.
+        SettingsCategory::Updates => vec![CheckForUpdates, InstallUpdate],
         // Advanced reports the machine state; opening the config file is the
         // page's one control.
         SettingsCategory::Advanced => vec![OpenConfigFile],
@@ -541,7 +550,11 @@ fn build_nav(
         let selected = cat == page;
         let label = Text::new(cat.label())
             .with_theme_color(
-                if selected { ColorToken::Text } else { ColorToken::Muted },
+                if selected {
+                    ColorToken::Text
+                } else {
+                    ColorToken::Muted
+                },
                 app,
             )
             .with_font_size(12.0)
@@ -576,6 +589,7 @@ fn build_pane(
     page: SettingsCategory,
 ) -> Box<dyn Element> {
     match page {
+        SettingsCategory::Profile => build_profile(app, state, actions, page),
         SettingsCategory::Appearance => build_appearance(app, state, actions, page),
         SettingsCategory::Mouse => build_mouse(app, state, actions, page),
         SettingsCategory::EditorInput => build_editor(app, state, actions, page),
@@ -583,6 +597,7 @@ fn build_pane(
         SettingsCategory::Environment => build_environment(app, state, actions, page),
         SettingsCategory::Connections => build_connections(app, state, actions, page),
         SettingsCategory::Models => build_models(app, state, actions, page),
+        SettingsCategory::Updates => build_updates(app, state, actions, page),
         SettingsCategory::Advanced => build_advanced(app, state, actions, page),
     }
 }
@@ -718,14 +733,22 @@ fn stepper(
     on_dec: Rc<RefCell<dyn FnMut()>>,
     on_inc: Rc<RefCell<dyn FnMut()>>,
 ) -> Box<dyn Element> {
-    let minus = Button::new(Text::new("-").with_theme_color(ColorToken::Text, app).finish())
-        .with_variant(ButtonVariant::Outline)
-        .with_on_click(move || (on_dec.borrow_mut())())
-        .finish();
-    let plus = Button::new(Text::new("+").with_theme_color(ColorToken::Text, app).finish())
-        .with_variant(ButtonVariant::Outline)
-        .with_on_click(move || (on_inc.borrow_mut())())
-        .finish();
+    let minus = Button::new(
+        Text::new("-")
+            .with_theme_color(ColorToken::Text, app)
+            .finish(),
+    )
+    .with_variant(ButtonVariant::Outline)
+    .with_on_click(move || (on_dec.borrow_mut())())
+    .finish();
+    let plus = Button::new(
+        Text::new("+")
+            .with_theme_color(ColorToken::Text, app)
+            .finish(),
+    )
+    .with_variant(ButtonVariant::Outline)
+    .with_on_click(move || (on_inc.borrow_mut())())
+    .finish();
     Flex::row()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -755,6 +778,58 @@ fn switch_row(
         .with_on_change(move |v| (on_change.borrow_mut())(v))
         .finish();
     setting_row(app, label, control, focused)
+}
+
+/// Settings → Profile: the friendly name, the default model and the telemetry
+/// choice. These are the same answers onboarding collects, so a user who wants
+/// to change one later comes here rather than having to run the flow again.
+fn build_profile(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    page: SettingsCategory,
+) -> Box<dyn Element> {
+    let controls = order_for(state, page);
+    let mut order = FocusOrder::new(state, &controls);
+
+    let name_focused = order.take(SettingsControl::FriendlyName);
+    let on_name = actions.on_profile_name_change.clone();
+    let on_name_focus = actions.on_profile_name_focus.clone();
+    let name_field = TextInput::new()
+        .with_value(state.settings_profile_name.clone())
+        .with_placeholder("Your name")
+        .with_focused(name_focused && state.settings_pane_field_active)
+        .with_full_width(true)
+        .with_on_change(move |value| (on_name.borrow_mut())(value))
+        // A press outside the field ends the edit without keeping it: the
+        // caret has left, so what was typed is a draft the user abandoned.
+        .with_on_focus_change(move |gained| (on_name_focus.borrow_mut())(gained))
+        .finish();
+
+    let share_focused = order.take(SettingsControl::DataSharing);
+
+    let col = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_child(heading(app, "You"))
+        .with_child(field_row(app, "Friendly name", name_field, name_focused))
+        .with_child(note(app, "The name the agent greets you by. You can change it any time."))
+        .with_child(rule())
+        .with_child(heading(app, "Privacy"))
+        .with_child(switch_row(
+            app,
+            "Share anonymous data",
+            state.share_telemetry,
+            actions.on_toggle_telemetry.clone(),
+            share_focused,
+        ))
+        .with_child(note(
+            app,
+            "Crash reports and usage counts only. Prompts, code and file contents stay on this machine.",
+        ));
+
+    order.finish();
+    Container::new(col.finish()).finish()
 }
 
 fn build_appearance(
@@ -880,11 +955,7 @@ fn build_appearance(
 
 /// Resolve the effective color for a theme channel: the custom override if set,
 /// else the theme's built-in token color.
-fn effective_theme_color(
-    app: &AppContext,
-    state: &UiSnapshot,
-    target: ColorTarget,
-) -> ColorU {
+fn effective_theme_color(app: &AppContext, state: &UiSnapshot, target: ColorTarget) -> ColorU {
     let hex = match target {
         ColorTarget::Primary => state.theme_primary.as_deref(),
         ColorTarget::Secondary => state.theme_secondary.as_deref(),
@@ -920,12 +991,7 @@ fn build_mouse(
         let current = state.settings_scroll_speed;
         Rc::new(RefCell::new(move || (a.borrow_mut())(current + 1)))
     };
-    let speed = stepper(
-        app,
-        state.settings_scroll_speed.to_string(),
-        on_dec,
-        on_inc,
-    );
+    let speed = stepper(app, state.settings_scroll_speed.to_string(), on_dec, on_inc);
     let rows = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min)
@@ -968,7 +1034,12 @@ fn build_editor(
         let current = state.settings_font_size;
         Rc::new(RefCell::new(move || (a.borrow_mut())(current + 0.1)))
     };
-    let size = stepper(app, format!("{:.1}x", state.settings_font_size), on_dec, on_inc);
+    let size = stepper(
+        app,
+        format!("{:.1}x", state.settings_font_size),
+        on_dec,
+        on_inc,
+    );
     let rows = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min)
@@ -1013,27 +1084,79 @@ fn build_agent(
     let controls = order_for(state, page);
     let mut order = FocusOrder::new(state, &controls);
 
+    let approval_mode_focused = order.take(SettingsControl::ApprovalMode);
+    let model_focused = order.take(SettingsControl::DefaultModel);
     let auto_approve_focused = order.take(SettingsControl::AutoApprove);
     let vim_focused = order.take(SettingsControl::VimMode);
+
+    // The mode is app-wide; the stepper and the composer's menu both write it
+    // through the same action, which persists it and copies it into every pane.
+    let on_mode = actions.on_select_approval_mode.clone();
+    let pane_id = state.active_pane_id;
+    let current_mode = state.approval_mode;
+    let on_dec = on_mode.clone();
+    let on_inc = on_mode.clone();
+    let dec = Rc::new(RefCell::new(move || {
+        (on_dec.borrow_mut())(pane_id, current_mode.previous())
+    }));
+    let inc = Rc::new(RefCell::new(move || {
+        (on_inc.borrow_mut())(pane_id, current_mode.next())
+    }));
+    let approval_mode = stepper(app, current_mode.label().to_string(), dec, inc);
 
     // The global auto-approve switch edits the active pane's control (the
     // setting is stored per pane and mirrored into the shared setting).
     let pane_id = state.active_pane_id;
     let on_auto_approve_action = actions.on_toggle_auto_approve.clone();
-    let on_auto_approve: Rc<RefCell<dyn FnMut(bool)>> =
-        Rc::new(RefCell::new(move |v: bool| {
-            (on_auto_approve_action.borrow_mut())(pane_id, v)
-        }));
+    let on_auto_approve: Rc<RefCell<dyn FnMut(bool)>> = Rc::new(RefCell::new(move |v: bool| {
+        (on_auto_approve_action.borrow_mut())(pane_id, v)
+    }));
     // Modal editing is a single app-wide choice (the pane states are per pane,
     // but the switch that turns the feature on is not).
     let on_vim_action = actions.on_toggle_vim_mode.clone();
-    let on_vim: Rc<RefCell<dyn FnMut(bool)>> = Rc::new(RefCell::new(move |v: bool| {
-        (on_vim_action.borrow_mut())(v)
-    }));
+    let on_vim: Rc<RefCell<dyn FnMut(bool)>> =
+        Rc::new(RefCell::new(move |v: bool| (on_vim_action.borrow_mut())(v)));
+
+    // The model default is picked from a menu anchored to its own field, the
+    // shape the composer's working-directory pill uses. The menu is drawn as
+    // the window's top layer (see `build_model_menu_overlay`), so the page only
+    // draws the field and records where it painted.
+    let current_model = if state.settings_default_model.trim().is_empty() {
+        state.selected_model.clone()
+    } else {
+        state.settings_default_model.clone()
+    };
+    let open_menu = state.settings_model_menu_open.clone();
+    let model_field = ConstrainedBox::new(
+        Button::new(model_field_content(app, &current_model))
+            .with_variant(ButtonVariant::Default)
+            .with_corner_radius(8.0)
+            .with_on_click(move || *open_menu.borrow_mut() = true)
+            .finish(),
+    )
+    .with_width(MODEL_FIELD_WIDTH)
+    .with_min_width(MODEL_FIELD_WIDTH)
+    .finish();
+    let model_field = Box::new(Anchored::new(
+        model_field,
+        state.settings_model_anchor.clone(),
+        state.settings_model_painted.clone(),
+    ));
+
     let mut col = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min)
         .with_child(heading(app, "Behaviour"))
+        .with_child(setting_row(
+            app,
+            "Approval mode",
+            approval_mode,
+            approval_mode_focused,
+        ))
+        .with_child(rule())
+        .with_child(setting_row(app, "Default model", model_field, model_focused))
+        .with_child(note(app, "New agents start on this model. The menu lists what the provider configured in Settings → Models offers."))
+        .with_child(rule())
         .with_child(switch_row(
             app,
             "Auto-approve",
@@ -1127,6 +1250,155 @@ fn build_agent(
     Container::new(col.finish()).finish()
 }
 
+/// The width the default-model field draws at: wide enough for a model id and
+/// the chevron, and the width the menu hanging from it takes.
+pub(crate) const MODEL_FIELD_WIDTH: f32 = 220.0;
+
+/// What the default-model field shows: the model in force, and the chevron
+/// that says pressing it opens a list.
+fn model_field_content(app: &AppContext, current: &str) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(
+            Expanded::new(
+                Text::new(current)
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_font_size(12.0)
+                    .with_max_lines(1)
+                    .finish(),
+            )
+            .finish(),
+        )
+        .with_child(
+            Icon::new("chevron-down")
+                .with_size(12.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .finish()
+}
+
+/// Records the rect its child painted at.
+///
+/// The settings page is drawn inside a scroll viewport, so a menu anchored to a
+/// field there cannot be the field's own child: the viewport would clip it and
+/// the rows below it would paint over it. Instead the field reports its rect
+/// while it paints, and [`build_model_menu_overlay`] hangs the panel from it at
+/// the window's top layer — one frame later, since the rect comes from the
+/// previous paint, which is invisible because the field never moves to open it.
+struct Anchored {
+    child: Box<dyn Element>,
+    rect: Rc<RefCell<Option<RectF>>>,
+    painted: Rc<RefCell<bool>>,
+}
+
+impl Anchored {
+    fn new(
+        child: Box<dyn Element>,
+        rect: Rc<RefCell<Option<RectF>>>,
+        painted: Rc<RefCell<bool>>,
+    ) -> Self {
+        Self {
+            child,
+            rect,
+            painted,
+        }
+    }
+}
+
+impl Element for Anchored {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        self.child.layout(constraint, ctx, app)
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        let size = self.child.size().unwrap_or_default();
+        *self.rect.borrow_mut() = Some(rectf(origin.x, origin.y, size.x, size.y));
+        *self.painted.borrow_mut() = true;
+        self.child.paint(origin, ctx, app);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.child.size()
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.child.origin()
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.child.dispatch_event(event, ctx, app)
+    }
+}
+
+/// The default-model menu, as the window's top-most layer.
+///
+/// `None` while the menu is closed, and while the page has not painted the
+/// field at least once — an overlay with nowhere to hang would open in the
+/// window's corner.
+pub(crate) fn build_model_menu_overlay(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Option<(Box<dyn Element>, Vector2F)> {
+    if !*state.settings_model_menu_open.borrow() || !*state.settings_model_painted.borrow() {
+        return None;
+    }
+    let anchor = (*state.settings_model_anchor.borrow())?;
+    let current = if state.settings_default_model.trim().is_empty() {
+        &state.selected_model
+    } else {
+        &state.settings_default_model
+    };
+    let models = state.models.clone();
+    let mut items = models
+        .iter()
+        .map(|model| {
+            let item = PopupMenuItem::new(model.clone()).with_icon("cpu");
+            if model == current {
+                item.selected()
+            } else {
+                item
+            }
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        items.push(PopupMenuItem::new("No models configured").disabled());
+    }
+    let on_select = actions.on_select_default_model.clone();
+    let menu = PopupMenu::new(Box::new(Empty::new()), items)
+        .with_open(state.settings_model_menu_open.clone())
+        .with_max_width(anchor.width())
+        .with_corner_radius(8.0)
+        .with_on_select(move |index| {
+            if let Some(model) = models.get(index) {
+                (on_select.borrow_mut())(model.clone());
+            }
+        })
+        .finish();
+    // The menu's trigger is empty, so the panel starts at the menu's own origin
+    // plus the popup gap. Placing the origin at the field's bottom edge leaves
+    // that gap between the field and the panel.
+    let _ = app;
+    Some((
+        menu,
+        vec2f(anchor.origin.x, anchor.origin.y + anchor.size.height),
+    ))
+}
+
 /// Settings → Environment: the groups of secrets, and the group that is open.
 ///
 /// A group is created by name, listed, opened (its secrets then shown), and
@@ -1155,12 +1427,19 @@ fn build_environment(
         .with_child(heading(app, "Groups of secrets"))
         .with_child(
             Container::new(
-                Text::new("Stored in the local database, unencrypted, for a turn that runs remotely.")
-                    .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(11.0)
-                    .finish(),
+                Text::new(
+                    "Stored in the local database, unencrypted, for a turn that runs remotely.",
+                )
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(11.0)
+                .finish(),
             )
-            .with_padding(EdgeInsets::new(sm, 0.0, sm, app.theme.spacing_px(SpacingToken::Xs)))
+            .with_padding(EdgeInsets::new(
+                sm,
+                0.0,
+                sm,
+                app.theme.spacing_px(SpacingToken::Xs),
+            ))
             .finish(),
         );
 
@@ -1192,7 +1471,9 @@ fn build_environment(
                         .with_max_lines(1)
                         .finish(),
                 )
-                .with_child(Expanded::new(focus_ring(app, group_field, group_field_focused)).finish())
+                .with_child(
+                    Expanded::new(focus_ring(app, group_field, group_field_focused)).finish(),
+                )
                 .with_child(focus_ring(app, create, create_focused))
                 .finish(),
         )
@@ -1216,8 +1497,7 @@ fn build_environment(
     for group in groups {
         col = col.with_child(rule());
         let row_focused = order.take(SettingsControl::EnvironmentGroup(group.id.clone()));
-        let delete_focused =
-            order.take(SettingsControl::EnvironmentDeleteGroup(group.id.clone()));
+        let delete_focused = order.take(SettingsControl::EnvironmentDeleteGroup(group.id.clone()));
         col = col.with_child(build_group_row(
             app,
             group,
@@ -1254,12 +1534,14 @@ fn build_environment(
 
         let save_focused = order.take(SettingsControl::EnvironmentSaveSecret);
         let on_save = actions.on_environment_save_secret.clone();
-        let save = Button::new(Text::new(if state.settings_environment_editing.is_some() {
-            "Save secret"
-        } else {
-            "Add secret"
-        })
-        .finish())
+        let save = Button::new(
+            Text::new(if state.settings_environment_editing.is_some() {
+                "Save secret"
+            } else {
+                "Add secret"
+            })
+            .finish(),
+        )
         .with_variant(ButtonVariant::Primary)
         .with_on_click(move || (on_save.borrow_mut())())
         .finish();
@@ -1652,14 +1934,18 @@ fn build_models(
     state: &UiSnapshot,
     actions: &UiActions,
     page: SettingsCategory,
-) -> Box<dyn Element> {    let sm = app.theme.spacing_px(SpacingToken::Sm);
+) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
     let controls = order_for(state, page);
     let mut order = FocusOrder::new(state, &controls);
 
     let mut col = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min)
-        .with_child(heading(app, "Models from ~/.goble/config.toml ([model.<slug>])"));
+        .with_child(heading(
+            app,
+            "Models from ~/.goble/config.toml ([model.<slug>])",
+        ));
     if state.models.is_empty() {
         col = col.with_child(
             Container::new(
@@ -1704,6 +1990,199 @@ fn build_models(
 
     col = col.with_child(rule());
     col = col.with_child(action_row(app, reload, reload_focused));
+
+    order.finish();
+    Container::new(col.finish()).finish()
+}
+
+/// Settings → Updates: what this build is, when it last asked the release host,
+/// what came back, and the two actions that move it.
+///
+/// The page draws a published [`crate::update::UpdateView`]; it never talks to
+/// the network itself. A withdrawn running version earns the banner above the
+/// rows, and its install button is the same one the section's bottom row has,
+/// so there is exactly one way to go back.
+fn build_updates(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    page: SettingsCategory,
+) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let controls = order_for(state, page);
+    let mut order = FocusOrder::new(state, &controls);
+    let update = &state.update;
+    let configured = state.update_configured;
+
+    let value = |text: String, color: ColorToken| {
+        Text::new(text)
+            .with_theme_color(color, app)
+            .with_font_size(11.0)
+            .with_max_lines(2)
+            .finish()
+    };
+
+    let version = if update.current_version.is_empty() {
+        "unknown".to_owned()
+    } else {
+        update.current_version.clone()
+    };
+    let channel = if update.channel.is_empty() {
+        "dev".to_owned()
+    } else {
+        update.channel.clone()
+    };
+    let last_check = update
+        .last_check
+        .clone()
+        .unwrap_or_else(|| "never".to_owned());
+    let status = update.status.clone();
+
+    let mut col = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_child(heading(app, "This build"))
+        .with_child(setting_row(
+            app,
+            "Version",
+            value(version, ColorToken::Text),
+            false,
+        ))
+        .with_child(rule())
+        .with_child(setting_row(
+            app,
+            "Channel",
+            value(channel, ColorToken::Text),
+            false,
+        ))
+        .with_child(rule())
+        .with_child(setting_row(
+            app,
+            "Last check",
+            value(last_check, ColorToken::Muted),
+            false,
+        ))
+        .with_child(rule())
+        .with_child(setting_row(
+            app,
+            "Status",
+            value(status, ColorToken::Text),
+            false,
+        ));
+
+    if !configured {
+        col = col.with_child(rule());
+        col = col.with_child(note(
+            app,
+            "This build has no update host configured, so it checks nothing. A released build carries the manifest URL and the public key it trusts.",
+        ));
+    }
+
+    // The banner a withdrawn version earns: it names the replacement, and the
+    // install row below is what carries the user back to it.
+    if let Some(banner) = &update.banner {
+        col = col.with_child(rule());
+        col = col.with_child(
+            Container::new(
+                Flex::column()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                    .with_spacing(sm)
+                    .with_child(
+                        Text::new(format!("{} was withdrawn", banner.running))
+                            .with_theme_color(ColorToken::Warning, app)
+                            .with_font_size(12.0)
+                            .with_max_lines(1)
+                            .finish(),
+                    )
+                    .with_child(
+                        Text::new(banner.detail.clone())
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_size(11.0)
+                            .with_max_lines(3)
+                            .finish(),
+                    )
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::uniform(sm))
+            .finish(),
+        );
+    }
+
+    if let Some(available) = &update.available {
+        let label = if available.rollback {
+            "Go back to"
+        } else {
+            "Available"
+        };
+        col = col.with_child(rule());
+        col = col.with_child(setting_row(
+            app,
+            label,
+            value(available.detail(), ColorToken::Accent),
+            false,
+        ));
+        col = col.with_child(rule());
+        col = col.with_child(setting_row(
+            app,
+            "File",
+            value(available.file_name.clone(), ColorToken::Muted),
+            false,
+        ));
+    }
+
+    if let Some(ready) = &update.ready_version {
+        col = col.with_child(rule());
+        col = col.with_child(setting_row(
+            app,
+            "Installed",
+            value(format!("{ready} — restart to use it"), ColorToken::Success),
+            false,
+        ));
+    }
+
+    // A failure is part of the section, in the page's own words: a silent log
+    // line is an update the user never learns did not happen.
+    if let Some(error) = &update.error {
+        col = col.with_child(rule());
+        col = col.with_child(setting_row(
+            app,
+            "Last error",
+            value(error.clone(), ColorToken::Error),
+            false,
+        ));
+    }
+
+    if let Some(failed) = &update.failed_version {
+        col = col.with_child(rule());
+        col = col.with_child(note(
+            app,
+            &format!("Goble {failed} was installed and rolled back, so this build is the one you are on."),
+        ));
+    }
+
+    let on_check = actions.on_check_for_updates.clone();
+    let check_focused = order.take(SettingsControl::CheckForUpdates);
+    let check = Button::new(Text::new("Check now").finish())
+        .with_on_click(move || (on_check.borrow_mut())())
+        .finish();
+    col = col.with_child(rule());
+    col = col.with_child(action_row(app, check, check_focused));
+
+    let install_label = match &update.available {
+        Some(available) if available.rollback => {
+            format!("Install {} and restart", available.version)
+        }
+        Some(available) => format!("Install {} and restart", available.version),
+        None => "Install and restart".to_owned(),
+    };
+    let on_install = actions.on_install_update.clone();
+    let install_focused = order.take(SettingsControl::InstallUpdate);
+    let install = Button::new(Text::new(install_label).finish())
+        .with_variant(ButtonVariant::Primary)
+        .with_disabled(!update.can_install() || !configured)
+        .with_on_click(move || (on_install.borrow_mut())())
+        .finish();
+    col = col.with_child(action_row(app, install, install_focused));
 
     order.finish();
     Container::new(col.finish()).finish()

@@ -7,11 +7,15 @@
 //! | `GOBLE_TELEMETRY_ADDR` | `127.0.0.1:8787` | Listen address. Put a TLS terminator in front; this process speaks plain HTTP. |
 //! | `GOBLE_TELEMETRY_DATA` | `./telemetry-data` | Where reports and events are stored. |
 //! | `GOBLE_TELEMETRY_TOKEN` | unset | When set, every ingest and summary request must present it. Set it on anything reachable from the internet. |
+//! | `GOBLE_TELEMETRY_S3_BUCKET` | unset | When set, every stored item is also copied to this bucket. Credentials come from the standard AWS chain. |
+//! | `GOBLE_TELEMETRY_S3_PREFIX` | `raw` | Where the S3 layout starts under the bucket. |
 //! | `RUST_LOG` | `info` | Log filter. |
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use goble_telemetry_server::sink::S3Sink;
 use goble_telemetry_server::{ServerState, Store, router};
 
 #[tokio::main]
@@ -31,11 +35,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let token = std::env::var("GOBLE_TELEMETRY_TOKEN").ok();
 
-    let state = ServerState::new(Store::new(&data), token);
+    // The sink is built before the listener so a misconfigured bucket is a
+    // startup log line rather than a surprise on the first event. It is never
+    // fatal: local disk is the source of truth, and `/v1/health` reports it.
+    let sink = S3Sink::from_env().await;
+    if let Some(sink) = &sink {
+        tracing::info!(bucket = sink.bucket(), prefix = sink.prefix(), "copying stored items to S3");
+    }
+
+    let state = ServerState::with_sink(Store::new(&data), token, sink.map(|s| Arc::new(s) as _));
     if !state.requires_token() {
         tracing::warn!(
             "no GOBLE_TELEMETRY_TOKEN is set: the collector accepts anything that can reach it"
         );
+    }
+    if let Some(sink) = state.sink() {
+        match sink.probe().await {
+            Ok(()) => tracing::info!("the object store answered"),
+            Err(failure) => {
+                tracing::error!(reason = failure.as_str(), "the object store is not reachable")
+            }
+        }
     }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

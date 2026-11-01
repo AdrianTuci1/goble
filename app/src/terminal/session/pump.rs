@@ -21,18 +21,29 @@ impl TerminalSession {
     /// (its colours, the text area size) waits for the reply, so this has to run
     /// even when nothing is being painted — the pane calls it every frame.
     pub fn pump(&mut self) {
-        let (events, replies, hooks, osc, block_events) = {
+        let (events, replies, hooks, osc, block_events, finishes) = {
             let Ok(mut state) = self.state.lock() else {
                 return;
             };
             let events = state.pump(&self.palette, self.cell);
             let replies = state.take_replies();
+            let block_events = state.take_block_events();
+            // What each finishing block was, read now: the block is frozen but
+            // still in the list, and the event itself carries only its id.
+            let finishes: Vec<Option<crate::emulator::FinishedBlock>> = block_events
+                .iter()
+                .map(|event| match event {
+                    BlockEvent::BlockFinished { id, .. } => state.finished_block(*id),
+                    _ => None,
+                })
+                .collect();
             (
                 events,
                 replies,
                 state.take_hook_events(),
                 state.take_osc_events(),
-                state.take_block_events(),
+                block_events,
+                finishes,
             )
         };
 
@@ -63,10 +74,24 @@ impl TerminalSession {
             self.hooks.push_back(event);
         }
         // A block the agent claimed reaching a terminal state is that tool
-        // call's result: its output and exit code answer the harness.
-        for event in block_events {
-            if let BlockEvent::ToolResult(result) = event {
-                self.tool_results.push(result);
+        // call's result: its output and exit code answer the harness. A block
+        // that ran a command is also the telemetry outcome for that command.
+        for (event, finish) in block_events.into_iter().zip(finishes) {
+            match event {
+                BlockEvent::ToolResult(result) => self.tool_results.push(result),
+                BlockEvent::BlockFinished { exit_code, failed, .. } => {
+                    let Some(finish) = finish.filter(|finish| finish.ran_a_command) else {
+                        continue;
+                    };
+                    let outcome = if failed || exit_code != 0 {
+                        goble_telemetry::Outcome::Error
+                    } else {
+                        goble_telemetry::Outcome::Success
+                    };
+                    let by_user = matches!(finish.owner, BlockOwner::User);
+                    crate::telemetry::terminal_command_finished(outcome, finish.duration, by_user);
+                }
+                _ => {}
             }
         }
         // A claim the shell never answered is failed on the frame it expires

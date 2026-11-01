@@ -153,6 +153,8 @@ pub(crate) async fn send_to_worker(
         } else {
             Some(hash_pairing_code(pairing_code, &[0u8; 16])?)
         },
+        // A CLI-run worker is provisioned without an installation link.
+        link_id: None,
     };
     ws_stream
         .send(tokio_tungstenite::tungstenite::Message::Text(

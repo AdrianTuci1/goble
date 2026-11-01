@@ -14,8 +14,7 @@ use crate::projects::make_projects_actions;
 use crate::state::PaneWorkItem;
 use crate::ui::pickers::PARENT_LABEL;
 use crate::ui::{
-    build_ui, AiSnapshot, ComposerContext, MediaSnapshot, ProjectsSnapshot, SidebarView,
-    UiSnapshot,
+    build_ui, AiSnapshot, ComposerContext, MediaSnapshot, ProjectsSnapshot, SidebarView, UiSnapshot,
 };
 
 use super::RootView;
@@ -75,6 +74,9 @@ impl RootView {
         // picker and explorer caches beside it: it is refilled when the page is
         // shown (or by its reload row) and never while the page draws.
         self.state.borrow_mut().ensure_ssh_hosts();
+        // The update checker publishes from its own thread; the frame reads the
+        // last word here rather than waiting for one.
+        self.state.borrow_mut().refresh_update_view();
         // The composer's context pills are the pane's own: the environment the
         // pane's conversation runs on (a conversation on a worker picks one) and
         // the working directory and branch, which describe one shell. All three
@@ -168,8 +170,8 @@ impl RootView {
                                 .mediums
                                 .iter()
                                 .map(|m| {
-                                    let mut item =
-                                        PopupMenuItem::new(m.label.clone()).with_icon(medium_icon(&m.id));
+                                    let mut item = PopupMenuItem::new(m.label.clone())
+                                        .with_icon(medium_icon(&m.id));
                                     if m.id == environment {
                                         item = item.selected();
                                     }
@@ -197,8 +199,7 @@ impl RootView {
                         ctx.dir_menu_open = controls.dir_menu_open.clone();
                         ctx.dir_menu_highlight = controls.dir_menu_highlight.clone();
                         ctx.dir_menu_scroll = controls.dir_menu_scroll.clone();
-                        let dir_rows =
-                            pickers.directories(&cwd, *controls.dir_menu_open.borrow());
+                        let dir_rows = pickers.directories(&cwd, *controls.dir_menu_open.borrow());
                         ctx.dir_ids = dir_rows.iter().map(|row| row.path.clone()).collect();
                         ctx.dir_items = dir_rows
                             .iter()
@@ -415,6 +416,14 @@ impl RootView {
                 live_work_phase: live_work.spinner_phase(),
                 pane_live_work,
                 auto_approve: s.auto_approve,
+                approval_mode: s.approval_mode,
+                onboarding_open: s.onboarding_open,
+                onboarding_step: s.onboarding_step,
+                onboarding_usage: s.onboarding_usage.clone(),
+                onboarding_name: s.onboarding_name.clone(),
+                onboarding_share: s.onboarding_share,
+                share_telemetry: s.share_telemetry,
+                settings_default_model: s.settings_default_model.clone(),
                 right_sidebar_open: s.right_sidebar_open,
                 fullscreen: s.fullscreen,
                 maximized_pane: s.maximized_pane,
@@ -456,6 +465,9 @@ impl RootView {
                 settings_focus: s.settings_focus,
                 settings_pane_focus: s.settings_pane_focus,
                 settings_pane_field_active: s.settings_pane_field_active,
+                settings_model_menu_open: s.settings_model_menu_open.clone(),
+                settings_model_anchor: s.settings_model_anchor.clone(),
+                settings_model_painted: s.settings_model_painted.clone(),
                 settings_environment_groups: s.settings_environment_groups.clone(),
                 settings_environment_open_group: s.settings_environment_open_group.clone(),
                 settings_environment_group_draft: s.settings_environment_group_draft.clone(),
@@ -464,6 +476,8 @@ impl RootView {
                 settings_environment_editing: s.settings_environment_editing.clone(),
                 settings_ssh_hosts: s.settings_ssh_hosts.clone(),
                 settings_ssh_selected: s.settings_ssh_selected.clone(),
+                update: s.update_view.clone(),
+                update_configured: s.update.is_some(),
                 remote_agents: s.remote_agents.clone(),
                 remote_mode: s.remote_mode,
                 remote_gateway_url: s.remote_gateway_url.clone(),
@@ -558,6 +572,7 @@ impl RootView {
                 inbox_index: s.inbox_index,
                 inbox_error: s.inbox_error.clone(),
                 inbox_scroll: s.inbox_scroll.clone(),
+                agent_dashboard: s.agent_dashboard.clone(),
                 show_onboarding_tip: s.show_onboarding_tip,
                 add_space_menu_open: s.add_space_menu_open.clone(),
                 env_selector_open: s.env_selector_open.clone(),
@@ -660,9 +675,18 @@ impl RootView {
             commands.insert("split_down".into(), actions.on_split_down.clone());
             commands.insert("new_terminal".into(), actions.on_new_terminal.clone());
             commands.insert("close_pane".into(), actions.on_close_pane.clone());
-            commands.insert("toggle_fullscreen".into(), actions.on_toggle_fullscreen.clone());
-            commands.insert("clear_transcript".into(), actions.on_clear_transcript.clone());
-            commands.insert("toggle_right_sidebar".into(), actions.on_toggle_right_sidebar.clone());
+            commands.insert(
+                "toggle_fullscreen".into(),
+                actions.on_toggle_fullscreen.clone(),
+            );
+            commands.insert(
+                "clear_transcript".into(),
+                actions.on_clear_transcript.clone(),
+            );
+            commands.insert(
+                "toggle_right_sidebar".into(),
+                actions.on_toggle_right_sidebar.clone(),
+            );
             commands.insert("open_settings".into(), actions.on_settings.clone());
             commands.insert("copy".into(), actions.on_copy.clone());
             // The Window menu's tab-strip items. The action takes a direction,

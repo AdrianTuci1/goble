@@ -14,11 +14,22 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::breadcrumbs::Breadcrumb;
-use crate::config::Channel;
+use crate::config::{Channel, Role};
+use crate::features::{Feature, Outcome};
 use crate::redact::Redactor;
 
 /// Bumped whenever a field is added, removed or changes meaning.
-pub const SCHEMA: u32 = 1;
+///
+/// Schema 2 moved the client context into an envelope that every event carries.
+pub const SCHEMA: u32 = 2;
+
+/// The schema a client that predates the envelope speaks: a bare event, with
+/// the context attached only to `app_started`.
+pub const LEGACY_SCHEMA: u32 = 1;
+
+/// Prefix of the id the collector mints for a schema-1 event, which never had
+/// one. Rows named `legacy-…` are v1 rows, normalised at ingest.
+pub const LEGACY_EVENT_PREFIX: &str = "legacy-";
 
 /// How much free text one report may carry.
 const MESSAGE_CAP: usize = 4 * 1024;
@@ -37,8 +48,36 @@ pub struct ClientContext {
     /// Random per installation, generated on first run. Not derived from the
     /// machine, the account or the user.
     pub install_id: String,
+    /// Shared by installations the user has linked, absent until then. Random
+    /// and resettable; never derived from an account, address or hardware.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_id: Option<String>,
+    /// Which part of the product sent this.
+    #[serde(default)]
+    pub role: Role,
     /// Random per process.
     pub session_id: String,
+}
+
+impl ClientContext {
+    /// A context for an event that arrived without one.
+    ///
+    /// Schema-1 clients sent `install_id` and `session_id` only on
+    /// `app_started`, so a v1 `app_exited` or `feature_used` has no identity to
+    /// attribute. Saying so is better than borrowing a neighbour's.
+    pub fn unattributed() -> Self {
+        Self {
+            app_version: "unknown".to_owned(),
+            channel: Channel::Dev,
+            os: "unknown".to_owned(),
+            os_version: None,
+            arch: "unknown".to_owned(),
+            install_id: "unknown".to_owned(),
+            link_id: None,
+            role: Role::Desktop,
+            session_id: "unknown".to_owned(),
+        }
+    }
 }
 
 /// Where a crash came from.
@@ -151,11 +190,93 @@ impl CrashReport {
     }
 }
 
-/// A lifecycle event. Deliberately coarse: knowing that a feature was used is
-/// useful, knowing what a user typed into it is not.
+/// A lifecycle or feature event. Deliberately coarse: knowing that a feature
+/// was used is useful, knowing what a user typed into it is not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum TelemetryEvent {
+    AppStarted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        locale: Option<String>,
+    },
+    AppExited {
+        uptime_secs: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+    },
+    FeatureUsed {
+        feature: Feature,
+        outcome: Outcome,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+    },
+    /// Two links belong to the same person from now on.
+    ///
+    /// Only an explicit user action may produce this, and nothing produces it
+    /// yet: merging is not something telemetry may infer from behaviour.
+    LinkMerged {
+        from: String,
+        /// Serialised as `into`, which is the wording of the event; `into` is a
+        /// Rust keyword, so the field itself is named differently.
+        #[serde(rename = "into")]
+        into_link: String,
+    },
+}
+
+/// The stable frame every schema-2 event travels in.
+///
+/// The identity and the clock are assigned once, when the event is created: a
+/// retry re-sends this same envelope, so the collector sees the same
+/// `event_id` and the same `occurred_at` however long the item waited on disk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventEnvelope {
+    pub schema: u32,
+    /// UUIDv4, minted when the event was enqueued.
+    pub event_id: String,
+    /// The client clock at creation, RFC 3339 UTC.
+    pub occurred_at: DateTime<Utc>,
+    pub context: ClientContext,
+    #[serde(flatten)]
+    pub event: TelemetryEvent,
+}
+
+impl EventEnvelope {
+    /// Wrap an event with a fresh id and the current time.
+    pub fn new(context: ClientContext, event: TelemetryEvent) -> Self {
+        Self {
+            schema: SCHEMA,
+            event_id: uuid::Uuid::new_v4().to_string(),
+            occurred_at: Utc::now(),
+            context,
+            event,
+        }
+    }
+
+    /// Whether this row was normalised from a schema-1 event.
+    pub fn is_legacy(&self) -> bool {
+        self.event_id.starts_with(LEGACY_EVENT_PREFIX)
+    }
+
+    /// The schema this row arrived as. Legacy rows are stored in the schema-2
+    /// shape, so the only trace of their origin is the id prefix.
+    pub fn arrived_as_schema(&self) -> u32 {
+        if self.is_legacy() {
+            LEGACY_SCHEMA
+        } else {
+            self.schema
+        }
+    }
+}
+
+/// A schema-1 event, exactly as a released client sent it: no envelope, and the
+/// context attached to `app_started` alone.
+///
+/// Kept so the collector can accept what is already out there. A v1 event has
+/// no id and no clock of its own, so ingest synthesises both, and the row is
+/// recognisable afterwards by its `legacy-` id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum LegacyEventV1 {
     AppStarted {
         context: ClientContext,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -173,6 +294,50 @@ pub enum TelemetryEvent {
     },
 }
 
+impl LegacyEventV1 {
+    /// Normalise to a schema-2 envelope.
+    ///
+    /// `occurred_at` is the ingest time: a v1 event carries no clock, and
+    /// guessing one would put queued events in the wrong day.
+    ///
+    /// `None` means the event cannot be represented honestly. A v1
+    /// `feature_used` carried a free-form name, and a name outside the catalog
+    /// has no series to join; inventing one would be worse than dropping it,
+    /// so the caller logs it and moves on.
+    pub fn into_envelope(self, received_at: DateTime<Utc>) -> Option<EventEnvelope> {
+        let (context, event) = match self {
+            Self::AppStarted { context, locale } => {
+                (context, TelemetryEvent::AppStarted { locale })
+            }
+            Self::AppExited { uptime_secs, exit_code } => (
+                ClientContext::unattributed(),
+                TelemetryEvent::AppExited { uptime_secs, exit_code },
+            ),
+            Self::FeatureUsed { name, duration_ms } => {
+                let feature = Feature::from_name(&name)?;
+                (
+                    ClientContext::unattributed(),
+                    TelemetryEvent::FeatureUsed {
+                        feature,
+                        // A v1 event recorded no outcome; calling it a success
+                        // would invent a rate nobody measured.
+                        outcome: Outcome::Error,
+                        duration_ms,
+                    },
+                )
+            }
+        };
+
+        Some(EventEnvelope {
+            schema: SCHEMA,
+            event_id: format!("{LEGACY_EVENT_PREFIX}{}", uuid::Uuid::new_v4()),
+            occurred_at: received_at,
+            context,
+            event,
+        })
+    }
+}
+
 /// One thing waiting to be uploaded.
 ///
 /// Adjacently tagged rather than flattened: a flattened report would put its own
@@ -182,7 +347,7 @@ pub enum TelemetryEvent {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum QueuedItem {
     Crash(Box<CrashReport>),
-    Event(Box<TelemetryEvent>),
+    Event(Box<EventEnvelope>),
 }
 
 impl QueuedItem {
@@ -190,8 +355,8 @@ impl QueuedItem {
         Self::Crash(Box::new(report))
     }
 
-    pub fn event(event: TelemetryEvent) -> Self {
-        Self::Event(Box::new(event))
+    pub fn event(envelope: EventEnvelope) -> Self {
+        Self::Event(Box::new(envelope))
     }
 
     /// Collector path for this kind of item.
@@ -351,8 +516,14 @@ mod tests {
             os_version: Some("15.0".into()),
             arch: "aarch64".into(),
             install_id: "abc".into(),
+            link_id: None,
+            role: Role::Desktop,
             session_id: "def".into(),
         }
+    }
+
+    fn envelope(event: TelemetryEvent) -> EventEnvelope {
+        EventEnvelope::new(context(), event)
     }
 
     fn report(message: &str) -> CrashReport {
@@ -449,7 +620,11 @@ mod tests {
     #[test]
     fn a_queued_item_knows_where_it_goes() {
         assert_eq!(QueuedItem::crash(report("boom")).endpoint_path(), "/v1/crashes");
-        let event = TelemetryEvent::FeatureUsed { name: "terminal".into(), duration_ms: None };
+        let event = envelope(TelemetryEvent::FeatureUsed {
+            feature: Feature::TurnCompleted,
+            outcome: Outcome::Success,
+            duration_ms: None,
+        });
         assert_eq!(QueuedItem::event(event).endpoint_path(), "/v1/events");
         assert!(QueuedItem::crash(report("boom")).is_crash());
     }
@@ -467,10 +642,9 @@ mod tests {
 
     #[test]
     fn a_queued_event_survives_a_round_trip() {
-        let item = QueuedItem::event(TelemetryEvent::AppStarted {
-            context: context(),
+        let item = QueuedItem::event(envelope(TelemetryEvent::AppStarted {
             locale: Some("en-GB".into()),
-        });
+        }));
         let json = serde_json::to_string(&item).unwrap();
         assert_eq!(serde_json::from_str::<QueuedItem>(&json).unwrap(), item);
     }
@@ -493,6 +667,145 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"event\":\"app_exited\""), "{json}");
         assert_eq!(serde_json::from_str::<TelemetryEvent>(&json).unwrap(), event);
+    }
+
+    #[test]
+    fn every_event_variant_survives_a_schema_2_round_trip() {
+        let mut linked = context();
+        linked.link_id = Some("link-1".into());
+        linked.role = Role::Worker;
+
+        let events = [
+            TelemetryEvent::AppStarted { locale: Some("en-GB".into()) },
+            TelemetryEvent::AppStarted { locale: None },
+            TelemetryEvent::AppExited { uptime_secs: 30, exit_code: Some(1) },
+            TelemetryEvent::AppExited { uptime_secs: 30, exit_code: None },
+            TelemetryEvent::FeatureUsed {
+                feature: Feature::TerminalCommandRun,
+                outcome: Outcome::Error,
+                duration_ms: Some(1234),
+            },
+            TelemetryEvent::FeatureUsed {
+                feature: Feature::OnboardingCompleted,
+                outcome: Outcome::Success,
+                duration_ms: None,
+            },
+            TelemetryEvent::LinkMerged { from: "link-a".into(), into_link: "link-b".into() },
+        ];
+
+        for event in events {
+            let envelope = EventEnvelope::new(linked.clone(), event);
+            let json = serde_json::to_string(&envelope).unwrap();
+            let parsed: EventEnvelope = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, envelope, "{json}");
+            assert_eq!(parsed.schema, SCHEMA);
+            assert_eq!(parsed.context.link_id.as_deref(), Some("link-1"));
+            assert_eq!(parsed.context.role, Role::Worker);
+        }
+    }
+
+    #[test]
+    fn the_envelope_carries_the_context_for_every_event() {
+        let envelope = envelope(TelemetryEvent::AppExited { uptime_secs: 5, exit_code: None });
+        let json: serde_json::Value = serde_json::to_value(&envelope).unwrap();
+
+        assert_eq!(json["schema"], 2);
+        assert_eq!(json["context"]["install_id"], "abc");
+        assert_eq!(json["context"]["session_id"], "def");
+        assert_eq!(json["event"], "app_exited");
+        // Flattened: the event's own fields sit beside the envelope's.
+        assert_eq!(json["uptime_secs"], 5);
+        assert!(json["occurred_at"].is_string(), "{json}");
+        assert!(json["event_id"].as_str().is_some_and(|id| id.len() == 36), "{json}");
+    }
+
+    #[test]
+    fn a_link_merge_names_both_ends_on_the_wire() {
+        let envelope = envelope(TelemetryEvent::LinkMerged {
+            from: "link-a".into(),
+            into_link: "link-b".into(),
+        });
+        let json: serde_json::Value = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(json["event"], "link_merged");
+        assert_eq!(json["from"], "link-a");
+        assert_eq!(json["into"], "link-b");
+    }
+
+    #[test]
+    fn a_v1_app_started_keeps_its_context_and_gains_an_id() {
+        let v1: LegacyEventV1 = serde_json::from_value(serde_json::json!({
+            "event": "app_started",
+            "context": {
+                "app_version": "0.1.0",
+                "channel": "stable",
+                "os": "macos",
+                "arch": "aarch64",
+                "install_id": "install-1",
+                "session_id": "session-1"
+            },
+            "locale": "en-GB"
+        }))
+        .unwrap();
+
+        let received_at = Utc::now();
+        let envelope = v1.into_envelope(received_at).expect("a known v1 event normalises");
+
+        assert!(envelope.event_id.starts_with(LEGACY_EVENT_PREFIX), "{}", envelope.event_id);
+        assert!(envelope.is_legacy());
+        assert_eq!(envelope.occurred_at, received_at);
+        assert_eq!(envelope.schema, SCHEMA);
+        assert_eq!(envelope.arrived_as_schema(), LEGACY_SCHEMA);
+        assert_eq!(envelope.context.install_id, "install-1");
+        assert_eq!(envelope.context.role, Role::Desktop);
+        assert_eq!(envelope.context.link_id, None);
+        assert_eq!(envelope.event, TelemetryEvent::AppStarted { locale: Some("en-GB".into()) });
+    }
+
+    #[test]
+    fn a_v1_event_without_a_context_is_stored_unattributed() {
+        let v1: LegacyEventV1 =
+            serde_json::from_str(r#"{"event":"app_exited","uptime_secs":12,"exit_code":0}"#)
+                .unwrap();
+        let envelope = v1.into_envelope(Utc::now()).unwrap();
+        assert!(envelope.is_legacy());
+        assert_eq!(envelope.context.install_id, "unknown");
+        assert_eq!(
+            envelope.event,
+            TelemetryEvent::AppExited { uptime_secs: 12, exit_code: Some(0) }
+        );
+    }
+
+    #[test]
+    fn a_v1_feature_name_outside_the_catalog_is_not_invented() {
+        let known: LegacyEventV1 = serde_json::from_str(
+            r#"{"event":"feature_used","name":"turn_completed","duration_ms":10}"#,
+        )
+        .unwrap();
+        let envelope = known.into_envelope(Utc::now()).expect("a catalog name maps");
+        assert!(matches!(
+            envelope.event,
+            TelemetryEvent::FeatureUsed { feature: Feature::TurnCompleted, .. }
+        ));
+
+        let unknown: LegacyEventV1 =
+            serde_json::from_str(r#"{"event":"feature_used","name":"terminal"}"#).unwrap();
+        assert!(unknown.into_envelope(Utc::now()).is_none());
+    }
+
+    #[test]
+    fn a_v1_client_context_defaults_the_new_fields() {
+        // A schema-1 report has no link id and no role; it must still parse.
+        let v1_context: ClientContext = serde_json::from_value(serde_json::json!({
+            "app_version": "0.1.0",
+            "channel": "dev",
+            "os": "linux",
+            "arch": "x86_64",
+            "install_id": "install-1",
+            "session_id": "session-1"
+        }))
+        .unwrap();
+        assert_eq!(v1_context.link_id, None);
+        assert_eq!(v1_context.role, Role::Desktop);
     }
 
     #[test]

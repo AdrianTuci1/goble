@@ -68,6 +68,19 @@ pub struct VisibleBlock {
     pub card: Option<AgentViewCard>,
 }
 
+/// What finished a block, for an observer that only receives its id.
+///
+/// The block event says what happened but not what the block was; this is the
+/// rest of it, read while the block is still in the list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinishedBlock {
+    pub owner: BlockOwner,
+    pub duration: Option<Duration>,
+    /// False for the empty block a bare prompt leaves behind, which is not a
+    /// command anybody ran.
+    pub ran_a_command: bool,
+}
+
 /// The VT state of one pane.
 pub struct Emulator {
     screen: Screen,
@@ -404,6 +417,21 @@ impl Emulator {
     /// no longer holds.
     pub fn block_output_lines_of(&self, id: BlockId) -> Option<Vec<ScreenLine>> {
         self.blocks.get(id).map(Block::output_lines)
+    }
+
+    /// What a block that just finished actually was: who owned it, how long it
+    /// ran, and whether a command was behind it at all.
+    ///
+    /// A block event carries only an id, and by the time a frame handles the
+    /// event the block is frozen but still in the list. `None` means the list
+    /// no longer holds it, which happens after a `clear`.
+    pub fn finished_block(&self, id: BlockId) -> Option<FinishedBlock> {
+        let block = self.blocks.get(id)?;
+        Some(FinishedBlock {
+            owner: block.owner().clone(),
+            duration: block.duration(),
+            ran_a_command: !block.command_text().trim().is_empty(),
+        })
     }
 
     /// Push the card standing for `conversation_id` into the block list, or

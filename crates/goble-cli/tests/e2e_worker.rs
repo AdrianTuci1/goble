@@ -31,6 +31,7 @@ async fn test_worker_run_agent_flow() {
     let pair = DesktopMessage::PairRequest {
         worker_id: worker_id.clone(),
         pairing_code_hash: Some(hash_pairing_code(code, &[0u8; 16]).unwrap()),
+        link_id: None,
     };
     ws.send(Message::Text(serde_json::to_string(&pair).unwrap().into()))
         .await

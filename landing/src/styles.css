@@ -1,0 +1,51 @@
+:root {
+  /* Colors */
+  --bg-color: #0b0c10;
+  --text-primary: #f8f9fa;
+  --text-secondary: #a0aab2;
+  --accent-purple: #8b5cf6;
+  --accent-purple-hover: #7c3aed;
+  --accent-purple-dark: #2e224f;
+  --placeholder-bg: rgba(139, 92, 246, 0.1);
+  --border-color: #2a2a2a;
+
+  /* Font Sizes */
+  --fs-hero: 3.5rem;
+  --fs-title-lg: 2.8rem;
+  --fs-title-md: 2.2rem;
+  --fs-subtitle: 1.05rem;
+  --fs-body: 0.95rem;
+  --fs-nav: 0.85rem;
+  --fs-small: 0.75rem;
+
+  /* Spacing */
+  --section-padding: 6rem 1.5rem;
+  --container-width: 1400px;
+  --gap-lg: 4rem;
+  --gap-md: 2rem;
+  --gap-sm: 1rem;
+
+  /* Transitions */
+  --transition: all 0.2s ease;
+  
+  /* Radii */
+  --radius-md: 8px;
+  --radius-sm: 6px;
+  --radius-full: 50px;
+}
+
+/* Shared Section Labels */
+.label-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 2rem;
+}
+
+.section-label {
+  font-size: var(--fs-small);
+  font-weight: 600;
+  letter-spacing: 0.1rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}

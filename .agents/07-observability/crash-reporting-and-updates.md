@@ -44,32 +44,53 @@ Decisions worth keeping:
 - **The fingerprint is over the message, with digits folded to `N`.** Grouping by location would split
   one bug into one group per build; grouping by raw message would split "the len is 3" from "the len
   is 7".
-- **Nothing is lost when the collector is unreachable.** Items wait in `~/.goble/telemetry-queue/`,
-  retry with backoff, and survive a restart. A permanent rejection (a 4xx that is not a timeout or a
-  rate limit) deletes the item, because retrying cannot change the answer.
+- **Nothing is lost when the endpoint is unreachable.** Items wait in `~/.goble/telemetry-queue/`,
+  drain in batches of up to 100 when 20 are waiting or the oldest has waited ten minutes, retry with
+  backoff, and survive a restart. A permanent rejection (a 4xx that is not a timeout or a rate
+  limit) deletes the batch, because retrying cannot change the answer.
 - **Release builds keep line tables** (`[profile.release] debug = 1`, `strip = false`). Without them a
   backtrace is a list of addresses and a crash report is not actionable.
 
-## 2. The collector — `crates/goble-telemetry-server`
+## 2. Ingest — `deploy/telemetry-worker` and `crates/goble-telemetry-server`
 
-`POST /v1/crashes`, `POST /v1/events`, `GET /v1/summary`, `GET /health`. It stores one file per report
-under `crashes/<fingerprint>/<id>.json` and appends events to `events/<date>.jsonl`, which makes
-"how many people hit this, and on which version" a directory listing.
+The production endpoint is the Cloudflare Worker in `deploy/telemetry-worker`, served at
+`https://telemetry.octomus.dev`. It accepts a batch of up to 200 events and writes one NDJSON object
+per batch to the shared S3 bucket under
+`octomus/telemetry/events/dt=YYYY-MM-DD/hour=HH/batch-<first-id>-<last-id>.jsonl`. The key is derived
+from the batch's event ids, so a retry overwrites the same object instead of duplicating a row.
+Crashes stay one object each under `octomus/telemetry/crashes/<fingerprint>/<id>.json`. The bucket,
+its IAM writer and the retention rule are recorded in `docs/telemetry-storage.md`.
 
-It deliberately does not log IP addresses, set cookies, or call a third party. It refuses an unknown
-`schema`, bounds every body (`MAX_BODY`), and refuses a fingerprint that would escape the store
+The same protocol has a self-hosted Rust implementation in `crates/goble-telemetry-server`:
+`POST /v1/crashes`, `POST /v1/events` (a single item or an array), `GET /v1/summary`, `GET /health`.
+Local disk is the source of truth: one file per report under `crashes/<fingerprint>/<id>.json`, one
+file per event under `events/dt=<date>/<event_id>.json`, and an idempotency marker per event id. An
+optional object-store copy is configured with `GOBLE_TELEMETRY_S3_BUCKET`.
+
+Neither path logs IP addresses, sets cookies, or calls a third party. Both refuse an unknown
+`schema`, bound every body (`MAX_BODY`), and refuse a fingerprint that would escape the store
 directory. Setting `GOBLE_TELEMETRY_TOKEN` makes every ingest and summary request require the token —
-which it must be, the moment it is reachable from the internet.
+which it must be, the moment the endpoint is reachable from the internet.
 
 ## 3. Update delivery — `crates/goble-update`
 
 One manifest per release, per channel, listing artifacts per platform with their digests:
 
 ```json
-{"schema": 1, "channels": {"stable": {"version": "0.2.0", "artifacts": [
+{"schema": 2, "channels": {"stable": {"version": "0.2.0", "epoch": 7, "yanked": ["0.1.9"],
+  "artifacts": [
   {"os": "macos", "arch": "aarch64", "url": "https://…", "sha256": "…", "size": 12345678}
 ], "signature": "…"}}}
 ```
+
+`epoch` rises on every publish of a channel and is the publisher's authority over which version
+should run: a document with a higher epoch than the installed one is offered even when its version is
+lower, which is how a rollback reaches machines. `yanked` names versions that must not stay installed,
+so a withdrawn build is told what replaces it. Both are covered in `docs/auto-update.md`.
+
+The manifest is served by `deploy/downloads-worker` at `downloads.goble.dev`, and published to it by
+`.github/workflows/release.yml` after a non-draft release. `docs/distribution.md` has the publishing
+and rollback runbooks.
 
 Four steps, in order: fetch and validate the manifest; compare versions with semver; download into a
 staging directory while hashing, and refuse a digest or size mismatch; verify the manifest's ed25519
@@ -132,7 +153,7 @@ copied, linked, or vendored here.
 | An anonymous install id, stored under a non-telemetry-looking key | Same idea, stored as `install_id` in `~/.goble/telemetry.json`; honesty is cheaper than obscurity for an open-source app |
 | Unconditional regex secret redaction on outbound payloads | Same idea, implemented in `redact.rs`, with the same rule: do not log secrets in the first place |
 | A hand-rolled updater per platform, `codesign` verification of the DMG | Same platform split, plus manifest signature verification and a refusal to install what it cannot authenticate |
-| Silently downloaded updates, a banner when one is ready | Not implemented yet; the app does not check for updates at all right now |
+| Silently downloaded updates, a banner when one is ready | Checks in the background at startup and every six hours, verifies signature and digest before staging, and shows the offer in Settings; a withdrawn running version gets a banner with the rollback install |
 | ~2,900 lines of packaging: `cargo bundle` + the pinned `create-dmg`, Inno Setup, and `linuxdeploy` plus deb/rpm/Arch templates | Same four installer targets, built with the tool each platform already has (`hdiutil`, Inno Setup, `appimagetool`/`dpkg-deb`, a tarball). We add what that tree turned out to be missing: Developer ID signing and notarisation, an actual EULA page on the installer, and a background image whose path exists |
 
 The reference's packaging has dead ends of its own, which is why it was not copied: no notarisation
@@ -151,12 +172,14 @@ so there is nothing to learn from it beyond the tag and breadcrumb taxonomy.
       assessment, and `signtool verify` on a real artifact. The signing code path is exercised with an
       ad-hoc signature and the DMG pipeline runs end to end, but nothing downstream of a real
       certificate has been tried.
-- [ ] Deploy a collector host, set `GOBLE_TELEMETRY_ENDPOINT` for release builds, and confirm an
-      end-to-end upload (staging → collector → summary) against the real host.
+- [x] Deploy the ingest endpoint and bucket: `deploy/telemetry-worker` at
+      `https://telemetry.octomus.dev`, writing to `s3://staticlabs-data/octomus/telemetry` (see
+      `docs/telemetry-storage.md`).
+- [ ] Confirm an end-to-end upload from a release build against the real endpoint.
 - [ ] Generate the release signing key pair, publish the public key, and make `--manifest` sign in CI.
-- [ ] Surface an available update in the UI: a banner or a status-bar entry with "Restart and update",
-      plus a manual "Check for updates" action. Today the check is off and log-only.
-- [ ] Wire `plan_install().apply()` into that flow, with the restart/relaunch handoff.
+- [ ] Deploy `deploy/downloads-worker`, point `downloads.goble.dev` at it, and set
+      `GOBLE_WORKER_URL` / `GOBLE_WORKER_ADMIN_TOKEN` so a published release moves the channel. The
+      worker and the client are wired; the account, the KV namespace and the route are not.
 - [ ] A first-run telemetry notice. `TelemetryState.notice_shown` exists and nothing sets it.
 - [ ] A settings surface for the telemetry switch, writing `~/.goble/telemetry.json`.
 - [ ] Minidump capture on Linux and Windows. A panic hook catches Rust panics; a segfault or a GPU

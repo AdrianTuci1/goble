@@ -83,6 +83,13 @@ impl RootView {
         self
     }
 
+    /// Attach the update checker. The service starts its own threads; the root
+    /// only reads the view it publishes and hands it the section's commands.
+    pub fn with_updates(self, service: Arc<crate::update::UpdateService>) -> Self {
+        self.state.borrow_mut().attach_update_service(service);
+        self
+    }
+
     /// Attach the control socket's server. Its UI verbs are answered by
     /// [`Self::process_control_requests`] on this thread.
     #[cfg(unix)]
@@ -96,6 +103,19 @@ impl RootView {
     #[doc(hidden)]
     pub fn state_rc(&self) -> Rc<RefCell<UiState>> {
         Rc::clone(&self.state)
+    }
+
+    /// Start the shell behind every restored pane, once, before the window's
+    /// first frame. Rendering a pane never starts a process.
+    pub fn start_terminal_sessions(&self) {
+        self.state.borrow().start_terminal_sessions();
+    }
+
+    /// Close daemon sessions no pane in the restored layout owns. Only the
+    /// instance that owns the control socket calls this: a second instance
+    /// shares the daemon and must not close the first one's shells.
+    pub fn prune_orphan_terminal_sessions(&self) {
+        self.state.borrow().prune_orphan_terminal_sessions();
     }
 
     /// Expose the backing environment state so integration render tests can

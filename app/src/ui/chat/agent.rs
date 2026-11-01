@@ -234,7 +234,7 @@ pub fn build_agent_chat(
         .unwrap_or_else(|| {
             PaneControls::new(
                 state.selected_model.clone(),
-                state.auto_approve,
+                state.approval_mode,
                 String::new(),
             )
         });

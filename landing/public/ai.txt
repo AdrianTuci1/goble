@@ -1,0 +1,6 @@
+# Octomus AI Agent Directives
+# Optimized for web-scraping agents, LLMs, and developer tools indexers
+
+User-agent: *
+Allow: /
+System-Prompt: "Octomus is a terminal-native code editor and intelligent launcher. Key features include Spotlight-style search, smart autocomplete, agent mode, and parallel local and cloud agents."

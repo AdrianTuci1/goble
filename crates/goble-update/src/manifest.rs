@@ -4,10 +4,12 @@
 //!
 //! ```json
 //! {
-//!   "schema": 1,
+//!   "schema": 2,
 //!   "channels": {
 //!     "stable": {
 //!       "version": "0.2.0",
+//!       "epoch": 7,
+//!       "yanked": ["0.1.9"],
 //!       "released_at": "2026-09-01T10:00:00Z",
 //!       "notes_url": "https://goble.dev/releases/0.2.0",
 //!       "artifacts": [
@@ -31,7 +33,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Manifest format this build understands.
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 
 /// An artifact that runs on every architecture of its platform.
 pub const UNIVERSAL: &str = "universal";
@@ -39,7 +41,7 @@ pub const UNIVERSAL: &str = "universal";
 /// The prefix of the bytes a signature covers. Changing the payload shape means
 /// changing this string, so an old signature can never be replayed into a new
 /// payload shape.
-const SIGNING_DOMAIN: &str = "goble-update-v1";
+const SIGNING_DOMAIN: &str = "goble-update-v2";
 
 /// Which release line a build follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -97,6 +99,16 @@ impl Artifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelRelease {
     pub version: String,
+    /// Publication counter for this channel. It rises on every publish,
+    /// including a rollback, so a client can tell an authoritative withdrawal
+    /// from a stale copy of an older manifest. Missing in a schema-1 document,
+    /// which reads as `0`.
+    #[serde(default)]
+    pub epoch: u64,
+    /// Versions withdrawn for this channel. A yanked version is replaced even
+    /// by a lower one, which is how a bad release is taken back.
+    #[serde(default)]
+    pub yanked: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub released_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,9 +127,23 @@ impl ChannelRelease {
     /// Deliberately not "the JSON": JSON has many spellings for the same value,
     /// and a signature over a serialisaion is a signature over whoever happened
     /// to write the serializer. Artifacts are sorted so the order in the file
-    /// does not change the payload.
+    /// does not change the payload, and so are the yanked versions.
+    ///
+    /// ```text
+    /// goble-update-v2
+    /// <version>
+    /// epoch=<epoch>
+    /// yanked=<comma-joined sorted versions>
+    /// <os> <arch> <sha256> <size> <url>
+    /// ...
+    /// ```
     pub fn signing_payload(&self) -> String {
-        let mut lines = vec![SIGNING_DOMAIN.to_owned(), self.version.clone()];
+        let mut lines = vec![
+            SIGNING_DOMAIN.to_owned(),
+            self.version.clone(),
+            format!("epoch={}", self.epoch),
+            format!("yanked={}", self.normalized_yanked().join(",")),
+        ];
         let mut artifacts: Vec<String> = self
             .artifacts
             .iter()
@@ -147,11 +173,32 @@ impl ChannelRelease {
         })
     }
 
+    /// The withdrawn versions, lower-cased, sorted and de-duplicated: the form
+    /// both the signer and the verifier put on the wire.
+    pub fn normalized_yanked(&self) -> Vec<String> {
+        let mut yanked: Vec<String> =
+            self.yanked.iter().map(|version| normalize_version(version)).collect();
+        yanked.sort();
+        yanked.dedup();
+        yanked
+    }
+
+    /// Whether a version was withdrawn from this channel.
+    pub fn is_yanked(&self, version: &str) -> bool {
+        let wanted = normalize_version(version);
+        self.normalized_yanked().contains(&wanted)
+    }
+
     /// Check everything that can be checked without a network.
     pub fn validate(&self) -> Result<(), ManifestError> {
         semver::Version::parse(&self.version).map_err(|_| ManifestError::BadVersion {
             version: self.version.clone(),
         })?;
+
+        for version in &self.yanked {
+            semver::Version::parse(normalize_version(version).as_str())
+                .map_err(|_| ManifestError::BadYankedVersion { version: version.clone() })?;
+        }
 
         if self.artifacts.is_empty() {
             return Err(ManifestError::NoArtifacts);
@@ -267,6 +314,8 @@ pub enum ManifestError {
     NoRelease { channel: &'static str },
     #[error("release version `{version}` is not a semver version")]
     BadVersion { version: String },
+    #[error("yanked version `{version}` is not a semver version")]
+    BadYankedVersion { version: String },
     #[error("a release with no artifacts cannot be installed")]
     NoArtifacts,
     #[error("{url} has a digest that is not 64 hex characters: {digest}")]
@@ -281,6 +330,15 @@ pub enum ManifestError {
     BadPublicKey { reason: String },
     #[error("the signature is unusable: {reason}")]
     BadSignature { reason: String },
+}
+
+/// A version string in the one form the payload and the comparisons use:
+/// trimmed, without a leading `v`, lower-cased. Prerelease identifiers are
+/// case-sensitive in semver, so this is only for the yanked list, where a
+/// published entry and the version a client reports should match.
+pub fn normalize_version(text: &str) -> String {
+    let lowered = text.trim().to_ascii_lowercase();
+    lowered.trim_start_matches('v').to_owned()
 }
 
 /// Downloads must be https, except from the loopback interface, which is how a
@@ -325,6 +383,8 @@ mod tests {
     fn sample() -> ChannelRelease {
         ChannelRelease {
             version: "0.2.0".into(),
+            epoch: 7,
+            yanked: vec!["0.1.9".into()],
             released_at: None,
             notes_url: None,
             artifacts: vec![
@@ -432,6 +492,96 @@ mod tests {
         let mut shuffled = sample();
         shuffled.artifacts.reverse();
         assert_eq!(sample().signing_payload(), shuffled.signing_payload());
+    }
+
+    #[test]
+    fn the_signing_payload_names_the_schema_epoch_and_yanked_versions() {
+        let payload = sample().signing_payload();
+        let lines: Vec<&str> = payload.lines().collect();
+        assert_eq!(lines[0], "goble-update-v2");
+        assert_eq!(lines[1], "0.2.0");
+        assert_eq!(lines[2], "epoch=7");
+        assert_eq!(lines[3], "yanked=0.1.9");
+        assert_eq!(lines.len(), 4 + sample().artifacts.len());
+    }
+
+    #[test]
+    fn an_old_manifest_reads_as_epoch_zero_with_no_yanked_versions() {
+        let text = serde_json::json!({
+            "schema": SCHEMA,
+            "channels": {
+                "stable": {
+                    "version": "0.2.0",
+                    "artifacts": [artifact("linux", "x86_64")],
+                    "signature": "00"
+                }
+            }
+        })
+        .to_string();
+        let manifest = ChannelManifest::parse(&text).unwrap();
+        let release = manifest.release(Channel::Stable).unwrap();
+        assert_eq!(release.epoch, 0);
+        assert!(release.yanked.is_empty());
+        assert!(release.signing_payload().contains("\nyanked=\n"));
+    }
+
+    #[test]
+    fn the_yanked_list_is_sorted_and_deduplicated_before_signing() {
+        let mut release = sample();
+        release.yanked = vec!["v0.1.10".into(), "0.1.9".into(), "0.1.10".into()];
+        assert_eq!(release.normalized_yanked(), vec!["0.1.10", "0.1.9"]);
+        // Two files that differ only in spelling and order sign the same bytes.
+        let mut other = sample();
+        other.yanked = vec!["0.1.9".into(), "0.1.10".into()];
+        assert_eq!(release.signing_payload(), other.signing_payload());
+        assert_eq!(release.validate(), Ok(()));
+    }
+
+    #[test]
+    fn an_epoch_change_changes_the_signing_payload() {
+        let mut bumped = sample();
+        bumped.epoch = 8;
+        assert_ne!(sample().signing_payload(), bumped.signing_payload());
+    }
+
+    #[test]
+    fn a_yanked_entry_that_is_not_a_version_is_refused() {
+        let mut release = sample();
+        release.yanked = vec!["0.1.9".into(), "nightly".into()];
+        assert_eq!(
+            release.validate(),
+            Err(ManifestError::BadYankedVersion { version: "nightly".into() })
+        );
+    }
+
+    #[test]
+    fn an_epoch_that_does_not_fit_u64_is_a_parse_error() {
+        for epoch in ["-1", "18446744073709551616", "\"7\"", "1.5", "null"] {
+            let text = format!(
+                r#"{{"schema": {SCHEMA}, "channels": {{"stable": {{
+                    "version": "0.2.0",
+                    "epoch": {epoch},
+                    "artifacts": [{{"os": "linux", "arch": "x86_64",
+                        "url": "https://releases.goble.dev/Goble-0.2.0-x86_64.AppImage",
+                        "sha256": "{}", "size": 1024}}],
+                    "signature": "00"
+                }}}}}}"#,
+                "a".repeat(64)
+            );
+            assert!(
+                matches!(ChannelManifest::parse(&text), Err(ManifestError::Json { .. })),
+                "epoch {epoch} must not parse"
+            );
+        }
+        assert_eq!(sample().epoch, 7);
+    }
+
+    #[test]
+    fn a_yanked_version_is_recognised_with_or_without_its_prefix() {
+        let release = sample();
+        assert!(release.is_yanked("0.1.9"));
+        assert!(release.is_yanked("v0.1.9"));
+        assert!(!release.is_yanked("0.2.0"));
     }
 
     #[test]

@@ -57,7 +57,8 @@ Options:
                         CI on a directory of artifacts from other runners.
   --outdir DIR          Output directory (default: <repo>/dist)
   --download-base URL   Base URL for manifest artifact links
-                        (default: \$GOBLE_DOWNLOAD_BASE or the GitHub release tag)
+                        (default: \$GOBLE_DOWNLOAD_BASE_URL, then
+                        \$GOBLE_DOWNLOAD_BASE, then the GitHub release tag)
   --universal           macOS only: build and bundle a universal (x86_64+arm64) app
   --linux-format FMT    Linux only; repeatable: appimage | deb | tarball | all
                         (default: appimage)
@@ -65,7 +66,11 @@ Options:
 
 Environment:
   GOBLE_VERSION                version, used when --version is absent
-  GOBLE_DOWNLOAD_BASE          base URL for the manifest
+  GOBLE_DOWNLOAD_BASE_URL      base URL for the manifest's artifact links
+                               (e.g. https://get.octomus.dev/dl)
+  GOBLE_RELEASE_EPOCH          publication epoch written to the manifest (default 1).
+                               It rises on every publish, including a rollback
+  GOBLE_YANKED_VERSIONS        comma-separated withdrawn versions, sorted (default empty)
   GOBLE_UPDATE_SIGNING_KEY     hex Ed25519 seed; signs the manifest channel
   GOBLE_REQUIRE_SIGNING        1 = a missing signing credential fails the build
   APPLE_SIGNING_IDENTITY       macOS codesign identity
@@ -94,7 +99,7 @@ SKIP_BUILD=0
 SKIP_PACKAGE=0
 SIGNING_MODE=""   # "", "require" or "allow"
 OUTDIR="$ROOT_DIR/dist"
-DOWNLOAD_BASE="${GOBLE_DOWNLOAD_BASE:-}"
+DOWNLOAD_BASE="${GOBLE_DOWNLOAD_BASE_URL:-${GOBLE_DOWNLOAD_BASE:-}}"
 UNIVERSAL=0
 LINUX_FORMATS=()
 
@@ -126,6 +131,55 @@ done
 if [[ ${#LINUX_FORMATS[@]} -eq 0 ]]; then
     LINUX_FORMATS=(appimage)
 fi
+
+# --- manifest epoch and yanked versions ------------------------------------
+# Both are part of the signed payload (see packaging/sign-manifest.sh), so a
+# bad value is caught here, before anything is signed or published.
+
+# A u64, as the manifest contract declares it.
+normalize_epoch() {
+    local raw="${GOBLE_RELEASE_EPOCH:-1}"
+    [[ "$raw" =~ ^[0-9]+$ ]] || die "GOBLE_RELEASE_EPOCH must be a non-negative integer, got '$raw'"
+    raw="${raw#"${raw%%[!0]*}"}"   # strip leading zeros
+    [[ -n "$raw" ]] || raw="0"
+    if [[ ${#raw} -gt 20 ]] || { [[ ${#raw} -eq 20 ]] && [[ "$raw" > "18446744073709551615" ]]; }; then
+        die "GOBLE_RELEASE_EPOCH must fit in a u64, got '$raw'"
+    fi
+    printf '%s\n' "$raw"
+}
+
+# The yanked list, lower-cased and without a leading `v`, exactly as the signer
+# writes it into the payload.
+normalize_version() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/^v//'
+}
+
+resolve_yanked() {
+    YANKED_VERSIONS=()
+    [[ -n "${GOBLE_YANKED_VERSIONS:-}" ]] || return 0
+
+    local raw item normalized
+    IFS=',' read -r -a raw <<< "$GOBLE_YANKED_VERSIONS"
+    for item in "${raw[@]}"; do
+        item="${item#"${item%%[![:space:]]*}"}"
+        item="${item%"${item##*[![:space:]]}"}"
+        [[ -n "$item" ]] || continue
+        [[ "$item" =~ ^[vV]?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] \
+            || die "GOBLE_YANKED_VERSIONS has an entry that is not a version: '$item'"
+        YANKED_VERSIONS+=("$(normalize_version "$item")")
+    done
+    [[ ${#YANKED_VERSIONS[@]} -gt 0 ]] || return 0
+
+    local written sorted
+    written="$(printf '%s\n' "${YANKED_VERSIONS[@]}" | paste -sd, -)"
+    sorted="$(printf '%s\n' "${YANKED_VERSIONS[@]}" | LC_ALL=C sort -u | paste -sd, -)"
+    if [[ "$written" != "$sorted" ]]; then
+        die "GOBLE_YANKED_VERSIONS must be sorted and free of duplicates; write '$sorted'"
+    fi
+}
+
+EPOCH="$(normalize_epoch)"
+resolve_yanked
 
 # --- version ---------------------------------------------------------------
 resolve_version() {
@@ -270,11 +324,16 @@ fi
 mkdir -p "$OUTDIR"
 OUTDIR="$(cd "$OUTDIR" && pwd)"
 
+MANIFEST_EPOCH="$EPOCH"
 log "Version:  $VERSION"
 log "Host:     $HOST_OS ($PLATFORM)"
 log "Output:   $OUTDIR"
 if [[ "$WRITE_MANIFEST" -eq 1 ]]; then
-    log "Manifest: dist/channel_versions.json (channel: $CHANNEL)"
+    log "Manifest: dist/channel_versions.json (channel: $CHANNEL, schema 2)"
+    log "Epoch:    $MANIFEST_EPOCH"
+    if [[ ${#YANKED_VERSIONS[@]} -gt 0 ]]; then
+        log "Yanked:   $(printf '%s ' "${YANKED_VERSIONS[@]}")"
+    fi
 fi
 
 run() {
@@ -442,8 +501,17 @@ pick_artifact() {
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
 write_manifest() {
-    [[ -n "$DOWNLOAD_BASE" ]] || DOWNLOAD_BASE="${RELEASE_BASE_URL}/v${VERSION}"
+    # The base names the host; the tag directory is appended here, so a worker
+    # URL (`https://get.octomus.dev/dl`) and the GitHub release URL
+    # (`…/releases/download`) both end up with the same `…/v<version>/<file>`
+    # shape the client and the download redirect agree on.
+    if [[ -z "$DOWNLOAD_BASE" ]]; then
+        DOWNLOAD_BASE="${RELEASE_BASE_URL%/}"
+    fi
     DOWNLOAD_BASE="${DOWNLOAD_BASE%/}"
+    if [[ "$DOWNLOAD_BASE" != */"v$VERSION" ]]; then
+        DOWNLOAD_BASE="$DOWNLOAD_BASE/v$VERSION"
+    fi
 
     local entries=()
     local os arch file
@@ -474,13 +542,26 @@ PAIRS
         warn "no recognized artifacts found in $OUTDIR; writing an empty artifact list"
     fi
 
+    local yanked_json=""
+    if [[ ${#YANKED_VERSIONS[@]} -gt 0 ]]; then
+        local version
+        for version in "${YANKED_VERSIONS[@]}"; do
+            if [[ -n "$yanked_json" ]]; then
+                yanked_json="$yanked_json, "
+            fi
+            yanked_json="$yanked_json\"$(json_escape "$version")\""
+        done
+    fi
+
     local manifest="$OUTDIR/channel_versions.json"
     {
         echo '{'
-        echo '  "schema": 1,'
+        echo '  "schema": 2,'
         echo '  "channels": {'
         echo "    \"$(json_escape "$CHANNEL")\": {"
         echo "      \"version\": \"$(json_escape "$VERSION")\","
+        echo "      \"epoch\": $MANIFEST_EPOCH,"
+        echo "      \"yanked\": [$yanked_json],"
         echo '      "artifacts": ['
         if [[ ${#entries[@]} -gt 0 ]]; then
             local i

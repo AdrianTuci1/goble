@@ -1,16 +1,24 @@
-# Dependency updates. Patch and minor bumps are grouped into one PR per ecosystem
-# so review stays about the code; a major bump keeps its own PR and its own
-# migration notes. Security fixes arrive through Dependabot alerts as well.
+# Dependency updates. Monthly: Goble ships on its own release cadence, so a
+# weekly drip of dependency pull requests cost more review than it saved.
+#
+# Patch and minor bumps for one ecosystem arrive as a single grouped pull
+# request. A major bump keeps its own request and carries the
+# `dependencies-major` label, because it needs migration notes rather than a
+# green tick. At most two requests are open per ecosystem at a time; anything
+# beyond that waits for the next run instead of piling up.
+#
+# Security fixes do not wait for this schedule: they arrive the moment an
+# advisory lands, through Dependabot alerts and Dependabot security updates.
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
       day: monday
       time: "06:00"
       timezone: Europe/Bucharest
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 2
     labels:
       - dependencies
     commit-message:
@@ -19,6 +27,12 @@ updates:
       rust-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+      rust-major:
+        patterns: ["*"]
+        update-types: ["major"]
+        labels:
+          - dependencies
+          - dependencies-major
     ignore:
       # The vendored emulator is pinned by scripts/fetch-alacritty-terminal.sh,
       # not by the crates.io graph.
@@ -27,16 +41,22 @@ updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
       day: monday
       time: "06:00"
       timezone: Europe/Bucharest
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 2
     labels:
       - dependencies
     commit-message:
       prefix: "chore(ci)"
     groups:
-      actions:
+      actions-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+      actions-major:
+        patterns: ["*"]
+        update-types: ["major"]
+        labels:
+          - dependencies
+          - dependencies-major

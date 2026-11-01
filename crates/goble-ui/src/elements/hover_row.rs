@@ -176,8 +176,15 @@ impl Element for HoverRow {
         &mut self,
         event: &DispatchedEvent,
         ctx: &mut EventContext,
-        _app: &AppContext,
+        app: &AppContext,
     ) -> bool {
+        // A control the row carries — a close button on the right end, say —
+        // takes the press before the row does, so pressing it does not also
+        // activate the row underneath. Rows without controls see no change:
+        // their content never consumes an event.
+        if self.content.dispatch_event(event, ctx, app) {
+            return true;
+        }
         let bounds = match self.bounds() {
             Some(bounds) => bounds,
             None => return false,
@@ -196,7 +203,7 @@ impl Element for HoverRow {
 mod tests {
     use super::*;
     use crate::elements::Text;
-    use crate::geometry::{rectf, RectF, vec2f};
+    use crate::geometry::{rectf, vec2f, RectF};
     use crate::render::{RenderCommand, Renderer};
 
     fn row(child: Box<dyn Element>) -> HoverRow {
@@ -359,8 +366,8 @@ mod tests {
         let app = AppContext::default();
         let clicked = Rc::new(RefCell::new(false));
         let flag = Rc::clone(&clicked);
-        let mut row = row(Text::new("src").finish())
-            .with_on_click(move || *flag.borrow_mut() = true);
+        let mut row =
+            row(Text::new("src").finish()).with_on_click(move || *flag.borrow_mut() = true);
         let band = paint(&mut row, &mut PaintContext::default(), &app);
 
         let mut ctx = EventContext::default();
@@ -382,5 +389,49 @@ mod tests {
             &app,
         );
         assert!(*clicked.borrow());
+    }
+
+    /// A control the row carries takes the press before the row does: a close
+    /// button at the row's end must not also select the row underneath it.
+    #[test]
+    fn a_control_inside_the_row_takes_the_press_before_the_row() {
+        let app = AppContext::default();
+        let row_clicked = Rc::new(RefCell::new(false));
+        let control_clicked = Rc::new(RefCell::new(false));
+
+        let row_flag = Rc::clone(&row_clicked);
+        let control_flag = Rc::clone(&control_clicked);
+        let control = crate::elements::TopbarButton::new(
+            crate::elements::Icon::new("close").with_size(12.0).finish(),
+        )
+        .with_size(20.0)
+        .with_on_click(move || *control_flag.borrow_mut() = true)
+        .finish();
+        let mut row = row(control).with_on_click(move || *row_flag.borrow_mut() = true);
+        let _band = paint(&mut row, &mut PaintContext::default(), &app);
+
+        let mut ctx = EventContext;
+        let press = vec2f(10.0, 10.0);
+        row.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: press,
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+        row.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: press,
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(*control_clicked.borrow(), "the control receives the press");
+        assert!(
+            !*row_clicked.borrow(),
+            "the row does not activate under the control"
+        );
     }
 }

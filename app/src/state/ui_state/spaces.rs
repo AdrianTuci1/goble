@@ -100,11 +100,72 @@ impl UiState {
         self.ensure_pane_controls();
     }
 
+    /// Start the shell behind every leaf pane in the restored layout.
+    ///
+    /// The window calls this once, before its first frame. Painting a pane no
+    /// longer starts a session: a test that renders the shell would otherwise
+    /// start a real shell in the user's daemon, and the daemon keeps a
+    /// detached shell alive for the next attach.
+    pub fn start_terminal_sessions(&self) {
+        let panes: Vec<(u64, String)> = self
+            .spaces
+            .iter()
+            .flat_map(|space| {
+                let mut ids = Vec::new();
+                collect_leaf_pane_ids(&space.root, &mut ids);
+                ids.into_iter()
+                    .filter(|id| space.root.leaf_kind(*id) == Some(&PaneKind::Terminal))
+                    .map(|id| {
+                        let cwd = self
+                            .pane_sessions
+                            .get(&id)
+                            .map(|session| session.path.clone())
+                            .unwrap_or_default();
+                        (id, cwd)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let mut terminal = self.terminal.borrow_mut();
+        for (pane_id, cwd) in panes {
+            terminal.ensure_session(pane_id, &cwd);
+        }
+    }
+
+    /// Close every pane's shell. The window calls this when it leaves the event
+    /// loop: a session that is only detached stays alive in the daemon, which
+    /// is how an app that is no longer running leaves orphan shells behind.
+    pub fn kill_terminal_sessions(&self) {
+        self.terminal.borrow_mut().kill_all();
+    }
+
+    /// Close the daemon sessions the layout does not name. A run that was
+    /// killed before it could close its shells leaves them detached; the next
+    /// launch sweeps them before it starts the restored panes.
+    pub fn prune_orphan_terminal_sessions(&self) {
+        let mut keep = HashSet::new();
+        for space in &self.spaces {
+            let mut ids = Vec::new();
+            collect_leaf_pane_ids(&space.root, &mut ids);
+            for id in ids {
+                let session_id = self
+                    .pane_sessions
+                    .get(&id)
+                    .map(|session| session.daemon_session_id.as_str())
+                    .unwrap_or("");
+                if !session_id.is_empty() {
+                    keep.insert((format!("pane-{id}"), session_id.to_string()));
+                }
+            }
+        }
+        self.terminal.borrow_mut().kill_orphan_sessions(&keep);
+    }
+
     /// Copy the daemon session ids the terminal registry holds into the pane
     /// state, so the next layout save remembers which shell each pane is on.
-    /// The session is created while a pane paints, which is after the action
-    /// that saved the layout; this runs before the frame's snapshot and
-    /// reports whether a pane's id changed.
+    /// The session is started by [`Self::start_terminal_sessions`] at launch or
+    /// by the action that opens the pane; this runs before the frame's snapshot
+    /// and reports whether a pane's id changed.
     pub fn adopt_daemon_session_ids(&mut self) -> bool {
         let live: Vec<(u64, String)> = {
             let terminal = self.terminal.borrow();
@@ -129,9 +190,10 @@ impl UiState {
     /// Persist the pane layout (spaces + active space/pane) so it survives an
     /// app restart. Called whenever a pane action mutates the layout.
     pub fn save_panes(&self, desktop: &DesktopState) {
-        // A session's daemon id is assigned when the pane first paints, after
-        // the layout's own save points. Overlay the registry's live ids so the
-        // persisted state can reattach next run instead of starting a new shell.
+        // A session's daemon id is assigned when the pane starts, which can be
+        // after the action that saved the layout. Overlay the registry's live
+        // ids so the persisted state can reattach next run instead of starting
+        // a new shell.
         let mut pane_sessions = self.pane_sessions.clone();
         {
             let terminal = self.terminal.borrow();
@@ -364,6 +426,9 @@ impl UiState {
         self.settings_pane_focus = 0;
         self.settings_pane_field_active = false;
         self.settings_field_edit_start = None;
+        // The model menu hangs at the window's top layer, so it has to close
+        // with the page it belongs to.
+        *self.settings_model_menu_open.borrow_mut() = false;
     }
 
     /// The pane a tab's label follows: the focused leaf of the active tab, and
@@ -425,6 +490,9 @@ impl UiState {
             return false;
         }
         self.active_space = target;
+        // A menu opened over the previous tab's settings page has no page to
+        // hang from on this one.
+        *self.settings_model_menu_open.borrow_mut() = false;
         self.spaces[target].recompute_layout();
         self.active_pane_id = self.spaces[target].root.first_leaf_id();
         if matches!(
@@ -540,8 +608,7 @@ impl UiState {
         }
         if let Some(target) = goble_core::ssh_command::parse_ssh_command(line) {
             let hosts = self.ssh_hosts_for_command();
-            let session =
-                target.resolve(hosts.as_ref(), &goble_core::ssh_hosts::current_user());
+            let session = target.resolve(hosts.as_ref(), &goble_core::ssh_hosts::current_user());
             self.bind_ssh_pane(pane_id, None, session);
         } else if goble_core::ssh_command::returns_to_local_shell(line) {
             if let Some(host) = self.note_ssh_ended(pane_id) {

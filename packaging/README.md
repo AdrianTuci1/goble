@@ -68,9 +68,10 @@ yet* below.
 
 ### macOS icons
 
-`make-bundle.sh` defaults to the in-repo 256×256 `icon.png` and will **upscale**
-it to fill the `.icns` sizes, warning as it does so. Pass a 1024×1024 source for
-a crisp Retina icon:
+`make-bundle.sh` defaults to the in-repo 1024×1024 `icon.png`, rendered from
+`packaging/icons/goble.svg` (the same source feeds the Linux and Windows
+assets). The 32, 128 and 256 px PNGs beside it are what the window and the
+installers use. Pass another 1024×1024 source to override it:
 
 ```bash
 packaging/macos/make-bundle.sh --binary target/release/goble-app \
@@ -209,21 +210,34 @@ this shape (no extra keys):
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "channels": {
     "stable": {
-      "version": "0.1.0",
+      "version": "0.2.0",
+      "epoch": 7,
+      "yanked": ["0.1.9"],
       "artifacts": [
-        {"os": "macos", "arch": "aarch64", "url": "https://…/Goble-0.1.0-arm64.dmg", "sha256": "…", "size": 12345}
+        {"os": "macos", "arch": "aarch64", "url": "https://…/Goble-0.2.0-arm64.dmg", "sha256": "…", "size": 12345}
       ]
     }
   }
 }
 ```
 
+`epoch` rises on every publish for that channel, including a rollback: a higher
+epoch than the client has installed is authoritative, so it replaces the
+running build even with a lower version. `yanked` lists withdrawn versions; it
+must be written sorted and without duplicates, and the signer normalises it
+(lower-case, no leading `v`) before signing. `GOBLE_RELEASE_EPOCH` sets the
+epoch (default `1`) and `GOBLE_YANKED_VERSIONS` the comma-separated list.
+
 Artifact URLs default to
 `https://github.com/AdrianTuci1/goble/releases/download/v<version>/<file>`;
-override with `--download-base` or `GOBLE_DOWNLOAD_BASE`.
+override the base with `--download-base`, `GOBLE_DOWNLOAD_BASE_URL` or
+`GOBLE_DOWNLOAD_BASE` (the `/v<version>` tag is appended unless the base already
+ends with it). Setting the base to the downloads worker
+(`https://get.octomus.dev/dl`) makes every link move when the worker's
+domain moves, without a client change.
 
 With `GOBLE_UPDATE_SIGNING_KEY` set, a `"signature"` field is added to the
 channel object and the hex signature is also written to
@@ -243,9 +257,11 @@ spellings for the same value, and a signature over a serialisation is a
 signature over whoever wrote the serialiser:
 
 ```
-goble-update-v1
+goble-update-v2
 <version>
-<os> <arch> <sha256> <size> <url>      # one line per artifact, sorted
+epoch=<epoch>
+yanked=<comma-joined sorted versions>   # empty when nothing is withdrawn
+<os> <arch> <sha256> <size> <url>       # one line per artifact, sorted
 ```
 
 `os`, `arch` and `sha256` are lowercased, the artifact lines are sorted as plain

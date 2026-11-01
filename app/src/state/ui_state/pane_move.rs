@@ -111,14 +111,21 @@ pub fn move_pane_to_new_space(
         spaces.remove(source_space);
         // The consumed tab is gone from the list, so an insertion point past it
         // names the tab one place earlier now.
-        let at = if index > source_space { index - 1 } else { index };
+        let at = if index > source_space {
+            index - 1
+        } else {
+            index
+        };
         tab = at.min(spaces.len());
         spaces.insert(tab, Space::unnamed(pane).with_medium(medium));
         reset_pane = None;
     } else {
         let fresh = *next_id;
         *next_id += 1;
-        spaces[source_space] = Space::unnamed(Pane::Leaf { id: fresh, kind: PaneKind::Chat });
+        spaces[source_space] = Space::unnamed(Pane::Leaf {
+            id: fresh,
+            kind: PaneKind::Chat,
+        });
         tab = if index > source_space {
             source_space + 1
         } else {
@@ -224,7 +231,12 @@ impl UiState {
         let Some(space) = self.spaces.get_mut(drag.source_space) else {
             return PaneDrop::Cancelled;
         };
-        if !space.move_pane(drag.pane_id, target.pane_id, target.side, &mut self.next_pane_id) {
+        if !space.move_pane(
+            drag.pane_id,
+            target.pane_id,
+            target.side,
+            &mut self.next_pane_id,
+        ) {
             return PaneDrop::Cancelled;
         }
         self.active_space = drag.source_space;
@@ -317,10 +329,17 @@ mod tests {
         let moved = move_pane_to_new_space(&mut spaces, 0, 1, 1, &mut next_id)
             .expect("pane 1 is in space A");
 
-        assert_eq!(spaces.len(), 2, "the emptied space is gone, the pane is a tab");
+        assert_eq!(
+            spaces.len(),
+            2,
+            "the emptied space is gone, the pane is a tab"
+        );
         // The insertion point is counted on the strip as it was drawn — the
         // source tab included — so point 1 is the slot the consumed tab left.
-        assert_eq!(moved.tab, 0, "the moved tab takes the place of the consumed one");
+        assert_eq!(
+            moved.tab, 0,
+            "the moved tab takes the place of the consumed one"
+        );
         assert!(
             !spaces.iter().any(|s| s.name == "A"),
             "the consumed tab is not left behind empty"
@@ -358,10 +377,17 @@ mod tests {
         let moved = move_pane_to_new_space(&mut spaces, 0, 1, 1, &mut next_id)
             .expect("pane 1 is in space A");
 
-        assert_eq!(spaces.len(), 2, "the window keeps a tab and gains the pane's");
+        assert_eq!(
+            spaces.len(),
+            2,
+            "the window keeps a tab and gains the pane's"
+        );
         assert_eq!(moved.tab, 1, "the pane's tab lands past the reset one");
         let fresh = moved.reset_pane.expect("the last space was reset");
-        assert_eq!(fresh, 2, "the reset pane is a fresh id, never the moved one");
+        assert_eq!(
+            fresh, 2,
+            "the reset pane is a fresh id, never the moved one"
+        );
         assert_eq!(
             spaces[0].root.leaf_kind(fresh),
             Some(&PaneKind::Chat),
@@ -384,15 +410,25 @@ mod tests {
 
         assert_eq!(moved.tab, 0, "insertion point 0 is before the source tab");
         assert_eq!(spaces[0].root.first_leaf_id(), 1, "the moved pane leads");
-        assert_eq!(spaces[1].root.first_leaf_id(), 2, "the reset space follows it");
+        assert_eq!(
+            spaces[1].root.first_leaf_id(),
+            2,
+            "the reset space follows it"
+        );
         assert_eq!(moved.reset_pane, Some(2));
     }
 
     #[test]
     fn an_unknown_pane_moves_nothing() {
         let (mut spaces, mut next_id) = split_source();
-        assert_eq!(move_pane_to_new_space(&mut spaces, 0, 99, 1, &mut next_id), None);
-        assert_eq!(move_pane_to_new_space(&mut spaces, 9, 1, 1, &mut next_id), None);
+        assert_eq!(
+            move_pane_to_new_space(&mut spaces, 0, 99, 1, &mut next_id),
+            None
+        );
+        assert_eq!(
+            move_pane_to_new_space(&mut spaces, 9, 1, 1, &mut next_id),
+            None
+        );
         assert_eq!(spaces.len(), 2, "neither call touched the tab list");
         assert!(spaces[0].root.contains_leaf(1) && spaces[0].root.contains_leaf(5));
     }
@@ -412,21 +448,24 @@ mod tests {
         let drag = state.pane_drag.as_ref().expect("the pane is lifted");
         assert_eq!(drag.pane_id, 5);
         assert_eq!(drag.source_space, 0);
-        assert!(!drag.moved(), "a press that has not travelled is not a drag yet");
+        assert!(
+            !drag.moved(),
+            "a press that has not travelled is not a drag yet"
+        );
 
         state.drag_pane_to(Vector2F::new(300.0, 10.0), None, None);
         assert!(
             state.pane_drag.as_ref().unwrap().moved(),
             "the pointer travelled, so the lift is a drag"
         );
-        assert_eq!(state.drop_pane(None), None, "a release off the strip cancels");
+        assert_eq!(
+            state.drop_pane(None),
+            None,
+            "a release off the strip cancels"
+        );
         assert!(state.pane_drag.is_none(), "the drag state is cleared");
         assert_eq!(state.spaces.len(), 2, "no tab was added");
-        assert_eq!(
-            state.spaces[0].root.max_id(),
-            5,
-            "the split is untouched"
-        );
+        assert_eq!(state.spaces[0].root.max_id(), 5, "the split is untouched");
         assert_eq!(state.active_space, 0, "and nothing was refocused");
     }
 
@@ -455,7 +494,10 @@ mod tests {
 
         assert_eq!(moved.tab, 1);
         assert_eq!(state.active_space, 1, "the moved pane's tab is on screen");
-        assert_eq!(state.active_pane_id, 5, "and the moved pane holds the focus");
+        assert_eq!(
+            state.active_pane_id, 5,
+            "and the moved pane holds the focus"
+        );
         assert_eq!(
             state.spaces[1].root.leaf_kind(5),
             Some(&PaneKind::Chat),
@@ -501,7 +543,11 @@ mod tests {
         state.drag_pane_to(Vector2F::new(300.0, 10.0), Some(1), None);
         let moved = state.drop_pane(Some(1)).expect("the pane moved");
 
-        assert_eq!(state.spaces.len(), 2, "the window keeps a tab and gains one");
+        assert_eq!(
+            state.spaces.len(),
+            2,
+            "the window keeps a tab and gains one"
+        );
         assert_eq!(
             state.spaces[moved.tab].root.leaf_kind(5),
             Some(&PaneKind::Terminal),

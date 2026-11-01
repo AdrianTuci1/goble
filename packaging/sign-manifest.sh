@@ -7,12 +7,15 @@
 # serialisation is a signature over whoever wrote the serialiser. The payload is
 # defined once, in `goble_update::ChannelRelease::signing_payload`:
 #
-#   goble-update-v1
+#   goble-update-v2
 #   <version>
+#   epoch=<epoch>
+#   yanked=<comma-joined sorted versions>
 #   <os> <arch> <sha256> <size> <url>      # one line per artifact, sorted
 #
-# with every artifact line lowercased for os/arch/sha256, and the artifact lines
-# sorted as plain strings. `crates/goble-update/tests/signer_contract.rs` runs
+# with every artifact line lowercased for os/arch/sha256, the artifact lines
+# sorted as plain strings, and the yanked versions normalized (no leading `v`,
+# lower-cased), sorted and de-duplicated. `crates/goble-update/tests/signer_contract.rs` runs
 # this script and verifies its output with the Rust verifier, so the two cannot
 # drift apart silently.
 #
@@ -230,7 +233,26 @@ if not isinstance(channel_obj, dict):
 # or not this script has already run.
 signed_obj = {k: v for k, v in channel_obj.items() if k != "signature"}
 
-SIGNING_DOMAIN = "goble-update-v1"
+SIGNING_DOMAIN = "goble-update-v2"
+
+
+def yanked_versions(release):
+    raw = release.get("yanked", [])
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        sys.stderr.write("error: `yanked` must be a list of version strings\n")
+        raise SystemExit(2)
+    normalized = set()
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            sys.stderr.write("error: a yanked entry is not a version string: %r\n" % (entry,))
+            raise SystemExit(2)
+        value = entry.strip().lower()
+        if value.startswith("v"):
+            value = value[1:]
+        normalized.add(value)
+    return sorted(normalized)
 
 
 def signing_payload(release):
@@ -239,7 +261,12 @@ def signing_payload(release):
         sys.stderr.write("error: the channel object has no version\n")
         raise SystemExit(2)
 
-    lines = [SIGNING_DOMAIN, version]
+    epoch = release.get("epoch", 0)
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+        sys.stderr.write("error: `epoch` must be a non-negative integer; got %r\n" % (epoch,))
+        raise SystemExit(2)
+
+    lines = [SIGNING_DOMAIN, version, "epoch=%d" % epoch, "yanked=" + ",".join(yanked_versions(release))]
     artifacts = []
     for artifact in release.get("artifacts", []):
         try:

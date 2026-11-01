@@ -8,8 +8,8 @@ use goble_core::worker::WorkerId;
 use goble_core::workflow::WorkflowId;
 use goble_desktop_service::DesktopState;
 use goble_terminal::blocks::BlockView;
-use goble_ui::platform::WindowControl;
 use goble_ui::geometry::Vector2F;
+use goble_ui::platform::WindowControl;
 use goble_ui::{ChatMessage, ChatRole, SettingsPage};
 
 use crate::media::MediaState;
@@ -18,12 +18,12 @@ use crate::state::{
     MULTI_CLICK_INTERVAL_MS, NEW_CONVERSATION_TITLE,
 };
 use crate::terminal::{classify_input, InputClass};
-use crate::ui::{
-    AppTab, CronEntry, DiffPanelAction, FloatingDrag, FloatingDragMode, LayoutKind, NavDir, Pane,
-    PaneKind, SettingsCategory, SettingsControl, SidebarView, Space, SplitDir, TabMenuAction,
-    UiActions, WorkspaceRouting,
-};
 use crate::ui::color_picker::ColorTarget;
+use crate::ui::{
+    AgentDashboardAction, AppTab, CronEntry, DiffPanelAction, FloatingDrag, FloatingDragMode,
+    LayoutKind, NavDir, OnboardingAction, Pane, PaneKind, SettingsCategory, SettingsControl,
+    SidebarView, Space, SplitDir, TabMenuAction, UiActions, WorkspaceRouting,
+};
 
 use super::pane_ops::{
     close_space_at, ensure_pane_hover, open_diff_pane, open_file_pane, open_pane_harness,
@@ -75,9 +75,9 @@ fn flush_queued_prompt(
         .get(&pane_id)
         .and_then(|rt| rt.pending_command.clone());
     if let Some(proposal) = pending {
-        let decision = goble_core::harness::CommandDecision::Reject(
-            "superseded by a new message".to_string(),
-        );
+        let decision =
+            goble_core::harness::CommandDecision::Reject("superseded by a new message".to_string());
+        crate::telemetry::approval_superseded();
         match desktop.resume_command_chat_turn(&chat_id, decision) {
             Ok(_) => {
                 state.resume_command_decision(pane_id, &proposal.id);
@@ -218,6 +218,9 @@ pub fn make_actions(
     let on_inbox_ack = Rc::clone(&state);
     let on_inbox_ack_all = Rc::clone(&state);
     let on_inbox_jump = Rc::clone(&state);
+    let on_agent_dashboard = Rc::clone(&state);
+    let desktop_agent_dashboard = desktop.clone();
+    let media_agent_dashboard = Rc::clone(&media);
     let on_settings_category = Rc::clone(&state);
     let on_settings_category_step = Rc::clone(&state);
     let on_settings_focus_move = Rc::clone(&state);
@@ -329,6 +332,10 @@ pub fn make_actions(
     let on_set_theme_secondary = Rc::clone(&state);
     let on_set_theme_accent = Rc::clone(&state);
     let on_save_profile = Rc::clone(&state);
+    let on_profile_name_change = Rc::clone(&state);
+    let on_default_model_state = Rc::clone(&state);
+    let on_toggle_telemetry_state = Rc::clone(&state);
+    let on_onboarding_state = Rc::clone(&state);
     let on_save_llm = Rc::clone(&state);
     let on_add_worker = Rc::clone(&state);
     let on_remove_worker = Rc::clone(&state);
@@ -360,8 +367,12 @@ pub fn make_actions(
     let desktop_skip = desktop.clone();
     let desktop_command = desktop.clone();
     let desktop_auto = desktop.clone();
+    let desktop_approval_mode = desktop.clone();
     let desktop_vim = desktop.clone();
     let desktop_auto_save = desktop.clone();
+    let desktop_default_model = desktop.clone();
+    let desktop_onboarding = desktop.clone();
+    let desktop_commit_settings_field = desktop.clone();
     let desktop_fork = desktop.clone();
     let desktop_set_harness = desktop.clone();
     let desktop_send_queued = desktop.clone();
@@ -523,34 +534,32 @@ pub fn make_actions(
     // the file into the desktop state, then copy its `[remote_agents.*]` map
     // into the page's rows. The state's own pinned path wins, so a test or a
     // tool that names a file is read instead of the user's home.
-    let action_reload_remote_agents: Rc<RefCell<dyn FnMut()>> =
-        Rc::new(RefCell::new(move || {
-            let mut state = on_reload_remote_agents.borrow_mut();
-            let Some(desktop) = &desktop_reload_remote_agents else {
-                return;
-            };
-            let path = desktop.config_path().or_else(|| {
-                goble_core::app_home::GobleHome::locate()
-                    .ok()
-                    .map(|home| home.config_path())
-            });
-            if let Some(path) = path {
-                if let Err(e) = desktop.reload_config(&path) {
-                    log::error!("reload_config (remote agents) failed: {e}");
-                }
+    let action_reload_remote_agents: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
+        let mut state = on_reload_remote_agents.borrow_mut();
+        let Some(desktop) = &desktop_reload_remote_agents else {
+            return;
+        };
+        let path = desktop.config_path().or_else(|| {
+            goble_core::app_home::GobleHome::locate()
+                .ok()
+                .map(|home| home.config_path())
+        });
+        if let Some(path) = path {
+            if let Err(e) = desktop.reload_config(&path) {
+                log::error!("reload_config (remote agents) failed: {e}");
             }
-            state.refresh_remote_agents(Some(desktop));
-        }));
+        }
+        state.refresh_remote_agents(Some(desktop));
+    }));
     // Remote is configured on the Settings page it belongs to. Every chooser
     // that names it before anything is configured opens that page with the
     // keyboard on the form, so there is one place to configure and one shape
     // to learn.
-    let action_open_remote_settings: Rc<RefCell<dyn FnMut()>> =
-        Rc::new(RefCell::new(move || {
-            on_open_remote_settings
-                .borrow_mut()
-                .open_remote_settings_tab(desktop_open_remote_settings.as_deref());
-        }));
+    let action_open_remote_settings: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
+        on_open_remote_settings
+            .borrow_mut()
+            .open_remote_settings_tab(desktop_open_remote_settings.as_deref());
+    }));
     // `~/.ssh` is read by the state (which owns the Connections page's cache),
     // so the row and `Enter` on it take one path.
     let action_reload_ssh_hosts: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new({
@@ -561,13 +570,29 @@ pub fn make_actions(
         let state = Rc::clone(&on_reload_ssh_hosts);
         move |alias: String| state.borrow_mut().ssh_select_host(&alias)
     }));
+    // Updates: both buttons go through the state, which owns the checker, so
+    // the page and the banner share one path.
+    let action_check_for_updates: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new({
+        let state = Rc::clone(&on_reload_ssh_hosts);
+        move || state.borrow_mut().check_for_updates()
+    }));
+    let action_install_update: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new({
+        let state = Rc::clone(&on_reload_ssh_hosts);
+        move || state.borrow_mut().install_available_update()
+    }));
     let action_toggle_auto_approve: Rc<RefCell<dyn FnMut(u64, bool)>> =
         Rc::new(RefCell::new(move |pane_id: u64, enabled: bool| {
+            // The switch is the two-state shortcut for the app-wide policy:
+            // on means always-approve, off means manual. The stepper on the
+            // same page writes the other two modes.
+            let mode = if enabled {
+                goble_ui::ApprovalMode::AlwaysApprove
+            } else {
+                goble_ui::ApprovalMode::Manual
+            };
             let mut state = on_toggle_auto_approve.borrow_mut();
             state.pane_controls_mut(pane_id).auto_approve = enabled;
-            if pane_id == state.active_pane_id {
-                state.auto_approve = enabled;
-            }
+            state.set_approval_mode(mode, desktop_auto.as_deref());
             if let Some(desktop) = &desktop_auto {
                 if let Err(e) = desktop.set_auto_approve(enabled) {
                     log::warn!("set_auto_approve failed: {e}");
@@ -580,9 +605,13 @@ pub fn make_actions(
     let action_select_approval_mode: Rc<RefCell<dyn FnMut(u64, goble_ui::ApprovalMode)>> =
         Rc::new(RefCell::new(move |pane_id: u64, mode| {
             let mut state = on_select_approval_mode_state.borrow_mut();
-            let controls = state.pane_controls_mut(pane_id);
-            controls.approval_mode = mode;
-            *controls.approval_menu_open.borrow_mut() = false;
+            // The mode is app-wide: a choice in one pane's menu is the policy
+            // the proposal path, every other composer and the next launch read.
+            state.set_approval_mode(mode, desktop_approval_mode.as_deref());
+            *state
+                .pane_controls_mut(pane_id)
+                .approval_menu_open
+                .borrow_mut() = false;
         }));
     // Modal (vim) editing for the rich input, off by default. The choice is
     // persisted; turning it off drops every pane's half-typed command and
@@ -641,6 +670,7 @@ pub fn make_actions(
             // run skips the onboarding overlays entirely.
             state.show_onboarding_tip = true;
             state.onboarding_done = true;
+            crate::telemetry::onboarding_completed();
             if let Some(desktop) = &desktop_choose_workspace {
                 if let Err(e) = desktop.set_onboarding_done() {
                     log::warn!("set_onboarding_done failed: {e}");
@@ -662,6 +692,69 @@ pub fn make_actions(
             // shortcut and menubar use, so the settings control reflects 1:1.
             *ui_zoom_font.borrow_mut() = state.settings_font_size;
         }));
+    // First-run onboarding: the three answers and the step buttons. Finishing
+    // writes the same store keys the Profile page edits.
+    let action_onboarding: Rc<RefCell<dyn FnMut(OnboardingAction)>> = {
+        let state = on_onboarding_state;
+        let desktop = desktop_onboarding;
+        Rc::new(RefCell::new(move |action: OnboardingAction| {
+            let mut state = state.borrow_mut();
+            match action {
+                OnboardingAction::SelectUsage(usage) => state.onboarding_usage = usage,
+                OnboardingAction::NameChanged(name) => state.onboarding_name = name,
+                OnboardingAction::SetDataSharing(share) => state.onboarding_share = share,
+                OnboardingAction::Next => {
+                    if state.onboarding_is_last_step() {
+                        state.complete_onboarding(desktop.as_deref());
+                    } else {
+                        state.onboarding_next_step();
+                    }
+                }
+                OnboardingAction::Back => state.onboarding_back(),
+                OnboardingAction::Replay => state.replay_onboarding(),
+            }
+        }))
+    };
+    let action_profile_name_change: Rc<RefCell<dyn FnMut(String)>> =
+        Rc::new(RefCell::new(move |value: String| {
+            on_profile_name_change.borrow_mut().settings_profile_name = value;
+        }));
+    // The name field's caret: taking it remembers what the field held, and
+    // leaving it without pressing Enter puts that value back.
+    let action_profile_name_focus: Rc<RefCell<dyn FnMut(bool)>> = {
+        let state = Rc::clone(&state);
+        Rc::new(RefCell::new(move |gained: bool| {
+            state.borrow_mut().settings_profile_name_focus(gained);
+        }))
+    };
+    // The Agent & Approval page's default model: one pick from the menu writes
+    // `[models] default`, so a new agent and the next launch start on it.
+    let action_select_default_model: Rc<RefCell<dyn FnMut(String)>> = {
+        let state = Rc::clone(&on_default_model_state);
+        let desktop = desktop_default_model.clone();
+        Rc::new(RefCell::new(move |model: String| {
+            let mut state = state.borrow_mut();
+            state.settings_default_model = model.clone();
+            // New panes read `selected_model`, so the choice takes effect now
+            // as well as on the next launch.
+            state.selected_model = model.clone();
+            *state.settings_model_menu_open.borrow_mut() = false;
+            if let Some(desktop) = &desktop {
+                if let Err(e) = desktop.set_default_model(&model) {
+                    log::warn!("set_default_model failed: {e}");
+                }
+            }
+        }))
+    };
+    let action_toggle_telemetry: Rc<RefCell<dyn FnMut(bool)>> = {
+        let state = on_toggle_telemetry_state;
+        Rc::new(RefCell::new(move |enabled: bool| {
+            let in_force = goble_telemetry::global()
+                .map(|telemetry| telemetry.set_upload_consent(enabled))
+                .unwrap_or(enabled);
+            state.borrow_mut().share_telemetry = in_force;
+        }))
+    };
     // The focused row's own value step, shared by the arrow keys and by `Enter`
     // on a row that holds one (a stepper advances, the channel column moves on).
     // The steppers run through the actions that own their bounds and, for the
@@ -670,6 +763,7 @@ pub fn make_actions(
         let step_state = Rc::clone(&state);
         let on_speed = action_set_scroll_speed.clone();
         let on_font = action_set_font_size.clone();
+        let on_mode = action_select_approval_mode.clone();
         Rc::new(RefCell::new(move |delta: i32| {
             // Read the focused control into a local first: the arms below run
             // the actions that own the value, and those borrow the same state,
@@ -683,6 +777,18 @@ pub fn make_actions(
                 Some(SettingsControl::FontSize) => {
                     let next = step_state.borrow().settings_font_size + delta as f32 * 0.1;
                     (on_font.borrow_mut())(next);
+                }
+                Some(SettingsControl::ApprovalMode) => {
+                    let (pane_id, mode) = {
+                        let state = step_state.borrow();
+                        (state.active_pane_id, state.approval_mode)
+                    };
+                    let next = if delta >= 0 {
+                        mode.next()
+                    } else {
+                        mode.previous()
+                    };
+                    (on_mode.borrow_mut())(pane_id, next);
                 }
                 _ => step_state.borrow_mut().settings_adjust_control(delta),
             }
@@ -720,14 +826,19 @@ pub fn make_actions(
             // here the conversation bound to its pane, so the tab reads `New
             // Agent` until that conversation has a subject.
             state.spaces.push(
-                Space::unnamed(Pane::Leaf { id, kind: PaneKind::Chat })
-                    .with_medium(medium_id.clone()),
+                Space::unnamed(Pane::Leaf {
+                    id,
+                    kind: PaneKind::Chat,
+                })
+                .with_medium(medium_id.clone()),
             );
             state.active_space = state.spaces.len() - 1;
             state.active_pane_id = id;
             state.workspace_routing = Some(WorkspaceRouting::from_routing(routing));
             ensure_pane_hover(&mut state, id);
-            let project_id = on_create_medium.borrow().default_project_for_medium(&medium_id);
+            let project_id = on_create_medium
+                .borrow()
+                .default_project_for_medium(&medium_id);
             let path = default_pane_path(&project_id, desktop_create.as_deref());
             state.set_active_pane_path(path.clone());
             // The subject the row was given names the conversation from the
@@ -768,11 +879,7 @@ pub fn make_actions(
             // process it should not have spawned). A local environment keeps
             // the agent pane it always had.
             if let Some(desktop) = &desktop_create {
-                state.adopt_routing(
-                    id,
-                    Some(WorkspaceRouting::from_routing(routing)),
-                    desktop,
-                );
+                state.adopt_routing(id, Some(WorkspaceRouting::from_routing(routing)), desktop);
             }
             open_pane_harness(&mut state, id, desktop_create.as_ref());
             state.refresh_space_labels();
@@ -800,7 +907,10 @@ pub fn make_actions(
             // menu back after Escape put it away.
             let pane_id = state.active_pane_id;
             *state.pane_controls_mut(pane_id).slash_index.borrow_mut() = 0;
-            *state.pane_controls_mut(pane_id).slash_dismissed.borrow_mut() = false;
+            *state
+                .pane_controls_mut(pane_id)
+                .slash_dismissed
+                .borrow_mut() = false;
         })),
         on_slash_move: Rc::new(RefCell::new(move |index: usize| {
             let mut state = on_slash_move.borrow_mut();
@@ -820,7 +930,10 @@ pub fn make_actions(
             // Escape: the menu goes away and the draft stays as typed, so the
             // flag — not the draft — is what closes it.
             let pane_id = state.active_pane_id;
-            *state.pane_controls_mut(pane_id).slash_dismissed.borrow_mut() = true;
+            *state
+                .pane_controls_mut(pane_id)
+                .slash_dismissed
+                .borrow_mut() = true;
             *state.pane_controls_mut(pane_id).slash_index.borrow_mut() = 0;
         })),
         on_composer_focus_change: Rc::new(RefCell::new(move |focused: bool| {
@@ -951,10 +1064,9 @@ pub fn make_actions(
             }
             // Persist the choice on the conversation the turn will run on, so
             // it survives a restart and is tracked per conversation.
-            if let (Some(desktop), Some(chat_id)) = (
-                &desktop_send_to_cloud,
-                state.pane_conversation_id(pane_id),
-            ) {
+            if let (Some(desktop), Some(chat_id)) =
+                (&desktop_send_to_cloud, state.pane_conversation_id(pane_id))
+            {
                 if let Err(e) = desktop.set_chat_workspace_routing(
                     &chat_id,
                     Some(routing_to_str(WorkspaceRouting::Remote)),
@@ -983,10 +1095,12 @@ pub fn make_actions(
             }
         })),
         on_voice: Rc::new(RefCell::new(move || {
-            on_voice.borrow_mut().push_active_message(ChatMessage::from_markdown(
-                ChatRole::Assistant,
-                "(voice input coming soon)",
-            ));
+            on_voice
+                .borrow_mut()
+                .push_active_message(ChatMessage::from_markdown(
+                    ChatRole::Assistant,
+                    "(voice input coming soon)",
+                ));
         })),
         on_select_model: Rc::new(RefCell::new(move || {
             log::info!("model selector pressed");
@@ -1075,12 +1189,7 @@ pub fn make_actions(
             if !has_shell {
                 return;
             }
-            run_terminal_command(
-                &mut state,
-                &checkout_branch_command(&branch),
-                pane_id,
-                None,
-            );
+            run_terminal_command(&mut state, &checkout_branch_command(&branch), pane_id, None);
             {
                 let controls = state.pane_controls_mut(pane_id);
                 controls.branch = branch.clone();
@@ -1230,6 +1339,7 @@ pub fn make_actions(
                 let mut state = on_command_decision.borrow_mut();
                 let chat_id = state.pane_conversation_id(pane_id);
                 if let (Some(desktop), Some(chat_id)) = (&desktop_command, chat_id) {
+                    crate::telemetry::approval_decision(&decision);
                     match desktop.resume_command_chat_turn(&chat_id, decision) {
                         Ok(_) => {
                             // The decision resumes the suspended turn: record
@@ -1253,7 +1363,9 @@ pub fn make_actions(
         // pane's transcript, bound to the pane that asked for it.
         on_fork_conversation: Rc::new(RefCell::new(move |pane_id: u64| {
             let mut state = on_fork_conversation.borrow_mut();
-            if state.fork_pane_conversation(pane_id, desktop_fork.as_deref()).is_some()
+            if state
+                .fork_pane_conversation(pane_id, desktop_fork.as_deref())
+                .is_some()
                 && pane_id == state.active_pane_id
             {
                 state.sync_active_view();
@@ -1344,6 +1456,293 @@ pub fn make_actions(
             let index = state.inbox_index;
             if state.jump_to_inbox_item(index) {
                 state.inbox_open = false;
+            }
+        })),
+        // The agent-management panel: a roster of conversations with the
+        // peek/reply box and the dispatch box grok-build's dashboard has. The
+        // panel is an overlay, so its open flag and drafts live in the app
+        // state and the tree is rebuilt from them every frame.
+        on_agent_dashboard: Rc::new(RefCell::new(move |action: AgentDashboardAction| {
+            let mut state = on_agent_dashboard.borrow_mut();
+            match action {
+                AgentDashboardAction::Toggle => {
+                    let opening = !state.agent_dashboard.open;
+                    state.agent_dashboard.open = opening;
+                    state.agent_dashboard.search_focused = false;
+                    state.agent_dashboard.reply_focused = false;
+                    state.agent_dashboard.dispatch_focused = false;
+                    state.agent_dashboard.rename = None;
+                    state.agent_dashboard.rename_focused = false;
+                    state.agent_dashboard.confirm_delete = None;
+                    if opening {
+                        state.agent_dashboard.query.clear();
+                        state.agent_dashboard.selected = None;
+                        state.agent_dashboard.reply.clear();
+                        state.agent_dashboard.dispatch.clear();
+                        state.agent_dashboard.dispatch_open = false;
+                        state.agent_dashboard.scroll.borrow_mut().reset();
+                    }
+                }
+                AgentDashboardAction::Close => {
+                    state.agent_dashboard.open = false;
+                    state.agent_dashboard.search_focused = false;
+                    state.agent_dashboard.reply_focused = false;
+                    state.agent_dashboard.dispatch_focused = false;
+                    state.agent_dashboard.dispatch_open = false;
+                    state.agent_dashboard.dispatch.clear();
+                    state.agent_dashboard.rename = None;
+                    state.agent_dashboard.rename_focused = false;
+                    state.agent_dashboard.confirm_delete = None;
+                    // The row the pointer was over belongs to a panel that is
+                    // no longer drawn; reopening must not start with a stale
+                    // hover on it.
+                    *state.agent_dashboard.hovered_row.borrow_mut() = None;
+                }
+                AgentDashboardAction::Select(id) => {
+                    // A cursor on a row gives the prompt a reply target, so the
+                    // dispatch prompt steps aside with its draft.
+                    state.agent_dashboard.dispatch_open = false;
+                    state.agent_dashboard.dispatch_focused = false;
+                    state.agent_dashboard.dispatch.clear();
+                    state.agent_dashboard.selected = id;
+                    // A draft belongs to the row it was typed for, so a
+                    // cursor move never carries it to another agent.
+                    state.agent_dashboard.reply.clear();
+                    state.agent_dashboard.reply_focused = false;
+                    state.agent_dashboard.rename = None;
+                    state.agent_dashboard.rename_focused = false;
+                    state.agent_dashboard.confirm_delete = None;
+                    // The response card starts at the top of the new row's
+                    // output rather than where the last one was scrolled to.
+                    state.agent_dashboard.response_scroll.borrow_mut().reset();
+                }
+                AgentDashboardAction::Search(query) => {
+                    state.agent_dashboard.query = query;
+                    state.agent_dashboard.scroll.borrow_mut().reset();
+                }
+                AgentDashboardAction::SearchFocus(focused) => {
+                    state.agent_dashboard.search_focused = focused;
+                }
+                AgentDashboardAction::SetReplyDraft(text) => {
+                    state.agent_dashboard.reply = text;
+                }
+                AgentDashboardAction::ReplyFocus(focused) => {
+                    state.agent_dashboard.reply_focused = focused;
+                }
+                AgentDashboardAction::Reply(id) => {
+                    let text = state.agent_dashboard.reply.trim().to_string();
+                    if text.is_empty() {
+                        return;
+                    }
+                    // The reply talks to the row's own agent. A conversation
+                    // no pane holds yet is opened in a tab first, so the
+                    // turn has the pane a prompt needs.
+                    let pane = match state.pane_id_for_conversation(&id) {
+                        Some(pane) => pane,
+                        None => {
+                            state.open_conversation_tab(
+                                id.clone(),
+                                desktop_agent_dashboard.as_deref(),
+                            );
+                            state.active_pane_id
+                        }
+                    };
+                    let busy = state
+                        .pane_runtime
+                        .get(&pane)
+                        .map(|rt| rt.busy)
+                        .unwrap_or(false);
+                    if busy {
+                        // A turn is in flight: the same queue the composer
+                        // uses, so the reply lands instead of interrupting.
+                        state.pane_runtime.entry(pane).or_default().queued_prompt =
+                            Some(text.clone());
+                        state.queued_prompt = Some(text);
+                    } else {
+                        send_agent_prompt(
+                            &mut state,
+                            desktop_agent_dashboard.as_ref(),
+                            &media_agent_dashboard,
+                            &text,
+                            pane,
+                        );
+                    }
+                    state.agent_dashboard.reply.clear();
+                }
+                AgentDashboardAction::SetDispatchDraft(text) => {
+                    state.agent_dashboard.dispatch = text;
+                }
+                AgentDashboardAction::DispatchFocus(focused) => {
+                    state.agent_dashboard.dispatch_focused = focused;
+                    if focused {
+                        // The prompt line is out even with the new-agent
+                        // drawer closed; putting the caret in it is what puts
+                        // the panel in dispatch mode.
+                        state.agent_dashboard.dispatch_open = true;
+                    }
+                }
+                AgentDashboardAction::ToggleDispatch => {
+                    let opening = !state.agent_dashboard.dispatch_open;
+                    state.agent_dashboard.dispatch_open = opening;
+                    // The prompt starts a new agent, so raising it steps the
+                    // cursor off the row it was on; retracting it drops the
+                    // half-typed prompt and gives the field back.
+                    state.agent_dashboard.selected = None;
+                    state.agent_dashboard.reply.clear();
+                    state.agent_dashboard.reply_focused = false;
+                    state.agent_dashboard.rename = None;
+                    state.agent_dashboard.rename_focused = false;
+                    state.agent_dashboard.confirm_delete = None;
+                    state.agent_dashboard.dispatch.clear();
+                    state.agent_dashboard.dispatch_focused = opening;
+                }
+                AgentDashboardAction::NewAgent => {
+                    // Escape's own shortcut, grok-build's `Esc: New Agent`:
+                    // leave the row, keep the prompt's draft, and put the
+                    // caret where the new agent is typed.
+                    state.agent_dashboard.selected = None;
+                    state.agent_dashboard.reply.clear();
+                    state.agent_dashboard.reply_focused = false;
+                    state.agent_dashboard.rename = None;
+                    state.agent_dashboard.rename_focused = false;
+                    state.agent_dashboard.confirm_delete = None;
+                    state.agent_dashboard.dispatch_open = true;
+                    state.agent_dashboard.dispatch_focused = true;
+                }
+                AgentDashboardAction::Dispatch => {
+                    let text = state.agent_dashboard.dispatch.trim().to_string();
+                    if text.is_empty() {
+                        return;
+                    }
+                    // Dispatch always starts a new conversation, never the
+                    // one the cursor is on: the cursor is navigation, not a
+                    // reply target (grok-build's dashboard rule).
+                    let Some(desktop) = desktop_agent_dashboard.as_ref() else {
+                        return;
+                    };
+                    let id = match desktop.create_chat(NEW_CONVERSATION_TITLE, None, None) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            log::warn!("create_chat (dashboard dispatch) failed: {e}");
+                            return;
+                        }
+                    };
+                    state.refresh_conversations(desktop);
+                    state.open_conversation_tab(id.clone(), Some(desktop));
+                    let pane = state.active_pane_id;
+                    send_agent_prompt(
+                        &mut state,
+                        Some(desktop),
+                        &media_agent_dashboard,
+                        &text,
+                        pane,
+                    );
+                    state.agent_dashboard.dispatch.clear();
+                    state.agent_dashboard.dispatch_open = false;
+                    state.agent_dashboard.dispatch_focused = false;
+                    // Enter is what opens the output: the card follows the
+                    // conversation the dispatch just started, so its response
+                    // lands where the user sent the prompt from.
+                    state.agent_dashboard.selected = Some(id);
+                    state.agent_dashboard.response_scroll.borrow_mut().reset();
+                }
+                AgentDashboardAction::Stop(id) => {
+                    if let Some(desktop) = desktop_agent_dashboard.as_ref() {
+                        let _ = desktop.cancel_chat_turn(&id);
+                    }
+                    if let Some(pane) = state.pane_id_for_conversation(&id) {
+                        state.stop_turn(pane);
+                        state.agent_busy = false;
+                    }
+                }
+                AgentDashboardAction::Delete(id) => {
+                    // The first click arms the row, the second one deletes
+                    // it, so a stray press cannot wipe a conversation.
+                    if state.agent_dashboard.confirm_delete.as_deref() != Some(id.as_str()) {
+                        state.agent_dashboard.confirm_delete = Some(id);
+                        return;
+                    }
+                    state.agent_dashboard.confirm_delete = None;
+                    if let Some(desktop) = desktop_agent_dashboard.as_ref() {
+                        if let Err(e) = desktop.store_clone().delete_chat(&id) {
+                            log::warn!("delete_chat (dashboard) failed: {e}");
+                            return;
+                        }
+                    }
+                    state.conversations.retain(|entry| entry.id != id);
+                    state.agent_cards.remove(&id);
+                    if state.agent_dashboard.selected.as_deref() == Some(id.as_str()) {
+                        state.agent_dashboard.selected = None;
+                        state.agent_dashboard.reply.clear();
+                        state.agent_dashboard.reply_focused = false;
+                    }
+                    // A pane the deleted conversation was bound to has no
+                    // thread left to run, so the active one moves to the
+                    // next conversation, the way the sidebar's delete does.
+                    let owned_by_active = state
+                        .pane_sessions
+                        .get(&state.active_pane_id)
+                        .map(|session| session.conversation_id == id)
+                        .unwrap_or(false);
+                    if owned_by_active {
+                        if let Some(next) =
+                            state.conversations.first().map(|entry| entry.id.clone())
+                        {
+                            state.bind_active_pane_conversation(
+                                next,
+                                desktop_agent_dashboard.as_deref(),
+                            );
+                        }
+                    }
+                    state.refresh_space_labels();
+                }
+                AgentDashboardAction::BeginRename(id) => {
+                    let name = state
+                        .conversations
+                        .iter()
+                        .find(|entry| entry.id == id)
+                        .map(|entry| entry.name.clone())
+                        .unwrap_or_default();
+                    state.agent_dashboard.selected = Some(id.clone());
+                    state.agent_dashboard.rename = Some((id, name));
+                    state.agent_dashboard.rename_focused = true;
+                    state.agent_dashboard.reply_focused = false;
+                    state.agent_dashboard.search_focused = false;
+                    state.agent_dashboard.dispatch_focused = false;
+                }
+                AgentDashboardAction::RenameDraft(text) => {
+                    if let Some((_, draft)) = state.agent_dashboard.rename.as_mut() {
+                        *draft = text;
+                    }
+                }
+                AgentDashboardAction::CommitRename => {
+                    let Some((id, draft)) = state.agent_dashboard.rename.take() else {
+                        return;
+                    };
+                    state.agent_dashboard.rename_focused = false;
+                    let title = draft.trim();
+                    if title.is_empty() {
+                        return;
+                    }
+                    if let Some(desktop) = desktop_agent_dashboard.as_ref() {
+                        if let Err(e) = desktop.set_chat_title(&id, title) {
+                            log::warn!("set_chat_title (dashboard) failed: {e}");
+                        }
+                    }
+                    if let Some(entry) = state.conversations.iter_mut().find(|entry| entry.id == id)
+                    {
+                        entry.name = title.to_string();
+                    }
+                    state.refresh_space_labels();
+                }
+                AgentDashboardAction::CancelRename => {
+                    state.agent_dashboard.rename = None;
+                    state.agent_dashboard.rename_focused = false;
+                }
+                AgentDashboardAction::ToggleGrouping => {
+                    state.agent_dashboard.grouping = state.agent_dashboard.grouping.next();
+                    state.agent_dashboard.scroll.borrow_mut().reset();
+                }
             }
         })),
         // The review pane's own interactions. Every view choice lives in the
@@ -1561,7 +1960,9 @@ pub fn make_actions(
             run_global_search(&mut state);
         })),
         on_global_search_focus_change: Rc::new(RefCell::new(move |focused: bool| {
-            on_global_search_focus_change.borrow_mut().global_search_focused = focused;
+            on_global_search_focus_change
+                .borrow_mut()
+                .global_search_focused = focused;
         })),
         on_workspace_click: Rc::new(RefCell::new(move |index: usize| {
             let mut state = on_workspace_click.borrow_mut();
@@ -1714,20 +2115,35 @@ pub fn make_actions(
                 .borrow_mut()
                 .open_settings_tab(desktop_settings.as_deref());
         })),
+        on_onboarding: action_onboarding.clone(),
+        on_profile_name_change: action_profile_name_change.clone(),
+        on_profile_name_focus: action_profile_name_focus.clone(),
+        on_select_default_model: action_select_default_model.clone(),
+        on_toggle_telemetry: action_toggle_telemetry.clone(),
         on_settings_category: Rc::new(RefCell::new(move |category: SettingsCategory| {
-            on_settings_category.borrow_mut().settings_select_category(category);
+            on_settings_category
+                .borrow_mut()
+                .settings_select_category(category);
         })),
         on_settings_category_step: Rc::new(RefCell::new(move |delta: i32| {
-            on_settings_category_step.borrow_mut().settings_category_step(delta);
+            on_settings_category_step
+                .borrow_mut()
+                .settings_category_step(delta);
         })),
         on_settings_focus_move: Rc::new(RefCell::new(move |delta: i32| {
-            on_settings_focus_move.borrow_mut().settings_focus_step(delta);
+            on_settings_focus_move
+                .borrow_mut()
+                .settings_focus_step(delta);
         })),
         on_settings_focus_into_pane: Rc::new(RefCell::new(move || {
-            on_settings_focus_into_pane.borrow_mut().settings_focus_into_pane();
+            on_settings_focus_into_pane
+                .borrow_mut()
+                .settings_focus_into_pane();
         })),
         on_settings_focus_out_of_pane: Rc::new(RefCell::new(move || {
-            on_settings_focus_out_of_pane.borrow_mut().settings_focus_out_of_pane();
+            on_settings_focus_out_of_pane
+                .borrow_mut()
+                .settings_focus_out_of_pane();
         })),
         on_settings_activate: Rc::new(RefCell::new({
             let activate_state = Rc::clone(&on_settings_activate);
@@ -1759,8 +2175,15 @@ pub fn make_actions(
                         (on_theme.borrow_mut())(target);
                     }
                     // A stepper advances: the same step the arrow keys take.
-                    Some(SettingsControl::ScrollSpeed) | Some(SettingsControl::FontSize) => {
+                    Some(SettingsControl::ScrollSpeed)
+                    | Some(SettingsControl::FontSize)
+                    | Some(SettingsControl::ApprovalMode) => {
                         (on_step.borrow_mut())(1);
+                    }
+                    // The default model is a list, not a stepper: Enter opens
+                    // the menu the field hangs, and a row picks the value.
+                    Some(SettingsControl::DefaultModel) => {
+                        *activate_state.borrow().settings_model_menu_open.borrow_mut() = true;
                     }
                     Some(SettingsControl::AutoApprove) => {
                         let (pane, next) = {
@@ -1779,9 +2202,7 @@ pub fn make_actions(
                     }
                     Some(SettingsControl::OpenConfigFile) => (on_open_config.borrow_mut())(),
                     Some(SettingsControl::ReloadModels) => (on_reload.borrow_mut())(),
-                    Some(SettingsControl::ReloadRemoteAgents) => {
-                        (on_reload_agents.borrow_mut())()
-                    }
+                    Some(SettingsControl::ReloadRemoteAgents) => (on_reload_agents.borrow_mut())(),
                     // Everything else belongs to the state: the environment
                     // rows, and a text field taking the caret or committing it.
                     _ => activate_state
@@ -1795,10 +2216,30 @@ pub fn make_actions(
             move |delta: i32| (step.borrow_mut())(delta)
         })),
         on_settings_commit_field: Rc::new(RefCell::new(move || {
-            on_settings_commit_field.borrow_mut().settings_commit_field();
+            // The name is the one field whose commit is also a write: every
+            // other field is either an action of its own or a draft.
+            let (control, name) = {
+                let state = on_settings_commit_field.borrow();
+                (
+                    state.settings_focused_control(),
+                    state.settings_profile_name.clone(),
+                )
+            };
+            if control == Some(SettingsControl::FriendlyName) {
+                if let Some(desktop) = &desktop_commit_settings_field {
+                    if let Err(e) = desktop.set_friendly_name(&name) {
+                        log::warn!("set_friendly_name failed: {e}");
+                    }
+                }
+            }
+            on_settings_commit_field
+                .borrow_mut()
+                .settings_commit_field();
         })),
         on_settings_cancel_field: Rc::new(RefCell::new(move || {
-            on_settings_cancel_field.borrow_mut().settings_cancel_field();
+            on_settings_cancel_field
+                .borrow_mut()
+                .settings_cancel_field();
         })),
         on_environment_group_draft_change: Rc::new(RefCell::new(move |value: String| {
             on_environment_group_draft_change
@@ -1811,7 +2252,9 @@ pub fn make_actions(
                 .environment_create_group(desktop_environment_create.as_deref());
         })),
         on_environment_open_group: Rc::new(RefCell::new(move |id: String| {
-            on_environment_open_group.borrow_mut().environment_open_group(&id);
+            on_environment_open_group
+                .borrow_mut()
+                .environment_open_group(&id);
         })),
         on_environment_delete_group: Rc::new(RefCell::new(move |id: String| {
             on_environment_delete_group
@@ -1834,7 +2277,9 @@ pub fn make_actions(
                 .environment_save_secret(desktop_environment_save.as_deref());
         })),
         on_environment_edit_secret: Rc::new(RefCell::new(move |id: String| {
-            on_environment_edit_secret.borrow_mut().environment_edit_secret(&id);
+            on_environment_edit_secret
+                .borrow_mut()
+                .environment_edit_secret(&id);
         })),
         on_environment_delete_secret: Rc::new(RefCell::new(move |id: String| {
             on_environment_delete_secret
@@ -1852,6 +2297,8 @@ pub fn make_actions(
         on_open_remote_settings: action_open_remote_settings.clone(),
         on_reload_ssh_hosts: action_reload_ssh_hosts.clone(),
         on_ssh_select_host: action_ssh_select_host.clone(),
+        on_check_for_updates: action_check_for_updates.clone(),
+        on_install_update: action_install_update.clone(),
         on_projects: Rc::new(RefCell::new(move || {
             on_projects.borrow_mut().current_tab = AppTab::Projects;
         })),
@@ -2157,13 +2604,15 @@ pub fn make_actions(
                 }
             },
         )),
-        on_float_rect: Rc::new(RefCell::new(move |pane_id: u64, rect: crate::ui::PaneRect| {
-            let mut state = on_float_rect.borrow_mut();
-            let space_idx = state.active_space;
-            if let Some(space) = state.spaces.get_mut(space_idx) {
-                space.set_floating_rect(pane_id, rect);
-            }
-        })),
+        on_float_rect: Rc::new(RefCell::new(
+            move |pane_id: u64, rect: crate::ui::PaneRect| {
+                let mut state = on_float_rect.borrow_mut();
+                let space_idx = state.active_space;
+                if let Some(space) = state.spaces.get_mut(space_idx) {
+                    space.set_floating_rect(pane_id, rect);
+                }
+            },
+        )),
         on_float_rect_end: Rc::new(RefCell::new(move || {
             let state = on_float_rect_end.borrow_mut();
             state.floating_drag.borrow_mut().take();
@@ -2439,8 +2888,11 @@ pub fn make_actions(
             // An unnamed space: its tab derives its label from what it holds —
             // here the working directory the pane opens in.
             state.spaces.push(
-                Space::unnamed(Pane::Leaf { id, kind: PaneKind::Terminal })
-                    .with_medium(medium_id.clone()),
+                Space::unnamed(Pane::Leaf {
+                    id,
+                    kind: PaneKind::Terminal,
+                })
+                .with_medium(medium_id.clone()),
             );
             state.active_space = state.spaces.len() - 1;
             state.active_pane_id = id;
@@ -2450,7 +2902,9 @@ pub fn make_actions(
             // created here: the thread appears only once an agent turn runs in
             // the pane (see `on_terminal_command`), so opening a workspace never
             // leaves an empty "New conversation" row behind.
-            let project_id = media_add_space.borrow().default_project_for_medium(&medium_id);
+            let project_id = media_add_space
+                .borrow()
+                .default_project_for_medium(&medium_id);
             let path = default_pane_path(&project_id, desktop_add_space.as_deref());
             state.set_active_pane_path(path);
             state.refresh_space_labels();
@@ -2896,6 +3350,7 @@ pub fn make_actions(
             let mut state = on_dismiss_llm_key_banner.borrow_mut();
             state.show_llm_key_banner = false;
             state.onboarding_done = true;
+            crate::telemetry::onboarding_completed();
             if let Some(desktop) = &desktop_dismiss_key {
                 if let Err(e) = desktop.set_onboarding_done() {
                     log::warn!("set_onboarding_done failed: {e}");
@@ -2908,6 +3363,7 @@ pub fn make_actions(
             state.show_workspace_choice = false;
             state.show_llm_key_banner = false;
             state.onboarding_done = true;
+            crate::telemetry::onboarding_completed();
             if let Some(desktop) = &desktop_dismiss_workspace {
                 if let Err(e) = desktop.set_onboarding_done() {
                     log::warn!("set_onboarding_done failed: {e}");
@@ -2950,11 +3406,7 @@ pub fn make_actions(
 /// onto a local tab would keep listing the previous tab's environment and the
 /// local conversations would stay out of sight.
 fn adopt_space_medium(state: &mut UiState, media: &Rc<RefCell<MediaState>>, index: usize) {
-    let Some(medium_id) = state
-        .spaces
-        .get(index)
-        .map(|space| space.medium.clone())
-    else {
+    let Some(medium_id) = state.spaces.get(index).map(|space| space.medium.clone()) else {
         return;
     };
     if !medium_id.trim().is_empty() {
@@ -3010,17 +3462,13 @@ fn adopt_space_routing(state: &mut UiState, index: usize) {
     if state.workspace_routing.is_some() {
         return;
     }
-    let Some(medium_id) = state
-        .spaces
-        .get(index)
-        .map(|space| space.medium.clone())
-    else {
+    let Some(medium_id) = state.spaces.get(index).map(|space| space.medium.clone()) else {
         return;
     };
     if !medium_id.trim().is_empty() {
-        state.workspace_routing = Some(WorkspaceRouting::from_routing(crate::media::medium_routing(
-            &medium_id,
-        )));
+        state.workspace_routing = Some(WorkspaceRouting::from_routing(
+            crate::media::medium_routing(&medium_id),
+        ));
     }
 }
 

@@ -36,6 +36,10 @@ rustls-pemfile = "2.2"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 tungstenite = "0.26"
 
+# telemetry collector object storage
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
+
 # serialization / config
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

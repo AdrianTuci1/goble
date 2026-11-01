@@ -1,0 +1,41 @@
+# Grok harness config, copied into the image at /root/.grok/config.toml.
+#
+# The default model is DeepSeek, not the station's Grok subscription: that
+# subscription has a 24-hour token window, and a job with parallel phases can
+# exhaust it in a single run. A workflow can still ask for another model per
+# agent; `[models] default` decides everything else.
+
+[model.deepseek]
+# The identifier sent to the provider and its OpenAI-compatible endpoint. No
+# `/v1`: the `chat_completions` backend appends the path itself.
+model = "deepseek-flash"
+base_url = "https://api.deepseek.com"
+name = "DeepSeek Flash"
+api_backend = "chat_completions"
+# The key comes from the Modal secret `staticlabs-sandboxes-llm`. `env_key` wins
+# over the session token, so a container with Grok OAuth still uses DeepSeek.
+env_key = "DEEPSEEK_API_KEY"
+max_completion_tokens = 16384
+context_window = 256000
+
+[models]
+default = "deepseek"
+
+[cli]
+# Together with `--no-auto-update`, this keeps the binary from replacing itself
+# mid-job.
+auto_update = false
+
+[workflows]
+enabled = true
+
+[memory]
+# One job per container; there is no session to resume.
+enabled = false
+
+[privacy]
+# Nobody is in the container to accept a first-run banner.
+privacy_banner_acked = "2026-10-12T00:00:00Z"
+
+[marketplace]
+default_skills_installs_purged = true

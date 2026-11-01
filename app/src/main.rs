@@ -6,6 +6,7 @@
 //! still runs with a plain logger and no crash capture.
 
 use std::cell::RefCell;
+use std::process::Command;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +23,11 @@ const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
 fn main() -> anyhow::Result<()> {
     let telemetry = start_telemetry();
 
+    // Before any window is drawn: a build that was installed and never proved
+    // itself is undone here, and the copy it replaced takes over. A broken
+    // build therefore costs one launch, not the installation.
+    recover_from_broken_update();
+
     // Some MCP/vault operations (search, install, update, test-call) call
     // `tokio::runtime::Handle::try_current()` and `block_on` on the calling
     // thread. Keep a multi-thread runtime entered for the app lifetime so
@@ -32,7 +38,16 @@ fn main() -> anyhow::Result<()> {
     if let Some(telemetry) = &telemetry {
         telemetry.app_started(locale());
     }
-    check_for_updates();
+    // The checker starts its own thread and owns its clock: a check now, then
+    // at most every six hours. `None` when this build has no release host.
+    let updates = goble_app::update::UpdateService::from_env(
+        app_version(),
+        update_channel(),
+        goble_update::UNKNOWN_EPOCH,
+    );
+    if let Some(service) = &updates {
+        service.start();
+    }
 
     // Open the real backend state. If the store genuinely cannot be opened we
     // surface an error instead of silently substituting mock data: the app
@@ -47,7 +62,11 @@ fn main() -> anyhow::Result<()> {
     let app_context = Rc::new(RefCell::new(AppContext::default()));
     let root = {
         let ctx = app_context.borrow();
-        RootView::new(&ctx, &desktop, Some(bus)).with_app_context(app_context.clone())
+        let root = RootView::new(&ctx, &desktop, Some(bus)).with_app_context(app_context.clone());
+        match &updates {
+            Some(service) => root.with_updates(Arc::clone(service)),
+            None => root,
+        }
     };
 
     // The control socket is a second front door onto the same UI state. Its
@@ -55,21 +74,44 @@ fn main() -> anyhow::Result<()> {
     // thread from the PTY daemon. A socket that cannot bind (another app
     // instance owns it) is logged, never fatal: the window still opens.
     #[cfg(unix)]
-    let root = match goble_app::control::start_default() {
+    let (root, owns_control) = match goble_app::control::start_default() {
         Ok(control) => {
             log::info!(
                 "control socket listening at {}",
                 control.socket_path().display()
             );
-            root.with_control(control)
+            (root.with_control(control), true)
         }
         Err(err) => {
             log::warn!("control socket is off for this run: {err}");
-            root
+            (root, false)
         }
     };
+    #[cfg(not(unix))]
+    let owns_control = true;
+
+    // The instance that owns the control socket is the one that may sweep the
+    // daemon: a second instance shares it and must leave the first one's
+    // shells alone. A run that was killed before it could close its panes
+    // leaves their sessions detached, and the daemon keeps those alive.
+    if owns_control {
+        root.prune_orphan_terminal_sessions();
+    }
+    // The panes in the restored layout get their shells now, before the first
+    // frame. Painting a pane must not start a process: a test that renders the
+    // shell would otherwise leave a real shell running in the user's daemon.
+    root.start_terminal_sessions();
+    // Keep a handle after the window is handed to the event loop: a clean quit
+    // has to close the pane shells, because dropping a session only detaches.
+    let ui_state = root.state_rc();
+    // First run shows the three-step onboarding over the window. This is the
+    // real-launch seam: mounting the tree in a test never opens it.
+    ui_state
+        .borrow_mut()
+        .open_onboarding_if_first_run(Some(&desktop));
 
     let result = run_with_root(Box::new(root), app_context);
+    ui_state.borrow().kill_terminal_sessions();
 
     if let Some(telemetry) = &telemetry {
         telemetry.app_exited(Some(if result.is_ok() { 0 } else { 1 }));
@@ -110,6 +152,9 @@ fn try_start_telemetry() -> Result<Arc<Telemetry>, Box<dyn std::error::Error>> {
     let max_level = logger.max_level();
     telemetry.install_logger(Box::new(logger), max_level)?;
     telemetry.clone().install_panic_hook();
+    // Publish the handle so outcome sites elsewhere in the app (a finished
+    // turn, an approval, a command block) can record without being handed it.
+    goble_telemetry::set_global(telemetry.clone());
     Ok(telemetry)
 }
 
@@ -153,42 +198,39 @@ fn locale() -> Option<String> {
         .map(|value| value.split(['.', '@']).next().unwrap_or(&value).to_owned())
 }
 
-/// An advisory update check.
+/// Undo an update that was installed and never reached its healthy marker.
 ///
-/// Off unless `GOBLE_UPDATE_MANIFEST` names a manifest, because there is nothing
-/// to check against until the release host exists, and the app should not open
-/// connections to a host that is not there. The outcome is logged; surfacing it
-/// in the UI is still open (see `.agents/07-observability/`).
-fn check_for_updates() {
-    let Ok(manifest_url) = std::env::var("GOBLE_UPDATE_MANIFEST") else {
+/// `goble_update::rollback_local` puts the previous copy back and records the
+/// failed version; this hands the machine over to the restored build and exits,
+/// so the user is not left running the build that did not start cleanly.
+fn recover_from_broken_update() {
+    let outcome = match goble_update::rollback_local() {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            log::warn!("the update markers could not be read: {err}");
+            return;
+        }
+    };
+    let goble_update::LocalRollback::Restored { target, .. } = &outcome else {
+        if let Some(message) = outcome.message() {
+            log::warn!("{message}");
+        }
         return;
     };
+    if let Some(message) = outcome.message() {
+        log::warn!("{message}");
+    }
 
-    std::thread::Builder::new()
-        .name("goble-update-check".to_owned())
-        .spawn(move || {
-            let mut config = goble_update::UpdateConfig::new(manifest_url);
-            if let Ok(key) = std::env::var("GOBLE_UPDATE_PUBLIC_KEY") {
-                config = config.with_public_key(key);
-            }
-
-            let client = match goble_update::UpdateClient::new(config, "goble-app") {
-                Ok(client) => client,
-                Err(err) => {
-                    log::warn!("update check could not start: {err}");
-                    return;
-                }
-            };
-
-            match client.check(
-                update_channel(),
-                app_version(),
-                std::env::consts::OS,
-                std::env::consts::ARCH,
-            ) {
-                Ok(outcome) => log::info!("update check: {outcome:?}"),
-                Err(err) => log::warn!("update check failed: {err}"),
-            }
-        })
-        .ok();
+    let launched = if target.is_dir() {
+        Command::new("open").arg("-n").arg(target).spawn()
+    } else {
+        Command::new(target).spawn()
+    };
+    match launched {
+        Ok(_) => std::process::exit(0),
+        Err(err) => log::error!(
+            "the previous build is back at {} but could not be started: {err}",
+            target.display()
+        ),
+    }
 }

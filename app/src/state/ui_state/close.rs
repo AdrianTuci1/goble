@@ -62,8 +62,7 @@ impl UiState {
         // worker status report. Its file view's scroll and buffer handles go
         // with it too.
         self.forget_pane(pane_id);
-        self.file_buffers
-            .retain(|(pane, _), _| *pane != pane_id);
+        self.file_buffers.retain(|(pane, _), _| *pane != pane_id);
         self.pane_open_files.remove(&pane_id);
         self.file_scroll.remove(&pane_id);
         self.file_hscroll.remove(&pane_id);
@@ -105,8 +104,7 @@ impl UiState {
         };
         // Drop the handles first: nothing left in the state can save this text
         // after the user said not to.
-        self.file_buffers
-            .retain(|(pane, _), _| *pane != pane_id);
+        self.file_buffers.retain(|(pane, _), _| *pane != pane_id);
         self.close_pane(pane_id, desktop);
     }
 

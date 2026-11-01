@@ -10,6 +10,7 @@ use goble_terminal::hooks::{encode_hook, PrecmdValue};
 use goble_terminal::HookEvent;
 
 use crate::state::UiState;
+use crate::ui::{PaneKind, SplitDir};
 
 /// Two panes (as two app instances would be) can attach to one daemon session.
 /// The second attach is a broadcast subscriber, not a takeover: both see live
@@ -359,4 +360,99 @@ fn a_reattached_pane_rebuilds_the_command_and_its_output_from_the_replay() {
             .map(|block| (block.command.clone(), block.output.clone()))
             .collect::<Vec<_>>()
     );
+}
+
+/// Launch starts the shell behind every terminal leaf, and only those: a chat
+/// leaf in the same space gets none. Rendering a pane no longer starts one, so
+/// a test that paints the shell never leaves a real shell behind.
+#[test]
+fn launch_starts_a_shell_for_terminal_leaves_only() {
+    let daemon = TestDaemon::start();
+    let mut state = UiState::mock();
+    state
+        .terminal
+        .borrow_mut()
+        .use_socket(daemon.socket.clone());
+
+    let active = state.active_pane_id;
+    let mut next = state.next_pane_id;
+    let terminal_pane = state.spaces[0]
+        .split_with_kind(active, SplitDir::Vertical, &mut next, PaneKind::Terminal)
+        .expect("open a terminal leaf");
+    let chat_pane = state.spaces[0]
+        .split_with_kind(terminal_pane, SplitDir::Vertical, &mut next, PaneKind::Chat)
+        .expect("open a chat leaf");
+    state.next_pane_id = next;
+    for pane in [terminal_pane, chat_pane] {
+        state.pane_sessions.entry(pane).or_default().path = "/tmp".to_string();
+    }
+
+    assert!(
+        !state
+            .terminal
+            .borrow()
+            .sessions
+            .contains_key(&terminal_pane),
+        "nothing starts before launch"
+    );
+
+    state.start_terminal_sessions();
+
+    let terminal = state.terminal.borrow();
+    assert!(
+        terminal.sessions.contains_key(&terminal_pane),
+        "the terminal leaf got a shell"
+    );
+    assert!(
+        !terminal.sessions.contains_key(&chat_pane),
+        "a chat leaf runs no local shell"
+    );
+    drop(terminal);
+
+    state.kill_terminal_sessions();
+    assert!(
+        daemon.list().is_empty(),
+        "leaving the app closes every pane shell: {:?}",
+        daemon.list()
+    );
+}
+
+/// The launch that follows a force-quit closes the sessions the restored
+/// layout no longer owns, while a pane that is still there keeps its shell.
+#[test]
+fn launch_sweeps_the_sessions_no_pane_owns() {
+    let daemon = TestDaemon::start();
+    let shell_cwd = tempfile::tempdir().expect("create a shell cwd");
+    let kept = daemon.create(
+        "pane-1",
+        "/bin/bash",
+        Vec::new(),
+        Vec::new(),
+        shell_cwd.path(),
+    );
+    let _orphan = daemon.create(
+        "pane-99",
+        "/bin/bash",
+        Vec::new(),
+        Vec::new(),
+        shell_cwd.path(),
+    );
+    assert_eq!(daemon.list().len(), 2);
+
+    let mut state = UiState::mock();
+    state
+        .terminal
+        .borrow_mut()
+        .use_socket(daemon.socket.clone());
+    state
+        .pane_sessions
+        .get_mut(&1)
+        .expect("pane 1 has a session")
+        .daemon_session_id = kept.session_id.clone();
+    state.prune_orphan_terminal_sessions();
+
+    let left = daemon.list();
+    assert_eq!(left.len(), 1, "one session belonged to no pane: {left:?}");
+    assert_eq!(left[0].pane_id, "pane-1");
+    assert_eq!(left[0].session_id, kept.session_id);
 }

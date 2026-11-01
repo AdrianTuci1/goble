@@ -12,20 +12,39 @@
 //!   before it reaches the store, and a schema this build does not know is
 //!   refused rather than written as a half-understood file.
 //!
+//! - **It is idempotent.** An event is stored under its own `event_id`, and a
+//!   marker remembers that id, so a retry after a timeout is one row rather
+//!   than two. Nothing a client can do short of lying about the id inflates a
+//!   count.
+//! - **It keeps the client's clock.** `occurred_at` says when the event
+//!   happened and decides its day; `received_at` says when the collector got
+//!   it. An event queued offline for two days lands in the day it happened.
+//!
 //! The wire types are the ones the client already uses, from the client crate:
 //! there is one schema, defined once, and both sides deserialize the same
-//! `QueuedItem`.
+//! `QueuedItem`. Events may arrive one at a time or as a JSON array; the client
+//! batches them, and the production deployment is the Cloudflare Worker in
+//! `deploy/telemetry-worker`, which writes one NDJSON object per batch to S3.
+//! This server is the self-hosted implementation of the same protocol.
 //!
 //! Layout on disk:
 //!
 //! ```text
 //! <root>/
 //!   crashes/<fingerprint>/<report-id>.json   one file per report, grouped by crash
-//!   events/<YYYY-MM-DD>.jsonl                append-only event stream
+//!   events/dt=YYYY-MM-DD/<event_id>.json     one file per event, day from occurred_at
+//!   events/seen/<event_id>                   idempotency marker, one per id
 //! ```
+//!
+//! When `GOBLE_TELEMETRY_S3_BUCKET` is set the same items are copied to the
+//! bucket under `raw/` (see [`sink`]). Local disk stays the source of truth, and
+//! a sink write that fails makes the request a retryable 5xx.
+
+pub mod sink;
 
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use axum::Json;
 use axum::body::Bytes;
@@ -35,13 +54,21 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{DateTime, NaiveDate, Utc};
-use serde::Serialize;
+use serde::de;
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use goble_telemetry::{CrashReport, QueuedItem, TelemetryEvent, SCHEMA};
+use goble_telemetry::{CrashReport, EventEnvelope, LegacyEventV1, LEGACY_SCHEMA, SCHEMA};
+
+use sink::{Sink, SinkFailure};
 
 /// Largest ingest body accepted. A report is capped well below this by the
 /// client; the limit is here so a hand-written request cannot fill the disk.
 pub const MAX_BODY: usize = 512 * 1024;
+
+/// Most events one request may carry. Matches the production Worker in
+/// `deploy/telemetry-worker`.
+pub const MAX_BATCH: usize = 200;
 
 /// A summary of one crash, grouped the way reports are fingerprinted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -63,6 +90,74 @@ pub enum StoreError {
     },
     #[error("could not encode the report: {0}")]
     Encode(#[from] serde_json::Error),
+}
+
+/// One event as the collector stores it: the client's envelope, plus the
+/// collector's own receipt stamp.
+///
+/// It serialises flat, with `received_at` alongside the envelope's fields, so a
+/// row in the local store has the same shape as an object in the bucket and
+/// one Athena table can read both.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredEvent {
+    pub received_at: DateTime<Utc>,
+    pub envelope: EventEnvelope,
+}
+
+impl StoredEvent {
+    pub fn new(envelope: EventEnvelope, received_at: DateTime<Utc>) -> Self {
+        Self { received_at, envelope }
+    }
+
+    pub fn occurred_at(&self) -> DateTime<Utc> {
+        self.envelope.occurred_at
+    }
+
+    /// The day this event belongs to: the day it happened, not the day it
+    /// arrived.
+    pub fn day(&self) -> NaiveDate {
+        self.occurred_at().date_naive()
+    }
+}
+
+impl Serialize for StoredEvent {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::Error as _;
+
+        let envelope = serde_json::to_value(&self.envelope).map_err(S::Error::custom)?;
+        let serde_json::Value::Object(fields) = envelope else {
+            return Err(S::Error::custom("an envelope serialises to an object"));
+        };
+
+        let mut map = serializer.serialize_map(Some(fields.len() + 1))?;
+        map.serialize_entry("received_at", &self.received_at)?;
+        for (key, value) in fields {
+            map.serialize_entry(&key, &value)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredEvent {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let received_at = value
+            .get("received_at")
+            .cloned()
+            .ok_or_else(|| de::Error::missing_field("received_at"))?;
+        let received_at = serde_json::from_value(received_at).map_err(de::Error::custom)?;
+        // `received_at` rides along in the envelope's fields; the envelope
+        // ignores what it does not know, exactly as it does on the wire.
+        let envelope = serde_json::from_value(value).map_err(de::Error::custom)?;
+        Ok(Self { received_at, envelope })
+    }
+}
+
+/// What storing an event found: a new row, or one that was already there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stored {
+    New,
+    Duplicate,
 }
 
 /// A crash/event store rooted in one directory.
@@ -88,6 +183,16 @@ impl Store {
         self.root.join("events")
     }
 
+    /// The directory holding one day's events, named by `occurred_at`.
+    pub fn event_day_dir(&self, day: NaiveDate) -> PathBuf {
+        self.events_dir().join(format!("dt={day}"))
+    }
+
+    /// The directory of idempotency markers, one file per `event_id` seen.
+    pub fn seen_dir(&self) -> PathBuf {
+        self.events_dir().join("seen")
+    }
+
     /// Store one report. Uploading the same report twice overwrites it, so a
     /// client that retries after a timeout does not create duplicates.
     pub fn put_crash(&self, report: &CrashReport) -> Result<PathBuf, StoreError> {
@@ -106,26 +211,59 @@ impl Store {
         Ok(path)
     }
 
-    /// Append one event to the day's stream.
-    pub fn put_event(&self, event: &TelemetryEvent) -> Result<(), StoreError> {
-        let dir = self.events_dir();
-        std::fs::create_dir_all(&dir).map_err(|source| StoreError::Io {
-            path: dir.clone(),
+    /// Store one event under the day it happened.
+    ///
+    /// The first write of an `event_id` creates its marker and its file. A
+    /// second write of the same id is a [`Stored::Duplicate`]: the file is left
+    /// alone, so the day holds one row per event even if the client retried.
+    pub fn put_event(&self, event: &StoredEvent) -> Result<Stored, StoreError> {
+        let seen = self.seen_dir();
+        std::fs::create_dir_all(&seen).map_err(|source| StoreError::Io {
+            path: seen.clone(),
             source,
         })?;
 
-        let path = dir.join(format!("{}.jsonl", Utc::now().format("%Y-%m-%d")));
-        let mut line = serde_json::to_string(event)?;
-        line.push('\n');
+        let id = sanitise(&event.envelope.event_id);
+        let marker = seen.join(&id);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&marker) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Ok(Stored::Duplicate);
+            }
+            Err(source) => return Err(StoreError::Io { path: marker, source }),
+        }
 
-        use std::io::Write as _;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|source| StoreError::Io { path: path.clone(), source })?;
-        file.write_all(line.as_bytes())
-            .map_err(|source| StoreError::Io { path, source })
+        let dir = self.event_day_dir(event.day());
+        let path = dir.join(format!("{id}.json"));
+        let body = serde_json::to_vec(event)?;
+        let written = std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(&path, &body))
+            .map_err(|source| StoreError::Io { path: path.clone(), source });
+        if let Err(error) = written {
+            // The marker must not outlive a write that did not happen, or the
+            // retry would look like a duplicate and the event would be lost.
+            let _ = std::fs::remove_file(&marker);
+            return Err(error);
+        }
+        Ok(Stored::New)
+    }
+
+    /// Every event stored for one day, in id order. Unreadable files are
+    /// skipped the way unreadable crash files are.
+    pub fn events_on(&self, day: NaiveDate) -> Result<Vec<StoredEvent>, StoreError> {
+        let dir = self.event_day_dir(day);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Ok(Vec::new());
+        };
+
+        let mut events: Vec<StoredEvent> = entries
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "json"))
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .filter_map(|text| serde_json::from_str(&text).ok())
+            .collect();
+        events.sort_by(|left, right| left.envelope.event_id.cmp(&right.envelope.event_id));
+        Ok(events)
     }
 
     /// One entry per crash, newest crash first.
@@ -214,16 +352,26 @@ pub struct ServerState {
     store: Store,
     /// When set, ingest requires this token.
     token: Option<String>,
+    /// A copy destination beyond the local store; `None` means local only.
+    sink: Option<Arc<dyn Sink>>,
 }
 
 impl ServerState {
     pub fn new(store: Store, token: Option<String>) -> Self {
+        Self::with_sink(store, token, None)
+    }
+
+    pub fn with_sink(store: Store, token: Option<String>, sink: Option<Arc<dyn Sink>>) -> Self {
         let token = token.filter(|value| !value.trim().is_empty());
-        Self { store, token }
+        Self { store, token, sink }
     }
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    pub fn sink(&self) -> Option<&dyn Sink> {
+        self.sink.as_deref()
     }
 
     pub fn requires_token(&self) -> bool {
@@ -268,7 +416,9 @@ impl ServerState {
 /// The collector's routes.
 pub fn router(state: ServerState) -> Router {
     Router::new()
+        // `/health` stays for the probes that already point at it.
         .route("/health", get(health))
+        .route("/v1/health", get(health))
         .route("/v1/crashes", post(ingest_crash))
         .route("/v1/events", post(ingest_event))
         .route("/v1/summary", get(summary))
@@ -276,8 +426,25 @@ pub fn router(state: ServerState) -> Router {
         .with_state(state)
 }
 
-async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({ "status": "ok", "schema": SCHEMA }))
+/// Liveness and sink reachability.
+///
+/// It never authenticates and never names a credential: an unconfigured sink is
+/// `configured: false` with no probe, a configured one is probed and reduced to
+/// a boolean plus a fixed reason label.
+async fn health(State(state): State<ServerState>) -> Response {
+    let s3 = match state.sink() {
+        None => serde_json::json!({ "configured": false, "reachable": null }),
+        Some(sink) => match sink.probe().await {
+            Ok(()) => serde_json::json!({ "configured": true, "reachable": true }),
+            Err(failure) => serde_json::json!({
+                "configured": true,
+                "reachable": false,
+                "reason": failure.as_str(),
+            }),
+        },
+    };
+
+    Json(serde_json::json!({ "status": "ok", "schema": SCHEMA, "s3": s3 })).into_response()
 }
 
 /// An ingest answer. Kept tiny: the client only needs to know whether to retry.
@@ -286,8 +453,72 @@ struct Ingested {
     accepted: usize,
 }
 
+/// One item as it arrives, before its schema is known.
+///
+/// The event payload stays untyped until its `schema` says which shape it is:
+/// a schema-2 envelope, or the bare event a schema-1 client sent.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+enum IncomingItem {
+    Crash(Box<CrashReport>),
+    Event(Box<serde_json::Value>),
+}
+
+/// Bring an event payload up to the schema-2 envelope.
+///
+/// `Err` is a body this collector cannot read and a 400 to the client.
+/// `Ok(None)` is a schema-1 event that cannot be represented honestly (a
+/// free-form feature name outside the catalog): it is accepted and logged, so a
+/// released v1 client stops retrying something no build can store.
+fn normalise_event(
+    value: serde_json::Value,
+    received_at: DateTime<Utc>,
+) -> Result<Option<EventEnvelope>, String> {
+    let schema = value.get("schema").and_then(serde_json::Value::as_u64);
+
+    match schema {
+        // A schema-1 event has no envelope at all.
+        Some(schema) if schema == u64::from(LEGACY_SCHEMA) => {
+            let legacy: LegacyEventV1 = serde_json::from_value(value)
+                .map_err(|err| format!("malformed schema-1 event: {err}"))?;
+            Ok(legacy.into_envelope(received_at))
+        }
+        Some(schema) if schema == u64::from(SCHEMA) => {
+            let envelope: EventEnvelope = serde_json::from_value(value)
+                .map_err(|err| format!("malformed schema-2 event: {err}"))?;
+            Ok(Some(envelope))
+        }
+        Some(schema) => Err(format!(
+            "unsupported schema {schema}: this collector speaks {SCHEMA} and accepts {LEGACY_SCHEMA}"
+        )),
+        // Nothing said "schema", so this is a bare event from a v1 client.
+        None => {
+            let legacy: LegacyEventV1 = serde_json::from_value(value)
+                .map_err(|err| format!("malformed schema-1 event: {err}"))?;
+            Ok(legacy.into_envelope(received_at))
+        }
+    }
+}
+
 fn rejected(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
+}
+
+/// A sink write that did not happen.
+///
+/// The status is retryable on purpose: the client keeps the item and sends it
+/// again, and the second attempt overwrites the same object. Acknowledging now
+/// would lose the copy until somebody noticed the bucket was thin.
+fn sink_failed(failure: SinkFailure) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::RETRY_AFTER, "5")],
+        Json(serde_json::json!({
+            "error": "the collector could not copy the item to the object store",
+            "reason": failure.as_str(),
+        })),
+    )
+        .into_response()
 }
 
 async fn ingest_crash(
@@ -299,16 +530,18 @@ async fn ingest_crash(
         return rejected(StatusCode::UNAUTHORIZED, "a collector token is required");
     }
 
-    let item: QueuedItem = match serde_json::from_slice(&body) {
+    let item: IncomingItem = match serde_json::from_slice(&body) {
         Ok(item) => item,
         Err(err) => return rejected(StatusCode::BAD_REQUEST, &format!("malformed report: {err}")),
     };
 
-    let QueuedItem::Crash(report) = item else {
+    let IncomingItem::Crash(report) = item else {
         return rejected(StatusCode::BAD_REQUEST, "this endpoint takes crash reports");
     };
 
-    if report.schema != SCHEMA {
+    // A schema-1 client's report is still a real crash; refusing it would throw
+    // away the reports the release that shipped first is sending.
+    if !(LEGACY_SCHEMA..=SCHEMA).contains(&report.schema) {
         return rejected(
             StatusCode::BAD_REQUEST,
             &format!("unsupported schema {}: this collector speaks {SCHEMA}", report.schema),
@@ -316,14 +549,33 @@ async fn ingest_crash(
     }
 
     match state.store.put_crash(&report) {
-        Ok(_) => {
-            tracing::info!(fingerprint = %report.fingerprint, version = %report.context.app_version, "stored a crash report");
-            (StatusCode::ACCEPTED, Json(Ingested { accepted: 1 })).into_response()
-        }
+        Ok(_) => {}
         Err(err) => {
             tracing::error!("could not store a crash report: {err}");
-            rejected(StatusCode::INTERNAL_SERVER_ERROR, "could not store the report")
+            return rejected(StatusCode::INTERNAL_SERVER_ERROR, "could not store the report");
         }
+    }
+
+    if let Some(sink) = state.sink() {
+        if let Err(failure) = sink.put_crash(&report).await {
+            return sink_failed(failure);
+        }
+    }
+
+    tracing::info!(fingerprint = %report.fingerprint, version = %report.context.app_version, "stored a crash report");
+    (StatusCode::ACCEPTED, Json(Ingested { accepted: 1 })).into_response()
+}
+
+/// One item, or a batch. Batching is the client's default, but a single item
+/// stays accepted so a client from before batching keeps working.
+fn parse_event_batch(body: &[u8]) -> Result<Vec<IncomingItem>, String> {
+    let first = body.iter().find(|byte| !byte.is_ascii_whitespace());
+    if first == Some(&b'[') {
+        serde_json::from_slice(body).map_err(|err| format!("malformed event batch: {err}"))
+    } else {
+        let item =
+            serde_json::from_slice(body).map_err(|err| format!("malformed event: {err}"))?;
+        Ok(vec![item])
     }
 }
 
@@ -336,22 +588,61 @@ async fn ingest_event(
         return rejected(StatusCode::UNAUTHORIZED, "a collector token is required");
     }
 
-    let item: QueuedItem = match serde_json::from_slice(&body) {
-        Ok(item) => item,
-        Err(err) => return rejected(StatusCode::BAD_REQUEST, &format!("malformed event: {err}")),
+    let items = match parse_event_batch(&body) {
+        Ok(items) => items,
+        Err(err) => return rejected(StatusCode::BAD_REQUEST, &err),
     };
-
-    let QueuedItem::Event(event) = item else {
-        return rejected(StatusCode::BAD_REQUEST, "this endpoint takes events");
-    };
-
-    match state.store.put_event(&event) {
-        Ok(()) => (StatusCode::ACCEPTED, Json(Ingested { accepted: 1 })).into_response(),
-        Err(err) => {
-            tracing::error!("could not store an event: {err}");
-            rejected(StatusCode::INTERNAL_SERVER_ERROR, "could not store the event")
-        }
+    if items.len() > MAX_BATCH {
+        return rejected(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &format!("a batch carries at most {MAX_BATCH} events"),
+        );
     }
+
+    let received_at = Utc::now();
+    let mut accepted = 0;
+
+    for item in items {
+        let IncomingItem::Event(value) = item else {
+            return rejected(StatusCode::BAD_REQUEST, "this endpoint takes events");
+        };
+
+        let envelope = match normalise_event(*value, received_at) {
+            Ok(Some(envelope)) => envelope,
+            Ok(None) => {
+                tracing::debug!("dropped a schema-1 event with no catalog feature name");
+                continue;
+            }
+            Err(err) => return rejected(StatusCode::BAD_REQUEST, &err),
+        };
+
+        let event = StoredEvent::new(envelope, received_at);
+        let stored = match state.store.put_event(&event) {
+            Ok(stored) => stored,
+            Err(err) => {
+                tracing::error!("could not store an event: {err}");
+                return rejected(StatusCode::INTERNAL_SERVER_ERROR, "could not store the event");
+            }
+        };
+
+        if stored == Stored::Duplicate {
+            // A retry of an event already on disk: one row, and the sink is
+            // asked again because the retry may be finishing a copy that
+            // failed.
+            tracing::debug!(event_id = %event.envelope.event_id, "an event was already stored");
+        } else if event.envelope.is_legacy() {
+            tracing::debug!(event_id = %event.envelope.event_id, "normalised a schema-1 event");
+        }
+
+        if let Some(sink) = state.sink() {
+            if let Err(failure) = sink.put_event(&event).await {
+                return sink_failed(failure);
+            }
+        }
+        accepted += 1;
+    }
+
+    (StatusCode::ACCEPTED, Json(Ingested { accepted })).into_response()
 }
 
 async fn summary(State(state): State<ServerState>, headers: HeaderMap) -> Response {
@@ -387,7 +678,9 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use axum::http::Request;
-    use goble_telemetry::{Channel, ClientContext, CrashKind};
+    use goble_telemetry::{
+        Channel, ClientContext, CrashKind, QueuedItem, Role, TelemetryEvent, LEGACY_EVENT_PREFIX,
+    };
     use tower::ServiceExt as _;
 
     fn context() -> ClientContext {
@@ -398,6 +691,8 @@ mod tests {
             os_version: Some("15.0".into()),
             arch: "aarch64".into(),
             install_id: "install".into(),
+            link_id: None,
+            role: Role::Desktop,
             session_id: "session".into(),
         }
     }
@@ -408,8 +703,30 @@ mod tests {
             .with_backtrace(Some("0: goble_app::main".into()))
     }
 
+    fn event() -> EventEnvelope {
+        EventEnvelope::new(context(), TelemetryEvent::AppStarted { locale: Some("en-GB".into()) })
+    }
+
     fn state(dir: &Path, token: Option<&str>) -> ServerState {
         ServerState::new(Store::new(dir), token.map(str::to_owned))
+    }
+
+    /// A sink that always fails, standing in for an unreachable bucket.
+    #[derive(Debug)]
+    struct FailingSink;
+
+    impl sink::Sink for FailingSink {
+        fn put_event<'a>(&'a self, _: &'a StoredEvent) -> sink::SinkFuture<'a, ()> {
+            Box::pin(async { Err(SinkFailure::Unavailable) })
+        }
+
+        fn put_crash<'a>(&'a self, _: &'a CrashReport) -> sink::SinkFuture<'a, ()> {
+            Box::pin(async { Err(SinkFailure::Unavailable) })
+        }
+
+        fn probe<'a>(&'a self) -> sink::SinkFuture<'a, ()> {
+            Box::pin(async { Err(SinkFailure::Unavailable) })
+        }
     }
 
     async fn post(state: &ServerState, path: &str, body: Vec<u8>, token: Option<&str>) -> u16 {
@@ -478,17 +795,151 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_event_is_appended_to_the_days_stream() {
+    async fn an_event_is_stored_under_the_day_it_happened() {
         let dir = tempfile::tempdir().unwrap();
         let state = state(dir.path(), None);
-        let event = TelemetryEvent::AppStarted { context: context(), locale: None };
-        let body = serde_json::to_vec(&QueuedItem::event(event)).unwrap();
+        let body = serde_json::to_vec(&QueuedItem::event(event())).unwrap();
 
         assert_eq!(post(&state, "/v1/events", body, None).await, 202);
-        // The day rollover is not simulated; today's file must exist.
-        let path = state.store().events_dir().join(format!("{}.jsonl", Utc::now().format("%Y-%m-%d")));
+
+        let today = Utc::now().date_naive();
+        let stored = state.store().events_on(today).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(stored[0].received_at >= stored[0].occurred_at());
+        // The file is named by the event, under the day it happened.
+        let path = state
+            .store()
+            .event_day_dir(today)
+            .join(format!("{}.json", stored[0].envelope.event_id));
         assert!(path.is_file(), "{path:?}");
-        assert!(std::fs::read_to_string(path).unwrap().contains("app_started"));
+    }
+
+    #[tokio::test]
+    async fn a_batch_of_events_is_one_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path(), None);
+        let batch = vec![QueuedItem::event(event()), QueuedItem::event(event())];
+        let body = serde_json::to_vec(&batch).unwrap();
+
+        assert_eq!(post(&state, "/v1/events", body, None).await, 202);
+
+        let stored = state.store().events_on(Utc::now().date_naive()).unwrap();
+        assert_eq!(stored.len(), 2);
+
+        let mut expected: Vec<String> = batch
+            .iter()
+            .map(|item| match item {
+                QueuedItem::Event(envelope) => envelope.event_id.clone(),
+                QueuedItem::Crash(_) => unreachable!("the batch holds events"),
+            })
+            .collect();
+        expected.sort();
+        let actual: Vec<String> =
+            stored.iter().map(|event| event.envelope.event_id.clone()).collect();
+        assert_eq!(actual, expected, "the batch keeps the ids the client sent");
+    }
+
+    #[tokio::test]
+    async fn an_event_queued_offline_lands_in_the_day_it_happened() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path(), None);
+
+        let mut envelope = event();
+        envelope.occurred_at = Utc::now() - chrono::Duration::days(2);
+        let day = envelope.occurred_at.date_naive();
+        let body = serde_json::to_vec(&QueuedItem::event(envelope)).unwrap();
+
+        assert_eq!(post(&state, "/v1/events", body, None).await, 202);
+
+        assert_eq!(state.store().events_on(day).unwrap().len(), 1);
+        assert!(state.store().events_on(Utc::now().date_naive()).unwrap().is_empty());
+        assert!(state.store().event_day_dir(day).is_dir());
+    }
+
+    #[tokio::test]
+    async fn the_same_event_twice_is_one_logical_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path(), None);
+        let envelope = event();
+        let event_id = envelope.event_id.clone();
+        let body = serde_json::to_vec(&QueuedItem::event(envelope)).unwrap();
+
+        assert_eq!(post(&state, "/v1/events", body.clone(), None).await, 202);
+        assert_eq!(post(&state, "/v1/events", body, None).await, 202);
+
+        let stored = state.store().events_on(Utc::now().date_naive()).unwrap();
+        assert_eq!(stored.len(), 1, "a retry is not a second row");
+        assert_eq!(stored[0].envelope.event_id, event_id);
+        assert!(state.store().seen_dir().join(&event_id).is_file());
+    }
+
+    #[tokio::test]
+    async fn a_schema_1_event_is_accepted_and_stored_as_a_legacy_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path(), None);
+        // Exactly what a released v1 client sends: no envelope at all.
+        let body = serde_json::to_vec(&serde_json::json!({
+            "kind": "event",
+            "value": {
+                "event": "app_started",
+                "context": {
+                    "app_version": "0.1.0",
+                    "channel": "stable",
+                    "os": "macos",
+                    "arch": "aarch64",
+                    "install_id": "install-1",
+                    "session_id": "session-1"
+                },
+                "locale": "en-GB"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(post(&state, "/v1/events", body, None).await, 202);
+
+        let stored = state.store().events_on(Utc::now().date_naive()).unwrap();
+        assert_eq!(stored.len(), 1);
+        let row = &stored[0];
+        assert!(row.envelope.event_id.starts_with(LEGACY_EVENT_PREFIX), "{}", row.envelope.event_id);
+        assert_eq!(row.envelope.context.install_id, "install-1");
+        assert_eq!(row.envelope.arrived_as_schema(), LEGACY_SCHEMA);
+        assert_eq!(row.envelope.schema, SCHEMA);
+        // A v1 client sent no clock, so the collector's receipt is both stamps.
+        assert_eq!(row.envelope.occurred_at, row.received_at);
+    }
+
+    #[tokio::test]
+    async fn a_v1_feature_name_outside_the_catalog_is_accepted_and_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path(), None);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "kind": "event",
+            "value": { "event": "feature_used", "name": "terminal", "duration_ms": 5 }
+        }))
+        .unwrap();
+
+        assert_eq!(post(&state, "/v1/events", body, None).await, 202);
+        assert!(!state.store().events_dir().exists(), "nothing is stored under an invented name");
+    }
+
+    #[tokio::test]
+    async fn a_v2_event_is_stored_with_its_own_id_and_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path(), None);
+
+        let mut envelope = event();
+        envelope.occurred_at = Utc::now() - chrono::Duration::days(3);
+        let event_id = envelope.event_id.clone();
+        let occurred_at = envelope.occurred_at;
+        let body = serde_json::to_vec(&QueuedItem::event(envelope)).unwrap();
+
+        assert_eq!(post(&state, "/v1/events", body, None).await, 202);
+
+        let stored = state.store().events_on(occurred_at.date_naive()).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].envelope.event_id, event_id);
+        assert_eq!(stored[0].envelope.occurred_at, occurred_at);
+        assert!(!stored[0].envelope.is_legacy());
     }
 
     #[tokio::test]
@@ -496,10 +947,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = state(dir.path(), None);
         let crash = serde_json::to_vec(&QueuedItem::crash(report("boom"))).unwrap();
-        let event = serde_json::to_vec(&QueuedItem::event(TelemetryEvent::AppExited {
-            uptime_secs: 1,
-            exit_code: None,
-        }))
+        let event = serde_json::to_vec(&QueuedItem::event(EventEnvelope::new(
+            context(),
+            TelemetryEvent::AppExited { uptime_secs: 1, exit_code: None },
+        )))
         .unwrap();
 
         assert_eq!(post(&state, "/v1/events", crash, None).await, 400);
@@ -551,6 +1002,56 @@ mod tests {
         let (status, body) = get(&state, "/health", None).await;
         assert_eq!(status, 200);
         assert_eq!(body["schema"], SCHEMA);
+
+        let (status, body) = get(&state, "/v1/health", None).await;
+        assert_eq!(status, 200);
+        assert_eq!(body["s3"]["configured"], false);
+        assert!(body["s3"]["reachable"].is_null());
+    }
+
+    #[tokio::test]
+    async fn health_reports_a_sink_that_cannot_be_reached_without_naming_why_in_detail() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = ServerState::with_sink(
+            Store::new(dir.path()),
+            None,
+            Some(Arc::new(FailingSink)),
+        );
+
+        let (status, body) = get(&state, "/v1/health", None).await;
+        assert_eq!(status, 200);
+        assert_eq!(body["s3"]["configured"], true);
+        assert_eq!(body["s3"]["reachable"], false);
+        assert_eq!(body["s3"]["reason"], "unavailable");
+        let text = body.to_string();
+        for leak in ["aws", "secret", "token", "AKIA"] {
+            assert!(!text.to_ascii_lowercase().contains(leak), "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sink_failure_is_retryable_and_leaves_the_local_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let state =
+            ServerState::with_sink(Store::new(dir.path()), None, Some(Arc::new(FailingSink)));
+        let body = serde_json::to_vec(&QueuedItem::event(event())).unwrap();
+
+        // The local store has the event, so the response is a retry rather
+        // than a loss, and the retry does not add a second row.
+        assert_eq!(post(&state, "/v1/events", body.clone(), None).await, 503);
+        assert_eq!(post(&state, "/v1/events", body, None).await, 503);
+        assert_eq!(state.store().events_on(Utc::now().date_naive()).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_sink_failure_on_a_crash_is_retryable_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let state =
+            ServerState::with_sink(Store::new(dir.path()), None, Some(Arc::new(FailingSink)));
+        let body = serde_json::to_vec(&QueuedItem::crash(report("boom"))).unwrap();
+
+        assert_eq!(post(&state, "/v1/crashes", body, None).await, 503);
+        assert_eq!(state.store().summaries().unwrap().len(), 1);
     }
 
     #[tokio::test]

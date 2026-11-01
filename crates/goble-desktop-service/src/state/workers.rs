@@ -12,6 +12,16 @@ use super::{DesktopState, WorkerConnection};
 
 const WORKER_PAIRING_CODE_VAULT_PREFIX: &str = "worker:";
 
+/// The telemetry link id this desktop shares with the workers it pairs.
+///
+/// Absent when telemetry did not start, which is the documented seam: pairing
+/// works as before, and the payload simply carries no link. The id is minted on
+/// first pairing and persisted next to the install id, so a later reconnect
+/// sends the same one.
+fn telemetry_link_id() -> Option<String> {
+    goble_telemetry::global()?.ensure_link()
+}
+
 impl DesktopState {
     /// Reconnect workers that were previously paired and have a stored pairing code in the vault.
     pub fn restore_clients(self: Arc<Self>) {
@@ -57,7 +67,10 @@ impl DesktopState {
             let state = self.clone();
             let worker_id = wid.clone();
             tokio::spawn(async move {
-                match WorkerClient::connect(state.clone(), worker_id.clone(), &config, code).await {
+                let link_id = telemetry_link_id();
+                match WorkerClient::connect(state.clone(), worker_id.clone(), &config, code, link_id)
+                    .await
+                {
                     Ok(client) => {
                         state.clients.lock().insert(worker_id.clone(), client);
                         state.add_log(format!("worker {worker_id} reconnected"));
@@ -192,6 +205,7 @@ impl DesktopState {
             tokio::spawn(async move {
                 let conn_name = conn.name.clone();
                 let url = conn.url.clone();
+                let link_id = telemetry_link_id();
                 let config = match cluster {
                     Some(identity) => {
                         let bundle = match identity.ca.sign_worker_bundle(
@@ -230,7 +244,14 @@ impl DesktopState {
                         cfg
                     }
                 };
-                match WorkerClient::connect(state.clone(), wid.clone(), &config, code.clone()).await
+                match WorkerClient::connect(
+                    state.clone(),
+                    wid.clone(),
+                    &config,
+                    code.clone(),
+                    link_id,
+                )
+                .await
                 {
                     Ok(client) => {
                         state.clients.lock().insert(wid.clone(), client);

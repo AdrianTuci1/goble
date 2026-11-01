@@ -11,6 +11,7 @@ use goble_ui::theme::{ColorToken, TabColor};
 
 use super::topbar::{
     build_live_indicator, insertion_index, reorder_target_index, WorkspaceChip, WorkspaceChipParts,
+    TOPBAR_ICON_BUTTON_SIZE,
 };
 
 use super::*;
@@ -299,11 +300,7 @@ fn render_with_pointer(
     app: &AppContext,
     cursor: Option<Vector2F>,
 ) -> Vec<RenderCommand> {
-    let _ = element.layout(
-        SizeConstraint::loose(size),
-        &mut LayoutContext,
-        app,
-    );
+    let _ = element.layout(SizeConstraint::loose(size), &mut LayoutContext, app);
     let mut ctx = PaintContext::new(goble_ui::render::Renderer::new());
     if let Some(position) = cursor {
         ctx.cursor_inside = true;
@@ -351,36 +348,63 @@ fn a_coloured_tab_tints_the_fill_its_state_gives_it() {
     let inside = vec2f(20.0, TOPBAR_HEIGHT / 2.0);
 
     let active = single_fill(&render_element(
-        &mut tab_colored(&app, true, Some(red), noop.clone(), close_button(&app, noop.clone())),
+        &mut tab_colored(
+            &app,
+            true,
+            Some(red),
+            noop.clone(),
+            close_button(&app, noop.clone()),
+        ),
         vec2f(400.0, TOPBAR_HEIGHT),
         &app,
     ));
     assert_eq!(
         active,
-        red.tint_over(app.theme.color(ColorToken::SurfaceRaised), goble_ui::theme::TabTint::Active),
+        red.tint_over(
+            app.theme.color(ColorToken::SurfaceRaised),
+            goble_ui::theme::TabTint::Active
+        ),
         "the active tab carries the colour over its raised surface"
     );
 
     let resting = single_fill(&render_element(
-        &mut tab_colored(&app, false, Some(red), noop.clone(), close_button(&app, noop.clone())),
+        &mut tab_colored(
+            &app,
+            false,
+            Some(red),
+            noop.clone(),
+            close_button(&app, noop.clone()),
+        ),
         vec2f(400.0, TOPBAR_HEIGHT),
         &app,
     ));
     assert_eq!(
         resting,
-        red.tint_over(app.theme.color(ColorToken::Surface), goble_ui::theme::TabTint::Resting),
+        red.tint_over(
+            app.theme.color(ColorToken::Surface),
+            goble_ui::theme::TabTint::Resting
+        ),
         "a resting coloured tab keeps the bar's own surface under the colour"
     );
 
     let hovered = single_fill(&render_with_pointer(
-        &mut tab_colored(&app, false, Some(red), noop.clone(), close_button(&app, noop.clone())),
+        &mut tab_colored(
+            &app,
+            false,
+            Some(red),
+            noop.clone(),
+            close_button(&app, noop.clone()),
+        ),
         vec2f(400.0, TOPBAR_HEIGHT),
         &app,
         Some(inside),
     ));
     assert_eq!(
         hovered,
-        red.tint_over(app.theme.color(ColorToken::Hover), goble_ui::theme::TabTint::Hovered),
+        red.tint_over(
+            app.theme.color(ColorToken::Hover),
+            goble_ui::theme::TabTint::Hovered
+        ),
         "under the pointer the colour is drawn over the hover fill"
     );
 
@@ -391,14 +415,8 @@ fn a_coloured_tab_tints_the_fill_its_state_gives_it() {
 
     // An untinted tab: the three theme fills themselves, unchanged.
     for (tinted, plain) in [
-        (
-            active,
-            app.theme.color(ColorToken::SurfaceRaised),
-        ),
-        (
-            hovered,
-            app.theme.color(ColorToken::Hover),
-        ),
+        (active, app.theme.color(ColorToken::SurfaceRaised)),
+        (hovered, app.theme.color(ColorToken::Hover)),
     ] {
         assert_ne!(tinted, plain, "a coloured tab is not its plain surface");
     }
@@ -422,15 +440,11 @@ fn the_close_control_appears_on_hover_and_closes_its_space() {
     let closed: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
     let on_click: Rc<RefCell<dyn FnMut(usize)>> = {
         let selected = selected.clone();
-        Rc::new(RefCell::new(move |i: usize| {
-            selected.borrow_mut().push(i)
-        }))
+        Rc::new(RefCell::new(move |i: usize| selected.borrow_mut().push(i)))
     };
     let on_close: Rc<RefCell<dyn FnMut(usize)>> = {
         let closed = closed.clone();
-        Rc::new(RefCell::new(move |i: usize| {
-            closed.borrow_mut().push(i)
-        }))
+        Rc::new(RefCell::new(move |i: usize| closed.borrow_mut().push(i)))
     };
     let mut element = tab(&app, true, on_click, close_button(&app, on_close));
 
@@ -828,11 +842,11 @@ fn the_inbox_sits_beside_settings_at_the_right_end_of_the_bar() {
         inbox.x < settings.x,
         "the inbox sits before Settings: {inbox:?} against {settings:?}"
     );
-    // The right group is packed: one `group_spacing` between two 32-point
-    // buttons puts their centres `32 + spacing` apart, and Settings sits on
-    // the bar's right edge.
+    // The right group is packed: one `group_spacing` between two topbar
+    // buttons puts their centres `button + spacing` apart, and Settings sits
+    // on the bar's right edge.
     let sm = app.theme.spacing_px(goble_ui::theme::SpacingToken::Sm);
-    let packed = 32.0 + sm;
+    let packed = TOPBAR_ICON_BUTTON_SIZE + sm;
     assert!(
         (settings.x - inbox.x - packed).abs() < 0.5,
         "the inbox is Settings' immediate neighbour, {packed} points apart: {inbox:?} against \
@@ -866,11 +880,7 @@ fn the_inbox_sits_beside_settings_at_the_right_end_of_the_bar() {
 /// One key through the whole app tree, after a frame — so the field that reads
 /// its own value was built from the last frame's state, as it is in the app.
 fn press(root: &mut Box<dyn Element>, app: &AppContext, name: &str) {
-    let _ = root.layout(
-        SizeConstraint::loose(window()),
-        &mut LayoutContext,
-        app,
-    );
+    let _ = root.layout(SizeConstraint::loose(window()), &mut LayoutContext, app);
     let mut paint_ctx = PaintContext::default();
     root.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
     let mut ctx = EventContext;
@@ -1165,7 +1175,11 @@ fn the_drop_index_counts_the_drawn_tab_centers_left_of_the_pointer() {
         0,
         "just left of the strip is still before every tab"
     );
-    assert_eq!(insertion_index(&[], 42.0), 0, "no tabs, no other place to go");
+    assert_eq!(
+        insertion_index(&[], 42.0),
+        0,
+        "no tabs, no other place to go"
+    );
 }
 
 /// A tab drag names the place the dragged tab belongs at: how many of the
@@ -1177,7 +1191,11 @@ fn the_drop_index_counts_the_drawn_tab_centers_left_of_the_pointer() {
 fn a_tab_drag_names_the_place_it_has_dragged_the_tab_to() {
     let tabs = three_drawn_tabs();
     let from = 0;
-    assert_eq!(reorder_target_index(&tabs, from, 0.0), 0, "left of the strip");
+    assert_eq!(
+        reorder_target_index(&tabs, from, 0.0),
+        0,
+        "left of the strip"
+    );
     assert_eq!(
         reorder_target_index(&tabs, from, 140.0),
         0,
@@ -1193,13 +1211,25 @@ fn a_tab_drag_names_the_place_it_has_dragged_the_tab_to() {
         2,
         "past the third's, and no further: the dragged tab is not counted"
     );
-    assert_eq!(reorder_target_index(&tabs, from, 400.0), 2, "right of the strip");
+    assert_eq!(
+        reorder_target_index(&tabs, from, 400.0),
+        2,
+        "right of the strip"
+    );
 
     // Dragging the last tab back to the front counts only the two others.
     let last = 2;
     assert_eq!(reorder_target_index(&tabs, last, 0.0), 0);
-    assert_eq!(reorder_target_index(&tabs, last, 140.0), 1, "past the first");
-    assert_eq!(reorder_target_index(&tabs, last, 200.0), 2, "past the second");
+    assert_eq!(
+        reorder_target_index(&tabs, last, 140.0),
+        1,
+        "past the first"
+    );
+    assert_eq!(
+        reorder_target_index(&tabs, last, 200.0),
+        2,
+        "past the second"
+    );
     assert_eq!(reorder_target_index(&tabs, last, 400.0), 2);
 
     // Monotonic in the pointer: a drag never moves the tab backwards.
@@ -1239,11 +1269,7 @@ fn press_chord(
     name: &str,
     modifiers: ModifiersState,
 ) -> bool {
-    let _ = root.layout(
-        SizeConstraint::loose(window()),
-        &mut LayoutContext,
-        app,
-    );
+    let _ = root.layout(SizeConstraint::loose(window()), &mut LayoutContext, app);
     let mut paint_ctx = PaintContext::default();
     root.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
     let mut ctx = EventContext;
@@ -1295,8 +1321,15 @@ fn ctrl_tab_walks_the_tab_strip_and_wraps_at_the_last_tab() {
     let (mut root, state, desktop, _dir) = app_root();
     workspace_of_tabs(&state, 3);
 
-    assert!(press_chord(&mut root, &app, "Tab", ctrl_tab()), "Ctrl+Tab is consumed");
-    assert_eq!(state.borrow().active_space, 1, "the next tab is the second one");
+    assert!(
+        press_chord(&mut root, &app, "Tab", ctrl_tab()),
+        "Ctrl+Tab is consumed"
+    );
+    assert_eq!(
+        state.borrow().active_space,
+        1,
+        "the next tab is the second one"
+    );
     assert_eq!(
         state.borrow().active_pane_id,
         3,
@@ -1312,7 +1345,11 @@ fn ctrl_tab_walks_the_tab_strip_and_wraps_at_the_last_tab() {
     assert_eq!(state.borrow().active_space, 2, "and on to the third");
 
     assert!(press_chord(&mut root, &app, "Tab", ctrl_tab()));
-    assert_eq!(state.borrow().active_space, 0, "the last tab's next tab is the first");
+    assert_eq!(
+        state.borrow().active_space,
+        0,
+        "the last tab's next tab is the first"
+    );
     assert_eq!(
         state.borrow().active_pane_id,
         1,
@@ -1320,7 +1357,11 @@ fn ctrl_tab_walks_the_tab_strip_and_wraps_at_the_last_tab() {
     );
 
     press_chord(&mut root, &app, "Tab", ModifiersState::none());
-    assert_eq!(state.borrow().active_space, 0, "a bare Tab is not the chord");
+    assert_eq!(
+        state.borrow().active_space,
+        0,
+        "a bare Tab is not the chord"
+    );
 }
 
 /// Ctrl+Shift+Tab walks the same strip backwards and wraps from the first tab to
@@ -1340,7 +1381,11 @@ fn ctrl_shift_tab_walks_the_tab_strip_backwards_and_wraps_at_the_first_tab() {
         2,
         "the first tab's previous tab is the last"
     );
-    assert_eq!(state.borrow().active_pane_id, 4, "its own first leaf takes the keyboard");
+    assert_eq!(
+        state.borrow().active_pane_id,
+        4,
+        "its own first leaf takes the keyboard"
+    );
 
     assert!(press_chord(&mut root, &app, "Tab", ctrl_shift_tab()));
     assert_eq!(state.borrow().active_space, 1, "and on back to the second");
@@ -1364,7 +1409,9 @@ fn ctrl_tab_does_not_move_a_one_tab_workspace() {
     // The layout the store already holds. A switch would replace it; a no-op
     // leaves it exactly as it is.
     let written = "{\"spaces\":[],\"active_space\":2,\"active_pane_id\":7,\"pane_sessions\":{}}";
-    desktop.set_ui_panes(written).expect("seed the persisted layout");
+    desktop
+        .set_ui_panes(written)
+        .expect("seed the persisted layout");
     let pane = state.borrow().active_pane_id;
     assert_eq!(state.borrow().spaces.len(), 1, "one tab to start");
 
@@ -1374,8 +1421,16 @@ fn ctrl_tab_does_not_move_a_one_tab_workspace() {
             "the chord is still answered"
         );
         assert_eq!(state.borrow().spaces.len(), 1, "no tab appears");
-        assert_eq!(state.borrow().active_space, 0, "the one tab stays on screen");
-        assert_eq!(state.borrow().active_pane_id, pane, "and keeps the keyboard");
+        assert_eq!(
+            state.borrow().active_space,
+            0,
+            "the one tab stays on screen"
+        );
+        assert_eq!(
+            state.borrow().active_pane_id,
+            pane,
+            "and keeps the keyboard"
+        );
     }
     assert_eq!(
         desktop.get_ui_panes().as_deref(),
@@ -1402,9 +1457,17 @@ fn ctrl_tab_onto_the_settings_tab_puts_the_keyboard_in_its_rail() {
         "the page holds the keyboard to start"
     );
     assert!(press_chord(&mut root, &app, "Tab", ctrl_shift_tab()));
-    assert_ne!(state.borrow().active_space, settings_tab, "the chord left the settings tab");
+    assert_ne!(
+        state.borrow().active_space,
+        settings_tab,
+        "the chord left the settings tab"
+    );
     assert!(press_chord(&mut root, &app, "Tab", ctrl_tab()));
-    assert_eq!(state.borrow().active_space, settings_tab, "and came back to it");
+    assert_eq!(
+        state.borrow().active_space,
+        settings_tab,
+        "and came back to it"
+    );
     assert_eq!(
         state.borrow().settings_focus,
         crate::ui::SettingsFocus::Rail,

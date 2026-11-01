@@ -27,6 +27,7 @@ goble-harness-internal = { path = "../goble-harness-internal" }
 goble-replay = { path = "../goble-replay" }
 goble-persistence = { path = "../goble-persistence" }
 goble-remote = { path = "../goble-remote" }
+goble-telemetry = { path = "../goble-telemetry" }
 goble-workflow = { path = "../goble-workflow" }
 hex = "0.4"
 log = "0.4"

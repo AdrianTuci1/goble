@@ -8,21 +8,26 @@ Every machine (or VM, or cluster) that runs Goble is **one workspace**. On that 
 
 ## Installation
 
-Install the latest release from the Goble releases page, then launch the app. macOS:
+Install the latest release with the one-line installer, then launch the app.
+
+macOS and Linux:
 
 ```bash
-brew install --cask goble
-open -a Goble
+curl -fsSL https://get.octomus.dev/install.sh | sh
 ```
 
-Linux (AppImage):
+Windows (PowerShell):
 
-```bash
-chmod +x goble.AppImage
-./goble.AppImage
+```powershell
+irm https://get.octomus.dev/install.ps1 | iex
 ```
 
-Windows uses the same installer flow as macOS. Goble writes everything under the current user's home, so once it runs it needs no extra setup beyond adding a model provider.
+The shell installer puts `Goble.app` in `~/Applications` on macOS and the
+AppImage in `~/.local/bin` on Linux. To install by hand, download the `.dmg`
+(macOS), the `.deb`, `.tar.gz`, or AppImage (Linux), or the Setup executable
+(Windows) from the same host.
+
+Goble writes everything under the current user's home, so once it runs it needs no extra setup beyond adding a model provider.
 
 ---
 

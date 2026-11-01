@@ -435,11 +435,10 @@ impl UiState {
     /// window globals) on first use.
     pub fn pane_controls_mut(&mut self, pane_id: u64) -> &mut PaneControls {
         let model = self.selected_model.clone();
-        let auto_approve = self.auto_approve;
         let branch = self.composer_branch.clone();
         self.pane_controls
             .entry(pane_id)
-            .or_insert_with(|| PaneControls::new(model, auto_approve, branch))
+            .or_insert_with(|| PaneControls::new(model, self.approval_mode, branch))
     }
 
     /// Take any finished git job's word for the review pane. The worker runs
@@ -473,13 +472,16 @@ impl UiState {
     /// A copy of this pane's rich-input controls. A pane that has no entry yet
     /// reads the window globals, so the first frame shows sane values.
     pub fn pane_controls(&self, pane_id: u64) -> PaneControls {
-        self.pane_controls.get(&pane_id).cloned().unwrap_or_else(|| {
-            PaneControls::new(
-                self.selected_model.clone(),
-                self.auto_approve,
-                self.composer_branch.clone(),
-            )
-        })
+        self.pane_controls
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_else(|| {
+                PaneControls::new(
+                    self.selected_model.clone(),
+                    self.approval_mode,
+                    self.composer_branch.clone(),
+                )
+            })
     }
 
     /// The per-pane controls as the views draw them: the model control carries
@@ -518,9 +520,7 @@ impl UiState {
             self.pane_controls_mut(id);
             // The whole-transcript filter bar is per pane too (its open flag and
             // selection live in app state so they survive the rebuild).
-            self.terminal_global_filters
-                .entry(id)
-                .or_default();
+            self.terminal_global_filters.entry(id).or_default();
             // Each pane's transcript owns a persistent scroll state, so the
             // user's scrollback and the follow-the-stream flag survive the
             // per-frame rebuild. A following state opens at the latest message.

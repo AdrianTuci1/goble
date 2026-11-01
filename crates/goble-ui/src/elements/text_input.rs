@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::elements::{
     caret_beam, AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Fill,
-    Flex, LayoutContext, PaintContext, Point, SizeConstraint, Text,
+    Flex, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{PointF, Vector2F};
@@ -13,6 +13,12 @@ pub struct TextInput {
     value: String,
     placeholder: String,
     focused: bool,
+    /// Whether the field claims the whole width it is given, so it spans the
+    /// band it sits in instead of hugging its text.
+    full_width: bool,
+    /// Whether the field draws as a bare prompt line: no surface, border or
+    /// focus ring, so it reads as the harness's own input under an arrow.
+    plain: bool,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     on_submit: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -27,6 +33,8 @@ impl TextInput {
             value: String::new(),
             placeholder: String::new(),
             focused: false,
+            full_width: false,
+            plain: false,
             on_change: None,
             on_focus_change: None,
             on_submit: None,
@@ -55,6 +63,22 @@ impl TextInput {
     /// from app state (e.g. hot-reload dev loops) so focus survives a rebuild.
     pub fn with_focused(mut self, focused: bool) -> Self {
         self.focused = focused;
+        self
+    }
+
+    /// Claim the whole width the field is given: the field fills the band it
+    /// sits in, and a press to the right of its text is still a press in it.
+    /// Leave it off when the field shares a row with another control.
+    pub fn with_full_width(mut self, full_width: bool) -> Self {
+        self.full_width = full_width;
+        self
+    }
+
+    /// Draw the field as a bare prompt line: no surface, border or focus ring.
+    /// The caret still marks the focus, so a harness prompt reads as one line
+    /// of text after its arrow rather than as a box the user types into.
+    pub fn with_plain(mut self, plain: bool) -> Self {
+        self.plain = plain;
         self
     }
 
@@ -94,6 +118,11 @@ impl TextInput {
         // user's own text starts — and after it once there is a value. The beam
         // takes no room in the row, so neither position moves the text.
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        if self.full_width {
+            // The row is the field's whole band: its main axis is the band's
+            // width, so the container below stretches with it.
+            row = row.with_main_axis_size(MainAxisSize::Max);
+        }
         if self.focused && empty {
             row = row.with_child(caret_beam(app));
         }
@@ -101,14 +130,25 @@ impl TextInput {
         if self.focused && !empty {
             row = row.with_child(caret_beam(app));
         }
-        let mut container = Container::new(row.finish())
-            .with_padding(EdgeInsets::uniform(padding))
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
-        if self.focused {
-            container = container.with_border(app.theme.color(ColorToken::Focus).into());
+        let container = if self.plain {
+            // A prompt line owns no chrome: only a little vertical padding so
+            // the press target is taller than the glyphs it draws.
+            Container::new(row.finish()).with_padding(EdgeInsets::new(
+                0.0,
+                padding * 0.5,
+                0.0,
+                padding * 0.5,
+            ))
         } else {
-            container = container.with_border(app.theme.color(ColorToken::Border).into());
-        }
+            let container = Container::new(row.finish())
+                .with_padding(EdgeInsets::uniform(padding))
+                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
+            if self.focused {
+                container.with_border(app.theme.color(ColorToken::Focus).into())
+            } else {
+                container.with_border(app.theme.color(ColorToken::Border).into())
+            }
+        };
         self.root = Some(container.finish());
     }
 }
@@ -420,6 +460,75 @@ mod tests {
                 RenderCommand::StrokeRect { color, .. } if *color == focus
             )),
             "a blurred field draws no focus ring: {commands:?}"
+        );
+    }
+
+    /// A full-width field fills the band it is given; a field that asks for
+    /// nothing keeps hugging its own text.
+    #[test]
+    fn a_full_width_field_spans_the_band_it_is_given() {
+        let app = AppContext::default();
+        let ring_width = |field: &mut Box<dyn Element>| -> f32 {
+            render_element(field, vec2f(320.0, 40.0), &app)
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::StrokeRect { rect, .. } => Some(rect.width()),
+                    _ => None,
+                })
+                .expect("the field draws its ring")
+        };
+
+        let mut hugging: Box<dyn Element> = Box::new(TextInput::new().with_value("hi"));
+        assert!(
+            ring_width(&mut hugging) < 320.0,
+            "a plain field hugs its text"
+        );
+        let mut spanning: Box<dyn Element> =
+            Box::new(TextInput::new().with_value("hi").with_full_width(true));
+        assert_eq!(
+            ring_width(&mut spanning),
+            320.0,
+            "a full-width field spans the band"
+        );
+    }
+
+    /// A plain field is a prompt line: no box, no ring, and the caret is the
+    /// only thing that marks the focus.
+    #[test]
+    fn a_plain_field_draws_a_prompt_line_with_no_chrome() {
+        use crate::elements::caret::CARET_WIDTH;
+
+        let app = AppContext::default();
+        let focus = app.theme.color(ColorToken::Focus);
+        let mut field: Box<dyn Element> = Box::new(
+            TextInput::new()
+                .with_placeholder("Dispatch a new agent…")
+                .with_focused(true)
+                .with_plain(true)
+                .with_full_width(true),
+        );
+        let commands = render_element(&mut field, vec2f(320.0, 40.0), &app);
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, RenderCommand::StrokeRect { .. })),
+            "a plain field draws no border or ring: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == focus
+                        && (rect.width() - CARET_WIDTH).abs() < 0.5
+            )),
+            "the caret still marks the focus: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text == "Dispatch a new agent…"
+            )),
+            "the prompt line draws its placeholder: {commands:?}"
         );
     }
 }

@@ -69,7 +69,7 @@ impl UiState {
             self.selected_model.clone()
         };
         if let Some(s) = desktop.effective_llm_setting(&provider, &model) {
-            self.settings_llm_provider = provider;
+            self.settings_llm_provider = provider.clone();
             self.settings_llm_model = s.model;
             self.settings_llm_api_key = s.api_key;
             self.settings_llm_base_url = s.base_url.unwrap_or_default();
@@ -78,6 +78,13 @@ impl UiState {
             }
         }
         self.refresh_llm_models(desktop);
+        self.settings_default_model = desktop.default_model(&provider);
+        if self.settings_field_edit_start.is_none() {
+            self.settings_profile_name = desktop.get_friendly_name();
+        }
+        self.share_telemetry = goble_telemetry::global()
+            .map(|telemetry| telemetry.consent().upload)
+            .unwrap_or(false);
         self.refresh_remote_agents(Some(desktop));
         self.refresh_environment_groups(Some(desktop));
     }
@@ -101,11 +108,7 @@ impl UiState {
         // names the YAML file the desktop service reads them from.
         self.remote_mode = config.remote.mode;
         self.remote_gateway_url = config.remote.gateway_url().unwrap_or_default().to_string();
-        self.remote_gateway_token = config
-            .remote
-            .worker_token()
-            .unwrap_or_default()
-            .to_string();
+        self.remote_gateway_token = config.remote.worker_token().unwrap_or_default().to_string();
         self.remote_config_path = desktop
             .config_path()
             .or_else(|| {
@@ -261,7 +264,10 @@ impl UiState {
         if count == 0 {
             return;
         }
-        let pos = all.iter().position(|c| *c == self.settings_page()).unwrap_or(0) as i32;
+        let pos = all
+            .iter()
+            .position(|c| *c == self.settings_page())
+            .unwrap_or(0) as i32;
         self.settings_select_category(all[(pos + delta).rem_euclid(count) as usize]);
     }
 
@@ -313,7 +319,10 @@ impl UiState {
     /// The text field a control names, if it names one.
     fn settings_field_mut(&mut self, control: &SettingsControl) -> Option<&mut String> {
         match control {
-            SettingsControl::EnvironmentGroupName => Some(&mut self.settings_environment_group_draft),
+            SettingsControl::FriendlyName => Some(&mut self.settings_profile_name),
+            SettingsControl::EnvironmentGroupName => {
+                Some(&mut self.settings_environment_group_draft)
+            }
             SettingsControl::EnvironmentSecretName => {
                 Some(&mut self.settings_environment_secret_name)
             }
@@ -337,9 +346,8 @@ impl UiState {
             self.settings_commit_field();
             return;
         }
-        self.settings_field_edit_start = self
-            .settings_field_mut(&control)
-            .map(|value| value.clone());
+        self.settings_field_edit_start =
+            self.settings_field_mut(&control).map(|value| value.clone());
         self.settings_pane_field_active = true;
     }
 
@@ -357,6 +365,26 @@ impl UiState {
                     *value = start;
                 }
             }
+        }
+        self.settings_pane_field_active = false;
+    }
+
+    /// The Profile name field took (`true`) or lost the caret.
+    ///
+    /// Taking it remembers what the field held; losing it without a commit is
+    /// the click-outside path, which abandons the edit and puts the stored name
+    /// back. `Enter` commits through [`Self::settings_commit_field`], which
+    /// clears the remembered value, so a later blur has nothing to undo.
+    pub fn settings_profile_name_focus(&mut self, gained: bool) {
+        if gained {
+            if self.settings_field_edit_start.is_none() {
+                self.settings_field_edit_start = Some(self.settings_profile_name.clone());
+            }
+            self.settings_pane_field_active = true;
+            return;
+        }
+        if let Some(start) = self.settings_field_edit_start.take() {
+            self.settings_profile_name = start;
         }
         self.settings_pane_field_active = false;
     }
@@ -388,6 +416,8 @@ impl UiState {
             // Cmd+Shift+N or the palette.
             Some(SettingsControl::SshHost(alias)) => self.ssh_select_host(&alias),
             Some(SettingsControl::ReloadSshHosts) => self.reload_ssh_hosts(),
+            Some(SettingsControl::CheckForUpdates) => self.check_for_updates(),
+            Some(SettingsControl::InstallUpdate) => self.install_available_update(),
             _ => {}
         }
     }
@@ -613,6 +643,37 @@ impl UiState {
             .is_some_and(|ssh| ssh.hosts.iter().any(|h| h.alias == alias));
         if known {
             self.settings_ssh_selected = Some(alias.to_string());
+        }
+    }
+
+    /// Attach the update checker and replay what its state file already knows.
+    /// Called once, from the shell that built the service.
+    pub fn attach_update_service(&mut self, service: std::sync::Arc<crate::update::UpdateService>) {
+        self.update_view = service.snapshot();
+        self.update = Some(service);
+    }
+
+    /// Pull what the checker published into the value the page draws. Called
+    /// once per frame from the rebuild, so the page never waits on a thread.
+    pub fn refresh_update_view(&mut self) {
+        if let Some(service) = &self.update {
+            self.update_view = service.snapshot();
+        }
+    }
+
+    /// The page's "Check now", and the startup check's manual twin.
+    pub fn check_for_updates(&mut self) {
+        if let Some(service) = &self.update {
+            service.check_now();
+            self.update_view = service.snapshot();
+        }
+    }
+
+    /// Install the offered release: download, verify, stage, swap, restart.
+    pub fn install_available_update(&mut self) {
+        if let Some(service) = &self.update {
+            service.install_available();
+            self.update_view = service.snapshot();
         }
     }
 

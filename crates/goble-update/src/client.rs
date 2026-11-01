@@ -59,6 +59,16 @@ impl StagedArtifact {
 pub struct AvailableUpdate {
     pub channel: Channel,
     pub version: Version,
+    /// The publication epoch of the release that offers it.
+    pub epoch: u64,
+    /// Whether installing this is a move backwards: the release is
+    /// authoritative (its epoch is higher than the installed one) and its
+    /// version is lower than the running one. This is how a bad release is
+    /// taken back.
+    pub rollback: bool,
+    /// Whether the running version is on the release's yanked list, so the
+    /// UI can say why it is offering a replacement.
+    pub current_yanked: bool,
     pub artifact: Artifact,
     pub notes_url: Option<String>,
     pub released_at: Option<DateTime<Utc>>,
@@ -158,10 +168,18 @@ impl UpdateClient {
     /// The manifest is validated, and its signature is checked when a key is
     /// configured. Without a key the outcome is reported but marked unverified,
     /// and [`Self::download`] will refuse it.
+    ///
+    /// `installed_epoch` is the epoch of the release this installation came
+    /// from (see [`crate::UpdateState`]). A release with a *higher* epoch is
+    /// authoritative: it is offered even when its version is lower, which is
+    /// the rollback path. A release with the same or a lower epoch is offered
+    /// only when its version is newer. The version already installed is never
+    /// offered, whatever the epoch says.
     pub fn check(
         &self,
         channel: Channel,
         current_version: &str,
+        installed_epoch: u64,
         os: &str,
         arch: &str,
     ) -> Result<CheckOutcome, UpdateError> {
@@ -174,30 +192,8 @@ impl UpdateClient {
         let current = parse_version(current_version)?;
         let manifest = self.fetch_manifest()?;
         let release = manifest.release(channel)?;
-        let latest = parse_version(&release.version)?;
-
-        if latest <= current {
-            return Ok(CheckOutcome::UpToDate { current, latest });
-        }
-
-        let Some(artifact) = release.artifact_for(os, arch) else {
-            return Ok(CheckOutcome::Unsupported {
-                reason: format!(
-                    "release {} has no artifact for {os}/{arch}",
-                    release.version
-                ),
-            });
-        };
-
         let verified = self.release_is_signed(release)?;
-        Ok(CheckOutcome::Available(Box::new(AvailableUpdate {
-            channel,
-            version: latest,
-            artifact: artifact.clone(),
-            notes_url: release.notes_url.clone(),
-            released_at: release.released_at,
-            verified,
-        })))
+        decide_update(channel, release, current, installed_epoch, os, arch, verified)
     }
 
     /// Whether the manifest signature checks out against the configured key.
@@ -275,6 +271,55 @@ impl UpdateClient {
             })
         })
     }
+}
+
+/// The decision [`UpdateClient::check`] makes, separated from the fetch so the
+/// whole table — newer, same, older, higher epoch, yanked — is testable without
+/// a network.
+pub fn decide_update(
+    channel: Channel,
+    release: &ChannelRelease,
+    current: Version,
+    installed_epoch: u64,
+    os: &str,
+    arch: &str,
+    verified: bool,
+) -> Result<CheckOutcome, UpdateError> {
+    let latest = parse_version(&release.version)?;
+
+    // The version already installed is never offered: reinstalling it would
+    // replace a working copy with itself and reset the healthy marker.
+    if latest == current {
+        return Ok(CheckOutcome::UpToDate { current, latest });
+    }
+
+    // A higher epoch is the publisher speaking about this channel as a whole,
+    // so it outranks the version comparison. That is what makes a rollback
+    // installable.
+    let authoritative = release.epoch > installed_epoch;
+    let current_yanked = release.is_yanked(&current.to_string());
+    if !(authoritative || current_yanked || latest > current) {
+        return Ok(CheckOutcome::UpToDate { current, latest });
+    }
+
+    let Some(artifact) = release.artifact_for(os, arch) else {
+        return Ok(CheckOutcome::Unsupported {
+            reason: format!("release {} has no artifact for {os}/{arch}", release.version),
+        });
+    };
+
+    let rollback = latest < current;
+    Ok(CheckOutcome::Available(Box::new(AvailableUpdate {
+        channel,
+        version: latest,
+        epoch: release.epoch,
+        rollback,
+        current_yanked,
+        artifact: artifact.clone(),
+        notes_url: release.notes_url.clone(),
+        released_at: release.released_at,
+        verified,
+    })))
 }
 
 /// Writes an artifact to disk while hashing it, and only keeps it if the
@@ -497,6 +542,9 @@ mod tests {
         let update = AvailableUpdate {
             channel: Channel::Stable,
             version: Version::new(0, 2, 0),
+            epoch: 7,
+            rollback: false,
+            current_yanked: false,
             artifact: artifact(b"x"),
             notes_url: None,
             released_at: None,
@@ -510,9 +558,155 @@ mod tests {
         assert!(matches!(error, UpdateError::Untrusted), "{error}");
     }
 
+
+    fn release(version: &str, epoch: u64, yanked: &[&str]) -> ChannelRelease {
+        ChannelRelease {
+            version: version.into(),
+            epoch,
+            yanked: yanked.iter().map(|entry| (*entry).to_owned()).collect(),
+            released_at: None,
+            notes_url: None,
+            artifacts: vec![artifact(b"a release")],
+            signature: Some("00".into()),
+        }
+    }
+
+    fn decide(
+        current: &str,
+        installed_epoch: u64,
+        release: &ChannelRelease,
+    ) -> Result<CheckOutcome, UpdateError> {
+        release.validate()?;
+        decide_update(
+            Channel::Stable,
+            release,
+            parse_version(current)?,
+            installed_epoch,
+            "macos",
+            "aarch64",
+            true,
+        )
+    }
+
+    fn offered(outcome: &CheckOutcome) -> Option<&AvailableUpdate> {
+        match outcome {
+            CheckOutcome::Available(update) => Some(update),
+            _ => None,
+        }
+    }
+
     #[test]
-    fn a_file_name_is_taken_from_the_url_and_cleaned() {
-        assert_eq!(file_name_of("https://host/a/Goble-0.2.0-arm64.dmg"), "Goble-0.2.0-arm64.dmg");
+    fn the_decision_table() {
+        // A newer version on the same epoch is the ordinary upgrade.
+        let update = decide("0.1.0", 5, &release("0.2.0", 5, &[])).unwrap();
+        let update = offered(&update).expect("a newer release is offered");
+        assert_eq!(update.version, Version::new(0, 2, 0));
+        assert_eq!(update.epoch, 5);
+        assert!(!update.rollback);
+        assert!(!update.current_yanked);
+
+        // The installed version is never offered, however high the epoch.
+        assert_eq!(
+            decide("0.2.0", 5, &release("0.2.0", 9, &[])).unwrap(),
+            CheckOutcome::UpToDate { current: Version::new(0, 2, 0), latest: Version::new(0, 2, 0) }
+        );
+
+        // An older version on the same epoch is not an update.
+        assert!(matches!(
+            decide("0.2.0", 5, &release("0.1.0", 5, &[])).unwrap(),
+            CheckOutcome::UpToDate { .. }
+        ));
+
+        // A higher epoch is authoritative: an older version is the rollback.
+        let update = decide("0.2.0", 5, &release("0.1.0", 6, &[])).unwrap();
+        let update = offered(&update).expect("a higher epoch is offered even when older");
+        assert_eq!(update.version, Version::new(0, 1, 0));
+        assert_eq!(update.epoch, 6);
+        assert!(update.rollback);
+        assert!(!update.current_yanked);
+
+        // A lower epoch cannot roll a newer install back.
+        assert!(matches!(
+            decide("0.2.0", 7, &release("0.1.0", 6, &[])).unwrap(),
+            CheckOutcome::UpToDate { .. }
+        ));
+
+        // An equal epoch with a newer version is still an update.
+        assert!(offered(&decide("0.1.0", 5, &release("0.2.0", 5, &[])).unwrap()).is_some());
+
+        // A yanked current version is replaced even by a lower one, and the
+        // reason travels with the offer.
+        let update = decide("0.2.1", 5, &release("0.2.0", 5, &["0.2.1"])).unwrap();
+        let update = offered(&update).expect("a yanked version is replaced");
+        assert!(update.rollback);
+        assert!(update.current_yanked);
+
+        // The same release leaves a yanked-but-equal version alone: there is
+        // nothing to install.
+        assert!(matches!(
+            decide("0.2.1", 5, &release("0.2.1", 6, &["0.2.1"])).unwrap(),
+            CheckOutcome::UpToDate { .. }
+        ));
+
+        // An empty yanked list is not a reason to move backwards.
+        assert!(matches!(
+            decide("0.2.0", 5, &release("0.1.9", 5, &[])).unwrap(),
+            CheckOutcome::UpToDate { .. }
+        ));
+
+        // A release with no artifact for this platform is reported, not offered.
+        let mut macos_only = release("0.2.0", 5, &[]);
+        macos_only.artifacts[0].arch = "x86_64".into();
+        assert!(matches!(
+            decide_update(
+                Channel::Stable,
+                &macos_only,
+                Version::new(0, 1, 0),
+                5,
+                "macos",
+                "riscv64",
+                true,
+            )
+            .unwrap(),
+            CheckOutcome::Unsupported { .. }
+        ));
+    }
+
+    #[test]
+    fn an_invalid_epoch_or_yanked_entry_never_reaches_the_decision() {
+        let text = r#"{"schema": 2, "channels": {"stable": {
+            "version": "0.2.0", "epoch": -1, "yanked": [],
+            "artifacts": [{"os": "macos", "arch": "aarch64",
+                "url": "https://releases.goble.dev/x", "sha256": "aa", "size": 1}],
+            "signature": "00"}}}"#;
+        assert!(matches!(
+            ChannelManifest::parse(text),
+            Err(ManifestError::Json { .. })
+        ));
+
+        let mut bad_yanked = release("0.2.0", 5, &["not-a-version"]);
+        assert!(matches!(
+            bad_yanked.validate(),
+            Err(ManifestError::BadYankedVersion { .. })
+        ));
+        bad_yanked.epoch = 5;
+        assert!(matches!(
+            decide("0.1.0", 5, &bad_yanked),
+            Err(UpdateError::Manifest(ManifestError::BadYankedVersion { .. }))
+        ));
+    }
+
+    #[test]
+    fn a_release_offers_its_epoch_and_artifact() {
+        let update = decide("0.1.0", 0, &release("0.2.0", 12, &[])).unwrap();
+        let update = offered(&update).unwrap();
+        assert_eq!(update.epoch, 12);
+        assert_eq!(update.artifact.os, "macos");
+        assert_eq!(update.version_string(), "0.2.0");
+    }
+
+    #[test]
+    fn a_file_name_is_taken_from_the_url_and_cleaned() {        assert_eq!(file_name_of("https://host/a/Goble-0.2.0-arm64.dmg"), "Goble-0.2.0-arm64.dmg");
         assert_eq!(file_name_of("https://host/a/x.exe?v=2"), "x.exe");
         assert_eq!(file_name_of("https://host/a/"), "artifact");
         // A path in a URL can never reach outside the staging directory.

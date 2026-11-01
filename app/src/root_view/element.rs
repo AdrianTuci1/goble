@@ -103,7 +103,16 @@ impl Element for RootView {
         // navigation + the command palette). These are handled before the tree
         // so a focused composer cannot swallow the keys.
         if let Some(actions) = &self.actions {
-            if let DispatchedEvent::KeyDown { key, modifiers } = event {
+            if let DispatchedEvent::KeyDown { .. } = event {
+                // The onboarding overlay owns the keyboard while it is up: no
+                // chord opens a panel or moves a pane behind it. The overlay
+                // itself decides what the key means.
+                if self.state.borrow().onboarding_open {
+                    return self.element.dispatch_event(event, ctx, app);
+                }
+                let DispatchedEvent::KeyDown { key, modifiers } = event else {
+                    return false;
+                };
                 let has_ctrl_cmd = modifiers.ctrl || modifiers.command;
                 // Cmd+K opens the keyboard shortcuts panel, the one menu that
                 // lists the chords. Ctrl+. is the same panel's own chord.
@@ -163,7 +172,10 @@ impl Element for RootView {
                 // A shell pane answers the same chord itself, beside Cmd+Shift+F
                 // and the alternate-screen rule, so the root leaves every shell
                 // pane's filter keys to that pane.
-                if has_ctrl_cmd && !modifiers.shift && !modifiers.alt && key.eq_ignore_ascii_case("f")
+                if has_ctrl_cmd
+                    && !modifiers.shift
+                    && !modifiers.alt
+                    && key.eq_ignore_ascii_case("f")
                 {
                     let mut state = self.state.borrow_mut();
                     let pane_id = state.active_pane_id;

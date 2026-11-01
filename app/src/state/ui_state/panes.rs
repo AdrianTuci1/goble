@@ -70,7 +70,9 @@ impl UiState {
         pane_id: u64,
         conversation_id: &str,
     ) -> Option<std::sync::Arc<dyn goble_core::harness::PaneSession>> {
-        self.terminal.borrow().pane_session(pane_id, conversation_id)
+        self.terminal
+            .borrow()
+            .pane_session(pane_id, conversation_id)
     }
 
     /// The blocks a pane's terminal view draws, oldest first: the shell's own
@@ -162,9 +164,8 @@ impl UiState {
         let Some(space_idx) = self.space_index_of_pane(pane_id) else {
             return false;
         };
-        let Some(PaneKind::File {
-            path: showing_path,
-        }) = self.spaces[space_idx].leaf_kind(pane_id).cloned()
+        let Some(PaneKind::File { path: showing_path }) =
+            self.spaces[space_idx].leaf_kind(pane_id).cloned()
         else {
             return false;
         };
@@ -217,10 +218,12 @@ impl UiState {
     /// The directory a review pane reads its working tree from, wherever the
     /// pane sits. `None` when the id is not a review pane.
     pub fn pane_cwd(&self, pane_id: u64) -> Option<String> {
-        self.spaces.iter().find_map(|space| match space.leaf_kind(pane_id) {
-            Some(PaneKind::Diff { cwd }) => Some(cwd.clone()),
-            _ => None,
-        })
+        self.spaces
+            .iter()
+            .find_map(|space| match space.leaf_kind(pane_id) {
+                Some(PaneKind::Diff { cwd }) => Some(cwd.clone()),
+                _ => None,
+            })
     }
 
     /// A pane that is gone owns nothing: drop every entry this state keys by
@@ -287,7 +290,10 @@ impl UiState {
 
     /// The files `pane_id`'s rich input carries, for whatever draws them.
     pub fn pane_attachments(&self, pane_id: u64) -> Vec<String> {
-        self.pane_attachments.get(&pane_id).cloned().unwrap_or_default()
+        self.pane_attachments
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The model an agent turn on `pane_id` runs: the pane's own choice, then
@@ -340,23 +346,19 @@ impl UiState {
         let rt = self.pane_runtime.entry(pane_id).or_default();
         // A suspended ask persists in the store, so the inline card survives a
         // refresh; answering clears it (status becomes `answered`).
-        rt.pending_ask = desktop
-            .get_pending_ask(conv)
-            .ok()
-            .flatten()
-            .and_then(|v| {
-                let question = v.get("question")?.as_str()?.to_string();
-                let quick: Vec<String> = v
-                    .get("quick_replies")
-                    .and_then(|q| q.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                Some(AskUserUi::new(question, quick))
-            });
+        rt.pending_ask = desktop.get_pending_ask(conv).ok().flatten().and_then(|v| {
+            let question = v.get("question")?.as_str()?.to_string();
+            let quick: Vec<String> = v
+                .get("quick_replies")
+                .and_then(|q| q.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(AskUserUi::new(question, quick))
+        });
         // A suspended ask is a real report that the pane needs input, even when
         // this run did not observe the `chat:ask_user` event (a restored pane).
         if rt.pending_ask.is_some() {

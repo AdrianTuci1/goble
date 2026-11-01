@@ -40,10 +40,12 @@ fn have_python() -> bool {
 
 fn write_manifest(path: &Path) {
     let manifest = serde_json::json!({
-        "schema": 1,
+        "schema": goble_update::SCHEMA,
         "channels": {
             "stable": {
                 "version": "0.2.0",
+                "epoch": 7,
+                "yanked": ["0.1.9"],
                 "released_at": "2026-09-01T10:00:00Z",
                 "artifacts": [
                     {
@@ -118,6 +120,70 @@ fn the_packaging_signer_and_the_client_verifier_agree() {
         release.verify_signature(&expected_public_key()).is_err(),
         "a tampered release must not verify"
     );
+
+    // The epoch and the yanked list are part of the signed bytes, so a manifest
+    // edited to claim a later publication stops verifying.
+    let bumped = text.replace("\"epoch\": 7", "\"epoch\": 8");
+    assert_ne!(bumped, text, "the fixture must contain the epoch being bumped");
+    let manifest = goble_update::ChannelManifest::parse(&bumped).unwrap();
+    let release = manifest.release(Channel::Stable).unwrap();
+    assert_eq!(release.epoch, 8);
+    assert!(
+        release.verify_signature(&expected_public_key()).is_err(),
+        "an edited epoch must not verify"
+    );
+
+    let yanked = text.replace("\"yanked\": [",
+        "\"yanked\": [\n          \"0.1.8\",");
+    assert_ne!(yanked, text, "the fixture must contain a yanked list");
+    let manifest = goble_update::ChannelManifest::parse(&yanked).unwrap();
+    let release = manifest.release(Channel::Stable).unwrap();
+    assert!(
+        release.verify_signature(&expected_public_key()).is_err(),
+        "an edited yanked list must not verify"
+    );
+}
+
+#[test]
+fn the_signer_normalizes_the_yanked_list_before_signing() {
+    if !have_python() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("channel_versions.json");
+    // The same versions, spelled in a different order and with a prefix.
+    let manifest = serde_json::json!({
+        "schema": goble_update::SCHEMA,
+        "channels": {"stable": {
+            "version": "0.2.0",
+            "epoch": 7,
+            "yanked": ["V0.1.10", "0.1.9", "0.1.10"],
+            "artifacts": [{
+                "os": "linux", "arch": "x86_64",
+                "url": "https://releases.goble.dev/stable/0.2.0/Goble-0.2.0-x86_64.AppImage",
+                "sha256": "d".repeat(64),
+                "size": 42
+            }]
+        }}
+    });
+    std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+
+    let output = sign(&manifest_path, true);
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let text = std::fs::read_to_string(&manifest_path).unwrap();
+    let manifest = goble_update::ChannelManifest::parse(&text).unwrap();
+    let release = manifest.release(Channel::Stable).unwrap();
+    assert_eq!(release.normalized_yanked(), vec!["0.1.10", "0.1.9"]);
+    release
+        .verify_signature(&expected_public_key())
+        .expect("the signature must cover the normalized list");
 }
 
 #[test]

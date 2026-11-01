@@ -17,7 +17,7 @@
 //! let client = UpdateClient::new(config, "goble/0.1.0")?;
 //!
 //! if let Some(update) = client
-//!     .check(Channel::Stable, "0.1.0", std::env::consts::OS, std::env::consts::ARCH)?
+//!     .check(Channel::Stable, "0.1.0", 0, std::env::consts::OS, std::env::consts::ARCH)?
 //!     .into_update()
 //! {
 //!     let staging = std::path::Path::new("/tmp/goble-updates");
@@ -52,15 +52,35 @@
 pub mod client;
 pub mod install;
 pub mod manifest;
+pub mod state;
 
 pub use client::{
     AvailableUpdate, CheckOutcome, StagedArtifact, StagingWriter, UpdateClient, UpdateConfig,
-    UpdateError, parse_version,
+    UpdateError, decide_update, parse_version,
 };
 pub use install::{InstallContext, InstallError, InstallOutcome, InstallPlan};
 pub use manifest::{
     Artifact, Channel, ChannelManifest, ChannelRelease, Channels, ManifestError, SCHEMA,
 };
+pub use state::{UNKNOWN_EPOCH, UpdateState};
+
+use std::path::PathBuf;
+
+/// `~/.goble`, resolved from the environment, for the default marker and state
+/// paths. `GOBLE_HOME` overrides it, which is how a test or a portable install
+/// keeps its files out of the real home directory. The app has its own
+/// resolution (`goble_core::app_home`) and passes that path explicitly where it
+/// can.
+pub fn home_dir() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("GOBLE_HOME").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(explicit));
+    }
+    let base = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    if base.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(base).join(".goble"))
+}
 
 impl CheckOutcome {
     /// The update, when there is one.

@@ -213,12 +213,15 @@ impl UiState {
             dragging_pane_id: None,
             composer_path: current_dir_display(),
             pane_hover: HashMap::from([(1u64, Rc::new(RefCell::new(false)))]),
-            pane_sessions: HashMap::from([(1u64, PaneSession {
-                conversation_id: "c1".to_string(),
-                draft: String::new(),
-                path: current_dir_display(),
-                daemon_session_id: String::new(),
-            })]),
+            pane_sessions: HashMap::from([(
+                1u64,
+                PaneSession {
+                    conversation_id: "c1".to_string(),
+                    draft: String::new(),
+                    path: current_dir_display(),
+                    daemon_session_id: String::new(),
+                },
+            )]),
             pane_runtime: HashMap::from([(
                 1u64,
                 PaneRuntime {
@@ -231,9 +234,7 @@ impl UiState {
                     command_scroll: Rc::new(RefCell::new(goble_ui::ScrollState::default())),
                     command_draft: Rc::new(RefCell::new(String::new())),
                     command_caret: Rc::new(RefCell::new(0)),
-                    command_editor_scroll: Rc::new(RefCell::new(
-                        goble_ui::ScrollState::default(),
-                    )),
+                    command_editor_scroll: Rc::new(RefCell::new(goble_ui::ScrollState::default())),
                     queued_prompt: None,
                     busy: false,
                     agent_state: PaneAgentState::Unknown,
@@ -272,6 +273,7 @@ impl UiState {
             inbox_error: None,
             inbox_scroll: Rc::new(RefCell::new(ScrollState::default())),
             next_inbox_id: 1,
+            agent_dashboard: AgentDashboardState::default(),
             show_onboarding_tip: false,
             add_space_menu_open: Rc::new(RefCell::new(false)),
             env_selector_open: Rc::new(RefCell::new(false)),

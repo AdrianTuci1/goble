@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use goble_harness_types::MediumKind;
 use goble_core::store::SecretGroup;
+use goble_harness_types::MediumKind;
 use goble_ui::elements::{
     AgentCardUi, ChatMessage as UiChatMessage, ConversationEntry, DiffSummary, PanelScroll,
     PopupMenuItem, TerminalFilter,
@@ -19,10 +19,10 @@ use crate::ui::FloatingDrag;
 use super::color_picker;
 use super::pane::Space;
 use super::types::{
-    AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, LlmFormField,
-    McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow,
-    SettingsCategory, SettingsFocus, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
-    WorkflowEntry, WorkflowRunEntry, WorkspaceRouting,
+    AgentDashboardState, AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry,
+    LlmFormField, McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow, SettingsCategory,
+    SettingsFocus, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry,
+    WorkflowRunEntry, WorkspaceRouting,
 };
 
 /// What a pane's sub-agent child view (S6) shows: the child's own conversation,
@@ -279,8 +279,7 @@ pub struct UiSnapshot {
     /// file. Shared with the read cache that settles it every frame, so the
     /// text the pane edits, its caret and its unsaved-changes mark outlive the
     /// per-frame rebuild.
-    pub file_buffers:
-        HashMap<(u64, String), Rc<RefCell<crate::ui::file_view::FileBuffer>>>,
+    pub file_buffers: HashMap<(u64, String), Rc<RefCell<crate::ui::file_view::FileBuffer>>>,
     pub crons_open: bool,
     /// Whether the workflow-runs overlay is up. It floats over the workspace, so
     /// the panes stay mounted underneath it.
@@ -537,6 +536,9 @@ pub struct UiSnapshot {
     pub inbox_error: Option<String>,
     /// Scroll offset of the inbox overlay's list.
     pub inbox_scroll: Rc<RefCell<ScrollState>>,
+    /// The agent-management panel's own state: its open flag, the roster's
+    /// filter and grouping, its cursor, the drafts and the rename field.
+    pub agent_dashboard: AgentDashboardState,
     /// First run: a compact "getting started" hint shown once the workspace
     /// choice is made, so the first-run flow lands on the chat with a tip.
     pub show_onboarding_tip: bool,

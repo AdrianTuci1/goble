@@ -11,6 +11,7 @@
 //! builder itself ([`build`]). Their items are re-exported here, so
 //! `crate::ui::X` keeps naming them.
 
+pub mod agent_dashboard;
 pub mod chat;
 pub mod color_picker;
 pub mod connectors;
@@ -46,7 +47,10 @@ mod shortcut_hints;
 mod snapshot;
 mod types;
 
-pub use actions::{AiActions, DiffPanelAction, FloatStartHandler, MediaActions, ProjectsActions, UiActions};
+pub use actions::{
+    AgentDashboardAction, AiActions, DiffPanelAction, FloatStartHandler, MediaActions,
+    ProjectsActions, UiActions,
+};
 pub use build::{build_ui, BuildContext};
 pub use pane::{
     DropSide, FloatingDrag, FloatingDragMode, FloatingPane, LayoutKind, NavDir, Pane, PaneDropTarget,
@@ -59,7 +63,8 @@ pub use snapshot::{
     UiSnapshot, WorkerPaneSnapshot,
 };
 pub use types::{
-    AppTab, CostEntry, CronEntry, ExecutionEntry, ExplorerRow, HarnessEntry, HarnessKind,
+    AgentDashboardGrouping, AgentDashboardState, AppTab, CostEntry, CronEntry, ExecutionEntry,
+    ExplorerRow, HarnessEntry, HarnessKind,
     LlmFormField, McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow, SettingsCategory, SettingsControl, SettingsFocus, SidebarView, TaskEntry,
     TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry,
     WorkflowStepEntry, WorkspaceRouting,

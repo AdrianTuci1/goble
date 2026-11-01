@@ -11,8 +11,7 @@ use super::types::{AppTab, SettingsCategory, SidebarView, WorkspaceRouting};
 
 /// Start a floating pane drag: the pane, the mode, the pointer where the press
 /// landed, and the space's pane area in pixels.
-pub type FloatStartHandler =
-    Rc<RefCell<dyn FnMut(u64, FloatingDragMode, Vector2F, Vector2F)>>;
+pub type FloatStartHandler = Rc<RefCell<dyn FnMut(u64, FloatingDragMode, Vector2F, Vector2F)>>;
 /// Answer the inline ask-user card, with an optional credential.
 pub type AnswerAskHandler = Rc<RefCell<dyn FnMut(String, Option<(String, String)>)>>;
 /// Answer a suspended command proposal from a pane.
@@ -76,6 +75,58 @@ pub enum DiffPanelAction {
     OpenFile(String),
     /// Copy these paths to the system clipboard, one per line.
     CopyPaths(Vec<String>),
+}
+
+/// One interaction in the agent-management panel (the topbar's dashboard).
+///
+/// The panel is a roster of conversations with a peek/reply box and a dispatch
+/// box; every control it draws sends one of these to the host, which mutates
+/// the app-owned [`super::AgentDashboardState`] and the conversation it names.
+pub enum AgentDashboardAction {
+    /// The topbar control: show the panel, or put it away when it is up.
+    Toggle,
+    /// Close the panel without touching anything.
+    Close,
+    /// Move the panel's cursor to this conversation (`None` clears it), so the
+    /// peek panel follows the row the user picked.
+    Select(Option<String>),
+    /// The roster's search text changed.
+    Search(String),
+    /// Track focus of the roster's search field.
+    SearchFocus(bool),
+    /// The reply draft changed.
+    SetReplyDraft(String),
+    ReplyFocus(bool),
+    /// Send the reply draft to this conversation. A busy agent queues it.
+    Reply(String),
+    /// The dispatch draft changed.
+    SetDispatchDraft(String),
+    DispatchFocus(bool),
+    /// Put the panel in dispatch mode: the prompt line takes the caret, or
+    /// drops the draft and gives the keyboard back when it already has it. The
+    /// line itself is always drawn.
+    ToggleDispatch,
+    /// The Escape shortcut: step the cursor off whatever it was on and put the
+    /// caret in the prompt for a new agent, keeping any draft already typed.
+    NewAgent,
+    /// Start a new conversation seeded with the dispatch draft, in a tab of
+    /// its own.
+    Dispatch,
+    /// Cancel the named conversation's running turn.
+    Stop(String),
+    /// Remove this conversation: the first click arms the row's delete, the
+    /// second one wipes the conversation from the store.
+    Delete(String),
+    /// Start renaming this conversation: its row becomes an editable field.
+    BeginRename(String),
+    /// The rename field's draft changed.
+    RenameDraft(String),
+    /// Commit the rename field's draft as the conversation's name.
+    CommitRename,
+    /// Leave rename without writing anything.
+    CancelRename,
+    /// Switch the roster between grouping by state and by directory.
+    ToggleGrouping,
 }
 
 /// Callbacks supplied by the host app for the main view. Created fresh on
@@ -146,8 +197,7 @@ pub struct UiActions {
     pub on_toggle_auto_approve: Rc<RefCell<dyn FnMut(u64, bool)>>,
     /// Set one pane's approval mode from the composer's mode control or the
     /// Shift+Tab cycle: always-approve, manual, plan, auto-review.
-    pub on_select_approval_mode:
-        Rc<RefCell<dyn FnMut(u64, goble_ui::ApprovalMode)>>,
+    pub on_select_approval_mode: Rc<RefCell<dyn FnMut(u64, goble_ui::ApprovalMode)>>,
     /// Turn modal (vim) editing on or off for the rich input. The choice is
     /// persisted; turning it off returns every pane's editor to insert mode.
     pub on_toggle_vim_mode: Rc<RefCell<dyn FnMut(bool)>>,
@@ -181,6 +231,9 @@ pub struct UiActions {
     pub on_inbox_ack_all: Rc<RefCell<dyn FnMut()>>,
     /// Jump to the pane the highlighted inbox item belongs to.
     pub on_inbox_jump: Rc<RefCell<dyn FnMut()>>,
+    /// One interaction in the agent-management panel: the topbar control opens
+    /// it, and every row, field and action inside sends its own variant.
+    pub on_agent_dashboard: Rc<RefCell<dyn FnMut(AgentDashboardAction)>>,
     pub on_settings: Rc<RefCell<dyn FnMut()>>,
     /// Toggle the left conversation sidebar (topbar sidebar button).
     pub on_toggle_sidebar: Rc<RefCell<dyn FnMut()>>,
@@ -578,4 +631,3 @@ pub struct MediaActions {
     /// the add-medium dialog.
     pub on_add_medium: Rc<RefCell<dyn FnMut(String)>>,
 }
-

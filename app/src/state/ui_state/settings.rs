@@ -101,11 +101,7 @@ impl UiState {
         // names the YAML file the desktop service reads them from.
         self.remote_mode = config.remote.mode;
         self.remote_gateway_url = config.remote.gateway_url().unwrap_or_default().to_string();
-        self.remote_gateway_token = config
-            .remote
-            .worker_token()
-            .unwrap_or_default()
-            .to_string();
+        self.remote_gateway_token = config.remote.worker_token().unwrap_or_default().to_string();
         self.remote_config_path = desktop
             .config_path()
             .or_else(|| {
@@ -261,7 +257,10 @@ impl UiState {
         if count == 0 {
             return;
         }
-        let pos = all.iter().position(|c| *c == self.settings_page()).unwrap_or(0) as i32;
+        let pos = all
+            .iter()
+            .position(|c| *c == self.settings_page())
+            .unwrap_or(0) as i32;
         self.settings_select_category(all[(pos + delta).rem_euclid(count) as usize]);
     }
 
@@ -313,7 +312,9 @@ impl UiState {
     /// The text field a control names, if it names one.
     fn settings_field_mut(&mut self, control: &SettingsControl) -> Option<&mut String> {
         match control {
-            SettingsControl::EnvironmentGroupName => Some(&mut self.settings_environment_group_draft),
+            SettingsControl::EnvironmentGroupName => {
+                Some(&mut self.settings_environment_group_draft)
+            }
             SettingsControl::EnvironmentSecretName => {
                 Some(&mut self.settings_environment_secret_name)
             }
@@ -337,9 +338,8 @@ impl UiState {
             self.settings_commit_field();
             return;
         }
-        self.settings_field_edit_start = self
-            .settings_field_mut(&control)
-            .map(|value| value.clone());
+        self.settings_field_edit_start =
+            self.settings_field_mut(&control).map(|value| value.clone());
         self.settings_pane_field_active = true;
     }
 

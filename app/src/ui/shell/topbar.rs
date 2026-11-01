@@ -1,22 +1,24 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     AppContext, Button, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
-    Element, Empty, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment,
-    MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem, RunningIndicator, SizeConstraint,
-    Stack, Text, TextInput, Tooltip, TopbarButton,
+    Element, Empty, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize,
+    PaintContext, Point, PopupMenu, PopupMenuItem, RunningIndicator, SizeConstraint, Stack, Text,
+    TextInput, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY, BUTTON_SECONDARY};
-use goble_ui::elements::interactive::contains;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken, TabColor, TabTint};
 
 use crate::media::medium_icon;
 use crate::state::PaneDrag;
 
-use super::super::tab_menu::{build_tab_menu, TabMenuTab, TabMenuAction};
-use super::super::{MediaActions, MediaSnapshot, PaneDropTarget, UiActions, UiSnapshot};
+use super::super::tab_menu::{build_tab_menu, TabMenuAction, TabMenuTab};
+use super::super::{
+    AgentDashboardAction, MediaActions, MediaSnapshot, PaneDropTarget, UiActions, UiSnapshot,
+};
 
 /// The width of the environment menu's hover tray.
 const ENV_TRAY_WIDTH: f32 = 220.0;
@@ -41,6 +43,18 @@ pub const TOPBAR_HEIGHT: f32 = 40.0;
 const TOPBAR_TRAFFIC_INSET: f32 = 76.0;
 #[cfg(not(target_os = "macos"))]
 const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
+
+/// The box a topbar icon sits in: a 16 pt glyph with 3 pt of padding on every
+/// side, so the icon reads tight against the bar's edge.
+pub(super) const TOPBAR_ICON_BUTTON_SIZE: f32 = 22.0;
+
+/// The height of the rule that opens the tab strip: the bar's height less a
+/// small inset at both ends, so it reads as a divider rather than a tab edge.
+const TOPBAR_RULE_HEIGHT: f32 = TOPBAR_HEIGHT - 8.0;
+
+/// The gap between the bar's own controls, and between the last of them and
+/// the tab strip's leading rule.
+const TOPBAR_CONTROL_GAP: f32 = 3.0;
 
 /// The width a tab of the bar is never drawn narrower than, while the bar's
 /// room can afford it: warp-new's own minimum for a tab slot
@@ -76,7 +90,8 @@ fn tab_slot(room: f32, tabs: usize) -> f32 {
 }
 
 /// Single general toolbar, reduced to the essentials: a sidebar toggle, the
-/// workspace tabs (one per space, the active one editable inline), a "+ ▾"
+/// agent management control, the workspace tabs (one per space, the active one
+/// editable inline), a "+ ▾"
 /// control that opens a new workspace / picks the environment it runs in, and
 /// the inbox beside the Settings icon pinned to the far right.
 ///
@@ -98,16 +113,54 @@ pub fn build_topbar(
 ) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
 
-    // Sidebar toggle (retract/expand the left conversation list).
+    // Sidebar toggle (retract/expand the left conversation list). Its hover
+    // tag names the panel it toggles, like the other icon-only controls.
     let on_toggle_sidebar = actions.on_toggle_sidebar.clone();
-    let sidebar_button = TopbarButton::new(
-        Icon::new("menu-01")
-            .with_size(16.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
+    let sidebar_button = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("menu-01")
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        // The tools panel is a toggle like the dashboard: lit while the
+        // sidebar is out, dark while it is retracted.
+        .with_active(state.sidebar_visible)
+        .with_size(TOPBAR_ICON_BUTTON_SIZE)
+        .with_on_click(move || (on_toggle_sidebar.borrow_mut())())
+        .finish(),
+        "Tools",
     )
-    .with_on_click(move || (on_toggle_sidebar.borrow_mut())())
+    .with_position(TooltipPosition::Below)
     .finish();
+
+    // Agent management: grok-build's `[Dashboard]` as a panel beside the tools
+    // control. It lists the roster, peeks and replies, and dispatches.
+    let on_agent_dashboard = actions.on_agent_dashboard.clone();
+    let agent_dashboard_button = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("robot")
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_active(state.agent_dashboard.open)
+        .with_size(TOPBAR_ICON_BUTTON_SIZE)
+        .with_on_click(move || {
+            (on_agent_dashboard.borrow_mut())(AgentDashboardAction::Toggle);
+        })
+        .finish(),
+        "Agent management",
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+
+    // A hairline between the dashboard control and the tab strip, with the
+    // strip's own 3 pt gap on the leading side: the two left controls read as
+    // one group, the workspaces as the next.
+    let strip_rule = ConstrainedBox::new(Divider::vertical().finish())
+        .with_height(TOPBAR_RULE_HEIGHT)
+        .finish();
 
     // One tab per workspace, active one first-class (double-click renames it).
     // A file open in a pane is not a workspace: it is named in its pane's own
@@ -139,22 +192,24 @@ pub fn build_topbar(
     // bar next to Settings. Pressing it toggles the overlay
     // (Cmd/Ctrl+Shift+I does the same), and the count is the snapshot's live
     // unread total.
-    let inbox_button = build_inbox_control(
-        app,
-        state.inbox_unread_count,
-        state.inbox_open,
-        actions,
-    );
+    let inbox_button =
+        build_inbox_control(app, state.inbox_unread_count, state.inbox_open, actions);
 
     // Settings stays reachable as an icon pinned to the far right.
     let on_settings = actions.on_settings.clone();
-    let settings_button = TopbarButton::new(
-        Icon::new("settings")
-            .with_size(16.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
+    let settings_button = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("settings")
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(TOPBAR_ICON_BUTTON_SIZE)
+        .with_on_click(move || (on_settings.borrow_mut())())
+        .finish(),
+        "Settings",
     )
-    .with_on_click(move || (on_settings.borrow_mut())())
+    .with_position(TooltipPosition::Below)
     .finish();
 
     // The strip's tabs share the room the bar has left for them, so the row is
@@ -163,12 +218,12 @@ pub fn build_topbar(
     // Settings leave behind, and the controls keep the positions they had (see
     // [`TopbarRow`]).
     let row = TopbarRow::new(
-        vec![sidebar_button],
+        vec![sidebar_button, agent_dashboard_button, strip_rule],
         workspaces,
         vec![add_workspace],
         vec![live_indicator, inbox_button, settings_button],
     )
-    .with_left_spacing(sm * 0.5)
+    .with_left_spacing(TOPBAR_CONTROL_GAP)
     .with_group_spacing(sm)
     .with_bar_bounds(bar_bounds)
     .with_gesture(
@@ -247,8 +302,12 @@ fn build_inbox_control(
             .finish(),
     )
     .with_active(open)
+    .with_size(TOPBAR_ICON_BUTTON_SIZE)
     .with_on_click(move || (on_inbox.borrow_mut())())
     .finish();
+    let button = Tooltip::new(button, "Inbox")
+        .with_position(TooltipPosition::Below)
+        .finish();
     if unread == 0 {
         return button;
     }
@@ -484,10 +543,7 @@ impl Element for TabStrip {
     ) -> Vector2F {
         let tabs: usize = self.frames.iter().map(|frame| frame.tabs).sum();
         let rules: usize = self.frames.iter().map(|frame| frame.rules).sum();
-        let slot = tab_slot(
-            constraint.max.x - rules as f32 * TAB_RULE_WIDTH,
-            tabs,
-        );
+        let slot = tab_slot(constraint.max.x - rules as f32 * TAB_RULE_WIDTH, tabs);
         let mut total = Vector2F::zero();
         for frame in &mut self.frames {
             let room = slot * frame.tabs as f32 + frame.rules as f32 * TAB_RULE_WIDTH;
@@ -786,9 +842,11 @@ impl Element for TopbarRow {
         } else {
             room
         };
-        let strip = self
-            .strip
-            .layout(SizeConstraint::loose(vec2f(strip_room, constraint.max.y)), ctx, app);
+        let strip = self.strip.layout(
+            SizeConstraint::loose(vec2f(strip_room, constraint.max.y)),
+            ctx,
+            app,
+        );
         cross_max = cross_max.max(strip.y);
 
         let size = vec2f(
@@ -1039,7 +1097,11 @@ fn build_rename_tab(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -
 }
 
 /// The inline rename field shown in place of the active workspace tab.
-fn build_rename_field(_app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+fn build_rename_field(
+    _app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
     let on_change = actions.on_space_rename_change.clone();
     let on_focus = actions.on_space_rename_focus.clone();
     let on_submit = actions.on_space_rename_commit.clone();
@@ -1144,8 +1206,8 @@ impl WorkspaceChip {
     /// control's own slot are out of it. Both kinds of tab measure their name
     /// against this, so a long name never runs under the control.
     fn inner(constraint: SizeConstraint, close_width: f32) -> SizeConstraint {
-        let room = (constraint.max.x - Self::h_pad() * 2.0 - Self::close_gap() - close_width)
-            .max(0.0);
+        let room =
+            (constraint.max.x - Self::h_pad() * 2.0 - Self::close_gap() - close_width).max(0.0);
         SizeConstraint::new(Vector2F::zero(), vec2f(room, Self::height()))
     }
 
@@ -1195,8 +1257,7 @@ impl Element for WorkspaceChip {
         let child_size = self
             .child
             .layout(Self::inner(constraint, close_size.x), ctx, app);
-        let intrinsic =
-            child_size.x + Self::close_gap() + close_size.x + Self::h_pad() * 2.0;
+        let intrinsic = child_size.x + Self::close_gap() + close_size.x + Self::h_pad() * 2.0;
         let size = vec2f(Self::width(intrinsic, constraint), Self::height());
         self.size = Some(size);
         size
@@ -1213,11 +1274,17 @@ impl Element for WorkspaceChip {
             // tints the fill its own state gives it, so the tab still reads as
             // active (or hovered) and the colour reads as a colour.
             if self.active {
-                renderer.fill_rect(rect, self.tinted(app, ColorToken::SurfaceRaised, TabTint::Active));
+                renderer.fill_rect(
+                    rect,
+                    self.tinted(app, ColorToken::SurfaceRaised, TabTint::Active),
+                );
             } else if hovered {
                 renderer.fill_rect(rect, self.tinted(app, ColorToken::Hover, TabTint::Hovered));
             } else if self.color.is_some() {
-                renderer.fill_rect(rect, self.tinted(app, ColorToken::Surface, TabTint::Resting));
+                renderer.fill_rect(
+                    rect,
+                    self.tinted(app, ColorToken::Surface, TabTint::Resting),
+                );
             }
         }
         let child_size = self.child.size().unwrap_or(Vector2F::zero());
@@ -1352,8 +1419,7 @@ fn build_add_workspace_control(
     // `(medium id, label)` per environment row, in item order.
     let mut envs: Vec<(String, String)> = Vec::new();
     for m in &media.mediums {
-        let mut item =
-            PopupMenuItem::new(m.label.clone()).with_icon(medium_icon(&m.id));
+        let mut item = PopupMenuItem::new(m.label.clone()).with_icon(medium_icon(&m.id));
         if m.id == media.selected_medium {
             item = item.selected();
         }
@@ -1440,7 +1506,11 @@ fn build_environment_tray(
             .with_child(
                 Text::new("Make default")
                     .with_theme_color(
-                        if is_default { ColorToken::Muted } else { ColorToken::Text },
+                        if is_default {
+                            ColorToken::Muted
+                        } else {
+                            ColorToken::Text
+                        },
                         app,
                     )
                     .with_font_size(12.0)
@@ -1884,11 +1954,7 @@ impl Element for PaneDragGhost {
         let (Some(card), Some(position)) = (self.card.as_mut(), self.position) else {
             return;
         };
-        card.paint(
-            position + vec2f(GHOST_OFFSET_X, GHOST_OFFSET_Y),
-            ctx,
-            app,
-        );
+        card.paint(position + vec2f(GHOST_OFFSET_X, GHOST_OFFSET_Y), ctx, app);
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -2071,11 +2137,11 @@ mod tests {
 
     fn topbar_text(commands: &[RenderCommand], text: &str) -> Option<Vector2F> {
         commands.iter().find_map(|command| match command {
-            RenderCommand::DrawText { text: drawn, origin, .. }
-                if drawn == text && origin.y < TOPBAR_HEIGHT =>
-            {
-                Some(*origin)
-            }
+            RenderCommand::DrawText {
+                text: drawn,
+                origin,
+                ..
+            } if drawn == text && origin.y < TOPBAR_HEIGHT => Some(*origin),
             _ => None,
         })
     }
@@ -2085,7 +2151,10 @@ mod tests {
     fn topbar_icon(commands: &[RenderCommand], name: &str) -> Option<Vector2F> {
         commands.iter().find_map(|command| match command {
             RenderCommand::DrawIcon {
-                name: drawn, origin, size, ..
+                name: drawn,
+                origin,
+                size,
+                ..
             } if drawn == name && origin.y < TOPBAR_HEIGHT => {
                 Some(vec2f(origin.x + size / 2.0, origin.y + size / 2.0))
             }
@@ -2117,6 +2186,63 @@ mod tests {
     /// A tab stops at the maximum ([`MAX_TAB_WIDTH`]) however wide the window is
     /// and however long its name: the room past the maximum stays with the bar,
     /// and the name is cut to the tab's own width instead of being drawn past it.
+    /// The agent-management control sits beside the tools toggle: the bar reads
+    /// "tools, then the dashboard", the order the two panels are opened in.
+    #[test]
+    fn the_agent_management_control_sits_beside_the_tools_toggle() {
+        let app = AppContext::default();
+        let (mut root, _state, _threads) = app_with_workspaces(vec!["One".to_string()]);
+        let commands = render_element(&mut root, window(), &app);
+
+        let tools = topbar_icon(&commands, "menu-01").expect("the tools toggle");
+        let agents = topbar_icon(&commands, "robot").expect("the agent management control");
+        assert!(
+            tools.x < agents.x,
+            "the dashboard control follows the tools toggle: {tools:?} against {agents:?}"
+        );
+        // The dashboard's box is a 16 pt face with 3 pt of padding, and the
+        // sidebar's toggle reads as active because its panel is out.
+        let selected = app.theme.color(ColorToken::Selected);
+        let tools_box = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == selected
+                        && rect.width() == TOPBAR_ICON_BUTTON_SIZE
+                        && rect.height() == TOPBAR_ICON_BUTTON_SIZE =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the tools toggle draws its active fill");
+        assert!(
+            (tools_box.origin.x + TOPBAR_ICON_BUTTON_SIZE / 2.0 - tools.x).abs() < 0.5
+                && (tools_box.origin.y + TOPBAR_ICON_BUTTON_SIZE / 2.0 - tools.y).abs() < 0.5,
+            "the icon sits centered in its 22 pt box: {tools_box:?} around {tools:?}"
+        );
+
+        // A hairline separates the dashboard control from the tab strip, three
+        // points after the control.
+        let rule = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, .. }
+                    if rect.width() == 1.0
+                        && (rect.height() - TOPBAR_RULE_HEIGHT).abs() < 0.5
+                        && rect.origin.x > agents.x =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the bar rules off the tab strip");
+        assert!(
+            (rule.origin.x - (agents.x + 11.0 + 3.0)).abs() < 0.5,
+            "three points separate the dashboard control from the rule: {rule:?}"
+        );
+    }
+
     #[test]
     fn a_long_name_is_cut_to_the_maximum_width() {
         let app = AppContext::default();
@@ -2157,7 +2283,9 @@ mod tests {
     fn many_tabs_share_the_bar_and_keep_the_controls_inside_it() {
         const COUNT: usize = 14;
         let app = AppContext::default();
-        let names: Vec<String> = (0..COUNT).map(|index| format!("Workspace {index}")).collect();
+        let names: Vec<String> = (0..COUNT)
+            .map(|index| format!("Workspace {index}"))
+            .collect();
         let (mut root, _state, _threads) = app_with_workspaces(names);
         let commands = render_element(&mut root, window(), &app);
 
@@ -2230,9 +2358,11 @@ mod tests {
     #[test]
     fn a_narrow_window_still_holds_every_control() {
         // Narrow enough that the bar's controls leave less than the minimum for
-        // three tabs: at 420 the remaining room still gives each tab more than
-        // [`MIN_TAB_WIDTH`], so the squeezed branch would not be exercised.
-        const WIDTH: f32 = 360.0;
+        // three tabs. The bar now carries two leading controls (tools and agent
+        // management), so the window needs a little more room than before for
+        // the squeezed tabs to keep drawing a cut name; past this it still
+        // shares the room rather than holding every tab at the minimum.
+        const WIDTH: f32 = 400.0;
         let app = AppContext::default();
         let names: Vec<String> = (0..3).map(|index| format!("Workspace {index}")).collect();
         let (mut root, _state, _threads) = app_with_workspaces(names);
@@ -2257,7 +2387,9 @@ mod tests {
             "nothing the bar draws is pushed past the window's right edge: {commands:?}"
         );
         let settings = topbar_icon(&commands, "settings").expect("the settings control");
-        assert!(settings.x < WIDTH, "Settings stays inside the window: {settings:?}");
+        assert!(
+            settings.x < WIDTH,
+            "Settings stays inside the window: {settings:?}"
+        );
     }
-
 }

@@ -602,8 +602,7 @@ impl UiState {
         }
         if let Some(target) = goble_core::ssh_command::parse_ssh_command(line) {
             let hosts = self.ssh_hosts_for_command();
-            let session =
-                target.resolve(hosts.as_ref(), &goble_core::ssh_hosts::current_user());
+            let session = target.resolve(hosts.as_ref(), &goble_core::ssh_hosts::current_user());
             self.bind_ssh_pane(pane_id, None, session);
         } else if goble_core::ssh_command::returns_to_local_shell(line) {
             if let Some(host) = self.note_ssh_ended(pane_id) {

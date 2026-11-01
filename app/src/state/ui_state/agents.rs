@@ -298,9 +298,10 @@ impl UiState {
     pub fn refresh_tui_agent_states(&mut self) {
         let terminal = self.terminal.borrow();
         for (pane_id, rt) in self.pane_runtime.iter_mut() {
-            if let Some(state) =
-                tui_agent_state(&terminal.mode(*pane_id), terminal.running_a_command(*pane_id))
-            {
+            if let Some(state) = tui_agent_state(
+                &terminal.mode(*pane_id),
+                terminal.running_a_command(*pane_id),
+            ) {
                 rt.agent_state = state;
             }
         }
@@ -410,10 +411,7 @@ impl UiState {
             .and_then(|rt| rt.sub_agents.get(&event.subagent_id))
             .cloned();
         if event.status == "failed" {
-            let detail = event
-                .error
-                .clone()
-                .unwrap_or_else(|| event.status.clone());
+            let detail = event.error.clone().unwrap_or_else(|| event.status.clone());
             self.raise_inbox(
                 pane_id,
                 event.chat_id.clone(),
@@ -422,9 +420,7 @@ impl UiState {
                 detail,
             );
         } else if event.status == "completed"
-            && record
-                .as_ref()
-                .is_some_and(|record| record.row.background)
+            && record.as_ref().is_some_and(|record| record.row.background)
         {
             let description = record
                 .as_ref()
@@ -543,7 +539,12 @@ impl UiState {
         let mut executions: Vec<LiveExecution> = self.live_executions.values().cloned().collect();
         executions.sort_by(|a, b| a.trace_id.cmp(&b.trace_id));
         let children: Vec<&SubAgentRecord> = runtime
-            .map(|rt| rt.sub_agents.values().filter(|r| r.row.is_running()).collect())
+            .map(|rt| {
+                rt.sub_agents
+                    .values()
+                    .filter(|r| r.row.is_running())
+                    .collect()
+            })
             .unwrap_or_default();
         let mut tool_calls: Vec<ToolCall> = runtime
             .map(|rt| {
@@ -702,7 +703,6 @@ impl UiState {
         }
         true
     }
-
 }
 
 /// The chip's line for one in-flight tool call: the row its family gives it,
@@ -712,7 +712,9 @@ fn work_call_description(call: &ToolCall) -> String {
     let arguments: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
     let row = goble_core::harness::tool_row(&call.name, &arguments, None);
-    format!("{}{}", row.verb, row.subject).trim_end().to_string()
+    format!("{}{}", row.verb, row.subject)
+        .trim_end()
+        .to_string()
 }
 
 /// The one line a finished background child's inbox item carries: what it was

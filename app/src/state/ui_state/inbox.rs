@@ -232,7 +232,11 @@ mod tests {
 
     use super::super::agents::tui_agent_state;
 
-    fn proposal(chat_id: &str, id: &str, command: &str) -> goble_desktop_service::CommandProposedEvent {
+    fn proposal(
+        chat_id: &str,
+        id: &str,
+        command: &str,
+    ) -> goble_desktop_service::CommandProposedEvent {
         goble_desktop_service::CommandProposedEvent {
             chat_id: chat_id.to_string(),
             id: id.to_string(),
@@ -307,7 +311,10 @@ mod tests {
         assert_eq!(state.inbox[0].kind, InboxKind::Error);
         assert_eq!(state.inbox[0].detail, "model overloaded");
         assert_eq!(
-            state.pane_runtime.get(&1).and_then(|rt| rt.turn_error.as_deref()),
+            state
+                .pane_runtime
+                .get(&1)
+                .and_then(|rt| rt.turn_error.as_deref()),
             Some("model overloaded"),
             "the transcript carries the reason the turn failed"
         );
@@ -320,7 +327,10 @@ mod tests {
         state.apply_turn_error("c1", "model overloaded");
         state.begin_turn(1);
         assert_eq!(
-            state.pane_runtime.get(&1).and_then(|rt| rt.turn_error.as_deref()),
+            state
+                .pane_runtime
+                .get(&1)
+                .and_then(|rt| rt.turn_error.as_deref()),
             None
         );
     }
@@ -333,7 +343,10 @@ mod tests {
         state.begin_turn(1);
         state.finish_turn(1, TurnOutcome::Success);
         assert_eq!(
-            state.pane_runtime.get(&1).and_then(|rt| rt.turn_error.as_deref()),
+            state
+                .pane_runtime
+                .get(&1)
+                .and_then(|rt| rt.turn_error.as_deref()),
             None
         );
     }
@@ -350,7 +363,11 @@ mod tests {
         );
         assert_eq!(rt.agent_state, PaneAgentState::NeedsInput);
         assert_eq!(
-            state.inbox.iter().filter(|item| item.kind == InboxKind::Approval).count(),
+            state
+                .inbox
+                .iter()
+                .filter(|item| item.kind == InboxKind::Approval)
+                .count(),
             1,
             "no Done item is invented while the approval is pending"
         );
@@ -431,7 +448,11 @@ mod tests {
         let first = state.raise_inbox(1, "c1", InboxKind::Approval, "one", "git status");
         assert_eq!(state.inbox.len(), 1);
         state.raise_inbox(1, "c1", InboxKind::Approval, "two", "git diff");
-        assert_eq!(state.inbox.len(), 1, "the same conversation and kind is one item");
+        assert_eq!(
+            state.inbox.len(),
+            1,
+            "the same conversation and kind is one item"
+        );
         state.push_inbox(InboxItem::new(
             first,
             1,
@@ -455,7 +476,10 @@ mod tests {
         state.raise_inbox(1, "c2", InboxKind::Question, "b", "b");
         assert_eq!(state.unread_inbox_count(), 2);
         assert!(state.ack_inbox(&first));
-        assert!(!state.ack_inbox(&first), "the same item is acknowledged once");
+        assert!(
+            !state.ack_inbox(&first),
+            "the same item is acknowledged once"
+        );
         assert_eq!(state.unread_inbox_count(), 1);
         assert_eq!(state.ack_all(), 1);
         assert_eq!(state.unread_inbox_count(), 0);
@@ -465,8 +489,20 @@ mod tests {
     fn jump_switches_to_the_items_space_and_pane() {
         let mut state = UiState::mock();
         state.spaces = vec![
-            Space::new("A", Pane::Leaf { id: 1, kind: crate::ui::PaneKind::Chat }),
-            Space::new("B", Pane::Leaf { id: 2, kind: crate::ui::PaneKind::Chat }),
+            Space::new(
+                "A",
+                Pane::Leaf {
+                    id: 1,
+                    kind: crate::ui::PaneKind::Chat,
+                },
+            ),
+            Space::new(
+                "B",
+                Pane::Leaf {
+                    id: 2,
+                    kind: crate::ui::PaneKind::Chat,
+                },
+            ),
         ];
         state.active_space = 0;
         state.active_pane_id = 1;
@@ -492,7 +528,10 @@ mod tests {
         let mut state = UiState::mock();
         state.raise_inbox(99, "gone", InboxKind::Approval, "approve", "git status");
         assert!(!state.jump_to_inbox_item(0));
-        assert!(state.inbox_error.is_some(), "the overlay can say why it did not land");
+        assert!(
+            state.inbox_error.is_some(),
+            "the overlay can say why it did not land"
+        );
     }
 
     #[test]
@@ -560,8 +599,7 @@ mod tests {
         assert_eq!(state.inbox[0].kind, InboxKind::Task);
         assert_eq!(state.inbox[0].title, "Sub-agent finished");
         assert_eq!(
-            state.inbox[0].detail,
-            "audit the migration · audit clean",
+            state.inbox[0].detail, "audit the migration · audit clean",
             "the item names the child and the first line it answered"
         );
         assert_eq!(state.inbox[0].pane_id, 1);

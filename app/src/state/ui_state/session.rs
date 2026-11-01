@@ -473,13 +473,16 @@ impl UiState {
     /// A copy of this pane's rich-input controls. A pane that has no entry yet
     /// reads the window globals, so the first frame shows sane values.
     pub fn pane_controls(&self, pane_id: u64) -> PaneControls {
-        self.pane_controls.get(&pane_id).cloned().unwrap_or_else(|| {
-            PaneControls::new(
-                self.selected_model.clone(),
-                self.auto_approve,
-                self.composer_branch.clone(),
-            )
-        })
+        self.pane_controls
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_else(|| {
+                PaneControls::new(
+                    self.selected_model.clone(),
+                    self.auto_approve,
+                    self.composer_branch.clone(),
+                )
+            })
     }
 
     /// The per-pane controls as the views draw them: the model control carries
@@ -518,9 +521,7 @@ impl UiState {
             self.pane_controls_mut(id);
             // The whole-transcript filter bar is per pane too (its open flag and
             // selection live in app state so they survive the rebuild).
-            self.terminal_global_filters
-                .entry(id)
-                .or_default();
+            self.terminal_global_filters.entry(id).or_default();
             // Each pane's transcript owns a persistent scroll state, so the
             // user's scrollback and the follow-the-stream flag survive the
             // per-frame rebuild. A following state opens at the latest message.

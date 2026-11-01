@@ -73,7 +73,6 @@ pub struct SpaceMenu {
     pub at: goble_ui::Vector2F,
 }
 
-
 #[derive(Clone)]
 pub struct UiState {
     pub current_tab: AppTab,
@@ -525,6 +524,9 @@ pub struct UiState {
     pub inbox_scroll: Rc<RefCell<ScrollState>>,
     /// Monotonic id source for event-derived inbox items.
     pub next_inbox_id: u64,
+    /// The agent-management panel (the topbar's dashboard): whether it is up,
+    /// what narrows the roster, and its drafts.
+    pub agent_dashboard: AgentDashboardState,
     /// First run: a compact "getting started" hint shown once the workspace
     /// choice is made.
     pub show_onboarding_tip: bool,

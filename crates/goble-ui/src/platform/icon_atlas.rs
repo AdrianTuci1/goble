@@ -30,6 +30,9 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("user-02", "user-02.svg"),
     icon_bytes!("settings", "settings.svg"),
     icon_bytes!("gear", "gear.svg"),
+    // The topbar's agent-management control: a robot bust, one face for the
+    // dashboard and its roster of agents.
+    icon_bytes!("robot", "robot.svg"),
     icon_bytes!("chat-dashed", "chat-dashed.svg"),
     icon_bytes!("message-chat-square", "message-chat-square.svg"),
     icon_bytes!("message-plus-square", "message-plus-square.svg"),
@@ -367,8 +370,8 @@ mod tests {
         let mut found = 0;
         for (name, bytes) in ICON_FILES {
             if *name == "folder" || *name == "git-branch" {
-                let img = rasterize_icon(bytes)
-                    .unwrap_or_else(|| panic!("icon {name} should rasterize"));
+                let img =
+                    rasterize_icon(bytes).unwrap_or_else(|| panic!("icon {name} should rasterize"));
                 assert!(
                     img.0.iter().any(|&a| a > 0),
                     "icon {name} rendered no opaque pixels"
@@ -411,10 +414,26 @@ mod tests {
         );
 
         let img = rasterize_icon(bytes).expect("the closed folder rasterizes");
+        assert!(img.0.iter().any(|&a| a > 0), "and it renders opaque pixels");
+    }
+
+    /// The agent-management control is a robot bust: the asset has to rasterize
+    /// like the rest of the bar's faces, and the antenna leaves ink above the
+    /// head so the silhouette is not just a rounded rectangle.
+    #[test]
+    fn the_robot_icon_rasterizes() {
+        let (_, bytes) = ICON_FILES
+            .iter()
+            .find(|(name, _)| *name == "robot")
+            .expect("the robot is registered");
+        let (alpha, width, height) = rasterize_icon(bytes).expect("the robot rasterizes");
+        assert!(alpha.iter().any(|&a| a > 0), "and it renders opaque pixels");
+        let ink = |x: u32, y: u32| alpha[(y * width + x) as usize] > 0;
         assert!(
-            img.0.iter().any(|&a| a > 0),
-            "and it renders opaque pixels"
+            ink(width / 2, height / 20),
+            "the antenna reaches the top of the box"
         );
+        assert!(!ink(1, height / 2), "and the sides stay clear of the edges");
     }
 
     /// The focused pane's corner mark has to reach the pane's own edges: the
@@ -510,8 +529,8 @@ mod tests {
         let mut found = 0;
         for (name, bytes) in ICON_FILES {
             if *name == "conversation-local" || *name == "conversation-remote" {
-                let img = rasterize_icon(bytes)
-                    .unwrap_or_else(|| panic!("icon {name} should rasterize"));
+                let img =
+                    rasterize_icon(bytes).unwrap_or_else(|| panic!("icon {name} should rasterize"));
                 assert!(
                     img.0.iter().any(|&a| a > 0),
                     "icon {name} rendered no opaque pixels"

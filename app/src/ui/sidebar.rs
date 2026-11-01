@@ -200,8 +200,7 @@ fn agents_view(
         .iter()
         .filter(|entry| entry.has_agent_reply && state.starred.iter().any(|id| id == &entry.id))
         .collect();
-    let is_starred =
-        |entry: &ConversationEntry| starred.iter().any(|pinned| pinned.id == entry.id);
+    let is_starred = |entry: &ConversationEntry| starred.iter().any(|pinned| pinned.id == entry.id);
 
     // Show only the conversations that belong to the selected environment
     // (Local / Remote). Each conversation carries its `workspace_routing`
@@ -222,7 +221,11 @@ fn agents_view(
     let shown: Vec<&ConversationEntry> = if state.conversations_expanded {
         visible.clone()
     } else {
-        visible.iter().take(COLLAPSED_CONVERSATIONS).copied().collect()
+        visible
+            .iter()
+            .take(COLLAPSED_CONVERSATIONS)
+            .copied()
+            .collect()
     };
 
     // Group the environment's conversations into folders (preserving insertion
@@ -233,7 +236,10 @@ fn agents_view(
         shown.iter().map(|entry| entry.id.as_str()).collect();
     let mut ordered: Vec<(String, Vec<&ConversationEntry>)> = Vec::new();
     for entry in &visible {
-        if let Some((_, items)) = ordered.iter_mut().find(|(folder, _)| folder == &entry.folder) {
+        if let Some((_, items)) = ordered
+            .iter_mut()
+            .find(|(folder, _)| folder == &entry.folder)
+        {
             items.push(entry);
         } else {
             ordered.push((entry.folder.clone(), vec![entry]));
@@ -247,7 +253,10 @@ fn agents_view(
     // Starred: the conversations the user pinned, above the folders, whichever
     // environment they belong to. A section with nothing in it is not drawn at
     // all: there is nothing to collapse.
-    let starred_collapsed = state.collapsed_sections.iter().any(|key| key == STARRED_SECTION);
+    let starred_collapsed = state
+        .collapsed_sections
+        .iter()
+        .any(|key| key == STARRED_SECTION);
     if !starred.is_empty() {
         list = list.with_child(section_header(
             app,
@@ -294,7 +303,10 @@ fn agents_view(
     }
     for (folder, entries) in ordered {
         let key = folder_section(&folder);
-        let collapsed = state.collapsed_sections.iter().any(|section| section == &key);
+        let collapsed = state
+            .collapsed_sections
+            .iter()
+            .any(|section| section == &key);
         // A folder the digest draws no card for is not a section here: its
         // header would stand over nothing. A folder the user folded keeps its
         // header whatever the digest draws, because the header is the section.
@@ -467,7 +479,9 @@ mod sidebar_surface_tests {
     use crate::root_view::RootView;
     use goble_core::store::Store;
     use goble_desktop_service::{DesktopState, ThreadStore};
-    use goble_ui::elements::{AgentCardUi, ConversationStatus, LayoutContext, PaintContext, SizeConstraint};
+    use goble_ui::elements::{
+        AgentCardUi, ConversationStatus, LayoutContext, PaintContext, SizeConstraint,
+    };
     use goble_ui::geometry::{vec2f, RectF};
     use goble_ui::render::{RenderCommand, Renderer};
     use goble_ui::test_util::render_element;
@@ -547,10 +561,10 @@ mod sidebar_surface_tests {
         view
     }
 
-    /// Every command the sidebar band drew — a rect fully left of the workspace
-    /// (the pane's frame starts at its own edge), or a run whose origin is.
+    /// Every command the sidebar body drew — a rect fully left of the workspace
+    /// (the pane's frame starts at its own edge), below the bar that spans it.
     fn in_band(rect: RectF) -> bool {
-        rect.max_x() <= crate::ui::SIDEBAR_WIDTH
+        rect.max_x() <= crate::ui::SIDEBAR_WIDTH && rect.min_y() >= crate::ui::shell::TOPBAR_HEIGHT
     }
 
     /// The sidebar draws no rounded fill, no separator rule and no magnifier,
@@ -684,12 +698,9 @@ mod sidebar_surface_tests {
         ));
         let app = AppContext::default();
 
-        for (hovered_card, hovered_create) in [
-            (false, false),
-            (false, true),
-            (true, false),
-            (true, true),
-        ] {
+        for (hovered_card, hovered_create) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
             let view = RootView::new(&app, &desktop, None);
             let state = view.state_rc();
             {
@@ -765,11 +776,7 @@ mod sidebar_surface_tests {
         // position), so the pointer has to be over the band when it is painted.
         let over_the_band = vec2f(crate::ui::SIDEBAR_WIDTH / 2.0, 400.0);
         let paint = |root: &mut Box<dyn Element>| {
-            let _ = root.layout(
-                SizeConstraint::loose(window),
-                &mut LayoutContext,
-                &app,
-            );
+            let _ = root.layout(SizeConstraint::loose(window), &mut LayoutContext, &app);
             let mut ctx = PaintContext::new(Renderer::new());
             ctx.cursor_inside = true;
             ctx.cursor_position = over_the_band;
@@ -1008,7 +1015,10 @@ mod sidebar_surface_tests {
             corner_radius: 0.0,
         };
         assert!(separator(&rule, band).is_some(), "a hairline is a rule");
-        assert!(separator(&field, band).is_none(), "the field's border is not");
+        assert!(
+            separator(&field, band).is_none(),
+            "the field's border is not"
+        );
     }
 
     /// A collapsed folder section keeps its header — which says how much is
@@ -1032,14 +1042,20 @@ mod sidebar_surface_tests {
         let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
         let drawn = drawn_text(&commands);
 
-        assert!(drawn.iter().any(|run| run == "Frontend"), "the header stays: {drawn:?}");
+        assert!(
+            drawn.iter().any(|run| run == "Frontend"),
+            "the header stays: {drawn:?}"
+        );
         for hidden in ["Ada", "Coder"] {
             assert!(
                 !drawn.iter().any(|run| run == hidden),
                 "the collapsed folder hides {hidden:?}: {drawn:?}"
             );
         }
-        assert!(drawn.iter().any(|run| run == "Ops"), "another section is untouched");
+        assert!(
+            drawn.iter().any(|run| run == "Ops"),
+            "another section is untouched"
+        );
     }
 
     /// The header counts the folder's whole list, not the cards the collapsed
@@ -1102,11 +1118,26 @@ mod sidebar_surface_tests {
         let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
         let drawn = drawn_text(&commands);
 
-        let section = drawn.iter().position(|run| run == "Starred").expect("the Starred header");
-        let folder = drawn.iter().position(|run| run == "Frontend").expect("a folder header");
-        let starred = drawn.iter().position(|run| run == "Ops").expect("the starred card");
-        assert!(section < folder && folder < starred || section < starred, "{drawn:?}");
-        assert!(section < starred, "the pinned card is under the Starred header: {drawn:?}");
+        let section = drawn
+            .iter()
+            .position(|run| run == "Starred")
+            .expect("the Starred header");
+        let folder = drawn
+            .iter()
+            .position(|run| run == "Frontend")
+            .expect("a folder header");
+        let starred = drawn
+            .iter()
+            .position(|run| run == "Ops")
+            .expect("the starred card");
+        assert!(
+            section < folder && folder < starred || section < starred,
+            "{drawn:?}"
+        );
+        assert!(
+            section < starred,
+            "the pinned card is under the Starred header: {drawn:?}"
+        );
     }
 
     /// The toolbelt is the sidebar's switch: the explorer draws the working
@@ -1214,11 +1245,7 @@ mod sidebar_surface_tests {
         // so the pointer has to be over the band while the tree is painted.
         let over_the_band = vec2f(crate::ui::SIDEBAR_WIDTH / 2.0, 400.0);
         let paint = |root: &mut Box<dyn Element>| -> Vec<RenderCommand> {
-            let _ = root.layout(
-                SizeConstraint::loose(window),
-                &mut LayoutContext,
-                &app,
-            );
+            let _ = root.layout(SizeConstraint::loose(window), &mut LayoutContext, &app);
             let mut ctx = PaintContext::new(Renderer::new());
             ctx.cursor_inside = true;
             ctx.cursor_position = over_the_band;
@@ -1226,15 +1253,22 @@ mod sidebar_surface_tests {
             ctx.renderer.expect("renderer").commands().to_vec()
         };
         /// Click the toolbelt tab whose icon the last paint drew under `name`.
-        fn click_tab(root: &mut Box<dyn Element>, commands: &[RenderCommand], name: &str, app: &AppContext) {
+        fn click_tab(
+            root: &mut Box<dyn Element>,
+            commands: &[RenderCommand],
+            name: &str,
+            app: &AppContext,
+        ) {
             use goble_ui::event::DispatchedEvent;
 
             let icon = commands
                 .iter()
                 .find_map(|command| match command {
-                    RenderCommand::DrawIcon { name: drawn, origin, .. }
-                        if drawn == name && origin.x < crate::ui::SIDEBAR_WIDTH =>
-                    {
+                    RenderCommand::DrawIcon {
+                        name: drawn,
+                        origin,
+                        ..
+                    } if drawn == name && origin.x < crate::ui::SIDEBAR_WIDTH => {
                         Some(vec2f(origin.x, origin.y))
                     }
                     _ => None,
@@ -1306,10 +1340,7 @@ mod sidebar_surface_tests {
     fn dots_box(commands: &[RenderCommand], band: f32) -> Option<RectF> {
         commands.iter().find_map(|command| match command {
             RenderCommand::DrawIcon {
-                name,
-                origin,
-                size,
-                ..
+                name, origin, size, ..
             } if name == "dots-horizontal" && origin.x < band => Some(RectF::new(
                 goble_ui::geometry::PointF::new(origin.x, origin.y),
                 goble_ui::geometry::Size2F::new(*size, *size),
@@ -1366,19 +1397,17 @@ mod sidebar_surface_tests {
             let state = view.state_rc();
             let mut s = state.borrow_mut();
             for id in ["c1", "c2", "c3", "c4", "c5"] {
-                s.agent_cards
-                    .insert(id.to_string(), Rc::new(RefCell::new(AgentCardUi::default())));
+                s.agent_cards.insert(
+                    id.to_string(),
+                    Rc::new(RefCell::new(AgentCardUi::default())),
+                );
             }
         }
         let mut root: Box<dyn Element> = Box::new(view);
         let window = vec2f(1024.0, 768.0);
         let away = vec2f(700.0, 400.0);
         let paint = |root: &mut Box<dyn Element>, at: goble_ui::geometry::Vector2F| {
-            let _ = root.layout(
-                SizeConstraint::loose(window),
-                &mut LayoutContext,
-                &app,
-            );
+            let _ = root.layout(SizeConstraint::loose(window), &mut LayoutContext, &app);
             let mut ctx = PaintContext::new(Renderer::new());
             ctx.cursor_inside = true;
             ctx.cursor_position = at;
@@ -1489,9 +1518,8 @@ mod sidebar_surface_tests {
         for width in [200.0_f32, 300.0, 480.0] {
             for expanded in [false, true] {
                 for (hover, menu_open) in [(true, false), (true, true)] {
-                    let case = format!(
-                        "width {width}, list expanded {expanded}, menu open {menu_open}"
-                    );
+                    let case =
+                        format!("width {width}, list expanded {expanded}, menu open {menu_open}");
                     let view = long_titled_view(&app, &desktop, width, expanded);
                     view.state_rc().borrow_mut().agent_cards.insert(
                         "c0".to_string(),
@@ -1522,9 +1550,7 @@ mod sidebar_surface_tests {
                     let row_clip = commands
                         .iter()
                         .filter_map(|command| match command {
-                            RenderCommand::ClipRect(rect) if rect.max_x() <= width => {
-                                Some(*rect)
-                            }
+                            RenderCommand::ClipRect(rect) if rect.max_x() <= width => Some(*rect),
                             _ => None,
                         })
                         .min_by(|a, b| a.max_x().total_cmp(&b.max_x()))
@@ -1561,7 +1587,10 @@ mod sidebar_surface_tests {
             .iter()
             .find_map(|command| match command {
                 RenderCommand::DrawText {
-                    text, origin, color, ..
+                    text,
+                    origin,
+                    color,
+                    ..
                 } if text == "View all (5)" => Some((*origin, *color)),
                 _ => None,
             })
@@ -2003,8 +2032,10 @@ mod sidebar_surface_tests {
         {
             let mut s = state.borrow_mut();
             for id in ["c1", "c2", "c3", "c4", "c5"] {
-                s.agent_cards
-                    .insert(id.to_string(), Rc::new(RefCell::new(AgentCardUi::default())));
+                s.agent_cards.insert(
+                    id.to_string(),
+                    Rc::new(RefCell::new(AgentCardUi::default())),
+                );
             }
         }
         let mut root: Box<dyn Element> = Box::new(view);
@@ -2090,9 +2121,7 @@ mod sidebar_surface_tests {
         // pointer arrives at the row.
         let crossing = vec2f(tray.min_x() - 2.0, tray.min_y() + 2.0);
         root.dispatch_event(
-            &DispatchedEvent::MouseMove {
-                position: crossing,
-            },
+            &DispatchedEvent::MouseMove { position: crossing },
             &mut ctx,
             &app,
         );
@@ -2123,9 +2152,7 @@ mod sidebar_surface_tests {
         // Its first row acts: a press and release on Star stars the
         // conversation, which is also what puts the tray away.
         root.dispatch_event(
-            &DispatchedEvent::MouseMove {
-                position: star_row,
-            },
+            &DispatchedEvent::MouseMove { position: star_row },
             &mut ctx,
             &app,
         );
@@ -2209,7 +2236,10 @@ mod sidebar_action_tests {
         (actions.on_toggle_section.borrow_mut())("folder:General".to_string());
         let s = state.borrow();
         assert!(!s.collapsed_sections.contains("folder:General"));
-        assert!(s.collapsed_sections.contains("starred"), "the other section is untouched");
+        assert!(
+            s.collapsed_sections.contains("starred"),
+            "the other section is untouched"
+        );
     }
 
     /// Starring is a toggle on the conversation id, which is what both the card

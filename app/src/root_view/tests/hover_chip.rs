@@ -34,9 +34,9 @@ fn paint_frame(
 
 /// Where the hovered chip's message is drawn, if the frame drew it at all.
 fn chip_text_index(commands: &[RenderCommand]) -> Option<usize> {
-    commands.iter().position(
-        |command| matches!(command, RenderCommand::DrawText { text, .. } if text == CHIP),
-    )
+    commands
+        .iter()
+        .position(|command| matches!(command, RenderCommand::DrawText { text, .. } if text == CHIP))
 }
 
 /// Where the sidebar and the pane on its right stop painting: the resize divider
@@ -53,6 +53,57 @@ fn divider_index(commands: &[RenderCommand], sidebar_width: f32) -> usize {
             _ => false,
         })
         .expect("the sidebar's divider is painted")
+}
+
+/// The icon-only topbar controls carry their name as a hover tag: the tools
+/// toggle, the agent management panel, the inbox and Settings.
+#[test]
+fn every_topbar_icon_control_names_itself_on_hover() {
+    let (view, _bus, _dir) = root_with_bus();
+    let state = view.state_rc();
+    {
+        let mut s = state.borrow_mut();
+        s.show_workspace_choice = false;
+        s.show_llm_key_banner = false;
+        s.right_sidebar_open = false;
+        s.crons_open = false;
+    }
+    let app = AppContext::default();
+    let mut root: Box<dyn Element> = Box::new(view);
+
+    let commands = paint_frame(&mut root, &app, None);
+    let controls = [
+        ("menu-01", "Tools"),
+        ("robot", "Agent management"),
+        ("inbox-01", "Inbox"),
+        ("settings", "Settings"),
+    ];
+    let centers: Vec<Vector2F> = controls
+        .iter()
+        .map(|(icon, _)| {
+            commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawIcon {
+                        origin, size, name, ..
+                    } if name == *icon && origin.y < crate::ui::shell::TOPBAR_HEIGHT => {
+                        Some(*origin + vec2f(size / 2.0, size / 2.0))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the {icon} control is drawn"))
+        })
+        .collect();
+
+    for ((icon, tag), center) in controls.iter().zip(centers) {
+        let commands = paint_frame(&mut root, &app, Some(center));
+        assert!(
+            commands.iter().any(
+                |command| matches!(command, RenderCommand::DrawText { text, .. } if text == tag)
+            ),
+            "hovering {icon} draws its {tag:?} tag"
+        );
+    }
 }
 
 /// The chip hovered on a sidebar toolbelt tab is drawn after the pane that sits
@@ -78,10 +129,7 @@ fn a_hovered_sidebar_tab_chip_is_the_windows_last_paint() {
         .iter()
         .find_map(|command| match command {
             RenderCommand::DrawIcon {
-                origin,
-                name,
-                size,
-                ..
+                origin, name, size, ..
             } if name == "message-chat-square"
                 && *size == 14.0
                 && origin.x < crate::ui::SIDEBAR_WIDTH =>

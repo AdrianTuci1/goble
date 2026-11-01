@@ -1,3 +1,107 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use goble_ui::ScrollState;
+
+/// Which dimension the agent-management panel groups its roster by. The
+/// panel's grouping control switches between the two, matching grok-build's
+/// dashboard (`Ctrl+G`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AgentDashboardGrouping {
+    /// Awaiting input, working, idle, done and failed, in that order.
+    #[default]
+    State,
+    /// The directory each agent works in, alphabetically.
+    Directory,
+}
+
+impl AgentDashboardGrouping {
+    /// The grouping a click on the panel's control switches to.
+    pub fn next(self) -> Self {
+        match self {
+            Self::State => Self::Directory,
+            Self::Directory => Self::State,
+        }
+    }
+
+    /// What the panel's control reads: the grouping in force.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::State => "Group: state",
+            Self::Directory => "Group: directory",
+        }
+    }
+}
+
+/// The agent-management panel's own state: whether it is up, what narrows the
+/// roster, and the drafts the panel owns across frames.
+///
+/// The panel is an overlay over the workspace, so the state lives with the
+/// app rather than with an element: the tree is rebuilt every frame and only
+/// this value survives it.
+#[derive(Clone, Debug)]
+pub struct AgentDashboardState {
+    /// Whether the panel is up.
+    pub open: bool,
+    /// The roster's search text.
+    pub query: String,
+    pub search_focused: bool,
+    /// The conversation the panel's cursor is on; `None` leaves the dispatch
+    /// box in the panel's footer slot.
+    pub selected: Option<String>,
+    pub grouping: AgentDashboardGrouping,
+    /// Scroll offset of the roster, shared with the app so a position survives
+    /// the per-frame rebuild.
+    pub scroll: Rc<RefCell<ScrollState>>,
+    /// Scroll offset of the response card's output, kept apart from the
+    /// roster's so reading a long response does not move the list.
+    pub response_scroll: Rc<RefCell<ScrollState>>,
+    /// The roster row the pointer was over on the last painted frame. Rows are
+    /// built before the paint that learns the hover, so the row's hover-only
+    /// state label and close control read it from here.
+    pub hovered_row: Rc<RefCell<Option<String>>>,
+    /// The reply draft for [`Self::selected`].
+    pub reply: String,
+    pub reply_focused: bool,
+    /// The prompt the dispatch box holds for a new agent.
+    pub dispatch: String,
+    pub dispatch_focused: bool,
+    /// Whether the prompt line is in dispatch mode rather than reply mode.
+    /// The line is always drawn; this flag says a caret in it starts a new
+    /// agent, and keeps the header's new-agent control lit while it does.
+    pub dispatch_open: bool,
+    /// The conversation being renamed, with its draft name. `None` while the
+    /// pane is not renaming anything.
+    pub rename: Option<(String, String)>,
+    pub rename_focused: bool,
+    /// The conversation whose delete button is armed: a second click removes
+    /// it. Any other interaction disarms it.
+    pub confirm_delete: Option<String>,
+}
+
+impl Default for AgentDashboardState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            query: String::new(),
+            search_focused: false,
+            selected: None,
+            grouping: AgentDashboardGrouping::State,
+            scroll: Rc::new(RefCell::new(ScrollState::default())),
+            response_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            hovered_row: Rc::new(RefCell::new(None)),
+            reply: String::new(),
+            reply_focused: false,
+            dispatch: String::new(),
+            dispatch_focused: false,
+            dispatch_open: false,
+            rename: None,
+            rename_focused: false,
+            confirm_delete: None,
+        }
+    }
+}
+
 /// A scheduled task (cron) shown in the agent's crons drawer.
 #[derive(Clone, Debug)]
 pub struct CronEntry {

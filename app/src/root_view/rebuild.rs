@@ -14,8 +14,7 @@ use crate::projects::make_projects_actions;
 use crate::state::PaneWorkItem;
 use crate::ui::pickers::PARENT_LABEL;
 use crate::ui::{
-    build_ui, AiSnapshot, ComposerContext, MediaSnapshot, ProjectsSnapshot, SidebarView,
-    UiSnapshot,
+    build_ui, AiSnapshot, ComposerContext, MediaSnapshot, ProjectsSnapshot, SidebarView, UiSnapshot,
 };
 
 use super::RootView;
@@ -171,8 +170,8 @@ impl RootView {
                                 .mediums
                                 .iter()
                                 .map(|m| {
-                                    let mut item =
-                                        PopupMenuItem::new(m.label.clone()).with_icon(medium_icon(&m.id));
+                                    let mut item = PopupMenuItem::new(m.label.clone())
+                                        .with_icon(medium_icon(&m.id));
                                     if m.id == environment {
                                         item = item.selected();
                                     }
@@ -200,8 +199,7 @@ impl RootView {
                         ctx.dir_menu_open = controls.dir_menu_open.clone();
                         ctx.dir_menu_highlight = controls.dir_menu_highlight.clone();
                         ctx.dir_menu_scroll = controls.dir_menu_scroll.clone();
-                        let dir_rows =
-                            pickers.directories(&cwd, *controls.dir_menu_open.borrow());
+                        let dir_rows = pickers.directories(&cwd, *controls.dir_menu_open.borrow());
                         ctx.dir_ids = dir_rows.iter().map(|row| row.path.clone()).collect();
                         ctx.dir_items = dir_rows
                             .iter()
@@ -563,6 +561,7 @@ impl RootView {
                 inbox_index: s.inbox_index,
                 inbox_error: s.inbox_error.clone(),
                 inbox_scroll: s.inbox_scroll.clone(),
+                agent_dashboard: s.agent_dashboard.clone(),
                 show_onboarding_tip: s.show_onboarding_tip,
                 add_space_menu_open: s.add_space_menu_open.clone(),
                 env_selector_open: s.env_selector_open.clone(),
@@ -665,9 +664,18 @@ impl RootView {
             commands.insert("split_down".into(), actions.on_split_down.clone());
             commands.insert("new_terminal".into(), actions.on_new_terminal.clone());
             commands.insert("close_pane".into(), actions.on_close_pane.clone());
-            commands.insert("toggle_fullscreen".into(), actions.on_toggle_fullscreen.clone());
-            commands.insert("clear_transcript".into(), actions.on_clear_transcript.clone());
-            commands.insert("toggle_right_sidebar".into(), actions.on_toggle_right_sidebar.clone());
+            commands.insert(
+                "toggle_fullscreen".into(),
+                actions.on_toggle_fullscreen.clone(),
+            );
+            commands.insert(
+                "clear_transcript".into(),
+                actions.on_clear_transcript.clone(),
+            );
+            commands.insert(
+                "toggle_right_sidebar".into(),
+                actions.on_toggle_right_sidebar.clone(),
+            );
             commands.insert("open_settings".into(), actions.on_settings.clone());
             commands.insert("copy".into(), actions.on_copy.clone());
             // The Window menu's tab-strip items. The action takes a direction,

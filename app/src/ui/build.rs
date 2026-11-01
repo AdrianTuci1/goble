@@ -9,7 +9,7 @@ use super::actions::{AiActions, MediaActions, ProjectsActions, UiActions};
 use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, UiSnapshot};
 use super::types::AppTab;
 use super::{
-    chat, connectors, crons, hosts, inbox, media, model_form, shell,
+    agent_dashboard, chat, connectors, crons, hosts, inbox, media, model_form, shell,
     shortcuts_help, sidebar, task_workflow, vault, CONNECTORS_WIDTH,
 };
 
@@ -42,9 +42,14 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     } = *context;
     let topbar = shell::build_topbar(app, state, actions, media, media_actions);
     let sidebar = sidebar::build_sidebar(app, state, actions, &media.selected_medium);
-    let main = shell::build_main(context);
-    // With the sidebar retracted the main area (and its resizable divider) is
-    // gone, so the chat/terminal column fills the whole window.
+    // The agent-management dashboard takes the panes' place beside the tools
+    // sidebar: the sidebar and the toolbar stay around it, and the panel gets
+    // the whole pane area.
+    let main: Box<dyn Element> = if state.agent_dashboard.open {
+        agent_dashboard::build_agent_dashboard(app, state, actions)
+    } else {
+        shell::build_main(context)
+    };
     let body: Box<dyn Element> = if state.sidebar_visible {
         let on_drag_start = actions.on_sidebar_drag_start.clone();
         let on_drag_move = actions.on_sidebar_drag_move.clone();
@@ -56,6 +61,8 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
             .with_on_drag_end(move || (on_drag_end.borrow_mut())())
             .finish()
     } else {
+        // With the sidebar retracted the main area (and its resizable divider)
+        // is gone, so the chat/terminal column fills the whole window.
         drop(sidebar);
         main
     };
@@ -99,12 +106,13 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // side so it reads as a panel rather than a sidebar. Cmd/Ctrl+Shift+W
     // toggles it; its ✕, Escape and the backdrop close it.
     let on_close_task_workflow = actions.on_close_task_workflow.clone();
-    let task_workflow_dialog =
-        Dialog::new(task_workflow::build_task_workflow_overlay(app, state, actions))
-            .with_open(state.task_workflow_open)
-            .with_inset(task_workflow::OVERLAY_MARGIN)
-            .with_on_close(move || (on_close_task_workflow.borrow_mut())())
-            .finish();
+    let task_workflow_dialog = Dialog::new(task_workflow::build_task_workflow_overlay(
+        app, state, actions,
+    ))
+    .with_open(state.task_workflow_open)
+    .with_inset(task_workflow::OVERLAY_MARGIN)
+    .with_on_close(move || (on_close_task_workflow.borrow_mut())())
+    .finish();
 
     // The global inbox: approvals and questions from every pane, plus the
     // terminal reports of turns and sub-agents. It floats over the workspace
@@ -148,11 +156,12 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // shape grok-build's cheatsheet has. Ctrl+. toggles it; it is stacked last
     // (see the stack's children) so it is the top-most overlay while open.
     let on_close_shortcuts = actions.on_close_shortcuts_help.clone();
-    let shortcuts_help_dialog = Dialog::new(shortcuts_help::build_shortcuts_help(app, state, actions))
-        .with_open(state.shortcuts_help_open)
-        .with_width(shortcuts_help::SHORTCUTS_PANEL_WIDTH)
-        .with_on_close(move || (on_close_shortcuts.borrow_mut())())
-        .finish();
+    let shortcuts_help_dialog =
+        Dialog::new(shortcuts_help::build_shortcuts_help(app, state, actions))
+            .with_open(state.shortcuts_help_open)
+            .with_width(shortcuts_help::SHORTCUTS_PANEL_WIDTH)
+            .with_on_close(move || (on_close_shortcuts.borrow_mut())())
+            .finish();
 
     // Cmd+Shift+N's saved-host list, and the offer shown when a saved host's
     // session ends. Both are dialogs over the workspace; the picker is modal

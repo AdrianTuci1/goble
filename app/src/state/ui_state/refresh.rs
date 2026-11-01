@@ -166,12 +166,15 @@ impl UiState {
             dragging_pane_id: None,
             composer_path: current_dir_display(),
             pane_hover: HashMap::from([(1u64, Rc::new(RefCell::new(false)))]),
-            pane_sessions: HashMap::from([(1u64, PaneSession {
-                conversation_id: String::new(),
-                draft: String::new(),
-                path: current_dir_display(),
-                daemon_session_id: String::new(),
-            })]),
+            pane_sessions: HashMap::from([(
+                1u64,
+                PaneSession {
+                    conversation_id: String::new(),
+                    draft: String::new(),
+                    path: current_dir_display(),
+                    daemon_session_id: String::new(),
+                },
+            )]),
             pane_runtime: HashMap::new(),
             pane_workers: HashMap::new(),
             pane_ssh: HashMap::new(),
@@ -201,6 +204,7 @@ impl UiState {
             inbox_error: None,
             inbox_scroll: Rc::new(RefCell::new(ScrollState::default())),
             next_inbox_id: 1,
+            agent_dashboard: AgentDashboardState::default(),
             show_onboarding_tip: false,
             add_space_menu_open: Rc::new(RefCell::new(false)),
             env_selector_open: Rc::new(RefCell::new(false)),
@@ -356,7 +360,11 @@ impl UiState {
                 TimelineEntry {
                     at: time_ago(&ex.started_at),
                     kind: "execution".to_string(),
-                    label: format!("Execution {} (agent {})", ex.id, ex.agent_id.unwrap_or_default()),
+                    label: format!(
+                        "Execution {} (agent {})",
+                        ex.id,
+                        ex.agent_id.unwrap_or_default()
+                    ),
                     status: Some(ex.status),
                 },
             ));
@@ -393,9 +401,7 @@ impl UiState {
                 },
             ));
         }
-        entries.sort_by(|a, b| {
-            b.0.cmp(&a.0).then_with(|| a.1.label.cmp(&b.1.label))
-        });
+        entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.label.cmp(&b.1.label)));
         self.timeline = entries.into_iter().map(|(_, entry)| entry).collect();
     }
 

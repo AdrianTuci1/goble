@@ -1,0 +1,122 @@
+name: Rollback Release
+
+# Withdrawing a bad release, the reversible way.
+#
+# Nothing is deleted and no artifact is rebuilt. The workflow takes the
+# artifacts of a known-good tag, regenerates channel_versions.json against them
+# with a *higher* epoch and a fresh signature, and publishes it. A client whose
+# installed epoch is lower treats that document as authoritative, so it is
+# offered the older version — the rollback path — and the withdrawn versions
+# are listed as yanked so the app can say why.
+#
+# Runbook: docs/distribution.md, section "Roll back a release".
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag whose artifacts are published (the known-good release, e.g. v0.2.0)'
+        required: true
+        type: string
+      channel:
+        description: 'Channel to publish'
+        required: true
+        default: 'stable'
+        type: string
+      epoch:
+        description: 'New epoch; it must be higher than the epoch already published'
+        required: true
+        type: string
+      yanked:
+        description: 'Withdrawn versions, sorted, comma separated (e.g. 0.2.1)'
+        required: false
+        default: ''
+        type: string
+      download_base_url:
+        description: 'Base URL for manifest artifact links (default: the GitHub release)'
+        required: false
+        default: ''
+        type: string
+
+# Uploading the regenerated manifest back to the release needs write access;
+# downloading the artifacts needs read.
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rollback:
+    name: publish an earlier release again
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve version and tag
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag }}"
+          echo "GOBLE_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          echo "GOBLE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Refuse an epoch that is not a plain integer
+        shell: bash
+        run: |
+          case "${{ inputs.epoch }}" in
+            ''|*[!0-9]*) echo "epoch must be a non-negative integer" >&2; exit 1 ;;
+          esac
+
+      - name: Download that tag's artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+          gh release download "$GOBLE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --dir dist \
+            --pattern '*.dmg' \
+            --pattern '*.AppImage' \
+            --pattern '*.deb' \
+            --pattern '*.tar.gz' \
+            --pattern '*.exe'
+          # The manifest itself is metadata, not an artifact: it is regenerated
+          # below and must not be picked up as one.
+          rm -f dist/channel_versions.json dist/*.sig
+          ls -lh dist
+
+      # The signed document is the whole point: a rollback that shipped an
+      # unsigned manifest would be rejected by every client.
+      - name: Regenerate and sign the manifest
+        env:
+          GOBLE_UPDATE_SIGNING_KEY: ${{ secrets.GOBLE_UPDATE_SIGNING_KEY }}
+          GOBLE_REQUIRE_SIGNING: '1'
+          GOBLE_RELEASE_EPOCH: ${{ inputs.epoch }}
+          GOBLE_YANKED_VERSIONS: ${{ inputs.yanked }}
+          GOBLE_DOWNLOAD_BASE_URL: ${{ inputs.download_base_url }}
+        run: |
+          scripts/release.sh --skip-build --skip-package --manifest \
+            --version "$GOBLE_VERSION" \
+            --channel "${{ inputs.channel }}" \
+            --outdir dist
+
+      - name: Show what is about to be published
+        run: |
+          cat dist/channel_versions.json
+          grep -E '"(schema|version|epoch|yanked)"' dist/channel_versions.json
+
+      - name: Keep the release's manifest in step with what was published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GOBLE_TAG" dist/channel_versions.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Publish it to the downloads worker
+        env:
+          GOBLE_WORKER_URL: ${{ secrets.GOBLE_WORKER_URL }}
+          GOBLE_WORKER_ADMIN_TOKEN: ${{ secrets.GOBLE_WORKER_ADMIN_TOKEN }}
+        run: |
+          scripts/publish-manifest.sh \
+            --manifest dist/channel_versions.json \
+            --channel "${{ inputs.channel }}"

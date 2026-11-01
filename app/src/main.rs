@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use goble_app::root_view::RootView;
 use goble_desktop_service::{CollectingEventBus, DesktopState};
-use goble_telemetry::{Channel, ProcessEnv, Telemetry, TelemetryConfig, TelemetryPaths};
+use goble_telemetry::{Channel, Outcome, ProcessEnv, Telemetry, TelemetryConfig, TelemetryPaths};
 use goble_ui::elements::AppContext;
 use goble_ui::platform::run_with_root;
 
@@ -188,6 +188,7 @@ fn check_for_updates() {
     std::thread::Builder::new()
         .name("goble-update-check".to_owned())
         .spawn(move || {
+            let started = std::time::Instant::now();
             let mut config = goble_update::UpdateConfig::new(manifest_url);
             if let Ok(key) = std::env::var("GOBLE_UPDATE_PUBLIC_KEY") {
                 config = config.with_public_key(key);
@@ -197,18 +198,27 @@ fn check_for_updates() {
                 Ok(client) => client,
                 Err(err) => {
                     log::warn!("update check could not start: {err}");
+                    goble_app::telemetry::update_check(Outcome::Error, Some(started.elapsed()));
                     return;
                 }
             };
 
+            // One check, one event: a check that found nothing is as healthy
+            // as one that found an update.
             match client.check(
                 update_channel(),
                 app_version(),
                 std::env::consts::OS,
                 std::env::consts::ARCH,
             ) {
-                Ok(outcome) => log::info!("update check: {outcome:?}"),
-                Err(err) => log::warn!("update check failed: {err}"),
+                Ok(outcome) => {
+                    log::info!("update check: {outcome:?}");
+                    goble_app::telemetry::update_check(Outcome::Success, Some(started.elapsed()));
+                }
+                Err(err) => {
+                    log::warn!("update check failed: {err}");
+                    goble_app::telemetry::update_check(Outcome::Error, Some(started.elapsed()));
+                }
             }
         })
         .ok();

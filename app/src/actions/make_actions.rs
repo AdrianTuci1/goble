@@ -78,6 +78,7 @@ fn flush_queued_prompt(
         let decision = goble_core::harness::CommandDecision::Reject(
             "superseded by a new message".to_string(),
         );
+        crate::telemetry::approval_superseded();
         match desktop.resume_command_chat_turn(&chat_id, decision) {
             Ok(_) => {
                 state.resume_command_decision(pane_id, &proposal.id);
@@ -641,6 +642,7 @@ pub fn make_actions(
             // run skips the onboarding overlays entirely.
             state.show_onboarding_tip = true;
             state.onboarding_done = true;
+            crate::telemetry::onboarding_completed();
             if let Some(desktop) = &desktop_choose_workspace {
                 if let Err(e) = desktop.set_onboarding_done() {
                     log::warn!("set_onboarding_done failed: {e}");
@@ -1230,6 +1232,7 @@ pub fn make_actions(
                 let mut state = on_command_decision.borrow_mut();
                 let chat_id = state.pane_conversation_id(pane_id);
                 if let (Some(desktop), Some(chat_id)) = (&desktop_command, chat_id) {
+                    crate::telemetry::approval_decision(&decision);
                     match desktop.resume_command_chat_turn(&chat_id, decision) {
                         Ok(_) => {
                             // The decision resumes the suspended turn: record
@@ -2896,6 +2899,7 @@ pub fn make_actions(
             let mut state = on_dismiss_llm_key_banner.borrow_mut();
             state.show_llm_key_banner = false;
             state.onboarding_done = true;
+            crate::telemetry::onboarding_completed();
             if let Some(desktop) = &desktop_dismiss_key {
                 if let Err(e) = desktop.set_onboarding_done() {
                     log::warn!("set_onboarding_done failed: {e}");
@@ -2908,6 +2912,7 @@ pub fn make_actions(
             state.show_workspace_choice = false;
             state.show_llm_key_banner = false;
             state.onboarding_done = true;
+            crate::telemetry::onboarding_completed();
             if let Some(desktop) = &desktop_dismiss_workspace {
                 if let Err(e) = desktop.set_onboarding_done() {
                     log::warn!("set_onboarding_done failed: {e}");

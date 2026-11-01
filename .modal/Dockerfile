@@ -1,8 +1,8 @@
 # Agent image for detached Goble runs.
 #
-# Built once and published as `goble-agent` by `.modal/images.py`; the control
-# plane (`.modal/app.py`) only refers to it by name. Rebuild with
-# `modal run .modal/images.py` after changing anything in this file.
+# Built once and published as `goble-agent` by `.modal/run.py::build`; jobs
+# refer to it by name. Rebuild with `modal run .modal/run.py::build` after
+# changing anything in this file.
 FROM python:3.12-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -51,7 +51,11 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     && cargo --version
 
 COPY grok-config.toml /root/.grok/config.toml
-COPY bootstrap.sh /opt/bootstrap.sh
-RUN chmod +x /opt/bootstrap.sh
+COPY harness/grok-workflow /usr/local/bin/grok-workflow
+RUN chmod +x /usr/local/bin/grok-workflow \
+    && git config --system user.name "Adrian Tucicovenco" \
+    && git config --system user.email "adrian.tucicovenco@gmail.com" \
+    && git config --system init.defaultBranch main \
+    && git config --system --add safe.directory '*'
 
 WORKDIR /work

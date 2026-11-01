@@ -1,6 +1,0 @@
-#!/bin/sh
-# Thin client for the deployed `sandboxes` app. No ephemeral app is created by
-# the job itself; this script only invokes the deployed functions.
-set -eu
-MODAL_PYTHON="${MODAL_PYTHON:-$HOME/.local/pipx/venvs/modal/bin/python}"
-exec "$MODAL_PYTHON" "$(dirname "$0")/client.py" "$@"

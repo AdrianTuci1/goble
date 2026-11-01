@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+# Vendored from core-infra `sandboxes/harness/grok-workflow`, the process the
+# `harness-grok` profile runs. It speaks ACP to `grok agent`, starts exactly one
+# Rhai workflow, and keeps the session open until the workflow reaches a final
+# state; headless `grok -p` would cancel a background workflow at the end of the
+# turn. Keep it in step with core-infra when the ACP handshake changes.
+"""Procesul principal al unui sandbox `harness-grok`: exact un workflow Rhai, fără TTY.
+
+Contractul cu planul de control (vezi docs/sandboxes.md, „Harness-ul Grok"):
+
+  $1                        numele workflow-ului, adică `meta.name` din fișierul de
+                            la /root/.grok/workflows/<nume>.rhai.
+  /work/.sandbox/task.md    task-ul scris de planul de control; ajunge la workflow
+                            ca `args.task`.
+  /work/SUMMARY.md          rezultatul citit de `sandbox_summary`.
+
+De ce nu `grok -p`: în 1.0.50, modul headless închide sesiunea imediat ce turnul
+s-a terminat („headless: no pending background tasks, exiting”), iar workflow-ul
+pornit de `/workflow` rulează în fundal — la ieșire e anulat după ~100 ms, înainte
+să apuce să cheme primul agent. Aici vorbim ACP direct cu `grok agent --always-approve
+stdio`, ținem procesul viu cât rulează workflow-ul și îl închidem noi la final.
+
+Modelul vine din mediu, niciodată dintr-un login interactiv:
+  XAI_API_KEY      cheia de la console.x.ai — modul documentat pentru CI/CD;
+  GROK_AUTH_JSON   conținutul unui `auth.json` existent (OAuth), scris ca fișier 0600.
+"""
+
+from __future__ import annotations
+
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+
+# Stările finale ale unei rulări, din `state.json`; restul înseamnă „încă rulează”.
+TERMINAL = ("complete", "failed", "cancelled", "interrupted")
+
+WORK_DIR = "/work"
+# Fișierul cu task-ul e numit după lucrare și vine prin `GROK_TASK_FILE` de la
+# planul de control. `/work/.sandbox/task.md` rămâne doar o copie de citit: pe un
+# volum persistent, un nume fix ar putea fi citit de o lucrare nouă înainte ca
+# serverul să apuce să-l rescrie.
+TASK_FILE = os.environ.get("GROK_TASK_FILE") or "/work/.sandbox/task.md"
+SUMMARY_FILE = "/work/SUMMARY.md"
+
+# Unde se caută un workflow care nu e în imagine. Proiectul își ține adaptarea
+# lângă codul pe care îl schimbă, în `<repo>/sandboxes/workflows/`, iar planul de
+# control clonează repo-ul în `/work/<nume>` înainte să pornească procesul ăsta.
+PROJECT_WORKFLOW_GLOBS = (
+    WORK_DIR + "/*/sandboxes/workflows/%s.rhai",
+    WORK_DIR + "/.sandbox/workflows/%s.rhai",
+)
+
+
+def log(message: str) -> None:
+    print("grok-workflow: " + message, file=sys.stderr, flush=True)
+
+
+class Agent:
+    """Client ACP minimal peste `grok agent stdio`.
+
+    ACP înseamnă JSON-RPC pe linii: noi trimitem `initialize`, `session/new` și
+    `session/prompt`, agentul răspunde la cereri și trimite notificări. Procesul
+    agentului trăiește cât îl ținem noi deschis, deci workflow-ul din fundal are
+    timp să termine — de asta nu se folosește `grok -p`.
+    """
+
+    def __init__(self, cwd: str, err_path: str) -> None:
+        self._next_id = 0
+        self._waiters: dict[int, tuple[threading.Event, dict]] = {}
+        self._lock = threading.Lock()
+        self._stderr = open(err_path, "wb")
+        env = dict(os.environ)
+        env.setdefault("GROK_HOME", os.path.expanduser("~/.grok"))
+        self.proc = subprocess.Popen(
+            # `--no-leader`: în sandbox nu e nevoie de un proces leader comun, iar
+            # unul lăsat în urmă ar ține containerul ocupat.
+            ["grok", "agent", "--always-approve", "--no-leader", "stdio"],
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=self._stderr,
+            env=env,
+            text=True,
+            bufsize=1,
+        )
+        threading.Thread(target=self._reader, daemon=True).start()
+
+    def _send(self, message: dict) -> None:
+        self.proc.stdin.write(json.dumps(message) + "\n")
+        self.proc.stdin.flush()
+
+    def _reader(self) -> None:
+        for line in self.proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "id" in message and ("result" in message or "error" in message):
+                with self._lock:
+                    waiter = self._waiters.pop(message["id"], None)
+                if waiter:
+                    waiter[1]["response"] = message
+                    waiter[0].set()
+            elif "method" in message and "id" in message:
+                self._answer(message)
+            # Notificările (`session/update`, `x.ai/*`) nu cer răspuns.
+
+    def _answer(self, message: dict) -> None:
+        """Cererile agentului către client. Aprobările se dau; restul se refuză."""
+        if message["method"] == "session/request_permission":
+            options = (message.get("params") or {}).get("options") or []
+            picked = next(
+                (o for o in options if str(o.get("kind", "")).startswith("allow")),
+                options[0] if options else None,
+            )
+            outcome = (
+                {"outcome": "selected", "optionId": picked["optionId"]}
+                if picked
+                else {"outcome": "cancelled"}
+            )
+            self._send({"jsonrpc": "2.0", "id": message["id"], "result": {"outcome": outcome}})
+            return
+        self._send({"jsonrpc": "2.0", "id": message["id"], "result": {}})
+
+    def request(self, method: str, params: dict, timeout: float) -> dict:
+        self._next_id += 1
+        message_id = self._next_id
+        event = threading.Event()
+        holder: dict = {}
+        with self._lock:
+            self._waiters[message_id] = (event, holder)
+        self._send({"jsonrpc": "2.0", "id": message_id, "method": method, "params": params})
+        if not event.wait(timeout):
+            return {}
+        return holder["response"]
+
+    def close(self) -> None:
+        try:
+            self.proc.terminate()
+            self.proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001 - la ieșire nu mai contează motivul
+            self.proc.kill()
+        self._stderr.close()
+
+
+def install_workflow(workflow: str, grok_home: str) -> str:
+    """Aduce workflow-ul cerut în `$GROK_HOME/workflows` și întoarce calea.
+
+    Ordinea e deliberată: întâi proiectul din `/work`, apoi imaginea. Un proiect
+    își ține adaptarea în repo-ul lui, lângă codul pe care îl schimbă, iar în
+    imagine rămân doar workflow-urile noastre generale. Un nume care nu se
+    găsește nicăieri oprește procesul cu lista locurilor căutate: un workflow
+    lipsă nu trebuie să arate ca o lucrare care a rulat și n-a produs nimic.
+    """
+    wanted = os.path.join(grok_home, "workflows", f"{workflow}.rhai")
+    os.makedirs(os.path.dirname(wanted), exist_ok=True)
+    for pattern in PROJECT_WORKFLOW_GLOBS:
+        for source in sorted(glob.glob(pattern % workflow)):
+            shutil.copyfile(source, wanted)
+            log(f"workflow din proiect: {source}")
+            return wanted
+    if os.path.exists(wanted):
+        return wanted
+    searched = [pattern % workflow for pattern in PROJECT_WORKFLOW_GLOBS] + [wanted]
+    log(f"workflow-ul {workflow!r} nu există; am căutat: " + ", ".join(searched))
+    return ""
+
+
+def newest_state(grok_home: str, started_at: float) -> str:
+    """Starea rulării curente. Un fișier mai vechi e al unei rulări anterioare."""
+    found = ""
+    pattern = os.path.join(grok_home, "sessions", "*", "*", "workflows", "*", "state.json")
+    for candidate in glob.glob(pattern):
+        try:
+            if os.path.getmtime(candidate) >= started_at:
+                found = candidate
+        except OSError:
+            continue
+    return found
+
+
+def state_status(path: str) -> tuple[str, str]:
+    if not path:
+        return "", ""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            body = json.load(handle).get("state", {})
+    except (OSError, json.JSONDecodeError):
+        return "", ""
+    return str(body.get("status") or ""), str(body.get("result_summary") or "")
+
+
+def write_summary(workflow: str, status: str, report: str) -> None:
+    """Rezumat de rezervă, ca `sandbox_summary` să aibă oricând ce citi.
+
+    Un rezultat lipsă nu se deosebește, mai departe, de o lucrare care n-a rulat.
+    """
+    with open(SUMMARY_FILE, "w", encoding="utf-8") as handle:
+        handle.write("# Lucrare în sandbox staticlabs — harness-grok\n\n")
+        if status == "complete":
+            handle.write(
+                f"Workflow-ul `{workflow}` a ieșit cu 0, dar nu a scris `{SUMMARY_FILE}`.\n\n"
+            )
+        else:
+            handle.write(
+                f"Workflow-ul `{workflow}` s-a terminat cu starea `{status or 'necunoscută'}`.\n\n"
+            )
+        if report:
+            handle.write("## Valoarea întoarsă de `complete()`\n\n" + report + "\n")
+        else:
+            handle.write("Nicio valoare întoarsă de workflow.\n")
+        handle.write(
+            "\n## Ce a rămas\n\n- Ieșirea brută: `/work/.sandbox/workflow.json`, "
+            "`/work/.sandbox/workflow.err`.\n"
+        )
+
+
+def main(argv: list[str]) -> int:
+    workflow = argv[1] if len(argv) > 1 else ""
+    if not workflow:
+        log("lipsește numele workflow-ului (primul argument)")
+        return 64
+
+    job_dir = os.path.dirname(TASK_FILE)
+    grok_home = os.environ.get("GROK_HOME", os.path.expanduser("~/.grok"))
+    # Cât așteptăm starea finală a workflow-ului. Implicitul trebuie să depășească
+    # orice rulare reală: un workflow cu faze paralele, câte un agent pe pagină,
+    # trece de o jumătate de oră, iar când procesul acesta iese, sandbox-ul se
+    # închide și workflow-ul e anulat la mijloc. Plafonul dur e al profilului
+    # (`timeout_hours`, 8 la `harness-grok`), deci așteptarea stă sub el.
+    wait_seconds = int(os.environ.get("GROK_WORKFLOW_TIMEOUT", "14400"))
+
+    # Modul fără browser, varianta OAuth: `auth.json` se scrie o singură dată, doar
+    # dacă nu e deja în imagine sau pe un volum.
+    auth = os.environ.get("GROK_AUTH_JSON")
+    if auth and not os.path.exists(os.path.join(grok_home, "auth.json")):
+        os.makedirs(grok_home, exist_ok=True)
+        fd = os.open(os.path.join(grok_home, "auth.json"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(auth)
+
+    # Rezumatul și urmele rulării sunt ale rulării curente: volumul proiectului e
+    # persistent, iar fișierele rămase de la lucrarea de dinainte ar trece drept
+    # rezultat al acesteia. Starea și jurnalul se scriu la sfârșit, deci unul
+    # vechi chiar poate fi citit ca „ce face lucrarea acum”.
+    for stale in (
+        SUMMARY_FILE,
+        os.path.join(job_dir, "workflow-state.json"),
+        os.path.join(job_dir, "workflow-journal.jsonl"),
+    ):
+        if os.path.exists(stale):
+            os.remove(stale)
+
+    args: dict = {}
+    if os.path.exists(TASK_FILE) and os.path.getsize(TASK_FILE):
+        with open(TASK_FILE, encoding="utf-8") as handle:
+            args = {"task": handle.read()}
+
+    # Workflow-ul cerut intră în `$GROK_HOME/workflows` înainte de orice: dacă
+    # lipsește, procesul iese acum, nu după ce a pornit un agent degeaba.
+    if not install_workflow(workflow, grok_home):
+        return 65
+
+    log(f"workflow={workflow} args_bytes={len(json.dumps(args))}")
+    started_at = time.time()
+    agent = Agent(WORK_DIR, os.path.join(job_dir, "workflow.err"))
+    agent.request(
+        "initialize",
+        {
+            "protocolVersion": 1,
+            "clientCapabilities": {
+                "fs": {"readTextFile": False, "writeTextFile": False},
+                "terminal": False,
+                "auth": {"terminal": False},
+            },
+            "_meta": {"clientType": "staticlabs-harness", "clientVersion": "1"},
+        },
+        60,
+    )
+    agent.request("authenticate", {"methodId": "cached_token"}, 60)
+    session = agent.request(
+        "session/new",
+        {
+            "cwd": WORK_DIR,
+            "mcpServers": [],
+            # Fără `--always-approve` la sesiune nu ar avea cine răspunde la o
+            # cerere de aprobare; granița rămâne sandbox-ul Modal.
+            "_meta": {"yoloMode": True},
+        },
+        120,
+    )
+    session_id = ((session.get("result") or {}) if session else {}).get("sessionId")
+    if not session_id:
+        log(f"nu am putut deschide sesiunea ACP: {json.dumps(session)[:400]}")
+        agent.close()
+        return 66
+
+    # Răspunsul la `session/prompt` vine la terminarea turnului. Workflow-ul rulează
+    # mai departe în fundal, iar procesul așteaptă starea finală: altfel Modul ar
+    # închide sandbox-ul peste el.
+    turn = agent.request(
+        "session/prompt",
+        {
+            "sessionId": session_id,
+            "prompt": [
+                {
+                    "type": "text",
+                    "text": f"/workflow {workflow} {json.dumps(args, ensure_ascii=False)}",
+                }
+            ],
+        },
+        300,
+    )
+    with open(os.path.join(job_dir, "workflow.json"), "w", encoding="utf-8") as handle:
+        json.dump(turn, handle, ensure_ascii=False, indent=2)
+
+    status = ""
+    deadline = started_at + wait_seconds
+    while time.time() < deadline:
+        status = state_status(newest_state(grok_home, started_at))[0]
+        if status in TERMINAL:
+            break
+        if agent.proc.poll() is not None:
+            log("procesul grok s-a închis înainte de terminarea workflow-ului")
+            break
+        time.sleep(2)
+
+    # Urmă pentru cine citește sandbox-ul: starea finală și jurnalul rulării.
+    state = newest_state(grok_home, started_at)
+    status, report = state_status(state)
+    if state:
+        with open(state, encoding="utf-8") as src, open(os.path.join(job_dir, "workflow-state.json"), "w", encoding="utf-8") as dst:
+            dst.write(src.read())
+        journal = os.path.join(os.path.dirname(state), "journal.jsonl")
+        if os.path.exists(journal):
+            with open(journal, encoding="utf-8") as src, open(os.path.join(job_dir, "workflow-journal.jsonl"), "w", encoding="utf-8") as dst:
+                dst.write(src.read())
+
+    agent.close()
+
+    if os.path.exists(SUMMARY_FILE) and os.path.getsize(SUMMARY_FILE):
+        log(f"{SUMMARY_FILE} a fost scris de workflow")
+        return 0 if status in ("", "complete") else 1
+
+    write_summary(workflow, status, report)
+    log(f"am scris {SUMMARY_FILE} din starea rulării (status={status or 'necunoscut'})")
+    return 0 if status == "complete" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

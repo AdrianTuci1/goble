@@ -311,7 +311,7 @@ impl UploadWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Channel;
+    use crate::config::{Channel, Role};
     use crate::queue::QueueEntry;
     use crate::report::{ClientContext, CrashKind, CrashReport, TelemetryEvent};
     use chrono::Utc;
@@ -325,6 +325,8 @@ mod tests {
             os_version: None,
             arch: "aarch64".into(),
             install_id: "install".into(),
+            link_id: None,
+            role: Role::Desktop,
             session_id: "session".into(),
         }
     }
@@ -484,7 +486,10 @@ mod tests {
 
     #[test]
     fn events_are_uploaded_to_their_own_path() {
-        let item = QueuedItem::event(TelemetryEvent::AppExited { uptime_secs: 1, exit_code: None });
+        let item = QueuedItem::event(crate::EventEnvelope::new(
+            context(),
+            TelemetryEvent::AppExited { uptime_secs: 1, exit_code: None },
+        ));
         assert_eq!(item.endpoint_path(), "/v1/events");
     }
 

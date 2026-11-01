@@ -35,9 +35,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{DateTime, NaiveDate, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use goble_telemetry::{CrashReport, QueuedItem, TelemetryEvent, SCHEMA};
+use goble_telemetry::{CrashReport, EventEnvelope, LegacyEventV1, LEGACY_SCHEMA, SCHEMA};
 
 /// Largest ingest body accepted. A report is capped well below this by the
 /// client; the limit is here so a hand-written request cannot fill the disk.
@@ -107,7 +107,7 @@ impl Store {
     }
 
     /// Append one event to the day's stream.
-    pub fn put_event(&self, event: &TelemetryEvent) -> Result<(), StoreError> {
+    pub fn put_event(&self, envelope: &EventEnvelope) -> Result<(), StoreError> {
         let dir = self.events_dir();
         std::fs::create_dir_all(&dir).map_err(|source| StoreError::Io {
             path: dir.clone(),
@@ -115,7 +115,7 @@ impl Store {
         })?;
 
         let path = dir.join(format!("{}.jsonl", Utc::now().format("%Y-%m-%d")));
-        let mut line = serde_json::to_string(event)?;
+        let mut line = serde_json::to_string(envelope)?;
         line.push('\n');
 
         use std::io::Write as _;
@@ -286,6 +286,53 @@ struct Ingested {
     accepted: usize,
 }
 
+/// One item as it arrives, before its schema is known.
+///
+/// The event payload stays untyped until its `schema` says which shape it is:
+/// a schema-2 envelope, or the bare event a schema-1 client sent.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+enum IncomingItem {
+    Crash(Box<CrashReport>),
+    Event(Box<serde_json::Value>),
+}
+
+/// Bring an event payload up to the schema-2 envelope.
+///
+/// `Err` is a body this collector cannot read and a 400 to the client.
+/// `Ok(None)` is a schema-1 event that cannot be represented honestly (a
+/// free-form feature name outside the catalog): it is accepted and logged, so a
+/// released v1 client stops retrying something no build can store.
+fn normalise_event(
+    value: serde_json::Value,
+    received_at: DateTime<Utc>,
+) -> Result<Option<EventEnvelope>, String> {
+    let schema = value.get("schema").and_then(serde_json::Value::as_u64);
+
+    match schema {
+        // A schema-1 event has no envelope at all.
+        Some(schema) if schema == u64::from(LEGACY_SCHEMA) => {
+            let legacy: LegacyEventV1 = serde_json::from_value(value)
+                .map_err(|err| format!("malformed schema-1 event: {err}"))?;
+            Ok(legacy.into_envelope(received_at))
+        }
+        Some(schema) if schema == u64::from(SCHEMA) => {
+            let envelope: EventEnvelope = serde_json::from_value(value)
+                .map_err(|err| format!("malformed schema-2 event: {err}"))?;
+            Ok(Some(envelope))
+        }
+        Some(schema) => Err(format!(
+            "unsupported schema {schema}: this collector speaks {SCHEMA} and accepts {LEGACY_SCHEMA}"
+        )),
+        // Nothing said "schema", so this is a bare event from a v1 client.
+        None => {
+            let legacy: LegacyEventV1 = serde_json::from_value(value)
+                .map_err(|err| format!("malformed schema-1 event: {err}"))?;
+            Ok(legacy.into_envelope(received_at))
+        }
+    }
+}
+
 fn rejected(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
@@ -299,16 +346,18 @@ async fn ingest_crash(
         return rejected(StatusCode::UNAUTHORIZED, "a collector token is required");
     }
 
-    let item: QueuedItem = match serde_json::from_slice(&body) {
+    let item: IncomingItem = match serde_json::from_slice(&body) {
         Ok(item) => item,
         Err(err) => return rejected(StatusCode::BAD_REQUEST, &format!("malformed report: {err}")),
     };
 
-    let QueuedItem::Crash(report) = item else {
+    let IncomingItem::Crash(report) = item else {
         return rejected(StatusCode::BAD_REQUEST, "this endpoint takes crash reports");
     };
 
-    if report.schema != SCHEMA {
+    // A schema-1 client's report is still a real crash; refusing it would throw
+    // away the reports the release that shipped first is sending.
+    if !(LEGACY_SCHEMA..=SCHEMA).contains(&report.schema) {
         return rejected(
             StatusCode::BAD_REQUEST,
             &format!("unsupported schema {}: this collector speaks {SCHEMA}", report.schema),
@@ -336,17 +385,31 @@ async fn ingest_event(
         return rejected(StatusCode::UNAUTHORIZED, "a collector token is required");
     }
 
-    let item: QueuedItem = match serde_json::from_slice(&body) {
+    let item: IncomingItem = match serde_json::from_slice(&body) {
         Ok(item) => item,
         Err(err) => return rejected(StatusCode::BAD_REQUEST, &format!("malformed event: {err}")),
     };
 
-    let QueuedItem::Event(event) = item else {
+    let IncomingItem::Event(value) = item else {
         return rejected(StatusCode::BAD_REQUEST, "this endpoint takes events");
     };
 
-    match state.store.put_event(&event) {
-        Ok(()) => (StatusCode::ACCEPTED, Json(Ingested { accepted: 1 })).into_response(),
+    let envelope = match normalise_event(*value, Utc::now()) {
+        Ok(Some(envelope)) => envelope,
+        Ok(None) => {
+            tracing::debug!("dropped a schema-1 event with no catalog feature name");
+            return (StatusCode::ACCEPTED, Json(Ingested { accepted: 0 })).into_response();
+        }
+        Err(err) => return rejected(StatusCode::BAD_REQUEST, &err),
+    };
+
+    match state.store.put_event(&envelope) {
+        Ok(()) => {
+            if envelope.is_legacy() {
+                tracing::debug!(event_id = %envelope.event_id, "normalised a schema-1 event");
+            }
+            (StatusCode::ACCEPTED, Json(Ingested { accepted: 1 })).into_response()
+        }
         Err(err) => {
             tracing::error!("could not store an event: {err}");
             rejected(StatusCode::INTERNAL_SERVER_ERROR, "could not store the event")
@@ -387,7 +450,9 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use axum::http::Request;
-    use goble_telemetry::{Channel, ClientContext, CrashKind};
+    use goble_telemetry::{
+        Channel, ClientContext, CrashKind, QueuedItem, Role, TelemetryEvent, LEGACY_EVENT_PREFIX,
+    };
     use tower::ServiceExt as _;
 
     fn context() -> ClientContext {
@@ -398,6 +463,8 @@ mod tests {
             os_version: Some("15.0".into()),
             arch: "aarch64".into(),
             install_id: "install".into(),
+            link_id: None,
+            role: Role::Desktop,
             session_id: "session".into(),
         }
     }
@@ -406,6 +473,10 @@ mod tests {
         CrashReport::new(&context(), CrashKind::Panic, message)
             .with_location(Some("app/src/main.rs:30".into()))
             .with_backtrace(Some("0: goble_app::main".into()))
+    }
+
+    fn event() -> EventEnvelope {
+        EventEnvelope::new(context(), TelemetryEvent::AppStarted { locale: Some("en-GB".into()) })
     }
 
     fn state(dir: &Path, token: Option<&str>) -> ServerState {
@@ -481,14 +552,87 @@ mod tests {
     async fn an_event_is_appended_to_the_days_stream() {
         let dir = tempfile::tempdir().unwrap();
         let state = state(dir.path(), None);
-        let event = TelemetryEvent::AppStarted { context: context(), locale: None };
-        let body = serde_json::to_vec(&QueuedItem::event(event)).unwrap();
+        let body = serde_json::to_vec(&QueuedItem::event(event())).unwrap();
 
         assert_eq!(post(&state, "/v1/events", body, None).await, 202);
         // The day rollover is not simulated; today's file must exist.
-        let path = state.store().events_dir().join(format!("{}.jsonl", Utc::now().format("%Y-%m-%d")));
+        let path =
+            state.store().events_dir().join(format!("{}.jsonl", Utc::now().format("%Y-%m-%d")));
         assert!(path.is_file(), "{path:?}");
-        assert!(std::fs::read_to_string(path).unwrap().contains("app_started"));
+        let stored = std::fs::read_to_string(path).unwrap();
+        assert!(stored.contains("app_started"), "{stored}");
+        assert!(stored.contains("\"schema\":2"), "{stored}");
+        assert!(stored.contains("\"event_id\""), "{stored}");
+    }
+
+    #[tokio::test]
+    async fn a_schema_1_event_is_accepted_and_stored_as_a_legacy_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path(), None);
+        // Exactly what a released v1 client sends: no envelope at all.
+        let body = serde_json::to_vec(&serde_json::json!({
+            "kind": "event",
+            "value": {
+                "event": "app_started",
+                "context": {
+                    "app_version": "0.1.0",
+                    "channel": "stable",
+                    "os": "macos",
+                    "arch": "aarch64",
+                    "install_id": "install-1",
+                    "session_id": "session-1"
+                },
+                "locale": "en-GB"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(post(&state, "/v1/events", body, None).await, 202);
+
+        let path =
+            state.store().events_dir().join(format!("{}.jsonl", Utc::now().format("%Y-%m-%d")));
+        let stored: EventEnvelope =
+            serde_json::from_str(std::fs::read_to_string(path).unwrap().trim()).unwrap();
+        assert!(stored.event_id.starts_with(LEGACY_EVENT_PREFIX), "{}", stored.event_id);
+        assert_eq!(stored.context.install_id, "install-1");
+        assert_eq!(stored.arrived_as_schema(), LEGACY_SCHEMA);
+        assert_eq!(stored.schema, SCHEMA);
+    }
+
+    #[tokio::test]
+    async fn a_v1_feature_name_outside_the_catalog_is_accepted_and_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path(), None);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "kind": "event",
+            "value": { "event": "feature_used", "name": "terminal", "duration_ms": 5 }
+        }))
+        .unwrap();
+
+        assert_eq!(post(&state, "/v1/events", body, None).await, 202);
+        assert!(!state.store().events_dir().exists(), "nothing is stored under an invented name");
+    }
+
+    #[tokio::test]
+    async fn a_v2_event_is_stored_with_its_own_id_and_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path(), None);
+
+        let mut envelope = event();
+        envelope.occurred_at = Utc::now() - chrono::Duration::days(3);
+        let event_id = envelope.event_id.clone();
+        let occurred_at = envelope.occurred_at;
+        let body = serde_json::to_vec(&QueuedItem::event(envelope)).unwrap();
+
+        assert_eq!(post(&state, "/v1/events", body, None).await, 202);
+
+        let path =
+            state.store().events_dir().join(format!("{}.jsonl", Utc::now().format("%Y-%m-%d")));
+        let stored: EventEnvelope =
+            serde_json::from_str(std::fs::read_to_string(path).unwrap().trim()).unwrap();
+        assert_eq!(stored.event_id, event_id);
+        assert_eq!(stored.occurred_at, occurred_at);
+        assert!(!stored.is_legacy());
     }
 
     #[tokio::test]
@@ -496,10 +640,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = state(dir.path(), None);
         let crash = serde_json::to_vec(&QueuedItem::crash(report("boom"))).unwrap();
-        let event = serde_json::to_vec(&QueuedItem::event(TelemetryEvent::AppExited {
-            uptime_secs: 1,
-            exit_code: None,
-        }))
+        let event = serde_json::to_vec(&QueuedItem::event(EventEnvelope::new(
+            context(),
+            TelemetryEvent::AppExited { uptime_secs: 1, exit_code: None },
+        )))
         .unwrap();
 
         assert_eq!(post(&state, "/v1/events", crash, None).await, 400);

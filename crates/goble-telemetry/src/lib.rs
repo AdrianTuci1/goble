@@ -63,6 +63,7 @@
 
 mod breadcrumbs;
 mod config;
+mod features;
 mod panic;
 mod queue;
 mod redact;
@@ -70,19 +71,24 @@ mod report;
 mod upload;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
-pub use breadcrumbs::{Breadcrumb, BreadcrumbLogger, Breadcrumbs, DEFAULT_LIMIT as BREADCRUMB_LIMIT};
-pub use config::{
-    Channel, Consent, ConsentSource, Environment, ProcessEnv, TelemetryConfig, TelemetryPaths,
-    TelemetryState, DEFAULT_ENDPOINT, ENV_DO_NOT_TRACK, ENV_ENABLED, ENV_ENDPOINT,
+pub use breadcrumbs::{
+    Breadcrumb, BreadcrumbLogger, Breadcrumbs, DEFAULT_LIMIT as BREADCRUMB_LIMIT,
 };
+pub use config::{
+    Channel, Consent, ConsentSource, Environment, ProcessEnv, Role, TelemetryConfig,
+    TelemetryPaths, TelemetryState, DEFAULT_ENDPOINT, ENV_DO_NOT_TRACK, ENV_ENABLED, ENV_ENDPOINT,
+    ENV_ROLE,
+};
+pub use features::{Feature, Outcome};
 pub use panic::install_panic_hook;
 pub use queue::{CrashQueue, QueueEntry};
 pub use redact::{Redactor, REDACTED};
 pub use report::{
-    ClientContext, CrashKind, CrashReport, QueuedItem, ReportArchive, TelemetryEvent, SCHEMA,
+    ClientContext, CrashKind, CrashReport, EventEnvelope, LegacyEventV1, QueuedItem, ReportArchive,
+    TelemetryEvent, LEGACY_EVENT_PREFIX, LEGACY_SCHEMA, SCHEMA,
 };
 pub use upload::{
     drain, HttpUploader, UploadConfig, UploadError, UploadErrorKind, UploadOutcome, UploadWorker,
@@ -123,11 +129,33 @@ pub fn global() -> Option<Arc<Telemetry>> {
     GLOBAL.get().cloned()
 }
 
+/// Record one feature against the process-wide handle, if there is one.
+///
+/// Instrumentation sits in code that must run the same whether telemetry
+/// started or not, so the call has to be a no-op when it did not.
+pub fn feature(feature: Feature, outcome: Outcome, duration: Option<Duration>) {
+    if let Some(telemetry) = global() {
+        telemetry.feature(feature, outcome, duration);
+    }
+}
+
+/// Record a once-per-installation feature against the process-wide handle.
+///
+/// Returns whether this call was the one that recorded it.
+pub fn feature_once(feature: Feature, outcome: Outcome, duration: Option<Duration>) -> bool {
+    global().is_some_and(|telemetry| telemetry.feature_once(feature, outcome, duration))
+}
+
 /// Crash reporting and telemetry, as the rest of the app sees it.
 #[derive(Debug)]
 pub struct Telemetry {
     config: TelemetryConfig,
-    context: ClientContext,
+    /// The identity every event carries. Behind a lock because a pairing
+    /// handshake can adopt a link id while events are being recorded.
+    context: RwLock<ClientContext>,
+    /// What survives a restart: install id, link id, one-shot flags.
+    state: Mutex<TelemetryState>,
+    state_path: PathBuf,
     redactor: Redactor,
     breadcrumbs: Arc<Breadcrumbs>,
     archive: ReportArchive,
@@ -154,6 +182,12 @@ impl Telemetry {
             redactor = redactor.with_secret(secret.clone());
         }
 
+        if let Some(link_id) = config.link_id.clone() {
+            if !state.set_link_id(&state_path, &link_id) {
+                log::warn!("ignoring an empty telemetry link id");
+            }
+        }
+
         let context = ClientContext {
             app_version: config.app_version.clone(),
             channel: config.channel,
@@ -161,6 +195,8 @@ impl Telemetry {
             os_version: config.os_version.clone().or_else(detect_os_version),
             arch: config.arch.clone().unwrap_or_else(|| std::env::consts::ARCH.to_owned()),
             install_id,
+            link_id: state.link_id.clone(),
+            role: config.role,
             session_id: config
                 .session_id
                 .clone()
@@ -197,7 +233,9 @@ impl Telemetry {
 
         Ok(Arc::new(Self {
             config,
-            context,
+            context: RwLock::new(context),
+            state: Mutex::new(state),
+            state_path,
             redactor,
             breadcrumbs: Arc::new(Breadcrumbs::new(BREADCRUMB_LIMIT)),
             archive,
@@ -212,8 +250,65 @@ impl Telemetry {
     }
 
     /// The anonymous identity attached to every report and event.
-    pub fn context(&self) -> &ClientContext {
-        &self.context
+    pub fn context(&self) -> ClientContext {
+        match self.context.read() {
+            Ok(context) => context.clone(),
+            // A poisoned read still holds valid data, and a telemetry lock must
+            // not take the app down over an identity.
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// The link id shared with the installations this one is paired with, if
+    /// any. Absent until a pairing handshake or an explicit adoption sets one.
+    pub fn link_id(&self) -> Option<String> {
+        self.context().link_id
+    }
+
+    /// Adopt a link id, for example one that arrived over the authenticated
+    /// pairing handshake. Returns whether it was accepted.
+    pub fn link_with(&self, link_id: impl AsRef<str>) -> bool {
+        let link_id = link_id.as_ref().trim();
+        if link_id.is_empty() {
+            return false;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if !state.set_link_id(&self.state_path, link_id) {
+            return false;
+        }
+        if let Ok(mut context) = self.context.write() {
+            context.link_id = Some(link_id.to_owned());
+        }
+        true
+    }
+
+    /// The link id, minted and persisted on first use.
+    ///
+    /// This is what a desktop shares when it pairs a worker: the link exists
+    /// from the moment there is somewhere to link to, and is stable after.
+    pub fn ensure_link(&self) -> Option<String> {
+        let Ok(mut state) = self.state.lock() else {
+            return None;
+        };
+        let link_id = state.ensure_link_id(&self.state_path);
+        if let Ok(mut context) = self.context.write() {
+            context.link_id = Some(link_id.clone());
+        }
+        Some(link_id)
+    }
+
+    /// Forget the link id. Nothing is merged automatically, so the old link
+    /// simply stops being carried; a later pairing starts a new one.
+    pub fn clear_link(&self) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        state.clear_link_id(&self.state_path);
+        if let Ok(mut context) = self.context.write() {
+            context.link_id = None;
+        }
     }
 
     pub fn consent(&self) -> Consent {
@@ -272,7 +367,7 @@ impl Telemetry {
         kind: CrashKind,
         message: impl Into<String>,
     ) -> CrashReport {
-        CrashReport::new(&self.context, kind, message)
+        CrashReport::new(&self.context(), kind, message)
             .with_breadcrumbs(self.breadcrumbs.snapshot())
     }
 
@@ -315,6 +410,9 @@ impl Telemetry {
                     log::warn!("telemetry: could not queue a crash report: {err}");
                 }
             }
+            // The crash counts as a feature too, so "which crashes hurt most"
+            // and "how many turns ended in a crash" come from one table.
+            self.feature(Feature::Crash, Outcome::Error, None);
         };
 
         // A second panic while unwinding would abort, so this is the last net.
@@ -330,28 +428,100 @@ impl Telemetry {
             log::debug!("telemetry: dropping an event because uploading is off");
             return;
         }
-        if let Err(err) = self.queue.enqueue(QueuedItem::event(event)) {
+        self.enqueue_event(EventEnvelope::new(self.context(), event));
+    }
+
+    /// Record an already-built envelope. Used by callers that must keep the id
+    /// and clock they were given, such as a queued item being replayed.
+    pub fn record_envelope(&self, envelope: EventEnvelope) {
+        if !self.config.consent.upload {
+            log::debug!("telemetry: dropping an event because uploading is off");
+            return;
+        }
+        self.enqueue_event(envelope);
+    }
+
+    fn enqueue_event(&self, envelope: EventEnvelope) {
+        if let Err(err) = self.queue.enqueue(QueuedItem::event(envelope)) {
             log::warn!("telemetry: could not queue an event: {err}");
         }
     }
 
     pub fn app_started(&self, locale: Option<String>) {
         let locale = locale.or_else(|| self.config.locale.clone());
-        self.record(TelemetryEvent::AppStarted { context: self.context.clone(), locale });
+        self.record(TelemetryEvent::AppStarted { locale });
     }
 
     pub fn app_exited(&self, exit_code: Option<i32>) {
-        self.record(TelemetryEvent::AppExited {
-            uptime_secs: self.started_at.elapsed().as_secs(),
-            exit_code,
+        let uptime = self.started_at.elapsed();
+        self.record(TelemetryEvent::AppExited { uptime_secs: uptime.as_secs(), exit_code });
+        // How long a session lasted, in the same table as every other feature.
+        self.feature(Feature::SessionSummary, Outcome::Success, Some(uptime));
+    }
+
+    /// Record one feature with its outcome and, when measured, its duration.
+    ///
+    /// Sampling is applied here rather than by the caller, so a rate changing
+    /// in config changes one decision instead of every call site.
+    pub fn feature(&self, feature: Feature, outcome: Outcome, duration: Option<Duration>) {
+        if !self.sampled(feature) {
+            return;
+        }
+        self.record(TelemetryEvent::FeatureUsed {
+            feature,
+            outcome,
+            duration_ms: duration.map(|value| u64::try_from(value.as_millis()).unwrap_or(u64::MAX)),
         });
     }
 
-    pub fn feature_used(&self, name: impl Into<String>, duration: Option<Duration>) {
+    /// Record a feature that may happen once per installation.
+    ///
+    /// The flag is persisted before the event is queued, so a crash between
+    /// the two loses one event instead of sending it every launch. Returns
+    /// whether this call recorded it.
+    pub fn feature_once(
+        &self,
+        feature: Feature,
+        outcome: Outcome,
+        duration: Option<Duration>,
+    ) -> bool {
+        if !self.config.consent.upload {
+            return false;
+        }
+        if !self.sampled(feature) {
+            return false;
+        }
+        let first = match self.state.lock() {
+            Ok(mut state) => state.mark_once(&self.state_path, feature),
+            Err(_) => false,
+        };
+        if !first {
+            return false;
+        }
         self.record(TelemetryEvent::FeatureUsed {
-            name: name.into(),
-            duration_ms: duration.map(|value| value.as_millis() as u64),
+            feature,
+            outcome,
+            duration_ms: duration.map(|value| u64::try_from(value.as_millis()).unwrap_or(u64::MAX)),
         });
+        true
+    }
+
+    /// Whether the configured sample rate keeps this event. A rate of 1.0 is
+    /// every event; anything less is decided by a random draw, because a
+    /// deterministic slice would follow installation order and be biased.
+    fn sampled(&self, feature: Feature) -> bool {
+        let rate = self.config.sample_rate(feature);
+        if rate >= 1.0 {
+            return true;
+        }
+        if rate <= 0.0 {
+            return false;
+        }
+        // The uuid crate is the only randomness already in the dependency
+        // graph; a v4 id is 122 random bits, and its low bits are as good a
+        // draw as any for this.
+        let draw = uuid::Uuid::new_v4().as_u128() as u64;
+        (draw as f64 / u64::MAX as f64) < rate
     }
 
     /// Ask the uploader to drain the queue now, waiting up to `timeout`.
@@ -456,11 +626,157 @@ mod tests {
         let telemetry = Telemetry::start(config(dir.path())).unwrap();
 
         telemetry.app_started(None);
-        telemetry.feature_used("terminal", Some(Duration::from_millis(5)));
+        telemetry.feature(
+            Feature::TerminalCommandRun,
+            Outcome::Success,
+            Some(Duration::from_millis(5)),
+        );
         telemetry.app_exited(Some(0));
 
         assert!(telemetry.queue().is_empty());
         assert!(telemetry.local_reports().is_empty());
+    }
+
+    /// The config a test uses when it wants the queue filled.
+    fn uploading(dir: &Path) -> TelemetryConfig {
+        let mut config = config(dir);
+        config.consent = Consent { upload: true, source: ConsentSource::Default };
+        config.endpoint = "http://127.0.0.1:9".into();
+        config
+    }
+
+    fn queued_events(telemetry: &Telemetry) -> Vec<EventEnvelope> {
+        telemetry
+            .queue()
+            .entries()
+            .into_iter()
+            .filter_map(|(_, entry)| match entry.item {
+                QueuedItem::Event(envelope) => Some(*envelope),
+                QueuedItem::Crash(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_event_is_queued_in_its_own_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        let telemetry = Telemetry::start(uploading(dir.path())).unwrap();
+
+        telemetry.app_started(Some("en-GB".into()));
+        telemetry.feature(Feature::ToolCallFinished, Outcome::Success, None);
+        telemetry.app_exited(Some(0));
+        telemetry.feature(Feature::SessionSummary, Outcome::Success, None);
+
+        let events = queued_events(&telemetry);
+        let ids: std::collections::BTreeSet<_> =
+            events.iter().map(|e| e.event_id.clone()).collect();
+        assert_eq!(ids.len(), events.len(), "ids are unique");
+        assert!(events.iter().all(|event| event.schema == SCHEMA), "{events:?}");
+        assert!(events
+            .iter()
+            .all(|event| event.context.install_id == telemetry.context().install_id));
+        assert_eq!(events[0].context.session_id, telemetry.context().session_id);
+        assert!(events.iter().all(|event| !event.is_legacy()));
+    }
+
+    #[test]
+    fn the_crash_feature_rides_with_the_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let telemetry = Telemetry::start(uploading(dir.path())).unwrap();
+        telemetry.crash(telemetry.crash_report(CrashKind::Reported, "boom"));
+
+        let events = queued_events(&telemetry);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(matches!(
+            events[0].event,
+            TelemetryEvent::FeatureUsed { feature: Feature::Crash, outcome: Outcome::Error, .. }
+        ));
+    }
+
+    #[test]
+    fn a_one_shot_feature_is_recorded_once_per_installation() {
+        let dir = tempfile::tempdir().unwrap();
+        let telemetry = Telemetry::start(uploading(dir.path())).unwrap();
+
+        assert!(telemetry.feature_once(Feature::FirstTurnCompleted, Outcome::Success, None));
+        assert!(!telemetry.feature_once(Feature::FirstTurnCompleted, Outcome::Success, None));
+        // A different one-shot is its own flag.
+        assert!(telemetry.feature_once(Feature::OnboardingCompleted, Outcome::Success, None));
+        assert_eq!(queued_events(&telemetry).len(), 2);
+
+        // The flag survives a restart, so a second launch does not resend it.
+        drop(telemetry);
+        let restarted = Telemetry::start(uploading(dir.path())).unwrap();
+        let before = queued_events(&restarted).len();
+        assert!(!restarted.feature_once(Feature::FirstTurnCompleted, Outcome::Success, None));
+        assert_eq!(queued_events(&restarted).len(), before);
+    }
+
+    #[test]
+    fn a_sample_rate_of_zero_records_nothing_and_one_records_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sampled = uploading(dir.path());
+        sampled.sample_rates.insert(Feature::TurnCompleted, 0.0);
+
+        let telemetry = Telemetry::start(sampled).unwrap();
+        for _ in 0..5 {
+            telemetry.feature(Feature::TurnCompleted, Outcome::Success, None);
+        }
+        assert!(queued_events(&telemetry).is_empty());
+
+        // Every other feature keeps its default of 1.0.
+        telemetry.feature(Feature::TerminalCommandRun, Outcome::Success, None);
+        assert_eq!(queued_events(&telemetry).len(), 1);
+    }
+
+    #[test]
+    fn a_link_id_is_absent_until_it_is_set_then_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let telemetry = Telemetry::start(config(dir.path())).unwrap();
+        assert_eq!(telemetry.link_id(), None, "a machine that never linked has none");
+        assert_eq!(telemetry.context().link_id, None);
+
+        let link = telemetry.ensure_link().expect("a link id is minted");
+        assert!(!link.is_empty());
+        assert_eq!(telemetry.link_id().as_deref(), Some(link.as_str()));
+        drop(telemetry);
+
+        let restarted = Telemetry::start(config(dir.path())).unwrap();
+        assert_eq!(restarted.link_id().as_deref(), Some(link.as_str()));
+
+        restarted.clear_link();
+        assert_eq!(restarted.link_id(), None);
+        drop(restarted);
+        let third = Telemetry::start(config(dir.path())).unwrap();
+        assert_eq!(third.link_id(), None, "a reset link does not come back");
+    }
+
+    #[test]
+    fn a_link_can_be_adopted_before_the_first_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let telemetry = Telemetry::start(uploading(dir.path())).unwrap();
+
+        assert!(telemetry.link_with("linked-installation"));
+        telemetry.app_started(None);
+
+        let events = queued_events(&telemetry);
+        assert_eq!(events[0].context.link_id.as_deref(), Some("linked-installation"));
+
+        // An empty link is not an identity, so it is refused.
+        assert!(!telemetry.link_with("  "));
+        assert_eq!(telemetry.link_id().as_deref(), Some("linked-installation"));
+    }
+
+    #[test]
+    fn the_role_from_config_travels_on_every_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut worker = uploading(dir.path());
+        worker.role = Role::Worker;
+        let telemetry = Telemetry::start(worker).unwrap();
+        telemetry.feature(Feature::TurnCompleted, Outcome::Success, None);
+
+        assert_eq!(telemetry.context().role, Role::Worker);
+        assert_eq!(queued_events(&telemetry)[0].context.role, Role::Worker);
     }
 
     #[test]

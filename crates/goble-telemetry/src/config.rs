@@ -4,15 +4,20 @@
 //! state file means "defaults", because a telemetry layer that can break startup
 //! or a crash report is worse than no telemetry at all.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::features::Feature;
+
 /// The name of the switch that turns uploading on or off.
 pub const ENV_ENABLED: &str = "GOBLE_TELEMETRY";
 /// Overrides the collector's base URL.
 pub const ENV_ENDPOINT: &str = "GOBLE_TELEMETRY_ENDPOINT";
+/// Which part of the product this process is: `desktop`, `worker` or `sandbox`.
+pub const ENV_ROLE: &str = "GOBLE_TELEMETRY_ROLE";
 /// The cross-project convention for opting out of telemetry.
 pub const ENV_DO_NOT_TRACK: &str = "DO_NOT_TRACK";
 /// Where reports go unless something overrides it. This host is not deployed
@@ -43,6 +48,44 @@ impl Channel {
     /// released build reports; a dev build has to be asked.
     pub fn reports_by_default(self) -> bool {
         !matches!(self, Self::Dev)
+    }
+}
+
+/// Which part of the product emitted an event.
+///
+/// A worker and a sandbox run on someone else's behalf, and a linked
+/// installation shares a [`link_id`](crate::ClientContext::link_id) with the
+/// desktop that owns it. Counting them as the same actor would inflate the
+/// desktop numbers, so the role travels with every event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// The app a person opened.
+    #[default]
+    Desktop,
+    /// A paired worker running work for a desktop.
+    Worker,
+    /// A remote sandbox the desktop provisioned.
+    Sandbox,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::Worker => "worker",
+            Self::Sandbox => "sandbox",
+        }
+    }
+
+    /// Parse the documented names. Anything else is a desktop, because that is
+    /// what a process with no role set is.
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "worker" => Self::Worker,
+            "sandbox" => Self::Sandbox,
+            _ => Self::Desktop,
+        }
     }
 }
 
@@ -169,6 +212,15 @@ pub struct TelemetryState {
     /// machine or the person using it.
     #[serde(default)]
     pub install_id: String,
+    /// Shared by installations the same person has linked, and absent until a
+    /// link is established. Random like the install id: never derived from an
+    /// account, an address, a hostname or hardware.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_id: Option<String>,
+    /// One-shot features already reported, by wire name, so "first turn" is
+    /// sent once even across restarts.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub once_seen: BTreeSet<String>,
     /// Whether the first-run notice has been shown.
     #[serde(default)]
     pub notice_shown: bool,
@@ -210,6 +262,65 @@ impl TelemetryState {
         }
         self.install_id.clone()
     }
+
+    /// The link id, generating and storing one on first use. Called when an
+    /// installation first has somewhere to link to; a machine that never pairs
+    /// never gets one.
+    pub fn ensure_link_id(&mut self, path: &Path) -> String {
+        if let Some(link_id) = &self.link_id {
+            return link_id.clone();
+        }
+        let link_id = uuid::Uuid::new_v4().simple().to_string();
+        self.link_id = Some(link_id.clone());
+        if let Err(err) = self.store(path) {
+            log::warn!("could not persist the telemetry link id: {err}");
+        }
+        link_id
+    }
+
+    /// Adopt a link id that came from the authenticated pairing handshake.
+    /// Empty values are ignored: a link has to be an identity.
+    pub fn set_link_id(&mut self, path: &Path, link_id: &str) -> bool {
+        let link_id = link_id.trim();
+        if link_id.is_empty() {
+            return false;
+        }
+        if self.link_id.as_deref() == Some(link_id) {
+            return true;
+        }
+        self.link_id = Some(link_id.to_owned());
+        if let Err(err) = self.store(path) {
+            log::warn!("could not persist the telemetry link id: {err}");
+        }
+        true
+    }
+
+    /// Forget the link id. A later pairing starts a new link rather than
+    /// rejoining the old one.
+    pub fn clear_link_id(&mut self, path: &Path) {
+        if self.link_id.take().is_some() {
+            if let Err(err) = self.store(path) {
+                log::warn!("could not persist the telemetry state: {err}");
+            }
+        }
+    }
+
+    /// Record a one-shot feature as seen. Returns `false` when it had already
+    /// been recorded, which is the caller's signal not to send it again.
+    pub fn mark_once(&mut self, path: &Path, feature: Feature) -> bool {
+        if !self.once_seen.insert(feature.as_str().to_owned()) {
+            return false;
+        }
+        if let Err(err) = self.store(path) {
+            log::warn!("could not persist the telemetry state: {err}");
+        }
+        true
+    }
+
+    /// Whether a one-shot feature has already been reported.
+    pub fn once_seen(&self, feature: Feature) -> bool {
+        self.once_seen.contains(feature.as_str())
+    }
 }
 
 /// Everything telemetry needs to know before it can start.
@@ -240,6 +351,14 @@ pub struct TelemetryConfig {
     pub arch: Option<String>,
     /// Overrides the generated session id; tests use it.
     pub session_id: Option<String>,
+    /// Which part of the product this process is.
+    pub role: Role,
+    /// Overrides the link id adopted at start; the pairing handshake and tests
+    /// use it.
+    pub link_id: Option<String>,
+    /// Per-feature sampling. A feature with no entry is sent every time, which
+    /// is the policy until there is a reason for anything else.
+    pub sample_rates: BTreeMap<Feature, f64>,
     /// Overrides the locale sent with `AppStarted`.
     pub locale: Option<String>,
 }
@@ -266,20 +385,41 @@ impl TelemetryConfig {
             os_version: None,
             arch: None,
             session_id: None,
+            role: Role::Desktop,
+            link_id: None,
+            sample_rates: BTreeMap::new(),
             locale: None,
         }
     }
 
-    /// Apply the environment overrides: endpoint, and the consent switch.
+    /// Apply the environment overrides: endpoint, the consent switch and the
+    /// role this process runs as.
     pub fn resolved(mut self, env: &dyn Environment) -> Self {
         if let Some(endpoint) = env.var(ENV_ENDPOINT).map(|v| v.trim().to_owned()) {
             if !endpoint.is_empty() {
                 self.endpoint = endpoint;
             }
         }
+        if let Some(role) = env.var(ENV_ROLE) {
+            self.role = Role::parse(&role);
+        }
         let stored = TelemetryState::load(&self.paths.state_path()).upload;
         self.consent = Consent::resolve(self.channel, stored, env);
         self
+    }
+
+    /// Send a feature at this rate, from 0.0 (never) to 1.0 (always).
+    /// Out-of-range values are clamped, because an accidental 100 is not a
+    /// hundredfold increase in traffic.
+    pub fn with_sample_rate(mut self, feature: Feature, rate: f64) -> Self {
+        self.sample_rates.insert(feature, rate.clamp(0.0, 1.0));
+        self
+    }
+
+    /// The configured rate for a feature. Defaults to 1.0: all events run at
+    /// full rate until sampling is a decision someone made.
+    pub fn sample_rate(&self, feature: Feature) -> f64 {
+        self.sample_rates.get(&feature).copied().unwrap_or(1.0).clamp(0.0, 1.0)
     }
 
     pub fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {

@@ -286,6 +286,10 @@ pub struct UiActions {
     pub on_open_remote_settings: Rc<RefCell<dyn FnMut()>>,
     /// Connections: re-read `~/.ssh` and replace the cached read.
     pub on_reload_ssh_hosts: Rc<RefCell<dyn FnMut()>>,
+    /// Updates: ask the release host now, off the UI thread.
+    pub on_check_for_updates: Rc<RefCell<dyn FnMut()>>,
+    /// Updates: download, verify, install and restart with the offered release.
+    pub on_install_update: Rc<RefCell<dyn FnMut()>>,
     /// Connections: select a connection by alias (the row's own click). It
     /// names a target and connects nothing.
     pub on_ssh_select_host: Rc<RefCell<dyn FnMut(String)>>,

@@ -217,6 +217,9 @@ pub enum SettingsCategory {
     /// its own.
     Connections,
     Models,
+    /// The installed version, the last check, the offered release and the
+    /// install button. The checker itself lives in `crate::update`.
+    Updates,
     Advanced,
 }
 
@@ -228,6 +231,7 @@ impl SettingsCategory {
         SettingsCategory::AgentApproval,
         SettingsCategory::Connections,
         SettingsCategory::Models,
+        SettingsCategory::Updates,
         SettingsCategory::Advanced,
     ];
 
@@ -240,6 +244,7 @@ impl SettingsCategory {
             SettingsCategory::Environment => "Environment",
             SettingsCategory::Connections => "Connections",
             SettingsCategory::Models => "Models",
+            SettingsCategory::Updates => "Updates",
             SettingsCategory::Advanced => "Advanced",
         }
     }
@@ -313,6 +318,11 @@ pub enum SettingsControl {
     SshHost(String),
     /// Connections: re-read `~/.ssh` and replace the cached read.
     ReloadSshHosts,
+    /// Updates: ask the release host now.
+    CheckForUpdates,
+    /// Updates: download, verify and install the offered release, then
+    /// restart. This is also the button the withdrawn-version banner offers.
+    InstallUpdate,
 }
 
 impl SettingsControl {

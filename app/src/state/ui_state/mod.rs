@@ -237,6 +237,13 @@ pub struct UiState {
     /// Settings → Connections: the alias `Enter` last selected, drawn as the
     /// page's prefill line. It names a target for whatever consumes it next.
     pub settings_ssh_selected: Option<String>,
+    /// The update checker, when this build knows a release host. `None` keeps
+    /// the Updates section written but inert: a build with nowhere to check
+    /// opens no sockets and offers no install.
+    pub update: Option<std::sync::Arc<crate::update::UpdateService>>,
+    /// What that checker last published, refreshed from it on every rebuild so
+    /// the page reads one frame behind the worker thread.
+    pub update_view: crate::update::UpdateView,
     /// Mouse: invert the wheel/scroll direction.
     pub settings_invert_scroll: bool,
     /// Mouse: scroll speed multiplier (1..=100, default 50).

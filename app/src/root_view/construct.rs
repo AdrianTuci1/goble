@@ -83,6 +83,13 @@ impl RootView {
         self
     }
 
+    /// Attach the update checker. The service starts its own threads; the root
+    /// only reads the view it publishes and hands it the section's commands.
+    pub fn with_updates(self, service: Arc<crate::update::UpdateService>) -> Self {
+        self.state.borrow_mut().attach_update_service(service);
+        self
+    }
+
     /// Attach the control socket's server. Its UI verbs are answered by
     /// [`Self::process_control_requests`] on this thread.
     #[cfg(unix)]

@@ -75,6 +75,9 @@ impl RootView {
         // picker and explorer caches beside it: it is refilled when the page is
         // shown (or by its reload row) and never while the page draws.
         self.state.borrow_mut().ensure_ssh_hosts();
+        // The update checker publishes from its own thread; the frame reads the
+        // last word here rather than waiting for one.
+        self.state.borrow_mut().refresh_update_view();
         // The composer's context pills are the pane's own: the environment the
         // pane's conversation runs on (a conversation on a worker picks one) and
         // the working directory and branch, which describe one shell. All three
@@ -464,6 +467,8 @@ impl RootView {
                 settings_environment_editing: s.settings_environment_editing.clone(),
                 settings_ssh_hosts: s.settings_ssh_hosts.clone(),
                 settings_ssh_selected: s.settings_ssh_selected.clone(),
+                update: s.update_view.clone(),
+                update_configured: s.update.is_some(),
                 remote_agents: s.remote_agents.clone(),
                 remote_mode: s.remote_mode,
                 remote_gateway_url: s.remote_gateway_url.clone(),

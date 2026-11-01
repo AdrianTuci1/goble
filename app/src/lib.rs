@@ -23,3 +23,4 @@ pub mod state;
 pub mod telemetry;
 pub mod terminal;
 pub mod ui;
+pub mod update;

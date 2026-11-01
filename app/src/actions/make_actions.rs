@@ -562,6 +562,16 @@ pub fn make_actions(
         let state = Rc::clone(&on_reload_ssh_hosts);
         move |alias: String| state.borrow_mut().ssh_select_host(&alias)
     }));
+    // Updates: both buttons go through the state, which owns the checker, so
+    // the page and the banner share one path.
+    let action_check_for_updates: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new({
+        let state = Rc::clone(&on_reload_ssh_hosts);
+        move || state.borrow_mut().check_for_updates()
+    }));
+    let action_install_update: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new({
+        let state = Rc::clone(&on_reload_ssh_hosts);
+        move || state.borrow_mut().install_available_update()
+    }));
     let action_toggle_auto_approve: Rc<RefCell<dyn FnMut(u64, bool)>> =
         Rc::new(RefCell::new(move |pane_id: u64, enabled: bool| {
             let mut state = on_toggle_auto_approve.borrow_mut();
@@ -1855,6 +1865,8 @@ pub fn make_actions(
         on_open_remote_settings: action_open_remote_settings.clone(),
         on_reload_ssh_hosts: action_reload_ssh_hosts.clone(),
         on_ssh_select_host: action_ssh_select_host.clone(),
+        on_check_for_updates: action_check_for_updates.clone(),
+        on_install_update: action_install_update.clone(),
         on_projects: Rc::new(RefCell::new(move || {
             on_projects.borrow_mut().current_tab = AppTab::Projects;
         })),

@@ -17,7 +17,7 @@ use super::*;
 fn categories_match_grok_build_labels() {
     let labels: Vec<&str> = SettingsCategory::ALL
         .iter()
-        .filter(|c| **c != SettingsCategory::Connections)
+        .filter(|c| **c != SettingsCategory::Connections && **c != SettingsCategory::Updates)
         .map(|c| c.label())
         .collect();
     assert_eq!(
@@ -48,7 +48,7 @@ fn connections_sits_after_the_agent_page() {
         labels[..at],
         ["Appearance", "Mouse", "Editor & Input", "Agent & Approval"]
     );
-    assert_eq!(&labels[at..], ["Connections", "Models", "Advanced"]);
+    assert_eq!(&labels[at..], ["Connections", "Models", "Updates", "Advanced"]);
 }
 
 /// The Environment menu is gone from the rail; the page it used to open has no
@@ -149,6 +149,96 @@ fn press_event(root: &mut Box<dyn Element>, app: &AppContext, event: &Dispatched
     root.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
     let mut ctx = EventContext;
     root.dispatch_event(event, &mut ctx, app)
+}
+
+/// The Updates page reports this build, the last check and the offer, and the
+/// withdrawn-version banner names the replacement. Nothing here touches the
+/// network: the page draws the view the checker published.
+#[test]
+fn the_updates_page_reports_the_build_and_the_offer() {
+    use crate::update::{AvailableSummary, UpdatePhase, UpdateView, YankedBanner};
+
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir) = settings_root(SettingsCategory::Updates);
+
+    // A build with no update host: the section says so, and the two controls
+    // are still the focus order.
+    let commands = frame(&mut root, &app, window);
+    assert!(drawn(&commands, "Check now"));
+    assert!(drawn(&commands, "Install and restart"));
+    assert!(drawn(&commands, "This build has no update host configured, so it checks nothing. A released build carries the manifest URL and the public key it trusts."));
+    assert_eq!(
+        state.borrow().settings_pane_controls(),
+        vec![
+            SettingsControl::CheckForUpdates,
+            SettingsControl::InstallUpdate
+        ]
+    );
+
+    // An offered release, and the banner a withdrawn version earns.
+    {
+        let mut s = state.borrow_mut();
+        s.update_view = UpdateView {
+            current_version: "0.2.1".to_owned(),
+            channel: "stable".to_owned(),
+            installed_epoch: 7,
+            last_check: Some("checked 3h ago".to_owned()),
+            phase: UpdatePhase::Available,
+            status: "stable 0.2.0 is available".to_owned(),
+            available: Some(AvailableSummary {
+                version: "0.2.0".to_owned(),
+                epoch: 8,
+                channel: "stable".to_owned(),
+                size: 12_900_000,
+                rollback: true,
+                current_yanked: true,
+                file_name: "Goble-0.2.0-arm64.dmg".to_owned(),
+            }),
+            ready_version: None,
+            error: None,
+            banner: Some(YankedBanner {
+                running: "0.2.1".to_owned(),
+                replacement: "0.2.0".to_owned(),
+                detail: "0.2.1 was withdrawn from stable. The replacement is 0.2.0 (12.3 MB)."
+                    .to_owned(),
+            }),
+            failed_version: None,
+        };
+    }
+    let commands = frame(&mut root, &app, window);
+    assert!(drawn(&commands, "0.2.1 was withdrawn"));
+    assert!(drawn(
+        &commands,
+        "0.2.1 was withdrawn from stable. The replacement is 0.2.0 (12.3 MB)."
+    ));
+    assert!(drawn(&commands, "0.2.0 · stable · 12.3 MB"));
+    assert!(drawn(&commands, "Goble-0.2.0-arm64.dmg"));
+    assert!(drawn(&commands, "Install 0.2.0 and restart"));
+    assert!(drawn(&commands, "checked 3h ago"));
+    assert!(state.borrow().update_view.can_install());
+}
+
+/// A failure belongs to the section: the page draws the reason, so an update
+/// that did not happen is never only a log line.
+#[test]
+fn the_updates_page_draws_the_failure_it_was_given() {
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 768.0);
+    let (mut root, state, _dir) = settings_root(SettingsCategory::Updates);
+    {
+        let mut s = state.borrow_mut();
+        s.update_view.phase = crate::update::UpdatePhase::Error;
+        s.update_view.status = "Update failed".to_owned();
+        s.update_view.error =
+            Some("the download did not match the signed digest, so it was discarded".to_owned());
+    }
+    let commands = frame(&mut root, &app, window);
+    assert!(drawn(
+        &commands,
+        "the download did not match the signed digest, so it was discarded"
+    ));
+    assert!(!state.borrow().update_view.can_install());
 }
 
 #[test]

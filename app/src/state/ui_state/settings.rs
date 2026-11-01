@@ -388,6 +388,8 @@ impl UiState {
             // Cmd+Shift+N or the palette.
             Some(SettingsControl::SshHost(alias)) => self.ssh_select_host(&alias),
             Some(SettingsControl::ReloadSshHosts) => self.reload_ssh_hosts(),
+            Some(SettingsControl::CheckForUpdates) => self.check_for_updates(),
+            Some(SettingsControl::InstallUpdate) => self.install_available_update(),
             _ => {}
         }
     }
@@ -613,6 +615,37 @@ impl UiState {
             .is_some_and(|ssh| ssh.hosts.iter().any(|h| h.alias == alias));
         if known {
             self.settings_ssh_selected = Some(alias.to_string());
+        }
+    }
+
+    /// Attach the update checker and replay what its state file already knows.
+    /// Called once, from the shell that built the service.
+    pub fn attach_update_service(&mut self, service: std::sync::Arc<crate::update::UpdateService>) {
+        self.update_view = service.snapshot();
+        self.update = Some(service);
+    }
+
+    /// Pull what the checker published into the value the page draws. Called
+    /// once per frame from the rebuild, so the page never waits on a thread.
+    pub fn refresh_update_view(&mut self) {
+        if let Some(service) = &self.update {
+            self.update_view = service.snapshot();
+        }
+    }
+
+    /// The page's "Check now", and the startup check's manual twin.
+    pub fn check_for_updates(&mut self) {
+        if let Some(service) = &self.update {
+            service.check_now();
+            self.update_view = service.snapshot();
+        }
+    }
+
+    /// Install the offered release: download, verify, stage, swap, restart.
+    pub fn install_available_update(&mut self) {
+        if let Some(service) = &self.update {
+            service.install_available();
+            self.update_view = service.snapshot();
         }
     }
 

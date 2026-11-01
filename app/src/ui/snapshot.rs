@@ -348,6 +348,10 @@ pub struct UiSnapshot {
     /// never reads the directory itself.
     pub settings_ssh_hosts: Option<goble_core::ssh_hosts::SshHosts>,
     pub settings_ssh_selected: Option<String>,
+    /// Settings → Updates: what the update checker last published, and whether
+    /// this build has a release host to check at all.
+    pub update: crate::update::UpdateView,
+    pub update_configured: bool,
     pub settings_invert_scroll: bool,
     pub settings_scroll_speed: i32,
     pub settings_font_size: f32,

@@ -95,6 +95,8 @@ impl UiState {
             settings_ssh_read: false,
             settings_ssh_home: None,
             settings_ssh_selected: None,
+            update: None,
+            update_view: crate::update::UpdateView::default(),
             settings_invert_scroll: false,
             settings_scroll_speed: 50,
             settings_font_size: 1.0,

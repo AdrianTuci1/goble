@@ -141,6 +141,9 @@ pub fn pane_controls(
             ReloadRemoteAgents,
         ],
         SettingsCategory::Models => vec![OpenConfigFile, ReloadModels],
+        // The two buttons the section offers: ask now, and install what the
+        // last ask found.
+        SettingsCategory::Updates => vec![CheckForUpdates, InstallUpdate],
         // Advanced reports the machine state; opening the config file is the
         // page's one control.
         SettingsCategory::Advanced => vec![OpenConfigFile],
@@ -583,6 +586,7 @@ fn build_pane(
         SettingsCategory::Environment => build_environment(app, state, actions, page),
         SettingsCategory::Connections => build_connections(app, state, actions, page),
         SettingsCategory::Models => build_models(app, state, actions, page),
+        SettingsCategory::Updates => build_updates(app, state, actions, page),
         SettingsCategory::Advanced => build_advanced(app, state, actions, page),
     }
 }
@@ -1704,6 +1708,169 @@ fn build_models(
 
     col = col.with_child(rule());
     col = col.with_child(action_row(app, reload, reload_focused));
+
+    order.finish();
+    Container::new(col.finish()).finish()
+}
+
+
+/// Settings → Updates: what this build is, when it last asked the release host,
+/// what came back, and the two actions that move it.
+///
+/// The page draws a published [`crate::update::UpdateView`]; it never talks to
+/// the network itself. A withdrawn running version earns the banner above the
+/// rows, and its install button is the same one the section's bottom row has,
+/// so there is exactly one way to go back.
+fn build_updates(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    page: SettingsCategory,
+) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let controls = order_for(state, page);
+    let mut order = FocusOrder::new(state, &controls);
+    let update = &state.update;
+    let configured = state.update_configured;
+
+    let value = |text: String, color: ColorToken| {
+        Text::new(text)
+            .with_theme_color(color, app)
+            .with_font_size(11.0)
+            .with_max_lines(2)
+            .finish()
+    };
+
+    let version = if update.current_version.is_empty() {
+        "unknown".to_owned()
+    } else {
+        update.current_version.clone()
+    };
+    let channel = if update.channel.is_empty() { "dev".to_owned() } else { update.channel.clone() };
+    let last_check = update.last_check.clone().unwrap_or_else(|| "never".to_owned());
+    let status = update.status.clone();
+
+    let mut col = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_child(heading(app, "This build"))
+        .with_child(setting_row(app, "Version", value(version, ColorToken::Text), false))
+        .with_child(rule())
+        .with_child(setting_row(app, "Channel", value(channel, ColorToken::Text), false))
+        .with_child(rule())
+        .with_child(setting_row(app, "Last check", value(last_check, ColorToken::Muted), false))
+        .with_child(rule())
+        .with_child(setting_row(app, "Status", value(status, ColorToken::Text), false));
+
+    if !configured {
+        col = col.with_child(rule());
+        col = col.with_child(note(
+            app,
+            "This build has no update host configured, so it checks nothing. A released build carries the manifest URL and the public key it trusts.",
+        ));
+    }
+
+    // The banner a withdrawn version earns: it names the replacement, and the
+    // install row below is what carries the user back to it.
+    if let Some(banner) = &update.banner {
+        col = col.with_child(rule());
+        col = col.with_child(
+            Container::new(
+                Flex::column()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                    .with_spacing(sm)
+                    .with_child(
+                        Text::new(format!("{} was withdrawn", banner.running))
+                            .with_theme_color(ColorToken::Warning, app)
+                            .with_font_size(12.0)
+                            .with_max_lines(1)
+                            .finish(),
+                    )
+                    .with_child(
+                        Text::new(banner.detail.clone())
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_size(11.0)
+                            .with_max_lines(3)
+                            .finish(),
+                    )
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::uniform(sm))
+            .finish(),
+        );
+    }
+
+    if let Some(available) = &update.available {
+        let label = if available.rollback { "Go back to" } else { "Available" };
+        col = col.with_child(rule());
+        col = col.with_child(setting_row(
+            app,
+            label,
+            value(available.detail(), ColorToken::Accent),
+            false,
+        ));
+        col = col.with_child(rule());
+        col = col.with_child(setting_row(
+            app,
+            "File",
+            value(available.file_name.clone(), ColorToken::Muted),
+            false,
+        ));
+    }
+
+    if let Some(ready) = &update.ready_version {
+        col = col.with_child(rule());
+        col = col.with_child(setting_row(
+            app,
+            "Installed",
+            value(format!("{ready} — restart to use it"), ColorToken::Success),
+            false,
+        ));
+    }
+
+    // A failure is part of the section, in the page's own words: a silent log
+    // line is an update the user never learns did not happen.
+    if let Some(error) = &update.error {
+        col = col.with_child(rule());
+        col = col.with_child(setting_row(
+            app,
+            "Last error",
+            value(error.clone(), ColorToken::Error),
+            false,
+        ));
+    }
+
+    if let Some(failed) = &update.failed_version {
+        col = col.with_child(rule());
+        col = col.with_child(note(
+            app,
+            &format!("Goble {failed} was installed and rolled back, so this build is the one you are on."),
+        ));
+    }
+
+    let on_check = actions.on_check_for_updates.clone();
+    let check_focused = order.take(SettingsControl::CheckForUpdates);
+    let check = Button::new(Text::new("Check now").finish())
+        .with_on_click(move || (on_check.borrow_mut())())
+        .finish();
+    col = col.with_child(rule());
+    col = col.with_child(action_row(app, check, check_focused));
+
+    let install_label = match &update.available {
+        Some(available) if available.rollback => {
+            format!("Install {} and restart", available.version)
+        }
+        Some(available) => format!("Install {} and restart", available.version),
+        None => "Install and restart".to_owned(),
+    };
+    let on_install = actions.on_install_update.clone();
+    let install_focused = order.take(SettingsControl::InstallUpdate);
+    let install = Button::new(Text::new(install_label).finish())
+        .with_variant(ButtonVariant::Primary)
+        .with_disabled(!update.can_install() || !configured)
+        .with_on_click(move || (on_install.borrow_mut())())
+        .finish();
+    col = col.with_child(action_row(app, install, install_focused));
 
     order.finish();
     Container::new(col.finish()).finish()

@@ -1,6 +1,6 @@
 # Auto-update
 
-The app checks a signed manifest on `downloads.goble.dev`, compares it to what
+The app checks a signed manifest on `get.octomus.dev`, compares it to what
 this installation already runs, and installs what the manifest names. The
 artifacts themselves stay on GitHub Releases; see
 [distribution.md](distribution.md) for the publishing side.

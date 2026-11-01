@@ -1,7 +1,7 @@
 # Distribution
 
 Goble's artifacts live on GitHub Releases. A Cloudflare Worker at
-`downloads.goble.dev` holds the signed manifest that names the current release
+`get.octomus.dev` holds the signed manifest that names the current release
 and redirects downloads to GitHub, so the app trusts one small domain we
 control while the bytes stay in a place we do not have to pay for.
 
@@ -63,7 +63,7 @@ The manifest is built by:
 ```sh
 GOBLE_RELEASE_EPOCH=7 \
 GOBLE_YANKED_VERSIONS=0.1.9 \
-GOBLE_DOWNLOAD_BASE_URL=https://downloads.goble.dev \
+GOBLE_DOWNLOAD_BASE_URL=https://get.octomus.dev \
   scripts/release.sh --manifest --version 0.2.0 --channel stable --outdir dist
 ```
 
@@ -98,9 +98,11 @@ npx wrangler deploy
 ```
 
 `PUBLIC_BASE_URL` and `GITHUB_REPO` are plain vars in `wrangler.toml`. The
-route block for `downloads.goble.dev` is commented out there; uncomment it once
-the zone is pointed at Cloudflare. The admin token is a secret: it never
-appears in `wrangler.toml`, in a manifest, or in anything a browser can fetch.
+Worker is live on `get.octomus.dev` through the zone route in that file: the
+`octomus.dev` zone is on Cloudflare and `get.` is a proxied record, so the
+route takes the hostname without a DNS change. The admin token is a secret: it
+never appears in `wrangler.toml`, in a manifest, or in anything a browser can
+fetch.
 
 A dry run validates the bundle without touching the account:
 
@@ -132,7 +134,7 @@ node --test deploy/downloads-worker/test
 5. Confirm both copies agree:
 
    ```sh
-   curl -s https://downloads.goble.dev/channel_versions.json | jq .channels.stable
+   curl -s https://get.octomus.dev/channel_versions.json | jq .channels.stable
    ```
 
    The worker's copy and the release asset should be identical.
@@ -140,7 +142,7 @@ node --test deploy/downloads-worker/test
 If the publish step was skipped (forks without the secrets), publish by hand:
 
 ```sh
-GOBLE_WORKER_URL=https://downloads.goble.dev \
+GOBLE_WORKER_URL=https://get.octomus.dev \
 GOBLE_WORKER_ADMIN_TOKEN=… \
   scripts/publish-manifest.sh --manifest dist/channel_versions.json
 ```
@@ -168,7 +170,7 @@ it next checks and installs.
 4. Confirm:
 
    ```sh
-   curl -s https://downloads.goble.dev/channel_versions.json | jq .channels.stable
+   curl -s https://get.octomus.dev/channel_versions.json | jq .channels.stable
    ```
 
    The version is the older one, the epoch is the new one, and the withdrawn
@@ -186,7 +188,7 @@ shows a banner naming the replacement and offering the install.
 
 Every artifact URL in the manifest is generated from `PUBLIC_BASE_URL` when
 `scripts/release.sh --manifest` runs. To move downloads from
-`downloads.goble.dev` to another host:
+`get.octomus.dev` to another host:
 
 1. Deploy the worker behind the new route and point the new host at it.
 2. Publish a manifest generated with the new base (a release dispatch, or

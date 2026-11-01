@@ -9,7 +9,7 @@
 # epoch answers 409) instead of pretending the publish happened.
 #
 # Usage:
-#   GOBLE_WORKER_URL=https://downloads.goble.dev \
+#   GOBLE_WORKER_URL=https://get.octomus.dev \
 #   GOBLE_WORKER_ADMIN_TOKEN=… \
 #   scripts/publish-manifest.sh --manifest dist/channel_versions.json
 #

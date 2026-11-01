@@ -67,7 +67,7 @@ Options:
 Environment:
   GOBLE_VERSION                version, used when --version is absent
   GOBLE_DOWNLOAD_BASE_URL      base URL for the manifest's artifact links
-                               (e.g. https://downloads.goble.dev/dl)
+                               (e.g. https://get.octomus.dev/dl)
   GOBLE_RELEASE_EPOCH          publication epoch written to the manifest (default 1).
                                It rises on every publish, including a rollback
   GOBLE_YANKED_VERSIONS        comma-separated withdrawn versions, sorted (default empty)
@@ -502,7 +502,7 @@ json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
 write_manifest() {
     # The base names the host; the tag directory is appended here, so a worker
-    # URL (`https://downloads.goble.dev/dl`) and the GitHub release URL
+    # URL (`https://get.octomus.dev/dl`) and the GitHub release URL
     # (`…/releases/download`) both end up with the same `…/v<version>/<file>`
     # shape the client and the download redirect agree on.
     if [[ -z "$DOWNLOAD_BASE" ]]; then

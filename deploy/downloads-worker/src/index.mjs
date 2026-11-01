@@ -9,7 +9,12 @@ import {
   sanitizeManifest,
   storedEpoch,
 } from "./manifest.mjs";
-import { bearerToken, downloadTarget, matchRoute, tokenMatches } from "./route.mjs";
+import {
+  DEFAULT_REPO,
+  powershellInstaller,
+  shellInstaller,
+} from "./install.mjs";
+import { bearerToken, downloadTarget, isValidRepo, matchRoute, tokenMatches } from "./route.mjs";
 
 /** Channel served when the request names none. */
 const DEFAULT_CHANNEL = "stable";
@@ -115,6 +120,8 @@ function indexResponse(request, env) {
 <h1>Goble downloads</h1>
 <ul>
 <li><a href="${base}/channel_versions.json">channel_versions.json</a> (add <code>?channel=beta</code> for another channel)</li>
+<li><a href="${base}/install.sh">install.sh</a> — <code>curl -fsSL ${base}/install.sh | sh</code></li>
+<li><a href="${base}/install.ps1">install.ps1</a></li>
 <li><a href="${base}/health">health</a></li>
 </ul>
 </body>
@@ -123,6 +130,41 @@ function indexResponse(request, env) {
   return new Response(body, {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+/**
+ * The installer script for a shell, built from the configured repository and
+ * public base. Both values are validated before they reach the script text.
+ * @param {Request} request
+ * @param {Env} env
+ * @param {"sh" | "ps1"} shell
+ * @returns {Response}
+ */
+function serveInstall(request, env, shell) {
+  const configured =
+    typeof env.GITHUB_REPO === "string" && env.GITHUB_REPO.trim() !== ""
+      ? env.GITHUB_REPO.trim()
+      : DEFAULT_REPO;
+  if (!isValidRepo(configured)) {
+    return error(500, "GITHUB_REPO is not a valid `owner/repo`");
+  }
+  const base = publicBaseUrl(env, request);
+  if (shell === "ps1") {
+    return new Response(powershellInstaller(configured, base), {
+      status: 200,
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "public, max-age=300",
+      },
+    });
+  }
+  return new Response(shellInstaller(configured, base), {
+    status: 200,
+    headers: {
+      "content-type": "text/x-shellscript; charset=utf-8",
+      "cache-control": "public, max-age=300",
+    },
   });
 }
 
@@ -229,6 +271,10 @@ export default {
         return hasMethod(request, "GET") ? json({ ok: true }) : methodNotAllowed("GET");
       case "manifest":
         return hasMethod(request, "GET") ? serveManifest(url, env) : methodNotAllowed("GET");
+      case "install":
+        return hasMethod(request, "GET")
+          ? serveInstall(request, env, route.shell)
+          : methodNotAllowed("GET");
       case "download":
         return hasMethod(request, "GET")
           ? serveDownload(route.tag, route.asset, env)

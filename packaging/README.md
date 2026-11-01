@@ -68,9 +68,10 @@ yet* below.
 
 ### macOS icons
 
-`make-bundle.sh` defaults to the in-repo 256×256 `icon.png` and will **upscale**
-it to fill the `.icns` sizes, warning as it does so. Pass a 1024×1024 source for
-a crisp Retina icon:
+`make-bundle.sh` defaults to the in-repo 1024×1024 `icon.png`, rendered from
+`packaging/icons/goble.svg` (the same source feeds the Linux and Windows
+assets). The 32, 128 and 256 px PNGs beside it are what the window and the
+installers use. Pass another 1024×1024 source to override it:
 
 ```bash
 packaging/macos/make-bundle.sh --binary target/release/goble-app \
@@ -235,7 +236,7 @@ Artifact URLs default to
 override the base with `--download-base`, `GOBLE_DOWNLOAD_BASE_URL` or
 `GOBLE_DOWNLOAD_BASE` (the `/v<version>` tag is appended unless the base already
 ends with it). Setting the base to the downloads worker
-(`https://downloads.goble.dev/dl`) makes every link move when the worker's
+(`https://get.octomus.dev/dl`) makes every link move when the worker's
 domain moves, without a client change.
 
 With `GOBLE_UPDATE_SIGNING_KEY` set, a `"signature"` field is added to the

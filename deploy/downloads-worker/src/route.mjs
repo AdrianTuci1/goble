@@ -19,6 +19,7 @@ const GITHUB_BASE = "https://github.com";
  * @typedef {{ kind: "index" }
  *   | { kind: "health" }
  *   | { kind: "manifest" }
+ *   | { kind: "install", shell: "sh" | "ps1" }
  *   | { kind: "download", tag: string, asset: string }
  *   | { kind: "publish" }
  *   | { kind: "notFound" }
@@ -63,6 +64,8 @@ export function matchRoute(pathname) {
   if (segments.length === 1) {
     if (segments[0] === "health") return { kind: "health" };
     if (segments[0] === "channel_versions.json") return { kind: "manifest" };
+    if (segments[0] === "install.sh") return { kind: "install", shell: "sh" };
+    if (segments[0] === "install.ps1") return { kind: "install", shell: "ps1" };
     return { kind: "notFound" };
   }
   if (segments.length === 2 && segments[0] === "admin" && segments[1] === "publish") {
@@ -100,6 +103,17 @@ export function validateAsset(asset) {
 }
 
 /**
+ * A repository is `owner/repo`, each side one segment, without traversal.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isValidRepo(value) {
+  return (
+    typeof value === "string" && REPO_PATTERN.test(value) && !value.includes("..")
+  );
+}
+
+/**
  * The GitHub URL a download route redirects to, or null when any part of the
  * input would escape the release path.
  * @param {string} githubRepo `owner/repo`
@@ -108,8 +122,7 @@ export function validateAsset(asset) {
  * @returns {string | null}
  */
 export function downloadTarget(githubRepo, tag, asset) {
-  if (typeof githubRepo !== "string" || !REPO_PATTERN.test(githubRepo)) return null;
-  if (githubRepo.includes("..")) return null;
+  if (!isValidRepo(githubRepo)) return null;
   if (!validateTag(tag) || !validateAsset(asset)) return null;
   const base = `${GITHUB_BASE}/${githubRepo}/releases`;
   return tag === LATEST

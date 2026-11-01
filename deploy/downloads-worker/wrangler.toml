@@ -13,21 +13,23 @@ workers_dev = true
 #   npx wrangler kv namespace create MANIFESTS
 [[kv_namespaces]]
 binding = "MANIFESTS"
-id = "00000000000000000000000000000000" # placeholder: fill from the command above
+id = "bd11e97c523842728c26840931f02c60" # MANIFESTS, created 2026-11-01
 
 [vars]
 # Absolute base the Worker advertises in its index links. Keep it in sync with
 # the route below when the domain moves.
-PUBLIC_BASE_URL = "https://downloads.goble.dev"
+# The host the Worker answers on. `get.octomus.dev` is a proxied record in the
+# `octomus.dev` zone, so the route below takes the hostname over.
+PUBLIC_BASE_URL = "https://get.octomus.dev"
 # Placeholder owner/repo: replace with the repository that publishes the
 # release assets (`GET /dl/:tag/:asset` redirects into its releases).
-GITHUB_REPO = "goble-dev/goble"
+GITHUB_REPO = "AdrianTuci1/goble"
 
-# Custom domain for the release host. Uncomment at release time, together with
-# PUBLIC_BASE_URL, then redeploy and republish the manifests.
-# [[routes]]
-# pattern = "downloads.goble.dev"
-# custom_domain = true
+# The release host. `octomus.dev` is a Cloudflare zone, and the record for
+# `get.` is proxied, so a zone route serves it without touching DNS.
+[[routes]]
+pattern = "get.octomus.dev/*"
+zone_name = "octomus.dev"
 
 # ADMIN_TOKEN is a secret and never appears in this file. Set it with:
 #   npx wrangler secret put ADMIN_TOKEN

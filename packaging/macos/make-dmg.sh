@@ -246,7 +246,17 @@ sync
 sleep 1
 
 log "Unmounting image"
-hdiutil detach "$MOUNT_POINT" >/dev/null
+# Finder can still hold the freshly laid-out volume, and a detach that races it
+# fails with "Resource busy" on the runners. Retry before forcing.
+detach_mount() {
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 && return 0
+        sleep 1
+    done
+    hdiutil detach "$MOUNT_POINT" -force >/dev/null
+}
+detach_mount
 MOUNTED=0
 
 # --- convert to compressed read-only ----------------------------------------

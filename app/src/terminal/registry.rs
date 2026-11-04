@@ -58,7 +58,12 @@ impl TerminalRegistry {
         if cfg!(test) || std::env::var_os("GOBLE_TESTING").is_some() {
             return registry;
         }
-        registry.socket = Some(goble_pty::resolve_socket_path());
+        // The PTY daemon is Unix-only; on Windows the registry keeps no socket
+        // and every session path reports the daemon as unavailable.
+        #[cfg(unix)]
+        {
+            registry.socket = Some(goble_pty::resolve_socket_path());
+        }
         registry
     }
 

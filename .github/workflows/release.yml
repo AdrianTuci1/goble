@@ -78,7 +78,7 @@ jobs:
         target: ${{ fromJson(inputs.worker_targets || '["x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu"]') }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # vendor/alacritty_terminal is a path dependency of goble-terminal, and a
       # missing path dependency fails every cargo command in this workspace, not
@@ -180,7 +180,7 @@ jobs:
       GOBLE_UPDATE_PUBLIC_KEY: d049abf5e7b5bc1f9068a7eb804066defbdfdf10185b5e4ab584dda89f51ad76
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # vendor/alacritty_terminal is a path dependency of goble-terminal, and a
       # missing path dependency fails every cargo command in this workspace, not
@@ -398,7 +398,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Resolve version
         shell: bash
@@ -455,7 +455,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # vendor/alacritty_terminal is a path dependency of goble-terminal, and a
       # missing path dependency fails every cargo command in this workspace, not
@@ -547,7 +547,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download the signed manifest from the release
         env:

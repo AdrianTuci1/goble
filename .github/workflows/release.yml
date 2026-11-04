@@ -117,7 +117,7 @@ jobs:
             scripts/install-goblin.sh
 
       - name: Upload worker artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: goblin-worker-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -353,7 +353,7 @@ jobs:
             --version "$GOBLE_VERSION" --outdir dist
 
       - name: Upload app artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: goble-app-${{ matrix.target }}
           # Explicit list: dist/* would also pull in the intermediate Goble.app
@@ -421,7 +421,7 @@ jobs:
             --outdir dist
 
       - name: Upload manifest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: goble-app-manifest
           path: |

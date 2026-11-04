@@ -165,6 +165,14 @@ jobs:
       # `secrets` cannot be read in a step's `if`, so the certificate's presence
       # is hoisted here as a flag and the import step tests that instead.
       APPLE_SIGNING_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+      # Where an installed build looks for updates and which key it trusts.
+      # Both values are public, so they are baked in here: an install must not
+      # depend on the runner having a repository variable set. The key is the
+      # public half of GOBLE_UPDATE_SIGNING_KEY, printed by
+      # `packaging/sign-manifest.sh --print-pubkey`; a manifest whose signature
+      # does not verify against it is refused.
+      GOBLE_UPDATE_MANIFEST: https://get.octomus.dev/channel_versions.json
+      GOBLE_UPDATE_PUBLIC_KEY: d049abf5e7b5bc1f9068a7eb804066defbdfdf10185b5e4ab584dda89f51ad76
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

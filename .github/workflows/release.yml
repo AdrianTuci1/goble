@@ -233,6 +233,10 @@ jobs:
         # Baked in with `option_env!`: the channel decides whether the build
         # reports crashes and accepts updates, and the version is what a crash
         # report and an update check compare against.
+        # PowerShell is the default shell on the Windows runners, and it does
+        # not continue a command over a trailing backslash: `-p` on the next
+        # line becomes a separate command. The step is bash on every platform.
+        shell: bash
         env:
           GOBLE_CHANNEL: ${{ inputs.channel }}
           GOBLE_RELEASE_VERSION: ${{ env.GOBLE_VERSION }}

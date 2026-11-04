@@ -326,7 +326,14 @@ jobs:
       # --- Windows ------------------------------------------------------------
       - name: Install Inno Setup
         if: matrix.platform == 'windows'
-        run: choco install innosetup --version=6.3.3 -y --no-progress
+        shell: pwsh
+        # The runner image ships a newer Inno Setup, and `choco install` refuses
+        # to downgrade it. Use whatever ISCC.exe is already there; install one
+        # only when the image has none.
+        run: |
+          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+          }
 
       - name: Build installer
         if: matrix.platform == 'windows'

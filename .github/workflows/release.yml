@@ -11,9 +11,9 @@ on:
         required: true
         type: string
       worker_targets:
-        description: 'Worker targets (comma separated)'
+        description: 'Worker targets as a JSON array'
         required: false
-        default: 'x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu'
+        default: '["x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu"]'
         type: string
       channel:
         description: 'Update channel written to channel_versions.json'
@@ -70,7 +70,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJson(format('[{0}]', inputs.worker_targets)) }}
+        # The input is a JSON array, and `||` supplies the default when a
+        # dispatch omits it. A comma-separated string here would make `fromJson`
+        # fail to parse the matrix, and a job with no matrix entries is never
+        # created: every job that needs the worker then quietly skips, as
+        # publish-release did.
+        target: ${{ fromJson(inputs.worker_targets || '["x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu"]') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

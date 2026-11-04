@@ -30,7 +30,10 @@ async-trait = "0.1"
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+# Default features pull `native-tls`, which links OpenSSL and blocks the
+# aarch64-linux worker release from cross-compiling on the amd64 runner.
+# Everything here speaks rustls, so keep the TLS stack single and portable.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "charset"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2.2"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }

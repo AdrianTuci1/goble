@@ -5,7 +5,7 @@ pub use ask_user::{AskUserCard, AskUserUi};
 pub use avatar::{Avatar, AvatarShape};
 pub use button::{Button, ButtonVariant};
 pub use caption::Caption;
-pub use caret::{caret, caret_beam, CaretShape, CARET_HEIGHT};
+pub use caret::{caret_beam, CaretShape, CARET_HEIGHT};
 pub use chat_composer::{ChatComposer, CommandProposalUi, DiffFileStat, DiffSummary};
 pub use chat_content::{
     tool_fold_key, ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, SubAgentRow,

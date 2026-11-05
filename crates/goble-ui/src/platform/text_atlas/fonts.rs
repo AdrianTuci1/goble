@@ -940,9 +940,13 @@ pub(super) fn rasterize_text_with_emoji(
         max_y = max_y.max(*y + bitmap.height as f32);
     }
 
-    // Anchor the bitmap at the line-box origin so the quad aligns with the
-    // element box; glyphs that overhang above/left still fit instead of being
-    // clipped.
+    // The quad covers the run's own coordinates: `left`/`top` are the ink's
+    // overhang past the origin — negative when a glyph reaches left of or above
+    // its slot — and each glyph is copied at `glyph - left` inside it. Anchoring
+    // the quad at `left` is what puts a glyph back on `origin + glyph.x`; the
+    // origin-anchored `-left` this had moved a run whose ink overhangs by one
+    // pixel two pixels right of its own pen, and moved the same glyph all over
+    // again when it was drawn as a run of its own.
     let left = min_x.min(0.0).floor();
     let top = min_y.min(0.0).floor();
     let width = ((max_x - left).ceil() as u32).max(1);
@@ -974,7 +978,7 @@ pub(super) fn rasterize_text_with_emoji(
         uv_origin: [0.0; 2],
         uv_size: [0.0; 2],
         size: [width as f32, height as f32],
-        offset: [-left, -top],
+        offset: [left, top],
     };
 
     let emoji_quads = emoji_boxes

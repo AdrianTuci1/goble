@@ -461,6 +461,10 @@ pub struct UiSnapshot {
     pub settings_scroll: Rc<RefCell<ScrollState>>,
     /// Whether the topbar workspace frame is in inline-rename mode.
     pub space_rename_editing: bool,
+    /// Whether the platform's chord modifier (Command on macOS, Ctrl elsewhere)
+    /// is held: each workspace tab then draws its own shortcut number in its
+    /// trailing slot, in place of the close control.
+    pub command_held: bool,
     /// The in-progress space name while renaming.
     pub space_rename_draft: String,
     /// Whether the rename field holds focus.
@@ -556,6 +560,11 @@ pub struct UiSnapshot {
     pub inbox_error: Option<String>,
     /// Scroll offset of the inbox overlay's list.
     pub inbox_scroll: Rc<RefCell<ScrollState>>,
+    /// The rect the topbar's inbox control painted at: the popover hangs from
+    /// it, one frame behind the control's own paint.
+    pub inbox_anchor: Rc<RefCell<Option<goble_ui::RectF>>>,
+    /// The item announced at the top of the window, if one is out.
+    pub announcement: Option<InboxItem>,
     /// The agent-management panel's own state: its open flag, the roster's
     /// filter and grouping, its cursor, the drafts and the rename field.
     pub agent_dashboard: AgentDashboardState,

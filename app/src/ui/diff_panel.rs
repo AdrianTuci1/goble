@@ -72,8 +72,11 @@ const COMPACT_COMMIT: f32 = 280.0;
 /// heights those blocks are laid out at, and a test pins the editor's rows to
 /// the same box the field uses.
 const FILE_HEADER_HEIGHT: f32 = 30.0;
-/// The height of the review's controls bar under the pane's topbar.
+/// The height of the review's controls bar under the pane's topbar, and of the
+/// hairline that separates the two. The bars are the pane's overlay chrome, so
+/// the content column reserves their heights to start below them.
 const TOOLBAR_HEIGHT: f32 = 32.0;
+const TOOLBAR_SEPARATOR_HEIGHT: f32 = 1.0;
 /// The clear space between two file boxes, measured into the next box's top.
 const FILE_BOX_GAP: f32 = 8.0;
 const LIST_PAD_TOP: f32 = 10.0;
@@ -171,7 +174,10 @@ pub(crate) fn build_diff_pane(
     if toolbar.is_some() {
         column = column.with_child(
             Empty::new()
-                .with_size(Vector2F::new(0.0, TOOLBAR_HEIGHT))
+                .with_size(Vector2F::new(
+                    0.0,
+                    TOOLBAR_HEIGHT + TOOLBAR_SEPARATOR_HEIGHT,
+                ))
                 .finish(),
         );
     }
@@ -249,7 +255,11 @@ pub(crate) fn build_diff_pane(
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(header);
     if let Some(toolbar) = toolbar {
-        chrome = chrome.with_child(toolbar);
+        // A hairline on the seam: the bars sit flush, so the content column
+        // reserves its point along with the bar's own height.
+        chrome = chrome
+            .with_child(Divider::horizontal().finish())
+            .with_child(toolbar);
     }
     Stack::new()
         .with_children(vec![content])

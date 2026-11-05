@@ -464,13 +464,35 @@ fn conversation_card(
     )
     .with_workspace_routing(entry.workspace_routing.clone())
     .with_status(entry.status)
-    .with_directory(entry.directory.clone())
+    .with_directory(card_directory(state, entry))
     .with_starred(state.starred.iter().any(|id| id == &entry.id))
     .with_dots_inset(dots_inset)
     .with_on_click(move || (on_select.borrow_mut())(click_id.clone()))
     .with_on_delete(move || (on_delete.borrow_mut())(delete_id.clone()))
     .with_on_toggle_star(move || (on_star.borrow_mut())(star_id.clone()))
     .finish()
+}
+
+/// The directory a card labels itself with. A conversation that has run
+/// somewhere names its own directory; one that has not names where it would
+/// run — the pane already holding it, or the focused pane's, which is where a
+/// conversation opened from the list starts. Every card therefore carries the
+/// row, and only the label is collapsed to `~`: the stored path stays real.
+fn card_directory(state: &UiSnapshot, entry: &ConversationEntry) -> String {
+    let directory = entry.directory.trim();
+    if !directory.is_empty() {
+        return crate::state::display_path(directory);
+    }
+    let pane_path = state
+        .pane_chat
+        .values()
+        .find(|pane| pane.conversation_id == entry.id)
+        .map(|pane| pane.composer_path.trim())
+        .filter(|path| !path.is_empty());
+    match pane_path.unwrap_or_else(|| state.composer_path.trim()) {
+        "" => crate::state::display_path(&crate::state::current_dir_display()),
+        path => crate::state::display_path(path),
+    }
 }
 
 #[cfg(test)]
@@ -1566,6 +1588,190 @@ mod sidebar_surface_tests {
                 }
             }
         }
+    }
+
+    /// Every run of text the sidebar's list drew, with where it drew it, in
+    /// paint order: left of the workspace and below the topbar.
+    fn list_runs(commands: &[RenderCommand]) -> Vec<(String, goble_ui::geometry::Vector2F)> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if origin.x < crate::ui::SIDEBAR_WIDTH
+                        && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                {
+                    Some((text.clone(), *origin))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A card names the directory its conversation works in, directly under the
+    /// subject and above the last response, in the form the user reads it: a
+    /// path under the home directory collapses to `~`. A conversation that has
+    /// run nowhere names the directory it would run in, so its card carries the
+    /// row too.
+    #[test]
+    fn a_conversation_card_draws_the_working_directory_under_its_subject() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let home = crate::state::home_directory().expect("the machine has a home directory");
+        let app = AppContext::default();
+        let view = RootView::new(&app, &desktop, None);
+        {
+            let state = view.state_rc();
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.conversations = vec![
+                conversation("c1", "Ada", "Frontend")
+                    .with_directory(format!("{home}/Projects/goble")),
+                // Nowhere yet: it names the pane's directory, where it would run.
+                conversation("c2", "Coder", "Frontend"),
+            ];
+            s.set_active_pane_path(format!("{home}/Projects/warp"));
+        }
+        let mut root: Box<dyn Element> = Box::new(view);
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        let runs = list_runs(&commands);
+
+        let at = |text: &str| {
+            runs.iter()
+                .find_map(|(run, origin)| (run == text).then_some(*origin))
+                .unwrap_or_else(|| panic!("the sidebar draws {text:?}: {runs:?}"))
+        };
+        let title = at("Ada");
+        let path = at("~/Projects/goble");
+        assert!(
+            title.y < path.y,
+            "the path is under the subject: title {title:?} path {path:?}"
+        );
+        let last = runs
+            .iter()
+            .filter(|(run, origin)| run == "Let's ship hot reload today" && origin.y > path.y)
+            .min_by(|a, b| a.1.y.total_cmp(&b.1.y))
+            .map(|(_, origin)| *origin)
+            .expect("the card draws its last response below the path");
+        assert!(
+            path.y < last.y,
+            "and above the last response: path {path:?} last {last:?}"
+        );
+
+        // The path row starts at the title's own x — the folder icon leads it,
+        // the way the title's gutter does — so the two read as one column.
+        let folder = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, origin, .. }
+                    if name == "folder" && origin.x < crate::ui::SIDEBAR_WIDTH =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .find(|origin| origin.y > title.y)
+            .expect("the path row leads with the folder icon");
+        assert_eq!(folder.x, title.x, "the path sits under the subject's x");
+
+        // A conversation with no directory of its own still shows one: where its
+        // pane runs.
+        let coder = at("Coder");
+        let fallback = at("~/Projects/warp");
+        assert!(
+            coder.y < fallback.y,
+            "the fallback directory is under its own card's subject: \
+             coder {coder:?} path {fallback:?}"
+        );
+    }
+
+    /// The path row is one line: a long directory elides at the band's edge
+    /// instead of wrapping under the title, so the card keeps its height and the
+    /// title stays readable at the sidebar's narrowest width.
+    #[test]
+    fn a_long_path_keeps_one_line_and_leaves_the_title_readable() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let home = crate::state::home_directory().expect("the machine has a home directory");
+        let app = AppContext::default();
+        let width = 200.0_f32;
+
+        let render = |directory: String| {
+            let view = RootView::new(&app, &desktop, None);
+            {
+                let state = view.state_rc();
+                let mut s = state.borrow_mut();
+                s.show_workspace_choice = false;
+                s.show_llm_key_banner = false;
+                s.right_sidebar_open = false;
+                s.crons_open = false;
+                s.sidebar_width = width;
+                s.conversations =
+                    vec![conversation("c1", "Ada", "Frontend").with_directory(directory)];
+            }
+            let mut root: Box<dyn Element> = Box::new(view);
+            render_element(&mut root, vec2f(1024.0, 768.0), &app)
+        };
+
+        let blank = render(format!("{home}/p"));
+        let long = render(format!(
+            "{home}/Projects/goble/crates/goble-ui/src/elements"
+        ));
+
+        let rows = |commands: &[RenderCommand]| {
+            let runs = list_runs(commands);
+            let at = |text: &str| {
+                runs.iter()
+                    .find_map(|(run, origin)| (run == text).then_some(*origin))
+                    .unwrap_or_else(|| panic!("the sidebar draws {text:?}: {runs:?}"))
+            };
+            (at("Ada"), at("Let's ship hot reload today"))
+        };
+        let (short_title, short_last) = rows(&blank);
+        let (long_title, long_last) = rows(&long);
+        assert_eq!(
+            short_last.y - short_title.y,
+            long_last.y - long_title.y,
+            "a longer path adds no line to the card"
+        );
+        assert_eq!(short_title.x, long_title.x, "and does not move the title");
+
+        // The subject is drawn whole at this width: the gutter holds and a short
+        // title still ends inside the card's own edge.
+        let card_edge = width - app.theme.spacing_px(SpacingToken::Xs);
+        let title_run = long
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText {
+                    text,
+                    origin,
+                    font_size,
+                    line_height,
+                    max_width,
+                    ..
+                } if text == "Ada" => Some(
+                    goble_ui::elements::text::measure_text(
+                        text,
+                        *font_size,
+                        *line_height,
+                        *max_width,
+                    ) + *origin,
+                ),
+                _ => None,
+            })
+            .expect("the narrow card draws its subject");
+        assert!(
+            title_run.x <= card_edge,
+            "the title ends inside the card: {title_run:?} edge {card_edge}"
+        );
     }
 
     /// "View all (N)" / "Show less" is the list's own control: its label and its

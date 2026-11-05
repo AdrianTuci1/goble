@@ -4,8 +4,8 @@ use std::rc::Rc;
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, EventContext, Expanded,
-    Fill, Flex, HoverRow, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point,
-    SizeConstraint, Text, TopbarButton,
+    Fill, Flex, HoverRow, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, Padding,
+    PaintContext, Point, SizeConstraint, Text, TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -26,10 +26,33 @@ const DOTS_SIZE: f32 = 16.0;
 /// edge), so the clip is what stops the title short of the dots.
 const DOTS_CLEARANCE: f32 = 6.0;
 
+/// The inset the card's content keeps from the band's edges. The band itself
+/// stays full width — its hover and selected fill spans the sidebar, and the
+/// card's hit area with it — so this is what keeps the content off the
+/// surface's edge, the 12 pt a warp-new list item keeps for its own content
+/// (`Container::with_horizontal_padding(12.)`).
+const CARD_CONTENT_INSET: f32 = 12.0;
+
 /// The status square the card leads with. It is a marker, not a badge: half
 /// the linear space of the environment avatar it replaces, so the subject's
 /// text stays the card's widest element.
-const STATUS_SIZE: f32 = 12.0;
+const STATUS_SIZE: f32 = 11.0;
+
+/// The gap between the status square and the subject. The card led with a
+/// 12 pt square and a 10 pt gap before the square shrank, so the gutter keeps
+/// its old width and this gap absorbs the extra point.
+const STATUS_GAP: f32 = 11.0;
+
+/// The gutter the status square keeps before the subject: the square and the gap
+/// after it. It is what the rows under the title pad themselves by to line up
+/// with the subject, the content inset coming from their container.
+const TEXT_GUTTER: f32 = STATUS_SIZE + STATUS_GAP;
+
+/// The inset the card's text starts at: the content inset plus the gutter the
+/// status square and its gap keep for themselves. The container supplies the
+/// content inset and the title row the gutter, so only the tests need the sum.
+#[cfg(test)]
+const TEXT_INSET: f32 = CARD_CONTENT_INSET + TEXT_GUTTER;
 
 /// The widest the card's tray grows before its rows' own width is what it takes.
 /// Wide enough for "Delete conversation" on one line with the row's own
@@ -259,7 +282,6 @@ impl ConversationListItem {
         if self.row.is_some() {
             return;
         }
-        let spacing = 10.0_f32;
         let xs = 6.0_f32;
 
         let ui = self.ui.borrow();
@@ -320,14 +342,41 @@ impl ConversationListItem {
             )
             .finish();
 
+        // Status square. It leads the title line rather than the card: its own
+        // line is the subject's, so the two share a centre, while a square
+        // centred on the whole column would sit between the title and the path
+        // under it.
+        //
+        // The colour is the conversation's last turn at a glance: gray when
+        // there is nothing to report, yellow while the agent is working or
+        // waiting on the user, red when the last turn failed and green when it
+        // finished. Square and unbacked, like the rest of the sidebar's marks;
+        // the environment avatar it replaces is gone.
+        let square = Container::new(
+            Empty::new()
+                .with_size(vec2f(STATUS_SIZE, STATUS_SIZE))
+                .finish(),
+        )
+        .with_background(Fill::Solid(app.theme.color(self.status.color_token())))
+        .finish();
+
+        let title = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(STATUS_GAP)
+            .with_child(square)
+            .with_child(name_row)
+            .finish();
+
         let mut text_column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_spacing(2.0)
-            .with_child(name_row);
+            .with_child(title);
         // The directory the conversation works in, directly under its subject:
-        // it says where the work happens, which the title alone cannot.
+        // it says where the work happens, which the title alone cannot. It and
+        // the last response keep the title's inset, so the column reads as one
+        // block beside the square's gutter.
         if let Some(directory) = self.directory.clone() {
-            text_column = text_column.with_child(
+            text_column = text_column.with_child(beside_square(
                 Flex::row()
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_spacing(4.0)
@@ -345,40 +394,26 @@ impl ConversationListItem {
                             .finish(),
                     )
                     .finish(),
-            );
+            ));
         }
-        let text_column = text_column.with_child(last_row).finish();
-
-        // Status square: the conversation's last turn reads at a glance —
-        // gray when there is nothing to report, yellow while the agent is
-        // working or waiting on the user, red when the last turn failed and
-        // green when it finished. Square and unbacked, like the rest of the
-        // sidebar's marks; the environment avatar it replaces is gone.
-        let status = Container::new(
-            Empty::new()
-                .with_size(vec2f(STATUS_SIZE, STATUS_SIZE))
-                .finish(),
-        )
-        .with_background(Fill::Solid(app.theme.color(self.status.color_token())))
-        .finish();
+        let text_column = text_column.with_child(beside_square(last_row)).finish();
 
         let row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
-            .with_child(status)
             .with_child(Expanded::new(text_column).finish());
 
         // Square: the sidebar is a flat surface, so a card is a full-width band
-        // rather than a rounded widget. The band's fill is painted by `paint` and
-        // not by this container: the row is clipped at the control's gutter while
-        // the band is not, so the two cannot come from one clipped subtree.
+        // rather than a rounded widget. Only the content is inset from the
+        // band's edges: the band's fill is painted by `paint` and not by this
+        // container, so the fill and the hit area stay full width — the row is
+        // clipped clear of the dots while the band is not, so the two cannot
+        // come from one clipped subtree.
         self.row = Some(
             Container::new(row.finish())
                 .with_padding(crate::style::EdgeInsets::new(
-                    0.0,
+                    CARD_CONTENT_INSET,
                     CARD_EXTRA_HEIGHT,
-                    0.0,
+                    CARD_CONTENT_INSET,
                     CARD_EXTRA_HEIGHT,
                 ))
                 .finish(),
@@ -533,16 +568,19 @@ impl ConversationListItem {
         }
     }
 
-    /// The area the row may paint in: the card's width less the control's
-    /// gutter, and the row's own band only, so the menu below it is not clipped
-    /// with the row.
+    /// The area the row may paint in: the card's content box, which stops at the
+    /// content inset on the trailing edge (the text is measured with nothing to
+    /// wrap against, so the clip is what cuts it at that inset), and clear of
+    /// the control's gutter while the control is drawn. It is the row's own band
+    /// only, so the menu below it is not clipped with the row.
     fn row_clip(&self, origin: Vector2F, size: Vector2F) -> RectF {
-        rectf(
-            origin.x,
-            origin.y,
-            (size.x - self.dots_inset - DOTS_SIZE - DOTS_CLEARANCE).max(0.0),
-            self.row_height,
-        )
+        let content_right = size.x - CARD_CONTENT_INSET;
+        let right = if self.dots.is_some() {
+            content_right.min(size.x - self.dots_inset - DOTS_SIZE - DOTS_CLEARANCE)
+        } else {
+            content_right
+        };
+        rectf(origin.x, origin.y, right.max(0.0), self.row_height)
     }
 
     /// The menu's star row, or `None` when the card was given no star action.
@@ -664,6 +702,14 @@ impl ConversationListItem {
     }
 }
 
+/// A row of the card's text column under the title, inset to the title's own x.
+/// The title starts after the status square's gutter ([`TEXT_GUTTER`], on top of
+/// the content inset its container already gives it); the rows under it line up
+/// with it rather than with the square's edge.
+fn beside_square(row: Box<dyn Element>) -> Box<dyn Element> {
+    Padding::new(row, EdgeInsets::new(TEXT_GUTTER, 0.0, 0.0, 0.0)).finish()
+}
+
 /// The inset a tray row gives its content. The tray has no horizontal padding
 /// of its own, so the band a row paints spans the tray edge to edge; the label
 /// keeps the inset the ghost button gave it — the tray's padding plus the
@@ -716,23 +762,19 @@ impl Element for ConversationListItem {
             renderer.clip_rect(card);
         }
 
-        // The row stops short of the control, so the title is cut before the
-        // dots rather than painted under them. The menu and the control are
-        // painted past that clip — inside the card's own, which keeps them
-        // within the surface they belong to.
-        let clipped_row = self.dots.is_some();
-        if clipped_row {
-            if let Some(renderer) = ctx.renderer.as_mut() {
-                renderer.clip_rect(self.row_clip(origin, size));
-            }
+        // The row stops at the content's trailing edge, and short of the control
+        // too while the control is drawn, so the title is cut at the inset rather
+        // than painted over the band's edge or under the dots. The menu and the
+        // control are painted past that clip — inside the card's own, which
+        // keeps them within the surface they belong to.
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            renderer.clip_rect(self.row_clip(origin, size));
         }
         if let Some(row) = self.row.as_mut() {
             row.paint(origin, ctx, app);
         }
-        if clipped_row {
-            if let Some(renderer) = ctx.renderer.as_mut() {
-                renderer.pop_clip();
-            }
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            renderer.pop_clip();
         }
         if let Some(bounds) = self.dots_bounds() {
             if let Some(dots) = self.dots.as_mut() {
@@ -758,14 +800,17 @@ impl Element for ConversationListItem {
             }
         }
 
-        // Fade the right edge of the row until the 3-dot menu appears (the row
-        // is then clipped clear of the dots). Skip while the menu is open so the
-        // fade never covers the delete button.
+        // Fade the trailing edge of the content until the 3-dot menu appears
+        // (the row is then clipped clear of the dots). It ends on the content's
+        // own edge, so the cut the row's clip makes there is a fade rather than
+        // a hard line. Skip while the menu is open so the fade never covers the
+        // delete button.
         let ui = self.ui.borrow();
         if !ui.hover && !ui.menu_open {
             let fade_w = 24.0_f32;
-            if size.x > fade_w {
-                let rect = rectf(origin.x + size.x - fade_w, origin.y, fade_w, size.y);
+            let content_width = size.x - CARD_CONTENT_INSET;
+            if content_width > fade_w {
+                let rect = rectf(origin.x + content_width - fade_w, origin.y, fade_w, size.y);
                 if let Some(renderer) = ctx.renderer.as_mut() {
                     renderer.fill_rect_fade_right(rect, self.bg, 0.0);
                 }
@@ -997,15 +1042,24 @@ mod tests {
         let width = 200.0;
         let commands = crate::test_util::render_element(&mut element, vec2f(width, 200.0), &app);
         assert!(dots_box(&commands).is_none(), "an idle card draws no dots");
+        let idle_clips: Vec<RectF> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::ClipRect(rect) => Some(*rect),
+                _ => None,
+            })
+            .collect();
         assert!(
-            commands
+            idle_clips
                 .iter()
-                .filter_map(|command| match command {
-                    RenderCommand::ClipRect(rect) => Some(rect.max_x()),
-                    _ => None,
-                })
-                .all(|max_x| max_x >= width - 0.01),
-            "and needs no gutter clip: the card's own clip is enough"
+                .all(|clip| clip.max_x() >= width - CARD_CONTENT_INSET - 0.01),
+            "an idle card needs no gutter clip: nothing cuts inside the content box {idle_clips:?}"
+        );
+        assert!(
+            idle_clips
+                .iter()
+                .any(|clip| (clip.max_x() - (width - CARD_CONTENT_INSET)).abs() < 0.01),
+            "and cuts its row at the content's edge: {idle_clips:?}"
         );
 
         // The hovered card pins its control to its trailing edge, inset by the
@@ -1542,7 +1596,27 @@ mod tests {
         })
     }
 
-    /// Every conversation's card leads with a 12x12 filled square, and its
+    /// The box a drawn run occupies: its origin and the height it measured to,
+    /// which is the band its line is centred in.
+    fn run_box(commands: &[RenderCommand], run: &str) -> Option<RectF> {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText {
+                text,
+                origin,
+                font_size,
+                line_height,
+                max_width,
+                ..
+            } if text == run => {
+                let size =
+                    crate::elements::text::measure_text(text, *font_size, *line_height, *max_width);
+                Some(rectf(origin.x, origin.y, size.x, size.y))
+            }
+            _ => None,
+        })
+    }
+
+    /// Every conversation's card leads with an 11x11 filled square, and its
     /// colour is the status: gray when idle or stopped, yellow while the agent
     /// works or waits, red for a failed turn and green for a finished one. The
     /// environment icon the card used to draw is gone.
@@ -1573,7 +1647,11 @@ mod tests {
                 status_square(&commands).unwrap_or_else(|| panic!("{status:?}: no square"));
             assert_eq!((square.width(), square.height()), (STATUS_SIZE, STATUS_SIZE));
             assert_eq!(color, app.theme.color(token), "{status:?} colour");
-            assert!(square.min_x() < 1.0, "{status:?}: the square leads the card");
+            assert_eq!(
+                square.min_x(),
+                CARD_CONTENT_INSET,
+                "{status:?}: the square leads the card's content"
+            );
             assert!(
                 !commands.iter().any(|command| matches!(
                     command,
@@ -1582,5 +1660,209 @@ mod tests {
                 "{status:?}: the environment icon is not drawn any more"
             );
         }
+    }
+
+    /// The status square belongs to the title line: its centre is the subject's
+    /// centre. A square centred on the card's whole text column instead lands
+    /// between the title and the path under it, which is the placement this
+    /// pins against.
+    #[test]
+    fn the_status_square_sits_on_the_title_line() {
+        let app = AppContext::default();
+        let item = ConversationListItem::new(
+            "c1",
+            "Ada",
+            "I finished the task.",
+            "40 min ago",
+            Rc::new(RefCell::new(AgentCardUi::default())),
+            false,
+        )
+        .with_directory("~/Projects/goble");
+        let mut element: Box<dyn Element> = Box::new(item);
+        let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
+        let card = element.size().expect("the card laid out");
+
+        let (square, _) = status_square(&commands).expect("the card draws its status square");
+        let title = run_box(&commands, "Ada").expect("the card draws its subject");
+        let path = run_box(&commands, "~/Projects/goble").expect("the card draws its path");
+        let last =
+            run_box(&commands, "I finished the task.").expect("the card draws its last response");
+
+        let centre = |box_: RectF| box_.min_y() + box_.height() / 2.0;
+        assert!(
+            (centre(square) - centre(title)).abs() <= 0.5,
+            "the square is centred on the title: square {square:?} title {title:?}"
+        );
+        assert!(
+            (centre(square) - card.y / 2.0).abs() > 1.0,
+            "and no longer on the whole card: square {square:?} card {card:?}"
+        );
+        assert!(
+            centre(title) < centre(path) && centre(path) < centre(last),
+            "the path sits between the title and the last response: \
+             title {title:?} path {path:?} last {last:?}"
+        );
+        // The square keeps its size, and the title starts past its gutter: the
+        // content's inset, then the square, then the gap.
+        assert_eq!(square.width(), STATUS_SIZE);
+        assert_eq!(
+            title.min_x(),
+            CARD_CONTENT_INSET + STATUS_SIZE + STATUS_GAP,
+            "the subject's first character starts past the square's gutter"
+        );
+        assert_eq!(
+            title.min_x(),
+            TEXT_INSET,
+            "which is the one inset the card's rows are placed from"
+        );
+        assert_eq!(
+            icon_box(&commands, "folder").map(|icon| icon.min_x()),
+            Some(TEXT_INSET),
+            "and the path row under it starts at the same inset"
+        );
+    }
+
+    /// The card keeps content padding of its own: the content starts 12 pt in
+    /// from the band's left edge, the way a warp-new list item's does, while the
+    /// band — the hover/selected fill and with it the hit area — still spans the
+    /// sidebar's full width.
+    #[test]
+    fn the_cards_content_is_inset_while_its_band_stays_full_width() {
+        let app = AppContext::default();
+        let width = 260.0;
+        let item = ConversationListItem::new(
+            "c1",
+            "Ada",
+            "I finished the task.",
+            "40 min ago",
+            Rc::new(RefCell::new(AgentCardUi {
+                hover: true,
+                menu_open: false,
+                ..Default::default()
+            })),
+            false,
+        )
+        .with_dots_inset(1.0);
+        let mut element: Box<dyn Element> = Box::new(item);
+        let commands = crate::test_util::render_element(&mut element, vec2f(width, 200.0), &app);
+        let card = element.size().expect("the card laid out");
+        assert_eq!(card.x, width, "the card is the sidebar's full width");
+
+        // The band: the hover fill covers the whole card, edge to edge.
+        let band = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == app.theme.color(ColorToken::Hover) =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the hovered card paints its band");
+        assert_eq!(band.min_x(), 0.0, "the band starts at the card's own edge");
+        assert_eq!(
+            band.max_x(),
+            card.x,
+            "and spans its full width: {band:?} card {card:?}"
+        );
+        assert_eq!(
+            band.height(),
+            card.y,
+            "over the card's full height: {band:?} card {card:?}"
+        );
+
+        // The content: the square starts at the inset, the subject past the
+        // square's gutter.
+        let (square, _) = status_square(&commands).expect("the card draws its status square");
+        assert_eq!(
+            square.min_x(),
+            CARD_CONTENT_INSET,
+            "the square starts the content's inset in: {square:?}"
+        );
+        let title = run_box(&commands, "Ada").expect("the card draws its subject");
+        assert_eq!(
+            title.min_x(),
+            CARD_CONTENT_INSET + STATUS_SIZE + STATUS_GAP,
+            "the subject starts past the square's gutter: {title:?}"
+        );
+
+        // The dots are placed from the band's trailing edge, so the right side's
+        // content inset does not push them a second time.
+        let dots = dots_box(&commands).expect("the hovered card draws its dots");
+        assert_eq!(
+            dots.max_x(),
+            card.x - 1.0,
+            "the dots keep their own inset from the band's edge: {dots:?}"
+        );
+
+        // The selected conversation's band is the same full-width rectangle.
+        let selected = ConversationListItem::new(
+            "c1",
+            "Ada",
+            "I finished the task.",
+            "40 min ago",
+            Rc::new(RefCell::new(AgentCardUi::default())),
+            true,
+        );
+        let mut element: Box<dyn Element> = Box::new(selected);
+        let commands = crate::test_util::render_element(&mut element, vec2f(width, 200.0), &app);
+        let band = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == app.theme.color(ColorToken::Selected) =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the selected card paints its band");
+        assert_eq!(
+            (band.min_x(), band.max_x()),
+            (0.0, width),
+            "the selected band spans the card too: {band:?}"
+        );
+    }
+
+    /// A directory wider than the card is cut at the content's trailing edge,
+    /// not at the band's: the inset holds on the right too, so a long path does
+    /// not run into the strip the band keeps clear of its own edge.
+    #[test]
+    fn a_long_directory_is_clipped_at_the_contents_trailing_edge() {
+        let app = AppContext::default();
+        let width = 260.0;
+        let directory = "~/Projects/goble/crates/goble-ui/src/elements/conversation_list_item";
+        let item = ConversationListItem::new(
+            "c1",
+            "Ada",
+            "I finished the task.",
+            "40 min ago",
+            Rc::new(RefCell::new(AgentCardUi::default())),
+            false,
+        )
+        .with_directory(directory);
+        let mut element: Box<dyn Element> = Box::new(item);
+        let commands = crate::test_util::render_element(&mut element, vec2f(width, 200.0), &app);
+
+        let run = run_box(&commands, directory).expect("the card draws its path");
+        assert!(
+            run.max_x() > width - CARD_CONTENT_INSET,
+            "the path is wider than the content box: {run:?}"
+        );
+
+        let narrowest = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::ClipRect(rect) => Some(*rect),
+                _ => None,
+            })
+            .min_by(|a, b| a.max_x().total_cmp(&b.max_x()))
+            .expect("the card paints its row clipped");
+        assert_eq!(
+            narrowest.max_x(),
+            width - CARD_CONTENT_INSET,
+            "the row is cut at the content's edge, not the band's: {narrowest:?}"
+        );
     }
 }

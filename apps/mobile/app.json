@@ -1,0 +1,61 @@
+{
+  "expo": {
+    "name": "Goble",
+    "slug": "goble",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "goble",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0e0e0e"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.goble.mobile",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "dev.goble.mobile",
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": true,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0e0e0e",
+        "monochromeImage": "./assets/monochrome-icon.png"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0e0e0e",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 120
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Goble uses your photos to attach them to a session.",
+          "cameraPermission": "Goble uses the camera to attach a photo to a session."
+        }
+      ],
+      "expo-notifications"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}

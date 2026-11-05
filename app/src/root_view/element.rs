@@ -20,6 +20,8 @@ impl Element for RootView {
         // accent from the color wheel) before the tree is rebuilt this frame.
         self.apply_theme();
         self.rebuild(app);
+        // The frame being laid out is the one the request asked for.
+        self.redraw_requested = false;
         let size = self.element.layout(constraint, ctx, app);
         let _ = self.hover_chips.layout(constraint, ctx, app);
         self.size = Some(size);
@@ -48,7 +50,18 @@ impl Element for RootView {
     /// arrived while it was following. Everything else is event-driven, so an
     /// idle window idles instead of rebuilding and repainting the same frame.
     fn wants_animation(&self) -> bool {
+        // A transition the state made outside the frame clock — a chord
+        // modifier that went down or came up, a window that lost the keyboard —
+        // is due a frame now, not at the next idle heartbeat.
+        if self.redraw_requested {
+            return true;
+        }
         let state = self.state.borrow();
+        // A finished turn's banner is put away by its own deadline, which is
+        // only reached on a frame: keep the clock running until it has gone.
+        if state.announcement.is_some() {
+            return true;
+        }
         let live = state.live_work();
         if live.turn_busy
             || !live.executions.is_empty()
@@ -99,6 +112,11 @@ impl Element for RootView {
         ctx: &mut EventContext,
         app: &AppContext,
     ) -> bool {
+        // The chord modifier's own press and release decide whether every
+        // workspace tab advertises its number (see `WorkspaceChip`). Tracked
+        // before the shortcuts, so the frame this key lands in already draws
+        // the hint, and tracked whatever the tree does with the event below.
+        self.track_chord_modifier(event);
         // Global shortcuts (warp-new style pane splitting + pane focus
         // navigation + the command palette). These are handled before the tree
         // so a focused composer cannot swallow the keys.
@@ -198,6 +216,24 @@ impl Element for RootView {
                     (actions.on_switch_space.borrow_mut())(delta);
                     return true;
                 }
+                // Cmd/Ctrl+1 … Cmd/Ctrl+8 select a workspace by the number its
+                // tab advertises while the chord modifier is held. There is no
+                // ninth slot, as in a browser's tab strip, and a digit past the
+                // last tab does nothing. Only the modifier makes it a chord, so
+                // a digit typed into a field still arrives as text.
+                if has_ctrl_cmd && !modifiers.shift && !modifiers.alt {
+                    if let Some(index) = workspace_digit(key) {
+                        if index < self.state.borrow().spaces.len() {
+                            // A chord is not a click: it never continues the
+                            // pointer's multi-click run, so landing on a tab
+                            // that was double-clicked a moment ago selects it
+                            // instead of reopening its rename field.
+                            self.state.borrow_mut().space_press_run.borrow_mut().take();
+                            (actions.on_workspace_click.borrow_mut())(index);
+                            return true;
+                        }
+                    }
+                }
                 // Pane focus navigation: Ctrl/Cmd+Arrows move between panes.
                 if has_ctrl_cmd && !modifiers.shift && !modifiers.alt {
                     let dir = match key.as_str() {
@@ -215,6 +251,48 @@ impl Element for RootView {
             }
         }
         self.element.dispatch_event(event, ctx, app)
+    }
+}
+
+/// The workspace a chord digit names: `1` is the first tab, `8` the eighth.
+/// `9` is left out, as in a browser's tab strip, and every other key names no
+/// workspace at all.
+fn workspace_digit(key: &str) -> Option<usize> {
+    let digit = key.parse::<usize>().ok().filter(|d| (1..=8).contains(d))?;
+    Some(digit - 1)
+}
+
+/// Whether `modifiers` reports the platform's chord modifier down: Command on
+/// macOS, Ctrl everywhere else — the two the tab hints spell out.
+fn chord_modifier_down(modifiers: &goble_ui::event::ModifiersState) -> bool {
+    if cfg!(target_os = "macos") {
+        modifiers.command
+    } else {
+        modifiers.ctrl
+    }
+}
+
+impl RootView {
+    /// Keep the chord-modifier flag in step with the keyboard. A modifier key
+    /// reports itself as a bare modifier change rather than as a key press, so
+    /// the platform forwards it as one; a key press or release that carries the
+    /// modifiers is read too, and a window that loses the keyboard clears the
+    /// flag outright — Cmd-Tabbing away sends no release for the key that was
+    /// down, and the hints would otherwise stay painted.
+    ///
+    /// Nothing here consumes the event: a release that changes nothing is
+    /// ordinary typing as far as the tree is concerned.
+    fn track_chord_modifier(&mut self, event: &DispatchedEvent) {
+        let held = match event {
+            DispatchedEvent::Modifiers { modifiers } => chord_modifier_down(modifiers),
+            DispatchedEvent::KeyDown { modifiers, .. } => chord_modifier_down(modifiers),
+            DispatchedEvent::KeyUp { modifiers, .. } => chord_modifier_down(modifiers),
+            DispatchedEvent::Focus { gained: false } => false,
+            _ => return,
+        };
+        if self.state.borrow_mut().set_command_held(held) {
+            self.redraw_requested = true;
+        }
     }
 }
 

@@ -7,8 +7,8 @@ use futures::FutureExt;
 use tokio::sync::oneshot;
 
 use crate::harness::{
-    execute_tool_call, harness_tool_definitions, ChatToolCall, ToolCallStatus, ToolTurnContext,
-    HARNESS_SYSTEM_PROMPT, SPAWN_SUBAGENT_TOOL,
+    execute_tool_call, harness_system_prompt, harness_tool_definitions, ChatToolCall,
+    ToolCallStatus, ToolTurnContext, SPAWN_SUBAGENT_TOOL,
 };
 use crate::llm::{CompletionRequest, CompletionResponse, Message, Role, ToolDefinition};
 use crate::mcp_manager::McpManager;
@@ -297,7 +297,7 @@ fn child_system_prompt(spec: &SubAgentSpec) -> String {
         spec.subagent_type,
         spec.description,
         spec.cwd.display(),
-        HARNESS_SYSTEM_PROMPT
+        harness_system_prompt()
     )
 }
 

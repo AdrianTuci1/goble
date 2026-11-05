@@ -1967,16 +1967,15 @@ fn the_focused_editor_shows_the_focus_blue_caret() {
 }
 
 /// The rich input's cursor does not move the letter it sits among: the editor
-/// draws its whole line as one run and the block is an overlay on top of it.
-/// The block covers exactly the letter after the insertion point, which it
-/// redraws in the cell's background colour.
+/// draws its whole line as one run and the block is a fill painted behind it.
+/// The block covers exactly the letter after the insertion point, and that
+/// letter is the run's own glyph — the caret never rasterizes one of its own.
 #[test]
 fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
     use crate::render::RenderCommand;
 
     let app = AppContext::default();
     let focus = app.theme.color(ColorToken::Focus);
-    let ink = app.theme.color(ColorToken::Bg);
     let caret = Rc::new(RefCell::new(1));
     let mut composer = ChatComposer::new()
         .with_value("hi")
@@ -1984,20 +1983,20 @@ fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
         .with_caret(caret);
     let commands = paint_composer(&app, &mut composer);
 
-    // One intact run, at the editor's own origin.
+    // One intact run, at the editor's own origin, and no run of the caret's
+    // own: the letter the block covers is the run's own glyph.
     let runs: Vec<(&str, crate::geometry::Vector2F)> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::DrawText {
-                origin,
-                text,
-                color,
-                ..
-            } if *color != ink => Some((text.as_str(), *origin)),
+            RenderCommand::DrawText { origin, text, .. } => Some((text.as_str(), *origin)),
             _ => None,
         })
         .collect();
-    assert_eq!(runs.len(), 1, "the editor draws its line as one run");
+    assert_eq!(
+        runs.len(),
+        1,
+        "the editor draws its line as one run, never a glyph of its own: {runs:?}"
+    );
     assert_eq!(runs[0].0, "hi");
 
     let (cell_at, cell) = commands
@@ -2028,26 +2027,15 @@ fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
         (cell.width() - advance_i).abs() < 0.5,
         "the cell covers the `i` after it ({advance_i}): {cell:?}"
     );
-    let (covered_at, covered) = commands
+    // The fill is behind the line: the run is painted over it, so the glyph the
+    // block covers keeps its own pixel column instead of being redrawn.
+    let run_at = commands
         .iter()
-        .enumerate()
-        .find_map(|(index, command)| match command {
-            RenderCommand::DrawText {
-                origin,
-                text,
-                color,
-                ..
-            } if *color == ink && text == "i" => Some((index, *origin)),
-            _ => None,
-        })
-        .expect("the covered letter is redrawn in the cell's background");
+        .position(|command| matches!(command, RenderCommand::DrawText { text, .. } if text == "hi"))
+        .expect("the line is drawn");
     assert!(
-        cell_at < covered_at,
-        "the block is painted before the letter it covers is redrawn"
-    );
-    assert!(
-        (covered.x - cell.min_x()).abs() < 1.0,
-        "the redrawn letter sits in its cell: {covered:?} against {cell:?}"
+        cell_at < run_at,
+        "the block is a fill painted before the line, not a cell redrawn over it"
     );
 }
 

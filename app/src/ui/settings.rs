@@ -1198,7 +1198,9 @@ fn build_agent(
     let config_file = if state.remote_config_path.trim().is_empty() {
         "~/.goble/config.toml".to_string()
     } else {
-        state.remote_config_path.clone()
+        // The row names the file the app reads, in the same `~` form the rest
+        // of the UI uses for a path under home.
+        crate::state::display_path(&state.remote_config_path)
     };
     col = col.with_child(setting_row(
         app,

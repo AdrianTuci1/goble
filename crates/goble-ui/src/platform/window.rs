@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -30,6 +30,11 @@ pub const MIN_WINDOW_HEIGHT: f64 = 192.0;
 #[derive(Clone, Default)]
 pub struct WindowControl {
     inner: Rc<RefCell<Option<Box<dyn FnMut(bool)>>>>,
+    /// The window's fullscreen state as the platform last reported it, shared
+    /// between every clone. `None` means no window has answered yet (a tree
+    /// built without one, as in tests), which is what lets a caller fall back
+    /// to the app's own flag instead.
+    fullscreen: Rc<Cell<Option<bool>>>,
     /// Registered app commands (name -> callback). Rebuilt by the app layer each
     /// frame (the closures are fresh per frame); the native menu bar and the
     /// command palette dispatch into this table by name.
@@ -38,12 +43,33 @@ pub struct WindowControl {
 
 impl WindowControl {
     /// Request the window to enter (`true`) or leave (`false`) fullscreen.
-    /// No-op until the event loop has created the window and installed a
-    /// handler via [`WindowControl::install`].
+    /// No-op on the window until the event loop has created it and installed a
+    /// handler via [`WindowControl::install`]; the request itself is recorded
+    /// either way, so a tree built before the window exists still reads it back.
     pub fn set_fullscreen(&self, fullscreen: bool) {
+        self.fullscreen.set(Some(fullscreen));
         if let Some(handler) = self.inner.borrow_mut().as_mut() {
             handler(fullscreen);
         }
+    }
+
+    /// Record the state the real window is in, as the platform reports it each
+    /// frame. The event loop calls this so a fullscreen entered another way —
+    /// macOS's green button, the window being restored by the OS — is seen too.
+    pub fn note_window_fullscreen(&self, fullscreen: bool) {
+        self.fullscreen.set(Some(fullscreen));
+    }
+
+    /// The window's fullscreen state as last reported, or `None` when no window
+    /// has reported one (nothing has been requested and no frame has run).
+    pub fn window_fullscreen(&self) -> Option<bool> {
+        self.fullscreen.get()
+    }
+
+    /// Whether the window is full screen. A plain shared-cell read: the topbar
+    /// asks once per frame, so it must not talk to the window or take a lock.
+    pub fn is_fullscreen(&self) -> bool {
+        self.fullscreen.get().unwrap_or(false)
     }
 
     /// Install a handler that applies fullscreen state to a real window. Called
@@ -145,6 +171,25 @@ struct App {
 }
 
 impl App {
+    /// Read the real window's fullscreen state and record it on the shared
+    /// [`WindowControl`], which is the only thing the element tree reads.
+    ///
+    /// winit tracks both routes into fullscreen: the borderless request this app
+    /// makes through `set_fullscreen`, and the native one macOS enters from the
+    /// green button (`windowWillEnterFullScreen:` records it, and the exit does
+    /// the same), so the window's own answer covers every path. Polling it here
+    /// costs one field read per frame and keeps the tree from asking the window
+    /// itself — the bar is rebuilt every frame and must not do IPC.
+    fn sync_window_fullscreen(&self) {
+        if let Some(window) = self.window.as_ref() {
+            let fullscreen = window.fullscreen().is_some();
+            self.app_context
+                .borrow()
+                .window_control
+                .note_window_fullscreen(fullscreen);
+        }
+    }
+
     /// Apply one frame of a trackpad glide: the motion the flick has travelled
     /// since the last frame goes through the tree like any other wheel event.
     ///
@@ -221,6 +266,11 @@ impl ApplicationHandler for App {
             }
         });
 
+        // The window exists, so it can answer for its own fullscreen state from
+        // now on; the frame loop keeps the record current. Recording it here
+        // means the first frame reads a real answer instead of "no window".
+        window_control.note_window_fullscreen(window.fullscreen().is_some());
+
         // macOS: install the native application menu bar (`NSMenu`), following
         // warp-new. The menu dispatches into the app command registry via
         // `WindowControl::run_command`, and adjusts the whole-app zoom.
@@ -256,6 +306,21 @@ impl ApplicationHandler for App {
             }
             winit::event::WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers;
+                // A modifier key is reported here and nowhere else — pressing
+                // Command alone sends no `KeyboardInput` — so the tree is told
+                // the modifiers changed and redraws from it (the workspace tabs
+                // advertise their shortcut numbers while the chord modifier is
+                // held).
+                let event = DispatchedEvent::Modifiers {
+                    modifiers: map_modifiers(&self.modifiers),
+                };
+                let mut event_ctx = crate::elements::EventContext::default();
+                let app_context = self.app_context.borrow().clone();
+                let _ = self
+                    .root
+                    .dispatch_event(&event, &mut event_ctx, &app_context);
+                drop(app_context);
+                window.request_redraw();
             }
             winit::event::WindowEvent::Resized(new_size) => {
                 if let Some(surface_state) = self.surface_state.as_mut() {
@@ -264,6 +329,10 @@ impl ApplicationHandler for App {
                 window.request_redraw();
             }
             winit::event::WindowEvent::RedrawRequested => {
+                // The window's real fullscreen state is read before the tree is
+                // laid out, so this frame already draws the padding that state
+                // asks for.
+                self.sync_window_fullscreen();
                 // A flick from last gesture glides on these frames: the motion
                 // it has travelled since the last one lands before the tree
                 // lays out, so this frame paints it.
@@ -700,6 +769,43 @@ mod tests {
         // Unknown commands are a no-op.
         wc.run_command("missing");
         assert_eq!(*calls.borrow(), 2);
+    }
+
+    #[test]
+    fn fullscreen_state_is_shared_and_read_back() {
+        let wc = WindowControl::default();
+        assert_eq!(
+            wc.window_fullscreen(),
+            None,
+            "no window has reported a state yet"
+        );
+        assert!(!wc.is_fullscreen(), "an unanswered state reads as windowed");
+
+        // The state lives in the clones: the event loop records it on one and
+        // the element tree reads it from another.
+        let clone = wc.clone();
+        wc.note_window_fullscreen(true);
+        assert_eq!(clone.window_fullscreen(), Some(true));
+        assert!(clone.is_fullscreen());
+        clone.note_window_fullscreen(false);
+        assert!(!wc.is_fullscreen(), "the record is shared both ways");
+    }
+
+    #[test]
+    fn a_fullscreen_request_is_recorded_with_or_without_a_window() {
+        // A tree built before the window exists still reads the request back.
+        let headless = WindowControl::default();
+        headless.set_fullscreen(true);
+        assert_eq!(headless.window_fullscreen(), Some(true));
+
+        // With a handler installed the window is asked as well.
+        let asked = Rc::new(RefCell::new(None));
+        let asked2 = Rc::clone(&asked);
+        let wc = WindowControl::default();
+        wc.install(move |fullscreen| *asked2.borrow_mut() = Some(fullscreen));
+        wc.set_fullscreen(true);
+        assert_eq!(*asked.borrow(), Some(true), "the window is told");
+        assert!(wc.is_fullscreen(), "and the state reads back from the tree");
     }
 
     #[test]

@@ -139,18 +139,35 @@ pub(crate) fn current_dir_display() -> String {
 }
 
 /// A path as the UI labels it: the home directory collapses to `~`, the way
-/// warp-new shows a working directory, so the pill and the shell prompt stay
-/// readable instead of repeating the user's whole path.
+/// warp-new shows a working directory, so the pill, the tab and the tooltip
+/// stay readable instead of repeating the user's whole path.
 ///
 /// Display only: a `~` string is not a usable working directory, so the paths
 /// that are actually run, spawned or read keep their real form and this is
 /// applied where the string is drawn.
 pub fn display_path(path: &str) -> String {
-    let Some(home) = home_directory() else {
+    collapse_home(path, home_directory().as_deref())
+}
+
+/// [`display_path`] with the home directory passed in, so the collapse is
+/// testable without changing the process environment.
+///
+/// A trailing slash names the same directory, so it is dropped before the
+/// comparison (`/Users/me/` reads as `~` the way `/Users/me` does); the
+/// filesystem root keeps its one slash.
+fn collapse_home(path: &str, home: Option<&str>) -> String {
+    let trimmed = path.trim_end_matches('/');
+    let path = if trimmed.is_empty() { path } else { trimmed };
+    let Some(home) = home
+        .map(|home| home.trim_end_matches('/'))
+        .filter(|home| !home.is_empty())
+    else {
         return path.to_string();
     };
-    match path.strip_prefix(home.as_str()) {
+    match path.strip_prefix(home) {
         Some("") => "~".to_string(),
+        // Only a component boundary collapses: `/Users/melanie` is not under
+        // `/Users/me`, so it keeps its absolute form.
         Some(rest) if rest.starts_with('/') => format!("~{rest}"),
         _ => path.to_string(),
     }
@@ -234,6 +251,84 @@ mod tests {
             current_branch("/definitely/not/a/repository/at/all"),
             "",
             "the walk stops at the filesystem root"
+        );
+    }
+
+    /// The home directory itself is the one a label spells `~`.
+    #[test]
+    fn the_home_directory_collapses_to_a_tilde() {
+        assert_eq!(collapse_home("/Users/me", Some("/Users/me")), "~");
+        assert_eq!(
+            collapse_home("/Users/me", Some("/Users/me/")),
+            "~",
+            "a home directory that ends in a slash is the same directory"
+        );
+    }
+
+    /// A directory under home keeps its whole tail, read from the `~`.
+    #[test]
+    fn a_directory_under_home_reads_from_the_tilde() {
+        assert_eq!(
+            collapse_home("/Users/me/Projects/goble", Some("/Users/me")),
+            "~/Projects/goble"
+        );
+    }
+
+    /// A path that shares home's prefix without a boundary is not under it:
+    /// `/Users/melanie` must not come back as `~lanie`.
+    #[test]
+    fn a_sibling_that_shares_the_home_prefix_stays_absolute() {
+        assert_eq!(
+            collapse_home("/Users/melanie/Projects", Some("/Users/me")),
+            "/Users/melanie/Projects"
+        );
+    }
+
+    /// Every path outside home is left alone, home known or not.
+    #[test]
+    fn a_path_outside_home_is_unchanged() {
+        assert_eq!(collapse_home("/opt/goble", Some("/Users/me")), "/opt/goble");
+        assert_eq!(collapse_home("/Users/me", None), "/Users/me");
+        assert_eq!(
+            collapse_home("/Users/me/Projects", Some("")),
+            "/Users/me/Projects"
+        );
+    }
+
+    /// A trailing slash names the same directory, so it collapses too; the
+    /// filesystem root keeps its own.
+    #[test]
+    fn a_trailing_slash_collapses() {
+        assert_eq!(collapse_home("/Users/me/", Some("/Users/me")), "~");
+        assert_eq!(
+            collapse_home("/Users/me/Projects/goble/", Some("/Users/me")),
+            "~/Projects/goble"
+        );
+        assert_eq!(collapse_home("/", Some("/Users/me")), "/");
+    }
+
+    /// An empty path is empty, not `~` and not a panic.
+    #[test]
+    fn an_empty_path_stays_empty() {
+        assert_eq!(collapse_home("", Some("/Users/me")), "");
+        assert_eq!(display_path(""), "");
+    }
+
+    /// The real environment's home directory collapses the same way its
+    /// children do, so a label built from the process's own home reads `~`.
+    #[test]
+    fn display_path_collapses_the_real_home_directory() {
+        let Some(home) = home_directory() else {
+            return;
+        };
+        assert_eq!(display_path(&home), "~");
+        assert_eq!(
+            display_path(&format!("{home}/Projects/goble")),
+            "~/Projects/goble"
+        );
+        assert_eq!(
+            display_path("/definitely/not/under/home"),
+            "/definitely/not/under/home"
         );
     }
 }

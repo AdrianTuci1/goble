@@ -61,8 +61,9 @@ pub use types::{
 };
 
 pub(crate) use commands::{command_candidates, run_approved_command, COMMAND_TOOL};
+pub use definitions::RICH_TEXT_GUIDE;
 pub(crate) use definitions::{
-    harness_tool_definitions, HARNESS_SYSTEM_PROMPT, SPAWN_SUBAGENT_TOOL,
+    harness_system_prompt, harness_tool_definitions, SPAWN_SUBAGENT_TOOL,
 };
 pub(crate) use dispatch::{arc_to_sender_ref, execute_tool_call, ToolTurnContext};
 

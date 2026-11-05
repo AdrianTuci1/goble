@@ -7,9 +7,16 @@
 //! [`UiState::jump_to_inbox_item`] is the action that takes the user back to the
 //! pane the item belongs to.
 
+use std::time::{Duration, Instant};
+
 use chrono::{DateTime, Utc};
 
 use super::*;
+
+/// How long a finished turn's announcement stays at the top of the window
+/// before it puts itself away. Long enough to read a title, short enough that
+/// it never becomes furniture.
+pub const ANNOUNCEMENT_LIFETIME: Duration = Duration::from_secs(6);
 
 /// What an [`InboxItem`] is. The kind decides the row's label and colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +89,17 @@ impl InboxItem {
             acknowledged: false,
         }
     }
+
+    /// Whether this report is announced at the top of the window when it
+    /// arrives. A turn that finished or failed is; an approval or a question
+    /// already stops the pane that raised it, and a sub-agent's own note stays
+    /// in the list.
+    pub fn announces(&self) -> bool {
+        matches!(
+            self.kind,
+            InboxKind::Done | InboxKind::Task | InboxKind::Error
+        )
+    }
 }
 
 impl UiState {
@@ -107,6 +125,12 @@ impl UiState {
         self.inbox.insert(0, item);
         self.inbox_index = 0;
         self.inbox_error = None;
+        // A finished or failed turn is also announced: the report is the one
+        // thing worth saying while the user is looking somewhere else.
+        if self.inbox[0].announces() {
+            let id = self.inbox[0].id.clone();
+            self.announce(&id);
+        }
         true
     }
 
@@ -205,6 +229,59 @@ impl UiState {
             self.clamp_inbox_index();
             self.inbox_error = None;
         }
+        // A banner whose item just left with its pane has nothing to point at.
+        if self.announcement_item().is_none() {
+            self.dismiss_announcement();
+        }
+    }
+
+    /// Put an item at the top of the window for [`ANNOUNCEMENT_LIFETIME`].
+    pub fn announce(&mut self, id: &str) {
+        self.announcement = Some(id.to_string());
+        self.announcement_until = Some(Instant::now() + ANNOUNCEMENT_LIFETIME);
+    }
+
+    /// The item the banner is announcing, while it is still in the list.
+    pub fn announcement_item(&self) -> Option<&InboxItem> {
+        let id = self.announcement.as_deref()?;
+        self.inbox.iter().find(|item| item.id == id)
+    }
+
+    /// Put the banner away. The item itself stays in the inbox.
+    pub fn dismiss_announcement(&mut self) {
+        self.announcement = None;
+        self.announcement_until = None;
+    }
+
+    /// Drop the banner once its time is up. Called once a frame, before the
+    /// snapshot is taken, so the frame clock's own ticks are what end it.
+    pub fn expire_announcement(&mut self) {
+        if self
+            .announcement_until
+            .is_some_and(|until| Instant::now() >= until)
+        {
+            self.dismiss_announcement();
+        }
+    }
+
+    /// Jump to the pane the announced item belongs to, and put the banner away.
+    /// A report whose pane has closed falls back to the list's own error and
+    /// opens the inbox so the reason is visible.
+    pub fn jump_to_announcement(&mut self) -> bool {
+        let index = self
+            .announcement
+            .as_deref()
+            .and_then(|id| self.inbox.iter().position(|item| item.id == id));
+        self.dismiss_announcement();
+        let Some(index) = index else {
+            return false;
+        };
+        self.inbox_index = index;
+        let landed = self.jump_to_inbox_item(index);
+        if !landed {
+            self.inbox_open = true;
+        }
+        landed
     }
 
     /// The space holding `pane_id`, if any.
@@ -440,6 +517,97 @@ mod tests {
         });
         assert_eq!(state.inbox[0].kind, InboxKind::Agent);
         assert_eq!(state.inbox[0].detail, "budget exhausted");
+    }
+
+    /// A finished turn is announced once, by the id of the newest report.
+    #[test]
+    fn a_finished_turn_is_announced_and_a_waiting_one_is_not() {
+        let mut state = UiState::mock();
+        assert!(
+            state.announcement.is_none(),
+            "a fresh state announces nothing"
+        );
+
+        state.raise_inbox(1, "c1", InboxKind::Approval, "approve", "git status");
+        assert!(
+            state.announcement.is_none(),
+            "an approval stops its own pane and is not a finish notice"
+        );
+
+        let first = state.raise_inbox(1, "c2", InboxKind::Done, "done", "2 files");
+        assert_eq!(state.announcement.as_deref(), Some(first.as_str()));
+        let second = state.raise_inbox(1, "c3", InboxKind::Error, "failed", "refused");
+        assert_eq!(
+            state.announcement.as_deref(),
+            Some(second.as_str()),
+            "the newest report owns the banner"
+        );
+        assert_eq!(
+            state.announcement_item().map(|item| item.kind),
+            Some(InboxKind::Error)
+        );
+    }
+
+    /// The banner is a banner, not a second list: dismissing it leaves the item
+    /// in the inbox, and its deadline is what ends it.
+    #[test]
+    fn the_announcement_is_dismissed_by_hand_or_by_its_deadline() {
+        let mut state = UiState::mock();
+        state.raise_inbox(1, "c1", InboxKind::Done, "done", "2 files");
+        state.dismiss_announcement();
+        assert!(state.announcement.is_none() && state.announcement_until.is_none());
+        assert_eq!(state.inbox.len(), 1, "the report stays in the list");
+
+        state.raise_inbox(1, "c2", InboxKind::Task, "task done", "audit clean");
+        state.announcement_until = Some(Instant::now());
+        state.expire_announcement();
+        assert!(
+            state.announcement.is_none(),
+            "a banner past its deadline is gone"
+        );
+        assert_eq!(state.inbox.len(), 2);
+    }
+
+    /// Jumping from the banner is the row's own jump: it selects the item,
+    /// switches to its space and puts the banner away.
+    #[test]
+    fn jumping_from_the_announcement_lands_on_the_items_pane() {
+        let mut state = UiState::mock();
+        state.spaces = vec![
+            Space::new(
+                "A",
+                Pane::Leaf {
+                    id: 1,
+                    kind: crate::ui::PaneKind::Chat,
+                },
+            ),
+            Space::new(
+                "B",
+                Pane::Leaf {
+                    id: 2,
+                    kind: crate::ui::PaneKind::Chat,
+                },
+            ),
+        ];
+        state.active_space = 0;
+        state.active_pane_id = 1;
+        state.pane_sessions.insert(
+            2,
+            PaneSession {
+                conversation_id: "c2".to_string(),
+                draft: String::new(),
+                path: "/b".to_string(),
+                daemon_session_id: String::new(),
+            },
+        );
+        state.raise_inbox(2, "c2", InboxKind::Done, "done", "2 files changed");
+        assert!(state.jump_to_announcement());
+        assert_eq!(state.active_space, 1);
+        assert_eq!(state.active_pane_id, 2);
+        assert!(
+            state.announcement.is_none(),
+            "the banner is spent on the jump"
+        );
     }
 
     #[test]

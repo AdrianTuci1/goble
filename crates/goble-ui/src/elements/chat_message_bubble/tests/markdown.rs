@@ -35,6 +35,15 @@ fn italic_is_not_bold_and_bold_italic_is_both() {
 }
 
 #[test]
+fn a_coloured_run_is_painted_in_its_colour() {
+    assert_eq!(
+        run_color("{color:#ef4444}x{/color}"),
+        ColorU::hex(0xef4444),
+        "the marker's colour must reach the painted glyphs"
+    );
+}
+
+#[test]
 fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
     use crate::color::ColorU;
 

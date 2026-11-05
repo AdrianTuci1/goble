@@ -916,6 +916,31 @@ fn run_style(markdown: &str) -> (FontWeight, bool) {
         .unwrap_or_else(|| panic!("no run drawing \"x\" for {markdown:?}"))
 }
 
+/// The colour of the run drawing `x` in a painted Markdown message.
+fn run_color(markdown: &str) -> ColorU {
+    let app = AppContext::default();
+    let message = ChatMessage::from_markdown(ChatRole::Assistant, markdown);
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments);
+    bubble.layout(
+        SizeConstraint::loose(vec2f(600.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    paint_ctx
+        .renderer
+        .take()
+        .map(|r| r.commands().to_vec())
+        .unwrap_or_default()
+        .into_iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { text, color, .. } if text == "x" => Some(color),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no run drawing \"x\" for {markdown:?}"))
+}
+
 /// Paint a bubble holding one reasoning row and return its commands.
 fn reasoning_commands(
     expanded: &Rc<RefCell<HashMap<String, bool>>>,

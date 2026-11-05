@@ -218,6 +218,9 @@ pub fn make_actions(
     let on_inbox_ack = Rc::clone(&state);
     let on_inbox_ack_all = Rc::clone(&state);
     let on_inbox_jump = Rc::clone(&state);
+    let on_inbox_jump_to = Rc::clone(&state);
+    let on_announcement_jump = Rc::clone(&state);
+    let on_announcement_dismiss = Rc::clone(&state);
     let on_agent_dashboard = Rc::clone(&state);
     let desktop_agent_dashboard = desktop.clone();
     let media_agent_dashboard = Rc::clone(&media);
@@ -1457,6 +1460,19 @@ pub fn make_actions(
             if state.jump_to_inbox_item(index) {
                 state.inbox_open = false;
             }
+        })),
+        on_inbox_jump_to: Rc::new(RefCell::new(move |index: usize| {
+            let mut state = on_inbox_jump_to.borrow_mut();
+            state.inbox_index = index;
+            if state.jump_to_inbox_item(index) {
+                state.inbox_open = false;
+            }
+        })),
+        on_announcement_jump: Rc::new(RefCell::new(move || {
+            on_announcement_jump.borrow_mut().jump_to_announcement();
+        })),
+        on_announcement_dismiss: Rc::new(RefCell::new(move || {
+            on_announcement_dismiss.borrow_mut().dismiss_announcement();
         })),
         // The agent-management panel: a roster of conversations with the
         // peek/reply box and the dispatch box grok-build's dashboard has. The

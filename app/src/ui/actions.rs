@@ -231,6 +231,12 @@ pub struct UiActions {
     pub on_inbox_ack_all: Rc<RefCell<dyn FnMut()>>,
     /// Jump to the pane the highlighted inbox item belongs to.
     pub on_inbox_jump: Rc<RefCell<dyn FnMut()>>,
+    /// Jump to the pane the row at this index belongs to (a click on the row).
+    pub on_inbox_jump_to: Rc<RefCell<dyn FnMut(usize)>>,
+    /// Jump to the pane the announced item belongs to.
+    pub on_announcement_jump: Rc<RefCell<dyn FnMut()>>,
+    /// Put the announcement away without jumping anywhere.
+    pub on_announcement_dismiss: Rc<RefCell<dyn FnMut()>>,
     /// One interaction in the agent-management panel: the topbar control opens
     /// it, and every row, field and action inside sends its own variant.
     pub on_agent_dashboard: Rc<RefCell<dyn FnMut(AgentDashboardAction)>>,

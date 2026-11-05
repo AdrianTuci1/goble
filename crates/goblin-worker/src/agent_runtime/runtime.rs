@@ -238,6 +238,7 @@ fn build_system_prompt(spec: &AgentSpec, runtime_state: &RuntimeState) -> String
     lines.push("".into());
     lines.push("You have access to tools. Use them to complete the task.".into());
     lines.push("When you are done, call the `finish` tool with a summary.".into());
+    lines.push(goble_core::harness::RICH_TEXT_GUIDE.into());
     lines.push("".into());
     if !runtime_state.checklist.is_empty() {
         lines.push("Current checklist:".into());

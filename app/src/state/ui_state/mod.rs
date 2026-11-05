@@ -389,6 +389,11 @@ pub struct UiState {
     /// Whether the topbar workspace frame is in inline-rename mode (entered by
     /// double-clicking the tab, or from its menu's "Rename tab" row).
     pub space_rename_editing: bool,
+    /// Whether the platform's chord modifier — Command on macOS, Ctrl elsewhere
+    /// — is held down. While it is, every workspace tab draws its own shortcut
+    /// number in its trailing slot (see `WorkspaceChip`). Not persisted: it
+    /// describes the keyboard this instant, and a restart has no key down.
+    pub command_held: bool,
     /// The run of presses on a workspace tab that the strip is counting: which
     /// tab, when it was pressed, and how many presses in a row this is.
     ///
@@ -555,6 +560,16 @@ pub struct UiState {
     pub inbox_error: Option<String>,
     /// Scroll offset of the inbox overlay's list.
     pub inbox_scroll: Rc<RefCell<ScrollState>>,
+    /// The rect the topbar's inbox control painted at, recorded by the control
+    /// itself. The panel is a window-level popover hung from that rect, one
+    /// frame behind it — the same seam the settings model menu uses.
+    pub inbox_anchor: Rc<RefCell<Option<goble_ui::RectF>>>,
+    /// The id of the inbox item being announced at the top of the window, and
+    /// when that banner stops being drawn on its own. Set where the item is
+    /// raised, so it names a report this run produced and never one read back
+    /// from the store at startup.
+    pub announcement: Option<String>,
+    pub announcement_until: Option<std::time::Instant>,
     /// Monotonic id source for event-derived inbox items.
     pub next_inbox_id: u64,
     /// The agent-management panel (the topbar's dashboard): whether it is up,

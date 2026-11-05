@@ -30,6 +30,7 @@ use goble_ui::EventContext;
         (view, bus, dir)
     }
 
+mod announcement;
 mod child_view;
 mod drain;
 mod environment;

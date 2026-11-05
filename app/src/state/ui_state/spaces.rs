@@ -260,6 +260,16 @@ impl UiState {
         self.space_rename_focused = true;
     }
 
+    /// Record whether the platform's chord modifier is held, reporting whether
+    /// that changed. The caller draws a frame only on the transition, not once
+    /// per key event: the tab strip's hints are the same in every frame the
+    /// modifier stays down.
+    pub fn set_command_held(&mut self, held: bool) -> bool {
+        let changed = self.command_held != held;
+        self.command_held = held;
+        changed
+    }
+
     /// The label the tab at `index` draws: the name the user typed for it, or —
     /// for a tab nobody has named — what the tab holds, read off its **focused**
     /// pane.

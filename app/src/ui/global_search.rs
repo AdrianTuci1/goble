@@ -276,7 +276,11 @@ fn run_search(
         return Ok(Some(Vec::new()));
     }
     if !Path::new(root).is_dir() {
-        return Err(format!("Global search cannot read {root}."));
+        // The band is a line of the sidebar, so the root reads from `~`.
+        return Err(format!(
+            "Global search cannot read {}.",
+            crate::state::display_path(root)
+        ));
     }
     match ripgrep_binary() {
         Some(rg) => search_with_ripgrep(&rg, root, query).map(Some),

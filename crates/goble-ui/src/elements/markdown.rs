@@ -1,3 +1,4 @@
+use crate::color::ColorU;
 use crate::elements::chat_content::ListItem;
 use crate::elements::{ChatFragment, ChatFragmentKind};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
@@ -7,6 +8,9 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 /// Supported constructs:
 /// - paragraphs and inline text
 /// - bold (`**text**`), italic (`_text_`), bold+italic
+/// - an explicit run colour: `{color:#rrggbb}text{/color}`, or a named colour
+///   (`red`, `orange`, `yellow`, `green`, `blue`, `purple`, `cyan`, `gray`,
+///   `white`, `black`). Colour nests over every other inline style.
 /// - inline code and fenced code blocks (language is preserved)
 /// - links `[label](url)`, kept inline in the paragraph they appear in
 /// - images `![alt](url)`, carried as alt text plus destination
@@ -39,6 +43,10 @@ struct MarkdownParser<'a> {
     bold: usize,
     italic: usize,
     link_url: Option<String>,
+    /// The colours the source has opened, innermost last. A `{color:…}` marker
+    /// pushes and `{/color}` pops, so a run inside two markers takes the inner
+    /// colour and the outer one resumes when it closes.
+    colors: Vec<ColorU>,
     image: Option<ImageState>,
     pending: PendingText,
 }
@@ -51,6 +59,7 @@ impl<'a> MarkdownParser<'a> {
             bold: 0,
             italic: 0,
             link_url: None,
+            colors: Vec::new(),
             image: None,
             pending: PendingText::default(),
         }
@@ -86,16 +95,16 @@ impl<'a> MarkdownParser<'a> {
         match event {
             Event::Start(tag) => self.parse_start(tag, out),
             Event::End(tag_end) => self.parse_inline_end(tag_end, out),
-            Event::Text(text) => self.push_text(&text),
+            Event::Text(text) => self.push_text_to(&text, out),
             Event::Code(code) => {
                 if self.image.is_some() {
-                    self.push_text(&code);
+                    self.push_text_to(&code, out);
                 } else {
                     self.flush(out);
                     out.push(ChatFragment::code(code.into_string()));
                 }
             }
-            Event::SoftBreak => self.push_text(" "),
+            Event::SoftBreak => self.push_text_to(" ", out),
             Event::HardBreak => {
                 self.flush(out);
                 out.push(ChatFragment::line_break());
@@ -328,18 +337,107 @@ impl<'a> MarkdownParser<'a> {
         out.extend(fragments);
     }
 
-    fn push_text(&mut self, text: &str) {
+    /// Append a text run, honouring the `{color:…}` markers it carries.
+    ///
+    /// A marker splits the run: the text before it is flushed in the colour in
+    /// force, the marker pushes or pops the colour stack, and the text after it
+    /// starts a new run. A marker that names no known colour, and a closing
+    /// marker with nothing open, stay literal text.
+    fn push_text_to(&mut self, text: &str, out: &mut Vec<ChatFragment>) {
         if let Some(image) = self.image.as_mut() {
             image.alt.push_str(text);
             return;
         }
-        append_text(
-            &mut self.pending,
-            text,
-            self.bold,
-            self.italic,
-            self.link_url.as_deref(),
-        );
+        let bold = self.bold;
+        let italic = self.italic;
+        let link_url = self.link_url.clone();
+        let mut rest = text;
+        loop {
+            let open = rest.find("{color:");
+            let close = rest.find("{/color}");
+            let (index, closing) = match (open, close) {
+                (Some(open), Some(close)) if close < open => (close, true),
+                (Some(open), _) => (open, false),
+                (None, Some(close)) => (close, true),
+                (None, None) => {
+                    append_text(
+                        &mut self.pending,
+                        rest,
+                        bold,
+                        italic,
+                        link_url.as_deref(),
+                        self.colors.last().copied(),
+                    );
+                    break;
+                }
+            };
+            let before = &rest[..index];
+            if !before.is_empty() {
+                append_text(
+                    &mut self.pending,
+                    before,
+                    bold,
+                    italic,
+                    link_url.as_deref(),
+                    self.colors.last().copied(),
+                );
+            }
+            let marker = &rest[index..];
+            if closing {
+                if self.colors.is_empty() {
+                    // A close with nothing open is text: keep it in the run it
+                    // appears in instead of starting a new one.
+                    append_text(
+                        &mut self.pending,
+                        "{/color}",
+                        bold,
+                        italic,
+                        link_url.as_deref(),
+                        None,
+                    );
+                } else {
+                    self.flush(out);
+                    self.colors.pop();
+                }
+                rest = &marker["{/color}".len()..];
+                continue;
+            }
+            let Some(end) = marker.find('}') else {
+                append_text(
+                    &mut self.pending,
+                    marker,
+                    bold,
+                    italic,
+                    link_url.as_deref(),
+                    self.colors.last().copied(),
+                );
+                break;
+            };
+            let candidate = &marker[..=end];
+            match parse_color_marker(candidate) {
+                Some(color) => {
+                    self.flush(out);
+                    self.colors.push(color);
+                }
+                None => append_text(
+                    &mut self.pending,
+                    candidate,
+                    bold,
+                    italic,
+                    link_url.as_deref(),
+                    self.colors.last().copied(),
+                ),
+            }
+            rest = &marker[end + 1..];
+        }
+    }
+
+    /// Append a run when the caller has no block output to flush into. Tests
+    /// that drive the parser directly use this; every parse path uses
+    /// [`Self::push_text_to`] so a colour marker can split the run.
+    #[cfg(test)]
+    fn push_text(&mut self, text: &str) {
+        self.push_text_to(text, &mut Vec::new());
     }
 
     fn flush(&mut self, out: &mut Vec<ChatFragment>) {
@@ -385,6 +483,7 @@ struct PendingText {
     bold: bool,
     italic: bool,
     link_url: Option<String>,
+    color: Option<ColorU>,
 }
 
 fn append_text(
@@ -393,6 +492,7 @@ fn append_text(
     bold_count: usize,
     italic_count: usize,
     link_url: Option<&str>,
+    color: Option<ColorU>,
 ) {
     // The run's style is the one in force where the run starts. A run that
     // starts in whitespace therefore stays plain, which is what the space
@@ -401,8 +501,31 @@ fn append_text(
         pending.bold = bold_count > 0;
         pending.italic = italic_count > 0;
         pending.link_url = link_url.map(|s| s.to_string());
+        pending.color = color;
     }
     pending.text.push_str(text);
+}
+
+/// The colour a `{color:…}` marker names: `#rrggbb` first, then the small
+/// named set every client shares. `None` leaves the marker as literal text.
+fn parse_color_marker(marker: &str) -> Option<ColorU> {
+    let value = marker.strip_prefix("{color:")?.strip_suffix('}')?.trim();
+    ColorU::from_hex(value).or_else(|| {
+        let rgb = match value.to_ascii_lowercase().as_str() {
+            "red" => 0xef4444,
+            "orange" => 0xff9e64,
+            "yellow" => 0xf59e0b,
+            "green" => 0x10b981,
+            "blue" => 0x19aad8,
+            "purple" => 0xa78bfa,
+            "cyan" => 0x22d3ee,
+            "gray" | "grey" => 0x8e8e8e,
+            "white" => 0xf1f1ef,
+            "black" => 0x0e0e0e,
+            _ => return None,
+        };
+        Some(ColorU::hex(rgb))
+    })
 }
 
 /// The buffered run as a fragment, or `None` when there is nothing to draw.
@@ -412,6 +535,7 @@ fn append_text(
 /// `leading` says the run opens a block, where whitespace is only an indent.
 fn take_pending(pending: &mut PendingText, leading: bool) -> Option<ChatFragment> {
     let text = std::mem::take(&mut pending.text);
+    let color = pending.color.take();
     let fragment = if text.is_empty() || (leading && text.trim().is_empty()) {
         None
     } else if let Some(url) = pending.link_url.take() {
@@ -428,25 +552,34 @@ fn take_pending(pending: &mut PendingText, leading: bool) -> Option<ChatFragment
     pending.bold = false;
     pending.italic = false;
     pending.link_url = None;
-    fragment
+    fragment.map(|fragment| match color {
+        Some(color) => fragment.with_color(color),
+        None => fragment,
+    })
 }
 
 fn merge_adjacent_text(fragments: &mut Vec<ChatFragment>) {
     let mut merged: Vec<ChatFragment> = Vec::with_capacity(fragments.len());
     for fragment in fragments.drain(..) {
         if let Some(last) = merged.last_mut() {
-            if let (ChatFragmentKind::Text(a), ChatFragmentKind::Text(b)) =
-                (&last.kind, &fragment.kind)
-            {
-                let separator =
-                    if a.ends_with(char::is_whitespace) || b.starts_with(char::is_whitespace) {
+            // Two runs with different colours are not adjacent text of the same
+            // style: merging them would paint the first run in the second's
+            // colour.
+            if last.color == fragment.color {
+                if let (ChatFragmentKind::Text(a), ChatFragmentKind::Text(b)) =
+                    (&last.kind, &fragment.kind)
+                {
+                    let separator = if a.ends_with(char::is_whitespace)
+                        || b.starts_with(char::is_whitespace)
+                    {
                         ""
                     } else {
                         " "
                     };
-                let combined = format!("{}{}{}", a, separator, b);
-                last.kind = ChatFragmentKind::Text(combined);
-                continue;
+                    let combined = format!("{}{}{}", a, separator, b);
+                    last.kind = ChatFragmentKind::Text(combined);
+                    continue;
+                }
             }
         }
         merged.push(fragment);
@@ -652,6 +785,74 @@ mod tests {
                 ChatFragment::text(" "),
                 ChatFragment::italic("italic"),
             ]
+        );
+    }
+
+    #[test]
+    fn parses_a_coloured_run() {
+        assert_eq!(
+            parse_markdown("{color:#ef4444}hot{/color}"),
+            vec![ChatFragment::text("hot").with_color(ColorU::hex(0xef4444))]
+        );
+    }
+
+    #[test]
+    fn a_colour_wraps_a_bold_run() {
+        assert_eq!(
+            parse_markdown("{color:red}**hot**{/color}"),
+            vec![ChatFragment::bold("hot").with_color(ColorU::hex(0xef4444))]
+        );
+    }
+
+    #[test]
+    fn a_named_colour_resolves() {
+        assert_eq!(
+            parse_markdown("{color:green}ok{/color}"),
+            vec![ChatFragment::text("ok").with_color(ColorU::hex(0x10b981))]
+        );
+    }
+
+    #[test]
+    fn nested_colours_use_the_inner_one_then_resume() {
+        assert_eq!(
+            parse_markdown("{color:red}out {color:blue}in{/color} out{/color}"),
+            vec![
+                ChatFragment::text("out ").with_color(ColorU::hex(0xef4444)),
+                ChatFragment::text("in").with_color(ColorU::hex(0x19aad8)),
+                ChatFragment::text(" out").with_color(ColorU::hex(0xef4444)),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_colour_stays_literal() {
+        assert_eq!(
+            parse_markdown("{color:chartreuse}hot{/color}"),
+            vec![ChatFragment::text("{color:chartreuse}hot{/color}")]
+        );
+    }
+
+    #[test]
+    fn an_unterminated_colour_marker_stays_literal() {
+        assert_eq!(
+            parse_markdown("a {color:#ff0000"),
+            vec![ChatFragment::text("a {color:#ff0000")]
+        );
+    }
+
+    #[test]
+    fn a_close_without_an_open_stays_literal() {
+        assert_eq!(
+            parse_markdown("a {/color} b"),
+            vec![ChatFragment::text("a {/color} b")]
+        );
+    }
+
+    #[test]
+    fn inline_code_keeps_the_marker_literal() {
+        assert_eq!(
+            parse_markdown("`{color:red}x{/color}`"),
+            vec![ChatFragment::code("{color:red}x{/color}")]
         );
     }
 

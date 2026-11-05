@@ -1,13 +1,11 @@
 use crate::color::ColorU;
-use crate::elements::{
-    AppContext, ConstrainedBox, Container, Element, Empty, Fill, Flex, LayoutContext,
-    PaintContext, Point, SizeConstraint, Text,
-};
-use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::platform::text_atlas::{advance_width, measure_text_family, FontWeight};
-use crate::theme::{ColorToken, FontFamily};
+use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
+use crate::geometry::{rectf, Vector2F};
+use crate::theme::ColorToken;
 
-/// Height of the caret beam: one line box of the 12px body text.
+use super::vec2f;
+
+/// Height of the caret: one line box of the 12px body text.
 pub const CARET_HEIGHT: f32 = 16.0;
 
 /// Width of the thin caret beam. It is the insertion point of a field that has
@@ -20,16 +18,8 @@ pub const CARET_WIDTH: f32 = 4.0;
 
 /// Width of a block caret's cell when there is no character to cover: the end
 /// of the line, or an empty field. A block covers one character, and with a
-/// proportional font the cell is the width that character itself measures.
+/// proportional font the cell is the width that character itself advances.
 pub const CARET_CELL_WIDTH: f32 = 8.0;
-
-/// The size the field's own text is drawn at, which a caret cell is measured
-/// at: the caret is one cell of that text.
-const CARET_FONT_SIZE: f32 = 12.0;
-const CARET_LINE_HEIGHT: f32 = 1.2;
-
-/// A probe glyph wide enough that a run measured with it spans the pen.
-const CELL_PROBE: &str = "W";
 
 /// Thickness of the underline caret drawn under the character it sits on.
 const CARET_UNDERLINE_HEIGHT: f32 = 2.0;
@@ -52,7 +42,12 @@ pub enum CaretShape {
 /// The element tree is rebuilt every frame, so the caret is built into the
 /// field's row at the index it sits at, instead of being paint-time state.
 pub fn caret_beam(app: &AppContext) -> Box<dyn Element> {
-    caret(app, CaretShape::Bar, None)
+    CaretBeam::new(
+        CARET_WIDTH,
+        CARET_HEIGHT,
+        app.theme.color(ColorToken::Focus),
+    )
+    .finish()
 }
 
 /// The same beam at a line height of the caller's own: a multi-line buffer's
@@ -62,202 +57,39 @@ pub fn caret_bar(app: &AppContext, height: f32) -> Box<dyn Element> {
     CaretBeam::new(CARET_WIDTH, height, app.theme.color(ColorToken::Focus)).finish()
 }
 
-/// Whether the caret draws the character it covers itself, and therefore takes
-/// that character's own advance in the row it sits in: the text after a block
-/// or an underline caret starts past the character it covers, so the character
-/// is neither drawn twice nor pushed along by the caret. A beam covers nothing
-/// and leaves the text to the row.
-pub fn caret_covers_character(shape: CaretShape, under: Option<char>) -> bool {
-    under.is_some() && shape != CaretShape::Bar
-}
-
-/// A character's own advance: where the next character starts after it.
+/// The insertion point, painted in the shape the editor's mode calls for, one
+/// cell at `x` past the element's own origin.
 ///
-/// A run reports the extent of its ink, which is a side bearing short of the
-/// advance — and nothing at all for a space — so a cell that has to cover the
-/// character it sits on, and leave the row where the text's own columns are,
-/// measures the advance itself: the distance the probe glyph moves when it is
-/// drawn after `text`.
-fn advance(text: &str) -> f32 {
-    let measured = |value: &str| {
-        measure_text_family(
-            value,
-            CARET_FONT_SIZE,
-            CARET_LINE_HEIGHT,
-            f32::INFINITY,
-            FontWeight::Regular,
-            FontFamily::System,
-            false,
-        )
-        .x
-    };
-    (measured(&format!("{text}{CELL_PROBE}")) - measured(CELL_PROBE)).max(0.0)
-}
-
-/// The width of the cell a block or an underline caret takes: the character's
-/// own advance when there is one, and a fixed cell at the end of a line.
-fn cell_width(under: Option<char>) -> f32 {
-    match under {
-        Some(ch) => advance(&ch.to_string()),
-        None => CARET_CELL_WIDTH,
-    }
-}
-
-/// The insertion point, drawn in the shape the editor's mode calls for.
+/// The element takes no room in the row and rasterizes no text. It reports no
+/// advance at all, so the line's own columns do not depend on where the caret
+/// is, and it paints a single rectangle: a block fills the cell of the
+/// character the insertion point sits before, an underline draws the rule under
+/// that character, and a bar is the field's own beam.
 ///
-/// `under` is the character the caret covers: a block caret paints it in the
-/// background colour so it stays readable inside the caret cell, and an
-/// underline caret gives it a slot to sit under. Both take the character's own
-/// advance — what the row would have spent on it — so the text does not move
-/// when the mode changes; both are ignored by the bar.
-pub fn caret(app: &AppContext, shape: CaretShape, under: Option<char>) -> Box<dyn Element> {
-    let color = app.theme.color(ColorToken::Focus);
-    let focus = Fill::Solid(color);
-    match shape {
-        // The beam is painted where the text is, over the character it reaches:
-        // it asks the row for no room at all, so the text never moves as the
-        // caret moves. The renderer draws a run's rectangles before its glyphs,
-        // so the character the beam covers stays drawn on the focus fill.
-        CaretShape::Bar => CaretBeam::new(CARET_WIDTH, CARET_HEIGHT, color).finish(),
-        CaretShape::Block => {
-            // The cell is the character's own, so the letter under the caret
-            // neither moves nor disappears: the cell takes the advance the row
-            // would have spent on it, and the letter is redrawn in the cell's
-            // background colour inside the fill. A space has no ink to draw but
-            // keeps its advance, which is the cell the block covers.
-            let cell: Box<dyn Element> = match under {
-                Some(ch) => ConstrainedBox::new(
-                    Text::new(ch.to_string())
-                        .with_theme_color(ColorToken::Bg, app)
-                        .finish(),
-                )
-                .with_min_width(cell_width(under))
-                .finish(),
-                None => Empty::new()
-                    .with_size(vec2f(CARET_CELL_WIDTH, CARET_HEIGHT))
-                    .finish(),
-            };
-            Container::new(cell).with_background(focus).finish()
-        }
-        CaretShape::Underline => {
-            // The character keeps its own line box and its own colour; the caret
-            // is a bar under it, so the text does not shift when the mode
-            // changes.
-            let slot: Box<dyn Element> = match under {
-                Some(ch) => ConstrainedBox::new(
-                    Text::new(ch.to_string())
-                        .with_theme_color(ColorToken::Text, app)
-                        .finish(),
-                )
-                .with_min_width(cell_width(under))
-                .finish(),
-                None => Empty::new()
-                    .with_size(vec2f(CARET_CELL_WIDTH, CARET_HEIGHT - CARET_UNDERLINE_HEIGHT))
-                    .finish(),
-            };
-            let bar = Container::new(
-                Empty::new()
-                    .with_size(vec2f(cell_width(under), CARET_UNDERLINE_HEIGHT))
-                    .finish(),
-            )
-            .with_background(focus)
-            .finish();
-            Flex::column()
-                .with_child(slot)
-                .with_child(bar)
-                .finish()
-        }
-    }
-}
-
-/// The font a caret's cell is measured in, and the font the character under a
-/// block is redrawn in.
-///
-/// A field that draws proportional text and a field that draws a mono buffer
-/// have different cells; the caller hands the same metrics it drew the text
-/// with, so the caret covers exactly one of that text's characters.
-#[derive(Clone, Copy, Debug)]
-pub struct CaretMetrics {
-    pub font_size: f32,
-    pub line_height: f32,
-    pub weight: FontWeight,
-    pub family: FontFamily,
-    pub italic: bool,
-}
-
-impl CaretMetrics {
-    pub fn new(
-        font_size: f32,
-        line_height: f32,
-        weight: FontWeight,
-        family: FontFamily,
-    ) -> Self {
-        Self {
-            font_size,
-            line_height,
-            weight,
-            family,
-            italic: false,
-        }
-    }
-
-    /// The advance of one character in these metrics: the width of the cell a
-    /// block caret covers it with.
-    pub fn advance(&self, ch: char) -> f32 {
-        let mut buffer = [0u8; 4];
-        advance_width(
-            ch.encode_utf8(&mut buffer),
-            self.font_size,
-            self.weight,
-            self.family,
-            self.italic,
-        )
-    }
-
-    /// Draw one character, positioned exactly as the intact run draws it: the
-    /// same origin, size, line height and face.
-    fn draw(&self, renderer: &mut crate::render::Renderer, origin: Vector2F, ch: char, color: ColorU) {
-        renderer.draw_text_with_font(
-            origin,
-            ch.to_string(),
-            self.font_size,
-            color,
-            f32::INFINITY,
-            self.line_height,
-            self.weight,
-            self.family,
-            self.italic,
-        );
-    }
-}
-
-/// A caret painted over an intact run of text, in the shape the editor's mode
-/// calls for.
-///
-/// The field never cuts its text at the insertion point: a cut re-rasterizes
-/// the tail as a new run, and a run whose first glyph has a negative left
-/// bearing (a `j`, for one) is blitted one pixel to the right of the same glyph
-/// inside the whole run. That made every character after the caret jump as the
-/// caret crossed such a letter. This element takes no room in the row and
-/// paints after the text: a block fills the cell of the character it covers and
-/// redraws that character in the cell's background colour; an underline draws
-/// only the rule under the intact character; a bar is the field's own beam.
+/// A block is put into the row *before* the run it sits in, so its fill is
+/// behind the text and the character it covers is that run's own glyph, at the
+/// position the row already gives it. Redrawing the glyph here — as a run of
+/// its own, which is what the caret used to do — placed it a couple of pixels
+/// off its slot for every glyph whose ink overhangs its cell (a `j` in the
+/// prose face, `A`, `x`, `p`, `#` and others in the oblique faces): a fresh
+/// run is anchored on its own ink, while the same glyph inside the line is
+/// anchored on the line's, so the letter under the caret jumped as the caret
+/// crossed it. Painting the fill behind the text keeps one rasterization per
+/// glyph and the row's own positions, which is the only way the text can be
+/// perfectly still.
 pub fn caret_overlay(
     app: &AppContext,
     shape: CaretShape,
-    under: Option<char>,
+    x: f32,
     cell: f32,
     height: f32,
-    metrics: CaretMetrics,
 ) -> Box<dyn Element> {
     CaretOverlay {
         shape,
-        under,
+        x: x.max(0.0),
         cell: cell.max(0.0),
         height,
-        metrics,
         color: app.theme.color(ColorToken::Focus),
-        ink: app.theme.color(ColorToken::Bg),
         origin: None,
     }
     .finish()
@@ -265,14 +97,12 @@ pub fn caret_overlay(
 
 struct CaretOverlay {
     shape: CaretShape,
-    under: Option<char>,
+    /// The cell's left edge, past the element's own origin. The element owns no
+    /// advance, so this offset is not part of what the row lays out.
+    x: f32,
     cell: f32,
     height: f32,
-    metrics: CaretMetrics,
     color: ColorU,
-    /// The colour the covered character is redrawn in inside a block, so it
-    /// stays readable against the focus fill.
-    ink: ColorU,
     origin: Option<Point>,
 }
 
@@ -292,29 +122,18 @@ impl Element for CaretOverlay {
         let Some(renderer) = ctx.renderer.as_mut() else {
             return;
         };
+        let x = origin.x + self.x;
         match self.shape {
             CaretShape::Bar => {
-                renderer.fill_rect(
-                    rectf(origin.x, origin.y, CARET_WIDTH, self.height),
-                    self.color,
-                );
+                renderer.fill_rect(rectf(x, origin.y, CARET_WIDTH, self.height), self.color);
             }
             CaretShape::Block => {
-                renderer.fill_rect(
-                    rectf(origin.x, origin.y, self.cell, self.height),
-                    self.color,
-                );
-                // The fill hides the character it covers. Draw it again in the
-                // cell's background colour, at the cell's own origin, so a
-                // letter under the block stays readable.
-                if let Some(ch) = self.under.filter(|ch| !ch.is_control()) {
-                    self.metrics.draw(renderer, origin, ch, self.ink);
-                }
+                renderer.fill_rect(rectf(x, origin.y, self.cell, self.height), self.color);
             }
             CaretShape::Underline => {
                 renderer.fill_rect(
                     rectf(
-                        origin.x,
+                        x,
                         origin.y + self.height - CARET_UNDERLINE_HEIGHT,
                         self.cell,
                         CARET_UNDERLINE_HEIGHT,

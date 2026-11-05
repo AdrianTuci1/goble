@@ -21,7 +21,7 @@ pub(crate) const HEADER_CONTROL_HEIGHT: f32 = 32.0;
 /// directory it runs in; an agent surface names the conversation it holds.
 pub(crate) enum PaneHeading {
     /// The pane's working directory, shortened the way the tab strip reads it
-    /// (`~`, `~/Projects/goble`), with the full path on hover.
+    /// (`~`, `~/Projects/goble`), with the same form on hover.
     Path(String),
     /// The agent conversation's subject, or its new-conversation placeholder.
     Agent(String),
@@ -30,7 +30,10 @@ pub(crate) enum PaneHeading {
 impl PaneHeading {
     fn element(self, app: &AppContext) -> Box<dyn Element> {
         let (text, tooltip) = match self {
-            PaneHeading::Path(path) => (crate::state::display_path(&path), Some(path)),
+            PaneHeading::Path(path) => {
+                let display = crate::state::display_path(&path);
+                (display.clone(), Some(display))
+            }
             PaneHeading::Agent(subject) => (subject, None),
         };
         let label = Text::new(text)
@@ -45,7 +48,7 @@ impl PaneHeading {
             None => label,
         };
         // A long path or subject stops short of the pane's own controls; the
-        // tooltip still carries the whole path.
+        // tooltip still carries the whole label.
         ConstrainedBox::new(label).with_max_width(340.0).finish()
     }
 }

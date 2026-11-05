@@ -412,6 +412,62 @@ fn the_topbar_draws_the_tree_totals_and_its_controls_above_the_cards() {
     }
 }
 
+/// The two stacked bars are told apart by a hairline: a one point, full-width
+/// rule on the seam where the pane's topbar ends and the controls bar starts.
+#[test]
+fn a_hairline_separates_the_topbar_from_the_review_controls() {
+    if !git_available() {
+        return;
+    }
+    let repo = repository();
+    std::fs::write(repo.path().join("tracked.txt"), "alpha\nbeta\n").unwrap();
+    let cwd = repo.path().to_string_lossy().to_string();
+    let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
+
+    let commands = frame(&mut root, &app);
+    let border = app.theme.color(goble_ui::theme::ColorToken::Border);
+    let rules: Vec<_> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == border && (rect.height() - 1.0).abs() < 0.5 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .collect();
+
+    // The pane opens under the app's own topbar, so its header ends about two
+    // bar heights down the window, where the controls bar begins.
+    let seam = crate::ui::shell::TOPBAR_HEIGHT * 2.0;
+    let toolbar = toolbar_y(&commands);
+    let rule = rules
+        .iter()
+        .find(|rect| (rect.min_y() - seam).abs() < 8.0)
+        .unwrap_or_else(|| panic!("a rule sits between the two bars: {rules:?}"));
+    assert!(
+        (rule.height() - 1.0).abs() < 0.5,
+        "the seam is one point high: {rule:?}"
+    );
+    assert!(
+        (rule.min_x() - (crate::ui::SIDEBAR_WIDTH + crate::ui::panes::PANE_INSET)).abs() < 1.0
+            && (rule.max_x() - (window().x - crate::ui::panes::PANE_INSET)).abs() < 1.0,
+        "the seam runs the pane's full width: {rule:?}"
+    );
+    assert!(
+        rule.max_y() <= toolbar,
+        "the seam sits above the controls: {rule:?} against {toolbar}"
+    );
+    // The rule above the cards is a separate one, further down the pane.
+    assert!(
+        rules
+            .iter()
+            .any(|rect| rect.min_y() > rule.max_y() && rect.width() > 600.0),
+        "the cards keep their own rule: {rules:?}"
+    );
+}
+
 /// The topbar reads the split it is drawn in: a narrow review keeps the
 /// shortened directory and gives up the branch and the totals, while the
 /// controls stay on their own bar under it.
@@ -1162,9 +1218,11 @@ fn every_file_is_drawn_inside_its_own_border() {
         "both files wear a border: {:?}",
         texts(&commands)
     );
+    // The window's own rule is drawn in the same colour and spans the whole
+    // window (see `ui::build_window_border`): it is not a file's card.
     let file_boxes: Vec<_> = boxes
         .into_iter()
-        .filter(|(rect, _)| rect.height() > 30.0)
+        .filter(|(rect, _)| rect.height() > 30.0 && rect.width() < window().x)
         .collect();
     assert!(
         file_boxes.len() >= 2

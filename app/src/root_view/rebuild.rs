@@ -35,6 +35,10 @@ impl RootView {
         // query the field holds now. The walk runs off this thread, so this is
         // where its answer reaches the rows the sidebar draws.
         self.state.borrow_mut().take_global_search_result();
+        // A finished turn's announcement is timed: the frame clock runs it out
+        // (see `Element::wants_animation`) and this is where the deadline is
+        // honoured, before the snapshot the banner is drawn from is taken.
+        self.state.borrow_mut().expire_announcement();
         // Follow what every pane's own shell reports as its working directory
         // before anything reads a path: the rich input's directory pill, the tab
         // label that derives from it and the explorer all draw from the pane's
@@ -558,6 +562,7 @@ impl RootView {
                 global_search_scroll: s.global_search_scroll.clone(),
                 settings_scroll: s.settings_scroll.clone(),
                 space_rename_editing: s.space_rename_editing,
+                command_held: s.command_held,
                 space_rename_draft: s.space_rename_draft.clone(),
                 space_rename_focused: s.space_rename_focused,
                 space_menu: s.space_menu.clone(),
@@ -572,6 +577,8 @@ impl RootView {
                 inbox_index: s.inbox_index,
                 inbox_error: s.inbox_error.clone(),
                 inbox_scroll: s.inbox_scroll.clone(),
+                inbox_anchor: s.inbox_anchor.clone(),
+                announcement: s.announcement_item().cloned(),
                 agent_dashboard: s.agent_dashboard.clone(),
                 show_onboarding_tip: s.show_onboarding_tip,
                 add_space_menu_open: s.add_space_menu_open.clone(),

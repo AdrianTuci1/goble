@@ -1,0 +1,21 @@
+appId: dev.goble.mobile
+---
+- launchApp:
+    clearState: true
+- assertVisible: "Sign in"
+- tapOn: "Continue with the demo workspace"
+- assertVisible: "What are we building?"
+- tapOn:
+    id: "open-sessions"
+- assertVisible: "Starred"
+- assertVisible: "Recent"
+- tapOn: "Gateway access control"
+- assertVisible: "cargo check -p goble-gateway"
+- tapOn:
+    id: "open-sessions"
+- tapOn: "Agent management"
+- assertVisible: "Agent management"
+- tapOn:
+    id: "open-sessions"
+- tapOn: "Settings"
+- assertVisible: "Switch server"

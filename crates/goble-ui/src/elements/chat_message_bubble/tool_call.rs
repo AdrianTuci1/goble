@@ -56,7 +56,13 @@ pub(super) fn to_text_span(
     };
     let is_code = matches!(span.style, InlineStyle::Code);
     let is_link = matches!(span.style, InlineStyle::Link(_));
-    let resolved = resolve_inline_span(text, bold, italic, is_code, is_link, app);
+    let mut resolved = resolve_inline_span(text, bold, italic, is_code, is_link, app);
+    // A run that named its own colour keeps it in every style: the marker is
+    // the source's statement, so it overrides the theme's text, accent or code
+    // colour.
+    if let Some(color) = span.color {
+        resolved = resolved.with_color(color);
+    }
 
     let InlineStyle::Link(url) = &span.style else {
         return resolved;

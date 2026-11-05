@@ -1,3 +1,4 @@
+use crate::color::ColorU;
 use crate::elements::terminal_block::TerminalData;
 use super::message::ChatAction;
 
@@ -23,119 +24,103 @@ impl ListItem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatFragment {
     pub kind: ChatFragmentKind,
+    /// A colour the source asked for with a `{color:…}` marker. `None` keeps
+    /// the theme's own colour for the run, which is what every fragment that
+    /// did not name one carries.
+    pub color: Option<ColorU>,
 }
 
 impl ChatFragment {
+    fn of(kind: ChatFragmentKind) -> Self {
+        Self { kind, color: None }
+    }
+
+    /// Paint this run in an explicit colour instead of its theme colour. The
+    /// markdown parser is the caller: a `{color:#rrggbb}` marker wraps the run
+    /// it opens.
+    pub fn with_color(mut self, color: ColorU) -> Self {
+        self.color = Some(color);
+        self
+    }
+
     pub fn text(text: impl Into<String>) -> Self {
-        Self {
-            kind: ChatFragmentKind::Text(text.into()),
-        }
+        Self::of(ChatFragmentKind::Text(text.into()))
     }
 
     pub fn bold(text: impl Into<String>) -> Self {
-        Self {
-            kind: ChatFragmentKind::Bold(text.into()),
-        }
+        Self::of(ChatFragmentKind::Bold(text.into()))
     }
 
     pub fn italic(text: impl Into<String>) -> Self {
-        Self {
-            kind: ChatFragmentKind::Italic(text.into()),
-        }
+        Self::of(ChatFragmentKind::Italic(text.into()))
     }
 
     pub fn bold_italic(text: impl Into<String>) -> Self {
-        Self {
-            kind: ChatFragmentKind::BoldItalic(text.into()),
-        }
+        Self::of(ChatFragmentKind::BoldItalic(text.into()))
     }
 
     pub fn code(code: impl Into<String>) -> Self {
-        Self {
-            kind: ChatFragmentKind::Code(code.into()),
-        }
+        Self::of(ChatFragmentKind::Code(code.into()))
     }
 
     pub fn code_block(lang: Option<String>, code: impl Into<String>) -> Self {
-        Self {
-            kind: ChatFragmentKind::CodeBlock {
-                lang,
-                code: code.into(),
-            },
-        }
+        Self::of(ChatFragmentKind::CodeBlock {
+            lang,
+            code: code.into(),
+        })
     }
 
     pub fn heading(level: u8, text: impl Into<String>) -> Self {
-        Self {
-            kind: ChatFragmentKind::Heading {
-                level,
-                text: text.into(),
-            },
-        }
+        Self::of(ChatFragmentKind::Heading {
+            level,
+            text: text.into(),
+        })
     }
 
     pub fn link(label: impl Into<String>, url: impl Into<String>) -> Self {
-        Self {
-            kind: ChatFragmentKind::Link {
-                label: label.into(),
-                url: url.into(),
-            },
-        }
+        Self::of(ChatFragmentKind::Link {
+            label: label.into(),
+            url: url.into(),
+        })
     }
 
     /// An ordered list carries its source start number; `None` means bulleted.
     pub fn list(items: Vec<ListItem>, start: Option<u64>) -> Self {
-        Self {
-            kind: ChatFragmentKind::List { items, start },
-        }
+        Self::of(ChatFragmentKind::List { items, start })
     }
 
     pub fn block_quote(content: Vec<ChatFragment>) -> Self {
-        Self {
-            kind: ChatFragmentKind::BlockQuote(content),
-        }
+        Self::of(ChatFragmentKind::BlockQuote(content))
     }
 
     pub fn table(header: Vec<String>, rows: Vec<Vec<String>>) -> Self {
-        Self {
-            kind: ChatFragmentKind::Table { header, rows },
-        }
+        Self::of(ChatFragmentKind::Table { header, rows })
     }
 
     pub fn rule() -> Self {
-        Self {
-            kind: ChatFragmentKind::Rule,
-        }
+        Self::of(ChatFragmentKind::Rule)
     }
 
     pub fn image(alt: impl Into<String>, url: impl Into<String>) -> Self {
-        Self {
-            kind: ChatFragmentKind::Image {
-                alt: alt.into(),
-                url: url.into(),
-            },
-        }
+        Self::of(ChatFragmentKind::Image {
+            alt: alt.into(),
+            url: url.into(),
+        })
     }
 
     pub fn line_break() -> Self {
-        Self {
-            kind: ChatFragmentKind::LineBreak,
-        }
+        Self::of(ChatFragmentKind::LineBreak)
     }
 
     pub fn action(label: impl Into<String>, payload: ChatAction) -> Self {
-        Self {
-            kind: ChatFragmentKind::Action {
-                label: label.into(),
-                payload,
-            },
-        }
+        Self::of(ChatFragmentKind::Action {
+            label: label.into(),
+            payload,
+        })
     }
 
     pub fn terminal(data: TerminalData) -> Self {
-        Self {
-            kind: ChatFragmentKind::Terminal(data),
-        }
+        Self::of(ChatFragmentKind::Terminal(data))
     }
 
     /// A model reasoning (thinking) step. `key` is the app-owned identity used
@@ -147,14 +132,12 @@ impl ChatFragment {
         text: impl Into<String>,
         done: bool,
     ) -> Self {
-        Self {
-            kind: ChatFragmentKind::Reasoning {
-                key: key.into(),
-                mode: mode.into(),
-                text: text.into(),
-                done,
-            },
-        }
+        Self::of(ChatFragmentKind::Reasoning {
+            key: key.into(),
+            mode: mode.into(),
+            text: text.into(),
+            done,
+        })
     }
 }
 

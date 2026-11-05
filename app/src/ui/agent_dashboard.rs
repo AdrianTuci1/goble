@@ -213,19 +213,12 @@ fn grouped_rows<'a>(
             })
             .collect(),
         AgentDashboardGrouping::Directory => {
-            let home = crate::state::home_directory();
             let label = |entry: &ConversationEntry| -> String {
                 let directory = entry.directory.trim();
                 if directory.is_empty() {
                     return "No directory".to_string();
                 }
-                match &home {
-                    Some(home) if directory == home => "~".to_string(),
-                    Some(home) if directory.starts_with(&format!("{home}/")) => {
-                        format!("~{}", &directory[home.len()..])
-                    }
-                    _ => directory.to_string(),
-                }
+                crate::state::display_path(directory)
             };
             let mut groups: std::collections::BTreeMap<String, Vec<&ConversationEntry>> =
                 std::collections::BTreeMap::new();
@@ -1250,6 +1243,67 @@ mod ui_tests {
         assert!(
             !texts.iter().any(|text| text == "◇ 1 idle"),
             "and counts no empty ones: {texts:?}"
+        );
+    }
+
+    /// The roster's state mark sits on the row's title line: its centre is the
+    /// name's centre, not the middle of the two-line item, which would put it
+    /// between the name and the activity under it.
+    #[test]
+    fn the_roster_state_mark_sits_on_the_title_line() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = root();
+        {
+            let mut s = state.borrow_mut();
+            s.conversations = vec![conversation(
+                "a",
+                "Fix the login flow",
+                "The fix is in.",
+                ConversationStatus::Success,
+            )];
+            s.agent_dashboard.open = true;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let sidebar_width = state.borrow().sidebar_width;
+
+        /// The vertical centre of the line a run was drawn in: its origin plus
+        /// half the height it measured to. Only runs inside the panel count: the
+        /// sidebar lists the same conversation beside it.
+        fn run_centre(commands: &[RenderCommand], text: &str, sidebar_width: f32) -> f32 {
+            commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText {
+                        text: drawn,
+                        origin,
+                        font_size,
+                        line_height,
+                        max_width,
+                        ..
+                    } if drawn == text && origin.x >= sidebar_width => {
+                        let size = goble_ui::elements::text::measure_text(
+                            drawn,
+                            *font_size,
+                            *line_height,
+                            *max_width,
+                        );
+                        Some(origin.y + size.y / 2.0)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the roster draws {text:?}"))
+        }
+
+        let mark = run_centre(&commands, "◆", sidebar_width);
+        let name = run_centre(&commands, "Fix the login flow", sidebar_width);
+        let activity = run_centre(&commands, "The fix is in.", sidebar_width);
+        assert!(
+            (mark - name).abs() < 0.5,
+            "the mark is centred on the name's line: mark {mark}, name {name}"
+        );
+        assert!(
+            (mark - activity).abs() > 2.0,
+            "and not between the name and the activity: mark {mark}, activity {activity}"
         );
     }
 

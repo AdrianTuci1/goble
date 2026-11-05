@@ -7,9 +7,9 @@ use chrono::Utc;
 use futures::{Stream, StreamExt};
 
 use crate::harness::{
-    arc_to_sender_ref, command_candidates, execute_tool_call, harness_tool_definitions,
-    ChatToolCall, HarnessEvent, ThinkingMode, ToolCallStatus, ToolTurnContext, WebSearchConfig,
-    COMMAND_TOOL, HARNESS_SYSTEM_PROMPT,
+    arc_to_sender_ref, command_candidates, execute_tool_call, harness_system_prompt,
+    harness_tool_definitions, ChatToolCall, HarnessEvent, ThinkingMode, ToolCallStatus,
+    ToolTurnContext, WebSearchConfig, COMMAND_TOOL,
 };
 use crate::llm::{
     CompletionRequest, CompletionStreamEvent, LlmProvider, LlmToolCall, Message, Role,
@@ -192,7 +192,7 @@ pub(crate) fn run_mission(
 
                 let history = build_history(&store, &chat_id, &mission, &reasoning_tools, &tools, mode).await;
                 let request = CompletionRequest::new(provider.clone(), model.clone())
-                    .with_system(HARNESS_SYSTEM_PROMPT)
+                    .with_system(harness_system_prompt())
                     .with_system(build_reasoning_prompt(mode, &mission.goal, &mission.reasoning_steps))
                     .with_messages(history)
                     .with_tools(reasoning_tools.clone());
@@ -361,7 +361,7 @@ pub(crate) fn run_mission(
             });
 
             let request = CompletionRequest::new(provider.clone(), model.clone())
-                .with_system(HARNESS_SYSTEM_PROMPT)
+                .with_system(harness_system_prompt())
                 .with_messages(history)
                 .with_tools(tools.clone());
 

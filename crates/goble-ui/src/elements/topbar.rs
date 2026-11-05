@@ -27,6 +27,23 @@ const TOPBAR_TRAFFIC_INSET: f32 = 76.0;
 #[cfg(not(target_os = "macos"))]
 const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
 
+// A full-screen window hides the traffic lights, so their room goes back to the
+// toolbar and only enough is kept to hold the first action off the edge.
+#[cfg(target_os = "macos")]
+const TOPBAR_FULLSCREEN_PADDING: f32 = 10.0;
+#[cfg(not(target_os = "macos"))]
+const TOPBAR_FULLSCREEN_PADDING: f32 = 0.0;
+
+/// The toolbar's leading padding: the traffic lights' room while the window is
+/// windowed, and the small fullscreen padding while it is full screen.
+fn left_padding(fullscreen: bool) -> f32 {
+    if fullscreen {
+        TOPBAR_FULLSCREEN_PADDING
+    } else {
+        TOPBAR_TRAFFIC_INSET
+    }
+}
+
     /// A premium application topbar matching the Tauri/Warp layout.
     ///
     /// Left side: menu toggle, (optionally) a threads button, projects button.
@@ -154,7 +171,7 @@ const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
 
             let root = Container::new(ConstrainedBox::new(row).with_height(TOPBAR_HEIGHT).finish())
                 .with_padding(EdgeInsets::new(
-                    TOPBAR_TRAFFIC_INSET,
+                    left_padding(app.window_control.is_fullscreen()),
                     vertical_padding,
                     0.0,
                     vertical_padding,

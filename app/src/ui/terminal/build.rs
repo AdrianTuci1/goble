@@ -695,9 +695,10 @@ impl TerminalView {
 
         // The shell's own view is the block list: one section per command, with
         // the directory it ran in and how long it took on the section's top line
-        // (warp-new's block view), and a card where a conversation happened. The
-        // sections are drawn inside one following viewport, so the newest command
-        // sits on the rich input and the history scrolls above it.
+        // (warp-new's block view), and a card where a conversation happened and
+        // the agent answered in it. The sections are drawn inside one following
+        // viewport, so the newest command sits on the rich input and the history
+        // scrolls above it.
         //
         // A program that owns the screen draws the live grid instead — a TUI
         // paints a layout, not a list of commands — and so does a shell whose
@@ -713,12 +714,20 @@ impl TerminalView {
             let mut line_base = 0usize;
             for block in &blocks {
                 if let Some(card) = &block.card {
+                    // A card stands for an exchange: a conversation the app's
+                    // list has answered in, titled by its subject. One with no
+                    // reply yet — or one the list does not know — draws
+                    // nothing, not even its empty slot.
+                    let Some(info) = self
+                        .conversation_info
+                        .get(&card.conversation_id)
+                        .filter(|info| info.has_agent_reply)
+                    else {
+                        continue;
+                    };
                     list = list.with_child(
                         CardProbe {
-                            inner: build_card(
-                                card,
-                                self.conversation_info.get(&card.conversation_id),
-                            ),
+                            inner: build_card(card, Some(info)),
                             cards: Rc::clone(&self.cards),
                             conversation_id: card.conversation_id.clone(),
                             size: None,

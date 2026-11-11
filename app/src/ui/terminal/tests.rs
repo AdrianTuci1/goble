@@ -2514,8 +2514,9 @@ fn the_conversation_card_is_the_shared_raised_band() {
     );
 }
 
-/// The card takes its harness and last activity from the app's conversation
-/// list, which is where a card left by a pane reads which agent ran it.
+/// The card takes its title, harness and last activity from the app's
+/// conversation list, which is where a card left by a pane reads what the
+/// conversation is called now and which agent ran it.
 #[test]
 fn the_conversation_card_takes_its_harness_from_the_conversation_list() {
     let app = AppContext::default();
@@ -2524,6 +2525,8 @@ fn the_conversation_card_takes_its_harness_from_the_conversation_list() {
         .with_status(ConversationStatus::Waiting);
     let info = CardInfo::from(&entry);
 
+    assert_eq!(info.title, "Fix the build");
+    assert!(info.has_agent_reply, "the entry has an agent's answer");
     assert_eq!(info.harness, "claude");
     assert_eq!(info.last_activity, "2m");
     assert_eq!(
@@ -2532,9 +2535,11 @@ fn the_conversation_card_takes_its_harness_from_the_conversation_list() {
         "the sidebar's one live state reads as a turn in flight"
     );
 
+    // The block's stored label is whatever the pane entered the view with; the
+    // conversation's current subject is what the row draws.
     let card = AgentViewCard {
         conversation_id: "c1".to_string(),
-        label: "Fix the build".to_string(),
+        label: "c1".to_string(),
     };
     let mut element = build_card(&card, Some(&info));
     let commands = render_element(&mut element, vec2f(420.0, 40.0), &app);
@@ -2546,6 +2551,38 @@ fn the_conversation_card_takes_its_harness_from_the_conversation_list() {
         )),
         "the card leads with the conversation's own harness"
     );
+    let drawn = texts(&commands);
+    assert!(
+        drawn.iter().any(|text| text == "Fix the build"),
+        "the conversation's subject titles the row: {drawn:?}"
+    );
+    assert!(
+        !drawn.iter().any(|text| text == "c1"),
+        "the stored label never wins over the list's subject: {drawn:?}"
+    );
+}
+
+/// A conversation the user has not named yet has no subject to draw, and the
+/// raw conversation id is not one.
+#[test]
+fn a_card_with_no_subject_is_a_new_conversation() {
+    let app = AppContext::default();
+    for name in ["", "c1"] {
+        let entry = ConversationEntry::new("c1", name, "", "");
+        let info = CardInfo::from(&entry);
+        assert_eq!(info.title, "New conversation");
+
+        let card = AgentViewCard {
+            conversation_id: "c1".to_string(),
+            label: name.to_string(),
+        };
+        let mut element = build_card(&card, Some(&info));
+        let drawn = texts(&render_element(&mut element, vec2f(420.0, 40.0), &app));
+        assert!(
+            drawn.iter().any(|text| text == "New conversation"),
+            "a card with no subject reads as a new conversation: {drawn:?}"
+        );
+    }
 }
 
 /// The card is a surface of the pane, not a row inside it: the raised band runs
@@ -2564,7 +2601,10 @@ fn the_conversation_card_runs_the_panes_whole_width() {
         7,
         TerminalBlockPlumbing::new(block_filters(), None, None),
     );
-    let mut pane: Box<dyn Element> = Box::new(pane);
+    let entry = ConversationEntry::new("c1", "Fix the build", "", "2m");
+    let mut pane: Box<dyn Element> = Box::new(
+        pane.with_conversation_info(HashMap::from([(entry.id.clone(), CardInfo::from(&entry))])),
+    );
     let window = vec2f(900.0, 500.0);
     let commands = render_element(&mut pane, window, &app);
 
@@ -2609,6 +2649,97 @@ fn the_conversation_card_runs_the_panes_whole_width() {
     assert!(
         command.x >= lg,
         "a section keeps the pane's side inset: {command:?}"
+    );
+}
+
+/// A card stands for an exchange. Entering the agent view leaves the card in
+/// the block list, but the pane draws it only once the app's conversation list
+/// says the agent answered in it — and titles it with the conversation's
+/// subject, never the raw id the block was pushed with.
+#[test]
+fn a_conversation_card_draws_only_once_the_agent_has_answered() {
+    use goble_ui::theme::ColorToken;
+
+    let app = AppContext::default();
+    let answered = "9b78c354-0a1b-4c2d-8e3f-4a5b6c7d8e9f";
+    let unanswered = "cb48cc15-1a2b-4c3d-9e4f-5a6b7c8d9e0f";
+    let window = vec2f(900.0, 500.0);
+    let pane_over = |info: HashMap<String, CardInfo>| -> Box<dyn Element> {
+        let mut session = session_that_ran("echo hi", "hi");
+        session.push_agent_view_block(answered, answered);
+        session.push_agent_view_block(unanswered, unanswered);
+        let (pane, _terminal) = view_over(
+            session,
+            7,
+            TerminalBlockPlumbing::new(block_filters(), None, None),
+        );
+        Box::new(pane.with_conversation_info(info))
+    };
+
+    // The blocks were pushed on entering, but the app's list does not know
+    // these conversations: nothing was exchanged, so no card is drawn.
+    let mut pane = pane_over(HashMap::new());
+    let commands = render_element(&mut pane, window, &app);
+    let drawn = texts(&commands);
+    for id in [answered, unanswered] {
+        assert!(
+            !drawn.iter().any(|text| text.contains(id)),
+            "the raw conversation id is never drawn: {drawn:?}"
+        );
+    }
+    assert!(
+        !drawn.iter().any(|text| text == "New conversation"),
+        "no card stands in for an empty conversation: {drawn:?}"
+    );
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { color, .. }
+                if *color == app.theme.color(ColorToken::SurfaceRaised)
+        )),
+        "no card, no raised band"
+    );
+
+    // An answered conversation draws, titled by its subject, while one with no
+    // reply stays hidden — its block is in the same list.
+    let answered_entry = ConversationEntry::new(answered, "Fix the build", "It builds.", "2m");
+    let unanswered_entry =
+        ConversationEntry::new(unanswered, "Draft chat", "", "1m").with_has_agent_reply(false);
+    assert!(!unanswered_entry.has_agent_reply);
+    let mut pane = pane_over(HashMap::from([
+        (answered_entry.id.clone(), CardInfo::from(&answered_entry)),
+        (
+            unanswered_entry.id.clone(),
+            CardInfo::from(&unanswered_entry),
+        ),
+    ]));
+    let commands = render_element(&mut pane, window, &app);
+    let drawn = texts(&commands);
+    assert!(
+        drawn.iter().any(|text| text == "Fix the build"),
+        "the answered conversation draws its subject: {drawn:?}"
+    );
+    assert!(
+        !drawn.iter().any(|text| text.contains(answered)),
+        "the card is titled by the subject, not the id: {drawn:?}"
+    );
+    for hidden in [unanswered, "Draft chat"] {
+        assert!(
+            !drawn.iter().any(|text| text.contains(hidden)),
+            "a conversation with no reply draws no card: {drawn:?}"
+        );
+    }
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| matches!(
+                command,
+                RenderCommand::FillRect { color, .. }
+                    if *color == app.theme.color(ColorToken::SurfaceRaised)
+            ))
+            .count(),
+        1,
+        "one band for the one conversation that was exchanged in"
     );
 }
 

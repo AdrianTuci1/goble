@@ -2157,11 +2157,21 @@ pub fn make_actions(
             let mut state = on_select_sidebar_view.borrow_mut();
             state.sidebar_view = view;
             // Each view has its own list and its own offset, so switching views
-            // starts that list at the top.
+            // starts that list at the top. A field the view opens on takes the
+            // query it already holds with the caret at its end, never at an
+            // index the query the field last typed into left behind.
             match view {
-                SidebarView::Agents => state.sidebar_scroll.borrow_mut().reset(),
+                SidebarView::Agents => {
+                    state.sidebar_scroll.borrow_mut().reset();
+                    let end = state.search_query.chars().count();
+                    *state.sidebar_search_caret.borrow_mut() = end;
+                }
                 SidebarView::Explorer => state.explorer_scroll.borrow_mut().reset(),
-                SidebarView::Search => state.global_search_scroll.borrow_mut().reset(),
+                SidebarView::Search => {
+                    state.global_search_scroll.borrow_mut().reset();
+                    let end = state.global_search_query.chars().count();
+                    *state.global_search_caret.borrow_mut() = end;
+                }
             }
         })),
         on_toggle_section: Rc::new(RefCell::new(move |key: String| {

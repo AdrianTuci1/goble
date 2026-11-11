@@ -83,6 +83,10 @@ pub struct UiState {
     pub selected_id: Option<String>,
     pub search_query: String,
     pub search_focused: bool,
+    /// The sidebar search field's insertion point. The element tree is rebuilt
+    /// every frame, so the caret lives here; it is reset to the end whenever
+    /// the app writes a query the field did not type itself.
+    pub sidebar_search_caret: Rc<RefCell<usize>>,
     pub new_conversation_draft: String,
     pub create_focused: bool,
     pub chat_messages: Vec<ChatMessage>,
@@ -373,6 +377,9 @@ pub struct UiState {
     /// result: no ripgrep on this machine, or a query ripgrep refused.
     pub global_search_error: Option<String>,
     pub global_search_focused: bool,
+    /// The global search field's insertion point, held the way the sidebar
+    /// search's is.
+    pub global_search_caret: Rc<RefCell<usize>>,
     /// The walk behind the query, on a thread of its own: reading every file
     /// under the root is far too slow to run between two keystrokes. The field
     /// hands it the query and the frame collects the answer.

@@ -196,6 +196,9 @@ pub struct UiSnapshot {
     pub selected_id: Option<String>,
     pub search_query: String,
     pub search_focused: bool,
+    /// The search field's insertion point, shared with the element so the beam
+    /// survives the per-frame rebuild.
+    pub sidebar_search_caret: Rc<RefCell<usize>>,
     pub new_conversation_draft: String,
     pub create_focused: bool,
     pub chat_messages: Vec<UiChatMessage>,
@@ -462,6 +465,8 @@ pub struct UiSnapshot {
     pub global_search_searched: bool,
     pub global_search_error: Option<String>,
     pub global_search_focused: bool,
+    /// The global search field's insertion point, shared with the element.
+    pub global_search_caret: Rc<RefCell<usize>>,
     /// Scroll offset of the sidebar's conversation list.
     pub sidebar_scroll: Rc<RefCell<ScrollState>>,
     /// Scroll offsets of the project explorer's and the global search's lists.

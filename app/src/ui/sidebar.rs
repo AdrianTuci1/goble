@@ -141,6 +141,7 @@ fn agents_view(
     let search = SearchInput::new()
         .with_value(state.search_query.clone())
         .with_focused(state.search_focused)
+        .with_caret(state.sidebar_search_caret.clone())
         .with_placeholder("Search")
         .with_compact(true)
         .with_icon(false)
@@ -1366,6 +1367,108 @@ mod sidebar_surface_tests {
         );
     }
 
+    /// The search field takes the keyboard: the arrows move its own caret, a
+    /// character typed after one lands before the last one, and `Enter` is
+    /// still consumed without touching the query.
+    #[test]
+    fn the_search_field_edits_at_the_caret() {
+        use goble_ui::elements::EventContext;
+        use goble_ui::event::DispatchedEvent;
+
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let view = seeded_view(&app, &desktop);
+        let state = view.state_rc();
+        {
+            let mut s = state.borrow_mut();
+            s.search_query = "ab".to_string();
+            *s.sidebar_search_caret.borrow_mut() = 2;
+        }
+
+        let mut root: Box<dyn Element> = Box::new(view);
+        let window = vec2f(1024.0, 768.0);
+        let paint = |root: &mut Box<dyn Element>| {
+            let _ = root.layout(
+                SizeConstraint::loose(window),
+                &mut LayoutContext::default(),
+                &app,
+            );
+            let mut ctx = PaintContext::new(Renderer::new());
+            root.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+            ctx.renderer.expect("renderer").commands().to_vec()
+        };
+        let commands = paint(&mut root);
+        // The field's own box is the one stroke in the band taller than a rule.
+        let field = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::StrokeRect { rect, .. } if in_band(*rect) && rect.height() > 2.0 => {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the sidebar draws its search field");
+        let at = vec2f(
+            (field.min_x() + field.max_x()) / 2.0,
+            (field.min_y() + field.max_y()) / 2.0,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            &mut EventContext::default(),
+            &app,
+        );
+        assert!(
+            state.borrow().search_focused,
+            "the press puts the caret in the field"
+        );
+
+        let key = |root: &mut Box<dyn Element>, key: &str| {
+            root.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: key.to_string(),
+                    modifiers: Default::default(),
+                },
+                &mut EventContext::default(),
+                &app,
+            )
+        };
+
+        assert!(key(&mut root, "ArrowLeft"));
+        assert_eq!(
+            *state.borrow().sidebar_search_caret.borrow(),
+            1,
+            "the arrow moved the field's caret, which the field then reads"
+        );
+
+        assert!(key(&mut root, "X"));
+        assert_eq!(
+            state.borrow().search_query,
+            "aXb",
+            "the character landed before the last one"
+        );
+        assert_eq!(*state.borrow().sidebar_search_caret.borrow(), 2);
+
+        assert!(key(&mut root, "Enter"), "enter is still the field's key");
+        assert_eq!(state.borrow().search_query, "aXb", "and changes nothing");
+
+        // The next frame draws the value split where the caret is.
+        let commands = paint(&mut root);
+        let drawn = drawn_text(&commands);
+        for run in ["aX", "b"] {
+            assert!(
+                drawn.iter().any(|text| text == run),
+                "the field draws the run {run:?} around its beam: {drawn:?}"
+            );
+        }
+    }
+
     /// The box a frame painted a card's 3-dot control in: the control's box is
     /// the glyph's own box, so the icon command is its bounds. It is looked for
     /// inside the sidebar's own band, because the pane header draws the same
@@ -2483,6 +2586,31 @@ mod sidebar_action_tests {
 
         (actions.on_select_sidebar_view.borrow_mut())(SidebarView::Search);
         assert_eq!(state.borrow().sidebar_view, SidebarView::Search);
+    }
+
+    /// Opening a view puts its field's caret at the end of the query it holds:
+    /// an index from the query the field last typed into never lands in it.
+    #[test]
+    fn opening_a_view_puts_its_caret_at_the_end_of_the_query() {
+        let (state, actions, _dir) = harness();
+        state.borrow_mut().search_query = "abc".to_string();
+        *state.borrow().sidebar_search_caret.borrow_mut() = 0;
+        state.borrow_mut().global_search_query = "xy".to_string();
+        *state.borrow().global_search_caret.borrow_mut() = 0;
+
+        (actions.on_select_sidebar_view.borrow_mut())(SidebarView::Agents);
+        assert_eq!(
+            *state.borrow().sidebar_search_caret.borrow(),
+            3,
+            "the sidebar's field opens with its caret at the query's end"
+        );
+
+        (actions.on_select_sidebar_view.borrow_mut())(SidebarView::Search);
+        assert_eq!(
+            *state.borrow().global_search_caret.borrow(),
+            2,
+            "and so does the global search's"
+        );
     }
 
     /// A section header toggles that one section; the others keep their state.

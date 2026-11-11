@@ -603,11 +603,11 @@ impl ChatView {
             has_chrome = true;
         }
 
-        // The pane's sub-agent strip sits directly under the bar and above the
+        // The pane's work dock sits directly under the bar and above the
         // conversation: it is chrome around the transcript, so it takes the
         // slot the header reserved rather than scrolling with the messages.
-        if let Some(panel) = self.sub_agent_panel.take() {
-            chrome = chrome.with_child(panel);
+        if let Some(dock) = self.work_dock.take() {
+            chrome = chrome.with_child(dock);
             has_chrome = true;
         }
         if has_chrome {

@@ -33,9 +33,9 @@ mod tests;
 
 pub struct ChatView {
     header: Option<Box<dyn Element>>,
-    /// The pane's sub-agent strip, drawn directly under the header and above
-    /// the transcript: the one place the pane's sub-agent controls live.
-    sub_agent_panel: Option<Box<dyn Element>>,
+    /// The pane's work dock, drawn directly under the header and above the
+    /// transcript: the one place the pane's in-flight work lives.
+    work_dock: Option<Box<dyn Element>>,
     /// An inline notice rendered at the top of the transcript (inside the chat
     /// area rather than as a floating dialog), e.g. the "no API key" error.
     notice: Option<Box<dyn Element>>,
@@ -235,7 +235,7 @@ impl ChatView {
     pub fn new() -> Self {
         Self {
             header: None,
-            sub_agent_panel: None,
+            work_dock: None,
             notice: None,
             turn_error: None,
             messages: Vec::new(),

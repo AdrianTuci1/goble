@@ -179,11 +179,11 @@ use super::*;
         }
     }
 
-    /// The strip is chrome under the pane's own header: it names the group, its
-    /// count, and each running child with the pane's model and its elapsed
-    /// time. The transcript below it carries no controls of its own.
+    /// The dock is chrome under the pane's own header: it names the group, its
+    /// count, and the running child with its elapsed time. The transcript below
+    /// it carries no controls of its own.
     #[test]
-    fn the_panel_draws_under_the_agent_header_with_its_count_model_and_elapsed() {
+    fn the_dock_draws_under_the_agent_header_with_its_count_and_elapsed() {
         let Fixture { root, .. } = fixture();
         let app = AppContext::default();
         let mut root: Box<dyn Element> = Box::new(root);
@@ -198,18 +198,14 @@ use super::*;
         let transcript_y = run_origin(&commands, "PARENT TRANSCRIPT MARKER").y;
         assert!(
             strip_y > header_y && strip_y < transcript_y,
-            "the strip sits under the header ({header_y}) and above the \
+            "the dock sits under the header ({header_y}) and above the \
              transcript ({transcript_y}), got {strip_y}"
         );
 
         let texts = pane_texts(&mut root, &app);
         assert!(
             texts.iter().any(|text| text == "1"),
-            "the strip states how many children it lists, got {texts:?}"
-        );
-        assert!(
-            texts.iter().any(|text| text == "deepseek"),
-            "the row names the pane's model, got {texts:?}"
+            "the dock states how many children it lists, got {texts:?}"
         );
         assert!(
             texts.iter().any(|text| text == "4.5s"),
@@ -227,10 +223,10 @@ use super::*;
         );
     }
 
-    /// A click anywhere on the header row folds the strip: the children leave,
+    /// A click anywhere on the header row folds the group: the children leave,
     /// the word and the count stay, and the chevron turns to the right.
     #[test]
-    fn the_chevron_folds_the_panel() {
+    fn the_chevron_folds_the_group() {
         let Fixture { root, .. } = fixture();
         let state = root.state_rc();
         let app = AppContext::default();
@@ -240,8 +236,8 @@ use super::*;
         click(&mut root, &app, origin + vec2f(2.0, 4.0));
 
         assert!(
-            !state.borrow().sub_agent_panel_open,
-            "the header row closes the strip"
+            !state.borrow().work_section_open(goble_ui::WorkSection::Subagents),
+            "the header row closes the group"
         );
         let commands = pane_commands(&mut root, &app);
         let texts: Vec<String> = commands
@@ -253,27 +249,26 @@ use super::*;
             .collect();
         assert!(
             texts.iter().any(|text| text == "Subagents"),
-            "a folded strip keeps its header, got {texts:?}"
+            "a folded group keeps its header, got {texts:?}"
         );
         assert!(
             !texts
                 .iter()
                 .any(|text| text.contains("audit the migration")),
-            "a folded strip draws none of its rows, got {texts:?}"
+            "a folded group draws none of its rows, got {texts:?}"
         );
         let strip_y = run_origin(&commands, "Subagents").y;
         let chevron = icon_centre(&commands, "chevron-right", strip_y);
         assert!(
             (chevron.y - strip_y).abs() < 12.0,
-            "a folded strip turns its chevron to the right: {chevron:?} against {strip_y}"
+            "a folded group turns its chevron to the right: {chevron:?} against {strip_y}"
         );
     }
 
-    /// The stop control in the strip cancels the child it belongs to: the
-    /// child's turn is cancelled and its row reads `cancelled` with the time it
-    /// ran, with no stop left to press.
+    /// The stop control in the dock cancels the child it belongs to: the
+    /// child's record reads `cancelled`, with no stop left to press.
     #[test]
-    fn the_panels_stop_cancels_the_child_and_its_row_reads_cancelled() {
+    fn the_docks_stop_cancels_the_child() {
         let Fixture { root, .. } = fixture();
         let state = root.state_rc();
         let app = AppContext::default();
@@ -293,22 +288,11 @@ use super::*;
         assert_eq!(
             status,
             goble_ui::SubAgentRowStatus::Cancelled,
-            "the strip's stop cancels the child it names"
+            "the dock's stop cancels the child it names"
         );
 
         let commands = pane_commands(&mut root, &app);
-        let texts: Vec<String> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            texts.iter().any(|text| text.contains("cancelled in 4.5s")),
-            "the row reads its cancellation, got {texts:?}"
-        );
-        // The strip's own band is below its header word, so a stop anywhere
+        // The dock's own band is below its header word, so a stop anywhere
         // under that word would be the cancelled child's; the pane bar's close
         // control sits above it.
         let strip_y = run_origin(&commands, "Subagents").y;
@@ -326,7 +310,7 @@ use super::*;
     /// gesture as the arrow at its end, so a plain (or double) click on the
     /// strip opens the child's view, the way grok's list does.
     #[test]
-    fn a_click_on_the_panels_row_enters_the_child_view() {
+    fn a_click_on_the_docks_row_enters_the_child_view() {
         let Fixture { root, .. } = fixture();
         let state = root.state_rc();
         let app = AppContext::default();
@@ -364,7 +348,7 @@ use super::*;
     /// The open control in the strip enters the child's own conversation in the
     /// pane, whose surface draws no strip of its own.
     #[test]
-    fn the_panels_open_enters_the_child_view() {
+    fn the_docks_open_enters_the_child_view() {
         let Fixture { root, .. } = fixture();
         let state = root.state_rc();
         let app = AppContext::default();

@@ -131,9 +131,13 @@ pub struct PaneChatSnapshot {
     /// call that spawned each child; the parent transcript's rows read their
     /// status, activity and elapsed time from these.
     pub sub_agents: HashMap<String, goble_ui::SubAgentRow>,
-    /// The rows the pane's sub-agent strip lists: its running children and the
-    /// ones that ended during the pane's current turn, sorted by child id.
-    pub sub_agent_panel_rows: Vec<goble_ui::SubAgentRow>,
+    /// The groups the pane's work dock lists: its in-flight workflows,
+    /// sub-agents, tasks and watchers, each with its fold state. Empty when
+    /// nothing is in flight, which draws no dock at all.
+    pub work_dock: Vec<goble_ui::WorkGroup>,
+    /// The dock's spinner phase, supplied by the pane's own work clock so every
+    /// live row turns together with the footer's indicator.
+    pub work_dock_phase: f32,
     /// The message the pane's last turn failed on, drawn inline at the end of
     /// the transcript so a failed turn is readable where it happened.
     pub turn_error: Option<String>,
@@ -273,9 +277,6 @@ pub struct UiSnapshot {
     /// Whole-transcript terminal filters (open flag + selected filter) keyed by
     /// pane id, so each pty/agent pane keeps its own filter bar.
     pub terminal_global_filters: HashMap<u64, TerminalFilter>,
-    /// Whether the sub-agent strip under an agent pane's header is open. The
-    /// strip owns the delegation chrome, so folding it is one app-wide choice.
-    pub sub_agent_panel_open: bool,
     /// Per-pane scroll offset of the terminal pane's command sections, shared
     /// with app state so a scrollback position survives the per-frame rebuild.
     pub pane_terminal_scroll: HashMap<u64, Rc<RefCell<goble_ui::ScrollState>>>,

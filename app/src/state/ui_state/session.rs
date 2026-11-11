@@ -689,7 +689,8 @@ impl UiState {
                         self.running_sub_agent_count(*pane_id),
                     ),
                     sub_agents: self.sub_agent_rows(*pane_id),
-                    sub_agent_panel_rows: self.pane_sub_agents(*pane_id),
+                    work_dock: self.work_dock_groups(*pane_id),
+                    work_dock_phase: self.pane_work_dock_phase(*pane_id),
                     turn_error: rt.and_then(|r| r.turn_error.clone()),
                     sub_agent_view: self.sub_agent_views.get(pane_id).map(|view| {
                         crate::ui::SubAgentViewSnapshot {

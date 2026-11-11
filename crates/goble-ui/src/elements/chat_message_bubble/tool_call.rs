@@ -4,21 +4,25 @@ use std::rc::Rc;
 
 use crate::color::ColorU;
 use crate::elements::chat_content::{tool_fold_key, ChatAction, InlineSpan as ModelSpan, InlineStyle, SubAgentRow, ToolCall, ToolDisplayMode};
-use crate::elements::{resolve_inline_span, Chip, CrossAxisAlignment, Element, Empty, Flex, HoverRow, InlineText, TextSpan};
+use crate::elements::{resolve_inline_span, CrossAxisAlignment, Element, Empty, Flex, HoverRow, InlineText, TextSpan};
 use crate::geometry::vec2f;
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 use goble_core::harness::{subagent_subject, tool_row, ToolCallStatus, ToolKind};
+use super::quote_rail::QuoteRail;
 use super::tool_body::build_tool_call_body;
 
-/// The arrow a chain's header shows while the pointer is over it or the chain
-/// is open. It takes the place of a mark: a folded chain draws two spaces, so
-/// the label never shifts when the pointer arrives.
-const CHAIN_ARROW: &str = "❯ ";
+/// The mark every tool row draws before its words, whatever its family or
+/// state: grok-build's filled diamond.
+const TOOL_MARK: &str = "◆ ";
 
-/// The two spaces a chain's header keeps where its arrow goes, so the label
-/// starts at the same x whether the arrow is drawn or not.
-const CHAIN_INDENT: &str = "  ";
+/// The mark an aggregated chain header draws: grok-build's dotted diamond,
+/// which tells a folded run apart from a single call at a glance.
+const VERB_GROUP_MARK: &str = "◈ ";
+
+/// The arrow a tool row shows while the pointer is over it. It takes the
+/// diamond's place in the same two columns, so the words never move.
+const HOVER_ARROW: &str = "❯ ";
 
 /// The prefix the app-owned fold map uses for a folded run, so a group's fold
 /// state never collides with the call that anchors the run.
@@ -454,10 +458,11 @@ pub(crate) fn tool_fold_targets(
     targets
 }
 
-/// The chain's header: the aggregated label inside outer parentheses, an arrow
-/// in place of a mark, and no band behind it. A closed chain reads quiet; the
-/// pointer or an open chain turns it white and brings the arrow in. The failed
-/// suffix stays in the error colour. A click opens or folds the whole chain.
+/// The chain's header: its aggregated label behind a dotted diamond, and no
+/// band behind it. A closed chain reads quiet; the pointer or an open chain
+/// turns it white and swaps the diamond for the arrow. The failed suffix stays
+/// in the error colour. A click opens or folds the whole chain. The run is
+/// delimited by the rail around it, not by punctuation inside its words.
 fn verb_group_header(
     label: &str,
     failed: usize,
@@ -482,11 +487,10 @@ fn verb_group_header(
     };
     let mut spans = vec![
         run(
-            if active { CHAIN_ARROW } else { CHAIN_INDENT }.to_string(),
+            if active { HOVER_ARROW } else { VERB_GROUP_MARK }.to_string(),
             base,
             FontWeight::Regular,
         ),
-        run("(".to_string(), base, FontWeight::Regular),
         run(label.to_string(), base, FontWeight::Bold),
     ];
     if failed > 0 {
@@ -496,7 +500,6 @@ fn verb_group_header(
             FontWeight::Regular,
         ));
     }
-    spans.push(run(")".to_string(), base, FontWeight::Regular));
 
     let toggle = fold.clone();
     let key = key.to_string();
@@ -531,6 +534,7 @@ fn single_call_column(
     index: usize,
     chain_open: bool,
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    hover: &Rc<RefCell<Option<String>>>,
     sub_agents: &HashMap<String, SubAgentRow>,
     sub_agent_model: &str,
     app: &crate::elements::AppContext,
@@ -549,6 +553,7 @@ fn single_call_column(
         mode,
         chain_open,
         fold,
+        hover,
         record,
         sub_agent_model,
         app,
@@ -579,9 +584,11 @@ fn single_call_column(
 /// survives the per-frame rebuild, and clicking the header advances it.
 ///
 /// Consecutive folded calls stack into one chain, exactly as grok-build folds
-/// them: `(Ran 3 commands, Read 2 files, Edited 1 file +12/-3)`. A spawn and a
-/// question end the chain and keep their own rows. Opening the chain shows its
-/// members, and a member the user opened stays visible without splitting it.
+/// them: `◈ Ran 3 commands, Read 2 files, Edited 1 file +12/-3`. The chain is
+/// delimited by a rail in the gutter rather than by punctuation in its label.
+/// A spawn and a question end the chain and keep their own rows. Opening the
+/// chain shows its members, and a member the user opened stays visible without
+/// splitting it.
 pub(super) fn build_tool_call_rows(
     tool_calls: &[ToolCall],
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
@@ -622,6 +629,7 @@ pub(super) fn build_tool_call_rows(
                 index,
                 false,
                 fold,
+                hover,
                 sub_agents,
                 sub_agent_model,
                 app,
@@ -681,13 +689,20 @@ pub(super) fn build_tool_call_rows(
                 member,
                 open,
                 fold,
+                hover,
                 sub_agents,
                 sub_agent_model,
                 app,
             );
             group = group.with_child(element);
         }
-        column = push(column, group.finish(), !open);
+        // The run is delimited by a rail in the gutter, the way the pager
+        // brackets a block, so its extent is read without punctuation between
+        // the words.
+        let rail = QuoteRail::new(group.finish(), app.theme.spacing_px(SpacingToken::Sm))
+            .with_color(ColorToken::Border)
+            .finish();
+        column = push(column, rail, !open);
         index = end.max(start + 1);
     }
     column.finish()
@@ -739,6 +754,7 @@ pub(super) fn tool_call_header(
     mode: ToolDisplayMode,
     chain_open: bool,
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    hover: &Rc<RefCell<Option<String>>>,
     sub_agent: Option<&SubAgentRow>,
     sub_agent_model: &str,
     app: &crate::elements::AppContext,
@@ -785,16 +801,21 @@ pub(super) fn tool_call_header(
             .with_family(FontFamily::Mono)
             .with_weight(weight)
     };
-    let mut spans = Vec::new();
-    if chain_open {
-        spans.push(run(
-            CHAIN_INDENT.to_string(),
-            app.theme.color(ColorToken::Muted),
-            FontWeight::Regular,
-        ));
-    }
+    // Every call wears the diamond, whatever its family or fold; the pointer
+    // swaps it for the arrow in the same two columns.
+    let hovered = hover.borrow().as_deref() == Some(key);
+    let mark_color = if chain_open || hovered {
+        ColorToken::Text
+    } else {
+        ColorToken::Muted
+    };
+    let mut spans = vec![run(
+        if hovered { HOVER_ARROW } else { TOOL_MARK }.to_string(),
+        app.theme.color(mark_color),
+        FontWeight::Regular,
+    )];
     if !parsed.verb.is_empty() {
-        let token = if chain_open {
+        let token = if chain_open || hovered {
             ColorToken::Text
         } else {
             match mode {
@@ -836,17 +857,20 @@ pub(super) fn tool_call_header(
     }
 
     let toggle = fold.clone();
-    let key = key.to_string();
-    Chip::flat(
+    let hover_key = key.to_string();
+    let toggle_key = key.to_string();
+    HoverRow::new(
         InlineText::new(spans)
             .with_font_size(TOOL_ROW_FONT_SIZE)
             .with_line_height(1.4)
             .finish(),
     )
+    .with_quiet_hover()
+    .with_hover_key(hover.clone(), hover_key)
     .with_on_click(move || {
         let mut folds = toggle.borrow_mut();
-        let current = folds.get(&key).copied().unwrap_or(fallback);
-        folds.insert(key.clone(), current.next());
+        let current = folds.get(&toggle_key).copied().unwrap_or(fallback);
+        folds.insert(toggle_key.clone(), current.next());
     })
     .finish()
 }

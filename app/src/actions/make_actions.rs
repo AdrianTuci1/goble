@@ -267,7 +267,9 @@ pub fn make_actions(
     let on_send_sub_agent_message = Rc::clone(&state);
     let desktop_send_sub_agent_message = desktop.clone();
     let media_send_sub_agent_message = Rc::clone(&media);
-    let on_toggle_sub_agent_panel = Rc::clone(&state);
+    let on_toggle_work_section = Rc::clone(&state);
+    let on_show_all_work_section = Rc::clone(&state);
+    let on_open_task_workflow = Rc::clone(&state);
     let desktop_open_sub_agent = desktop.clone();
     let desktop_stop_sub_agent = desktop.clone();
     let on_answer_ask = Rc::clone(&state);
@@ -1530,9 +1532,22 @@ pub fn make_actions(
                 }
             },
         )),
-        on_toggle_sub_agent_panel: Rc::new(RefCell::new(move || {
-            let mut state = on_toggle_sub_agent_panel.borrow_mut();
-            state.sub_agent_panel_open = !state.sub_agent_panel_open;
+        on_toggle_work_section: Rc::new(RefCell::new(
+            move |section: goble_ui::WorkSection| {
+                on_toggle_work_section
+                    .borrow_mut()
+                    .toggle_work_section(section);
+            },
+        )),
+        on_show_all_work_section: Rc::new(RefCell::new(
+            move |section: goble_ui::WorkSection| {
+                on_show_all_work_section
+                    .borrow_mut()
+                    .show_all_work_section(section);
+            },
+        )),
+        on_open_task_workflow: Rc::new(RefCell::new(move || {
+            on_open_task_workflow.borrow_mut().task_workflow_open = true;
         })),
         on_answer_ask: Rc::new(RefCell::new(
             move |response: String, credential: Option<(String, String)>| {

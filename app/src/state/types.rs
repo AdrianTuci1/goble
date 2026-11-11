@@ -299,6 +299,13 @@ pub struct PaneRuntime {
     /// running call is visible before the turn ends. A finish/error clears the
     /// entry and the re-read from the store carries the terminal state.
     pub in_flight_tools: HashMap<String, ToolCall>,
+    /// When each in-flight call above was first seen running, keyed by call id.
+    /// The work dock's task rows read their elapsed time from this; a call the
+    /// app did not observe starting has no entry and states no elapsed time.
+    pub in_flight_since: HashMap<String, std::time::Instant>,
+    /// When this pane's work dock first drew live work. The dock's spinner
+    /// advances from it, so a child that outlives the turn still turns.
+    pub work_started_at: Option<std::time::Instant>,
     /// The model's reasoning (thinking) steps for this pane, fed by the live
     /// `chat:reasoning` events. Overlaid on the transcript as their own rows;
     /// replaced when the next reasoning turn starts (step 0).
@@ -382,6 +389,23 @@ pub struct ReasoningRow {
 }
 
 impl PaneRuntime {
+    /// Start the work dock's clock if it is not already running, so the dock's
+    /// spinner advances from the pane's first live work.
+    pub(crate) fn start_dock_clock(&mut self) {
+        self.work_started_at.get_or_insert_with(std::time::Instant::now);
+    }
+
+    /// The work dock's spinner phase: the same period and frame order as the
+    /// turn footer, advanced from the pane's first live work rather than from
+    /// the turn, so a background child keeps turning after the turn ends.
+    pub fn work_dock_phase(&self) -> f32 {
+        const PERIOD_MS: u128 = 480;
+        self.work_started_at
+            .or(self.turn_started_at)
+            .map(|started| (started.elapsed().as_millis() % PERIOD_MS) as f32 / PERIOD_MS as f32)
+            .unwrap_or(0.0)
+    }
+
     /// Drop the suspended command and the edit state that belonged to it.
     /// Called wherever a proposal is settled or abandoned, so the next one
     /// opens on its own candidate instead of the previous draft.

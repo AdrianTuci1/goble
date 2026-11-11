@@ -195,8 +195,12 @@ pub struct UiActions {
     /// Send the text typed in a child view to that child's own conversation:
     /// `(pane_id, text)`. The child id is resolved from the pane's open view.
     pub on_send_sub_agent_message: Rc<RefCell<dyn FnMut(u64, String)>>,
-    /// Fold or open the sub-agent strip under the agent pane's header.
-    pub on_toggle_sub_agent_panel: Rc<RefCell<dyn FnMut()>>,
+    /// Fold or open one group of the work dock under the agent pane's header.
+    pub on_toggle_work_section: Rc<RefCell<dyn FnMut(goble_ui::WorkSection)>>,
+    /// Reveal the rows one work-dock group holds behind `show N more`.
+    pub on_show_all_work_section: Rc<RefCell<dyn FnMut(goble_ui::WorkSection)>>,
+    /// Open the workflow-runs overlay from a work-dock row.
+    pub on_open_task_workflow: Rc<RefCell<dyn FnMut()>>,
     /// Submit the composed answer of the inline ask-user card. The optional
     /// `(name, value)` carries a credential entered in the card, threaded out
     /// separately from the answer so the secret never enters the transcript.

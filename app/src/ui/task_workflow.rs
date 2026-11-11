@@ -766,6 +766,7 @@ complete(#{ summary: "done" });
                     detail: None,
                 }],
                 started_at: "2 min ago".to_string(),
+                elapsed: Some(std::time::Duration::from_secs(120)),
                 finished_at: Some("just now".to_string()),
                 output: Some(serde_json::json!({ "summary": "done" })),
                 log: vec!["phase Run".to_string()],

@@ -63,11 +63,11 @@ impl ChatView {
         self
     }
 
-    /// Draw the pane's sub-agent strip under the header, above the transcript.
-    /// The pane builds it (its rows, the pane's model and the two controls), so
-    /// the view only has to give it the slot.
-    pub fn with_sub_agent_panel(mut self, panel: Option<Box<dyn Element>>) -> Self {
-        self.sub_agent_panel = panel;
+    /// Draw the pane's work dock under the header, above the transcript. The
+    /// pane builds it (its groups, spinner phase and controls), so the view
+    /// only has to give it the slot.
+    pub fn with_work_dock(mut self, dock: Option<Box<dyn Element>>) -> Self {
+        self.work_dock = dock;
         self
     }
 

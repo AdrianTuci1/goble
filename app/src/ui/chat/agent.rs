@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use goble_terminal::blocks::BlockView;
 use goble_terminal::BlockOwner;
 use goble_ui::elements::{AppContext, Element, PopupMenuItem};
-use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView};
+use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView, WorkSection};
 
 use crate::emulator::VisibleBlock;
 use crate::state::PaneControls;
@@ -302,26 +302,49 @@ pub fn build_agent_chat(
             (stop.borrow_mut())(pane_id, child_id)
         }))
     };
-    // The strip under the header owns the delegation chrome: its rows carry the
-    // controls that enter and stop a child, and the transcript only reports
-    // what the child is doing. A child view draws no strip of its own — the
-    // early return above keeps the child's surface free of the parent's.
-    let sub_agent_panel: Option<Box<dyn Element>> = {
-        let rows = session.sub_agent_panel_rows.clone();
-        if rows.is_empty() {
+    // The dock under the header owns the pane's in-flight work: one collapsible
+    // group per kind, its rows carrying the controls that enter and stop them.
+    // A child view draws no dock of its own — the early return above keeps the
+    // child's surface free of the parent's.
+    let work_dock: Option<Box<dyn Element>> = {
+        let groups = session.work_dock.clone();
+        if groups.is_empty() {
             None
         } else {
-            let on_toggle = actions.on_toggle_sub_agent_panel.clone();
+            let on_toggle = actions.on_toggle_work_section.clone();
+            let on_show_all = actions.on_show_all_work_section.clone();
+            let open_overlay = actions.on_open_task_workflow.clone();
+            let on_open: Rc<RefCell<dyn FnMut(WorkSection, String)>> = {
+                let open_sub_agent = on_open_sub_agent.clone();
+                let open_overlay = open_overlay.clone();
+                Rc::new(RefCell::new(move |section: WorkSection, id: String| {
+                    match section {
+                        WorkSection::Subagents => (open_sub_agent.borrow_mut())(id),
+                        WorkSection::Workflows | WorkSection::Watchers => {
+                            (open_overlay.borrow_mut())()
+                        }
+                        // A task is a tool call already drawn in the transcript;
+                        // there is no separate surface to open.
+                        WorkSection::Tasks => {}
+                    }
+                }))
+            };
+            let on_stop: Rc<RefCell<dyn FnMut(WorkSection, String)>> = {
+                let stop_sub_agent = on_stop_sub_agent.clone();
+                Rc::new(RefCell::new(move |section: WorkSection, id: String| {
+                    if section == WorkSection::Subagents {
+                        (stop_sub_agent.borrow_mut())(id);
+                    }
+                }))
+            };
             Some(
-                goble_ui::SubAgentPanel::new(
-                    rows,
-                    controls.model.clone(),
-                    state.sub_agent_panel_open,
-                )
-                .with_on_open(on_open_sub_agent.clone())
-                .with_on_stop(on_stop_sub_agent.clone())
-                .with_on_toggle(move || (on_toggle.borrow_mut())())
-                .finish(),
+                goble_ui::WorkDock::new(groups)
+                    .with_phase(session.work_dock_phase)
+                    .with_on_toggle(move |section| (on_toggle.borrow_mut())(section))
+                    .with_on_show_all(move |section| (on_show_all.borrow_mut())(section))
+                    .with_on_open(on_open)
+                    .with_on_stop(on_stop)
+                    .finish(),
             )
         }
     };
@@ -409,8 +432,8 @@ pub fn build_agent_chat(
         // spawn call's arguments.
         .with_sub_agents(session.sub_agents.clone())
         .with_sub_agent_model(controls.model.clone())
-        // The pane's strip: drawn under the header, above the transcript.
-        .with_sub_agent_panel(sub_agent_panel)
+        // The pane's work dock: drawn under the header, above the transcript.
+        .with_work_dock(work_dock)
         // A link inside a paragraph dispatches `ChatAction::OpenUrl`; the
         // sub-agent controls are the strip's own, wired above.
         .with_on_action(chat_action_relay(on_open_url))

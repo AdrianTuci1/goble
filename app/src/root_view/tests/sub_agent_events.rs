@@ -60,9 +60,14 @@ use super::*;
             "the running row carries the activity and the elapsed time from the event"
         );
         assert_eq!(
-            snapshot[&1].sub_agent_panel_rows.len(),
+            snapshot[&1]
+                .work_dock
+                .iter()
+                .flat_map(|group| group.rows.iter())
+                .filter(|row| row.kind == "Subagent")
+                .count(),
             1,
-            "a running child is listed in the pane's strip"
+            "a running child is listed in the pane's work dock"
         );
 
         bus.emit(
@@ -99,7 +104,11 @@ use super::*;
             "the finish settles the row's status, duration and outcome"
         );
         assert!(
-            snapshot[&1].sub_agent_panel_rows.is_empty(),
-            "an ended child leaves the strip once the pane's turn is over"
+            snapshot[&1]
+                .work_dock
+                .iter()
+                .flat_map(|group| group.rows.iter())
+                .all(|row| row.kind != "Subagent"),
+            "an ended child leaves the dock once the pane's turn is over"
         );
     }

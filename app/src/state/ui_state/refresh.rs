@@ -57,7 +57,8 @@ impl UiState {
             right_sidebar_open: false,
             fullscreen: false,
             sub_agent_views: HashMap::new(),
-            sub_agent_panel_open: true,
+            work_dock_open: Rc::new(RefCell::new(HashMap::new())),
+            work_dock_show_all: Rc::new(RefCell::new(HashMap::new())),
             maximized_pane: None,
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
             reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
@@ -339,6 +340,7 @@ impl UiState {
                     })
                     .collect(),
                 started_at: time_ago(&run.started_at),
+                elapsed: elapsed_since(&run.started_at),
                 finished_at: run.finished_at.as_deref().map(time_ago),
                 output: run.output,
                 log: run.log,

@@ -72,10 +72,15 @@ impl UiState {
         {
             let rt = self.pane_runtime.entry(pane_id).or_default();
             if call.status == ToolCallStatus::Running {
+                rt.in_flight_since
+                    .entry(call.id.clone())
+                    .or_insert_with(std::time::Instant::now);
+                rt.work_started_at.get_or_insert_with(std::time::Instant::now);
                 rt.in_flight_tools
                     .insert(call.id.clone(), tool_call_from_event(call));
             } else {
                 rt.in_flight_tools.remove(&call.id);
+                rt.in_flight_since.remove(&call.id);
             }
             overlay_in_flight(&mut rt.messages, &rt.in_flight_tools);
         }
@@ -369,6 +374,10 @@ impl UiState {
         let Some(pane_id) = self.pane_for_chat_event(&event.chat_id) else {
             return;
         };
+        self.pane_runtime
+            .entry(pane_id)
+            .or_default()
+            .start_dock_clock();
         self.pane_runtime
             .entry(pane_id)
             .or_default()
@@ -755,7 +764,7 @@ impl UiState {
 /// The chip's line for one in-flight tool call: the row its family gives it,
 /// the same phrasing the footer draws (`Run cargo test`, `Search "fn main"`),
 /// rather than the tool's own name. A call no family claims keeps its name.
-fn work_call_description(call: &ToolCall) -> String {
+pub(super) fn work_call_description(call: &ToolCall) -> String {
     let arguments: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
     let row = goble_core::harness::tool_row(&call.name, &arguments, None);

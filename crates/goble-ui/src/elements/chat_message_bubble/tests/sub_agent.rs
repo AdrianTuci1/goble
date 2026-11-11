@@ -97,11 +97,11 @@ fn each_sub_agent_status_draws_its_own_line() {
             .iter()
             .find(|row| row.contains("Agent "))
             .unwrap_or_else(|| panic!("status {status:?} draws its row, got {rows:?}"));
-        // One ruler row: the verb, the child and what it is doing, with no
-        // body and no card.
+        // One ruler row: the diamond, the verb, the child and what it is
+        // doing, with no body and no card.
         assert!(
-            row.starts_with("Agent "),
-            "status {status:?} names the spawned child, got {row:?}"
+            row.starts_with("◆ Agent "),
+            "status {status:?} names the spawned child behind its mark, got {row:?}"
         );
         assert!(
             row.contains("“audit the migration”"),
@@ -116,9 +116,9 @@ fn each_sub_agent_status_draws_its_own_line() {
             "status {status:?} draws no controls of its own, got {row:?}"
         );
         assert_eq!(
-            rows.iter().filter(|row| row.starts_with("Agent ")).count(),
+            rows.iter().filter(|row| row.starts_with("◆ Agent ")).count(),
             1,
-            "the collapsed call draws one row, got {rows:?}"
+            "the collapsed call draws one marked row, got {rows:?}"
         );
     }
 }
@@ -358,12 +358,12 @@ fn a_sub_agent_row_draws_no_controls_of_its_own() {
     );
 }
 
-/// Every call draws one quiet row whatever its status. The row carries no
-/// status glyph: its words and its colour state where it is, and a resting row
-/// reads in the quiet colour. A finished command folds into its chain header
-/// the same way.
+/// Every call draws one row whatever its status. The diamond is the row's
+/// fixed mark; its words and its colour state where it is, and a resting row
+/// reads in the quiet colour. A finished command folds into its chain header,
+/// which wears the dotted diamond.
 #[test]
-fn a_resting_row_carries_no_status_mark() {
+fn a_resting_row_carries_its_diamond() {
     let app = AppContext::default();
     for status in [
         ToolCallStatus::Pending,
@@ -374,15 +374,10 @@ fn a_resting_row_carries_no_status_mark() {
         let (commands, _) = paint_tool_calls(vec![call("ls", "{}", status, None)]);
         assert_eq!(
             drawn_row_texts(&commands),
-            vec!["ls".to_string()],
-            "status {status:?} draws the tool's own words"
+            vec!["◆ ls".to_string()],
+            "status {status:?} draws its diamond and the tool's own words"
         );
         let runs = text_runs(&commands);
-        assert!(
-            runs.iter()
-                .all(|(text, _, _, _)| text != "◆ " && text != "◈ "),
-            "status {status:?} draws no mark, got {runs:?}"
-        );
         assert_eq!(
             runs[0].1,
             app.theme.color(ColorToken::Muted),
@@ -405,8 +400,8 @@ fn a_resting_row_carries_no_status_mark() {
     assert!(
         text_runs(&commands)
             .iter()
-            .all(|(text, _, _, _)| text != "◆ " && text != "◈ "),
-        "a command's header carries no mark either"
+            .any(|(text, _, _, _)| text == "◈ "),
+        "a command's folded header wears the dotted diamond"
     );
 }
 

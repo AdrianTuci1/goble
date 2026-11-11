@@ -1,6 +1,17 @@
 use super::*;
 
 
+/// How long ago an RFC3339 timestamp was, when it parses. A row that cannot
+/// read its start states no elapsed time rather than guessing one.
+pub(crate) fn elapsed_since(started_at: &str) -> Option<std::time::Duration> {
+    let ts = DateTime::parse_from_rfc3339(started_at).ok()?;
+    let secs = Utc::now()
+        .signed_duration_since(ts.with_timezone(&Utc))
+        .num_seconds()
+        .max(0);
+    Some(std::time::Duration::from_secs(secs as u64))
+}
+
 /// Format an RFC3339 timestamp as a short relative "time ago" label (e.g.
 /// "40 min ago"). Falls back to the raw string when it cannot be parsed.
 pub(crate) fn time_ago(updated_at: &str) -> String {

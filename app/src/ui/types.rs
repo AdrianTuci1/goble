@@ -230,6 +230,10 @@ pub struct WorkflowRunEntry {
     pub steps: Vec<WorkflowRunStepEntry>,
     /// Relative label, e.g. `2m ago`.
     pub started_at: String,
+    /// How long the run has been going, when its recorded start parsed. The
+    /// work dock states it on a running row; a run with no parseable start
+    /// states none rather than inventing a clock.
+    pub elapsed: Option<std::time::Duration>,
     pub finished_at: Option<String>,
     /// The value a script passed to `complete()`.
     pub output: Option<serde_json::Value>,

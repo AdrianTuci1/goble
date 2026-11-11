@@ -12,6 +12,10 @@ pub(crate) const QUOTE_RAIL_WIDTH: f32 = 2.0;
 pub(crate) struct QuoteRail {
     child: Box<dyn Element>,
     gap: f32,
+    /// The rail's own colour. A quote draws it muted; a tool chain draws it in
+    /// the border tone, so the rail delimits the group without competing with
+    /// the words beside it.
+    color: ColorToken,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -21,9 +25,16 @@ impl QuoteRail {
         Self {
             child,
             gap,
+            color: ColorToken::Muted,
             size: None,
             origin: None,
         }
+    }
+
+    /// Draw the rail in another tone than a quote's muted one.
+    pub(crate) fn with_color(mut self, color: ColorToken) -> Self {
+        self.color = color;
+        self
     }
 }
 
@@ -55,7 +66,7 @@ impl Element for QuoteRail {
         if let Some(renderer) = ctx.renderer.as_mut() {
             renderer.fill_rect(
                 rectf(origin.x, origin.y, QUOTE_RAIL_WIDTH, size.y),
-                app.theme.color(ColorToken::Muted),
+                app.theme.color(self.color),
             );
         }
         self.child.paint(

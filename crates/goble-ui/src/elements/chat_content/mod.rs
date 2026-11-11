@@ -14,6 +14,7 @@ mod fragment;
 mod message;
 mod sub_agent;
 mod sub_agent_panel;
+mod work_dock;
 mod tool_call;
 #[cfg(test)]
 mod tests;
@@ -21,8 +22,9 @@ mod tests;
 pub use block::{group_fragments_into_blocks, ChatBlock, InlineSpan, InlineStyle};
 pub use fragment::{ChatFragment, ChatFragmentKind, ListItem};
 pub use message::{ChatAction, ChatMessage, ChatRole};
-pub use sub_agent::{SubAgentRow, SubAgentRowStatus};
+pub use sub_agent::{format_elapsed, SubAgentRow, SubAgentRowStatus};
 pub use sub_agent_panel::SubAgentPanel;
+pub use work_dock::{WorkDock, WorkGroup, WorkRow, WorkSection};
 pub use tool_call::{tool_fold_key, ToolCall, ToolDisplayMode};
 
 /// The elapsed time a sub-agent row states, shared by the transcript row's

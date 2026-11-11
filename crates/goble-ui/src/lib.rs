@@ -44,7 +44,8 @@ pub use elements::{
     ToolCall, ToolDisplayMode, tool_fold_key,
     ThreadListItem, ToggleButton, Toolbar, Topbar, TopbarButton, TranscriptSelection,
     TurnActivity, TurnStatus,
-    TurnStatusFooter, Vector2FExt, WorkKind, WorkKindCount,
+    TurnStatusFooter, Vector2FExt, WorkDock, WorkGroup, WorkKind, WorkKindCount, WorkRow,
+    WorkSection,
     CHAT_RIGHT_SIDEBAR_WIDTH, CONVERSATION_SIDEBAR_WIDTH, DIALOG_DEFAULT_WIDTH, SHEET_DEFAULT_WIDTH,
 };
 pub use geometry::{rectf, size2f, vec2f, PointF, RectF, Size2F, Vector2F};

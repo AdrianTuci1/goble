@@ -476,11 +476,11 @@ fn the_pane_header_tray_paints_over_the_transcript_and_fits_the_view() {
     );
 }
 
-/// The pane's sub-agent strip is chrome around the transcript: it takes the
-/// row directly under the header the column reserved and hands the rest to the
+/// The pane's work dock is chrome around the transcript: it takes the row
+/// directly under the header the column reserved and hands the rest to the
 /// conversation, so it never scrolls with the messages.
 #[test]
-fn the_sub_agent_panel_sits_under_the_header_and_above_the_transcript() {
+fn the_work_dock_sits_under_the_header_and_above_the_transcript() {
     use crate::elements::chat_content::{SubAgentPanel, SubAgentRow, SubAgentRowStatus};
     use crate::elements::Empty;
     use crate::render::RenderCommand;
@@ -514,7 +514,7 @@ fn the_sub_agent_panel_sits_under_the_header_and_above_the_transcript() {
                 .with_size(vec2f(0.0, header_height))
                 .finish(),
         )
-        .with_sub_agent_panel(Some(panel))
+        .with_work_dock(Some(panel))
         .finish();
     let commands = render_element(&mut view, vec2f(600.0, 480.0), &app);
 
@@ -1269,7 +1269,7 @@ fn the_transcript_draws_the_tool_rows_the_lock_covers() {
             _ => None,
         })
         .collect();
-    for expected in ["Read 1 file", "Edit "] {
+    for expected in ["◈ ", "Reading 1 file, Editing 1 file +1/-1"] {
         assert!(
             texts.iter().any(|text| text == expected),
             "the transcript draws {expected:?}, got {texts:?}"

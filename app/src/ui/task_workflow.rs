@@ -8,10 +8,12 @@
 //! every phase's own status (from the script's `phase` calls), the failure
 //! reason, the value a script passed to `complete()`, and its log lines. A
 //! workflow that has never run falls back to its definition plus the execution
-//! ledger, and says so. What grok-build reports and goble has no source for —
-//! the agent budget and the pause / resume / stop / save affordances — is left
-//! out rather than invented. The full tasks / executions dump is still its own
-//! page, so nothing is dropped for being out of place here.
+//! ledger, and says so. Run starts the selected workflow through the same
+//! action as the crons drawer's trigger, which matters for a manual workflow:
+//! nothing else starts one. What grok-build reports and goble has no source for
+//! — the agent budget and the pause / resume / stop / save affordances — is
+//! left out rather than invented. The full tasks / executions dump is still its
+//! own page, so nothing is dropped for being out of place here.
 //!
 //! It is an overlay rather than a page: the workspace (the pane tree and its
 //! transcript) stays mounted underneath, the backdrop closes it, and nothing
@@ -19,9 +21,9 @@
 //! drawn once.
 
 use goble_ui::elements::{
-    AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, MainAxisAlignment, MainAxisSize, Scrollable,
-    Spacer, Text, TopbarButton,
+    AppContext, Axis, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment,
+    Divider, EdgeInsets, Element, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler,
+    MainAxisAlignment, MainAxisSize, Scrollable, Spacer, Text, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 
@@ -116,9 +118,26 @@ fn build_run_detail(
     state: &UiSnapshot,
     wf: &WorkflowEntry,
     phase: usize,
+    actions: &UiActions,
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Md);
     let sm = app.theme.spacing_px(SpacingToken::Sm);
+
+    // A manual workflow has no clock, so this control is the only thing that
+    // starts it from the panel. It goes through the same action as the crons
+    // drawer's trigger, which runs the workflow's body and reports the run in
+    // the ledger.
+    let on_run = actions.on_cron_trigger.clone();
+    let run_id = wf.id.clone();
+    let run_button = Button::new(
+        Text::new("Run")
+            .with_font_size(11.0)
+            .with_theme_color(ColorToken::Accent, app)
+            .finish(),
+    )
+    .with_variant(ButtonVariant::Ghost)
+    .with_on_click(move || (on_run.borrow_mut())(run_id.clone()))
+    .finish();
 
     let header = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -131,6 +150,7 @@ fn build_run_detail(
         )
         .with_child(Spacer::new().finish())
         .with_child(muted(app, &run_counts(wf), 11.0))
+        .with_child(run_button)
         .finish();
 
     // The newest recorded run is the run's status. A workflow that never ran
@@ -184,6 +204,15 @@ fn build_run_detail(
         column = column.with_child(muted(
             app,
             "This workflow is disabled: only a manual run starts it.",
+            11.0,
+        ));
+    }
+    // A manual workflow has no clock in the store, so nothing but this
+    // panel's Run control starts it.
+    if wf.trigger == "manual" {
+        column = column.with_child(muted(
+            app,
+            "Manual workflow: a schedule never starts it; press Run.",
             11.0,
         ));
     }
@@ -364,7 +393,7 @@ pub fn build_task_workflow_overlay(
     let selected_phase = *state.task_workflow_phase.borrow();
 
     let detail: Box<dyn Element> = match state.workflows.get(selected_run) {
-        Some(wf) => build_run_detail(app, state, wf, selected_phase),
+        Some(wf) => build_run_detail(app, state, wf, selected_phase, actions),
         None => Flex::column()
             .with_child(muted(
                 app,
@@ -457,17 +486,26 @@ mod tests {
     /// names an agent, and the execution the ledger holds for that agent. The
     /// ledger's own refresh path is covered by the observability tests; what is
     /// under test here is that the overlay draws the records it is given.
-    fn app_with_records() -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir) {
+    fn app_with_records() -> (
+        Box<dyn Element>,
+        Rc<RefCell<UiState>>,
+        Arc<DesktopState>,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().expect("temp thread-store dir");
-        let desktop = Arc::new(DesktopState::new(
+        let desktop = DesktopState::new(
             Store::open_in_memory().expect("in-memory store"),
             ThreadStore::new(dir.path()).expect("thread store"),
-        ));
+        );
+        // A body with no agent() calls: pressing Run settles it without an LLM.
         desktop
-            .create_workflow(
+            .create_workflow_with_script(
                 "Nightly digest",
                 "summarise the day",
-                vec![],
+                r#"let meta = #{ name: "Nightly digest", description: "summarise the day", phases: [#{ title: "Digest" }] };
+phase("Digest");
+complete(#{ summary: "done" });
+"#,
                 Trigger::Cron {
                     expression: "0 12 * * *".to_string(),
                 },
@@ -506,7 +544,7 @@ mod tests {
                 step_count: 4,
             }];
         }
-        (Box::new(root), state, dir)
+        (Box::new(root), state, desktop, dir)
     }
 
     /// One frame through the whole app, returning what it painted. The rebuild
@@ -595,7 +633,7 @@ mod tests {
     #[test]
     fn the_overlay_is_an_inset_panel_and_every_route_closes_it() {
         let app = AppContext::default();
-        let (mut root, state, _dir) = app_with_records();
+        let (mut root, state, _desktop, _dir) = app_with_records();
 
         // Closed, none of it is drawn.
         let commands = frame(&mut root, &app);
@@ -714,7 +752,7 @@ mod tests {
     #[test]
     fn the_detail_draws_the_latest_recorded_run() {
         let app = AppContext::default();
-        let (mut root, state, _dir) = app_with_records();
+        let (mut root, state, _desktop, _dir) = app_with_records();
         {
             let mut s = state.borrow_mut();
             s.workflow_runs = vec![WorkflowRunEntry {
@@ -749,12 +787,58 @@ mod tests {
         ));
     }
 
+    /// A workflow with no clock — a manual one, or any workflow the user wants
+    /// started now — starts from the panel's Run control, and the run lands in
+    /// the ledger with that workflow's id.
+    #[test]
+    fn the_run_control_starts_the_selected_workflow() {
+        let app = AppContext::default();
+        let (mut root, state, desktop, _dir) = app_with_records();
+        let stored = desktop.list_workflows().remove(0);
+        {
+            let mut s = state.borrow_mut();
+            s.workflows[0].id = stored.id.clone();
+            s.workflows[0].trigger = "manual".to_string();
+            s.task_workflow_open = true;
+        }
+        let commands = frame(&mut root, &app);
+        assert!(
+            drawn(&commands, "never run · manual · enabled · created 3 min ago"),
+            "the workflow reports that it has never run"
+        );
+        let run_origin = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Run" => Some(*origin),
+                _ => None,
+            })
+            .expect("the detail draws a Run control");
+
+        let mut ctx = EventContext;
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: run_origin,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: run_origin,
+                button: 0,
+            },
+        ] {
+            root.dispatch_event(&event, &mut ctx, &app);
+        }
+
+        let runs = desktop.list_workflow_runs();
+        assert_eq!(runs.len(), 1, "the press starts one run");
+        assert_eq!(runs[0].workflow_id, stored.id, "the run is this workflow's");
+    }
+
     /// The run list picks the run whose detail is drawn, and a phase row moves
     /// the roster onto that phase's agent.
     #[test]
     fn the_run_list_and_the_phase_rail_carry_the_selection() {
         let app = AppContext::default();
-        let (mut root, state, _dir) = app_with_records();
+        let (mut root, state, _desktop, _dir) = app_with_records();
         state.borrow_mut().workflows.push(WorkflowEntry {
             id: "wf-2".to_string(),
             name: "Weekly report".to_string(),
@@ -809,7 +893,7 @@ mod tests {
     #[test]
     fn empty_records_are_named_not_faked() {
         let app = AppContext::default();
-        let (mut root, state, _dir) = app_with_records();
+        let (mut root, state, _desktop, _dir) = app_with_records();
         {
             let mut s = state.borrow_mut();
             s.workflows = vec![WorkflowEntry {

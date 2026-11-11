@@ -130,6 +130,15 @@ impl UiState {
         self.pane_controls(pane_id).surface()
     }
 
+    /// Whether `pane_id` is a terminal leaf: the one pane kind whose drawn
+    /// surface [`PaneControls::surface`] decides. A chat pane draws its
+    /// conversation's agent view whatever its terminal filter says.
+    pub fn pane_is_terminal(&self, pane_id: u64) -> bool {
+        self.spaces
+            .iter()
+            .any(|space| matches!(space.leaf_kind(pane_id), Some(PaneKind::Terminal)))
+    }
+
     /// Enter `conversation_id`'s agent view in `pane_id`: push the card that
     /// stands for the conversation into the pane's block list (so the terminal
     /// keeps a way back to it) and point the pane's filter at the conversation.

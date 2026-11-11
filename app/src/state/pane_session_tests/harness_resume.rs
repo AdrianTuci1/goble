@@ -175,6 +175,62 @@ fn opening_the_agent_view_switches_a_bound_pane_into_agent_mode() {
     );
 }
 
+/// A harness launched from a terminal pane leaves its conversation bound to
+/// that pane. Esc puts the pane back on the shell the harness runs in, and the
+/// sidebar row is still the conversation's entry point: clicking it brings the
+/// thread forward on its agent surface instead of leaving the pane in terminal
+/// mode, where the next `!` line would run in the pane's own terminal.
+#[test]
+fn a_harness_conversation_left_on_its_shell_reopens_in_the_agent_view() {
+    let mut state = UiState::mock();
+    state.spaces = vec![Space::new(
+        "Shell",
+        Pane::Leaf {
+            id: 1,
+            kind: PaneKind::Terminal,
+        },
+    )];
+    state.conversations.push(
+        ConversationEntry::new("launch-1", "Launch", "last reply", "now")
+            .with_harness("claude")
+            .with_directory("/Users/me/Projects/goble"),
+    );
+    state
+        .pane_sessions
+        .get_mut(&1)
+        .expect("pane 1 has a session")
+        .conversation_id = "launch-1".to_string();
+
+    // The launch opened the conversation's view, then Esc went back to the
+    // shell the harness runs in.
+    state.open_harness_agent_view(1);
+    state.leave_agent_view(1);
+    assert_eq!(
+        state.pane_view(1),
+        goble_terminal::blocks::BlockView::Terminal,
+        "the premise: the pane is on its shell"
+    );
+
+    state.open_conversation_tab("launch-1".to_string(), None);
+
+    assert_eq!(
+        state.active_pane_id, 1,
+        "the pane already on the conversation is the one brought forward"
+    );
+    assert!(
+        state.pane_controls(1).harness_mode,
+        "the row opens the conversation's harness"
+    );
+    assert!(
+        matches!(
+            state.pane_view(1),
+            goble_terminal::blocks::BlockView::Agent { ref conversation_id }
+                if conversation_id == "launch-1"
+        ),
+        "the row opens the conversation's agent view, not its terminal"
+    );
+}
+
 #[test]
 fn opening_the_agent_view_without_a_conversation_changes_nothing() {
     let mut state = UiState::mock();

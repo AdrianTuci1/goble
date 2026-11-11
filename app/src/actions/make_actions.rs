@@ -1075,8 +1075,18 @@ pub fn make_actions(
                     // view names it, and it is read the one way the app reads a
                     // pane's surface (`pane_view`), so the conversation the
                     // command is filed under is the one the pane is drawing.
+                    //
+                    // A chat pane's composer is its conversation's agent composer
+                    // whatever the pane's terminal filter says — `pane_view`
+                    // describes the terminal surface, and a chat pane has none —
+                    // so a line typed there is filed under the conversation the
+                    // pane shows. Reading it as the shell's would run the line in
+                    // a terminal behind the pane instead of the conversation.
                     let conversation = match state.pane_view(pane_id) {
                         BlockView::Agent { conversation_id } => Some(conversation_id),
+                        BlockView::Terminal if !state.pane_is_terminal(pane_id) => {
+                            state.pane_conversation_id(pane_id)
+                        }
                         BlockView::Terminal => None,
                     };
                     // A harness the line names has to be able to take a

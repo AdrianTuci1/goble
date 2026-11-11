@@ -35,6 +35,7 @@ mod keys;
 mod pane_commands;
 mod registry;
 mod rich_input;
+mod separation;
 mod session;
 mod shell;
 mod ssh_session;

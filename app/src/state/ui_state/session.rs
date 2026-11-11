@@ -250,6 +250,18 @@ impl UiState {
         if let Some((space_index, pane_id)) = self.open_conversation_pane(&conversation_id) {
             self.active_space = space_index;
             self.active_pane_id = pane_id;
+            // A terminal pane already bound to the conversation comes forward
+            // on the conversation's agent surface. The row is the thread's
+            // entry point, and a harness launched from the pane leaves it on
+            // the shell after Esc: focusing it there would put the conversation
+            // in terminal mode, where the next `!` line runs in the pane's
+            // terminal instead of the conversation's shell. A child view open
+            // over the parent's transcript is left as well, so the row lands
+            // on the conversation it names.
+            if self.pane_is_terminal(pane_id) {
+                self.sub_agent_views.remove(&pane_id);
+                self.open_harness_agent_view(pane_id);
+            }
             self.sync_active_view();
             if let Some(desktop) = desktop {
                 self.refresh_messages(desktop);

@@ -453,6 +453,11 @@ impl RootView {
                 task_workflow_open: s.task_workflow_open,
                 task_workflow_selected: s.task_workflow_selected.clone(),
                 task_workflow_phase: s.task_workflow_phase.clone(),
+                work_dock_phase: s
+                    .pane_runtime
+                    .get(&s.active_pane_id)
+                    .map(|runtime| runtime.work_dock_phase())
+                    .unwrap_or(0.0),
                 shortcuts_help_open: s.shortcuts_help_open,
                 shortcuts_help_filter: s.shortcuts_help_filter.clone(),
                 shortcuts_help_index: s.shortcuts_help_index,

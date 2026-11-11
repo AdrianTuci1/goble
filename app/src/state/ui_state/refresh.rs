@@ -67,7 +67,7 @@ impl UiState {
             terminal_global_filters: HashMap::new(),
             crons_open: false,
             task_workflow_open: false,
-            task_workflow_selected: Rc::new(RefCell::new(0)),
+            task_workflow_selected: Rc::new(RefCell::new(None)),
             task_workflow_phase: Rc::new(RefCell::new(0)),
             shortcuts_help_open: false,
             shortcuts_help_filter: String::new(),
@@ -340,7 +340,12 @@ impl UiState {
                     })
                     .collect(),
                 started_at: time_ago(&run.started_at),
-                elapsed: elapsed_since(&run.started_at),
+                // A settled run's duration is its whole span; a live one is
+                // measured to now, so its clock keeps moving.
+                elapsed: match run.finished_at.as_deref() {
+                    Some(finished_at) => elapsed_between(&run.started_at, finished_at),
+                    None => elapsed_since(&run.started_at),
+                },
                 finished_at: run.finished_at.as_deref().map(time_ago),
                 output: run.output,
                 log: run.log,

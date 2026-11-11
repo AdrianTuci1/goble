@@ -35,7 +35,7 @@ pub use elements::{
     Icon, IconButton, IconName, KeyHandler, Label, LabelSize, LayoutContext, MainAxisAlignment,
     MainAxisSize,
     Margin, Modal, Padding, Page, PaintContext, Point, QuickActionButton, Rect, RightPanel,
-    RunningIndicator, ScrollState, Scrollable, SearchInput, Select, SelectOption,
+    ProgressBar, RunningIndicator, ScrollState, Scrollable, SearchInput, Select, SelectOption,
     SelectableElement, Sidebar,
     SidebarItem, SizeConstraint, Sheet, Spacer, SplitNode, Stack, SubAgentPanel, SubAgentRow, SubAgentRowStatus,
     Switch, Tab, TabBar, TerminalBlock,

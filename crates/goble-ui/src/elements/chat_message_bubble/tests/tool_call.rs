@@ -1168,35 +1168,44 @@ fn web_search_call_shows_the_query_and_its_sources() {
     );
 }
 
-/// A folded run is delimited by a rail in the gutter, outside the words: the
-/// header starts past it, in either fold, and the label carries no punctuation
-/// of its own. A stand-alone row, which has no run to delimit, stays at the
-/// prose column.
+/// A tool block is bracketed down both sides, in the free margin beside the
+/// text, while the pointer is on it or the group is open. The strokes take no
+/// layout space, so the words keep the prose column's alignment.
 #[test]
-fn a_tool_group_is_delimited_by_a_rail_beside_it() {
+fn a_tool_block_is_bracketed_without_moving_its_words() {
     let app = AppContext::default();
-    for mode in [ToolDisplayMode::Collapsed, ToolDisplayMode::Expanded] {
-        let key = tool_fold_key(
-            &call(
-                "read_file",
-                r#"{"path":"src/lib.rs"}"#,
-                ToolCallStatus::Finished,
-                Some("fn main() {}\n"),
-            ),
-            0,
-        );
-        let mut bubble = ChatMessageBubble::new(
-            ChatRole::Assistant,
-            vec![ChatFragment::text("Prose starts here.")],
-        )
-        .with_tool_calls(vec![call(
+    let read = || {
+        call(
             "read_file",
             r#"{"path":"src/lib.rs"}"#,
             ToolCallStatus::Finished,
             Some("fn main() {}\n"),
-        )])
-        .with_tool_fold(Rc::new(RefCell::new(HashMap::from([(key, mode)]))));
-        let size = bubble.layout(
+        )
+    };
+    for (label, fold, hovered) in [
+        ("folded and resting", HashMap::new(), None),
+        (
+            "folded under the pointer",
+            HashMap::new(),
+            Some(tool_fold_key(&read(), 0)),
+        ),
+        (
+            "opened",
+            HashMap::from([(
+                format!("verb-group:{}", tool_fold_key(&read(), 0)),
+                ToolDisplayMode::Expanded,
+            )]),
+            None,
+        ),
+    ] {
+        let mut bubble = ChatMessageBubble::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Prose starts here.")],
+        )
+        .with_tool_calls(vec![read()])
+        .with_tool_fold(Rc::new(RefCell::new(fold)))
+        .with_tool_hover(Rc::new(RefCell::new(hovered)));
+        bubble.layout(
             SizeConstraint::loose(vec2f(400.0, 400.0)),
             &mut LayoutContext::default(),
             &app,
@@ -1218,68 +1227,104 @@ fn a_tool_group_is_delimited_by_a_rail_beside_it() {
             })
         };
         let prose = origin_x("Prose starts here.").expect("the prose is drawn");
-        let row_start = commands
+        let row_start = origin_x("◈ ")
+            .or_else(|| origin_x("◆ "))
+            .unwrap_or_else(|| {
+                panic!("{label}: the run's own header is drawn: {:?}", drawn_texts(&commands))
+            });
+        assert!(
+            (row_start - prose).abs() < 0.5,
+            "{label}: the words stay in the prose column, got {row_start} against {prose}"
+        );
+
+        let brackets: Vec<_> = commands
             .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. }
-                    if text.starts_with("◈ ")
-                        || text.starts_with("❯ ")
-                        || text.starts_with("◆ ") =>
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == app.theme.color(ColorToken::Muted)
+                        && rect.size.width <= 2.5
+                        && rect.size.height > 0.0 =>
                 {
-                    Some(origin.x)
+                    Some(*rect)
                 }
                 _ => None,
             })
-            .unwrap_or_else(|| {
-                panic!(
-                    "{mode:?}: the run's own header is drawn: {:?}",
-                    drawn_texts(&commands)
-                )
-            });
-        let rail = commands.iter().find_map(|command| match command {
-            RenderCommand::FillRect { rect, color, .. }
-                if *color == app.theme.color(ColorToken::Border) && rect.size.width <= 2.5 =>
-            {
-                Some(*rect)
-            }
-            _ => None,
-        });
-        if mode == ToolDisplayMode::Collapsed {
-            // The folded run is a group: its header sits past a rail in the
-            // gutter, and the label carries no punctuation of its own.
-            let inset = goble_ui_spacing(&app);
+            .collect();
+        let bracketed = label != "folded and resting";
+        assert_eq!(
+            brackets.len(),
+            if bracketed { 2 } else { 0 },
+            "{label}: both sides are bracketed, got {brackets:?}"
+        );
+        if bracketed {
+            let (left, right) = (brackets[0], brackets[1]);
             assert!(
-                row_start > prose + inset - 0.5,
-                "the group starts past its rail, but its text is at {row_start} and prose at {prose}"
+                left.min_x() < row_start && right.max_x() > row_start,
+                "{label}: the strokes sit outside the words: {brackets:?} against {row_start}"
             );
-            let rail = rail.expect("the folded run draws its gutter rail");
-            assert!(rail.size.height > 0.0, "the rail spans the run");
-            assert!(
-                !drawn_texts(&commands)
-                    .iter()
-                    .any(|text| text.starts_with('(') || text.ends_with(')')),
-                "the group's label carries no parentheses: {:?}",
-                drawn_texts(&commands)
-            );
-        } else {
-            // A call the user opened draws its own row: no run to delimit.
-            assert!(
-                (row_start - prose).abs() < 0.5,
-                "the opened row starts in the prose column, but its text is at {row_start} and prose at {prose}"
+            assert_eq!(
+                left.min_y(),
+                right.min_y(),
+                "{label}: both strokes start on the block's first line"
             );
             assert!(
-                rail.is_none(),
-                "an opened call draws no group rail: {:?}",
-                drawn_texts(&commands)
+                right.max_x() - left.min_x() > 300.0,
+                "{label}: the pair frames the block's width, not just its words: {brackets:?}"
             );
         }
     }
 }
 
-/// The gap the run leaves between its rail and its words, read from the same
-/// theme token the renderer uses.
-fn goble_ui_spacing(app: &AppContext) -> f32 {
-    app.theme.spacing_px(crate::theme::SpacingToken::Sm)
+/// A call that stands on its own — never folded into a run — is bracketed only
+/// under the pointer.
+#[test]
+fn a_standalone_row_is_bracketed_only_under_the_pointer() {
+    let app = AppContext::default();
+    let read = call(
+        "read_file",
+        r#"{"path":"src/lib.rs"}"#,
+        ToolCallStatus::Finished,
+        Some("fn main() {}"),
+    );
+    let key = tool_fold_key(&read, 0);
+    for hovered in [None, Some(key.clone())] {
+        let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+            .with_tool_calls(vec![read.clone()])
+            .with_tool_fold(Rc::new(RefCell::new(HashMap::from([(
+                key.clone(),
+                ToolDisplayMode::Expanded,
+            )]))))
+            .with_tool_hover(Rc::new(RefCell::new(hovered.clone())));
+        bubble.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx
+            .renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default();
+        let brackets = commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    RenderCommand::FillRect { rect, color, .. }
+                        if *color == app.theme.color(ColorToken::Muted)
+                            && rect.size.width <= 2.5
+                            && rect.size.height > 0.0
+                )
+            })
+            .count();
+        assert_eq!(
+            brackets,
+            if hovered.is_some() { 2 } else { 0 },
+            "a stand-alone row is bracketed only under the pointer"
+        );
+    }
 }
 
 /// A call under the pointer swaps its diamond for the arrow and reads white,

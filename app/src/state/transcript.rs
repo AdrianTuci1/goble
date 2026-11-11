@@ -12,6 +12,16 @@ pub(crate) fn elapsed_since(started_at: &str) -> Option<std::time::Duration> {
     Some(std::time::Duration::from_secs(secs as u64))
 }
 
+/// How long a finished span took, from its two RFC3339 timestamps. A span
+/// whose stamps cannot be read, or that ends before it starts, states no
+/// duration rather than guessing one.
+pub(crate) fn elapsed_between(started_at: &str, finished_at: &str) -> Option<std::time::Duration> {
+    let start = DateTime::parse_from_rfc3339(started_at).ok()?;
+    let end = DateTime::parse_from_rfc3339(finished_at).ok()?;
+    let secs = end.signed_duration_since(start).num_seconds();
+    (secs >= 0).then(|| std::time::Duration::from_secs(secs as u64))
+}
+
 /// Format an RFC3339 timestamp as a short relative "time ago" label (e.g.
 /// "40 min ago"). Falls back to the raw string when it cannot be parsed.
 pub(crate) fn time_ago(updated_at: &str) -> String {
@@ -522,6 +532,21 @@ mod tests {
             goble_ui::elements::chat_content::ChatFragmentKind::Notice(
                 "Context 82% full. Compacting…".to_string()
             )
+        );
+    }
+
+    /// A settled span measures start to finish, so a run's printed duration
+    /// stops when it stopped rather than growing with the wall clock.
+    #[test]
+    fn a_finished_span_keeps_the_duration_it_ran_for() {
+        assert_eq!(
+            elapsed_between("2026-01-01T00:00:00Z", "2026-01-01T00:03:20Z"),
+            Some(std::time::Duration::from_secs(200))
+        );
+        assert_eq!(
+            elapsed_between("2026-01-01T00:03:20Z", "2026-01-01T00:00:00Z"),
+            None,
+            "a span that ends before it starts states nothing"
         );
     }
 }

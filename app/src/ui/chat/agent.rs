@@ -1257,7 +1257,9 @@ mod agent_pill_tests {
             "src/sidebar.rs",
             "src/panes.rs",
             "\"fn build\" in src",
-            "Subagent ",
+            // The transcript names a spawned child by what it is: `Agent`,
+            // the word grok-build gives the row, not the tool's own name.
+            "Agent ",
         ];
         let rows: Vec<goble_ui::Vector2F> = row_labels
             .iter()

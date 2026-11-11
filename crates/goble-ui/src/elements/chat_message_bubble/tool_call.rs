@@ -9,8 +9,8 @@ use crate::geometry::vec2f;
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 use goble_core::harness::{subagent_subject, tool_row, ToolCallStatus, ToolKind};
-use super::quote_rail::QuoteRail;
 use super::tool_body::build_tool_call_body;
+use super::tool_bracket::ToolBracket;
 
 /// The mark every tool row draws before its words, whatever its family or
 /// state: grok-build's filled diamond.
@@ -634,6 +634,8 @@ pub(super) fn build_tool_call_rows(
                 sub_agent_model,
                 app,
             );
+            let hovered = hover.borrow().as_deref() == Some(key.as_str());
+            let element = ToolBracket::new(element, hovered).finish();
             column = push(column, element, collapsed);
             index += 1;
             continue;
@@ -696,13 +698,19 @@ pub(super) fn build_tool_call_rows(
             );
             group = group.with_child(element);
         }
-        // The run is delimited by a rail in the gutter, the way the pager
-        // brackets a block, so its extent is read without punctuation between
-        // the words.
-        let rail = QuoteRail::new(group.finish(), app.theme.spacing_px(SpacingToken::Sm))
-            .with_color(ColorToken::Border)
-            .finish();
-        column = push(column, rail, !open);
+        // The block is bracketed in the free margin beside the text — both
+        // strokes, no inset — while the group is open or the pointer is on any
+        // of its rows. The label carries no punctuation of its own.
+        let hovered = {
+            let hovered = hover.borrow();
+            let hovered = hovered.as_deref();
+            hovered == Some(group_key.as_str())
+                || (start..end).any(|member| {
+                    hovered == Some(tool_fold_key(&tool_calls[member], member).as_str())
+                })
+        };
+        let group = ToolBracket::new(group.finish(), open || hovered).finish();
+        column = push(column, group, !open);
         index = end.max(start + 1);
     }
     column.finish()

@@ -65,9 +65,7 @@ impl UiState {
                 .flatten(),
             group(WorkSection::Subagents, self.subagent_work_rows(pane_id)),
             group(WorkSection::Tasks, self.task_work_rows(pane_id)),
-            (pane_id == self.active_pane_id)
-                .then(|| group(WorkSection::Watchers, self.watcher_work_rows()))
-                .flatten(),
+            group(WorkSection::Watchers, self.watcher_work_rows(pane_id)),
         ]
         .into_iter()
         .flatten()
@@ -139,9 +137,26 @@ impl UiState {
     }
 
     /// The pane's in-flight tool calls, named by the row their family gives
-    /// them. A call whose child accounts for it, or one the harness hides, is
-    /// not a task of its own.
+    /// them. A call whose child accounts for it, one the harness hides, or a
+    /// watcher (which has its own group) is not a task of its own.
     fn task_work_rows(&self, pane_id: u64) -> Vec<WorkRow> {
+        self.call_work_rows(pane_id, |call| !is_watcher_call(call))
+    }
+
+    /// The pane's live watchers: in-flight calls of a monitor/watch tool. Only
+    /// a call that is running now is listed, so the group empties when the
+    /// watch ends instead of pinning a scheduled loop above the transcript.
+    fn watcher_work_rows(&self, pane_id: u64) -> Vec<WorkRow> {
+        self.call_work_rows(pane_id, is_watcher_call)
+    }
+
+    /// The in-flight calls `wanted` accepts, each as the dock's row with the
+    /// call's own elapsed clock.
+    fn call_work_rows(
+        &self,
+        pane_id: u64,
+        wanted: impl Fn(&ToolCall) -> bool,
+    ) -> Vec<WorkRow> {
         let Some(rt) = self.pane_runtime.get(&pane_id) else {
             return Vec::new();
         };
@@ -156,13 +171,24 @@ impl UiState {
             .values()
             .filter(|call| !is_hidden_tool(&call.name))
             .filter(|call| !spawned_by_running.contains(call.id.as_str()))
+            .filter(|call| wanted(call))
             .collect();
         calls.sort_by(|a, b| a.id.cmp(&b.id));
         calls
             .into_iter()
             .map(|call| {
-                let mut row = WorkRow::new(call.id.clone(), "Task", work_call_description(call))
-                    .spinning(true);
+                // A watcher row leads with the tool that is watching, because
+                // the group above it already says "Watchers"; a task row leads
+                // with the word "Task" and the verb its family gives it.
+                let (kind, description) = if is_watcher_call(call) {
+                    (
+                        tool_kind_word(&call.name),
+                        watcher_subject(call),
+                    )
+                } else {
+                    ("Task".to_string(), work_call_description(call))
+                };
+                let mut row = WorkRow::new(call.id.clone(), kind, description).spinning(true);
                 if let Some(started) = rt.in_flight_since.get(&call.id) {
                     row = row.with_meta(format_elapsed(started.elapsed()));
                 }
@@ -170,33 +196,49 @@ impl UiState {
             })
             .collect()
     }
+}
 
-    /// The enabled scheduled loops. A loop is not running now, so its row keeps
-    /// the still dot and states its schedule and last run instead of a clock.
-    fn watcher_work_rows(&self) -> Vec<WorkRow> {
-        self.crons
-            .iter()
-            .filter(|cron| cron.enabled)
-            .map(|cron| {
-                let mut row = WorkRow::new(cron.id.clone(), "Loop", cron.name.clone())
-                    .openable(true)
-                    .with_meta(cron.schedule.clone());
-                if !cron.last_run.is_empty() {
-                    row = row.with_activity(format!("last run {}", cron.last_run));
-                }
-                row
-            })
-            .collect()
+/// A tool name as the dock's kind word: the display name with its first letter
+/// capitalised, so `monitor` reads `Monitor` beside a `Task` row.
+fn tool_kind_word(name: &str) -> String {
+    let words = goble_core::harness::tool_display_name(name);
+    let mut chars = words.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => words,
     }
+}
+
+/// What a watch is watching: the call's own description, or the operand the
+/// tool family uses. A watch with neither is named by its tool alone, so the
+/// row never draws a dangling separator.
+fn watcher_subject(call: &ToolCall) -> String {
+    let arguments: serde_json::Value =
+        serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
+    for key in ["description", "pattern", "path", "command", "url"] {
+        if let Some(value) = arguments
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return value.to_string();
+        }
+    }
+    String::new()
+}
+
+/// Whether a call is a watch rather than ordinary work: the harness's monitor
+/// tools. They get their own group in the dock; every other call is a task.
+fn is_watcher_call(call: &ToolCall) -> bool {
+    matches!(call.name.to_lowercase().as_str(), "monitor" | "watch" | "watch_process")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::types::SubAgentRecord;
-    use crate::ui::{
-        CronEntry, WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry,
-    };
+    use crate::ui::{WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry};
     use goble_core::harness::ToolCallStatus;
     use goble_ui::{SubAgentRow, SubAgentRowStatus};
     use std::time::{Duration, Instant};
@@ -312,21 +354,43 @@ mod tests {
     }
 
     #[test]
-    fn an_enabled_loop_is_a_watcher_row() {
+    fn a_monitor_call_is_a_watcher_row() {
         let mut state = UiState::mock();
-        state.crons = vec![CronEntry::new(
-            "cron-1",
-            "Morning digest",
-            "0 9 * * *",
-            "2h ago",
-        )];
+        running_call(
+            &mut state,
+            "call_watch",
+            "monitor",
+            r#"{"description":"watch the dev instance"}"#,
+        );
+        running_call(
+            &mut state,
+            "call_task",
+            "run_terminal_command",
+            r#"{"command":"cargo test"}"#,
+        );
         let groups = state.work_dock_groups(1);
-        let watchers = group(&groups, WorkSection::Watchers).expect("the loop lists a group");
-        let row = &watchers.rows[0];
-        assert_eq!(row.kind, "Loop");
-        assert_eq!(row.description, "Morning digest");
-        assert_eq!(row.meta, "0 9 * * *");
-        assert!(!row.spinning, "a scheduled loop is not running now");
+        let watchers = group(&groups, WorkSection::Watchers).expect("the watch lists a group");
+        assert_eq!(watchers.rows.len(), 1);
+        assert_eq!(watchers.rows[0].id, "call_watch");
+        assert_eq!(watchers.rows[0].kind, "Monitor", "the tool that watches");
+        assert_eq!(watchers.rows[0].description, "watch the dev instance");
+        assert!(watchers.rows[0].spinning);
+        let tasks = group(&groups, WorkSection::Tasks).expect("the call lists a task group");
+        assert_eq!(tasks.rows.len(), 1, "a watch is not also a task");
+        assert_eq!(tasks.rows[0].id, "call_task");
+    }
+
+    #[test]
+    fn a_scheduled_loop_does_not_pin_a_watcher_group() {
+        let mut state = UiState::mock();
+        state.crons = vec![
+            crate::ui::CronEntry::new("cron-1", "Morning digest", "0 9 * * *", "2h ago"),
+        ];
+        let groups = state.work_dock_groups(1);
+        assert!(
+            group(&groups, WorkSection::Watchers).is_none(),
+            "an idle scheduled loop is not a live watcher"
+        );
     }
 
     #[test]

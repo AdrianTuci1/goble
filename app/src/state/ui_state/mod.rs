@@ -189,11 +189,12 @@ pub struct UiState {
     /// Whether the workflow-runs overlay is up (it covers the workspace without
     /// replacing it).
     pub task_workflow_open: bool,
-    /// The workflow the overlay's run list has selected, and the phase — one of
-    /// that workflow's steps — selected inside its detail. Shared cells because
-    /// the element tree is rebuilt every frame: a row the user clicked writes
-    /// its index there and the next frame's rows read it back.
-    pub task_workflow_selected: Rc<RefCell<usize>>,
+    /// The run the overlay's list has selected — its key, not its row, because
+    /// a new run moves the list under the pointer — and the phase, one of that
+    /// run's steps, selected inside its detail. Shared cells because the
+    /// element tree is rebuilt every frame: a row the user clicked writes there
+    /// and the next frame's rows read it back.
+    pub task_workflow_selected: Rc<RefCell<Option<String>>>,
     pub task_workflow_phase: Rc<RefCell<usize>>,
     /// Whether the keyboard shortcuts panel is up.
     pub shortcuts_help_open: bool,

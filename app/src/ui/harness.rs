@@ -7,7 +7,7 @@
 
 use goble_ui::elements::{
     AppContext, Axis, Button, ButtonVariant, Container, CrossAxisAlignment, Divider, EdgeInsets,
-    Element, Expanded, Fill, Flex, HoverRow, Icon, MainAxisSize, Rect, Scrollable, Spacer, Text,
+    Element, Fill, Flex, Icon, MainAxisSize, Rect, Scrollable, Spacer, Text,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -187,62 +187,6 @@ pub(crate) fn build_workflow_row(app: &AppContext, wf: &WorkflowEntry) -> Box<dy
             .with_child(status_el)
             .finish(),
     )
-}
-
-/// One row of the workflow-runs overlay's run list: the run's name and
-/// objective, what it declares, and its status. `selected` draws the row whose
-/// detail the panel shows beside it; the callback is what walks that selection
-/// onto this run.
-pub(crate) fn build_workflow_run_row(
-    app: &AppContext,
-    wf: &WorkflowEntry,
-    selected: bool,
-    on_click: impl FnMut() + 'static,
-) -> Box<dyn Element> {
-    let sm = app.theme.spacing_px(SpacingToken::Sm);
-    let (color, status_el) = status(app, if wf.enabled { "enabled" } else { "disabled" });
-    let info = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_spacing(2.0)
-        .with_child(
-            Text::new(wf.name.clone())
-                .with_font_size(12.0)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
-        )
-        .with_child(
-            // The objective the record carries, under the name it belongs to.
-            Text::new(wf.description.clone())
-                .with_font_size(11.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .with_max_lines(1)
-                .finish(),
-        )
-        .finish();
-    HoverRow::new(
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(sm)
-            .with_child(Expanded::new(info).finish())
-            .with_child(
-                Text::new(format!(
-                    "{} · {}",
-                    workflow_run_step_count(wf),
-                    workflow_run_agent_count(wf)
-                ))
-                .with_font_size(11.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-            )
-            .with_child(status_dot(app, color))
-            .with_child(status_el)
-            .finish(),
-    )
-    .with_selected(selected)
-    .with_padding(EdgeInsets::uniform(sm))
-    .with_on_click(on_click)
-    .finish()
 }
 
 /// How many phases a workflow declares.

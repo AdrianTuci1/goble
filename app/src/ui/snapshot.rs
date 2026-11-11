@@ -315,10 +315,14 @@ pub struct UiSnapshot {
     /// Whether the workflow-runs overlay is up. It floats over the workspace, so
     /// the panes stay mounted underneath it.
     pub task_workflow_open: bool,
-    /// The run the overlay's list has selected, and the phase selected inside
-    /// that run's detail. Shared with app state so the choice outlives the
-    /// per-frame rebuild.
-    pub task_workflow_selected: Rc<RefCell<usize>>,
+    /// The run the overlay's list has selected — keyed by run (or workflow,
+    /// for one that has never run) so a new run does not move the selection to
+    /// another row — and the phase selected inside that run's detail. Shared
+    /// with app state so the choice outlives the per-frame rebuild.
+    pub task_workflow_selected: Rc<RefCell<Option<String>>>,
+    /// The active pane's work clock, so a live run's mark in the overlay turns
+    /// with the same spinner the dock and the footer show.
+    pub work_dock_phase: f32,
     pub task_workflow_phase: Rc<RefCell<usize>>,
     /// Whether the keyboard shortcuts panel is up (also an overlay over the
     /// workspace, opened with Ctrl+.).

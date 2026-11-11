@@ -1412,9 +1412,12 @@ mod ui_tests {
             texts.iter().any(|text| text.contains("Task completed.")),
             "and the word that it finished: {texts:?}"
         );
+        // The banner names the branch the work happened on, which is whatever
+        // the pane's composer reports rather than a branch spelled here.
+        let branch = state.borrow().composer_branch.clone();
         assert!(
-            texts.iter().any(|text| text == "terminal-first"),
-            "and the branch it happened on: {texts:?}"
+            texts.iter().any(|text| *text == branch),
+            "and the branch it happened on ({branch:?}): {texts:?}"
         );
     }
 

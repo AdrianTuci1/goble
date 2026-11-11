@@ -113,7 +113,7 @@ impl UiState {
             terminal_global_filters: HashMap::new(),
             crons_open: false,
             task_workflow_open: false,
-            task_workflow_selected: Rc::new(RefCell::new(0)),
+            task_workflow_selected: Rc::new(RefCell::new(None)),
             task_workflow_phase: Rc::new(RefCell::new(0)),
             shortcuts_help_open: false,
             shortcuts_help_filter: String::new(),

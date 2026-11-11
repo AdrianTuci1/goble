@@ -344,9 +344,12 @@ impl BlockList {
         self.active = self.blocks.len() - 1;
     }
 
-    /// Append a block standing for a conversation, without disturbing the
-    /// active shell block: the card takes its place in the history at the point
-    /// the conversation happened, and output keeps going to the block below it.
+    /// Place a block standing for a conversation at the point the conversation
+    /// happened, without disturbing the active shell block: the card sits above
+    /// the prompt waiting for the next command, so the command's output lands
+    /// below the card and the card keeps its slot in the history. A command
+    /// already running takes the card after itself — there is no prompt to
+    /// insert above.
     pub fn push_agent_view_block(
         &mut self,
         conversation_id: impl Into<String>,
@@ -354,14 +357,19 @@ impl BlockList {
     ) -> BlockId {
         let id = BlockId(self.next_id);
         self.next_id += 1;
-        let block = Block::agent_view(
-            id,
-            self.blocks.len(),
-            self.size,
-            conversation_id.into(),
-            label.into(),
-        );
-        self.blocks.push(block);
+        let at = if self.active_block().state() == BlockState::BeforeExecution {
+            self.active
+        } else {
+            self.blocks.len()
+        };
+        let block = Block::agent_view(id, at, self.size, conversation_id.into(), label.into());
+        self.blocks.insert(at, block);
+        for (index, block) in self.blocks.iter_mut().enumerate().skip(at) {
+            block.index = index;
+        }
+        if at <= self.active {
+            self.active += 1;
+        }
         id
     }
 

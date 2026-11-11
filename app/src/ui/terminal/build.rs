@@ -648,6 +648,15 @@ impl TerminalView {
         self.cards.borrow_mut().clear();
         self.block_geometry.borrow_mut().clear();
 
+        // Every row of shell output keeps the pane's inset. The conversation
+        // card and the refusal band are surfaces of their own, so they run the
+        // pane's whole width and hold their padding internally.
+        let inset = |element: Box<dyn Element>| -> Box<dyn Element> {
+            Container::new(element)
+                .with_padding(EdgeInsets::new(lg, 0.0, lg, 0.0))
+                .finish()
+        };
+
         let mut column = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
@@ -655,12 +664,12 @@ impl TerminalView {
         // The scrollback find bar (Cmd+F): the query, its regex toggle and the
         // current/total match count, scoped to this pane.
         if pane_ui.find.open {
-            column = column.with_child(find_bar(
+            column = column.with_child(inset(find_bar(
                 &pane_ui.find,
                 app,
                 Rc::clone(&self.terminal),
                 self.pane_id,
-            ));
+            )));
         }
 
         // The pane's whole-output filter (Cmd+Alt+F): one bar over every block the
@@ -671,13 +680,13 @@ impl TerminalView {
         if !live_screen {
             if let Some(filter) = self.plumbing.global_filter().filter(|f| f.is_open()) {
                 let (matched, total) = filter_line_counts(&blocks, &filter);
-                column = column.with_child(terminal_filter_bar(
+                column = column.with_child(inset(terminal_filter_bar(
                     &filter,
                     TERMINAL_FILTER_PLACEHOLDER,
                     matched,
                     total,
                     app,
-                ));
+                )));
             }
         }
 
@@ -747,13 +756,13 @@ impl TerminalView {
                             },
                         }
                     });
-                    list = list.with_child(self.plumbing.element_with_selection_and_cursor(
+                    list = list.with_child(inset(self.plumbing.element_with_selection_and_cursor(
                         &data,
                         selection,
                         cursor,
                         line_base,
                         Rc::clone(&block_geometry),
-                    ));
+                    )));
                     line_base += data.lines.len();
                     listed += 1;
                 }
@@ -829,7 +838,7 @@ impl TerminalView {
         } else if show_grid || screen.has_content {
             // The grid is the only surface that can paint an image, so an
             // image-only viewport takes it even when every cell is blank.
-            GridProbe {
+            let probe = GridProbe {
                 // The grid is this pane's output; the pane's input is the rich
                 // input bar below it, and that bar owns the caret. A cursor
                 // painted in the grid too would read as a second, competing
@@ -865,7 +874,8 @@ impl TerminalView {
                     ),
                 geometry: Rc::clone(&self.geometry),
             }
-            .finish()
+            .finish();
+            inset(probe)
         } else {
             *self.geometry.borrow_mut() = None;
             // The shell's directory hugs the bottom of the body, just above the
@@ -877,11 +887,13 @@ impl TerminalView {
                 .with_font_family(FontFamily::Mono)
                 .with_theme_color(ColorToken::Muted, app)
                 .finish();
-            Flex::column()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_main_axis_alignment(MainAxisAlignment::End)
-                .with_child(hint)
-                .finish()
+            inset(
+                Flex::column()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_main_axis_alignment(MainAxisAlignment::End)
+                    .with_child(hint)
+                    .finish(),
+            )
         };
         column = column.with_child(Expanded::new(body).finish());
 
@@ -893,14 +905,25 @@ impl TerminalView {
         if let Some(reason) = self.harness_refusal.take() {
             column = column.with_child(
                 Container::new(
-                    Text::new(reason)
-                        .with_theme_color(ColorToken::Error, app)
-                        .with_font_size(FONT_SIZE)
-                        .with_line_height(LINE_HEIGHT)
-                        .finish(),
+                    Container::new(
+                        // The row fills the pane's width so the band does: the
+                        // background runs edge to edge, and only the text keeps
+                        // its side padding.
+                        Flex::row()
+                            .with_main_axis_size(MainAxisSize::Max)
+                            .with_child(
+                                Text::new(reason)
+                                    .with_theme_color(ColorToken::Error, app)
+                                    .with_font_size(FONT_SIZE)
+                                    .with_line_height(LINE_HEIGHT)
+                                    .finish(),
+                            )
+                            .finish(),
+                    )
+                    .with_padding(EdgeInsets::new(md, md, md, md))
+                    .finish(),
                 )
                 .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                .with_padding(EdgeInsets::uniform(md))
                 .finish(),
             );
         }
@@ -910,11 +933,13 @@ impl TerminalView {
         // element, taken by this frame's build (the tree is rebuilt per frame).
         // A rule separates it from the shell's output, so the input reads as its
         // own surface rather than another line of the transcript.
-        // The pane's output carries the pane's padding; the rich input below it
-        // runs edge to edge, so the input is the pane's width rather than an
+        // The pane's output holds only its vertical padding here: each row of
+        // shell output applies the side inset itself, so the conversation card
+        // and the refusal band paint edge to edge. The rich input below runs
+        // edge to edge too, so the input is the pane's width rather than an
         // inset card inside it.
         let body = Container::new(column.finish())
-            .with_padding(EdgeInsets::new(lg, lg, lg, 0.0))
+            .with_padding(EdgeInsets::new(0.0, lg, 0.0, 0.0))
             .finish();
         let mut outer = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)

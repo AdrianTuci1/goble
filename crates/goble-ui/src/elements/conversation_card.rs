@@ -20,7 +20,7 @@ pub const CARD_RAIL_WIDTH: f32 = 2.0;
 
 const FONT_SIZE: f32 = 13.0;
 const PADDING_X: f32 = 12.0;
-const PADDING_Y: f32 = 8.0;
+const PADDING_Y: f32 = 12.0;
 
 /// The harness mark the row leads with, and the trailing glyphs that say the
 /// row opens.

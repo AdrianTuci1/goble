@@ -2340,6 +2340,81 @@ fn session_with_a_command_running(command: &str) -> TerminalSession {
     TerminalSession::with_emulator(emulator)
 }
 
+/// The refusal is a band of the pane, so its surface runs the pane's whole
+/// width: the background has no side margin, and only the text keeps padding.
+#[test]
+fn the_refusal_band_runs_the_panes_whole_width() {
+    use goble_ui::theme::ColorToken;
+
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    {
+        let s = state.borrow();
+        let mut registry = s.terminal.borrow_mut();
+        registry
+            .sessions
+            .insert(1, session_with_a_command_running("cargo build"));
+    }
+    let _ = pane_runs(&mut root, &app);
+    let cmd_enter = key(
+        "Enter",
+        ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        },
+    );
+    assert!(
+        root.dispatch_event(&cmd_enter, &mut EventContext, &app),
+        "Cmd+Enter is taken by the bar"
+    );
+
+    let window = vec2f(1024.0, 768.0);
+    let commands = render_element(&mut root, window, &app);
+    let reason = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text == BUSY_REFUSAL => Some(*origin),
+            _ => None,
+        })
+        .expect("the refusal is drawn");
+    let band = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::SurfaceRaised)
+                    && reason.x >= rect.min_x()
+                    && reason.x < rect.max_x()
+                    && reason.y >= rect.min_y()
+                    && reason.y < rect.max_y() =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the refusal paints a raised band");
+    let bounds = state
+        .borrow()
+        .pane_bounds
+        .borrow()
+        .get(&1)
+        .copied()
+        .expect("the pane recorded its bounds");
+    assert_eq!(
+        band.min_x(),
+        bounds.min_x(),
+        "no side margin on the band: {band:?} in {bounds:?}"
+    );
+    assert_eq!(
+        band.max_x(),
+        bounds.max_x(),
+        "the band is the pane's width: {band:?} in {bounds:?}"
+    );
+    assert!(
+        reason.x > band.min_x(),
+        "the text keeps its own side padding: {reason:?} in {band:?}"
+    );
+}
+
 /// The focused pane's corner mark is drawn over the left end of the pane's
 /// own bar, so the bar starts past it. The harness's "esc for terminal" hint
 /// leads that bar, and without the room the mark leaves it would sit under
@@ -2470,6 +2545,70 @@ fn the_conversation_card_takes_its_harness_from_the_conversation_list() {
             RenderCommand::DrawIcon { name, .. } if name == "harness-claude"
         )),
         "the card leads with the conversation's own harness"
+    );
+}
+
+/// The card is a surface of the pane, not a row inside it: the raised band runs
+/// the pane's whole width with no side margin, and the row's own padding is
+/// what keeps its text off the edges. A command's section keeps the pane's
+/// inset, so the shell's output stays where it was.
+#[test]
+fn the_conversation_card_runs_the_panes_whole_width() {
+    use goble_ui::theme::{ColorToken, SpacingToken};
+
+    let app = AppContext::default();
+    let mut session = session_that_ran("echo hi", "hi");
+    session.push_agent_view_block("c1", "Fix the build");
+    let (pane, _terminal) = view_over(
+        session,
+        7,
+        TerminalBlockPlumbing::new(block_filters(), None, None),
+    );
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let window = vec2f(900.0, 500.0);
+    let commands = render_element(&mut pane, window, &app);
+
+    let band = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::SurfaceRaised) =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the card paints its raised band");
+    assert_eq!(band.min_x(), 0.0, "the band has no side margin");
+    assert_eq!(band.max_x(), window.x, "the band runs the pane's width");
+
+    let title = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text == "Fix the build" => {
+                Some(*origin)
+            }
+            _ => None,
+        })
+        .expect("the card draws its title");
+    assert!(
+        title.x > band.min_x(),
+        "the title keeps the card's own padding: {title:?} in {band:?}"
+    );
+
+    let lg = app.theme.spacing_px(SpacingToken::Lg);
+    let command = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text.contains("echo hi") => {
+                Some(*origin)
+            }
+            _ => None,
+        })
+        .expect("the section draws its command line");
+    assert!(
+        command.x >= lg,
+        "a section keeps the pane's side inset: {command:?}"
     );
 }
 

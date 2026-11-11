@@ -62,6 +62,9 @@ pub struct ChatView {
     /// App-owned three-state fold for the tool calls, keyed by
     /// [`tool_fold_key`], shared down to each `ChatMessageBubble`.
     tool_fold: Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    /// The tool row under the pointer, reported by the row's own paint, so a
+    /// chain's header can draw its arrow and its white label.
+    tool_hover: Rc<RefCell<Option<String>>>,
     /// The live sub-agent records the tool-call rows read their status from,
     /// keyed by the id of the tool call that spawned each child; held by the
     /// app from S4's `chat:subagent_*` events and handed down every frame.
@@ -244,6 +247,7 @@ impl ChatView {
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
             reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
             tool_fold: Rc::new(RefCell::new(HashMap::new())),
+            tool_hover: Rc::new(RefCell::new(None)),
             sub_agents: HashMap::new(),
             sub_agent_model: String::new(),
             global_terminal_filter: None,

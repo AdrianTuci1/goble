@@ -123,6 +123,7 @@ pub(crate) fn build_sub_agent_child_view(
         .with_terminal_filters(state.terminal_filters.clone())
         .with_reasoning_expanded(state.reasoning_expanded.clone())
         .with_tool_fold(state.tool_fold.clone())
+        .with_tool_hover(state.tool_hover.clone())
         .with_on_copy_terminal(Some(actions.on_copy_terminal.clone()))
         // A child can itself spawn a child: the pane's live sub-agent records
         // feed this view's rows too, so a nested child is drawn here as the

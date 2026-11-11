@@ -446,6 +446,7 @@ impl RootView {
                 terminal_filters: s.terminal_filters.clone(),
                 reasoning_expanded: s.reasoning_expanded.clone(),
                 tool_fold: s.tool_fold.clone(),
+                tool_hover: s.tool_hover.clone(),
                 terminal_global_filters: s.terminal_global_filters.clone(),
                 sub_agent_panel_open: s.sub_agent_panel_open,
                 pane_terminal_scroll: s.pane_terminal_scroll.clone(),

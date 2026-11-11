@@ -4,21 +4,21 @@ use std::rc::Rc;
 
 use crate::color::ColorU;
 use crate::elements::chat_content::{tool_fold_key, ChatAction, InlineSpan as ModelSpan, InlineStyle, SubAgentRow, ToolCall, ToolDisplayMode};
-use crate::elements::{resolve_inline_span, Chip, CrossAxisAlignment, Element, Empty, Flex, InlineText, TextSpan};
+use crate::elements::{resolve_inline_span, Chip, CrossAxisAlignment, Element, Empty, Flex, HoverRow, InlineText, TextSpan};
 use crate::geometry::vec2f;
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 use goble_core::harness::{subagent_subject, tool_row, ToolCallStatus, ToolKind};
 use super::tool_body::build_tool_call_body;
 
-/// The mark every tool call draws, whatever its state: grok-build's filled
-/// diamond. The state is carried by the mark's colour and never by swapping the
-/// glyph, so a call's row has the same shape before, while and after it runs.
-pub(super) const TOOL_MARK: &str = "◆";
+/// The arrow a chain's header shows while the pointer is over it or the chain
+/// is open. It takes the place of a mark: a folded chain draws two spaces, so
+/// the label never shifts when the pointer arrives.
+const CHAIN_ARROW: &str = "❯ ";
 
-/// The chrome before a folded run's aggregated label: grok-build's dotted
-/// diamond, drawn in the run's state colour (error, running or quiet).
-const VERB_GROUP_MARK: &str = "◈";
+/// The two spaces a chain's header keeps where its arrow goes, so the label
+/// starts at the same x whether the arrow is drawn or not.
+const CHAIN_INDENT: &str = "  ";
 
 /// The prefix the app-owned fold map uses for a folded run, so a group's fold
 /// state never collides with the call that anchors the run.
@@ -28,11 +28,6 @@ const VERB_GROUP_KEY_PREFIX: &str = "verb-group:";
 /// controls that enter and stop a child belong to the pane's strip, not to the
 /// reply the child was spawned from.
 pub(super) const TOOL_ROW_FONT_SIZE: f32 = 13.0;
-
-/// How far a collapsed call's mark is blended into the background. grok-build
-/// dims the accent of a collapsed tool diamond by half and keeps an open row's
-/// at full strength.
-const COLLAPSED_DIM: f32 = 0.5;
 
 /// Resolve a model [`ModelSpan`] (text + style) into a renderable [`TextSpan`]
 /// using the current theme colors. A link span also carries a click handler, so
@@ -87,47 +82,6 @@ fn recorded_diffstat(diff: &str) -> String {
     }
 }
 
-/// The colour a tool call's mark carries: the state, not the tool. Every call
-/// walks the same four states, and each one owns a colour a reader can tell
-/// apart at a glance — queued is quiet, work in flight is amber, a call that
-/// finished is green and a failure is red. The colour is the state; the mark
-/// never changes shape.
-fn tool_mark_token(status: ToolCallStatus) -> ColorToken {
-    match status {
-        ToolCallStatus::Pending => ColorToken::Muted,
-        ToolCallStatus::Running => ColorToken::Warning,
-        ToolCallStatus::Finished => ColorToken::Success,
-        ToolCallStatus::Error => ColorToken::Error,
-    }
-}
-
-/// The colour a call's mark is drawn in for a row with no live record: its
-/// family's shape and its persisted status.
-fn mark_token(call: &ToolCall, sub_agent: Option<&SubAgentRow>) -> ColorToken {
-    match sub_agent {
-        // A child's own record is the row's state, and its four statuses are
-        // the same four the tool-call path carries.
-        Some(record) => record.status_affordance().1,
-        None => tool_mark_token(call.status),
-    }
-}
-
-/// The mark's colour in `mode`: blended half into the background while the call
-/// is collapsed, at full strength once it is open. The rail keeps the undimmed
-/// colour, so an open call's edge is the state at full strength even though its
-/// mark is not.
-fn tool_mark_color(
-    token: ColorToken,
-    mode: ToolDisplayMode,
-    app: &crate::elements::AppContext,
-) -> ColorU {
-    let color = app.theme.color(token);
-    match mode {
-        ToolDisplayMode::Collapsed => color.mix(&app.theme.color(ColorToken::Bg), COLLAPSED_DIM),
-        _ => color,
-    }
-}
-
 /// The colour of the operand a row names: a path takes grok-build's warm
 /// orange, a command its yellow, a search's pattern and glob the success
 /// colour, and a row with no operand class the row's own text colour. A
@@ -153,22 +107,10 @@ fn tool_subject_color(
     }
 }
 
-/// The label colour in `mode`: the row's own text while the call is open, the
-/// quiet colour while it is collapsed — the same dimming grok-build applies to
-/// a folded entry's label.
-fn label_color(mode: ToolDisplayMode, app: &crate::elements::AppContext) -> ColorU {
-    match mode {
-        ToolDisplayMode::Collapsed => app.theme.color(ColorToken::Muted),
-        _ => app.theme.color(ColorToken::Text),
-    }
-}
-
-/// The buckets grok-build folds into an aggregated run header. The label-only
-/// kinds (`Command`, `EditFile`, `McpCall`, `OtherTool`) and a sub-agent spawn
-/// are deliberately absent: those calls render their own rows and end a run. A
-/// spawn draws the child it started — its quoted description and its status
-/// line — so folding it under a run header would hide the one row the user acts
-/// on.
+/// The buckets a chain's header summarises, using grok-build's vocabulary. A
+/// chain folds every tool family except a spawn and a question: a spawn draws
+/// the child it started — its description and status line — and a question is
+/// waiting on the user, so both render their own rows and end the chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VerbGroupKind {
     File,
@@ -179,6 +121,9 @@ enum VerbGroupKind {
     WebSearch,
     MemorySearch,
     IntegrationSearch,
+    Command,
+    EditFile,
+    McpCall,
 }
 
 impl VerbGroupKind {
@@ -187,28 +132,44 @@ impl VerbGroupKind {
     fn verb(self, running: bool) -> &'static str {
         let (past, present) = match self {
             Self::File | Self::Skill => ("Read", "Reading"),
-            Self::Search
-            | Self::WebSearch
-            | Self::MemorySearch
-            | Self::IntegrationSearch => ("Searched", "Searching"),
+            Self::Search | Self::WebSearch | Self::MemorySearch | Self::IntegrationSearch => {
+                ("Searched", "Searching")
+            }
             Self::Dir => ("Listed", "Listing"),
             Self::WebFetch => ("Fetched", "Fetching"),
+            Self::Command => ("Ran", "Running"),
+            Self::EditFile => ("Edited", "Editing"),
+            Self::McpCall => ("Called", "Calling"),
         };
-        if running { present } else { past }
+        if running {
+            present
+        } else {
+            past
+        }
     }
 
     /// The noun, pluralized by the bucket's count.
     fn noun(self, count: usize) -> &'static str {
         let (one, many) = match self {
-            Self::File => ("file", "files"),
+            Self::File | Self::EditFile => ("file", "files"),
             Self::Skill => ("skill", "skills"),
             Self::Search => ("pattern", "patterns"),
             Self::Dir => ("dir", "dirs"),
             Self::WebFetch | Self::WebSearch => ("website", "websites"),
             Self::MemorySearch => ("memory", "memories"),
-            Self::IntegrationSearch => ("MCP tool", "MCP tools"),
+            Self::IntegrationSearch | Self::McpCall => ("MCP tool", "MCP tools"),
+            Self::Command => ("command", "commands"),
         };
-        if count == 1 { one } else { many }
+        if count == 1 {
+            one
+        } else {
+            many
+        }
+    }
+
+    /// Whether the bucket totals a diffstat beside its count.
+    fn is_edit(self) -> bool {
+        self == Self::EditFile
     }
 }
 
@@ -238,9 +199,9 @@ fn run_step(call: &ToolCall, mode: ToolDisplayMode) -> RunStep {
     }
 }
 
-/// The bucket a call joins, read from the row's parsed family. `None` for the
-/// action kinds a run must not fold across: a command, an edit, a tool
-/// dispatch, a spawn (which draws its own row) or a call no family claims.
+/// The bucket a call joins, read from the row's parsed family. Every family has
+/// a bucket except a spawn (whose row carries the child) and a question (which
+/// is waiting on the user): those end the chain and draw their own row.
 fn verb_group_kind(call: &ToolCall) -> Option<VerbGroupKind> {
     let arguments: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
@@ -254,20 +215,21 @@ fn verb_group_kind(call: &ToolCall) -> Option<VerbGroupKind> {
         ToolKind::WebSearch => Some(VerbGroupKind::WebSearch),
         ToolKind::MemorySearch => Some(VerbGroupKind::MemorySearch),
         ToolKind::SearchTools => Some(VerbGroupKind::IntegrationSearch),
-        ToolKind::SubAgent
-        | ToolKind::Execute
-        | ToolKind::Create
-        | ToolKind::Delete
-        | ToolKind::Edit
-        | ToolKind::UseTool
-        | ToolKind::Ask
-        | ToolKind::Other => None,
+        ToolKind::Execute => Some(VerbGroupKind::Command),
+        ToolKind::Create | ToolKind::Delete | ToolKind::Edit => Some(VerbGroupKind::EditFile),
+        ToolKind::UseTool => Some(VerbGroupKind::McpCall),
+        // A call no family claims draws its own row: folding it would trade
+        // the only name it has for a count.
+        ToolKind::SubAgent | ToolKind::Ask | ToolKind::Other => None,
     }
 }
 
 /// Whether a member is still running.
 fn member_running(call: &ToolCall) -> bool {
-    matches!(call.status, ToolCallStatus::Pending | ToolCallStatus::Running)
+    matches!(
+        call.status,
+        ToolCallStatus::Pending | ToolCallStatus::Running
+    )
 }
 
 /// Whether a member failed.
@@ -275,15 +237,63 @@ fn member_failed(call: &ToolCall) -> bool {
     call.status == ToolCallStatus::Error
 }
 
-/// The aggregated label a folded run draws: buckets in first-appearance order,
-/// each `Verb N noun`, plus grok-build's ` · N failed` suffix. Running flips
-/// every bucket's tense, as one flag for the run rather than per member.
+/// One bucket of a chain's label: how many calls of a kind it holds, the
+/// distinct websites a web search reached, and the lines its edits touched.
+#[derive(Default)]
+struct ChainBucket {
+    kind: Option<VerbGroupKind>,
+    calls: usize,
+    sources: std::collections::HashSet<String>,
+    added: usize,
+    removed: usize,
+}
+
+/// The lines a recorded diff added and removed.
+fn diff_totals(diff: &str) -> (usize, usize) {
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for hunk in crate::elements::parse_unified_diff(diff) {
+        added += hunk.added();
+        removed += hunk.removed();
+    }
+    (added, removed)
+}
+
+/// The lines a call's change touched: its recorded diff when the harness
+/// carried one, else the diffstat the call's own arguments imply. The parse
+/// reads a replace's old and new text into the row's ` +A/-R` detail, which is
+/// the same count a recorded diff would state.
+fn call_diff_totals(call: &ToolCall) -> (usize, usize) {
+    if let Some(diff) = call.diff.as_deref() {
+        let totals = diff_totals(diff);
+        if totals.0 + totals.1 > 0 {
+            return totals;
+        }
+    }
+    let arguments: serde_json::Value =
+        serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
+    parse_diffstat(&tool_row(&call.name, &arguments, call.result.as_deref()).detail)
+        .unwrap_or((0, 0))
+}
+
+/// Read a row's ` +A/-R` detail back into its two counts.
+fn parse_diffstat(detail: &str) -> Option<(usize, usize)> {
+    let rest = detail.split('+').nth(1)?;
+    let (added, removed) = rest.split_once('/')?;
+    let removed = removed.strip_prefix('-')?;
+    Some((added.trim().parse().ok()?, removed.trim().parse().ok()?))
+}
+
+/// The aggregated label a folded chain draws: buckets in first-appearance order,
+/// each `Verb N noun`, an edit bucket's ` +A/-R` diffstat, and grok-build's
+/// ` · N failed` suffix. Running flips every bucket's tense, as one flag for the
+/// chain rather than per member.
 fn verb_group_label(
     calls: &[ToolCall],
     start: usize,
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
 ) -> (String, bool, usize) {
-    let mut buckets: Vec<(VerbGroupKind, usize)> = Vec::new();
+    let mut buckets: Vec<ChainBucket> = Vec::new();
     let mut running = false;
     let mut failed = 0usize;
     for (offset, call) in calls.iter().enumerate() {
@@ -301,13 +311,43 @@ fn verb_group_label(
         if member_failed(call) {
             failed += 1;
         }
-        match buckets.iter_mut().find(|(bucket, _)| *bucket == kind) {
-            Some((_, count)) => *count += 1,
-            None => buckets.push((kind, 1)),
+        let position = buckets
+            .iter()
+            .position(|bucket| bucket.kind == Some(kind))
+            .unwrap_or_else(|| {
+                buckets.push(ChainBucket {
+                    kind: Some(kind),
+                    ..ChainBucket::default()
+                });
+                buckets.len() - 1
+            });
+        let Some(bucket) = buckets.get_mut(position) else {
+            continue;
+        };
+        bucket.calls += 1;
+        if kind == VerbGroupKind::WebSearch {
+            if let Some(result) = call.result.as_deref() {
+                bucket
+                    .sources
+                    .extend(goble_core::harness::web_search_sources(result));
+            }
+        }
+        if kind.is_edit() {
+            let (added, removed) = call_diff_totals(call);
+            bucket.added += added;
+            bucket.removed += removed;
         }
     }
     let mut label = String::new();
-    for (index, (kind, count)) in buckets.iter().enumerate() {
+    for (index, bucket) in buckets.iter().enumerate() {
+        let Some(kind) = bucket.kind else {
+            continue;
+        };
+        let count = if kind == VerbGroupKind::WebSearch && !bucket.sources.is_empty() {
+            bucket.sources.len()
+        } else {
+            bucket.calls
+        };
         if index > 0 {
             label.push_str(", ");
         }
@@ -315,7 +355,10 @@ fn verb_group_label(
         label.push(' ');
         label.push_str(&count.to_string());
         label.push(' ');
-        label.push_str(kind.noun(*count));
+        label.push_str(kind.noun(count));
+        if kind.is_edit() && bucket.added + bucket.removed > 0 {
+            label.push_str(&format!(" +{}/-{}", bucket.added, bucket.removed));
+        }
     }
     (label, running, failed)
 }
@@ -367,7 +410,10 @@ pub(crate) fn tool_fold_targets(
     let mut targets = Vec::new();
     let mut index = 0usize;
     while index < tool_calls.len() {
-        if !matches!(run_step(&tool_calls[index], mode_of(index)), RunStep::Member(_)) {
+        if !matches!(
+            run_step(&tool_calls[index], mode_of(index)),
+            RunStep::Member(_)
+        ) {
             let key = tool_fold_key(&tool_calls[index], index);
             targets.push(ToolFoldTarget::Call { key, index });
             index += 1;
@@ -408,24 +454,26 @@ pub(crate) fn tool_fold_targets(
     targets
 }
 
-/// The folded run's header: grok-build's dotted diamond in the run's state
-/// colour and the bold aggregated label, with the failed suffix in the error
-/// colour. A click on the row opens or folds the whole run.
+/// The chain's header: the aggregated label inside outer parentheses, an arrow
+/// in place of a mark, and no band behind it. A closed chain reads quiet; the
+/// pointer or an open chain turns it white and brings the arrow in. The failed
+/// suffix stays in the error colour. A click opens or folds the whole chain.
 fn verb_group_header(
     label: &str,
-    running: bool,
     failed: usize,
     key: &str,
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    hover: &Rc<RefCell<Option<String>>>,
     app: &crate::elements::AppContext,
 ) -> Box<dyn Element> {
-    let token = if failed > 0 {
-        ColorToken::Error
-    } else if running {
-        ColorToken::Warning
+    let open = verb_group_open(fold, key);
+    let hovered = hover.borrow().as_deref() == Some(key);
+    let active = open || hovered;
+    let base = app.theme.color(if active {
+        ColorToken::Text
     } else {
-        ColorToken::Success
-    };
+        ColorToken::Muted
+    });
     let run = |text: String, color: ColorU, weight: FontWeight| -> TextSpan {
         TextSpan::plain(text)
             .with_color(color)
@@ -434,15 +482,12 @@ fn verb_group_header(
     };
     let mut spans = vec![
         run(
-            format!("{VERB_GROUP_MARK} "),
-            app.theme.color(token),
+            if active { CHAIN_ARROW } else { CHAIN_INDENT }.to_string(),
+            base,
             FontWeight::Regular,
         ),
-        run(
-            label.to_string(),
-            app.theme.color(ColorToken::Text),
-            FontWeight::Bold,
-        ),
+        run("(".to_string(), base, FontWeight::Regular),
+        run(label.to_string(), base, FontWeight::Bold),
     ];
     if failed > 0 {
         spans.push(run(
@@ -451,34 +496,40 @@ fn verb_group_header(
             FontWeight::Regular,
         ));
     }
+    spans.push(run(")".to_string(), base, FontWeight::Regular));
 
     let toggle = fold.clone();
     let key = key.to_string();
-    Chip::flat(
+    HoverRow::new(
         InlineText::new(spans)
             .with_font_size(TOOL_ROW_FONT_SIZE)
             .with_line_height(1.4)
             .finish(),
     )
-        .with_on_click(move || {
-            let mut folds = toggle.borrow_mut();
-            let open = folds.get(&key).copied() == Some(ToolDisplayMode::Expanded);
-            folds.insert(
-                key.clone(),
-                if open {
-                    ToolDisplayMode::Collapsed
-                } else {
-                    ToolDisplayMode::Expanded
-                },
-            );
-        })
-        .finish()
+    .with_quiet_hover()
+    .with_hover_key(hover.clone(), key.clone())
+    .with_on_click(move || {
+        let mut folds = toggle.borrow_mut();
+        let open = folds.get(&key).copied() == Some(ToolDisplayMode::Expanded);
+        folds.insert(
+            key.clone(),
+            if open {
+                ToolDisplayMode::Collapsed
+            } else {
+                ToolDisplayMode::Expanded
+            },
+        );
+    })
+    .finish()
 }
 
 /// One call drawn on its own: its header and the body its own fold calls for.
+/// `chain_open` is true for a member of a chain the user opened, which draws
+/// its label white whatever the member's own fold is.
 fn single_call_column(
     call: &ToolCall,
     index: usize,
+    chain_open: bool,
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
     sub_agents: &HashMap<String, SubAgentRow>,
     sub_agent_model: &str,
@@ -491,7 +542,17 @@ fn single_call_column(
     // own id (`parent_call_id` is the spawn call's id). It exists only for a
     // sub-agent-shaped call, so one lookup serves the row.
     let record = sub_agents.get(&call.id);
-    let header = tool_call_header(call, &key, fallback, mode, fold, record, sub_agent_model, app);
+    let header = tool_call_header(
+        call,
+        &key,
+        fallback,
+        mode,
+        chain_open,
+        fold,
+        record,
+        sub_agent_model,
+        app,
+    );
     // Stretch, so the header and the body are measured at the transcript's
     // width: a long command or path wraps inside the pane instead of running
     // past its right edge.
@@ -503,10 +564,7 @@ fn single_call_column(
     for row in build_tool_call_body(call, mode, record, app) {
         call_column = call_column.with_child(row);
     }
-    (
-        call_column.finish(),
-        mode == ToolDisplayMode::Collapsed,
-    )
+    (call_column.finish(), mode == ToolDisplayMode::Collapsed)
 }
 
 /// Tool invocations drawn as inline rows in the pager idiom: a status mark and
@@ -520,14 +578,14 @@ fn single_call_column(
 /// its shape starts in; the state lives in the app-owned `fold` map so it
 /// survives the per-frame rebuild, and clicking the header advances it.
 ///
-/// Consecutive folded calls that belong to a verb-groupable family stack into
-/// one run header, exactly as grok-build folds them: `◈ Read 3 files, Searched
-/// 1 pattern`. A command, edit or unclassified tool ends the run and keeps its
-/// own row. Opening the run shows its members, and a member the user opened
-/// stays visible without splitting the run.
+/// Consecutive folded calls stack into one chain, exactly as grok-build folds
+/// them: `(Ran 3 commands, Read 2 files, Edited 1 file +12/-3)`. A spawn and a
+/// question end the chain and keep their own rows. Opening the chain shows its
+/// members, and a member the user opened stays visible without splitting it.
 pub(super) fn build_tool_call_rows(
     tool_calls: &[ToolCall],
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    hover: &Rc<RefCell<Option<String>>>,
     sub_agents: &HashMap<String, SubAgentRow>,
     sub_agent_model: &str,
     app: &crate::elements::AppContext,
@@ -559,15 +617,15 @@ pub(super) fn build_tool_call_rows(
         // A transparent call — one the user opened — cannot anchor a run; it
         // keeps its own rows, and the next folded call starts a fresh run.
         if !matches!(run_step(&tool_calls[index], mode), RunStep::Member(_)) {
-            let (element, collapsed) =
-                single_call_column(
-                    &tool_calls[index],
-                    index,
-                    fold,
-                    sub_agents,
-                    sub_agent_model,
-                    app,
-                );
+            let (element, collapsed) = single_call_column(
+                &tool_calls[index],
+                index,
+                false,
+                fold,
+                sub_agents,
+                sub_agent_model,
+                app,
+            );
             column = push(column, element, collapsed);
             index += 1;
             continue;
@@ -598,12 +656,12 @@ pub(super) fn build_tool_call_rows(
 
         let group_key = verb_group_key(tool_calls, start);
         let open = verb_group_open(fold, &group_key);
-        let (label, running, failed) = verb_group_label(&tool_calls[start..end], start, fold);
+        let (label, _running, failed) = verb_group_label(&tool_calls[start..end], start, fold);
         let mut group = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(2.0)
             .with_child(verb_group_header(
-                &label, running, failed, &group_key, fold, app,
+                &label, failed, &group_key, fold, hover, app,
             ));
         // Folded, a run shows only its header — except for a member the user
         // already opened, which grok-build keeps on screen and transparent.
@@ -621,6 +679,7 @@ pub(super) fn build_tool_call_rows(
             let (element, _) = single_call_column(
                 &tool_calls[member],
                 member,
+                open,
                 fold,
                 sub_agents,
                 sub_agent_model,
@@ -662,11 +721,11 @@ fn sub_agent_detail(record: &SubAgentRow, model: &str) -> String {
     format!("· {doing}")
 }
 
-/// The row a call always draws: the rail while it is open, the status mark,
-/// then the call parsed into the words its family gives it
+/// The row a call draws: the call parsed into the words its family gives it
 /// ([`tool_row`]) — the bold verb, the operand its arguments carry and the dim
 /// detail its result states. A call is named by its tool only when no family
-/// claims it, so `read_file {"path":"src/lib.rs"}` draws `◆ Read src/lib.rs`.
+/// claims it. `chain_open` marks a member of a chain the user opened: it is
+/// indented under the chain's header and its label reads white.
 /// The row is clickable: a click advances that call's fold, the mouse arm of
 /// the same toggle.
 ///
@@ -678,15 +737,12 @@ pub(super) fn tool_call_header(
     key: &str,
     fallback: ToolDisplayMode,
     mode: ToolDisplayMode,
+    chain_open: bool,
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
     sub_agent: Option<&SubAgentRow>,
     sub_agent_model: &str,
     app: &crate::elements::AppContext,
 ) -> Box<dyn Element> {
-    // A live child's record is the row's state; the row's own shape is whatever
-    // the spawn call's family gives it.
-    let token = mark_token(call, sub_agent);
-    let mark = tool_mark_color(token, mode, app);
     let arguments: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
     let mut parsed = tool_row(&call.name, &arguments, call.result.as_deref());
@@ -703,19 +759,23 @@ pub(super) fn tool_call_header(
         // child is doing and how long it has been doing it. The chat states
         // the delegation and nothing else; the controls that enter and stop
         // the child belong to the pane's strip.
+        parsed.verb = "Agent ";
         parsed.subject = sub_agent_subject(record);
         parsed.detail = sub_agent_detail(record, sub_agent_model);
     } else if parsed.kind == ToolKind::SubAgent {
+        // grok-build names the spawned child's row by what it is, then the
+        // description the parent gave it.
+        parsed.verb = "Agent ";
         parsed.subject = match argument_str(&arguments, "description") {
             Some(description) => subagent_subject(description),
             None => call.name.clone(),
         };
     }
 
-    // The row is one line of runs: the mark, the verb in bold, the operand and
-    // the detail, each at its own colour and separated by the spaces they
-    // already carry. The row starts where prose starts — no rail and no inset
-    // — so a call reads as part of the reply rather than as a nested block.
+    // The row is one line of runs: the verb in bold, the operand and the
+    // detail, each at its own colour and separated by the spaces they already
+    // carry. A member of an open chain is indented under its header and read
+    // white; a stand-alone row starts where prose starts.
     // One wrapping flow rather than a row of runs: a long operand or detail
     // breaks inside the transcript's width, and an over-wide token breaks
     // inside it too, instead of being drawn past the pane's right edge.
@@ -725,20 +785,42 @@ pub(super) fn tool_call_header(
             .with_family(FontFamily::Mono)
             .with_weight(weight)
     };
-    let mut spans = vec![run(format!("{TOOL_MARK} "), mark, FontWeight::Regular)];
+    let mut spans = Vec::new();
+    if chain_open {
+        spans.push(run(
+            CHAIN_INDENT.to_string(),
+            app.theme.color(ColorToken::Muted),
+            FontWeight::Regular,
+        ));
+    }
     if !parsed.verb.is_empty() {
+        let token = if chain_open {
+            ColorToken::Text
+        } else {
+            match mode {
+                ToolDisplayMode::Collapsed => ColorToken::Muted,
+                _ => ColorToken::Text,
+            }
+        };
         spans.push(run(
             parsed.verb.to_string(),
-            label_color(mode, app),
+            app.theme.color(token),
             FontWeight::Bold,
         ));
     }
     if !parsed.subject.is_empty() {
         // The operand keeps its own colour while folded: it is the one thing a
-        // folded row is read for.
+        // folded row is read for. A member of an open chain reads white with
+        // the rest of the chain's own words; only a thought stays quiet, and a
+        // thought is never a member of a chain.
+        let color = if chain_open {
+            app.theme.color(ColorToken::Text)
+        } else {
+            tool_subject_color(parsed.kind, mode, app)
+        };
         spans.push(run(
             parsed.subject.clone(),
-            tool_subject_color(parsed.kind, mode, app),
+            color,
             FontWeight::Regular,
         ));
     }
@@ -777,11 +859,9 @@ pub(super) fn tool_body_row(
 ) -> Box<dyn Element> {
     // Inline flow, like the header: a long command or path breaks at the
     // transcript's width, and an over-wide token breaks inside it.
-    InlineText::new(vec![
-        TextSpan::plain(text.into())
-            .with_color(app.theme.color(color))
-            .with_family(FontFamily::Mono),
-    ])
+    InlineText::new(vec![TextSpan::plain(text.into())
+        .with_color(app.theme.color(color))
+        .with_family(FontFamily::Mono)])
     .with_font_size(TOOL_ROW_FONT_SIZE)
     .with_line_height(1.4)
     .finish()
@@ -801,7 +881,9 @@ pub(super) fn tool_body_span_row(
             .with_line_height(1.4)
             .finish(),
     )
-    .with_background(crate::elements::Fill::Solid(app.theme.color(ColorToken::Bg)))
+    .with_background(crate::elements::Fill::Solid(
+        app.theme.color(ColorToken::Bg),
+    ))
     .finish()
 }
 

@@ -155,6 +155,13 @@ impl ChatView {
         self
     }
 
+    /// Set the app-owned cell that names the tool row under the pointer, so a
+    /// chain's header can draw its arrow without a hover band behind it.
+    pub fn with_tool_hover(mut self, tool_hover: Rc<RefCell<Option<String>>>) -> Self {
+        self.tool_hover = tool_hover;
+        self
+    }
+
     /// Set the live sub-agent records for this pane's transcript, keyed by the
     /// id of the tool call that spawned each child. The map is rebuilt from the
     /// app's S4 events every frame, so a running child's row re-draws with it.

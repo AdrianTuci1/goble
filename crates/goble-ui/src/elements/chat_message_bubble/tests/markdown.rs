@@ -118,8 +118,8 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
     );
     assert_eq!(header.0, "Thought", "the finished label is exactly grok-build's");
     assert!(
-        texts.iter().any(|(text, _, _)| text == "◆ "),
-        "a thinking row wears the tool diamond while its header is visible, got {texts:?}"
+        !texts.iter().any(|(text, _, _)| text == "◆ " || text == "◈ "),
+        "a thinking row draws no tool mark, got {texts:?}"
     );
     assert!(
         !texts

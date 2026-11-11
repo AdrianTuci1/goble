@@ -91,18 +91,17 @@ fn a_tool_row_draws_a_bold_verb_and_an_accented_operand() {
     );
 }
 
-/// A call with nothing to show collapses to a single row — the status mark and
-/// the tool's own name, on one baseline, with no argument or result row. `ls`
-/// carries no path here, so the parse has no operand to name and falls back to
-/// the tool, exactly as it does for a call no family claims.
+/// A call with nothing to show collapses to a single row — the tool's own
+/// name, on one baseline, with no argument or result row. `ls` carries no path
+/// here, so the parse has no operand to name and falls back to the tool,
+/// exactly as it does for a call no family claims.
 ///
-/// The mark is the one diamond every state draws, coloured by the state: a
-/// collapsed call's is the quiet colour, because a finished `ls` is a read-line
-/// tool and not the success a finished command announces.
+/// The row carries no status mark: a resting row is quiet, and the pointer
+/// brightens it. Its state is its words and its colour, not a second glyph.
 #[test]
 fn collapsed_tool_call_renders_in_one_row() {
-    let (commands, _) =
-        paint_tool_calls(vec![call("ls", "{}", ToolCallStatus::Finished, None)]);
+    let app = AppContext::default();
+    let (commands, _) = paint_tool_calls(vec![call("ls", "{}", ToolCallStatus::Finished, None)]);
 
     assert_eq!(
         drawn_rows(&commands),
@@ -111,10 +110,15 @@ fn collapsed_tool_call_renders_in_one_row() {
     );
     assert_eq!(
         drawn_row_texts(&commands),
-        vec!["◆ ls".to_string()],
-        "only the status mark and the tool name are drawn"
+        vec!["ls".to_string()],
+        "only the tool name is drawn"
     );
-    assert_eq!(drawn_texts(&commands).len(), 2, "one row of two runs");
+    assert_eq!(drawn_texts(&commands).len(), 1, "one row of one run");
+    assert_eq!(
+        text_runs(&commands)[0].1,
+        app.theme.color(ColorToken::Muted),
+        "a resting row reads quiet"
+    );
 }
 
 /// A tool whose definition declares no shape (here `list_entities`) expands in
@@ -143,7 +147,7 @@ fn expanded_generic_tool_call_draws_its_result_and_never_prints_json() {
     );
     assert_eq!(
         drawn_row_texts(&commands),
-        vec!["◆ List Entities agent".to_string(), "2 entities".to_string()],
+        vec!["List Entities agent".to_string(), "2 entities".to_string()],
         "the row and its result are the whole body, got {texts:?}"
     );
     assert!(
@@ -178,7 +182,9 @@ fn an_integration_tools_arguments_are_named_not_printed() {
         "a nested argument is named by how much it holds, got {rows:?}"
     );
     assert!(
-        !rows.iter().any(|row| row.contains('{') || row.contains('[')),
+        !rows
+            .iter()
+            .any(|row| row.contains('{') || row.contains('[')),
         "no row prints a payload in braces, got {rows:?}"
     );
     assert!(
@@ -420,8 +426,12 @@ fn folded_read_draws_one_line() {
     );
     assert_eq!(
         drawn_texts(&commands),
-        vec!["◈ ".to_string(), "Read 1 file".to_string()],
-        "the folded run draws only its aggregated label"
+        vec![
+            "  (".to_string(),
+            "Read 1 file".to_string(),
+            ")".to_string()
+        ],
+        "the folded run draws only its aggregated label in outer parentheses"
     );
 
     let (commands, _) = paint_tool_calls_with_run_open(calls, 0);
@@ -435,8 +445,8 @@ fn folded_read_draws_one_line() {
         "the file body is hidden while the member is folded, got {texts:?}"
     );
 
-    // grok-build folds a member row whole: the verb and its path are both
-    // muted, and only the verb is bold.
+    // A member of a chain the user opened reads white whole — the verb and its
+    // path — while a folded row is muted.
     let app = AppContext::default();
     let run = |needle: &str| {
         commands.iter().find_map(|command| match command {
@@ -451,18 +461,19 @@ fn folded_read_draws_one_line() {
     };
     assert_eq!(
         run("Read "),
-        Some((app.theme.color(ColorToken::Muted), FontWeight::Bold)),
-        "a folded verb is muted and bold"
+        Some((app.theme.color(ColorToken::Text), FontWeight::Bold)),
+        "a member of an open chain reads white and bold"
     );
     assert_eq!(
         run("src/lib.rs"),
-        Some((app.theme.color(ColorToken::Muted), FontWeight::Regular)),
-        "a folded path is muted like the rest of the row"
+        Some((app.theme.color(ColorToken::Text), FontWeight::Regular)),
+        "the member's path reads white inside an open chain"
     );
 }
 
-/// A command starts folded: its header carries the command and its output
-/// is not drawn at all.
+/// A command starts folded into its chain: the header states how many commands
+/// ran, and neither the command line nor its output is drawn. Opening the chain
+/// brings the command row in.
 #[test]
 fn folded_command_hides_its_output() {
     let (commands, _) = paint_tool_calls(vec![call(
@@ -479,8 +490,12 @@ fn folded_command_hides_its_output() {
     );
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|t| t == "cargo test -p goble-ui"),
-        "the folded command's header carries the command, got {texts:?}"
+        texts.iter().any(|t| t == "Ran 1 command"),
+        "the folded command's header counts the command, got {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("cargo test")),
+        "the command line is hidden while folded, got {texts:?}"
     );
     assert!(
         !texts.iter().any(|t| t.contains("test result")),
@@ -488,8 +503,8 @@ fn folded_command_hides_its_output() {
     );
 }
 
-/// An edit starts folded carrying its `+N/-M` diffstat, and its hunks are not
-/// drawn until it is opened.
+/// An edit starts folded carrying its `+N/-M` diffstat on the aggregated
+/// label, and its hunks are not drawn until it is opened.
 #[test]
 fn folded_edit_shows_its_diffstat() {
     let (commands, _) = paint_tool_calls(vec![call(
@@ -502,14 +517,14 @@ fn folded_edit_shows_its_diffstat() {
     let rows = drawn_row_texts(&commands);
     let header = rows
         .iter()
-        .find(|row| row.contains("Edit"))
+        .find(|row| row.contains("Edited"))
         .unwrap_or_else(|| panic!("the folded edit draws its row, got {rows:?}"));
     assert!(
-        header.contains("src/lib.rs"),
-        "the folded edit's header carries the path, got {header:?}"
+        header.contains("Edited 1 file"),
+        "the folded edit's header counts the file, got {header:?}"
     );
     assert!(
-        header.ends_with("+1/-1"),
+        header.ends_with("+1/-1)"),
         "the folded edit's header carries its diffstat, got {header:?}"
     );
     assert!(
@@ -1158,8 +1173,8 @@ fn web_search_call_shows_the_query_and_its_sources() {
     );
 }
 
-/// A tool row starts where prose starts: no left rail, in either fold, and
-/// the mark is the row's first run. The row and its body read as part of the
+/// A tool row starts where prose starts: no left rail, in either fold, and its
+/// first run is the row's own text. The row and its body read as part of the
 /// reply rather than as a nested block.
 #[test]
 fn a_tool_row_aligns_with_the_text_around_it() {
@@ -1207,11 +1222,11 @@ fn a_tool_row_aligns_with_the_text_around_it() {
             })
         };
         let prose = origin_x("Prose starts here.").expect("the prose is drawn");
-        let mark = commands
+        let row_start = commands
             .iter()
             .find_map(|command| match command {
                 RenderCommand::DrawText { text, origin, .. }
-                    if text.starts_with("◆ ") || text.starts_with("◈ ") =>
+                    if text.starts_with("  (") || text.starts_with("Read ") =>
                 {
                     Some(origin.x)
                 }
@@ -1219,13 +1234,13 @@ fn a_tool_row_aligns_with_the_text_around_it() {
             })
             .unwrap_or_else(|| {
                 panic!(
-                    "{mode:?}: the row's mark is drawn: {:?}",
+                    "{mode:?}: the row's own text is drawn: {:?}",
                     drawn_texts(&commands)
                 )
             });
         assert!(
-            (mark - prose).abs() < 0.5,
-            "{mode:?}: the tool row starts in the prose column, but the mark is at {mark} and prose at {prose}"
+            (row_start - prose).abs() < 0.5,
+            "{mode:?}: the tool row starts in the prose column, but its text is at {row_start} and prose at {prose}"
         );
         assert!(
             !drawn_texts(&commands).iter().any(|text| text == "┃ "),
@@ -1235,42 +1250,107 @@ fn a_tool_row_aligns_with_the_text_around_it() {
     }
 }
 
-/// The state is the mark's colour, and it is dimmed while the call is folded.
-/// An open call's mark is at full strength, so the fold and the state read off
-/// the same row without either of them being a second glyph.
+/// A chain header reads quiet while it rests and white while it is selected.
+/// Selecting it — by opening the chain or by putting the pointer over it —
+/// brings the arrow in and brightens the label, with no band behind the row.
 #[test]
-fn the_mark_is_dimmed_while_the_call_is_folded() {
+fn the_chain_label_reads_quiet_until_selected() {
     let app = AppContext::default();
-    let call = || {
-        call(
-            "run_command",
-            r#"{"command":"ls"}"#,
+    let calls = || {
+        vec![call(
+            "read_file",
+            r#"{"path":"src/lib.rs"}"#,
             ToolCallStatus::Finished,
-            Some("file.txt"),
-        )
+            Some("fn main() {}\n"),
+        )]
     };
-    let mark = |commands: &[RenderCommand]| {
+    let label_color = |commands: &[RenderCommand]| -> crate::color::ColorU {
         text_runs(commands)
             .into_iter()
-            .find(|(text, _, _, _)| text == "◆ ")
-            .expect("the mark is drawn")
+            .find(|(text, _, _, _)| text == "Read 1 file")
+            .expect("the chain's label is drawn")
             .1
     };
+    let hover_bands = |commands: &[RenderCommand]| -> usize {
+        commands
+            .iter()
+            .filter(|command| {
+                matches!(command, RenderCommand::FillRect { color, .. } if *color == app.theme.color(ColorToken::Hover))
+            })
+            .count()
+    };
 
-    let (folded, _) = paint_tool_calls(vec![call()]);
-    let (open, _) = paint_tool_calls_with_fold(vec![call()], Some(ToolDisplayMode::Expanded));
-    let success = app.theme.color(ColorToken::Success);
-    assert_eq!(mark(&open), success, "an open call's mark is at full strength");
+    let (resting, _) = paint_tool_calls(calls());
     assert_eq!(
-        mark(&folded),
-        success.mix(&app.theme.color(ColorToken::Bg), 0.5),
-        "a folded call's mark is blended half into the background"
+        label_color(&resting),
+        app.theme.color(ColorToken::Muted),
+        "a resting chain reads quiet"
+    );
+    let resting_texts = drawn_texts(&resting);
+    assert!(
+        resting_texts.iter().any(|text| text == "  ("),
+        "a resting chain keeps the arrow's space, got {resting_texts:?}"
+    );
+    assert!(
+        !resting_texts.iter().any(|text| text.contains('❯')),
+        "the arrow appears only once the row is selected, got {resting_texts:?}"
+    );
+    assert_eq!(hover_bands(&resting), 0, "a chain row paints no band");
+
+    let (open, _) = paint_tool_calls_with_run_open(calls(), 0);
+    assert_eq!(
+        label_color(&open),
+        app.theme.color(ColorToken::Text),
+        "an open chain reads white"
+    );
+    let open_texts = drawn_texts(&open);
+    assert!(
+        open_texts.iter().any(|text| text.contains("❯ (")),
+        "an open chain draws its arrow, got {open_texts:?}"
+    );
+
+    // The pointer brightens a closed chain the same way, through the app's
+    // own hover cell: the row's paint reports it and the next frame builds
+    // the arrow.
+    let hovered: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    *hovered.borrow_mut() = Some(run_key(&calls(), 0));
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(calls())
+        .with_tool_hover(Rc::clone(&hovered));
+    bubble.layout(
+        SizeConstraint::loose(vec2f(400.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let hovered_commands = paint_ctx
+        .renderer
+        .take()
+        .map(|renderer| renderer.commands().to_vec())
+        .unwrap_or_default();
+    assert_eq!(
+        label_color(&hovered_commands),
+        app.theme.color(ColorToken::Text),
+        "the chain under the pointer reads white while closed"
+    );
+    assert!(
+        drawn_texts(&hovered_commands)
+            .iter()
+            .any(|text| text.contains("❯ (")),
+        "the chain under the pointer draws its arrow"
+    );
+    assert!(
+        !drawn_texts(&hovered_commands)
+            .iter()
+            .any(|text| text == "src/lib.rs"),
+        "a bright chain stays closed until it is clicked"
     );
 }
 
-/// The row is drawn at 13 px, the fold mark included, and its retracted and
-/// open shapes draw the same text: the controls that enter and stop a child
-/// live in the pane's strip, so the row owns no action of its own.
+/// The row is drawn at 13 px, and its retracted and open shapes draw the same
+/// text: the controls that enter and stop a child live in the pane's strip, so
+/// the row owns no action of its own.
 #[test]
 fn a_sub_agent_row_is_thirteen_px_with_no_action_text() {
     let call = spawn_call(ToolCallStatus::Running);
@@ -1290,7 +1370,11 @@ fn a_sub_agent_row_is_thirteen_px_with_no_action_text() {
         .into_iter()
         .map(|(text, _, _, size)| (text, size))
         .collect();
-    assert_eq!(sizes.get("◆ "), Some(&13.0), "the row itself stays 13 px");
+    assert_eq!(
+        sizes.get("Agent "),
+        Some(&13.0),
+        "the row itself stays 13 px"
+    );
     assert!(
         !sizes.contains_key("open child"),
         "the row draws no action, got {sizes:?}"
@@ -1305,17 +1389,16 @@ fn a_sub_agent_row_is_thirteen_px_with_no_action_text() {
         .into_iter()
         .map(|(text, _, _, size)| (text, size))
         .collect();
-    assert_eq!(sizes.get("◆ "), Some(&13.0), "an open row stays 13 px");
+    assert_eq!(sizes.get("Agent "), Some(&13.0), "an open row stays 13 px");
     assert!(
         !sizes.contains_key("open child"),
         "an open row draws no action either, got {sizes:?}"
     );
 }
 
-/// Consecutive folded calls of the verb-groupable families stack into one
+/// Consecutive folded calls of every groupable family stack into one
 /// aggregated header, in first-appearance order, with the counts and plural
-/// nouns grok-build uses. A command breaks the run and keeps its own row, and
-/// the calls after it start a fresh run.
+/// nouns grok-build uses. Commands fold in with the rest.
 #[test]
 fn consecutive_groupable_calls_stack_into_one_run_header() {
     let mut calls = vec![
@@ -1357,19 +1440,12 @@ fn consecutive_groupable_calls_stack_into_one_run_header() {
     }
     let (commands, _) = paint_tool_calls(calls);
     let rows = drawn_row_texts(&commands);
-
-    assert!(
-        rows.iter()
-            .any(|row| row == "◈ Read 1 file, Searched 1 pattern, Listed 1 dir"),
-        "the run folds in first-appearance order, got {rows:?}"
-    );
-    assert!(
-        rows.iter().any(|row| row == "◆ Run cargo test"),
-        "a command breaks the run and keeps its own row, got {rows:?}"
-    );
-    assert!(
-        rows.iter().any(|row| row == "◈ Read 1 file"),
-        "the call after the command starts a fresh run, got {rows:?}"
+    // The aggregated label is longer than the test's pane, so it wraps; joining
+    // the wrapped rows reads the whole header.
+    assert_eq!(
+        rows.join(" "),
+        "  (Read 2 files, Searched 1 pattern, Listed 1 dir, Ran 1 command)",
+        "the run folds every family in first-appearance order, got {rows:?}"
     );
     assert!(
         !drawn_texts(&commands).iter().any(|text| text == "src/a.rs"),
@@ -1406,17 +1482,17 @@ fn a_running_run_uses_the_present_tense_and_counts_failures() {
     let rows = drawn_row_texts(&commands);
     assert_eq!(
         rows,
-        vec!["◈ Reading 3 files · 1 failed".to_string()],
+        vec!["  (Reading 3 files · 1 failed)".to_string()],
         "one header states the run's tense and failures"
     );
-    let marked = text_runs(&commands)
+    let failed = text_runs(&commands)
         .into_iter()
-        .find(|(text, _, _, _)| text == "◈ ")
-        .expect("the run draws its chrome");
+        .find(|(text, _, _, _)| text.starts_with(" · "))
+        .expect("the failure suffix is drawn");
     assert_eq!(
-        marked.1,
+        failed.1,
         app.theme.color(ColorToken::Error),
-        "a run with a failure carries the error accent"
+        "a run with a failure carries the error accent on its count"
     );
 }
 
@@ -1457,8 +1533,16 @@ fn an_opened_member_keeps_its_body_inside_the_folded_run() {
     );
     let rows = drawn_row_texts(&commands);
     assert!(
-        rows.iter().any(|row| row == "◈ Read 2 files"),
+        rows.iter().any(|row| row.contains("(Read 2 files)")),
         "the header counts the folded members around the opened one, got {rows:?}"
+    );
+    let member = rows
+        .iter()
+        .find(|row| row.contains("src/b.rs"))
+        .unwrap_or_else(|| panic!("the opened member draws its row, got {rows:?}"));
+    assert!(
+        member.starts_with("Read "),
+        "the opened member draws its own row inside the folded chain, got {member:?}"
     );
     assert!(
         rows.iter().any(|row| row.contains("fn b()")),
@@ -1490,10 +1574,7 @@ fn tool_rows_underline_nothing_they_did_not_receive() {
         &app,
     );
     assert_eq!(spans.len(), 1);
-    assert!(
-        !spans[0].underline,
-        "a plain output line is not underlined"
-    );
+    assert!(!spans[0].underline, "a plain output line is not underlined");
 
     let emitted = TerminalLine {
         text: "underlined".to_string(),

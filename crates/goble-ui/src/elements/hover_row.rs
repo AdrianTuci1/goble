@@ -28,6 +28,10 @@ pub struct HoverRow {
     selected: bool,
     padding: EdgeInsets,
     corner_radius: f32,
+    /// Whether the row paints its hover band. A row whose own content changes
+    /// under the pointer (a tool row that shows its arrow, say) turns the band
+    /// off and carries the hover in its content instead.
+    hover_highlight: bool,
     /// The app's own cell the row names itself in while the pointer is over it,
     /// and the key it writes there. See [`Self::with_hover_key`].
     hover_key: Option<(Rc<RefCell<Option<String>>>, String)>,
@@ -44,6 +48,7 @@ impl HoverRow {
             selected: false,
             padding: EdgeInsets::uniform(0.0),
             corner_radius: 0.0,
+            hover_highlight: true,
             hover_key: None,
             on_click: None,
             state: InteractiveState::default(),
@@ -69,6 +74,14 @@ impl HoverRow {
     /// rather than a slice of the panel.
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = radius;
+        self
+    }
+
+    /// Keep the row's hover out of its paint: no band, no selected fill. The
+    /// row still reports its hover through [`Self::with_hover_key`], which is
+    /// what a row whose content itself answers the pointer needs.
+    pub fn with_quiet_hover(mut self) -> Self {
+        self.hover_highlight = false;
         self
     }
 
@@ -139,7 +152,9 @@ impl Element for HoverRow {
             }
         }
         if let Some(bounds) = bounds {
-            let background = if self.selected {
+            let background = if !self.hover_highlight {
+                None
+            } else if self.selected {
                 Some(ColorToken::Selected)
             } else if hovered {
                 Some(ColorToken::Hover)
@@ -259,6 +274,37 @@ mod tests {
             "the hovered row draws its own band {band:?}: {:?}",
             bands(&over)
         );
+    }
+
+    /// A quiet row answers the pointer in its own content: it reports the hover
+    /// into the app's cell and paints no band, so a tool row can show its arrow
+    /// without the list highlight appearing behind the text.
+    #[test]
+    fn a_quiet_row_reports_hover_without_painting_a_band() {
+        let app = AppContext::default();
+        let cell = Rc::new(RefCell::new(None));
+        let mut row = row(Text::new("Ran 2 commands").finish())
+            .with_quiet_hover()
+            .with_hover_key(Rc::clone(&cell), "verb-group:x");
+
+        let mut over = PaintContext::new(Renderer::new());
+        over.cursor_inside = true;
+        over.cursor_position = vec2f(10.0, 10.0);
+        let band = paint(&mut row, &mut over, &app);
+        assert_eq!(
+            cell.borrow().as_deref(),
+            Some("verb-group:x"),
+            "the row still names itself while the pointer is over it"
+        );
+        let fills = over
+            .renderer
+            .as_ref()
+            .expect("renderer")
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, RenderCommand::FillRect { .. }))
+            .count();
+        assert_eq!(fills, 0, "a quiet row paints no band over {band:?}");
     }
 
     /// A rounded row paints its highlight with the given corner radius, which is

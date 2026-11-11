@@ -267,6 +267,9 @@ pub struct UiSnapshot {
     /// keyed by the call's id; shared with app state so a fold survives the
     /// per-frame rebuild.
     pub tool_fold: Rc<RefCell<HashMap<String, goble_ui::ToolDisplayMode>>>,
+    /// The tool row under the pointer, set by the row's own paint; the next
+    /// frame draws that row's arrow and white label.
+    pub tool_hover: Rc<RefCell<Option<String>>>,
     /// Whole-transcript terminal filters (open flag + selected filter) keyed by
     /// pane id, so each pty/agent pane keeps its own filter bar.
     pub terminal_global_filters: HashMap<u64, TerminalFilter>,

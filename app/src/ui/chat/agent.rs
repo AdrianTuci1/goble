@@ -399,6 +399,7 @@ pub fn build_agent_chat(
         .with_reasoning_expanded(state.reasoning_expanded.clone())
         // The app-owned tool-call fold map: a folded call survives the rebuild.
         .with_tool_fold(state.tool_fold.clone())
+        .with_tool_hover(state.tool_hover.clone())
         // This pane's own filter bar state (seeded per pane before the
         // snapshot), so opening it in one pane leaves the siblings alone.
         .with_global_terminal_filter(state.terminal_global_filters.get(&pane_id).cloned())

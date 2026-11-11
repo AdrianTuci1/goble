@@ -47,19 +47,17 @@ fn sub_agent_call_shows_its_own_rows() {
 /// doing — and an ended one keeps its terminal phrase, with the elapsed time
 /// inside it. The row carries no controls: the pane's strip owns those.
 ///
-/// The mark itself does not change with the status: every row draws the same
-/// diamond, and the status is the colour it is drawn in. A live child is not a
-/// spinner and an ended one is not a different shape.
+/// The row carries no status mark either: its terminal word and detail state
+/// where the child is, and the row reads as part of the chain rather than as a
+/// separate kind of line.
 #[test]
 fn each_sub_agent_status_draws_its_own_line() {
-    let app = AppContext::default();
     let cases = [
         (
             SubAgentRowStatus::Running,
             "reading",
             Duration::from_millis(4500),
             None,
-            ColorToken::Warning,
             "running: “audit the migration” · Responding",
         ),
         (
@@ -67,7 +65,6 @@ fn each_sub_agent_status_draws_its_own_line() {
             "",
             Duration::from_secs(43),
             Some("migration audited"),
-            ColorToken::Success,
             "completed in 43s",
         ),
         (
@@ -75,7 +72,6 @@ fn each_sub_agent_status_draws_its_own_line() {
             "",
             Duration::from_secs(12),
             Some("child turn failed"),
-            ColorToken::Error,
             "failed in 12s · child turn failed",
         ),
         (
@@ -83,11 +79,10 @@ fn each_sub_agent_status_draws_its_own_line() {
             "",
             Duration::from_secs(5),
             Some("stopped by the user"),
-            ColorToken::Muted,
             "cancelled in 5.0s",
         ),
     ];
-    for (status, activity, elapsed, outcome, token, line) in cases {
+    for (status, activity, elapsed, outcome, line) in cases {
         let call = spawn_call(ToolCallStatus::Finished);
         let record = record("conv-child-1", status, activity, elapsed, outcome);
         // A spawn call draws its own row, collapsed by default: no run has to be
@@ -100,13 +95,13 @@ fn each_sub_agent_status_draws_its_own_line() {
         let rows = drawn_row_texts(&commands);
         let row = rows
             .iter()
-            .find(|row| row.contains("Subagent"))
+            .find(|row| row.contains("Agent "))
             .unwrap_or_else(|| panic!("status {status:?} draws its row, got {rows:?}"));
-        // One ruler row: the status mark, the verb, the child and what it is
-        // doing, with no body and no card.
+        // One ruler row: the verb, the child and what it is doing, with no
+        // body and no card.
         assert!(
-            row.starts_with("◆ "),
-            "status {status:?} draws the one diamond mark, got {row:?}"
+            row.starts_with("Agent "),
+            "status {status:?} names the spawned child, got {row:?}"
         );
         assert!(
             row.contains("“audit the migration”"),
@@ -120,34 +115,12 @@ fn each_sub_agent_status_draws_its_own_line() {
             !row.contains("Stop") && !row.contains("open child"),
             "status {status:?} draws no controls of its own, got {row:?}"
         );
-        assert!(
-            mark_color(&commands, folded_mark(&app, token)),
-            "status {status:?} is carried by the mark's colour, {token:?}"
-        );
         assert_eq!(
-            rows.iter().filter(|row| row.starts_with("◆ ")).count(),
+            rows.iter().filter(|row| row.starts_with("Agent ")).count(),
             1,
-            "the collapsed call draws one marked row, got {rows:?}"
+            "the collapsed call draws one row, got {rows:?}"
         );
     }
-}
-
-/// The colour a collapsed row's mark is drawn in: the status's own colour
-/// blended half into the background. The rows under test are folded, so the
-/// state reads through the dimming rather than beside it.
-fn folded_mark(app: &AppContext, token: ColorToken) -> crate::color::ColorU {
-    app.theme
-        .color(token)
-        .mix(&app.theme.color(ColorToken::Bg), 0.5)
-}
-
-/// Whether a run of the mark is drawn in `color`. The mark is the row's first
-/// run, so the status a row reports is the colour at the head of its line.
-fn mark_color(commands: &[RenderCommand], color: crate::color::ColorU) -> bool {
-    commands.iter().any(|command| match command {
-        RenderCommand::DrawText { text, color: drawn, .. } => text == "◆ " && *drawn == color,
-        _ => false,
-    })
 }
 
 /// A running child's row states what the child is doing and the model it is
@@ -171,10 +144,10 @@ fn a_running_sub_agent_row_states_responding_and_the_panes_model() {
     let rows = drawn_row_texts(&paint_bubble_at(&mut bubble, &app, 800.0));
     let row = rows
         .iter()
-        .find(|row| row.contains("Subagent"))
+        .find(|row| row.contains("Agent "))
         .unwrap_or_else(|| panic!("the running row is drawn, got {rows:?}"));
     assert!(
-        row.contains("Subagent running: “audit the migration” · Responding (deepseek)"),
+        row.contains("Agent running: “audit the migration” · Responding (deepseek)"),
         "the row names the delegation and the model, got {row:?}"
     );
     assert!(
@@ -251,7 +224,7 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
     let paint = |bubble: &mut ChatMessageBubble| paint_bubble_at(bubble, &app, 800.0);
     let header_click = |bubble: &mut ChatMessageBubble| {
         let commands = paint(bubble);
-        let origin = run_origin(&commands, "Subagent ");
+        let origin = run_origin(&commands, "Agent ");
         click_at(bubble, &app, origin + vec2f(2.0, 4.0));
     };
 
@@ -259,7 +232,7 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
     // the child in quotes and the record's line are the whole folded shape.
     let folded = drawn_row_texts(&paint(&mut bubble));
     assert_eq!(
-        folded.iter().filter(|row| row.contains("Subagent")).count(),
+        folded.iter().filter(|row| row.contains("Agent ")).count(),
         1,
         "a collapsed spawn call draws its own header line, got {folded:?}"
     );
@@ -329,7 +302,7 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
     assert_eq!(
         drawn_row_texts(&paint(&mut bubble))
             .iter()
-            .filter(|row| row.contains("Subagent"))
+            .filter(|row| row.contains("Agent "))
             .count(),
         1,
         "folded again the header is one line"
@@ -366,7 +339,9 @@ fn a_sub_agent_row_draws_no_controls_of_its_own() {
     ] {
         let texts = texts_for(status);
         assert!(
-            !texts.iter().any(|text| text == "Stop" || text == "open child"),
+            !texts
+                .iter()
+                .any(|text| text == "Stop" || text == "open child"),
             "a {status:?} row draws no controls, got {texts:?}"
         );
     }
@@ -376,39 +351,45 @@ fn a_sub_agent_row_draws_no_controls_of_its_own() {
     let (commands, _) = paint_sub_agent(vec![call], HashMap::new(), None);
     let texts = drawn_texts(&commands);
     assert!(
-        !texts.iter().any(|text| text == "Stop" || text == "open child"),
+        !texts
+            .iter()
+            .any(|text| text == "Stop" || text == "open child"),
         "a row with no record draws no controls, got {texts:?}"
     );
 }
 
-/// The status affordance is read from the persisted status: one mark, drawn in
-/// the colour the status carries, and no result text is inspected to infer it.
+/// Every call draws one quiet row whatever its status. The row carries no
+/// status glyph: its words and its colour state where it is, and a resting row
+/// reads in the quiet colour. A finished command folds into its chain header
+/// the same way.
 #[test]
-fn status_affordance_reflects_the_persisted_status() {
+fn a_resting_row_carries_no_status_mark() {
     let app = AppContext::default();
-    let cases = [
-        (ToolCallStatus::Pending, ColorToken::Muted),
-        (ToolCallStatus::Running, ColorToken::Warning),
-        (ToolCallStatus::Finished, ColorToken::Success),
-        (ToolCallStatus::Error, ColorToken::Error),
-    ];
-    for (status, token) in cases {
+    for status in [
+        ToolCallStatus::Pending,
+        ToolCallStatus::Running,
+        ToolCallStatus::Finished,
+        ToolCallStatus::Error,
+    ] {
         let (commands, _) = paint_tool_calls(vec![call("ls", "{}", status, None)]);
-        // The mark is drawn with the row's trailing space. Every call carries
-        // its state's colour, whatever tool it is.
+        assert_eq!(
+            drawn_row_texts(&commands),
+            vec!["ls".to_string()],
+            "status {status:?} draws the tool's own words"
+        );
+        let runs = text_runs(&commands);
         assert!(
-            mark_color(&commands, folded_mark(&app, token)),
-            "status {status:?} draws the mark in {token:?}"
+            runs.iter()
+                .all(|(text, _, _, _)| text != "◆ " && text != "◈ "),
+            "status {status:?} draws no mark, got {runs:?}"
         );
         assert_eq!(
-            drawn_texts(&commands).iter().filter(|t| *t == "◆ ").count(),
-            1,
-            "every status draws the same one mark"
+            runs[0].1,
+            app.theme.color(ColorToken::Muted),
+            "status {status:?} rests in the quiet colour"
         );
     }
 
-    // A finished command carries the same success colour as every other
-    // finished call.
     let (commands, _) = paint_tool_calls(vec![call(
         "run_command",
         r#"{"command":"ls"}"#,
@@ -416,8 +397,16 @@ fn status_affordance_reflects_the_persisted_status() {
         Some("file.txt"),
     )]);
     assert!(
-        mark_color(&commands, folded_mark(&app, ColorToken::Success)),
-        "a finished command carries the success colour"
+        drawn_texts(&commands)
+            .iter()
+            .any(|text| text == "Ran 1 command"),
+        "a finished command folds into its chain header"
+    );
+    assert!(
+        text_runs(&commands)
+            .iter()
+            .all(|(text, _, _, _)| text != "◆ " && text != "◈ "),
+        "a command's header carries no mark either"
     );
 }
 
@@ -433,7 +422,11 @@ fn tool_result_block_still_renders_for_a_user_command() {
     let data = TerminalData::new("call_1", vec![TerminalLine::output("file.txt")]);
     let filters: Rc<RefCell<HashMap<String, TerminalFilter>>> =
         Rc::new(RefCell::new(HashMap::new()));
-    let hovered = filters.borrow_mut().entry(data.filter_key()).or_default().clone();
+    let hovered = filters
+        .borrow_mut()
+        .entry(data.filter_key())
+        .or_default()
+        .clone();
     hovered.set_hovered(true);
 
     let paint = |bubble: &mut ChatMessageBubble| {
@@ -457,10 +450,8 @@ fn tool_result_block_still_renders_for_a_user_command() {
             .count()
     };
 
-    let mut resting = ChatMessageBubble::new(
-        ChatRole::Tool,
-        vec![ChatFragment::terminal(data.clone())],
-    );
+    let mut resting =
+        ChatMessageBubble::new(ChatRole::Tool, vec![ChatFragment::terminal(data.clone())]);
     let commands = paint(&mut resting);
     assert_eq!(
         copy_icons(&commands),

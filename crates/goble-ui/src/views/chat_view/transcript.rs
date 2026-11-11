@@ -643,6 +643,7 @@ impl ChatView {
                     .with_terminal_filters(self.terminal_filters.clone())
                     .with_reasoning_expanded(self.reasoning_expanded.clone())
                     .with_tool_fold(self.tool_fold.clone())
+                    .with_tool_hover(self.tool_hover.clone())
                     .with_sub_agents(self.sub_agents.clone())
                     .with_sub_agent_model(self.sub_agent_model.clone())
                     .with_global_terminal_filter(self.global_terminal_filter.clone())

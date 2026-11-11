@@ -11,7 +11,7 @@ use crate::theme::{ColorToken, FontFamily, SpacingToken};
 use super::quote_rail::QuoteRail;
 use crate::elements::table_grid::{self, TableCell, TableGrid};
 use crate::elements::terminal_block::TerminalBlockPlumbing;
-use super::tool_call::{build_tool_call_rows, to_text_span, TOOL_MARK, TOOL_ROW_FONT_SIZE};
+use super::tool_call::{build_tool_call_rows, to_text_span, TOOL_ROW_FONT_SIZE};
 
 /// The prompt marker that leads a user's own message. grok-build's `❯` is a
 /// wide, short-armed chevron at the user accent, and the bundled mono face
@@ -43,6 +43,9 @@ pub struct ChatMessageBubble {
     /// [`tool_fold_key`](crate::elements::chat_content::tool_fold_key); shared so a call the user folded stays folded (and one
     /// they opened stays open) across the per-frame rebuild.
     tool_fold: Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    /// The tool row under the pointer, reported by the row's paint; the next
+    /// frame draws that row's arrow and its white label.
+    tool_hover: Rc<RefCell<Option<String>>>,
     /// The live sub-agent records the parent's tool-call rows read their status
     /// from, keyed by the id of the tool call that spawned the child. The app
     /// holds them from S4's `chat:subagent_*` events.
@@ -69,6 +72,7 @@ impl ChatMessageBubble {
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
             reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
             tool_fold: Rc::new(RefCell::new(HashMap::new())),
+            tool_hover: Rc::new(RefCell::new(None)),
             sub_agents: HashMap::new(),
             sub_agent_model: String::new(),
             global_terminal_filter: None,
@@ -81,6 +85,13 @@ impl ChatMessageBubble {
 
     pub fn with_tool_calls(mut self, tool_calls: Vec<ToolCall>) -> Self {
         self.tool_calls = tool_calls;
+        self
+    }
+
+    /// Share the app-owned cell that names the tool row under the pointer, so
+    /// a chain's header can draw its arrow without a hover band behind it.
+    pub fn with_tool_hover(mut self, tool_hover: Rc<RefCell<Option<String>>>) -> Self {
+        self.tool_hover = tool_hover;
         self
     }
 
@@ -224,6 +235,7 @@ impl ChatMessageBubble {
             column = column.with_child(build_tool_call_rows(
                 &self.tool_calls,
                 &self.tool_fold,
+                &self.tool_hover,
                 &self.sub_agents,
                 &self.sub_agent_model,
                 app,
@@ -421,9 +433,10 @@ impl ChatMessageBubble {
     }
 
     /// A model reasoning (thinking) row, drawn the way grok-build's Thinking
-    /// block is: the same filled diamond as a tool call, then a bold muted
-    /// label — `Thought` once the step is over, `Thinking…` while it streams.
-    /// Opening it shows the body behind the pager's dim quote rail.
+    /// block is: a bold muted label — `Thought` once the step is over,
+    /// `Thinking…` while it streams. Opening it shows the body behind the
+    /// pager's dim quote rail; the body stays muted, since a thought is a
+    /// quieter record than the commands it led to.
     fn render_reasoning(
         &self,
         key: &str,
@@ -443,33 +456,15 @@ impl ChatMessageBubble {
             .copied()
             .unwrap_or(!done);
         let label = if done { "Thought" } else { "Thinking…" };
-        let mark = if done {
-            ColorToken::Muted
-        } else {
-            ColorToken::Accent
-        };
 
         let toggle = self.reasoning_expanded.clone();
         let key = key.to_string();
         let header = Chip::flat(
-            Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(2.0)
-                .with_child(
-                    Text::new(format!("{TOOL_MARK} "))
-                        .with_theme_color(mark, app)
-                        .with_font_family(FontFamily::Mono)
-                        .with_font_size(TOOL_ROW_FONT_SIZE)
-                        .finish(),
-                )
-                .with_child(
-                    Text::new(label)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .with_font_family(FontFamily::Mono)
-                        .with_font_size(TOOL_ROW_FONT_SIZE)
-                        .with_weight(FontWeight::Bold)
-                        .finish(),
-                )
+            Text::new(label)
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(TOOL_ROW_FONT_SIZE)
+                .with_weight(FontWeight::Bold)
                 .finish(),
         )
         .with_on_click(move || {

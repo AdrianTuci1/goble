@@ -173,6 +173,10 @@ pub struct UiState {
     /// keyed by the call's id. Shared with the UI next to `reasoning_expanded`
     /// so a call the user folded stays folded across the per-frame rebuild.
     pub tool_fold: Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    /// The tool row (a chain's header, keyed by its group key) the pointer is
+    /// over, reported by the row's own paint. The next frame reads it to draw
+    /// the row's arrow and its white label without a hover band behind it.
+    pub tool_hover: Rc<RefCell<Option<String>>>,
     /// Whole-transcript terminal filter (open flag + selected filter) per pane,
     /// so the filter bar of one pty/agent pane does not open in its sibling.
     pub terminal_global_filters: HashMap<u64, TerminalFilter>,

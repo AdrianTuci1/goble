@@ -108,6 +108,7 @@ impl UiState {
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
             reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
             tool_fold: Rc::new(RefCell::new(HashMap::new())),
+            tool_hover: Rc::new(RefCell::new(None)),
             terminal_global_filters: HashMap::new(),
             crons_open: false,
             task_workflow_open: false,
